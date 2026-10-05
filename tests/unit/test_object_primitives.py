@@ -1,12 +1,13 @@
-"""Object primitives from the voxel map (``docs/reference/object-primitives-design.md``).
+"""Camera-first object instances, map-confirmed (``docs/reference/object-primitives-design.md``).
 
 The scene is the committed Isaac warehouse deploy scene, numerically:
 ``scenes/deploy/isaac_openarm_warehouse.yaml`` spawns three YCB props on the pallet deck
 (top z 0.21 in ``world``) in front of an OpenArm whose base frame sits 0.698 m above the
 URDF root (``robots/openarm/robot.yaml`` ``base_to_root_xyz_rpy``), at the 15 mm cells
-``deploy_e2e`` gives a sim octomap. Each prop is modelled as the shell the head camera
-leaves in the map — its top layer and the wall facing the robot — over a 7 cm footprint
-(the scene names positions, not sizes). No mocks (CLAUDE.md §1.11).
+``deploy_e2e`` gives a sim octomap. Each prop is modelled in the map as the shell the head
+camera leaves — its top layer and the wall facing the robot — over a 7 cm footprint (the
+scene names positions, not sizes), and ray-cast into the manifest's ``head_zed`` for the
+per-instance masks a segmenter returns (``_head_camera_render``). No mocks (CLAUDE.md §1.11).
 """
 
 from __future__ import annotations
@@ -19,18 +20,22 @@ import yaml
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
 from openral_hal._grasp_target import (
     VoxelLattice,
-    _in_region,
+    _components,
+    _ijk,
     cell_closed_region,
-    support_top_from_voxels,
+    region_covers_occupied,
+    target_region_from_masks,
 )
 from openral_hal._object_primitives import (
     PrimitiveFit,
     PrimitiveTracker,
+    instance_prompt,
+    map_confirms,
     nearest_primitive,
     point_box_gap_m,
-    primitives_from_voxels,
-    raised_anchor_xy,
 )
+
+from tests.unit._head_camera_render import Box, head_camera, render
 
 _REPO = Path(__file__).resolve().parents[2]
 _SCENE = _REPO / "scenes" / "deploy" / "isaac_openarm_warehouse.yaml"
@@ -40,10 +45,6 @@ _DECK_WORLD_Z = 0.21  # the scene's comment: Shelf_1 deck top
 _FRAME = "openarm_base"
 _FOOT = 0.07  # modelled prop footprint (the scene names positions only)
 _HEIGHT = 0.12
-_CAPS = {
-    "max_half_extent_m": GraspDeclaration.MAX_HALF_EXTENT_M,
-    "max_volume_m3": GraspDeclaration.MAX_VOLUME_M3,
-}
 
 
 def _scene() -> tuple[list[tuple[float, float]], float]:
@@ -104,37 +105,42 @@ def _column(x: float, y: float, *, half_xy: float) -> PlaceRegion:
     )
 
 
-def _support(grid: VoxelLattice, column: PlaceRegion) -> float:
-    """The leg's support measurement (``GraspTargetLeg._measure_support``) over ``column``."""
-    centers = grid.occupied_centers()
-    hx, hy, hz = column.half_extents
-    grow = 0.05 + _RES  # the ring is counted on the column grown by the probe margin + a cell
-    around = column.model_copy(update={"half_extents": (hx + grow, hy + grow, hz)})
-    anchor = raised_anchor_xy(grid, column, column.pose.xyz[:2])
-    assert anchor is not None
-    z = support_top_from_voxels(
-        grid,
-        centers[_in_region(centers, column)],
-        near_xy=anchor,
-        min_cells=8,
-        probe_margin_m=0.05,
-        surface_centers=centers[_in_region(centers, around)],
-    )
-    assert z is not None
-    return z
+def _foot(x: float, y: float, w: float = _FOOT, d: float = _FOOT, h: float = _HEIGHT) -> Box:
+    """The solid box the camera sees for a ``_lattice`` entry."""
+    return ((x - w / 2, y - d / 2, _DECK_Z), (x + w / 2, y + d / 2, _DECK_Z + h))
 
 
-def _at(regions: list[PlaceRegion], y: float) -> PlaceRegion:
-    """The one region whose centre lies within a cell of ``y`` (the lattice quantises)."""
-    near = [r for r in regions if abs(r.pose.xyz[1] - y) <= _RES]
-    assert len(near) == 1, (y, [r.pose.xyz for r in regions])
-    return near[0]
+_DECK: Box = ((0.2, -0.5, _DECK_Z - 2 * _RES), (0.8, 0.5, _DECK_Z))
 
 
-def _fits(grid: VoxelLattice, column: PlaceRegion) -> tuple[list[PrimitiveFit], list[str]]:
-    return primitives_from_voxels(
-        grid, column, support_z=_support(grid, column), min_cells=8, stamp_ns=7, **_CAPS
-    )
+def _camera_fits(boxes: list[Box], *, stamp_ns: int = 7) -> list[PlaceRegion]:
+    """One fit per box from its own mask (what a prompt on it returns), in box order."""
+    t, k = head_camera()
+    depth, labels = render([*boxes, _DECK], t, k)
+    regions = []
+    for n in range(1, len(boxes) + 1):
+        fit = target_region_from_masks(
+            [labels == n],
+            depth,
+            k,
+            t,
+            support_z=_DECK_Z,
+            resolution=_RES,
+            frame_id=_FRAME,
+            evidence_ref=f"segment_in_view:test@{stamp_ns}",
+            stamp_ns=stamp_ns,
+        )
+        assert fit.region is not None, (n, fit.refusal)
+        regions.append(fit.region)
+    return regions
+
+
+def _confirmed(grid: VoxelLattice, region: PlaceRegion) -> tuple[str, str]:
+    return map_confirms(grid, region, support_z=_DECK_Z, min_cover=0.5)
+
+
+def _fit(region: PlaceRegion, grid: VoxelLattice) -> PrimitiveFit:
+    return PrimitiveFit(region, region_covers_occupied(grid, region)[0], _DECK_Z)
 
 
 def test_the_scene_fixtures_place_three_props_on_the_deck_in_reach() -> None:
@@ -143,33 +149,16 @@ def test_the_scene_fixtures_place_three_props_on_the_deck_in_reach() -> None:
     assert pytest.approx(0.21 - 0.698) == _DECK_Z
 
 
-def test_each_prop_on_the_deck_is_one_primitive_within_the_kernels_contract() -> None:
+def test_each_prop_is_one_camera_instance_the_map_confirms_within_the_kernels_contract() -> None:
     grid = _props()
-    column = _column(0.5, 0.0, half_xy=0.45)
-    support_z = _support(grid, column)
-    assert support_z == pytest.approx(_DECK_Z)
-    fits, skipped = _fits(grid, column)
-    assert skipped == [] and len(fits) == 3
-    for _, y in _PROPS_XY:
-        _at([f.region for f in fits], y)
-    for fit in fits:
-        region = fit.region
-        assert region.stamp_ns == 7 and region.frame_id == _FRAME
-        # The tight box: over cell centres (half a cell short of the footprint each side),
-        # its lower face one voxel above the deck, never into it (HZ-0115-6).
-        assert abs(region.half_extents[0] - _FOOT / 2) <= _RES
-        assert abs(region.half_extents[1] - _FOOT / 2) <= _RES
-        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(support_z + _RES)
-        assert region.pose.xyz[2] + region.half_extents[2] == pytest.approx(
-            _DECK_Z + _HEIGHT, abs=_RES
-        )
-        # What the kernel gets holds every cell of the component and passes the caps.
+    regions = _camera_fits([_foot(x, y) for x, y in _PROPS_XY])
+    for region, (x, y) in zip(regions, _PROPS_XY, strict=True):
+        assert _confirmed(grid, region) == ("", "")
+        assert region.pose.xyz[:2] == pytest.approx((x, y), abs=_RES)
+        # The camera box, its lower face one voxel above the deck, never into it (HZ-0115-6).
+        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(_DECK_Z + _RES)
         closed, clamped = cell_closed_region(region, grid, max_half_extent_m=0.2)
         assert not clamped
-        centers = grid.occupied_centers()
-        above = centers[centers[:, 2] > support_z + _RES]
-        held = above[_in_region(above, closed)]
-        assert len(held) >= fit.cell_count
         GraspDeclaration(
             target_id="approach:openarm_left_finger_pair:1",
             contact_links=("openarm_left_finger_pair",),
@@ -179,139 +168,114 @@ def test_each_prop_on_the_deck_is_one_primitive_within_the_kernels_contract() ->
         )
 
 
-def test_the_prop_nearest_the_hand_is_chosen_and_a_tie_is_refused() -> None:
-    grid = _props()
-    fits, _ = _fits(grid, _column(0.5, 0.0, half_xy=0.45))
-    regions = [f.region for f in fits]
-    middle = regions.index(_at(regions, _PROPS_XY[1][1]))
-    plus = regions.index(_at(regions, _PROPS_XY[2][1]))
+def test_the_instance_nearest_the_hand_is_chosen_and_a_tie_is_refused() -> None:
+    regions = _camera_fits([_foot(x, y) for x, y in _PROPS_XY])
     hover = _DECK_Z + _HEIGHT + 0.10
-    index, why = nearest_primitive(regions, [(0.5, 0.03, hover)], ambiguity_m=_RES)
-    assert (index, why) == (middle, "")
-    index, why = nearest_primitive(regions, [(0.5, 0.20, hover)], ambiguity_m=_RES)
-    assert (index, why) == (plus, "")
-    between = (_PROPS_XY[1][1] + _PROPS_XY[2][1]) / 2
-    index, why = nearest_primitive(regions, [(0.5, between, hover)], ambiguity_m=_RES)
+    index, why = nearest_primitive(
+        regions, [(0.5, _PROPS_XY[1][1] + 0.03, hover)], ambiguity_m=_RES
+    )
+    assert (index, why) == (1, "")
+    index, why = nearest_primitive(regions, [(0.5, _PROPS_XY[2][1], hover)], ambiguity_m=_RES)
+    assert (index, why) == (2, "")
+    # Midway between the two boxes' facing sides (each fit is its own camera view's).
+    between = (
+        regions[1].pose.xyz[1]
+        + regions[1].half_extents[1]
+        + regions[2].pose.xyz[1]
+        - regions[2].half_extents[1]
+    ) / 2
+    index, why = nearest_primitive(regions, [(_PROPS_XY[1][0], between, hover)], ambiguity_m=_RES)
     assert index is None and why.startswith("ambiguous")
-    # A named search box (no hand) is unambiguous only with one primitive in it.
+    # A named search box (no hand) is unambiguous only with one instance in it.
     assert nearest_primitive(regions[:1], [], ambiguity_m=_RES) == (0, "")
     assert nearest_primitive(regions, [], ambiguity_m=_RES)[0] is None
     assert nearest_primitive([], [(0.5, 0.0, hover)], ambiguity_m=_RES)[0] is None
-    assert point_box_gap_m((0.5, _PROPS_XY[1][1], hover), regions[middle]) == pytest.approx(
-        0.10, abs=_RES
-    )
+    top = regions[1].pose.xyz[2] + regions[1].half_extents[2]
+    assert point_box_gap_m((*_PROPS_XY[1], top + 0.10), regions[1]) == pytest.approx(0.10)
 
 
-def test_a_touching_pair_is_one_primitive_and_a_merged_block_past_the_caps_is_none() -> None:
-    """Two bodies within one voxel are one component (HZ-0115-30): the map alone cannot
-    separate them. Under the caps the pair is one primitive — the documented residual;
-    past them there is no primitive at all (fail safe: no region, the kernel stops)."""
+def test_a_packed_pair_the_map_merges_is_two_instances_from_two_masks() -> None:
+    """Two cartons packed face to face: one 26-connected blob in the map (HZ-0115-30),
+    which the map alone could only exempt whole. The prompts land one on each carton (the
+    second only once the first's instance covers its top), each mask fits its own carton,
+    the map confirms both (each box holds one body: its own carton and the touching sliver
+    of the other), and the tracker keeps two identities."""
     x, y = _PROPS_XY[1]
-    pair = _lattice(
-        [(x, y - _FOOT / 2, _FOOT, _FOOT, _HEIGHT), (x, y + _FOOT / 2, _FOOT, _FOOT, _HEIGHT)]
-    )
-    fits, skipped = _fits(pair, _column(x, y, half_xy=0.2))
-    assert len(fits) == 1 and skipped == []
-    assert max(fits[0].region.half_extents[:2]) == pytest.approx(_FOOT - _RES / 2, abs=_RES)
-    crates = _lattice([(x, y - 0.13, 0.26, 0.26, 0.20), (x, y + 0.13, 0.26, 0.26, 0.20)])
-    fits, skipped = _fits(crates, _column(x, y, half_xy=0.35))
-    assert fits == []
-    assert len(skipped) == 1 and "over the caps" in skipped[0]
-
-
-def test_a_hand_beside_the_target_anchors_on_the_target_not_the_deck() -> None:
-    """A lateral approach: the search column is centred on bare deck 10 cm from the prop.
-    Anchored on the deck the support scan finds nothing under it; anchored on the nearest
-    raised top surface it measures the deck and fits the prop."""
-    grid = _props()
-    x, y = _PROPS_XY[1]
-    column = _column(x, y + 0.10, half_xy=0.2)
+    pair = [(x, y - _FOOT / 2), (x, y + _FOOT / 2)]
+    grid = _props(pair)
     centers = grid.occupied_centers()
-    inside = centers[_in_region(centers, column)]
-    assert (
-        support_top_from_voxels(
-            grid, inside, near_xy=column.pose.xyz[:2], min_cells=8, probe_margin_m=0.05
-        )
-        is None
-    )
-    anchor = raised_anchor_xy(grid, column, column.pose.xyz[:2])
-    assert anchor is not None and abs(anchor[1] - (y + _FOOT / 2)) <= _RES
-    fits, _ = _fits(grid, column)  # the column also reaches the +y prop
-    assert len(fits) == 2 and _at([f.region for f in fits], y) is not None
-    assert raised_anchor_xy(_lattice([]), column, column.pose.xyz[:2]) is None
+    above = centers[centers[:, 2] > _DECK_Z + _RES]
+    assert len(_components(_ijk(grid, above))) == 1, "the map holds the pair as one body"
+
+    column = _column(x, y, half_xy=0.2)
+    hand = (x, y - 0.25)
+    first = instance_prompt(grid, column, [], near_xy=hand)
+    assert first is not None and first[0][1] < y - _RES, "the first prompt is on the near carton"
+    near, far = _camera_fits([_foot(*xy) for xy in pair])
+    second = instance_prompt(grid, column, [near], near_xy=hand)
+    assert second is not None and second[0][1] > y + _RES, "then on the other one"
+    assert instance_prompt(grid, column, [near, far], near_xy=hand) is None
+
+    for region, (_, cy) in zip((near, far), pair, strict=True):
+        assert _confirmed(grid, region) == ("", "")
+        assert region.pose.xyz[1] == pytest.approx(cy, abs=_RES)
+        assert region.half_extents[1] < _FOOT, "one carton, not the pair"
+    tracker = PrimitiveTracker()
+    ids = [
+        p.primitive_id
+        for region in (near, far)
+        for p in tracker.update([_fit(region, grid)], stamp_ns=7, tol_m=_RES, scanned=region)
+    ]
+    assert ids == [0, 1] and len(tracker.primitives) == 2
 
 
-def test_a_component_touching_the_column_edge_is_skipped() -> None:
-    grid = _props()
+def test_the_map_refuses_a_box_it_does_not_hold_or_that_holds_two_bodies() -> None:
     x, y = _PROPS_XY[1]
-    fits, skipped = _fits(grid, _column(x + 0.03, y, half_xy=0.06))
-    assert fits == [] and len(skipped) == 1 and "touch the column's edge" in skipped[0]
-    fits, _ = _fits(grid, _column(x, y, half_xy=0.10))
-    assert len(fits) == 1
-
-
-def test_a_body_stacked_on_another_is_one_primitive_with_it() -> None:
-    """A riser under the target clusters with it and the box reaches the support: the map
-    cannot tell the two apart (the camera's ``not_on_support`` can). Pinned as the
-    residual the design note keeps a camera confirmation for."""
-    x, y = _PROPS_XY[1]
-    stacked = _lattice([(x, y, _FOOT, _FOOT, 0.05), (x, y, _FOOT, _FOOT, 0.17)], solid=True)
-    fits, skipped = _fits(stacked, _column(x, y, half_xy=0.2))
-    assert len(fits) == 1 and skipped == []
-    assert fits[0].region.pose.xyz[2] + fits[0].region.half_extents[2] == pytest.approx(
-        _DECK_Z + 0.17, abs=_RES
-    )
-
-
-def test_too_few_cells_and_a_tilted_lattice_are_refused() -> None:
-    grid = _props()
-    column = _column(0.5, 0.0, half_xy=0.45)
-    fits, skipped = primitives_from_voxels(
-        grid, column, support_z=_support(grid, column), min_cells=60, **_CAPS
-    )
-    assert fits == [] and len(skipped) == 3 and all("< min_cells" in s for s in skipped)
+    (region,) = _camera_fits([_foot(x, y)])
+    gone = _props([_PROPS_XY[0], _PROPS_XY[2]])  # the prop taken away: its cells cleared
+    kind, why = _confirmed(gone, region)
+    assert kind == "map_disagrees" and "occupied cells" in why
+    # Two props 3 cm apart and a box over both (a mask that took in the pair): two
+    # bodies in one box is never one instance.
+    apart = _props([(x, y - 0.05), (x, y + 0.05)])
+    both = region.model_copy(update={"half_extents": (0.05, 0.10, region.half_extents[2])})
+    assert _confirmed(apart, both)[0] == "map_split"
     with pytest.raises(Exception, match="frame"):
-        primitives_from_voxels(
-            grid, column.model_copy(update={"frame_id": "map"}), support_z=0.0, min_cells=8, **_CAPS
-        )
+        _confirmed(apart, both.model_copy(update={"frame_id": "map"}))
 
 
-def test_the_tracker_keeps_identities_and_drops_what_the_map_cleared() -> None:
-    column = _column(0.5, 0.0, half_xy=0.45)
-    tracker = PrimitiveTracker(max_misses=2)
+def test_the_tracker_keeps_identities_across_fits_and_drops_stale_and_cleared() -> None:
+    grid = _props()
+    tracker = PrimitiveTracker(max_misses=2, max_tracks=3)
 
-    def frame(grid: VoxelLattice, stamp: int) -> dict[int, PlaceRegion]:
-        fits, _ = _fits(grid, column)
-        return {
-            p.primitive_id: p.region
-            for p in tracker.update(fits, stamp_ns=stamp, tol_m=_RES, scanned=column)
-        }
+    def fold(regions: list[PlaceRegion], stamp: int) -> list[int]:
+        return [
+            p.primitive_id
+            for r in regions
+            for p in tracker.update([_fit(r, grid)], stamp_ns=stamp, tol_m=_RES, scanned=r)
+        ]
 
-    first = frame(_props(), 1)
-    assert sorted(first) == [0, 1, 2]
-    assert frame(_props(), 2).keys() == first.keys(), "a still scene keeps every identity"
-    # The middle prop nudged by one cell: the same identity, its box refreshed.
+    boxes = [_foot(x, y) for x, y in _PROPS_XY]
+    assert fold(_camera_fits(boxes, stamp_ns=1), 1) == [0, 1, 2]
+    # The next captures: the same objects keep their identities, and their boxes and
+    # stamps are the new fit's (``last_seen_ns`` is the instance's camera confirmation).
     x, y = _PROPS_XY[1]
-    nudged = [_PROPS_XY[0], (x + _RES, y), _PROPS_XY[2]]
-    third = frame(_props(nudged), 3)
-    assert third.keys() == first.keys()
-    moved = next(pid for pid, r in first.items() if r == _at(list(first.values()), y))
-    assert third[moved].pose.xyz[0] == pytest.approx(first[moved].pose.xyz[0] + _RES)
-    assert third[moved].stamp_ns == 7  # the fit's stamp, from the grid it was taken from
-    # The middle prop taken away: one miss keeps it, the second drops it (the map cleared
-    # its cells); the other two are untouched.
-    gone = [_PROPS_XY[0], _PROPS_XY[2]]
-    assert sorted(frame(_props(gone), 4)) == sorted(set(first) - {moved})
-    assert sorted(p.primitive_id for p in tracker.primitives) == sorted(first)
-    frame(_props(gone), 5)
-    assert sorted(p.primitive_id for p in tracker.primitives) == sorted(set(first) - {moved})
-    # Put back 12 cm away: a new identity (its centre lies in no remembered box).
-    far = [_PROPS_XY[0], (x, y + 0.12), _PROPS_XY[2]]
-    assert max(frame(_props(far), 6)) == 3
-    # A primitive outside the scanned column is not a miss: scanning elsewhere keeps it.
-    narrow = _column(*_PROPS_XY[0], half_xy=0.1)
-    fits, _ = _fits(_props(far), narrow)
-    kept = tracker.update(fits, stamp_ns=7, tol_m=_RES, scanned=narrow)
-    assert len(kept) == 1 and len(tracker.primitives) == 3
+    nudged = [boxes[0], _foot(x + _RES, y), boxes[2]]
+    assert fold(_camera_fits(nudged, stamp_ns=2), 2) == [0, 1, 2]
+    middle = next(p for p in tracker.primitives if p.primitive_id == 1)
+    assert middle.last_seen_ns == 2 and middle.first_seen_ns == 1
+    assert middle.region.pose.xyz[0] == pytest.approx(x + _RES, abs=_RES / 2)
+    # Seen elsewhere 12 cm away: a new identity; past ``max_tracks`` the one seen
+    # longest ago goes (bounded work).
+    far = _camera_fits([_foot(x, y + 0.12)], stamp_ns=3)
+    assert fold(far, 3) == [3]
+    assert sorted(p.primitive_id for p in tracker.primitives) == [1, 2, 3]
+    # Staleness and map contradiction are the leg's ``prune`` predicates: not re-fitted
+    # since stamp 2, or no longer held by the map (its cells cleared).
+    cleared = _props([_PROPS_XY[0], _PROPS_XY[2]])
+    dropped = tracker.prune(lambda p: region_covers_occupied(cleared, p.region)[1])
+    assert sorted(p.primitive_id for p in dropped) == [1, 3]
+    assert [p.primitive_id for p in tracker.prune(lambda p: p.last_seen_ns > 2)] == [2]
+    assert tracker.primitives == []
     with pytest.raises(ValueError, match="max_misses"):
         PrimitiveTracker(max_misses=0)

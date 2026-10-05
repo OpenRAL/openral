@@ -1,49 +1,46 @@
-"""Object primitives from the voxel map — every component above a measured support, tracked.
+"""Object instances before contact — camera-originated, map-confirmed, tracked.
 
-The map-first half of ``docs/reference/object-primitives-design.md`` (issue #349): the
-grasp region is needed *before* the fingers reach the target, and a VLA never pauses
-for the head camera to get a clean, unoccluded fit. The octomap already holds every
-object as a 26-connected component of occupied cells standing on a measured support
-(the same component ``_grasp_target.map_completed_region`` grows a camera fit to), and
-it remembers views from before the hand arrived. So the component *is* the primitive:
-a gravity-aligned (yaw-only) box over its cell centres, its lower face one voxel above
-the support (HZ-0115-6: never into the support layer), its yaw the footprint's PCA.
+``docs/reference/object-primitives-design.md`` (issue #349): the grasp region is needed
+*before* the fingers reach the target, and a VLA never pauses for the head camera to get
+a clean, unoccluded fit while a hand is armed. So the grasp-target leg measures every
+object instance near a hand **before** any hand arms, from the head camera: one
+``SegmentInView`` mask per instance (``instance_prompt`` says where to prompt), lifted
+through the registered depth by the existing fit (``target_region_from_masks``), and
+**confirmed** by the voxel map (``map_confirms``: the map holds the box, and the box holds
+one body). The camera gives identity and separates objects the map merges (cartons packed
+in a bin are one 26-connected blob in the map, HZ-0115-30); the map, which integrates
+views from before the hand arrived, confirms each box and — while the declared hand
+occludes the camera in the final approach — holds the confirmed box. The map never
+originates a box.
 
-Pure numpy, no ROS, no clock. ``primitives_from_voxels`` extracts every primitive in a
-search column; ``PrimitiveTracker`` keeps identities across grids and retracts what the
-map stops holding; ``nearest_primitive`` picks the one a hand approaches, refusing a
-tie. The grasp-target leg (``_grasp_target_leg``, ``primitives=True``) runs the chosen
-box through its existing gates (map cover, whole-component, tracking, occlusion hold,
-caps, cell closure) and publishes it as the declaration's region — the kernel contract
-is unchanged and the camera is not consulted.
+Pure numpy, no ROS, no clock. ``PrimitiveTracker`` keeps identities across fits and drops
+what goes stale or what the map contradicts; ``nearest_primitive`` picks the instance a
+hand approaches, refusing a tie. The leg (``_grasp_target_leg``, ``premeasure=True``) runs
+the chosen box through its existing gates before ``accept``; the kernel contract is
+unchanged (no region, no exemption).
 
-Every threshold is a *calibration point* (CLAUDE.md §1.2). What the map cannot do is
-documented, not hidden: two bodies within one voxel of each other are one component
-(HZ-0115-30), and a target standing on a same-footprint body is one component with it —
-the camera's ``not_on_support`` gate is the only one that separates them, so the
-design note keeps a camera confirmation as the production posture.
+Every threshold is a *calibration point* (CLAUDE.md §1.2).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from numpy.typing import NDArray
-from openral_core import PlaceRegion, Pose6D
-from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
+from openral_core import PlaceRegion
+from openral_core.geometry import homogeneous_from_quat_xyz
 
 from openral_hal._grasp_target import (
-    _NEIGHBOURS_26,
     VoxelLattice,
-    _cell_centres,
     _check_frame,
     _components,
     _ijk,
     _in_region,
+    cell_closed_region,
     occupied_centers_in_box,
+    region_covers_occupied,
     track_region,
 )
 
@@ -51,25 +48,28 @@ __all__ = [
     "ObjectPrimitive",
     "PrimitiveFit",
     "PrimitiveTracker",
+    "instance_prompt",
+    "map_confirms",
     "nearest_primitive",
     "point_box_gap_m",
-    "primitives_from_voxels",
-    "raised_anchor_xy",
 ]
 
 
 @dataclass(frozen=True)
 class PrimitiveFit:
-    """One component of the map fitted as a box.
+    """One camera instance fit, map-confirmed.
 
     Attributes:
-        region: The tight gravity-aligned box over the component's cell centres, its
-            lower face one voxel above the support.
-        cell_count: Cells in the component.
+        region: The instance's gravity-aligned box (``target_region_from_masks``), its
+            lower face one voxel above the support, stamped no later than the depth
+            frame and the grid it was confirmed on.
+        cell_count: Occupied map cells inside the box (``region_covers_occupied``).
+        support_z: The measured support top the box was fitted on.
     """
 
     region: PlaceRegion
     cell_count: int
+    support_z: float
 
 
 @dataclass(frozen=True)
@@ -77,204 +77,154 @@ class ObjectPrimitive:
     """A tracked primitive: a ``PrimitiveFit`` under a stable identity.
 
     Attributes:
-        primitive_id: Stable across grids while the box tracks (``PrimitiveTracker``).
+        primitive_id: Stable across fits while the box tracks (``PrimitiveTracker``).
         region: The newest fit's box.
         cell_count: The newest fit's cell count.
-        first_seen_ns: Grid ``source_stamp`` the identity was minted at.
-        last_seen_ns: Grid ``source_stamp`` of the newest fit.
+        support_z: The newest fit's support top.
+        first_seen_ns: Stamp of the fit the identity was minted at.
+        last_seen_ns: Stamp of the newest camera fit (``region.stamp_ns``): the instance's
+            ``confirmed_ns``, what its staleness is measured from.
     """
 
     primitive_id: int
     region: PlaceRegion
     cell_count: int
+    support_z: float
     first_seen_ns: int
     last_seen_ns: int
 
 
-def _footprint_yaw(xy: NDArray[np.float64]) -> float:
-    """Yaw of the footprint's major axis: 2-D PCA over the distinct cell columns."""
-    if len(xy) < 2:  # noqa: PLR2004 — one column has no axis
-        return 0.0
-    _, _, vt = np.linalg.svd(xy - xy.mean(axis=0), full_matrices=False)
-    return math.atan2(float(vt[0, 1]), float(vt[0, 0]))
+def map_confirms(
+    grid: VoxelLattice, region: PlaceRegion, *, support_z: float, min_cover: float
+) -> tuple[str, str]:
+    """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
-
-def primitives_from_voxels(
-    grid: VoxelLattice,
-    column: PlaceRegion,
-    *,
-    support_z: float,
-    min_cells: int,
-    max_half_extent_m: float,
-    max_volume_m3: float,
-    stamp_ns: int = 0,
-    evidence_ref: str = "map_primitive",
-) -> tuple[list[PrimitiveFit], list[str]]:
-    """Every object standing on the support inside ``column``, each as a tight yaw box.
-
-    The occupied cells of ``column`` more than one voxel above ``support_z`` (the layer
-    touching the support is the support's own, as ``target_seed_from_voxels`` drops it)
-    are labelled into 26-connected components. A component is a primitive when it has
-    at least ``min_cells`` cells, its lowest cell sits within two voxels of the support
-    (else it stands on something else — a shelf above, a riser), none of its cells
-    touches the column's edge (the leg cannot vouch for what continues outside it, the
-    same rule as ``map_completed_region``), and its box fits the caps. The box is the
-    smallest gravity-aligned box in the footprint's PCA yaw holding every cell centre
-    (each horizontal half-extent at least half a cell), its lower face pinned at
-    ``support_z + resolution`` — never lower (HZ-0115-6) — and its top the highest
-    cell's top face. ``cell_closed_region`` then grows it to hold every cell whole, as
-    for a camera fit.
-
-    Two bodies within one voxel of each other are one component and so one primitive
-    (HZ-0115-30); the caps refuse a merged pair that grew past one graspable object,
-    and the rest is the documented residual.
+    The camera originates the box (one mask, one object); the map only confirms it. Two
+    gates, both the producer's existing rules: the map must hold the box
+    (``region_covers_occupied``, at least ``min_cover`` of its footprint's cells — else
+    ``map_disagrees``: the object is gone, or the camera fitted something the map never
+    saw), and the occupied cells above the support inside the box's cell closure (what the
+    kernel would exempt) must be **one** 26-connected body — else ``map_split``: the box
+    reaches a second body the map holds apart from it. A neighbour *touching* the instance
+    is one body with it in the map (HZ-0115-30), so a packed pair passes, each instance
+    with the sliver of its neighbour inside its own padded box — never the whole merged
+    blob, which is what the map alone would have exempted.
 
     Args:
-        grid: The published lattice; must be z-up (yaw-only).
-        column: The search column, in ``grid.frame_id``.
-        support_z: The measured support top (``support_top_from_voxels``).
-        min_cells: Fewest cells a component may have. *Calibration point.*
-        max_half_extent_m: Per-axis cap on the tight box (``GraspDeclaration``'s).
-        max_volume_m3: Volume cap on the tight box.
-        stamp_ns: Stamp put on every region (the grid's ``source_stamp``).
-        evidence_ref: Provenance put on every region.
-
-    Returns:
-        ``(fits, skipped)`` — the primitives, largest first, and one line per component
-        refused (why, with its size), for the trace.
+        grid: The published lattice; ``region`` must be in its frame.
+        region: The camera instance's box.
+        support_z: The support top the instance was fitted on.
+        min_cover: ``region_covers_occupied``'s fraction. *Calibration point.*
 
     Raises:
-        ROSConfigError: On a frame mismatch or a tilted lattice.
+        ROSConfigError: On a frame mismatch or a tilted region.
 
     Example:
         >>> import numpy as np
         >>> from openral_core import PlaceRegion, Pose6D
-        >>> occ = np.zeros(8 * 8 * 4, dtype=np.uint8)
-        >>> occ[:64] = 1  # k=0: a table top
-        >>> for k in (1, 2):  # a 2x2 post at i=j=2..3 and a 1x3 bar at i=6, j=1..3
-        ...     for i, j in [(2, 2), (2, 3), (3, 2), (3, 3), (6, 1), (6, 2), (6, 3)]:
-        ...         occ[i + 8 * (j + 8 * k)] = 1
-        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (8, 8, 4), occ)
+        >>> occ = np.zeros(8 * 4 * 3, dtype=np.uint8)
+        >>> for i in (1, 2, 5, 6):  # two 2x2 posts, one cell high, a 2-cell gap apart
+        ...     for j in (1, 2):
+        ...         occ[i + 8 * (j + 4 * 1)] = 1
+        >>> g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (8, 4, 3), occ)
+        >>> def box(x, hx):
+        ...     return PlaceRegion(
+        ...         frame_id="b",
+        ...         half_extents=(hx, 0.1, 0.05),
+        ...         pose=Pose6D(xyz=(x, 0.2, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
+        ...     )
+        >>> map_confirms(g, box(0.2, 0.1), support_z=0.0, min_cover=0.5)
+        ('', '')
+        >>> map_confirms(g, box(0.4, 0.3), support_z=0.0, min_cover=0.5)[0]
+        'map_split'
+        >>> map_confirms(g, box(0.4, 0.05), support_z=0.0, min_cover=0.5)[0]
+        'map_disagrees'
+    """
+    count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
+    if not covered:
+        return "map_disagrees", f"only {count} occupied cells inside the instance box"
+    closed, _ = cell_closed_region(region, grid, max_half_extent_m=math.inf)
+    centers = occupied_centers_in_box(grid, closed)
+    above = centers[centers[:, 2] > support_z + grid.resolution]
+    parts = sorted((len(c) for c in _components(_ijk(grid, above))), reverse=True)
+    if len(parts) > 1:
+        return "map_split", f"{len(parts)} separate bodies inside the instance box (cells {parts})"
+    return "", ""
+
+
+def instance_prompt(
+    grid: VoxelLattice,
+    column: PlaceRegion,
+    covered: Sequence[PlaceRegion],
+    *,
+    near_xy: tuple[float, float],
+    skip: Collection[tuple[int, int, int]] = (),
+) -> tuple[tuple[float, float, float], tuple[int, int, int]] | None:
+    """Where to prompt the segmenter next: a raised top surface no instance holds yet.
+
+    ``SegmentInView`` takes one positive point, never a whole frame (there is no
+    prompt-free mode), so the map says *where* to look and the camera says *what* is
+    there. A top-surface cell is an occupied cell of ``column`` with nothing directly
+    above it; it is *raised* when it stands more than one cell above the column's lowest
+    top surface (the support the hand works over). The prompt is the raised top cell
+    nearest ``near_xy`` that lies in no ``covered`` box and is not in ``skip`` (recently
+    prompted), preferring an *interior* cell (all four side neighbours raised tops too):
+    a packed pair's shared top is one surface in the map, and a prompt one cell inside
+    its near edge lands on one body, where its centroid would land on the seam. Once that
+    body's instance covers its cells, the next prompt lands on the neighbour — so two
+    masks separate what the map merges.
+
+    Returns:
+        ``(point, cell)`` — the prompt (the cell's top-face centre, in
+        ``grid.frame_id``) and its lattice cell (the ``skip`` key) — or ``None``.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> occ = np.zeros(6 * 6 * 3, dtype=np.uint8)
+        >>> occ[:36] = 1  # k=0: a table
+        >>> occ[[36 + 4 + 6 * 4, 72 + 4 + 6 * 4]] = 1  # a 2-cell post at i=j=4
+        >>> g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 6, 3), occ)
         >>> col = PlaceRegion(
-        ...     frame_id="base",
-        ...     half_extents=(0.45, 0.45, 0.25),
-        ...     pose=Pose6D(xyz=(0.4, 0.4, 0.2), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     frame_id="b",
+        ...     half_extents=(0.3, 0.3, 0.15),
+        ...     pose=Pose6D(xyz=(0.3, 0.3, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
         ... )
-        >>> fits, skipped = primitives_from_voxels(
-        ...     g, col, support_z=0.1, min_cells=2, max_half_extent_m=0.2, max_volume_m3=0.03
-        ... )
-        >>> [(f.cell_count, [round(v, 3) for v in f.region.pose.xyz]) for f in fits]
-        [(4, [0.3, 0.3, 0.25]), (3, [0.65, 0.25, 0.25])]
-        >>> skipped
-        []
+        >>> instance_prompt(g, col, [], near_xy=(0.1, 0.1))
+        ((0.45, 0.45, 0.3), (4, 4, 2))
+        >>> instance_prompt(g, col, [], near_xy=(0.1, 0.1), skip={(4, 4, 2)}) is None
+        True
     """
     _check_frame(grid, column)
     centers = occupied_centers_in_box(grid, column)
-    above = centers[centers[:, 2] > support_z + grid.resolution]
-    fits: list[PrimitiveFit] = []
-    skipped: list[str] = []
-    if len(above) == 0:
-        return fits, skipped
-    ijk = _ijk(grid, above)
-    res = grid.resolution
-    for comp in sorted(_components(ijk), key=len, reverse=True):
-        n = len(comp)
-        if n < min_cells:
-            skipped.append(f"{n} cells < min_cells {min_cells}")
-            continue
-        cells = ijk[comp]
-        pts = above[comp]
-        bottom = float(pts[:, 2].min()) - 0.5 * res
-        if bottom - support_z > 2.0 * res + 1e-9:
-            skipped.append(f"{n} cells not on the support ({bottom - support_z:.3f} m above it)")
-            continue
-        around = (cells[:, None, :] + np.asarray(_NEIGHBOURS_26, dtype=np.int64)[None]).reshape(
-            -1, 3
-        )
-        if not _in_region(_cell_centres(grid, around), column).all():
-            skipped.append(f"{n} cells touch the column's edge")
-            continue
-        footprint = np.unique(cells[:, :2], axis=0)
-        yaw = _footprint_yaw(
-            _cell_centres(grid, np.column_stack([footprint, footprint[:, :1]]))[:, :2]
-        )
-        c, s = math.cos(yaw), math.sin(yaw)
-        rot2 = np.array(((c, -s), (s, c)))
-        xy_mean = pts[:, :2].mean(axis=0)
-        uv = (pts[:, :2] - xy_mean) @ rot2
-        lo, hi = uv.min(axis=0), uv.max(axis=0)
-        half_xy = np.maximum((hi - lo) / 2.0, 0.5 * res)
-        floor = support_z + res
-        top = float(pts[:, 2].max()) + 0.5 * res
-        if top <= floor:
-            skipped.append(f"{n} cells with no height above the support")
-            continue
-        half = (float(half_xy[0]), float(half_xy[1]), (top - floor) / 2.0)
-        if max(half) > max_half_extent_m or 8.0 * half[0] * half[1] * half[2] > max_volume_m3:
-            skipped.append(
-                f"{n} cells over the caps: half_extents {tuple(round(v, 3) for v in half)}"
-            )
-            continue
-        centre_xy = xy_mean + rot2 @ ((lo + hi) / 2.0)
-        region = PlaceRegion(
-            frame_id=grid.frame_id,
-            pose=Pose6D(
-                xyz=(float(centre_xy[0]), float(centre_xy[1]), (top + floor) / 2.0),
-                quat_xyzw=yaw_to_quat_xyzw(yaw),
-                frame_id=grid.frame_id,
-            ),
-            half_extents=half,
-            evidence_ref=evidence_ref,
-            stamp_ns=stamp_ns,
-        )
-        fits.append(PrimitiveFit(region, n))
-    return fits, skipped
-
-
-def raised_anchor_xy(
-    grid: VoxelLattice, column: PlaceRegion, near_xy: tuple[float, float]
-) -> tuple[float, float] | None:
-    """Where to anchor the support scan: the nearest top-surface cell standing above the floor.
-
-    ``support_top_from_voxels`` anchors on the occupied column nearest a point; over a
-    surface that fills the search column every point is occupied, so a hand beside the
-    target (a lateral approach) anchors on the bare support and finds no layer under it.
-    Here the anchor is the top-surface cell (no occupied cell directly above it) nearest
-    ``near_xy`` among those more than one cell above the column's lowest top surface — the
-    floor the hand works over — so the scan starts on whatever stands on it.
-
-    Returns:
-        The anchor's ``(x, y)`` in ``grid.frame_id``, or ``None`` when nothing in the
-        column stands above its lowest surface.
-
-    Example:
-        >>> import numpy as np
-        >>> from openral_core import PlaceRegion, Pose6D
-        >>> occ = np.zeros(6 * 6 * 4, dtype=np.uint8)
-        >>> occ[:36] = 1  # k=0: a table
-        >>> occ[[36 + 4 + 6 * 4, 72 + 4 + 6 * 4]] = 1  # a 2-cell post at i=j=4
-        >>> g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 6, 4), occ)
-        >>> col = PlaceRegion(
-        ...     frame_id="b",
-        ...     half_extents=(0.3, 0.3, 0.2),
-        ...     pose=Pose6D(xyz=(0.3, 0.3, 0.2), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
-        ... )
-        >>> raised_anchor_xy(g, col, (0.1, 0.1))  # the hand over bare table
-        (0.45, 0.45)
-    """
-    centers = occupied_centers_in_box(grid, column)
     if len(centers) == 0:
         return None
-    cells = _ijk(grid, centers).tolist()
-    occupied = {tuple(c) for c in cells}
-    top = np.array([(i, j, k + 1) not in occupied for i, j, k in cells], dtype=bool)
-    tops = centers[top]
-    raised = tops[tops[:, 2] > float(tops[:, 2].min()) + grid.resolution]
-    if len(raised) == 0:
+    ijk = _ijk(grid, centers)
+    occupied = {(i, j, k) for i, j, k in ijk.tolist()}
+    top = np.array([(i, j, k + 1) not in occupied for i, j, k in ijk.tolist()], dtype=bool)
+    tops, top_ijk = centers[top], ijk[top]
+    raised = tops[:, 2] > float(tops[:, 2].min()) + grid.resolution
+    tops, top_ijk = tops[raised], top_ijk[raised]
+    free = np.array([(i, j, k) not in skip for i, j, k in top_ijk.tolist()], dtype=bool)
+    for region in covered:
+        if len(tops) and region.frame_id == grid.frame_id:
+            free &= ~_in_region(tops, region)
+    if not free.any():
         return None
-    d2 = np.sum((raised[:, :2] - np.asarray(near_xy, dtype=np.float64)) ** 2, axis=1)
-    x, y = raised[int(np.argmin(d2)), :2]
-    return float(x), float(y)
+    columns = {(i, j) for i, j, _ in top_ijk.tolist()}
+    edge = np.array(
+        [
+            not all((i + di, j + dj) in columns for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            for i, j, _ in top_ijk.tolist()
+        ],
+        dtype=bool,
+    )
+    d2 = np.sum((tops[:, :2] - np.asarray(near_xy, dtype=np.float64)) ** 2, axis=1)
+    candidates = np.flatnonzero(free)
+    pick = int(candidates[np.lexsort((d2[candidates], edge[candidates]))[0]])
+    x, y, z = (float(v) for v in tops[pick])
+    i, j, k = (int(v) for v in top_ijk[pick])
+    return (x, y, z + 0.5 * grid.resolution), (i, j, k)
 
 
 def point_box_gap_m(point: Sequence[float], region: PlaceRegion) -> float:
@@ -351,22 +301,24 @@ def nearest_primitive(
 
 
 class PrimitiveTracker:
-    """Identities for primitives across grids; retracts what the map stops holding.
+    """Identities for instances across fits; drops what goes stale or is contradicted.
 
-    Association is geometric, label-free: a fit that barely moved (``track_region``
-    within ``tol_m``, one voxel) refreshes its primitive; one whose centre lies in a
-    primitive's box, or holds that box's centre, is the same object nudged or re-fitted
-    (the same identity, the box replaced); anything else is a new primitive. A primitive
-    inside the scanned column that no fit matched accrues a miss and is dropped after
-    ``max_misses`` grids — the map cleared its cells (the object was taken away), or it
-    merged into a neighbour; one outside the column is kept (not looked at).
+    Association is geometric, label-free (``SegmentInView`` names no class): a fit that
+    barely moved (``track_region`` within ``tol_m``, one voxel) refreshes its instance;
+    one whose centre lies in an instance's box, or holds that box's centre, is the same
+    object nudged or re-fitted (the same identity, the box replaced); anything else is a
+    new instance. An instance whose centre lies in ``scanned`` that no fit matched accrues
+    a miss and is dropped after ``max_misses`` updates — the camera looked there and saw
+    something else; one outside it is kept (not looked at). ``prune`` drops by predicate
+    (the leg's staleness and map-contradiction rules); past ``max_tracks`` the instance
+    seen longest ago is dropped (bounded work).
 
-    Pure and single-threaded by contract: the grasp-target leg updates it from its
-    measurement tick only.
+    Single-threaded by contract: the grasp-target leg touches it under the bridge lock.
 
     Args:
-        max_misses: Consecutive scanned grids without a match before a primitive is
-            dropped. *Calibration point.*
+        max_misses: Consecutive scans without a match before an instance is dropped.
+            *Calibration point.*
+        max_tracks: Most instances held at once. *Calibration point.*
 
     Example:
         >>> from openral_core import PlaceRegion, Pose6D
@@ -378,6 +330,7 @@ class PrimitiveTracker:
         ...             pose=Pose6D(xyz=(x, 0.0, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
         ...         ),
         ...         9,
+        ...         0.0,
         ...     )
         >>> col = PlaceRegion(
         ...     frame_id="b",
@@ -397,11 +350,14 @@ class PrimitiveTracker:
         ([0], [0])
     """
 
-    def __init__(self, *, max_misses: int = 3) -> None:
+    def __init__(self, *, max_misses: int = 3, max_tracks: int = 16) -> None:
         """Start empty."""
-        if max_misses < 1:
-            raise ValueError(f"max_misses must be >= 1; got {max_misses}")
+        if max_misses < 1 or max_tracks < 1:
+            raise ValueError(
+                f"max_misses and max_tracks must be >= 1; got {max_misses}, {max_tracks}"
+            )
         self._max_misses = max_misses
+        self._max_tracks = max_tracks
         self._tracks: dict[int, tuple[ObjectPrimitive, int]] = {}  # id -> (primitive, misses)
         self._next_id = 0
 
@@ -428,14 +384,14 @@ class PrimitiveTracker:
     def update(
         self, fits: Sequence[PrimitiveFit], *, stamp_ns: int, tol_m: float, scanned: PlaceRegion
     ) -> list[ObjectPrimitive]:
-        """Fold one grid's fits in; return the primitives inside ``scanned`` (largest first).
+        """Fold fits in; return their instances (largest first).
 
         Args:
-            fits: ``primitives_from_voxels`` of this grid's scan of ``scanned``.
-            stamp_ns: The grid's ``source_stamp``.
+            fits: Map-confirmed camera fits of one capture.
+            stamp_ns: The capture's stamp (the fits' ``region.stamp_ns``).
             tol_m: The tracking tolerance (one voxel).
-            scanned: The column the fits were extracted from: primitives whose centre lies
-                in it and matched nothing are misses.
+            scanned: Where the capture looked: instances whose centre lies in it and
+                matched nothing are misses.
         """
         taken: set[int] = set()
         out: list[ObjectPrimitive] = []
@@ -448,7 +404,7 @@ class PrimitiveTracker:
             else:
                 first = self._tracks[pid][0].first_seen_ns
             taken.add(pid)
-            prim = ObjectPrimitive(pid, fit.region, fit.cell_count, first, stamp_ns)
+            prim = ObjectPrimitive(pid, fit.region, fit.cell_count, fit.support_z, first, stamp_ns)
             self._tracks[pid] = (prim, 0)
             out.append(prim)
         for pid in list(self._tracks):
@@ -463,4 +419,13 @@ class PrimitiveTracker:
                 del self._tracks[pid]
             else:
                 self._tracks[pid] = (prim, misses)
+        while len(self._tracks) > self._max_tracks:
+            del self._tracks[min(self._tracks, key=lambda p: self._tracks[p][0].last_seen_ns)]
         return out
+
+    def prune(self, keep: Callable[[ObjectPrimitive], bool]) -> list[ObjectPrimitive]:
+        """Drop every instance ``keep`` refuses; return what was dropped."""
+        dropped = [p for p, _ in self._tracks.values() if not keep(p)]
+        for prim in dropped:
+            del self._tracks[prim.primitive_id]
+        return dropped

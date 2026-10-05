@@ -3460,99 +3460,158 @@ def test_a_margin_outside_its_bounds_is_refused_at_construction(margin: float) -
         )
 
 
-# ── map primitives: the region before contact, with no segmenter (issue #349) ────
+# ── instances before contact: camera first, map-confirmed (issue #349) ───────────
 
 
-def _deck_and_two_props_lattice() -> VoxelLattice:
-    """20 mm cells: a deck (k=0-1, top face z=0.05) and two solid 10 cm props, 16 cm tall,
-    at (0.46, 0.0) and (0.46, 0.20)."""
-    size = (15, 25, 12)
-    occ = np.zeros(int(np.prod(size)), dtype=np.uint8)
-    cells = _cells(range(15), range(25), range(2))
-    for j0 in (7, 18):
-        cells |= _cells(range(8, 13), range(j0, j0 + 5), range(2, 10))
-    for a, b, c in cells:
-        occ[a + size[0] * (b + size[1] * c)] = 1
-    return VoxelLattice("openarm_base", (0.25, -0.2, 0.01), (0.0, 0.0, 0.0, 1.0), 0.02, size, occ)
+def _feed_instances(live: _LiveLeg, grid: VoxelLattice, *, source_ns: int, stamp_ns: int) -> None:
+    """Pre-measurement replies for every warehouse prop, through the leg's reply path.
+
+    The props ray-cast into the manifest's head camera; each reply carries one prop's mask
+    (what a prompt on it returns), fitted, map-confirmed and tracked by
+    ``_on_instance_reply`` exactly as a live ``SegmentInView`` answer would be.
+    """
+    pytest.importorskip("openral_msgs")
+    rclpy_task = pytest.importorskip("rclpy.task")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics
+    from openral_msgs.srv import SegmentInView
+    from sensor_msgs.msg import Image as ImageMsg
+
+    from tests.unit._head_camera_render import head_camera, render
+    from tests.unit.test_object_primitives import _DECK, _DECK_Z, _PROPS_XY, _foot
+
+    t, k = head_camera()
+    live.bridge._camera_info = camera_info_from_intrinsics(
+        width=k.width, height=k.height, fx=k.fx, fy=k.fy, cx=k.cx, cy=k.cy, frame_id="cam"
+    )
+    depth, labels = render([*(_foot(x, y) for x, y in _PROPS_XY), _DECK], t, k)
+    for n in range(1, len(_PROPS_XY) + 1):
+        image = ImageMsg(height=k.height, width=k.width, encoding="mono8", step=k.width)
+        image.header.stamp.sec, image.header.stamp.nanosec = divmod(stamp_ns, _S)
+        image.data = ((labels == n).astype(np.uint8) * 255).tobytes()
+        response = SegmentInView.Response(ok=True)
+        response.masks = [image]
+        future = rclpy_task.Future()
+        future.set_result(response)
+        snapshot = (depth, stamp_ns, k, t, _DECK_Z, None, 0)
+        live.leg._on_instance_reply(future, snapshot, stamp_ns, (grid, source_ns, time.monotonic()))
 
 
-def test_map_primitives_measure_the_approached_target_with_no_segmenter() -> None:
-    """``grasp_target_primitives``: the hand 5 cm over a prop arms and, on the same tick,
-    holds that prop's map component as the region — stamped with the grid's world data,
-    within the kernel's contract — although no segmenter is in the graph at all. A
-    second tick tracks it under the same identity; the hand midway between two props is
-    a tie, refused (HZ-0115-2), and the hand leaving ends the arming."""
-    import time
+def test_premeasured_instances_arm_the_region_with_no_segmenter_call() -> None:
+    """``grasp_target_premeasure``: the props are measured by the head camera before any
+    hand is near (three instances, map-confirmed); the hand arriving within the approach
+    distance of one arms and, on that tick, holds that instance's camera box — with no
+    segmenter in the graph at all (``_client is None``, nothing in flight). While the hand
+    is over it the map holds it (re-stamped per confirming grid, the same box); the map
+    clearing its cells retracts it; instances not re-seen for a freeze are dropped."""
+    from tests.unit.test_object_primitives import _DECK_Z, _HEIGHT, _PROPS_XY, _props
 
-    with _live_leg("test_grasp_target_primitives", grasp_target_primitives=True) as live:
+    with _live_leg("test_grasp_target_premeasure", grasp_target_premeasure=True) as live:
         leg = live.leg
-        assert leg._primitives is not None and leg._bridge._client is None
-        leg._approach_m = 0.18  # the deploy's 0.20-class box: wide enough to hold a whole prop
+        assert leg._instances is not None and leg._bridge._client is None
         now_ns = leg._now_ns()
-        source_ns = now_ns - 200_000_000
-        leg._bridge._grid = (_deck_and_two_props_lattice(), source_ns, time.monotonic())
-        live.place("left", (0.46, 0.0, 0.26))  # 5 cm over the first prop's top (0.21)
-        live.place("right", (0.46, -0.40, 0.40))
+        source_ns, camera_ns = now_ns - 300_000_000, now_ns - 200_000_000
+        grid = _props()
+        leg._bridge._grid = (grid, source_ns, time.monotonic())
+        x, y = _PROPS_XY[1]
+        top = _DECK_Z + _HEIGHT
+        # 20 cm short of the middle prop: outside the approach distance (0.10 m), inside
+        # the pre-measurement reach (two approach distances).
+        live.place("left", (x - 0.20, y, top + 0.05))
+        live.place("right", (x, -0.9, 0.40))
         leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
 
+        leg._tick()  # nothing near: no arming; a pre-measurement prompt on the prop's top
+        assert leg.tracker.target == _goal_scope(stamp_ns=now_ns) and leg._inflight is None
+        # (no depth frame and no segmenter in this graph: refused, logged, nothing sent)
+        px, py, pz = (float(v) for v in leg._premeasure_note[8:].split(")")[0].split(", "))
+        assert abs(px - x) < 0.035 and abs(py - y) < 0.035 and pz == pytest.approx(top, abs=0.015)
+
+        _feed_instances(live, grid, source_ns=source_ns, stamp_ns=camera_ns)
+        instances = sorted(leg._instances.primitives, key=lambda p: p.region.pose.xyz[1])
+        assert len(instances) == 3
+        middle = instances[1]
+        assert middle.region.evidence_ref.startswith("segment_in_view:")
+        assert middle.region.stamp_ns == source_ns, "stamped no later than the confirming map"
+
+        live.place("left", (x, y, top + 0.05))  # 5 cm over the middle prop
         leg._tick()
         target = leg.tracker.target
         assert target is not None and target.contact_links == _LEFT, "the left hand armed"
-        region = leg.tracker.region
-        assert region is not None, "no region on the arming tick"
-        assert region.evidence_ref == f"map_primitive:0@{source_ns}"
-        assert region.stamp_ns == source_ns, "stamped with the grid's world data, not now"
-        assert region.pose.xyz[0] == pytest.approx(0.46, abs=0.02)
-        assert region.pose.xyz[1] == pytest.approx(0.0, abs=0.02)
-        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(0.05 + 0.02)
-        assert region.pose.xyz[2] + region.half_extents[2] == pytest.approx(0.21)
-        closed = leg.kernel_region(target.target_id, region)
+        assert leg.tracker.region == middle.region, "no instance box on the arming tick"
+        assert leg._inflight is None and leg._bridge._client is None
+        assert leg.measured_support(middle.region) == pytest.approx(_DECK_Z)
+        closed = leg.kernel_region(target.target_id, middle.region)
         GraspDeclaration.model_validate(target.model_dump() | {"region": closed})
-        envelope = leg.tracker.envelope(now_ns=now_ns)
-        assert envelope is not None and envelope.region == region
-        assert leg.measured_support(region) == pytest.approx(0.05)
 
-        leg._tick()  # a still scene: the same primitive, re-accepted from the same grid
+        # The hand over it occludes the camera: each newer grid that confirms the box
+        # holds it — the same box, the grid's stamp — never moved or grown.
+        held_ns = now_ns - 100_000_000
+        leg._bridge._grid = (grid, held_ns, time.monotonic())
+        leg._tick()
         held = leg.tracker.region
-        assert held is not None and held.evidence_ref == f"map_primitive:0@{source_ns}"
+        assert held is not None and held.stamp_ns == held_ns
+        assert held.model_copy(update={"stamp_ns": source_ns}) == middle.region
 
-        live.place("left", (0.46, 0.10, 0.26))  # midway between the two props: a tie
+        # The prop taken away (its cells cleared): no region, and its instance is dropped.
+        gone = _props([_PROPS_XY[0], _PROPS_XY[2]])
+        leg._bridge._grid = (gone, now_ns, time.monotonic())
         leg._tick()
-        assert leg.tracker.region is None, "a tie must not exempt either prop"
+        assert leg.tracker.region is None, "a box the map no longer holds stayed exempt"
+        assert [p.primitive_id for p in leg._instances.primitives] == [
+            p.primitive_id for p in instances if p is not middle
+        ], "the cleared instance was kept"
 
-        live.place("left", (0.46, 0.0, 0.60))  # 39 cm clear of the props
-        leg._tick()
-        assert leg.tracker.target == _goal_scope(stamp_ns=now_ns), "the approach ended"
+        # Not re-seen for longer than a freeze: dropped.
+        later = now_ns + int(3 * _S)
+        leg._bridge._grid = (grid, later, time.monotonic())
+        leg._premeasure(later)
+        assert leg._instances.primitives == []
 
 
-def test_a_named_search_box_grounds_to_the_lone_primitive_in_it_before_any_motion() -> None:
-    """A reasoner-grounded search box (no approach): the one primitive inside it is the
-    region at once, hands wherever they are; a box holding two is refused as ambiguous."""
-    import time
+def test_a_named_search_box_grounds_to_the_lone_instance_in_it() -> None:
+    """A reasoner-grounded search box (no approach): the one pre-measured instance inside
+    it is the region on the next tick, hands wherever they are; a box holding two is
+    refused as ambiguous."""
+    from tests.unit.test_object_primitives import _DECK_Z, _PROPS_XY, _props
 
-    with _live_leg("test_grasp_target_primitives_named", grasp_target_primitives=True) as live:
+    with _live_leg("test_grasp_target_premeasure_named", grasp_target_premeasure=True) as live:
         leg = live.leg
         now_ns = leg._now_ns()
-        leg._bridge._grid = (_deck_and_two_props_lattice(), now_ns, time.monotonic())
-        live.place("left", (0.20, 0.30, 0.60))  # the hand parked far from both props
-        live.place("right", (0.20, -0.30, 0.60))
+        grid = _props()
+        leg._bridge._grid = (grid, now_ns, time.monotonic())
+        live.place("left", (0.20, 0.30, 0.40))  # the hands parked far from every prop
+        live.place("right", (0.20, -0.30, 0.40))
+        _feed_instances(live, grid, source_ns=now_ns, stamp_ns=now_ns)
+        x, y = _PROPS_XY[1]
 
-        def declare(y: float, half_y: float) -> None:
+        def declare(half_y: float) -> None:
             box = PlaceRegion(
                 frame_id="openarm_base",
-                pose=Pose6D(xyz=(0.46, y, 0.14), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+                pose=Pose6D(
+                    xyz=(x, y, _DECK_Z + 0.10), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"
+                ),
                 half_extents=(0.10, half_y, 0.12),
             )
             leg.tracker.on_declaration(
                 _dispatched(stamp_ns=now_ns).model_copy(
-                    update={"target_id": f"obj:prop:{y}", "search_box": box, "contact_links": _LEFT}
+                    update={"target_id": f"obj:prop:{half_y}", "search_box": box}
                 )
             )
 
-        declare(0.0, 0.08)
+        declare(0.08)
         leg._tick()
         region = leg.tracker.region
-        assert region is not None and region.pose.xyz[1] == pytest.approx(0.0, abs=0.02)
-        declare(0.10, 0.20)  # a box spanning both props
+        assert region is not None and region.pose.xyz[1] == pytest.approx(y, abs=0.015)
+        assert leg._inflight is None
+        # The prop taken away, no hand anywhere near: the map contradicts the held box and
+        # it is retracted at once — not held out its freeze.
+        gone = _props([_PROPS_XY[0], _PROPS_XY[2]])
+        leg._bridge._grid = (gone, now_ns + 1, time.monotonic())
+        leg._tick()
+        assert leg.tracker.region is None
+        assert leg.tracker._status == "retracted:map_disagrees"
+        leg._bridge._grid = (grid, now_ns + 2, time.monotonic())
+        _feed_instances(live, grid, source_ns=now_ns + 2, stamp_ns=now_ns + 2)
+        declare(0.25)  # a box holding two props
         leg._tick()
         assert leg.tracker.region is None

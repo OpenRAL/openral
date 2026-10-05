@@ -10085,12 +10085,16 @@ class VisionAttachmentRuntime(BaseModel):
             the rSkill runner arms a goal-scope declaration for every goal so the
             policy, not the reasoner, picks what to grasp. ``None`` = off (default).
             Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.
-        grasp_target_primitives: Measure the grasp target from the voxel map's connected
-            components instead of a segmenter fit (HAL param
-            ``vision_attachment_grasp_target_primitives``; needs ``grasp_target_enabled``),
+        grasp_target_premeasure: Pre-measure every object instance near a hand (or in a
+            named search box) from head-camera segmentation before any hand arms, each
+            camera box confirmed by the voxel map, and arm the region from the tracked
+            instance nearest the hand on the arming tick (HAL param
+            ``vision_attachment_grasp_target_premeasure``; needs ``grasp_target_enabled``),
             so the region exists before contact without the policy pausing for an
-            unoccluded view (``docs/reference/object-primitives-design.md``, issue #349).
-            Prototype; default off.
+            unoccluded view. Source order: camera instance first, the map confirms it and
+            holds it while the declared hand occludes it
+            (``docs/reference/object-primitives-design.md``, issue #349). Prototype;
+            default off.
         grasp_target_margin_m: How far the grasp target is bloated, metres (HAL param
             ``vision_attachment_grasp_target_margin_m``; design note §2.1 "Grasp-target
             margin"). Before the handover the region the kernel exempts for the declared
@@ -10150,7 +10154,7 @@ class VisionAttachmentRuntime(BaseModel):
     grasp_target_margin_m: float = Field(
         default=DEFAULT_GRASP_TARGET_MARGIN_M, ge=0.0, le=MAX_GRASP_TARGET_MARGIN_M
     )
-    grasp_target_primitives: bool = False
+    grasp_target_premeasure: bool = False
     place_target_enabled: bool = False
     release_timeout_s: float = Field(default=3.0, gt=0)
 
@@ -10180,10 +10184,10 @@ class VisionAttachmentRuntime(BaseModel):
                 "vision_attachment.grasp_target_approach_m needs grasp_target_enabled: the "
                 "approach-armed target is measured by the grasp-target producer"
             )
-        if self.grasp_target_primitives and not self.grasp_target_enabled:
+        if self.grasp_target_premeasure and not self.grasp_target_enabled:
             raise ValueError(
-                "vision_attachment.grasp_target_primitives needs grasp_target_enabled: the "
-                "map primitives are measured by the grasp-target producer"
+                "vision_attachment.grasp_target_premeasure needs grasp_target_enabled: the "
+                "instances are pre-measured by the grasp-target producer"
             )
         return self
 
