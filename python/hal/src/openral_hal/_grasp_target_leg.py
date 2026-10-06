@@ -255,6 +255,7 @@ from openral_hal._grasp_target import (
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
+    _anchor,
     _ijk,
     _in_region,
     cell_closed_region,
@@ -1317,6 +1318,21 @@ def _kernel_closure(
     return closed, "; ".join(n for n in (note, cap) if n)
 
 
+def _anchor_top(
+    grid: VoxelLattice, centers: NDArray[np.float64], near_xy: tuple[float, float]
+) -> tuple[float, float, float]:
+    """The segmenter prompt when the map cannot seed one target: the anchor's top face.
+
+    The anchor is ``support_top_from_voxels``' own: the highest cell of the occupied
+    column nearest ``near_xy``. Refuses (a lost view) an empty column.
+    """
+    if len(centers) == 0:
+        raise _lost("too_few_cells", "no occupied cell in the column under the search box")
+    i = _anchor(centers, _ijk(grid, centers), near_xy)
+    x, y, z = (float(v) for v in centers[i])
+    return x, y, z + 0.5 * grid.resolution
+
+
 def _gate_refit(
     grid: VoxelLattice,
     region: PlaceRegion,
@@ -1431,7 +1447,7 @@ _Snapshot = tuple[
     int,
     "IntrinsicsPinhole",
     "NDArray[np.float64]",
-    float,
+    float | None,
     GraspDeclaration | None,
     int,
 ]
@@ -1826,7 +1842,11 @@ class GraspTargetLeg:
         assert target.search_box is not None  # checked by ``_begin_tick``
         try:
             try:
-                seed_point, support_z = self._seed(grid, target.search_box)
+                seed_point, support_z = self._seed(
+                    grid,
+                    target.search_box,
+                    approach=target.target_id.startswith(APPROACH_TARGET_PREFIX),
+                )
             except ROSConfigError as exc:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
@@ -2135,7 +2155,7 @@ class GraspTargetLeg:
         generation: int,
         grid: VoxelLattice,
         seed_point: tuple[float, float, float],
-        support_z: float,
+        support_z: float | None,
     ) -> None:
         """Send the tick's request, unless torn down or the target changed during the scan."""
         if self._torn_down or self._inflight is not None or generation != self.tracker.generation:
@@ -2378,10 +2398,21 @@ class GraspTargetLeg:
         )
 
     def _seed(
-        self, grid: VoxelLattice, box: PlaceRegion
-    ) -> tuple[tuple[float, float, float], float]:
-        """Measure the support under the box, then seed the one target above it — or refuse."""
+        self, grid: VoxelLattice, box: PlaceRegion, *, approach: bool = False
+    ) -> tuple[tuple[float, float, float], float | None]:
+        """Measure the support under the box, then seed the one target above it — or refuse.
+
+        The seed only places the segmenter's prompt; the mask names the target. With no
+        support measured (``None``: a bin floor out of the camera's view) the prompt goes
+        on the anchor — the top of the occupied column nearest the box centre — and the
+        camera fit decides the rest. On an ``approach`` arming the same holds for a map
+        that cannot tell the clusters apart (packed cartons, a bin's walls): the hand
+        names the target, the anchor is the column nearest it. A named declaration with
+        comparable clusters stays refused ``ambiguous`` (HZ-0115-2): nothing says which.
+        """
         _, column_centers, near_xy, support_z = self._measure_support(grid, box)
+        if support_z is None:
+            return _anchor_top(grid, column_centers, near_xy), None
         min_cells = self._config.grasp_target_min_cells
         # Seeded from the whole column, so a lifted box bottom cannot hide the
         # target's lower cells from the contact check below.
@@ -2392,30 +2423,25 @@ class GraspTargetLeg:
             assert seed.refusal is not None
             detail = f"cluster sizes {list(seed.cluster_sizes)}"
             if seed.refusal is TargetRefusal.AMBIGUOUS:
+                if approach:
+                    return _anchor_top(grid, column_centers, near_xy), support_z
                 raise _contradicted(seed.refusal.value, detail)
             raise _lost(seed.refusal.value, detail)
-        # The target must stand on the measured support: its lowest kept cell sits
-        # one voxel up (the seed drops the layer touching the plane), plus one voxel
-        # of tolerance. A lower surface — a bench under the shelf board the target
-        # is on — would stand the region on nothing and exempt the gap (HZ-0115-6).
-        assert seed.bottom_z is not None
-        if seed.bottom_z - support_z > 2.0 * grid.resolution + 1e-9:
-            raise _contradicted(
-                "not_on_support",
-                f"target's lowest cell at z={seed.bottom_z:.3f} is "
-                f"{seed.bottom_z - support_z:.3f} m above the measured support z={support_z:.3f} "
-                f"(> {2.0 * grid.resolution:.3f} m)",
-            )
+        # Whether the target stands on that support is the camera fit's to decide
+        # (``target_region_from_masks``: NOT_ON_SUPPORT, the nested-body veto and the
+        # own-lowest-point fallback, HZ-0115-6): the map merges a target with what it
+        # stands on, so its cluster bottom says nothing about the target alone.
         return seed.point, support_z
 
     def _measure_support(
         self, grid: VoxelLattice, box: PlaceRegion, *, near_xy: tuple[float, float] | None = None
-    ) -> tuple[PlaceRegion, NDArray[np.float64], tuple[float, float], float]:
+    ) -> tuple[PlaceRegion, NDArray[np.float64], tuple[float, float], float | None]:
         """The search column under ``box``, its occupied centres, the anchor xy and the support top.
 
         ``support_top_from_voxels`` over the column (``search_column``), the target anchored
-        on the column nearest ``near_xy`` (the box centre by default) — or a refusal (a
-        tilted box, a probe margin under two cells, no ringed layer).
+        on the column nearest ``near_xy`` (the box centre by default); ``None`` when no
+        layer qualifies (the support is unseen: the camera fit then stands the target on
+        its own lower face). Refuses a tilted box or a probe margin under two cells.
         """
         try:
             column = search_column(box, below_m=self._search_below_m)
@@ -2445,13 +2471,6 @@ class GraspTargetLeg:
             probe_margin_m=self._probe_margin_m,
             surface_centers=occupied_centers_in_box(grid, around),
         )
-        if support_z is None:
-            raise _contradicted(
-                "no_support",
-                f"no layer in the column under the search box (down to "
-                f"{self._search_below_m:.2f} m below it) holds >= {min_cells} surface cells "
-                f"within {self._probe_margin_m:.2f} m around the target's footprint",
-            )
         return column, column_centers, near_xy, support_z
 
     def _request(
@@ -2461,7 +2480,7 @@ class GraspTargetLeg:
         generation: int,
         grid: VoxelLattice,
         seed_point: tuple[float, float, float],
-        support_z: float,
+        support_z: float | None,
     ) -> None:
         """Project the seed and send one bounded ``SegmentInView`` request — or refuse.
 
@@ -2587,7 +2606,9 @@ class GraspTargetLeg:
         try:
             try:
                 # Outside the lock: mask decode, back-projection and gates on the snapshot.
-                region, added = self._measure(future, snapshot, now_ns, grid, hands, previous)
+                region, added, support_z = self._measure(
+                    future, snapshot, now_ns, grid, hands, previous
+                )
             except ROSConfigError as exc:  # an input shape the geometry refuses
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
@@ -2598,7 +2619,7 @@ class GraspTargetLeg:
             # ``_measure`` ran: ``accept`` drops the region when the generation moved.
             self.tracker.accept(region, generation=snapshot[6], map_cells=added)
             if self.tracker.region is region:
-                self._support = (region, snapshot[4])
+                self._support = (region, support_z)
 
     def measured_support(self, region: PlaceRegion) -> float | None:
         """The support top ``region`` was fitted on, in ``region.frame_id``, or ``None``.
@@ -2631,10 +2652,11 @@ class GraspTargetLeg:
                 if fit.region is None:
                     assert fit.refusal is not None
                     raise _contradicted(fit.refusal.value, f"points={fit.point_count}")
+                assert fit.support_z is not None  # set with every region
                 kind, detail = map_confirms(
                     grid,
                     fit.region,
-                    support_z=snapshot[4],
+                    support_z=fit.support_z,
                     min_cover=self._config.grasp_target_min_cover,
                 )
                 if kind:
@@ -2650,7 +2672,7 @@ class GraspTargetLeg:
         with self._lock:
             assert self._instances is not None
             (instance,) = self._instances.update(
-                [PrimitiveFit(region, cells, snapshot[4])],
+                [PrimitiveFit(region, cells, fit.support_z)],
                 stamp_ns=region.stamp_ns,
                 tol_m=grid.resolution,
                 scanned=region,
@@ -2670,7 +2692,7 @@ class GraspTargetLeg:
         grid_entry: tuple[VoxelLattice, int, float] | None,
         hands: Sequence[tuple[float, float, float]],
         previous: PlaceRegion | None,
-    ) -> tuple[PlaceRegion, int]:
+    ) -> tuple[PlaceRegion, int, float]:
         """Reply → region → map cover → completion → tracking gate (``_gate_refit``), or a refusal.
 
         Pure on its arguments (snapshots taken under the bridge lock by ``_on_reply``),
@@ -2695,17 +2717,19 @@ class GraspTargetLeg:
                 visible=fit.box,
                 tol_m=grid.resolution,
             )
-        return _gate_refit(
+        assert fit.support_z is not None  # set with every region
+        region, added = _gate_refit(
             grid,
             fit.region,
             previous,
-            support_z=snapshot[4],
+            support_z=fit.support_z,
             min_cover=self._config.grasp_target_min_cover,
             column=search_column(declaration.search_box, below_m=self._search_below_m),
             hands=hands,
             occluder_margin_m=self._occluder_margin_m,
             hand_rise_m=self._approach_m or 0.0,
         )
+        return region, added, fit.support_z
 
     def _fit(
         self,
@@ -2802,6 +2826,12 @@ class GraspTargetLeg:
             evidence_ref=f"segment_in_view:{model}@{depth_stamp_ns}",
             stamp_ns=stamp_ns,
         )
+        if fit.support_unseen:
+            self._node.get_logger().info(
+                f"grasp target support unseen (measured: {support_z}); the region stands "
+                f"on the target's own lowest point z={fit.support_z:.3f} + one voxel",
+                throttle_duration_sec=5.0,
+            )
         return fit, grid
 
     def _kept_points(self, stamp_ns: int, frame: str) -> NDArray[np.float64] | None:

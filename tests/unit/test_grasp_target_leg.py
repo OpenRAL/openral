@@ -682,12 +682,45 @@ def test_a_target_on_a_visible_shelf_board_seeds_on_the_board() -> None:
 
 def test_a_shelf_board_edge_over_a_bench_is_not_the_targets_support() -> None:
     """The board is barely wider than the item and its lip hidden: no ring there, so the
-    first surface found is the bench 10 cm below — the target does not stand on it."""
+    first surface found is the bench 10 cm below — the target does not stand on it. The
+    seed only places the prompt on the item; the camera fit refuses to pin the region to
+    the bench (``NOT_ON_SUPPORT``) and stands it on the item's own lowest point instead
+    (``target_region_from_masks``), so the board never enters the region."""
     grid = _shelf_lattice(range(7, 14), range(7, 14))
-    with pytest.raises(_Refusal) as caught:
-        _leg()._seed(grid, _item_search_box())
-    assert (caught.value.kind, caught.value.retract) == ("not_on_support", True)
-    assert "support z=0.120" in caught.value.detail
+    point, support = _leg()._seed(grid, _item_search_box())
+    assert support == pytest.approx(0.120)
+    assert point[2] > support + 0.1  # on the item's top, above the board
+
+
+def _bin_lattice() -> VoxelLattice:
+    """The item's visible shell inside a bin: walls up to its top, no floor and no bench.
+
+    The head camera sees the item's top and the walls' inner faces; the bin floor around
+    the item (and the floor the bin stands on) is out of its view, so no layer in the
+    column holds a surface ring."""
+    item = _cells(_ITEM_I, _ITEM_J, range(15, 16))
+    for k in range(11, 16):
+        item |= _cells(range(8, 9), _ITEM_J, range(k, k + 1))
+    walls = set()
+    for k in range(9, 16):
+        walls |= _cells(range(5, 6), range(5, 16), range(k, k + 1))
+        walls |= _cells(range(15, 16), range(5, 16), range(k, k + 1))
+        walls |= _cells(range(5, 16), range(5, 6), range(k, k + 1))
+        walls |= _cells(range(5, 16), range(15, 16), range(k, k + 1))
+    occ = np.zeros(int(np.prod(_CELLS)), dtype=np.uint8)
+    for a, b, c in item | walls:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    return VoxelLattice("openarm_base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, _CELLS, occ)
+
+
+def test_a_target_in_a_bin_with_its_floor_out_of_view_seeds_with_the_support_unseen() -> None:
+    """No measured layer under the item is not a refusal: the prompt goes on the item's top
+    and the support is unseen (``None``), so the camera fit stands the region on the
+    item's own lowest point (``target_region_from_mask``)."""
+    point, support = _leg()._seed(_bin_lattice(), _item_search_box())
+    assert support is None
+    assert 0.16 <= point[0] <= 0.26 and 0.16 <= point[1] <= 0.26  # on the item
+    assert point[2] == pytest.approx(0.32)  # its top face
 
 
 def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() -> None:
@@ -707,6 +740,23 @@ def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() 
         0.08,
         0.02,
     )
+
+
+def test_comparable_clusters_refuse_a_named_target_but_not_an_approaching_hand() -> None:
+    """Two items of the same size on the board: a named search box cannot say which
+    (``ambiguous``, HZ-0115-2); an approaching hand can — the prompt goes on the column
+    nearest it, and the camera's mask names the one item."""
+    grid = _shelf_lattice(range(7, 24), range(24))
+    occ = grid.occupancy.copy()
+    for a, b, c in {(i + 6, j, k) for i, j, k in _cells(_ITEM_I, _ITEM_J, range(11, 16))}:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    two = VoxelLattice("openarm_base", grid.origin, grid.orientation_xyzw, 0.02, _CELLS, occ)
+    with pytest.raises(_Refusal) as caught:
+        _leg()._seed(two, _item_search_box())
+    assert caught.value.kind == "ambiguous"
+    point, support = _leg()._seed(two, _item_search_box(), approach=True)
+    assert support == pytest.approx(0.22)
+    assert point[0] < 0.27  # the item nearest the box centre, not its neighbour
 
 
 def test_a_probe_margin_under_two_grid_cells_is_a_typed_lost_view() -> None:
@@ -2931,7 +2981,7 @@ def test_a_tick_commits_its_request_only_under_the_lock_it_snapshotted() -> None
         leg._request = lambda *args: requested.append(args[2])  # type: ignore[method-assign]  # reason: records the commit
 
         def scan_then(during: Any) -> Any:
-            def seed(*_: Any) -> tuple[tuple[float, float, float], float]:
+            def seed(*_: Any, **__: Any) -> tuple[tuple[float, float, float], float]:
                 during()  # another thread, while the column is scanned outside the lock
                 return (0.45, 0.0, 0.09), 0.05
 
@@ -3074,7 +3124,7 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
             future = rclpy_task.Future()
             future.set_result(response)
             snapshot = (depth, now_ns, k, t_base_from_cam, 0.03, _dispatched(), 0)
-            region, added = leg._measure(future, snapshot, now_ns, grid, [], previous)
+            region, added, _ = leg._measure(future, snapshot, now_ns, grid, [], previous)
             assert added == 0, "the block's fit holds its whole component"
             return region
 
@@ -3147,7 +3197,8 @@ def test_a_capture_of_the_targets_near_part_is_completed_through_measure() -> No
                 0,
             )
             grid = (lattice, now_ns, time.monotonic())
-            return leg._measure(future, snapshot, now_ns, grid, [], previous)
+            region, added, _ = leg._measure(future, snapshot, now_ns, grid, [], previous)
+            return region, added
 
         fit, added = measure(_held_block_lattice(), None)
         assert added == 0

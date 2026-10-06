@@ -237,6 +237,12 @@ class TargetRegionFit:
             leg tells the closing hand occluding the target's lower part (that box inside
             the held region) from a contradiction (``_refused_fit``).
         z_span: Height of the (trimmed) cloud, top minus lowest point; 0 when too few.
+        support_z: The support the region stands on: the measured one, or, when none
+            is measured under the target (``unseen``), one voxel under the target's own
+            lowest kept point — so ``region``'s lower face is always ``support_z +
+            resolution``. ``None`` when nothing was fitted.
+        support_unseen: ``True`` when ``support_z`` is the target's own lower face, not
+            a measured surface.
     """
 
     region: PlaceRegion | None
@@ -246,6 +252,8 @@ class TargetRegionFit:
     half_extents: tuple[float, float, float]
     box: PlaceRegion | None = None
     z_span: float = 0.0
+    support_z: float | None = None
+    support_unseen: bool = False
 
 
 def _in_region(points: NDArray[np.float64], region: PlaceRegion) -> NDArray[np.bool_]:
@@ -658,7 +666,7 @@ def target_region_from_mask(
     intrinsics: IntrinsicsPinhole,
     t_base_from_cam: NDArray[np.float64],
     *,
-    support_z: float,
+    support_z: float | None,
     resolution: float,
     frame_id: str,
     evidence_ref: str,
@@ -695,6 +703,13 @@ def target_region_from_mask(
     the target alone; a view that sees only its top face (straight down, or its
     lower part occluded) is refused too — less exemption, never more.
 
+    **An unseen support is not a refusal.** With no support measured under the target
+    (``support_z=None``: a bin floor the head camera cannot see), or a measured layer
+    above the target's own lowest kept point by more than a voxel (a neighbour's top
+    face, a bin rim: not what the target stands on), the lower face is the target's own
+    lowest kept point — the box never reaches down into space nothing measured, and the
+    stacked-body check needs a measured support under the target, so it does not apply.
+
     Padding is ``√3·resolution/2 + extrinsic_error_m`` — a cell whose centre is
     outside a box can still overlap it by half a cell diagonal, plus the camera
     mount's error. The cloud is trimmed to the ``[trim, 100 - trim]`` percentile
@@ -707,7 +722,8 @@ def target_region_from_mask(
         depth_m: ``(H, W)`` metric depth.
         intrinsics: Intrinsics at ``(H, W)`` (``depth_cloud.intrinsics_from_camera_info``).
         t_base_from_cam: ``(4, 4)`` optical-frame → base-frame transform.
-        support_z: Support-plane height in the base frame.
+        support_z: Support-plane height in the base frame, or ``None`` when no support
+            was measured under the target.
         resolution: The voxel lattice's cell edge.
         frame_id: Base frame name stamped on the region.
         evidence_ref: Free-text provenance (camera, mask id, trace).
@@ -771,6 +787,10 @@ def target_region_from_mask(
     )
 
     pad = math.sqrt(3.0) * resolution / 2.0 + extrinsic_error_m
+    unseen = support_z is None or low < support_z - resolution
+    if unseen:
+        support_z = low - resolution
+    assert support_z is not None
     bottom = support_z + resolution
     z_hi = top + pad
     half_xy = (hi_uv - lo_uv) / 2.0 + pad
@@ -794,11 +814,13 @@ def target_region_from_mask(
         evidence_ref=evidence_ref,
         stamp_ns=stamp_ns,
     )
-    if low > support_z + 2.0 * resolution + 1e-9:
+    if not unseen and low > support_z + 2.0 * resolution + 1e-9:
         return TargetRegionFit(
             None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half, box=region, z_span=span
         )
-    return TargetRegionFit(region, None, n, valid, half, z_span=span)
+    return TargetRegionFit(
+        region, None, n, valid, half, z_span=span, support_z=support_z, support_unseen=unseen
+    )
 
 
 def target_region_from_masks(
@@ -826,6 +848,13 @@ def target_region_from_masks(
       height) has no body to stand on anything and vetoes nothing, so the whole can still
       fits. ponytail: a subpart with its own height (a can's upper half) also vetoes the
       whole object — less exemption, never more; the Safety-WG owns relaxing it.
+    - **A body standing above the measured support stands on its own lowest point.**
+      When no candidate fits, the first body refused ``NOT_ON_SUPPORT`` (in the
+      segmenter's order) that holds no other such body is re-fitted with the support
+      unseen (``support_z=None``): its region reaches down to its own lowest kept point
+      and never to the support, so whatever it stands on — a bin's floor, a riser —
+      stays outside the exemption, and the veto above still refuses every larger
+      candidate holding it.
     - **A candidate set refused whole reports its most severe refusal**
       (``_REFUSAL_SEVERITY``), never the last one tried: a contradiction is not read as a
       lost view because a smaller candidate came last.
@@ -871,6 +900,25 @@ def target_region_from_masks(
         )
     if not checked:
         return TargetRegionFit(None, TargetRefusal.TOO_FEW_POINTS, 0, 0.0, (0.0, 0.0, 0.0))
+    for mask in bodies:
+        holds_body = any(
+            other is not mask
+            and np.count_nonzero(other) < np.count_nonzero(mask)
+            and np.count_nonzero(other & mask) >= nested_fraction * np.count_nonzero(other)
+            for other in bodies
+        )
+        if holds_body:
+            continue
+        own = target_region_from_mask(
+            mask,
+            depth_m,
+            intrinsics,
+            t_base_from_cam,
+            resolution=resolution,
+            **{**fit_kwargs, "support_z": None},
+        )
+        if own.region is not None:
+            return own
     return min(checked, key=lambda f: _REFUSAL_SEVERITY.index(cast("TargetRefusal", f.refusal)))
 
 

@@ -148,7 +148,8 @@ caps the declaration's; every threshold a calibration point with a stated defaul
 | mask spans two separated bodies | `map_split`, not tracked | a box over two bodies is never an instance |
 | mask on something the map does not hold | `map_disagrees`, not tracked | the map must confirm every box |
 | packed pair (touching) | one instance per mask; each box holds a sliver of its neighbour | **residual** (HZ-0115-30, now a sliver within the camera padding, not the whole neighbour) |
-| target on a same-footprint body | the camera's `not_on_support` / `STACKED` refuses the fit | as the camera path today (HZ-0115-37 closed) |
+| target on a same-footprint body | the whole-stack mask is refused `STACKED`; the target's own mask, refused `not_on_support`, is re-fitted on its own lowest point | the body it stands on never enters the region (HZ-0115-37 closed, HZ-0115-42) |
+| support unseen (a bin floor out of the camera's view; a neighbour's top or a bin rim above the target's bottom) | the region stands on the target's own lowest kept point, logged `support unseen` | the box never reaches into space nothing measured; a finger below it meets the kernel's voxels |
 | two instances tie for the hand / two in a named box | `ambiguous`, retracted | neither exempt until the hand commits |
 | hand points leak into the map | the hold's `map_split` is a lost view; the held box is never replaced | freeze TTL bounds it |
 | object removed | held region retracted (`map_disagrees`), instance dropped | the region dies with the map evidence |
