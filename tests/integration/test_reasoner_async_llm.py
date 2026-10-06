@@ -419,7 +419,7 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
-    from openral_core import ExecuteRskillTool
+    from openral_core import ExecuteRskillTool, WaitTool
     from openral_msgs.action import ExecuteRskill
     from openral_reasoner import ToolPalette
     from openral_reasoner_ros import ReasonerNode
@@ -431,9 +431,14 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
     aborted = threading.Semaphore(0)
+    drained = threading.Event()
     attempts: list[int] = [0]
+    abort_count: list[int] = [0]
 
     def _selector(_context: str, _palette: Any) -> Any:
+        if abort_count[0] >= 5:
+            drained.set()
+            return WaitTool(rationale="soak complete")
         attempts[0] += 1
         return ExecuteRskillTool(
             rskill_id="openral/skill-async-soak",
@@ -459,6 +464,7 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
             result.success = False
             result.failure_reason = "soak abort"
             result.trace_id = ""
+            abort_count[0] += 1
             goal_handle.abort()
             aborted.release()
             return result
@@ -490,12 +496,18 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
             while aborted.acquire(blocking=False):
                 cycles += 1
 
-        # Let any in-flight tick settle so the release path is exercised.
+        # Stop periodic work; the forced post-abort tick returns WaitTool after
+        # the fifth cycle, leaving the single-flight window genuinely idle.
+        assert reasoner._tick_timer is not None
+        reasoner._tick_timer.cancel()
         settle = time.monotonic() + 2.0
-        while time.monotonic() < settle:
+        while time.monotonic() < settle and (
+            not drained.is_set() or reasoner._tick_in_flight or reasoner._rskill_inflight
+        ):
             executor.spin_once(timeout_sec=0.05)
-        # Single-flight release is the stuck-state observable.
-        tick_released = not reasoner._tick_in_flight or not reasoner._rskill_inflight
+        tick_released = (
+            drained.is_set() and not reasoner._tick_in_flight and not reasoner._rskill_inflight
+        )
 
         executor.remove_node(reasoner)
         executor.remove_node(server_node)
