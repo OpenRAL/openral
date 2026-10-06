@@ -367,6 +367,7 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_grasp_target_approach_m": 0.0,
         "vision_attachment_grasp_target_margin_m": 0.03,  # the scene names it (1.5 x 20 mm)
+        "vision_attachment_grasp_target_premeasure": False,
         "vision_attachment_place_target_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [

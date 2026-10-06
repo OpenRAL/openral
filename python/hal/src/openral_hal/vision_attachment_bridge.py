@@ -960,6 +960,12 @@ class VisionAttachmentConfig:
             it). ``0.0`` = unbloated. In
             ``[0, VisionAttachmentRuntime.MAX_GRASP_TARGET_MARGIN_M]``, else
             ``ROSConfigError`` from the leg. *Calibration point*, Safety-WG (HZ-0115-32).
+        grasp_target_premeasure: Pre-measure object instances from head-camera
+            segmentation before any hand arms, confirmed by the voxel map
+            (``_object_primitives``, ``GraspTargetLeg(premeasure=True)``), so the region
+            exists on the arming tick without the policy pausing
+            (``docs/reference/object-primitives-design.md``). Prototype, default off;
+            needs ``grasp_target_enabled``.
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
             dropped (``ReleaseWindow``). The deploy sets it to the kernel's
@@ -1044,6 +1050,7 @@ class VisionAttachmentConfig:
     grasp_target_occluder_margin_m: float = 0.05
     grasp_target_approach_m: float | None = None
     grasp_target_margin_m: float = VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M
+    grasp_target_premeasure: bool = False
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
     grid_max_age_s: float = 1.0
@@ -1372,6 +1379,7 @@ class VisionAttachmentBridge:
                 support_probe_margin_m=self._config.grasp_target_support_probe_margin_m,
                 occluder_margin_m=self._config.grasp_target_occluder_margin_m,
                 approach_m=self._config.grasp_target_approach_m,
+                premeasure=self._config.grasp_target_premeasure,
             )
             if self._config.grasp_target_enabled
             else None

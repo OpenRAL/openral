@@ -433,19 +433,25 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   and 0.05 m out, counted on the column grown by that margin + one cell since the ring lies
   outside a tightly padded box; the margin must be at least two cells — a grid too coarse for it is a
   `probe_margin_under_two_cells` lost view, never silently widened — a surface extends past what stands on it, the target's own dense top does
-  not), whose top face is the support — no such layer is a typed `no_support` refusal and no
-  region; the target's lowest cell must sit within one voxel (+ one of tolerance) of it, else
-  `not_on_support` (a bench below the shelf board the target stands on) and no region; the
-  masked depth cloud's lowest point must also sit within two voxels of the support, else
-  `not_on_support` (a target on a same-footprint box or a hidden riser clusters with it in the
-  voxels, but the mask names the target alone; a view of its top face only is refused too). SAM
+  not), whose top face is the support. **No such layer is not a refusal** (the support is
+  *unseen*: a bin floor the head camera cannot see): the prompt goes on the anchor and the
+  camera fit stands the region on the target's own lowest kept point, never lower, logged
+  `grasp target support unseen`. The same holds when the measured layer lies more than a voxel
+  above the target's own lowest point (a neighbour's top face or a bin rim, not what it stands
+  on). With a support measured below the target, the masked depth cloud's lowest point must sit
+  within two voxels of it, else the candidate is `not_on_support` (a target on a same-footprint
+  box or a hidden riser clusters with it in the voxels, but the mask names the target alone);
+  when no candidate fits, such a body is re-fitted on its own lowest point, so what it stands on
+  never enters the region. The map's cluster bottom is no longer a refusal of its own: it merges
+  a target with what it stands on and says nothing about the target alone. SAM
   answers with nested candidates (subpart, part, whole): the first that fits is taken, except one
   holding a smaller candidate refused `not_on_support` whose cloud has ≥ 2 voxels of height —
   that candidate adds the body the target stands on, and is refused `stacked` (a lid-only
   subpart vetoes nothing); a set refused whole reports its most severe refusal, so a
   contradiction is never read as a lost view because a smaller mask came last. Then occupied voxels inside the
   search box → the anchored cluster above the measured support plane (another cluster at least
-  half its size is `ambiguous`) → cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
+  half its size is `ambiguous` for a named declaration; an approaching hand prompts on the
+  column nearest it instead, and the mask names the target) → cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
   `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
   extrinsic error. Cross-check: the OBB must contain enough occupied cells or it is refused.
@@ -684,6 +690,17 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`,
   `…AHandedOverDeclarationThatLosesItsRegionRetires`,
   the runner in `packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py`.
+- **Instances before contact (prototype, default off; issue #349):** a VLA never hovers for
+  the clean fit the measurement above needs. With `vision_attachment.grasp_target_premeasure`
+  the leg measures object instances **before** any hand arms: it prompts the head camera's
+  segmenter on the raised top surfaces the map holds around each free hand, fits each mask
+  exactly as above, keeps a box only when the voxel map confirms it (it holds the box, and the
+  box holds one body — never grown from the map, so two masks separate cartons the map merges)
+  and tracks it (`openral_hal._object_primitives`). On the arming tick the region is the
+  tracked instance nearest the armed hand (or the lone one in a reasoner's search box), gated
+  as any re-fit, with no segmenter call; while the hand occludes it the map holds it. Design,
+  residuals and the drafted ADR-0116 amendment:
+  [object-primitives-design.md](object-primitives-design.md).
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on

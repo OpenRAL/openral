@@ -632,16 +632,53 @@ def _masks_fit(masks: list[NDArray[np.bool_]], depth: NDArray[np.float64]) -> Ta
 
 
 def test_a_whole_stack_mask_never_exempts_what_a_refused_part_stands_on() -> None:
-    """HZ-0115-6 under SAM's multimask: the item (top 6 cm) is refused ``not_on_support``,
+    """HZ-0115-6 under SAM's multimask: the item (top 6 cm) stands 6 cm above the table,
     the item + its same-footprint box (the whole 12 cm stack) reaches the table. Taking
-    the first candidate that fits would pin the region to the table over the box."""
+    the first candidate that fits would pin the region to the table over the box: the
+    whole stack is vetoed, and the item stands on its own lowest point instead — the box
+    under it never enters the region."""
     whole, depth = _prism_view(_mask_in_zed(_ERASER_MASK, factor=4), _TOP_Z, _SUPPORT_Z)
     item = whole & (_base_z(depth) >= _SUPPORT_Z + 0.06)
-    assert _masks_fit([item], depth).refusal is TargetRefusal.NOT_ON_SUPPORT
+    alone = target_region_from_mask(  # one mask alone: the measured support is far below
+        item,
+        depth,
+        _ZED_K,
+        _t_base_from_optical(),
+        support_z=_SUPPORT_Z,
+        resolution=_RES,
+        frame_id=_FRAME,
+        evidence_ref="head_zed:sam2.1:test",
+    )
+    assert alone.refusal is TargetRefusal.NOT_ON_SUPPORT
     assert _masks_fit([whole], depth).region is not None  # alone, the stack fits
-    for masks in ([item, whole], [whole, item]):
+    for masks in ([item], [item, whole], [whole, item]):
         fit = _masks_fit(masks, depth)
-        assert (fit.region, fit.refusal) == (None, TargetRefusal.STACKED)
+        assert fit.region is not None and fit.support_unseen
+        lower = fit.region.pose.xyz[2] - fit.region.half_extents[2]
+        assert lower >= _SUPPORT_Z + 0.06 - 0.005, lower  # the riser stays outside
+
+
+def test_an_unseen_support_stands_the_region_on_the_targets_own_lowest_point() -> None:
+    """No support measured under the target (a bin floor out of view), or a measured layer
+    above the target's own lowest point (a neighbour's top face): the region is fitted,
+    its lower face at the target's lowest kept point — never below it."""
+    whole, depth = _prism_view(_mask_in_zed(_ERASER_MASK, factor=4), _TOP_Z, _SUPPORT_Z)
+    low = float(np.percentile(_base_z(depth)[whole & (depth > 0)], 1.0))
+    for support_z in (None, _TOP_Z - 0.02):
+        fit = target_region_from_mask(
+            whole,
+            depth,
+            _ZED_K,
+            _t_base_from_optical(),
+            support_z=support_z,
+            resolution=_RES,
+            frame_id=_FRAME,
+            evidence_ref="head_zed:sam2.1:test",
+        )
+        assert fit.region is not None and fit.support_unseen
+        lower = fit.region.pose.xyz[2] - fit.region.half_extents[2]
+        assert low - 1e-3 <= lower <= low + 0.005  # its own points, eroded and trimmed
+        assert fit.support_z == pytest.approx(lower - _RES)
 
 
 def test_a_top_face_subpart_does_not_veto_the_whole_object() -> None:

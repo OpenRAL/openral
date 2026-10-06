@@ -682,12 +682,45 @@ def test_a_target_on_a_visible_shelf_board_seeds_on_the_board() -> None:
 
 def test_a_shelf_board_edge_over_a_bench_is_not_the_targets_support() -> None:
     """The board is barely wider than the item and its lip hidden: no ring there, so the
-    first surface found is the bench 10 cm below — the target does not stand on it."""
+    first surface found is the bench 10 cm below — the target does not stand on it. The
+    seed only places the prompt on the item; the camera fit refuses to pin the region to
+    the bench (``NOT_ON_SUPPORT``) and stands it on the item's own lowest point instead
+    (``target_region_from_masks``), so the board never enters the region."""
     grid = _shelf_lattice(range(7, 14), range(7, 14))
-    with pytest.raises(_Refusal) as caught:
-        _leg()._seed(grid, _item_search_box())
-    assert (caught.value.kind, caught.value.retract) == ("not_on_support", True)
-    assert "support z=0.120" in caught.value.detail
+    point, support = _leg()._seed(grid, _item_search_box())
+    assert support == pytest.approx(0.120)
+    assert point[2] > support + 0.1  # on the item's top, above the board
+
+
+def _bin_lattice() -> VoxelLattice:
+    """The item's visible shell inside a bin: walls up to its top, no floor and no bench.
+
+    The head camera sees the item's top and the walls' inner faces; the bin floor around
+    the item (and the floor the bin stands on) is out of its view, so no layer in the
+    column holds a surface ring."""
+    item = _cells(_ITEM_I, _ITEM_J, range(15, 16))
+    for k in range(11, 16):
+        item |= _cells(range(8, 9), _ITEM_J, range(k, k + 1))
+    walls = set()
+    for k in range(9, 16):
+        walls |= _cells(range(5, 6), range(5, 16), range(k, k + 1))
+        walls |= _cells(range(15, 16), range(5, 16), range(k, k + 1))
+        walls |= _cells(range(5, 16), range(5, 6), range(k, k + 1))
+        walls |= _cells(range(5, 16), range(15, 16), range(k, k + 1))
+    occ = np.zeros(int(np.prod(_CELLS)), dtype=np.uint8)
+    for a, b, c in item | walls:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    return VoxelLattice("openarm_base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, _CELLS, occ)
+
+
+def test_a_target_in_a_bin_with_its_floor_out_of_view_seeds_with_the_support_unseen() -> None:
+    """No measured layer under the item is not a refusal: the prompt goes on the item's top
+    and the support is unseen (``None``), so the camera fit stands the region on the
+    item's own lowest point (``target_region_from_mask``)."""
+    point, support = _leg()._seed(_bin_lattice(), _item_search_box())
+    assert support is None
+    assert 0.16 <= point[0] <= 0.26 and 0.16 <= point[1] <= 0.26  # on the item
+    assert point[2] == pytest.approx(0.32)  # its top face
 
 
 def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() -> None:
@@ -707,6 +740,23 @@ def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() 
         0.08,
         0.02,
     )
+
+
+def test_comparable_clusters_refuse_a_named_target_but_not_an_approaching_hand() -> None:
+    """Two items of the same size on the board: a named search box cannot say which
+    (``ambiguous``, HZ-0115-2); an approaching hand can — the prompt goes on the column
+    nearest it, and the camera's mask names the one item."""
+    grid = _shelf_lattice(range(7, 24), range(24))
+    occ = grid.occupancy.copy()
+    for a, b, c in {(i + 6, j, k) for i, j, k in _cells(_ITEM_I, _ITEM_J, range(11, 16))}:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    two = VoxelLattice("openarm_base", grid.origin, grid.orientation_xyzw, 0.02, _CELLS, occ)
+    with pytest.raises(_Refusal) as caught:
+        _leg()._seed(two, _item_search_box())
+    assert caught.value.kind == "ambiguous"
+    point, support = _leg()._seed(two, _item_search_box(), approach=True)
+    assert support == pytest.approx(0.22)
+    assert point[0] < 0.27  # the item nearest the box centre, not its neighbour
 
 
 def test_a_probe_margin_under_two_grid_cells_is_a_typed_lost_view() -> None:
@@ -2931,7 +2981,7 @@ def test_a_tick_commits_its_request_only_under_the_lock_it_snapshotted() -> None
         leg._request = lambda *args: requested.append(args[2])  # type: ignore[method-assign]  # reason: records the commit
 
         def scan_then(during: Any) -> Any:
-            def seed(*_: Any) -> tuple[tuple[float, float, float], float]:
+            def seed(*_: Any, **__: Any) -> tuple[tuple[float, float, float], float]:
                 during()  # another thread, while the column is scanned outside the lock
                 return (0.45, 0.0, 0.09), 0.05
 
@@ -3074,7 +3124,7 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
             future = rclpy_task.Future()
             future.set_result(response)
             snapshot = (depth, now_ns, k, t_base_from_cam, 0.03, _dispatched(), 0)
-            region, added = leg._measure(future, snapshot, now_ns, grid, [], previous)
+            region, added, _ = leg._measure(future, snapshot, now_ns, grid, [], previous)
             assert added == 0, "the block's fit holds its whole component"
             return region
 
@@ -3147,7 +3197,8 @@ def test_a_capture_of_the_targets_near_part_is_completed_through_measure() -> No
                 0,
             )
             grid = (lattice, now_ns, time.monotonic())
-            return leg._measure(future, snapshot, now_ns, grid, [], previous)
+            region, added, _ = leg._measure(future, snapshot, now_ns, grid, [], previous)
+            return region, added
 
         fit, added = measure(_held_block_lattice(), None)
         assert added == 0
@@ -3458,3 +3509,160 @@ def test_a_margin_outside_its_bounds_is_refused_at_construction(margin: float) -
                 camera="head_zed", grasp_target_enabled=True, grasp_target_margin_m=margin
             ),
         )
+
+
+# ── instances before contact: camera first, map-confirmed (issue #349) ───────────
+
+
+def _feed_instances(live: _LiveLeg, grid: VoxelLattice, *, source_ns: int, stamp_ns: int) -> None:
+    """Pre-measurement replies for every warehouse prop, through the leg's reply path.
+
+    The props ray-cast into the manifest's head camera; each reply carries one prop's mask
+    (what a prompt on it returns), fitted, map-confirmed and tracked by
+    ``_on_instance_reply`` exactly as a live ``SegmentInView`` answer would be.
+    """
+    pytest.importorskip("openral_msgs")
+    rclpy_task = pytest.importorskip("rclpy.task")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics
+    from openral_msgs.srv import SegmentInView
+    from sensor_msgs.msg import Image as ImageMsg
+
+    from tests.unit._head_camera_render import head_camera, render
+    from tests.unit.test_object_primitives import _DECK, _DECK_Z, _PROPS_XY, _foot
+
+    t, k = head_camera()
+    live.bridge._camera_info = camera_info_from_intrinsics(
+        width=k.width, height=k.height, fx=k.fx, fy=k.fy, cx=k.cx, cy=k.cy, frame_id="cam"
+    )
+    depth, labels = render([*(_foot(x, y) for x, y in _PROPS_XY), _DECK], t, k)
+    for n in range(1, len(_PROPS_XY) + 1):
+        image = ImageMsg(height=k.height, width=k.width, encoding="mono8", step=k.width)
+        image.header.stamp.sec, image.header.stamp.nanosec = divmod(stamp_ns, _S)
+        image.data = ((labels == n).astype(np.uint8) * 255).tobytes()
+        response = SegmentInView.Response(ok=True)
+        response.masks = [image]
+        future = rclpy_task.Future()
+        future.set_result(response)
+        snapshot = (depth, stamp_ns, k, t, _DECK_Z, None, 0)
+        live.leg._on_instance_reply(future, snapshot, stamp_ns, (grid, source_ns, time.monotonic()))
+
+
+def test_premeasured_instances_arm_the_region_with_no_segmenter_call() -> None:
+    """``grasp_target_premeasure``: the props are measured by the head camera before any
+    hand is near (three instances, map-confirmed); the hand arriving within the approach
+    distance of one arms and, on that tick, holds that instance's camera box — with no
+    segmenter in the graph at all (``_client is None``, nothing in flight). While the hand
+    is over it the map holds it (re-stamped per confirming grid, the same box); the map
+    clearing its cells retracts it; instances not re-seen for a freeze are dropped."""
+    from tests.unit.test_object_primitives import _DECK_Z, _HEIGHT, _PROPS_XY, _props
+
+    with _live_leg("test_grasp_target_premeasure", grasp_target_premeasure=True) as live:
+        leg = live.leg
+        assert leg._instances is not None and leg._bridge._client is None
+        now_ns = leg._now_ns()
+        source_ns, camera_ns = now_ns - 300_000_000, now_ns - 200_000_000
+        grid = _props()
+        leg._bridge._grid = (grid, source_ns, time.monotonic())
+        x, y = _PROPS_XY[1]
+        top = _DECK_Z + _HEIGHT
+        # 20 cm short of the middle prop: outside the approach distance (0.10 m), inside
+        # the pre-measurement reach (two approach distances).
+        live.place("left", (x - 0.20, y, top + 0.05))
+        live.place("right", (x, -0.9, 0.40))
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+
+        leg._tick()  # nothing near: no arming; a pre-measurement prompt on the prop's top
+        assert leg.tracker.target == _goal_scope(stamp_ns=now_ns) and leg._inflight is None
+        # (no depth frame and no segmenter in this graph: refused, logged, nothing sent)
+        px, py, pz = (float(v) for v in leg._premeasure_note[8:].split(")")[0].split(", "))
+        assert abs(px - x) < 0.035 and abs(py - y) < 0.035 and pz == pytest.approx(top, abs=0.015)
+
+        _feed_instances(live, grid, source_ns=source_ns, stamp_ns=camera_ns)
+        instances = sorted(leg._instances.primitives, key=lambda p: p.region.pose.xyz[1])
+        assert len(instances) == 3
+        middle = instances[1]
+        assert middle.region.evidence_ref.startswith("segment_in_view:")
+        assert middle.region.stamp_ns == source_ns, "stamped no later than the confirming map"
+
+        live.place("left", (x, y, top + 0.05))  # 5 cm over the middle prop
+        leg._tick()
+        target = leg.tracker.target
+        assert target is not None and target.contact_links == _LEFT, "the left hand armed"
+        assert leg.tracker.region == middle.region, "no instance box on the arming tick"
+        assert leg._inflight is None and leg._bridge._client is None
+        assert leg.measured_support(middle.region) == pytest.approx(_DECK_Z)
+        closed = leg.kernel_region(target.target_id, middle.region)
+        GraspDeclaration.model_validate(target.model_dump() | {"region": closed})
+
+        # The hand over it occludes the camera: each newer grid that confirms the box
+        # holds it — the same box, the grid's stamp — never moved or grown.
+        held_ns = now_ns - 100_000_000
+        leg._bridge._grid = (grid, held_ns, time.monotonic())
+        leg._tick()
+        held = leg.tracker.region
+        assert held is not None and held.stamp_ns == held_ns
+        assert held.model_copy(update={"stamp_ns": source_ns}) == middle.region
+
+        # The prop taken away (its cells cleared): no region, and its instance is dropped.
+        gone = _props([_PROPS_XY[0], _PROPS_XY[2]])
+        leg._bridge._grid = (gone, now_ns, time.monotonic())
+        leg._tick()
+        assert leg.tracker.region is None, "a box the map no longer holds stayed exempt"
+        assert [p.primitive_id for p in leg._instances.primitives] == [
+            p.primitive_id for p in instances if p is not middle
+        ], "the cleared instance was kept"
+
+        # Not re-seen for longer than a freeze: dropped.
+        later = now_ns + int(3 * _S)
+        leg._bridge._grid = (grid, later, time.monotonic())
+        leg._premeasure(later)
+        assert leg._instances.primitives == []
+
+
+def test_a_named_search_box_grounds_to_the_lone_instance_in_it() -> None:
+    """A reasoner-grounded search box (no approach): the one pre-measured instance inside
+    it is the region on the next tick, hands wherever they are; a box holding two is
+    refused as ambiguous."""
+    from tests.unit.test_object_primitives import _DECK_Z, _PROPS_XY, _props
+
+    with _live_leg("test_grasp_target_premeasure_named", grasp_target_premeasure=True) as live:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        grid = _props()
+        leg._bridge._grid = (grid, now_ns, time.monotonic())
+        live.place("left", (0.20, 0.30, 0.40))  # the hands parked far from every prop
+        live.place("right", (0.20, -0.30, 0.40))
+        _feed_instances(live, grid, source_ns=now_ns, stamp_ns=now_ns)
+        x, y = _PROPS_XY[1]
+
+        def declare(half_y: float) -> None:
+            box = PlaceRegion(
+                frame_id="openarm_base",
+                pose=Pose6D(
+                    xyz=(x, y, _DECK_Z + 0.10), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"
+                ),
+                half_extents=(0.10, half_y, 0.12),
+            )
+            leg.tracker.on_declaration(
+                _dispatched(stamp_ns=now_ns).model_copy(
+                    update={"target_id": f"obj:prop:{half_y}", "search_box": box}
+                )
+            )
+
+        declare(0.08)
+        leg._tick()
+        region = leg.tracker.region
+        assert region is not None and region.pose.xyz[1] == pytest.approx(y, abs=0.015)
+        assert leg._inflight is None
+        # The prop taken away, no hand anywhere near: the map contradicts the held box and
+        # it is retracted at once — not held out its freeze.
+        gone = _props([_PROPS_XY[0], _PROPS_XY[2]])
+        leg._bridge._grid = (gone, now_ns + 1, time.monotonic())
+        leg._tick()
+        assert leg.tracker.region is None
+        assert leg.tracker._status == "retracted:map_disagrees"
+        leg._bridge._grid = (grid, now_ns + 2, time.monotonic())
+        _feed_instances(live, grid, source_ns=now_ns + 2, stamp_ns=now_ns + 2)
+        declare(0.25)  # a box holding two props
+        leg._tick()
+        assert leg.tracker.region is None
