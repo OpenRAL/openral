@@ -3666,3 +3666,53 @@ def test_a_named_search_box_grounds_to_the_lone_instance_in_it() -> None:
         declare(0.25)  # a box holding two props
         leg._tick()
         assert leg.tracker.region is None
+
+
+def test_a_named_search_box_refuses_a_broad_fit_outside_its_target() -> None:
+    """A map-confirmed camera fit may swell past the one object named at dispatch."""
+    from openral_hal._object_primitives import PrimitiveFit, PrimitiveTracker, map_confirms
+
+    from tests.unit.test_object_primitives import _DECK_Z, _PROPS_XY, _props
+
+    with _live_leg("test_grasp_target_named_box_bounds", grasp_target_premeasure=True) as live:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        grid = _props()
+        leg._bridge._grid = (grid, now_ns, time.monotonic())
+        _feed_instances(live, grid, source_ns=now_ns, stamp_ns=now_ns)
+        x, y = _PROPS_XY[1]
+        assert leg._instances is not None
+        prop = min(leg._instances.primitives, key=lambda p: abs(p.region.pose.xyz[1] - y))
+        px, py, pz = prop.region.pose.xyz
+        broad = prop.region.model_copy(
+            update={
+                "pose": prop.region.pose.model_copy(update={"xyz": (px - 0.02, py, pz)}),
+                "half_extents": (0.095, prop.region.half_extents[1], prop.region.half_extents[2]),
+            }
+        )
+        assert map_confirms(grid, broad, support_z=prop.support_z, min_cover=0.5, pad_m=0.015) == (
+            "",
+            "",
+        )
+        leg._instances = PrimitiveTracker()
+        leg._instances.update(
+            [PrimitiveFit(broad, prop.cell_count, prop.support_z)],
+            stamp_ns=now_ns,
+            tol_m=grid.resolution,
+            scanned=broad,
+        )
+        box = PlaceRegion(
+            frame_id="openarm_base",
+            pose=Pose6D(
+                xyz=(x, y, _DECK_Z + 0.10), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"
+            ),
+            half_extents=(0.10, 0.08, 0.12),
+        )
+        leg.tracker.on_declaration(
+            _dispatched(stamp_ns=now_ns).model_copy(
+                update={"target_id": "obj:prop", "search_box": box}
+            )
+        )
+        leg._tick()
+        assert leg.tracker.region is None
+        assert leg.tracker._status == "retracted:outside_named_search_box"

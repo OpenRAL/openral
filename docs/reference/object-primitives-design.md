@@ -89,7 +89,10 @@ box holds `min_cells` occupied cells above its lowest layer, or a named search b
 0. A held region the map no longer covers is retracted at once (`map_disagrees`), hand or no hand.
 1. The candidate is the tracked instance nearest the armed hand's TCP points inside the search
    column, refused on a tie within one voxel (`nearest_primitive`, HZ-0115-2); for a named search
-   box, the lone instance inside it (two: `ambiguous`; none: the lost view `no_instance`).
+   box, the lone instance inside it (two: `ambiguous`; none: the lost view `no_instance`). A named
+   target also requires the **whole** measured instance to fit within its search box plus one
+   voxel. A camera fit that widens across the named box's edge retracts the region, even when
+   its centre remains inside and the map confirms occupied cells there.
 2. A candidate fitted after the held region is confirmed on the current grid (`map_confirms`) and
    gated against the held region (`_gate_refit(complete=False)`: tracking within one voxel, the
    own-hand `occluded_refit` hold, `target_moved`, `unoccluded_refit`), then accepted. On the

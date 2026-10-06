@@ -1440,6 +1440,16 @@ def _gate_refit(
     )
 
 
+def _guard_named_instance(
+    region: PlaceRegion, declared: GraspDeclaration | None, grid: VoxelLattice
+) -> None:
+    """A named target must contain the whole measured instance, not just its centre."""
+    if declared is None or declared.search_box is None:
+        return
+    if not region_within(region, declared.search_box, tol_m=grid.resolution):
+        raise _contradicted("outside_named_search_box", "instance reaches outside the named box")
+
+
 #: What a request was made against: (depth, depth stamp ns, intrinsics,
 #: T_base_from_cam, support_z, the declaration it measures — ``None`` for an instance
 #: pre-measurement — and the tracker generation).
@@ -1913,6 +1923,7 @@ class GraspTargetLeg:
                 if chosen is not None and (
                     previous is None or chosen.region.stamp_ns > previous.stamp_ns
                 ):
+                    _guard_named_instance(chosen.region, self.tracker.declaration, grid)
                     support_z = chosen.support_z
                     kind, detail = map_confirms(
                         grid,
