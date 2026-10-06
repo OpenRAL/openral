@@ -95,7 +95,12 @@ class ObjectPrimitive:
 
 
 def map_confirms(
-    grid: VoxelLattice, region: PlaceRegion, *, support_z: float, min_cover: float
+    grid: VoxelLattice,
+    region: PlaceRegion,
+    *,
+    support_z: float,
+    min_cover: float,
+    pad_m: float = 0.0,
 ) -> tuple[str, str]:
     """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
@@ -108,13 +113,18 @@ def map_confirms(
     reaches a second body the map holds apart from it. A neighbour *touching* the instance
     is one body with it in the map (HZ-0115-30), so a packed pair passes, each instance
     with the sliver of its neighbour inside its own padded box — never the whole merged
-    blob, which is what the map alone would have exempted.
+    blob, which is what the map alone would have exempted. A neighbour a cell or two
+    apart is the same sliver: a second body none of whose cells reaches inside the box
+    shrunk by ``pad_m`` (the fit's own padding, sides and top) lies only in the padding
+    band and does not split it.
 
     Args:
         grid: The published lattice; ``region`` must be in its frame.
         region: The camera instance's box.
         support_z: The support top the instance was fitted on.
         min_cover: ``region_covers_occupied``'s fraction. *Calibration point.*
+        pad_m: The padding the fit added to the box's sides and top (``fit_pad_m``); a
+            second body confined to that band is a sliver, not a split.
 
     Raises:
         ROSConfigError: On a frame mismatch or a tilted region.
@@ -127,10 +137,10 @@ def map_confirms(
         ...     for j in (1, 2):
         ...         occ[i + 8 * (j + 4 * 1)] = 1
         >>> g = VoxelLattice("b", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (8, 4, 3), occ)
-        >>> def box(x, hx):
+        >>> def box(x, hx, hz=0.05):
         ...     return PlaceRegion(
         ...         frame_id="b",
-        ...         half_extents=(hx, 0.1, 0.05),
+        ...         half_extents=(hx, 0.1, hz),
         ...         pose=Pose6D(xyz=(x, 0.2, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
         ...     )
         >>> map_confirms(g, box(0.2, 0.1), support_z=0.0, min_cover=0.5)
@@ -139,6 +149,11 @@ def map_confirms(
         'map_split'
         >>> map_confirms(g, box(0.4, 0.05), support_z=0.0, min_cover=0.5)[0]
         'map_disagrees'
+        >>> wide = box(0.35, 0.25, hz=0.1)  # reaches 5 cm into the second post
+        >>> map_confirms(g, wide, support_z=0.0, min_cover=0.5)[0]
+        'map_split'
+        >>> map_confirms(g, wide, support_z=0.0, min_cover=0.5, pad_m=0.06)  # only in the pad
+        ('', '')
     """
     count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
     if not covered:
@@ -146,8 +161,18 @@ def map_confirms(
     closed, _ = cell_closed_region(region, grid, max_half_extent_m=math.inf)
     centers = occupied_centers_in_box(grid, closed)
     above = centers[centers[:, 2] > support_z + grid.resolution]
-    parts = sorted((len(c) for c in _components(_ijk(grid, above))), reverse=True)
-    if len(parts) > 1:
+    comps = sorted(_components(_ijk(grid, above)), key=len, reverse=True)
+    hx, hy, hz = region.half_extents
+    x, y, z = region.pose.xyz
+    inner = region.model_copy(
+        update={
+            "half_extents": (max(hx - pad_m, 0.0), max(hy - pad_m, 0.0), max(hz - pad_m / 2, 0.0)),
+            "pose": region.pose.model_copy(update={"xyz": (x, y, z - pad_m / 2)}),
+        }
+    )
+    deep = [c for c in comps[1:] if _in_region(above[c], inner).any()]
+    if deep:
+        parts = [len(c) for c in comps]
         return "map_split", f"{len(parts)} separate bodies inside the instance box (cells {parts})"
     return "", ""
 

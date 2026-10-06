@@ -137,6 +137,23 @@ _REFUSAL_SEVERITY = (
 )
 
 
+#: Camera-mount error budget of a target fit (``target_region_from_mask``). *Calibration point.*
+EXTRINSIC_ERROR_M = 0.01
+
+
+def fit_pad_m(resolution: float, extrinsic_error_m: float = EXTRINSIC_ERROR_M) -> float:
+    """The padding a target fit adds to its sides and top, metres.
+
+    A cell whose centre is outside a box can still overlap it by half a cell diagonal,
+    plus the camera mount's error.
+
+    Example:
+        >>> round(fit_pad_m(0.02), 4)
+        0.0273
+    """
+    return math.sqrt(3.0) * resolution / 2.0 + extrinsic_error_m
+
+
 @dataclass(frozen=True)
 class VoxelLattice:
     """The fields of one ``openral_msgs/OccupancyVoxels`` the target producer reads.
@@ -672,7 +689,7 @@ def target_region_from_mask(
     evidence_ref: str,
     stamp_ns: int = 0,
     erode_px: int = 2,
-    extrinsic_error_m: float = 0.01,
+    extrinsic_error_m: float = EXTRINSIC_ERROR_M,
     trim_percentile: float = 1.0,
     min_points: int = 200,
     min_depth_m: float = 0.1,
@@ -786,7 +803,7 @@ def target_region_from_mask(
         float(v) for v in np.percentile(pts[:, 2], (trim_percentile, 100.0 - trim_percentile))
     )
 
-    pad = math.sqrt(3.0) * resolution / 2.0 + extrinsic_error_m
+    pad = fit_pad_m(resolution, extrinsic_error_m)
     unseen = support_z is None or low < support_z - resolution
     if unseen:
         support_z = low - resolution

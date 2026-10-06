@@ -259,6 +259,7 @@ from openral_hal._grasp_target import (
     _ijk,
     _in_region,
     cell_closed_region,
+    fit_pad_m,
     lowered_to_support,
     map_completed_region,
     margin_grown_region,
@@ -1914,7 +1915,11 @@ class GraspTargetLeg:
                 ):
                     support_z = chosen.support_z
                     kind, detail = map_confirms(
-                        grid, chosen.region, support_z=support_z, min_cover=min_cover
+                        grid,
+                        chosen.region,
+                        support_z=support_z,
+                        min_cover=min_cover,
+                        pad_m=fit_pad_m(grid.resolution),
                     )
                     if kind:
                         detail = f"instance {chosen.primitive_id}: {detail}"
@@ -1969,7 +1974,11 @@ class GraspTargetLeg:
         if support_z is None:  # every accepted region records its support
             raise _lost("no_support_record", "held region has no measured support")
         kind, detail = map_confirms(
-            grid, held, support_z=support_z, min_cover=self._config.grasp_target_min_cover
+            grid,
+            held,
+            support_z=support_z,
+            min_cover=self._config.grasp_target_min_cover,
+            pad_m=fit_pad_m(grid.resolution),
         )
         if kind == "map_disagrees":
             raise _contradicted(kind, f"held region, hand over it: {detail}")
@@ -2658,6 +2667,7 @@ class GraspTargetLeg:
                     fit.region,
                     support_z=fit.support_z,
                     min_cover=self._config.grasp_target_min_cover,
+                    pad_m=fit_pad_m(grid.resolution),
                 )
                 if kind:
                     raise _contradicted(kind, detail)
