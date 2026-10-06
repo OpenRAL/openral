@@ -811,6 +811,7 @@ def test_the_hand_is_located_through_the_attach_link_not_the_manifest_only_jaw_l
     retracted. The hand is the bridge's TCP — the attach link through ``tf_frames``
     (``openarm_left_link7`` -> ``openarm_left_ee_base_link``) plus the gripper joint's
     ``origin_xyz`` — and a shrink with it at the held box is a lost view."""
+    pytest.importorskip("geometry_msgs.msg")
     from geometry_msgs.msg import TransformStamped
 
     with _live_leg("test_grasp_target_jaw_point") as live:
@@ -1821,6 +1822,8 @@ def test_every_bridge_and_leg_entry_point_is_serialized() -> None:
     re-ATTACH's trigger update and its close, an executor drop between ``_region_payload``
     and ``on_attach``) can happen."""
     from openral_core import Action, ControlMode, JointState
+
+    pytest.importorskip("openral_msgs.msg")
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
     from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
 
