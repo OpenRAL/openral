@@ -749,6 +749,9 @@ class IsaacSimOptions(BaseModel):
     # USD assets do not carry these process-level RTX settings.
     translucent_materials: bool = False
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
+    # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
+    # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
+    image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
     # command_convention). Unnamed joints start at the URDF's zero. Teleported, not
@@ -1418,6 +1421,7 @@ def _write_robot_spec(
     camera_intrinsics: dict[str, IntrinsicsPinhole] | None = None,
     translucent_materials: bool = False,
     exposure_ev: float | None = None,
+    image_blur_sigma_px: float = 0.0,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1472,6 +1476,7 @@ def _write_robot_spec(
     spec = _build_robot_spec(desc, robot_id)
     spec["translucent_materials"] = translucent_materials
     spec["exposure_ev"] = exposure_ev
+    spec["image_blur_sigma_px"] = image_blur_sigma_px
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1580,7 +1585,12 @@ def _placement(
     )
     image_settings = opts.model_dump(
         mode="json",
-        include={"camera_intrinsics", "translucent_materials", "exposure_ev"},
+        include={
+            "camera_intrinsics",
+            "translucent_materials",
+            "exposure_ev",
+            "image_blur_sigma_px",
+        },
         exclude_defaults=True,
     )
     image_key = json.dumps(image_settings, sort_keys=True) if image_settings else ""
@@ -1685,6 +1695,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.camera_intrinsics,
         opts.translucent_materials,
         opts.exposure_ev,
+        opts.image_blur_sigma_px,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

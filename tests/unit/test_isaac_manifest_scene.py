@@ -632,3 +632,93 @@ def test_a_width_meters_gripper_is_refused_in_the_isaac_scene() -> None:
     desc = desc.model_copy(update={"end_effectors": [ee, *desc.end_effectors[1:]]})
     with pytest.raises(ROSConfigError, match="width_meters"):
         _build_robot_spec(desc, "franka_panda")
+
+
+# ── RGB lens validity + render softening ──────────────────────────────────────
+
+# The OpenArm ZED-M left lens, VGA raw: the Oct-2 Brown fit (the policy's training camera)
+# and its monotonic rational extension (fitted 2026-10-07 to the SDK's raw->rect map; equal
+# to the Brown fit within 0.007 px inside its calibrated radius).
+_ZED_TOP_K = {"width": 672, "height": 376, "fx": 388.508267, "fy": 388.527128,
+              "cx": 336.707405, "cy": 190.106848}  # fmt: skip
+_ZED_TOP_BROWN = [-0.358038981, 0.187982349, -0.000311155, 0.000069646, -0.056267709]
+_ZED_TOP_RATIONAL = [-1.441958182143234, 0.7289916610988222, -0.000311155, 6.9646e-05,
+                     0.19532166359108094, -1.0824447975648817, 0.1369386641081563,
+                     0.5689119070450521]  # fmt: skip
+
+
+def test_a_brown_fit_that_folds_inside_the_frame_is_refused(_manifest_scene_mod: object) -> None:
+    """Isaac inverts the lens per output pixel; past the fold there is no ray, so the
+    renderer draws swirls at the image edge. The Oct-2 fit folds at r_d 0.858 < 0.995."""
+    mod = _manifest_scene_mod
+    assert mod.radial_fold_radius(_ZED_TOP_BROWN) == pytest.approx(0.858, abs=1e-3)  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match=r"folds at normalised radius 0\.858"):
+        mod.check_radial_reaches_corners("top", _ZED_TOP_K, _ZED_TOP_BROWN)  # type: ignore[attr-defined]
+
+
+def test_the_rational_extension_reaches_the_corners_and_keeps_the_brown_interior(
+    _manifest_scene_mod: object,
+) -> None:
+    mod = _manifest_scene_mod
+    mod.check_radial_reaches_corners("top", _ZED_TOP_K, _ZED_TOP_RATIONAL)  # type: ignore[attr-defined]
+
+    def radial(c: list[float], r: np.ndarray) -> np.ndarray:
+        k1, k2, _, _, k3, k4, k5, k6 = (c + [0.0] * 8)[:8]
+        r2 = r * r
+        return r * (1 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / (1 + k4 * r2 + k5 * r2**2 + k6 * r2**3)
+
+    r = np.linspace(0.0, 0.8, 200)  # well inside the Brown fit's valid range
+    px = np.abs(radial(_ZED_TOP_RATIONAL, r) - radial(_ZED_TOP_BROWN, r)) * _ZED_TOP_K["fx"]
+    assert px.max() < 0.05
+
+
+def test_the_thor_wrist_calibrations_pass_the_corner_check(_manifest_scene_mod: object) -> None:
+    """Real fixtures: the committed wrist Arducam calibrations are monotonic to their corners."""
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    robot = RobotDescription.from_yaml(path)
+    sensors = apply_sensor_overlays(
+        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
+    )
+    for s in sensors:
+        if s.name in ("wrist_left", "wrist_right"):
+            assert s.intrinsics is not None
+            k = s.intrinsics.model_dump()
+            _manifest_scene_mod.check_radial_reaches_corners(s.name, k, k["distortion_coeffs"])  # type: ignore[attr-defined]
+
+
+def test_rational_polynomial_is_a_schema_model() -> None:
+    from openral_core import IntrinsicsPinhole
+
+    k = IntrinsicsPinhole(
+        **_ZED_TOP_K, distortion_model="rational_polynomial", distortion_coeffs=_ZED_TOP_RATIONAL
+    )
+    assert IntrinsicsPinhole.model_validate_json(k.model_dump_json()) == k
+
+
+def test_blur_softens_without_shifting_or_darkening(_manifest_scene_mod: object) -> None:
+    blur = _manifest_scene_mod.blur_rgb  # type: ignore[attr-defined]
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 256, size=(40, 60, 3), dtype=np.uint8)
+    assert blur(img, 0.0) is img
+    out = blur(img, 0.9)
+    assert out.shape == img.shape and out.dtype == np.uint8
+    assert abs(float(out.mean()) - float(img.mean())) < 0.5
+    assert float(np.abs(np.diff(out.astype(float), axis=1)).mean()) < float(
+        np.abs(np.diff(img.astype(float), axis=1)).mean()
+    )
+    dot = np.zeros((11, 11, 3), dtype=np.uint8)
+    dot[5, 5] = 255
+    peak = np.unravel_index(np.argmax(blur(dot, 1.0)[..., 0]), (11, 11))
+    assert peak == (5, 5)
+
+
+def test_image_blur_option_is_bounded() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    assert IsaacSimOptions().image_blur_sigma_px == 0.0
+    assert IsaacSimOptions(image_blur_sigma_px=0.9).image_blur_sigma_px == 0.9
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(image_blur_sigma_px=-0.1)
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(image_blur_sigma_px=6.0)

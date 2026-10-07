@@ -438,6 +438,94 @@ def camera_hfov_deg(meta: dict[str, Any]) -> float | None:
     return None
 
 
+def radial_fold_radius(coeffs: list[float]) -> float:
+    """The largest distorted normalised radius a Brown/rational radial model reaches.
+
+    ``r_d = r * (1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)`` must
+    increase with the undistorted radius ``r`` for a pixel to have a ray. Beyond its
+    first turning point (or a pole) a distorted pixel has no preimage, so a renderer that
+    inverts the model per output pixel draws garbage there. Tangential terms are ignored.
+    Pure.
+
+    Example:
+        >>> round(radial_fold_radius([-0.358038981, 0.187982349, 0, 0, -0.056267709]), 3)
+        0.858
+        >>> radial_fold_radius([0.0] * 5) > 3.9
+        True
+    """
+    k1, k2, _p1, _p2, k3, k4, k5, k6 = (list(coeffs) + [0.0] * 8)[:8]
+    r = np.linspace(0.0, 4.0, 40001)[1:]
+    r2 = r * r
+    den = 1.0 + k4 * r2 + k5 * r2**2 + k6 * r2**3
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rd = r * (1.0 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / den
+    bad = np.flatnonzero(~np.isfinite(rd[1:]) | (den[1:] <= 0) | (np.diff(rd) <= 0))
+    rd = rd[: bad[0] + 1] if bad.size else rd
+    return float(np.max(rd))
+
+
+def check_radial_reaches_corners(name: str, k: dict[str, Any], coeffs: list[float]) -> None:
+    """Refuse an RGB lens model that folds before the image corners.
+
+    Isaac renders a distorted camera by inverting its model for every output pixel, so a
+    calibration whose radial curve turns over inside the frame renders swirls at the
+    edges (the Oct-2 ZED-M fit folds at 0.858 while its corners sit at 0.995). Extend it
+    with ``rational_polynomial`` terms that stay monotonic instead. Pure.
+
+    Example:
+        >>> k = {"width": 672, "height": 376, "fx": 388.5, "fy": 388.5, "cx": 336.7, "cy": 190.1}
+        >>> check_radial_reaches_corners("top", k, [-0.103, -0.002, 0.0, 0.0, 0.043])
+        >>> check_radial_reaches_corners("top", k, [-0.358, 0.188, 0.0, 0.0, -0.0563])
+        Traceback (most recent call last):
+        ...
+        ValueError: top: radial model folds at normalised radius 0.858, inside the image (corners at 0.995); extend it with rational_polynomial k4-k6
+    """
+    corner = max(
+        float(np.hypot((u - k["cx"]) / k["fx"], (v - k["cy"]) / k["fy"]))
+        for u in (0.0, float(k["width"]))
+        for v in (0.0, float(k["height"]))
+    )
+    fold = radial_fold_radius(coeffs)
+    if fold < corner:
+        raise ValueError(
+            f"{name}: radial model folds at normalised radius {fold:.3f}, inside the image "
+            f"(corners at {corner:.3f}); extend it with rational_polynomial k4-k6"
+        )
+
+
+def blur_rgb(image: NDArray[np.uint8], sigma_px: float) -> NDArray[np.uint8]:
+    """Separable Gaussian blur of an HWC uint8 frame; ``sigma_px <= 0`` returns it unchanged.
+
+    RTX renders are sharper than a real low-cost camera after compression; a sub-pixel
+    sigma matches their measured sharpness (scene option ``image_blur_sigma_px``). Pure.
+
+    Example:
+        >>> img = np.zeros((9, 9, 3), dtype=np.uint8)
+        ... img[4, 4] = 255
+        >>> out = blur_rgb(img, 1.0)
+        >>> int(out[4, 4, 0]) < 255 and int(out[4, 3, 0]) > 0
+        True
+        >>> blur_rgb(img, 0.0) is img
+        True
+    """
+    if sigma_px <= 0:
+        return image
+    radius = max(1, int(np.ceil(3.0 * sigma_px)))
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel = np.exp(-0.5 * (x / np.float32(sigma_px)) ** 2)
+    kernel /= kernel.sum()
+    out = image.astype(np.float32)
+    for axis in (0, 1):
+        pad = [(0, 0)] * out.ndim
+        pad[axis] = (radius, radius)
+        padded = np.pad(out, pad, mode="reflect")
+        acc = np.zeros_like(out)
+        for i, weight in enumerate(kernel):
+            acc += weight * np.take(padded, np.arange(i, i + out.shape[axis]), axis=axis)
+        out = acc
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
 def _configure_rgb_projection(cam: Any, meta: dict[str, Any]) -> None:
     """Apply calibrated RGB K/D through Isaac's native OmniLensDistortion schema.
 
@@ -457,11 +545,17 @@ def _configure_rgb_projection(cam: Any, meta: dict[str, Any]) -> None:
             raise ValueError(f"{meta['name']}: equidistant requires four coefficients")
         cam.set_opencv_fisheye_properties(**params, fisheye=coeffs)
         readback = cam.get_opencv_fisheye_properties()
-    elif model in ("none", "plumb_bob"):
+    elif model in ("none", "plumb_bob", "rational_polynomial"):
         if model == "none" and any(coeffs):
             raise ValueError(f"{meta['name']}: distortion_model none has nonzero coefficients")
-        if len(coeffs) not in (0, 5):
-            raise ValueError(f"{meta['name']}: plumb_bob requires five coefficients")
+        counts = {"none": (0,), "plumb_bob": (0, 5), "rational_polynomial": (8,)}[model]
+        if len(coeffs) not in counts:
+            raise ValueError(
+                f"{meta['name']}: {model} requires {' or '.join(map(str, counts))} coefficients"
+            )
+        check_radial_reaches_corners(meta["name"], k, coeffs)
+        # Isaac's OpenCV pinhole takes [k1 k2 p1 p2 k3 k4 k5 k6 s1 s2 s3 s4]: the rational
+        # terms are positions 6-8, the thin-prism ones stay zero.
         coeffs += [0.0] * (12 - len(coeffs))
         cam.set_opencv_pinhole_properties(**params, pinhole=coeffs)
         readback = cam.get_opencv_pinhole_properties()
@@ -1465,7 +1559,10 @@ class IsaacManifestScene(IsaacSceneBase):
         out: dict[str, NDArray[np.uint8]] = {}
         for meta in self._cam_meta:
             if meta["modality"] == "rgb":
-                out[meta["key"]] = self._grab(self._cameras[meta["name"]])
+                frame = self._grab(self._cameras[meta["name"]])
+                out[meta["key"]] = blur_rgb(
+                    frame, float(self._spec.get("image_blur_sigma_px") or 0)
+                )
         return out
 
     def _world_from_base(self) -> NDArray[np.float64]:
