@@ -438,6 +438,98 @@ def camera_hfov_deg(meta: dict[str, Any]) -> float | None:
     return None
 
 
+def _configure_rgb_projection(cam: Any, meta: dict[str, Any]) -> None:
+    """Apply calibrated RGB K/D through Isaac's native OmniLensDistortion schema.
+
+    Explicit mount FOVs keep their existing ideal pinhole model. Depth retains its
+    existing pinhole path: its pointcloud API does not support distorted deprojection.
+    """
+    k = meta.get("intrinsics")
+    if meta["modality"] != "rgb" or not k or (meta.get("mount") or {}).get("hfov_deg"):
+        return
+    width, height = cam.get_resolution()
+    sx, sy = width / k["width"], height / k["height"]
+    params = {"fx": k["fx"] * sx, "fy": k["fy"] * sy, "cx": k["cx"] * sx, "cy": k["cy"] * sy}
+    model = k.get("distortion_model", "none")
+    coeffs = list(k.get("distortion_coeffs") or [])
+    if model == "equidistant":
+        if len(coeffs) != 4:
+            raise ValueError(f"{meta['name']}: equidistant requires four coefficients")
+        cam.set_opencv_fisheye_properties(**params, fisheye=coeffs)
+        readback = cam.get_opencv_fisheye_properties()
+    elif model in ("none", "plumb_bob"):
+        if model == "none" and any(coeffs):
+            raise ValueError(f"{meta['name']}: distortion_model none has nonzero coefficients")
+        if len(coeffs) not in (0, 5):
+            raise ValueError(f"{meta['name']}: plumb_bob requires five coefficients")
+        coeffs += [0.0] * (12 - len(coeffs))
+        cam.set_opencv_pinhole_properties(**params, pinhole=coeffs)
+        readback = cam.get_opencv_pinhole_properties()
+    else:
+        raise ValueError(f"{meta['name']}: unsupported distortion model {model!r}")
+    expected = [params[key] for key in ("cx", "cy", "fx", "fy")]
+    if not np.allclose(readback[:4], expected) or not np.allclose(readback[4], coeffs):
+        raise RuntimeError(f"{meta['name']}: camera calibration readback differs from request")
+    print(
+        f"[isaac_manifest_scene] {meta['name']} {width}x{height} K={params} "
+        f"D={coeffs} model={model} (native lens schema readback OK)",
+        flush=True,
+    )
+
+
+def _configure_rendering(spec: dict[str, Any]) -> None:
+    """Opt-in process settings required by solid clear-plastic environment assets."""
+    import carb
+
+    settings = carb.settings.get_settings()
+    values: dict[str, bool | int | float] = {}
+    if spec.get("translucent_materials"):
+        values.update(
+            {
+                "/rtx/material/enableRefraction": True,
+                "/rtx/material/translucencyAsOpacity": False,
+                "/rtx/sceneDb/translucencyAsOpacity": False,
+                "/rtx/translucency/enabled": True,
+                "/rtx/translucency/sampleRoughness": True,
+                "/rtx/translucency/reflectAtAllBounce": True,
+                "/rtx/translucency/maxRefractionBounces": 8,
+                # Isaac 6 defaults to Real-Time 2.0; legacy translucency limits alone
+                # do not change its three-bounce budget for a thick transparent shell.
+                "/rtx/rtpt/maxBounces": 8,
+                "/rtx/rtpt/maxSpecularAndTransmissionBounces": 12,
+                "/rtx/pathtracing/maxBounces": 8,
+                "/rtx/pathtracing/maxSpecularAndTransmissionBounces": 12,
+                "/rtx/indirectDiffuse/enabled": True,
+                "/rtx/indirectDiffuse/maxBounces": 4,
+                "/rtx/indirectDiffuse/scalingFactor": 1.0,
+                # Low-resolution policy cameras need the quality DLSS profile.
+                "/rtx/post/dlss/execMode": 2,
+            }
+        )
+    ev = spec.get("exposure_ev")
+    if ev is not None:
+        values.update(
+            {
+                "/rtx/post/histogram/enabled": False,
+                "/rtx/post/tonemap/op": 6,
+                "/rtx/post/tonemap/colorMode": 0,
+                "/rtx/post/tonemap/enableSrgbToGamma": True,
+                "/rtx/post/tonemap/filmIso": 100.0,
+                "/rtx/post/tonemap/exposureTime": 0.02,
+                "/rtx/post/tonemap/fNumber": 5.0 * 2.0 ** (-float(ev) / 2.0),
+                "/rtx/post/tonemap/responsivity": 1.1026709,
+            }
+        )
+    for name, value in values.items():
+        settings.set(name, value)
+    if values:
+        print(
+            f"[isaac_manifest_scene] rendering settings: "
+            f"{ {name: settings.get(name) for name in values} }",
+            flush=True,
+        )
+
+
 def points_in_frame(
     points: NDArray[np.float32], world_from_frame: NDArray[np.float64]
 ) -> NDArray[np.float32]:
@@ -740,6 +832,34 @@ class IsaacManifestScene(IsaacSceneBase):
             self._root_body = (root_body, self._relative_to_root(root_body))
         from isaacsim.core.utils.stage import get_current_stage
 
+        # World.reset() initializes physics before the post-reset teleport.
+        # Seed the imported joints too, so its first contact pass uses the
+        # requested pose rather than the URDF zero pose among the scene props.
+        from pxr import PhysxSchema, Usd, UsdPhysics
+
+        initial_dofs: dict[str, float] = {}
+        for (kind, ref), value in zip(self._slot_plan, self._initial_slots, strict=True):
+            if np.isnan(value):
+                continue
+            if kind == "arm":
+                initial_dofs[ref] = float(value)
+            else:
+                lead = manifest_to_urdf_gripper(ref, float(value))
+                initial_dofs[ref["leader"]] = lead
+                for follower in ref["followers"]:
+                    initial_dofs[follower["dof"]] = float(follower["multiplier"]) * lead + float(
+                        follower["offset"]
+                    )
+        for prim in Usd.PrimRange(get_current_stage().GetPrimAtPath(prim_path)):
+            if prim.GetName() not in initial_dofs:
+                continue
+            angular = prim.IsA(UsdPhysics.RevoluteJoint)
+            axis = UsdPhysics.Tokens.angular if angular else UsdPhysics.Tokens.linear
+            value = initial_dofs[prim.GetName()]
+            PhysxSchema.JointStateAPI.Apply(prim, axis).CreatePositionAttr(
+                float(np.degrees(value)) if angular else value
+            )
+
         finger_joints = [
             name
             for g in self._spec.get("grippers") or []
@@ -826,6 +946,9 @@ class IsaacManifestScene(IsaacSceneBase):
         # (OpenArm's openarm_base sits 0.698 m above it).
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
         self._world.reset()
+        # Opening/importing a stage can restore renderer defaults. Apply the
+        # requested settings after those operations and before the first image.
+        _configure_rendering(self._spec)
         for meta in self._cam_meta:
             cam = self._cameras[meta["name"]]
             cam.initialize()
@@ -836,6 +959,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 cam.set_horizontal_aperture(aperture)
                 width, height = camera_resolution(meta, self.obs_width, self.obs_height)
                 cam.set_vertical_aperture(aperture * height / width)
+            _configure_rgb_projection(cam, meta)
             if meta.get("mount"):
                 self._mount_camera(cam, meta["mount"])
             if meta["modality"] == "depth":
@@ -843,6 +967,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 cam.add_distance_to_image_plane_to_frame()
         self._place_robot()
         self._resolve_dof_mapping()
+        self._after_world_reset()
         if self._lidar is not None:
             from omni.physx import get_physx_scene_query_interface
 
@@ -1169,6 +1294,15 @@ class IsaacManifestScene(IsaacSceneBase):
             ),
             None,
         )
+        if self._anchor_joint is not None and self._spec.get("fix_base", True):
+            # The converter puts the root API on a body, creating a floating
+            # articulation restrained by a solver joint. Mark the world joint
+            # instead so PhysX creates a genuinely fixed-base articulation.
+            for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
+                if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+            self._anchor_joint.GetBody0Rel().ClearTargets(True)
+            UsdPhysics.ArticulationRootAPI.Apply(self._anchor_joint.GetPrim())
         return prim_path
 
     def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
@@ -1305,6 +1439,9 @@ class IsaacManifestScene(IsaacSceneBase):
             self._write_slots(self._target, self._initial_slots)
             self._robot.set_joint_positions(self._target)
             self._robot.set_joint_velocities(np.zeros_like(self._target))
+            self._robot.set_joints_default_state(
+                positions=self._target.copy(), velocities=np.zeros_like(self._target)
+            )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=self._target)
         )

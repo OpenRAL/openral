@@ -23,8 +23,21 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription
-from openral_sim.backends.isaac_sim import _build_robot_spec
+from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
+from openral_sim.backends.isaac_sim import _build_robot_spec, _sensor_dict
+
+
+def test_thor_brown_calibration_survives_sidecar_serialization() -> None:
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    robot = RobotDescription.from_yaml(path)
+    sensors = apply_sensor_overlays(
+        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
+    )
+    for sensor in sensors:
+        if sensor.name not in ("wrist_left", "wrist_right"):
+            continue
+        assert sensor.intrinsics is not None
+        assert _sensor_dict(sensor)["intrinsics"] == sensor.intrinsics.model_dump()
 
 
 def _repo_root() -> Path:
@@ -97,7 +110,16 @@ def test_build_robot_spec_sensors_serialised(franka: RobotDescription) -> None:
     assert rgb, "franka manifest declares RGB cameras"
     cam = rgb[0]
     assert cam["intrinsics"] is not None
-    assert set(cam["intrinsics"]) == {"width", "height", "fx", "fy", "cx", "cy"}
+    assert set(cam["intrinsics"]) == {
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy",
+        "distortion_model",
+        "distortion_coeffs",
+    }
 
 
 def test_build_robot_spec_panda_mobile_base(panda_mobile: RobotDescription) -> None:

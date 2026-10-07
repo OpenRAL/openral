@@ -7,7 +7,7 @@ Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
 environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash"}
     reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
     render->{"frame": uint8 HWC|None}   close->{"ok"}
@@ -24,6 +24,7 @@ drives an externally-provisioned install.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import os
 import re
@@ -194,7 +195,8 @@ def main(argv: list[str]) -> int:
         if not args.robot_spec:
             raise SystemExit("--layout manifest requires --robot-spec <path>")
         with open(args.robot_spec, encoding="utf-8") as fh:
-            robot_spec = json.load(fh)
+            robot_spec_json = fh.read()
+        robot_spec = json.loads(robot_spec_json)
         scene = IsaacManifestScene(
             robot_spec=robot_spec,
             environment_usd=args.environment_usd,
@@ -220,6 +222,7 @@ def main(argv: list[str]) -> int:
             spawn=list(args.spawn_pose),
             robot=args.robot,
             objects=args.objects_json or "",
+            robot_spec_hash=hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -244,6 +247,7 @@ def _serve(
     spawn: list[float],
     robot: str,
     objects: str,
+    robot_spec_hash: str,
 ) -> int:
     import msgpack
     import zmq
@@ -272,6 +276,7 @@ def _serve(
                     "spawn": spawn,
                     "robot": robot,
                     "objects": objects,
+                    "robot_spec_hash": robot_spec_hash,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the
