@@ -132,9 +132,12 @@ def _install_v1(uv: str, py: Path) -> None:
     """Provision the V1 (4B) sidecar venv.
 
     V1's ``requirements.txt`` is training-oriented and omits lerobot/
-    bitsandbytes/pyzmq, so they're installed explicitly (torch cu128,
-    transformers==4.51.3; flash-attn deliberately skipped — server coerces to
-    eager).
+    bitsandbytes/pyzmq, so they're installed explicitly (torch 2.7.1 /
+    torchvision 0.22.1 cu128 and torchcodec 0.5 — the newest pairs under
+    lerobot 0.4.2's ``torch<2.8.0`` / ``torchvision<0.23.0`` /
+    ``torchcodec<0.6.0`` caps, so its install keeps them instead of silently
+    swapping in a PyPI-default torch; transformers==4.51.3; flash-attn
+    deliberately skipped — server coerces to eager).
 
     x86_64 only: ``lerobot==0.4.2`` (a hard V1 dependency) caps
     ``torch<2.8.0``, and no torch under that cap ships an aarch64 cu128 wheel
@@ -152,8 +155,8 @@ def _install_v1(uv: str, py: Path) -> None:
             "--python",
             str(py),
             "--torch-backend=cu128",
-            "torch==2.8.0",
-            "torchvision==0.23.0",
+            "torch==2.7.1",
+            "torchvision==0.22.1",
         ],
     )
     run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "lerobot==0.4.2"])
@@ -167,7 +170,7 @@ def _install_v1(uv: str, py: Path) -> None:
             str(py),
             "transformers==4.51.3",
             "numpy==1.26.4",
-            "torchcodec==0.6.0",
+            "torchcodec==0.5",
             "datasets==3.6.0",
         ],
     )

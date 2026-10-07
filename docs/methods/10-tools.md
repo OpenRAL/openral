@@ -589,7 +589,7 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_TORCHCODEC_PIN` (L90) — matching v2 torch-stack pin (excluded on aarch64).
 - `_TRITON_PIN` (L91) — matching v2 torch-stack pin.
 - `_V2_OVERRIDES: tuple[str, ...]` (L92) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L307) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `main() -> int` (L310) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
 - `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L319) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
 - `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L944) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.
