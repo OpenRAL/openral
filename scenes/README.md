@@ -307,6 +307,46 @@ Depth clouds are published in the manifest `base_frame` with misses dropped,
 and since the camera renders the robot, `deploy sim` runs the robot self-filter
 in front of octomap for an `isaacsim` scene, as on real hardware.
 
+For calibrated RGB cameras, Isaac applies the complete `fx`, `fy`, `cx`, `cy`
+and Brown (`plumb_bob`) or fisheye (`equidistant`) coefficients through its native
+lens schema. An explicit mount `hfov_deg` selects an ideal pinhole instead.
+Depth keeps its existing pinhole/deprojection path. The camera schema is read back
+and logged at boot; Isaac versions without this API fail rather than drop calibration.
+
+`backend_options.camera_intrinsics` overrides **RGB** image models for a simulation
+without changing the physical robot's stream bindings. For example, reproducing a
+raw training camera alongside a rectified depth camera:
+
+```yaml
+    camera_intrinsics:
+      top:
+        width: 672
+        height: 376
+        fx: 388.508267
+        fy: 388.527128
+        cx: 336.707405
+        cy: 190.106848
+        distortion_model: plumb_bob
+        distortion_coeffs: [-0.358038981, 0.187982349, -0.000311155, 0.000069646, -0.056267709]
+    translucent_materials: true
+    exposure_ev: 0.0
+```
+
+These top-camera numbers describe the **unrectified ZED-M left lens** measured on
+2 October 2026; they do not calibrate an SDK-rectified image. Use the profile that
+matches the recording pipeline. Native rasters are preserved before policy preprocessing.
+`translucent_materials` enables RTX refraction and indirect light, including the
+Real-Time 2.0/path-tracing limits (eight total bounces, twelve specular/transmission
+bounces), legacy refraction limit (eight), and the DLSS Quality profile for
+small camera rasters. Settings are applied after stage
+initialization; USD files alone do not transfer those process settings. Material
+compatibility still requires a rendered check; enabling this option alone does not
+guarantee transparent plastic. `exposure_ev` selects fixed
+manual exposure (ISO 100, 20 ms, f/5 at zero; +1 doubles exposure), preventing automatic
+exposure changes between poses. Both are opt-in; omitted values retain runtime defaults.
+The complete resolved robot spec is hashed into the sidecar handshake, so changing
+calibration, initial state, or renderer settings cannot reuse a stale sidecar silently.
+
 **Any manifest robot** with an `assets.urdf` imports — manifest joints are
 matched to URDF joints by the URDF's own structure, each gripper's mimic finger
 follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
@@ -422,3 +462,5 @@ paste-able right now. Copy any name straight into `--rskill` (e.g.
 
 (`openral sim list` is the other half: it prints scene config paths for
 `--config`, not rSkills.)
+
+Isaac 6 manifest imports use the world fixed joint as the articulation root, so a fixed arm stays at its declared spawn rather than settling against a floating-base constraint. Scene initial joint positions are seeded before physics initialization and retained on reset.

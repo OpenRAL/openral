@@ -11,6 +11,7 @@ argv the factory launched the sidecar with (written to the JSON file named by
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -79,6 +80,7 @@ def main(argv: list[str]) -> int:
         spawn=list(args.spawn_pose),
         robot=args.robot,
         objects=args.objects_json or "",
+        robot_spec_hash=hashlib.sha256(Path(args.robot_spec).read_bytes()).hexdigest(),
     )
 
 

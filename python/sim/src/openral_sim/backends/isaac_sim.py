@@ -69,6 +69,7 @@ launcher, accepts the NVIDIA Omniverse EULA via ``OMNI_KIT_ACCEPT_EULA=YES``).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -80,6 +81,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core import IntrinsicsPinhole
 from openral_core.exceptions import ROSConfigError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -742,6 +744,11 @@ class IsaacSimOptions(BaseModel):
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
+    # Simulation-only image models, e.g. a raw training stream alongside rectified depth.
+    camera_intrinsics: dict[str, IntrinsicsPinhole] = Field(default_factory=dict)
+    # USD assets do not carry these process-level RTX settings.
+    translucent_materials: bool = False
+    exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
     # command_convention). Unnamed joints start at the URDF's zero. Teleported, not
@@ -904,6 +911,8 @@ def _sensor_dict(sensor: SensorSpec) -> dict[str, Any]:
                 "fy": intr.fy,
                 "cx": intr.cx,
                 "cy": intr.cy,
+                "distortion_model": intr.distortion_model,
+                "distortion_coeffs": intr.distortion_coeffs,
             }
         ),
         "range_min_m": sensor.range_min_m,
@@ -1406,6 +1415,9 @@ def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
     initial_joint_positions: dict[str, float] | None = None,
+    camera_intrinsics: dict[str, IntrinsicsPinhole] | None = None,
+    translucent_materials: bool = False,
+    exposure_ev: float | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1437,7 +1449,29 @@ def _write_robot_spec(
             f"[isaac-sim] robot unit overlays: {', '.join(o.name for o in overlays)}",
             flush=True,
         )
+    if camera_intrinsics:
+        rgb_names = {s.name for s in desc.sensors if s.modality == "rgb"}
+        unknown = sorted(set(camera_intrinsics) - rgb_names)
+        if unknown:
+            raise ROSConfigError(f"camera_intrinsics must name RGB sensors; invalid: {unknown}")
+        for name, k in camera_intrinsics.items():
+            if min(k.width, k.height, k.fx, k.fy) <= 0 or not all(
+                math.isfinite(v) for v in (k.fx, k.fy, k.cx, k.cy, *k.distortion_coeffs)
+            ):
+                raise ROSConfigError(f"camera_intrinsics[{name!r}]: invalid raster or projection")
+        desc = desc.model_copy(
+            update={
+                "sensors": [
+                    s.model_copy(update={"intrinsics": camera_intrinsics[s.name]})
+                    if s.name in camera_intrinsics
+                    else s
+                    for s in desc.sensors
+                ]
+            }
+        )
     spec = _build_robot_spec(desc, robot_id)
+    spec["translucent_materials"] = translucent_materials
+    spec["exposure_ev"] = exposure_ev
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1450,7 +1484,8 @@ def _write_robot_spec(
                 desc,
                 manifest.parent,
                 urdf_links,
-                {o.name for o in overlays if o.intrinsics is not None},
+                {o.name for o in overlays if o.intrinsics is not None}
+                | set(camera_intrinsics or {}),
             ).items()
             if k in cameras
         },
@@ -1543,7 +1578,15 @@ def _placement(
         if opts.initial_joint_positions
         else ""
     )
-    world = _world_key(environment_usd, env_cfg.base_pose, objects_json + mounts + initial)
+    image_settings = opts.model_dump(
+        mode="json",
+        include={"camera_intrinsics", "translucent_materials", "exposure_ev"},
+        exclude_defaults=True,
+    )
+    image_key = json.dumps(image_settings, sort_keys=True) if image_settings else ""
+    world = _world_key(
+        environment_usd, env_cfg.base_pose, objects_json + mounts + initial + image_key
+    )
     return layout, environment_usd, spawn, objects_json, world
 
 
@@ -1636,9 +1679,15 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
     # it via --robot-spec.
     robot_spec_path, desc = _write_robot_spec(
-        env_cfg, opts.camera_mounts, opts.initial_joint_positions
+        env_cfg,
+        opts.camera_mounts,
+        opts.initial_joint_positions,
+        opts.camera_intrinsics,
+        opts.translucent_materials,
+        opts.exposure_ev,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
+    robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
@@ -1666,10 +1715,17 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "spawn": [float(v) for v in spawn_args],
             "robot": robot_id,
             "objects": objects_json,
+            "robot_spec_hash": robot_spec_hash,
         },
     )
     try:
         client.connect()
+        if client.call("ping").get("robot_spec_hash") != robot_spec_hash:
+            client.close()
+            raise ROSConfigError(
+                "Isaac sidecar cannot confirm the resolved robot/camera/render spec; "
+                "restart it with the matching sidecar code before using this scene."
+            )
     finally:
         # The sidecar reads the spec once at boot (before it answers ping), so by
         # the time connect() returns or fails the temp file is consumed — unlink
