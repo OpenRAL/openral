@@ -79,7 +79,9 @@ robot_unit: orin
 # every cloud. `*_path` args are scene-relative (`deploy_e2e.launch.py`).
 # Camera-only check with exactly these args on the lab Orin, 2026-09-22: HD720,
 # positional tracking FALSE, `cloud_registered` 9.9 Hz, `depth_registered`
-# 29.7 Hz, zero reboots — measured with the arms untouched.
+# 29.7 Hz, zero reboots — measured with the arms untouched. Since 2026-10-07 the
+# override grabs VGA, not HD720, and advertises the raw image: the restock policy was
+# trained on the unrectified VGA stream, and the units bind `top` to it (see the file).
 #
 # `zed_wrapper` is built in its own colcon workspace, so source that overlay
 # too (`source ~/zed_ws/install/setup.bash`), not just the OpenRAL one; an

@@ -47,7 +47,9 @@ reverse 0/40.
 
 The real ZED on the OpenArm cell publishes a REDUCED cloud (224×128 points ×
 16 B ≈ 459 KB), just under the cliff — any larger setting crosses it, and its
-HD720 depth and colour frames under `openarm_bench.yaml` (2.7–3.7 MB) are above it.
+HD720 depth and colour frames (2.7–3.7 MB) were above it. `openarm_bench.yaml` has grabbed
+VGA since 2026-10-07 (672×376: about 1 MB depth, 1 MB BGRA colour), but those frames still
+exceed the cliff, so the options below still apply.
 
 ## Options measured (2.8 MB, 4 Hz, same host)
 

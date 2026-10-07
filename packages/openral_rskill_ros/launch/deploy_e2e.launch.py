@@ -868,7 +868,7 @@ def _live_camera_info_topic(spec: SensorSpec, hal_mode: str) -> str:
         >>> thor = resolve_sensor_overlays("robots/openarm/robot.yaml", "thor", required=True)
         >>> top = next(s for s in apply_sensor_overlays(arm.sensors, thor) if s.name == "top")
         >>> _live_camera_info_topic(top, "real")
-        '/zed/zed_node/rgb/color/rect/camera_info'
+        '/zed/zed_node/rgb/color/raw/camera_info'
         >>> _live_camera_info_topic(top, "sim")
         '/openral/cameras/top/camera_info'
     """

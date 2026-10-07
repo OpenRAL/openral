@@ -176,8 +176,10 @@ drivers:
       # DYNAMIC transforms, and octomap_server stalls for seconds waiting on them
       # (docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 1).
       enable_ipc: "false"
-      # Scene-relative. Pins HD720 (the ZED-M shares a USB hub with other
-      # cameras and reboots in a loop at HD1080), turns positional tracking
+      # Scene-relative. Pins VGA (the ZED-M shares a USB hub with other
+      # cameras and reboots in a loop at HD1080; VGA raw is also what the
+      # restock policy was trained on), advertises the raw image topics,
+      # turns positional tracking
       # off and depth stabilization to 0 (the SDK force-enables tracking
       # otherwise, defeating the setting above).
       ros_params_override_path: drivers/zedm_openarm_override.yaml
@@ -229,14 +231,17 @@ sensors:
         qos_depth: 5
       max_age_ms: 500
 
-  # RGB: the wrapper's rectified left image, the policy's `top` view. It is
-  # published as `bgra8`; the reader drops the constant alpha plane and
+  # RGB: the wrapper's UNRECTIFIED left image, the policy's `top` view — the
+  # restock policy was trained on raw VGA frames, so the override grabs VGA
+  # and sets `video.publish_raw: true`. Use `rgb/color/rect/image` (with its
+  # zero-distortion CameraInfo) for consumers that assume a pinhole camera.
+  # It is published as `bgra8`; the reader drops the constant alpha plane and
   # delivers `bgr8`.
   - name: top
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/zed_node/rgb/color/rect/image
+        topic: /zed/zed_node/rgb/color/raw/image
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200

@@ -25,8 +25,19 @@
             # Dev 002), and at 1920x1080 the SDK opened the camera and then
             # dropped it repeatedly mid-stream — "Connection issue detected:
             # CAMERA REBOOTING" on a ~2.8 s retry loop, with no frame ever
-            # reaching the bus. HD720 roughly halves the pixel rate.
-            grab_resolution: 'HD720'
+            # reaching the bus.
+            #
+            # VGA, not HD720: the restock policy was trained on the ZED's VGA
+            # stream (672x376, the left half of the 1344x376 side-by-side UVC
+            # frame, unrectified). HD720 is not a rescale of it — measured on
+            # the Orin cell 2026-10-07, HD720 raw has fx 769.8 at 1280 px (79.5 deg
+            # HFOV) against VGA raw fx 384.9 at 672 px (82.3 deg); the training
+            # calibration is fx 388.5 (81.7 deg). VGA also cuts the hub load further.
+            grab_resolution: 'VGA'
+        video:
+            # Advertise rgb/color/raw/*: the units' `top` binding reads the
+            # UNRECTIFIED image, because that is what the policy was trained on.
+            publish_raw: true
         depth:
             depth_mode: 'NEURAL_LIGHT'
             # Off so `pos_tracking_enabled: false` above actually holds. The SDK

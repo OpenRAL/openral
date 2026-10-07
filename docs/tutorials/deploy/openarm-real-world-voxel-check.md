@@ -211,8 +211,10 @@ standard route and works for any robot with a gripper. What OpenRAL fixes is the
 - **Where it goes.** The unit overlay, `robots/openarm/units/<unit>.yaml`, selected by
   `OPENRAL_ROBOT_UNIT` or a scene's `robot_unit`: `static_transform_xyz_rpy` under its
   `head_zed` entry, `[x, y, z, roll, pitch, yaw]` in metres and radians, fixed-axis XYZ
-  (`static_transform_publisher` convention). The Thor and Orin cells have different ZED
-  mounts, so each unit carries its own; a value measured on one is wrong on the other. The
+  (`static_transform_publisher` convention). Each unit carries its own mount; a value
+  measured on one cell's camera is wrong on another's. The exception is the same robot and
+  camera moving between hosts: on 2026-10-07 the OpenArm and its ZED moved from Thor to
+  Orin, so `orin.yaml` carries Thor's measurement (checked on Orin against a fresh capture). The
   camera is robot geometry: no scene may redefine it
   (`openral_core.check_scene_sensor_overrides`), and a unit overlay may only set the
   binding, driver topic, pose and intrinsics (`SensorOverlay`). Record how and when it was

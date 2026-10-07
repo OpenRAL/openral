@@ -664,7 +664,7 @@ def test_the_real_detector_reads_the_zed_driver_camera_info() -> None:
     assert params["sensor_id"] == "top"
     assert params["primary_camera"] == "top"
     assert params["image_topic"] == "/openral/cameras/top/image"
-    assert params["camera_infos"] == ("top=/zed/zed_node/rgb/color/rect/camera_info",)
+    assert params["camera_infos"] == ("top=/zed/zed_node/rgb/color/raw/camera_info",)
 
 
 @pytest.mark.usefixtures("calibrated_openarm")
