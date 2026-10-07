@@ -197,7 +197,7 @@
       ]
     },
     "IntrinsicsPinhole": {
-      "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+      "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
       "properties": {
         "width": {
           "title": "Width",
@@ -227,6 +227,7 @@
           "default": "plumb_bob",
           "enum": [
             "plumb_bob",
+            "rational_polynomial",
             "equidistant",
             "none"
           ],
@@ -441,7 +442,7 @@
           "type": "object"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -471,6 +472,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -1011,7 +1013,7 @@
           "type": "object"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -1041,6 +1043,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -3166,7 +3169,7 @@
           "type": "string"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -3196,6 +3199,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -13021,7 +13025,7 @@
           "type": "object"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -13051,6 +13055,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -15191,7 +15196,7 @@
           "type": "object"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -15221,6 +15226,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -17500,7 +17506,7 @@
           "type": "object"
         },
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -17530,6 +17536,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -21358,7 +21365,7 @@
     "SensorReaderConfig": {
       "$defs": {
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -21388,6 +21395,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -21550,7 +21558,7 @@
     "SensorOverlay": {
       "$defs": {
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -21580,6 +21588,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],
@@ -21727,7 +21736,7 @@
     "RobotUnit": {
       "$defs": {
         "IntrinsicsPinhole": {
-          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:\n        ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``\n        (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term\n        is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),\n        ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.\n    distortion_coeffs: Distortion coefficients, in the model's order.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
             "width": {
               "title": "Width",
@@ -21757,6 +21766,7 @@
               "default": "plumb_bob",
               "enum": [
                 "plumb_bob",
+                "rational_polynomial",
                 "equidistant",
                 "none"
               ],

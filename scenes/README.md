@@ -308,8 +308,12 @@ and since the camera renders the robot, `deploy sim` runs the robot self-filter
 in front of octomap for an `isaacsim` scene, as on real hardware.
 
 For calibrated RGB cameras, Isaac applies the complete `fx`, `fy`, `cx`, `cy`
-and Brown (`plumb_bob`) or fisheye (`equidistant`) coefficients through its native
-lens schema. An explicit mount `hfov_deg` selects an ideal pinhole instead.
+and Brown (`plumb_bob`, 5), OpenCV rational (`rational_polynomial`, 8) or fisheye
+(`equidistant`, 4) coefficients through its native lens schema. A radial model that
+folds inside the image is refused at boot: Isaac inverts the lens per output pixel, and
+past the fold it has no ray, so it would render swirls along the edges. A strong Brown fit
+can fold (the Oct-2 ZED-M fit turns over at normalised radius 0.858, its corners sit at
+0.995); extend it with `rational_polynomial` k4-k6 fitted to stay monotonic. An explicit mount `hfov_deg` selects an ideal pinhole instead.
 Depth keeps its existing pinhole/deprojection path. The camera schema is read back
 and logged at boot; Isaac versions without this API fail rather than drop calibration.
 
@@ -326,10 +330,14 @@ raw training camera alongside a rectified depth camera:
         fy: 388.527128
         cx: 336.707405
         cy: 190.106848
-        distortion_model: plumb_bob
-        distortion_coeffs: [-0.358038981, 0.187982349, -0.000311155, 0.000069646, -0.056267709]
+        # The Oct-2 Brown fit extended with monotonic rational terms (equal to it within
+        # 0.007 px inside its calibrated radius; the 5-term fit folds inside the frame).
+        distortion_model: rational_polynomial
+        distortion_coeffs: [-1.441958182, 0.728991661, -0.000311155, 0.000069646,
+                            0.195321664, -1.082444798, 0.136938664, 0.568911907]
     translucent_materials: true
     exposure_ev: 0.0
+    image_blur_sigma_px: 0.9
 ```
 
 These top-camera numbers describe the **unrectified ZED-M left lens** measured on
@@ -343,7 +351,10 @@ initialization; USD files alone do not transfer those process settings. Material
 compatibility still requires a rendered check; enabling this option alone does not
 guarantee transparent plastic. `exposure_ev` selects fixed
 manual exposure (ISO 100, 20 ms, f/5 at zero; +1 doubles exposure), preventing automatic
-exposure changes between poses. Both are opt-in; omitted values retain runtime defaults.
+exposure changes between poses. `image_blur_sigma_px` blurs every RGB frame by that
+Gaussian sigma: RTX renders are sharper than a real camera's compressed stream (the
+restock training frames match about 0.9 px). All are opt-in; omitted values retain
+runtime defaults.
 The complete resolved robot spec is hashed into the sidecar handshake, so changing
 calibration, initial state, or renderer settings cannot reuse a stale sidecar silently.
 
