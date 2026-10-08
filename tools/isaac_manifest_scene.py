@@ -226,6 +226,51 @@ class FingerFrictionResult:
     combine_max: bool
 
 
+def recolor_robot_materials(
+    stage: Any, robot_prim: str, colors: dict[str, list[float]]
+) -> dict[str, list[float]]:
+    """Set the diffuse colour of the robot's visual materials whose name matches a pattern.
+
+    Upstream meshes carry their own materials (OpenArm's `.dae` "matte_black" is diffuse
+    0.247, which renders mid-grey; the real plastic is near-black), so the colour has to be
+    set after the URDF import. Only materials bound under ``robot_prim`` are touched; each
+    ``fnmatch`` pattern is tested against the material prim's name, first match wins.
+    Handles ``UsdPreviewSurface`` (``diffuseColor``) and OmniPBR MDL
+    (``diffuse_color_constant``) shaders. Returns ``{material path: colour}``.
+    """
+    import fnmatch
+
+    from pxr import Gf, Sdf, Usd, UsdShade
+
+    root = stage.GetPrimAtPath(robot_prim)
+    materials = {}
+    for prim in Usd.PrimRange(root):
+        mat, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        if mat:
+            materials[str(mat.GetPath())] = mat
+    changed: dict[str, list[float]] = {}
+    for path, mat in materials.items():
+        name = mat.GetPrim().GetName()
+        rgb = next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
+        if rgb is None:
+            continue
+        for child in Usd.PrimRange(mat.GetPrim()):
+            shader = UsdShade.Shader(child)
+            if not shader:
+                continue
+            for input_name in ("diffuseColor", "diffuse_color_constant"):
+                inp = shader.GetInput(input_name) or (
+                    shader.CreateInput(input_name, Sdf.ValueTypeNames.Color3f)
+                    if shader.GetIdAttr().Get() == "UsdPreviewSurface"
+                    and input_name == "diffuseColor"
+                    else None
+                )
+                if inp:
+                    inp.Set(Gf.Vec3f(*rgb))
+                    changed[path] = list(rgb)
+    return changed
+
+
 def apply_finger_friction(
     stage: Any,
     robot_prim: str,
@@ -959,6 +1004,15 @@ class IsaacManifestScene(IsaacSceneBase):
             for g in self._spec.get("grippers") or []
             for name in (g["leader"], *(f["dof"] for f in g["followers"]))
         ]
+        colors = self._spec.get("robot_material_colors") or {}
+        if colors:
+            changed = recolor_robot_materials(get_current_stage(), prim_path, colors)
+            print(
+                f"[isaac_manifest_scene] robot material colours {colors}: "
+                f"{len(changed)} material(s) recoloured {sorted(changed)}"
+                + ("" if changed else " — WARNING: no robot material matched"),
+                flush=True,
+            )
         result = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
         print(
             f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} bound on "
