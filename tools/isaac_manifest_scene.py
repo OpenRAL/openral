@@ -576,7 +576,7 @@ def blur_rgb(image: NDArray[np.uint8], sigma_px: float) -> NDArray[np.uint8]:
 
     Example:
         >>> img = np.zeros((9, 9, 3), dtype=np.uint8)
-        ... img[4, 4] = 255
+        >>> img[4, 4] = 255
         >>> out = blur_rgb(img, 1.0)
         >>> int(out[4, 4, 0]) < 255 and int(out[4, 3, 0]) > 0
         True
