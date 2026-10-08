@@ -770,6 +770,31 @@ def test_robot_material_recolour_targets_only_matching_robot_materials(
     assert diffuse("/World/Looks/shelf_matte_black_material") == pytest.approx((0.5, 0.5, 0.5))
 
 
+def test_robot_material_recolour_writes_the_connected_material_input(
+    _manifest_scene_mod: object,
+) -> None:
+    """Isaac's URDF importer exposes the colour as a Material interface input that the
+    shader's diffuseColor is connected to; the recolour must write that source."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    mat = UsdShade.Material.Define(stage, "/World/robot/Materials/palette_01_matte_black")
+    iface = mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    iface.Set(Gf.Vec3f(0.05, 0.05, 0.05))
+    sh = UsdShade.Shader.Define(stage, "/World/robot/Materials/palette_01_matte_black/S")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    mesh = UsdGeom.Mesh.Define(stage, "/World/robot/link1/visual").GetPrim()
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+
+    _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.01, 0.01, 0.01]}
+    )
+    assert tuple(iface.Get()) == pytest.approx((0.01, 0.01, 0.01))
+
+
 def test_robot_material_colours_are_validated() -> None:
     from openral_sim.backends.isaac_sim import IsaacSimOptions
     from pydantic import ValidationError
