@@ -803,3 +803,34 @@ def test_robot_material_colours_are_validated() -> None:
     assert opts.robot_material_colors["*matte_black*"] == (0.03, 0.03, 0.03)
     with pytest.raises(ValidationError, match="RGB in"):
         IsaacSimOptions(robot_material_colors={"*": (1.2, 0.0, 0.0)})
+
+
+def test_robot_material_recolour_reaches_instanced_visuals(_manifest_scene_mod: object) -> None:
+    """Isaac's URDF importer instances the visuals, so their materials are read-only
+    instance proxies: the recolour de-instances only the instances holding a match."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    proto = "/Prototypes/link_visual"
+    mesh = UsdGeom.Mesh.Define(stage, f"{proto}/mesh").GetPrim()
+    mat = UsdShade.Material.Define(stage, f"{proto}/Looks/palette_01_matte_black")
+    mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.05, 0.05, 0.05))
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+    collider = stage.DefinePrim("/World/robot/link1/collisions")
+    collider.GetReferences().AddInternalReference(proto)
+    collider.SetInstanceable(True)
+    visual = stage.DefinePrim("/World/robot/link1/visuals")
+    visual.GetReferences().AddInternalReference(proto)
+    visual.SetInstanceable(True)
+    stage.GetPrimAtPath("/Prototypes").SetActive(False)
+    assert stage.GetPrimAtPath("/World/robot/link1/visuals/mesh").IsInstanceProxy()
+
+    changed = _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.01, 0.01, 0.01]}
+    )
+    assert changed
+    for root in ("visuals", "collisions"):
+        prim = stage.GetPrimAtPath(f"/World/robot/link1/{root}/mesh")
+        bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        assert tuple(bound.GetInput("diffuseColor").Get()) == pytest.approx((0.01, 0.01, 0.01))

@@ -242,18 +242,39 @@ def recolor_robot_materials(
 
     from pxr import Gf, Sdf, Usd, UsdShade
 
+    def match(name: str) -> list[float] | None:
+        return next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
+
     root = stage.GetPrimAtPath(robot_prim)
-    materials = {}
-    for prim in Usd.PrimRange(root):
+    # The importer instances the visuals, so the bound materials are instance proxies,
+    # which cannot be edited: walk the proxies, then de-instance only the instances that
+    # hold a matching material; the rest (e.g. the collision geometry the finger pad binds)
+    # stay instanced.
+    paths = set()
+    for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies()):
         mat, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
-        if mat:
-            materials[str(mat.GetPath())] = mat
+        if mat and match(mat.GetPrim().GetName()) is not None:
+            paths.add(mat.GetPath())
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        while prim.IsInstanceProxy():
+            anc = prim.GetParent()
+            while not anc.IsInstance():
+                anc = anc.GetParent()
+            anc.SetInstanceable(False)
+            prim = stage.GetPrimAtPath(path)
     changed: dict[str, list[float]] = {}
-    for path, mat in materials.items():
-        name = mat.GetPrim().GetName()
-        rgb = next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
+    for path in sorted(paths, key=str):
+        mat = UsdShade.Material(stage.GetPrimAtPath(path))
+        rgb = match(mat.GetPrim().GetName())
         if rgb is None:
             continue
+        # The importer's materials expose the colour as a Material interface input that
+        # their UsdPreviewSurface reads; set it there when present.
+        iface = mat.GetInput("diffuseColor")
+        if iface:
+            iface.Set(Gf.Vec3f(*rgb))
+            changed[str(path)] = list(rgb)
         for child in Usd.PrimRange(mat.GetPrim()):
             shader = UsdShade.Shader(child)
             if not shader:
@@ -276,7 +297,7 @@ def recolor_robot_materials(
                     ).Set(Gf.Vec3f(*rgb))
                 if not inp.HasConnectedSource():
                     inp.Set(Gf.Vec3f(*rgb))
-                changed[path] = list(rgb)
+                changed[str(path)] = list(rgb)
     return changed
 
 
