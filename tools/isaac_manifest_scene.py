@@ -167,6 +167,146 @@ def _rpy_quat(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
     )
 
 
+def _quat_mul(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Hamilton product ``a ⊗ b`` of ``(w, x, y, z)`` quaternions.
+
+    Example:
+        >>> import numpy as np
+        >>> np.allclose(_quat_mul(_yaw_quat(0.2), _yaw_quat(0.3)), _yaw_quat(0.5))
+        True
+    """
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ]
+    )
+
+
+def _footprint(prim: Any, obj: dict[str, Any]) -> tuple[float, float, float, float]:
+    """``(cx, cy, hx, hy)`` of a scene object's USD bounds after its roll/pitch, in its yawed frame."""
+    from pxr import Usd, UsdGeom
+
+    box = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+    rng_ = box.ComputeUntransformedBound(prim).ComputeAlignedRange()
+    lo, hi = np.array(rng_.GetMin()), np.array(rng_.GetMax())
+    corners = np.array(
+        [
+            [(lo, hi)[i][0], (lo, hi)[j][1], (lo, hi)[k][2]]
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ]
+    )
+    cr, sr = np.cos(float(obj.get("roll", 0.0))), np.sin(float(obj.get("roll", 0.0)))
+    cp, sp = np.cos(float(obj.get("pitch", 0.0))), np.sin(float(obj.get("pitch", 0.0)))
+    rot = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]) @ np.array(
+        [[1, 0, 0], [0, cr, -sr], [0, sr, cr]]
+    )
+    xy = (corners @ rot.T)[:, :2]
+    (x0, y0), (x1, y1) = xy.min(0), xy.max(0)
+    return float((x0 + x1) / 2), float((y0 + y1) / 2), float((x1 - x0) / 2), float((y1 - y0) / 2)
+
+
+def _rect_corners(
+    x: float, y: float, yaw: float, rect: tuple[float, float, float, float]
+) -> NDArray[np.float64]:
+    """World ``(4, 2)`` corners of a footprint ``(cx, cy, hx, hy)`` (object frame) at ``x, y, yaw``."""
+    cx, cy, hx, hy = rect
+    local = np.array(
+        [[cx + sx * hx, cy + sy * hy] for sx, sy in ((1, 1), (-1, 1), (-1, -1), (1, -1))]
+    )
+    c, s = np.cos(yaw), np.sin(yaw)
+    return local @ np.array([[c, s], [-s, c]]) + (x, y)
+
+
+def _rects_overlap(a: NDArray[np.float64], b: NDArray[np.float64], margin: float) -> bool:
+    """Separating-axis test of two convex quads ``(4, 2)``; ``margin`` (m) counts as contact."""
+    for quad in (a, b):
+        for i in range(4):
+            edge = quad[(i + 1) % 4] - quad[i]
+            axis = np.array([-edge[1], edge[0]]) / np.hypot(*edge)
+            pa, pb = a @ axis, b @ axis
+            if pa.max() + margin <= pb.min() or pb.max() + margin <= pa.min():
+                return False
+    return True
+
+
+def sample_object_poses(
+    objects: list[dict[str, Any]],
+    footprints: list[tuple[float, float, float, float]],
+    rng: np.random.Generator,
+    *,
+    margin_m: float = 0.002,
+) -> list[tuple[float, float, float, str]]:
+    """Per-reset ``(x, y, yaw, status)`` of each scene object, in order.
+
+    ``objects`` are the sidecar's object dicts; one with a ``pose_noise`` block
+    (``IsaacObjectPoseNoise``) draws truncated-normal offsets around its declared
+    ``xyz``/``yaw`` until its ``footprints`` rectangle (object frame, ``(cx, cy,
+    hx, hy)``) clears every object placed before it and stays inside
+    ``keep_inside_xy`` by ``margin_m``. ``status``: ``"declared"`` (no noise),
+    ``"sampled"``, or ``"declared_fallback"`` (``max_tries`` draws all rejected).
+    Deterministic for a given ``rng`` state.
+
+    Example:
+        >>> import numpy as np
+        >>> objs = [
+        ...     {
+        ...         "xyz": [0, 0, 0],
+        ...         "yaw": 0.0,
+        ...         "pose_noise": {
+        ...             "xy_sigma_m": [0.01, 0.01],
+        ...             "yaw_sigma_deg": 5.0,
+        ...             "clip_sigma": 2.0,
+        ...             "keep_inside_xy": None,
+        ...             "max_tries": 10,
+        ...         },
+        ...     }
+        ... ]
+        >>> x, y, yaw, status = sample_object_poses(
+        ...     objs, [(0, 0, 0.02, 0.02)], np.random.default_rng(0)
+        ... )[0]
+        >>> status, bool(abs(x) <= 0.02 and abs(y) <= 0.02 and abs(yaw) <= np.radians(10))
+        ('sampled', True)
+    """
+    placed: list[NDArray[np.float64]] = []
+    out: list[tuple[float, float, float, str]] = []
+    for obj, rect in zip(objects, footprints, strict=True):
+        x0, y0, yaw0 = float(obj["xyz"][0]), float(obj["xyz"][1]), float(obj.get("yaw", 0.0))
+        noise = obj.get("pose_noise")
+        pose = (x0, y0, yaw0, "declared")
+        if noise:
+            sigma = np.array(
+                [*noise["xy_sigma_m"], np.radians(noise["yaw_sigma_deg"])], dtype=np.float64
+            )
+            clip, box = float(noise["clip_sigma"]), noise.get("keep_inside_xy")
+            pose = (x0, y0, yaw0, "declared_fallback")
+            for _ in range(int(noise["max_tries"])):
+                z = rng.standard_normal(3)
+                while np.any(np.abs(z) > clip):  # truncate by redrawing, never by clamping
+                    bad = np.abs(z) > clip
+                    z[bad] = rng.standard_normal(int(bad.sum()))
+                x, y, yaw = np.array([x0, y0, yaw0]) + z * sigma
+                quad = _rect_corners(x, y, yaw, rect)
+                if box is not None and (
+                    np.any(quad < np.add(box[0], margin_m))
+                    or np.any(quad > np.subtract(box[1], margin_m))
+                ):
+                    continue
+                if any(_rects_overlap(quad, q, margin_m) for q in placed):
+                    continue
+                pose = (float(x), float(y), float(yaw), "sampled")
+                break
+        placed.append(_rect_corners(pose[0], pose[1], pose[2], rect))
+        out.append(pose)
+    return out
+
+
 def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     """4x4 rigid transform from a position and a ``(w, x, y, z)`` quaternion (normalised).
 
@@ -914,6 +1054,10 @@ class IsaacManifestScene(IsaacSceneBase):
             dtype=np.float32,
         )
         self._objects: list[dict[str, Any]] = list(objects or [])
+        # Per object: footprint (cx, cy, hx, hy) in its yawed frame, and the default
+        # (position, wxyz) its prim was registered with -- the pose_noise anchor.
+        self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
+        self._object_nominal: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
         self._object_prims: dict[str, Any] = {}
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
@@ -1307,6 +1451,7 @@ class IsaacManifestScene(IsaacSceneBase):
                         prim_path=path, name=name, position=pos, orientation=quat
                     )
             self._object_prims[name] = self._world.scene.add(prim)
+            self._object_footprints[name] = _footprint(stage.GetPrimAtPath(path), obj)
             print(f"[isaac_manifest_scene] object {obj['name']} at {pos.tolist()}", flush=True)
 
     def _add_obstacles(self) -> None:
@@ -1672,6 +1817,40 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
+        self._jitter_objects(rng)
+
+    def _jitter_objects(self, rng: np.random.Generator) -> None:
+        """Redraw every ``pose_noise`` object's default pose; ``world.reset()`` then applies it."""
+        if not any(o.get("pose_noise") for o in self._objects):
+            return
+        foot = [self._object_footprints[str(o["name"])] for o in self._objects]
+        for obj, (x, y, yaw, status) in zip(
+            self._objects, sample_object_poses(self._objects, foot, rng), strict=True
+        ):
+            if not obj.get("pose_noise"):
+                continue
+            name = str(obj["name"])
+            prim = self._object_prims[name]
+            if name not in self._object_nominal:
+                st = prim.get_default_state()
+                self._object_nominal[name] = (
+                    np.asarray(st.position, dtype=np.float64),
+                    np.asarray(st.orientation, dtype=np.float64),
+                )
+            p0, q0 = self._object_nominal[name]
+            # Planar move of the declared root pose, applied to the registered prim
+            # (the root, or a rigid child that rides it).
+            x0, y0, yaw0 = float(obj["xyz"][0]), float(obj["xyz"][1]), float(obj.get("yaw", 0.0))
+            d = yaw - yaw0
+            c, s_ = np.cos(d), np.sin(d)
+            rx, ry = p0[0] - x0, p0[1] - y0
+            pos = np.array([x + c * rx - s_ * ry, y + s_ * rx + c * ry, p0[2]])
+            prim.set_default_state(position=pos, orientation=_quat_mul(_yaw_quat(d), q0))
+            print(
+                f"[isaac_manifest_scene] object {name} {status}: x={x:.4f} y={y:.4f} "
+                f"yaw={np.degrees(yaw):.1f}deg (declared {x0:.4f} {y0:.4f} {np.degrees(yaw0):.1f}deg)",
+                flush=True,
+            )
 
     def _after_world_reset(self) -> None:
         # world.reset() puts the pinned root back at its import pose (the
@@ -1841,7 +2020,8 @@ class IsaacManifestScene(IsaacSceneBase):
         ``robot_position``: the articulation root's world ``[x, y, z]`` as PhysX
         holds it (where the robot physically is, vs. the integrated odometry);
         ``object_positions``: ``{name: [x, y, z]}`` per scene object, for
-        checking a grasp or a placement.
+        checking a grasp or a placement; ``object_orientations_wxyz``: their
+        orientations (``pose_noise`` draws a new yaw each reset).
         """
         info: dict[str, Any] = {
             "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
@@ -1849,6 +2029,10 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._object_prims:
             info["object_positions"] = {
                 name: [float(v) for v in prim.get_world_pose()[0]]
+                for name, prim in self._object_prims.items()
+            }
+            info["object_orientations_wxyz"] = {
+                name: [float(v) for v in prim.get_world_pose()[1]]
                 for name, prim in self._object_prims.items()
             }
         return info

@@ -655,6 +655,43 @@ def _locate_sidecar_script() -> Path:
 # ── backend options ──
 
 
+class IsaacObjectPoseNoise(BaseModel):
+    """Per-reset planar jitter of a scene object around its declared pose.
+
+    Each reset draws ``x``/``y``/``yaw`` offsets from zero-mean normals truncated at
+    ``clip_sigma`` (redrawn, not clamped), from the episode seed: a seed reproduces
+    its layout, a new seed gives a new one. ``z``, ``roll`` and ``pitch`` stay as
+    declared, so an object resting on a support keeps resting on it. A draw is
+    rejected while the object's footprint (its USD bounds) overlaps an object
+    already placed, or leaves ``keep_inside_xy`` (world ``[[x_min, y_min], [x_max,
+    y_max]]``, e.g. a tote's floor); after ``max_tries`` rejections the object keeps
+    its declared pose and the sidecar logs it.
+
+    Example:
+        >>> IsaacObjectPoseNoise(xy_sigma_m=(0.01, 0.008), yaw_sigma_deg=5.0).clip_sigma
+        2.0
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    xy_sigma_m: tuple[float, float] = (0.0, 0.0)
+    yaw_sigma_deg: float = Field(default=0.0, ge=0.0, le=180.0)
+    clip_sigma: float = Field(default=2.0, gt=0.0, le=5.0)
+    keep_inside_xy: tuple[tuple[float, float], tuple[float, float]] | None = None
+    max_tries: int = Field(default=100, ge=1, le=10000)
+
+    @model_validator(mode="after")
+    def _valid(self) -> IsaacObjectPoseNoise:
+        if min(self.xy_sigma_m) < 0.0:
+            raise ValueError(f"pose_noise.xy_sigma_m must be >= 0, got {self.xy_sigma_m}")
+        box = self.keep_inside_xy
+        if box is not None and not (box[0][0] < box[1][0] and box[0][1] < box[1][1]):
+            raise ValueError(
+                f"pose_noise.keep_inside_xy must be [[x_min, y_min], [x_max, y_max]]: {box}"
+            )
+        return self
+
+
 class IsaacSceneObject(BaseModel):
     """One extra USD object placed in the ``isaac_sim`` manifest scene.
 
@@ -663,7 +700,9 @@ class IsaacSceneObject(BaseModel):
     body + convex-hull colliders are added when the asset has none); static ones
     are fixed props. ``roll``/``pitch``/``yaw`` are radians about world x/y/z in the
     URDF ``rpy`` order (``Rz·Ry·Rx``): an asset authored lying down stands upright
-    with a quarter-turn roll or pitch.
+    with a quarter-turn roll or pitch. ``pose_noise`` (``IsaacObjectPoseNoise``)
+    jitters the planar pose at every reset; without it the pose is the same every
+    episode.
 
     Example:
         >>> IsaacSceneObject(
@@ -683,6 +722,7 @@ class IsaacSceneObject(BaseModel):
     pitch: float = 0.0
     yaw: float = 0.0
     dynamic: bool = True
+    pose_noise: IsaacObjectPoseNoise | None = None
 
 
 class IsaacCameraMount(BaseModel):
