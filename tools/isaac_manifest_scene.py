@@ -265,9 +265,18 @@ def recolor_robot_materials(
                     and input_name == "diffuseColor"
                     else None
                 )
-                if inp:
+                if not inp:
+                    continue
+                # A connected input reads its source (Isaac's URDF importer exposes the
+                # colour as a Material interface input): setting the shader's own value
+                # would be silently ignored, so write the source instead.
+                for source in inp.GetConnectedSources()[0] if inp.HasConnectedSource() else []:
+                    UsdShade.ConnectableAPI(source.source.GetPrim()).GetInput(
+                        source.sourceName
+                    ).Set(Gf.Vec3f(*rgb))
+                if not inp.HasConnectedSource():
                     inp.Set(Gf.Vec3f(*rgb))
-                    changed[path] = list(rgb)
+                changed[path] = list(rgb)
     return changed
 
 
