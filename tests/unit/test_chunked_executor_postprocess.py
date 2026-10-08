@@ -71,11 +71,16 @@ def test_every_action_of_a_chunk_uses_its_own_inference_state() -> None:
 
     popped = [ex.select_action(batch) for _ in range(2 * CHUNK)]
     ex.stop()
-    assert len(states) >= 2
+    assert len(states) >= 3
     # Chunk 0 was inferred at state 1.0: holding position means every action is 1.0,
     # including the 3 popped after the prefetch launch re-ran the preprocessor at 2.0.
     assert all(torch.equal(a, states[0]) for a in popped[:CHUNK])
-    assert all(torch.equal(a, states[1]) for a in popped[CHUNK:])
+    # Chunk 1 read step 3's observation (state 2.0); steps 3-6 were served from chunk 0's
+    # tail, so only its last 2 actions are current — each still carrying ITS OWN state
+    # 2.0, not the 3.0 the next prefetch cached meanwhile. Chunk 2 (state 3.0, read at
+    # step 7, 2 stale) then serves the rest.
+    assert all(torch.equal(a, states[1]) for a in popped[CHUNK : CHUNK + 2])
+    assert all(torch.equal(a, states[2]) for a in popped[CHUNK + 2 :])
 
 
 def test_prefetched_chunk_is_postprocessed_off_the_control_thread() -> None:

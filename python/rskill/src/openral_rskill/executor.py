@@ -44,9 +44,13 @@ The executor owns its action deque, calling lerobot's
 ``predict_action_chunk`` directly; it never resets or consumes the
 policy's internal ``select_action`` queue from two threads.
 
-With an enabled lerobot ``RTCConfig`` the deque becomes a Real-Time-Chunking
-``ActionQueue``: a pre-fetched chunk replaces the queue tail as soon as it
-lands instead of being appended behind it.
+Without RTC a pre-fetched chunk is appended behind the queue tail minus its
+leading actions that are already in the past (``_merge_prefetched``): it was
+planned from the observation of the step that launched it, and the tail served
+those steps meanwhile. Appending it whole replayed ``prefetch_at`` stale steps at
+every boundary — the arm visibly snapped back each chunk. With an enabled lerobot
+``RTCConfig`` the deque becomes a Real-Time-Chunking ``ActionQueue``: a pre-fetched
+chunk replaces the queue tail as soon as it lands instead of being appended.
 
 ``postprocess_action`` runs on every action of a chunk in the thread that
 produced it, right after inference, and the chunk is moved to host memory
@@ -211,6 +215,11 @@ class ChunkedExecutor:
         self._bg_error: Exception | None = None
 
         self._chunk_index: int = 0
+        # Actions served so far, and the count before the step whose observation the
+        # pending pre-fetch read: their difference is how many of the pre-fetched chunk's
+        # leading actions are already in the past when it is merged (`_merge_prefetched`).
+        self._popped: int = 0
+        self._popped_at_launch: int = 0
 
         self._running = False
 
@@ -235,6 +244,8 @@ class ChunkedExecutor:
         self._bg_error = None
         self._buffer.clear()
         self._chunk_index = 0
+        self._popped = 0
+        self._popped_at_launch = 0
         if self._rtc_queue is not None:
             self._rtc_queue.clear()
         self._rtc_last_delay = 0
@@ -282,8 +293,12 @@ class ChunkedExecutor:
             self._bg_event.clear()
             if result is None:
                 raise ROSRuntimeError("ChunkedExecutor stopped while waiting on pre-fetch")
-            self._buffer.extend(result)
-            return self._pop_and_maybe_prefetch(batch)
+            fresh = self._merge_prefetched(result)
+            if fresh:
+                self._buffer.extend(fresh)
+                return self._pop_and_maybe_prefetch(batch)
+            # Every pre-fetched action is already in the past (the pre-fetch read an
+            # observation a whole chunk ago): replan from this step's observation below.
 
         # Cold start (first call after reset) — synchronous foreground chunk.
         self._chunk_index += 1
@@ -299,10 +314,33 @@ class ChunkedExecutor:
         Every pop routes through this method so all branches share one trigger.
         """
         action = self._buffer.popleft()
+        self._popped += 1
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= len(self._buffer) and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
         return action
+
+    def _merge_prefetched(self, actions: list[Any]) -> list[Any]:
+        """Drop the pre-fetched chunk's actions that are already in the past.
+
+        A pre-fetch reads the observation of step *k* (the step whose pop launched it);
+        action *i* of that chunk targets step *k + i*, exactly as a synchronous chunk's
+        first action is served at its own observation step. Steps *k* … *k + elapsed - 1*
+        were already served from the previous chunk's tail, so its first ``elapsed``
+        actions are in the past.
+        Serving them would replay that stretch — the arm snaps back by ``prefetch_at``
+        steps at every boundary (measured on the OpenArm restock π0.5: the chunk-2 head
+        landed 0.46 rad from the live state). Returns ``[]`` when the whole chunk is
+        stale; the caller then replans synchronously from the current observation.
+        """
+        elapsed = max(self._popped - self._popped_at_launch, 0)
+        if elapsed:
+            log.debug(
+                "chunked_executor.prefetch_stale_dropped",
+                dropped=min(elapsed, len(actions)),
+                elapsed=elapsed,
+            )
+        return actions[elapsed:]
 
     # ── RTC mode ─────────────────────────────────────────────────────────────
 
@@ -467,6 +505,8 @@ class ChunkedExecutor:
 
         self._chunk_index += 1
         prefetch_index = self._chunk_index
+        # Launched from the pop that served step k: count from before that pop.
+        self._popped_at_launch = self._popped - 1
 
         rtc_kwargs: dict[str, Any] | None = None
         idx_before = 0

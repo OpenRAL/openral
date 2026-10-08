@@ -155,11 +155,16 @@ class TestChunkedExecutor:
         assert first_chunk == list(range(100, 100 + chunk_size))
 
         # Crossing into chunk 2 consumes the pre-fetched result: total
-        # inferences == 2 (one per chunk), and the policy was never reset.
-        assert int(ex.select_action(batch)[0, 0].item()) == 200
-        assert p._inference_count == 2
+        # inferences == 2 (one per chunk), and the policy was never reset. The
+        # boundary serves the chunk-2 action for the current step (chunk 2 read
+        # step 4's observation; steps 4-6 are past), not its head.
+        assert int(ex.select_action(batch)[0, 0].item()) == 203
+        ex.stop()  # join the background thread before reading its counters
+        # 3, not 2: after dropping the past steps chunk 2 holds 2 actions <= prefetch_at,
+        # so the boundary pop already launched the NEXT pre-fetch (background, never a
+        # foreground re-inference — that one would also show up as a reset).
+        assert p._inference_count == 3
         assert p._reset_count == 0
-        ex.stop()
 
     def test_reset_clears_state(self) -> None:
         """reset() clears the owned buffer and resets the policy once."""
@@ -254,8 +259,10 @@ class TestChunkedExecutor:
         The companion to ``test_prefetch_triggers_background_thread``: that one
         proves the thread launches, this one proves what it hands back is still
         the right sequence. With prefetch ACTIVE, the whole of chunk 1 must be
-        served in order and the boundary must hand over chunk 2's first action —
-        not a duplicate, not a reordered pop, not a re-inference.
+        served in order and the boundary must hand over the chunk-2 action for the
+        CURRENT step — not a duplicate, not a reordered pop, not a re-inference, and
+        not chunk 2's head: chunk 2 was planned from step 4's observation (the pop that
+        left 2 buffered), so steps 4-6 are past and step 7 gets 200 + 3.
         """
         chunk_size = 6
         p = _NullPolicy(chunk_size=chunk_size)
@@ -264,11 +271,11 @@ class TestChunkedExecutor:
         batch: dict[str, Any] = {}
 
         got = [int(ex.select_action(batch)[0, 0].item()) for _ in range(chunk_size + 1)]
-        assert got == [100, 101, 102, 103, 104, 105, 200]
-        assert p._inference_count == 2
+        assert got == [100, 101, 102, 103, 104, 105, 203]
+        ex.stop()  # join the background thread before reading its counters
+        assert p._inference_count == 3  # the third is the next pre-fetch (see above)
         assert p._reset_count == 0
         assert p._select_action_calls == 0
-        ex.stop()
 
 
 class TestChunkedExecutorChunkFn:
@@ -375,3 +382,29 @@ class TestBuildChunkExecutor:
                 chunk_size=4,
                 adapter_name="test",
             )
+
+
+class TestPrefetchTimeAlignment:
+    """A pre-fetched chunk resumes at the action for the current step, not at its head."""
+
+    @pytest.mark.parametrize(("chunk_size", "prefetch_at"), [(52, 30), (10, 3), (6, 1), (8, 7)])
+    def test_served_actions_follow_the_step_clock_across_boundaries(
+        self, chunk_size: int, prefetch_at: int
+    ) -> None:
+        """Each chunk is planned so action i targets observation step k + i (the
+        lerobot/openpi convention a synchronous chunk is served with). A correctly
+        aligned executor therefore serves exactly the step number on every tick: a
+        boundary that replays the chunk head shows up as a repeat (the OpenArm restock
+        snap-back), a skipped action as a gap."""
+
+        def chunk_fn(payload: dict[str, int]) -> list[torch.Tensor]:
+            return [torch.full((1, 1), float(payload["step"] + i)) for i in range(chunk_size)]
+
+        ex = ChunkedExecutor(chunk_fn=chunk_fn, chunk_size=chunk_size, prefetch_at=prefetch_at)
+        ex.start()
+        served = []
+        for step in range(4 * chunk_size):
+            # The payload factory captures the step whose observation it would read.
+            served.append(int(ex.select_action(lambda s=step: {"step": s})[0, 0].item()))
+        ex.stop()
+        assert served == list(range(4 * chunk_size))
