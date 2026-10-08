@@ -601,6 +601,71 @@ def blur_rgb(image: NDArray[np.uint8], sigma_px: float) -> NDArray[np.uint8]:
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
+# RTX tonemap op 6 (what exposure_ev selects) is the Narkowicz ACES fit followed by the
+# sRGB encode: re-exposing a frame through its inverse matches a re-render at another
+# exposure_ev to ~1 DN, where a display-space gain misses by ~11 DN.
+_ACES_GRID: NDArray[np.float64] = np.linspace(0.0, 20.0, 200001, dtype=np.float64)
+
+
+def _aces(x: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.clip(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0)
+
+
+def _srgb_decode(v: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
+
+
+def _srgb_encode(v: NDArray[np.float64]) -> NDArray[np.float64]:
+    v = np.clip(v, 0.0, 1.0)
+    return np.where(v <= 0.0031308, v * 12.92, 1.055 * v ** (1 / 2.4) - 0.055)
+
+
+_ACES_Y = _aces(_ACES_GRID)
+# uint8 display value -> scene-linear radiance under the op-6 tonemap.
+_SCENE_FROM_DN = np.interp(
+    np.clip(_srgb_decode(np.arange(256) / 255.0), 0.0, _ACES_Y[-1]), _ACES_Y, _ACES_GRID
+)
+
+
+def relight_rgb(
+    image: NDArray[np.uint8], gain_rgb: tuple[float, float, float]
+) -> NDArray[np.uint8]:
+    """Re-expose an op-6-tonemapped RGB frame by scene-linear per-channel gains. Pure.
+
+    Example:
+        >>> img = np.full((2, 2, 3), 100, dtype=np.uint8)
+        >>> int(relight_rgb(img, (2.0, 2.0, 2.0))[0, 0, 0]) > 100
+        True
+        >>> bool((relight_rgb(img, (1.0, 1.0, 1.0)) == img).all())
+        True
+    """
+    scene = _SCENE_FROM_DN[image] * np.asarray(gain_rgb, dtype=np.float64)
+    return np.clip(np.rint(_srgb_encode(_aces(scene)) * 255.0), 0, 255).astype(np.uint8)
+
+
+def auto_exposure_gain(
+    image: NDArray[np.uint8], target: float, wb_rgb: tuple[float, float, float]
+) -> float:
+    """Scene-linear gain putting the frame's mean BT.601 luma at ``target`` (metered 1:8). Pure.
+
+    Example:
+        >>> img = np.full((16, 16, 3), 60, dtype=np.uint8)
+        >>> g = auto_exposure_gain(img, 120.0, (1.0, 1.0, 1.0))
+        >>> abs(float(relight_rgb(img, (g, g, g)).mean()) - 120.0) < 1.5
+        True
+    """
+    small = image[::8, ::8]
+    lo, hi = 1 / 16, 16.0
+    for _ in range(24):
+        g = (lo * hi) ** 0.5
+        y = relight_rgb(small, (g * wb_rgb[0], g * wb_rgb[1], g * wb_rgb[2])).astype(np.float64)
+        if float((y @ np.array([0.299, 0.587, 0.114])).mean()) < target:
+            lo = g
+        else:
+            hi = g
+    return (lo * hi) ** 0.5
+
+
 def _configure_rgb_projection(cam: Any, meta: dict[str, Any]) -> None:
     """Apply calibrated RGB K/D through Isaac's native OmniLensDistortion schema.
 
@@ -808,6 +873,8 @@ class IsaacManifestScene(IsaacSceneBase):
     ) -> None:
         super().__init__(**kwargs)
         self._spec = robot_spec
+        # Auto-exposure state per camera: (scene-linear gain, sim time ns of that frame).
+        self._ae_state: dict[str, tuple[float, int | None]] = {}
         self._environment_usd = environment_usd
         self._spawn = spawn_pose  # world x, y, z, yaw
         # Actuated manifest joints (the planar base is handled separately in M3;
@@ -1641,12 +1708,32 @@ class IsaacManifestScene(IsaacSceneBase):
 
     def _images(self) -> dict[str, NDArray[np.uint8]]:
         out: dict[str, NDArray[np.uint8]] = {}
+        posts = self._spec.get("camera_image_post") or {}
+        now = self.sim_time_ns()
         for meta in self._cam_meta:
-            if meta["modality"] == "rgb":
-                frame = self._grab(self._cameras[meta["name"]])
-                out[meta["key"]] = blur_rgb(
-                    frame, float(self._spec.get("image_blur_sigma_px") or 0)
-                )
+            if meta["modality"] != "rgb":
+                continue
+            post = posts.get(meta["name"], {})
+            sigma = post.get("blur_sigma_px")
+            if sigma is None:
+                sigma = self._spec.get("image_blur_sigma_px") or 0
+            frame = blur_rgb(self._grab(self._cameras[meta["name"]]), float(sigma))
+            wb = tuple(post.get("white_balance_rgb") or (1.0, 1.0, 1.0))
+            target = post.get("auto_exposure_target")
+            gain = 1.0
+            if target is not None:
+                want = auto_exposure_gain(frame, float(target), wb)
+                prev = self._ae_state.get(meta["name"])
+                if prev is None or now is None or now <= prev[1]:  # first frame / reset
+                    gain = want
+                else:
+                    dt_s = (now - prev[1]) * 1e-9
+                    alpha = 1.0 - float(np.exp(-dt_s / post["auto_exposure_tau_s"]))
+                    gain = prev[0] * (want / prev[0]) ** alpha  # first-order, in log exposure
+                self._ae_state[meta["name"]] = (gain, now)
+            if gain != 1.0 or wb != (1.0, 1.0, 1.0):
+                frame = relight_rgb(frame, (gain * wb[0], gain * wb[1], gain * wb[2]))
+            out[meta["key"]] = frame
         return out
 
     def _world_from_base(self) -> NDArray[np.float64]:

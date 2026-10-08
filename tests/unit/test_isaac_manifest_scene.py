@@ -724,6 +724,38 @@ def test_image_blur_option_is_bounded() -> None:
         IsaacSimOptions(image_blur_sigma_px=6.0)
 
 
+def test_relight_matches_exposure_and_auto_exposure_hits_target(
+    _manifest_scene_mod: object,
+) -> None:
+    """One stop of scene-linear gain through the inverse op-6 tonemap is monotone, keeps
+    black at black, and the AE gain brings a dark frame's mean luma to the target."""
+    relight = _manifest_scene_mod.relight_rgb  # type: ignore[attr-defined]
+    ae_gain = _manifest_scene_mod.auto_exposure_gain  # type: ignore[attr-defined]
+    ramp = np.repeat(np.arange(256, dtype=np.uint8)[None, :, None], 3, axis=2)
+    up = relight(ramp, (2.0, 2.0, 2.0)).astype(int)
+    assert up[0, 0, 0] == 0 and (np.diff(up[0, :, 0]) >= 0).all() and (up >= ramp).all()
+    assert (relight(ramp, (1.0, 1.0, 1.0)) == ramp).all()
+    rng = np.random.default_rng(0)
+    dark = rng.integers(10, 90, size=(64, 96, 3), dtype=np.uint8)
+    g = ae_gain(dark, 107.0, (1.0, 1.0, 1.2))
+    lit = relight(dark, (g, g, 1.2 * g)).astype(float) @ np.array([0.299, 0.587, 0.114])
+    assert g > 1.0 and abs(float(lit.mean()) - 107.0) < 3.0
+
+
+def test_camera_image_post_needs_exposure_ev() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    post = {"wrist_left": {"blur_sigma_px": 1.5, "auto_exposure_target": 107}}
+    opts = IsaacSimOptions(exposure_ev=-1.0, image_blur_sigma_px=0.9, camera_image_post=post)
+    assert opts.camera_image_post["wrist_left"].blur_sigma_px == 1.5
+    IsaacSimOptions(camera_image_post={"wrist_left": {"blur_sigma_px": 1.5}})  # blur alone: fine
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(camera_image_post=post)
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(exposure_ev=-1.0, camera_image_post={"w": {"white_balance_rgb": (0, 1, 1)}})
+
+
 def test_robot_material_recolour_targets_only_matching_robot_materials(
     _manifest_scene_mod: object,
 ) -> None:
