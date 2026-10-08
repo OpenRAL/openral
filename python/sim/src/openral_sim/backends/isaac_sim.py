@@ -722,6 +722,43 @@ class IsaacCameraMount(BaseModel):
         return self
 
 
+_WB_GAIN_MIN, _WB_GAIN_MAX = 0.25, 4.0
+
+
+class IsaacCameraImagePost(BaseModel):
+    """Per-camera RGB post-process in the ``isaac_sim`` scene (``camera_image_post``).
+
+    ``blur_sigma_px`` overrides the scene-wide ``image_blur_sigma_px`` for this camera.
+    ``auto_exposure_target`` (mean BT.601 luma, 0-255) emulates a camera's auto exposure:
+    the frame is re-exposed in scene-linear light (inverse of the RTX ACES tonemap that
+    ``exposure_ev`` selects) toward the target, settling with ``auto_exposure_tau_s`` of
+    sim time and converged at each reset. ``white_balance_rgb`` are scene-linear channel
+    gains. Both need ``exposure_ev`` set (the only tonemap whose inverse is known).
+
+    Example:
+        >>> IsaacCameraImagePost(blur_sigma_px=1.5, auto_exposure_target=107).auto_exposure_tau_s
+        0.3
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    blur_sigma_px: float | None = Field(default=None, ge=0.0, le=5.0)
+    auto_exposure_target: float | None = Field(default=None, gt=0.0, lt=255.0)
+    auto_exposure_tau_s: float = Field(default=0.3, gt=0.0)
+    white_balance_rgb: tuple[float, float, float] = Field(default=(1.0, 1.0, 1.0))
+
+    @model_validator(mode="after")
+    def _gains_positive(self) -> IsaacCameraImagePost:
+        if not all(_WB_GAIN_MIN <= g <= _WB_GAIN_MAX for g in self.white_balance_rgb):
+            raise ValueError("camera_image_post: white_balance_rgb gains must be in [0.25, 4]")
+        return self
+
+    @property
+    def relights(self) -> bool:
+        """Whether this camera is re-exposed (auto exposure or a non-unit white balance)."""
+        return self.auto_exposure_target is not None or self.white_balance_rgb != (1.0, 1.0, 1.0)
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -752,6 +789,10 @@ class IsaacSimOptions(BaseModel):
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
     # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
     image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
+    # Per-camera overrides (RGB sensor name -> IsaacCameraImagePost): a camera whose real
+    # counterpart differs from the scene-wide look (OpenArm restock: the Arducam wrists run
+    # auto exposure / white balance and are softer than the top ZED).
+    camera_image_post: dict[str, IsaacCameraImagePost] = Field(default_factory=dict)
     # Robot visual material name pattern (fnmatch) -> diffuse RGB in [0, 1], applied after
     # the URDF import: upstream meshes carry their own colours (OpenArm's "matte_black"
     # renders mid-grey). Simulation appearance only; collision/physics untouched.
@@ -777,6 +818,16 @@ class IsaacSimOptions(BaseModel):
             raise ValueError(
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _relight_needs_known_tonemap(self) -> IsaacSimOptions:
+        relit = sorted(n for n, p in self.camera_image_post.items() if p.relights)
+        if relit and self.exposure_ev is None:
+            raise ValueError(
+                f"camera_image_post{relit}: auto exposure / white balance need exposure_ev "
+                "(they invert its ACES tonemap)"
             )
         return self
 
@@ -1426,6 +1477,17 @@ def default_camera_mounts(
     return out
 
 
+def _camera_image_post_spec(
+    desc: RobotDescription, camera_image_post: dict[str, IsaacCameraImagePost]
+) -> dict[str, Any]:
+    """Serialise ``camera_image_post`` for the sidecar, refusing names that are not RGB sensors."""
+    rgb_sensors = {s.name for s in desc.sensors if s.modality == "rgb"}
+    unknown = sorted(set(camera_image_post) - rgb_sensors)
+    if unknown:
+        raise ROSConfigError(f"camera_image_post must name RGB sensors; invalid: {unknown}")
+    return {k: v.model_dump(mode="json") for k, v in camera_image_post.items()}
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
@@ -1435,6 +1497,7 @@ def _write_robot_spec(
     exposure_ev: float | None = None,
     image_blur_sigma_px: float = 0.0,
     robot_material_colors: dict[str, tuple[float, float, float]] | None = None,
+    camera_image_post: dict[str, IsaacCameraImagePost] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1490,6 +1553,7 @@ def _write_robot_spec(
     spec["translucent_materials"] = translucent_materials
     spec["exposure_ev"] = exposure_ev
     spec["image_blur_sigma_px"] = image_blur_sigma_px
+    spec["camera_image_post"] = _camera_image_post_spec(desc, camera_image_post or {})
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
@@ -1604,6 +1668,7 @@ def _placement(
             "translucent_materials",
             "exposure_ev",
             "image_blur_sigma_px",
+            "camera_image_post",
             "robot_material_colors",
         },
         exclude_defaults=True,
@@ -1712,6 +1777,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.exposure_ev,
         opts.image_blur_sigma_px,
         opts.robot_material_colors,
+        opts.camera_image_post,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
