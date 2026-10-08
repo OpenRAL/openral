@@ -866,3 +866,94 @@ def test_robot_material_recolour_reaches_instanced_visuals(_manifest_scene_mod: 
         prim = stage.GetPrimAtPath(f"/World/robot/link1/{root}/mesh")
         bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
         assert tuple(bound.GetInput("diffuseColor").Get()) == pytest.approx((0.01, 0.01, 0.01))
+
+
+def _noisy(x: float, y: float, yaw: float, **noise: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "xy_sigma_m": [0.01, 0.01],
+        "yaw_sigma_deg": 10.0,
+        "clip_sigma": 2.0,
+        "keep_inside_xy": None,
+        "max_tries": 200,
+    }
+    return {"xyz": [x, y, 0.2], "yaw": yaw, "pose_noise": {**base, **noise}}
+
+
+def test_object_pose_noise_is_seeded_truncated_and_collision_free(
+    _manifest_scene_mod: object,
+) -> None:
+    """Two tote cartons (OpenArm restock E14 footprints) 8 mm apart, inside a tote floor."""
+    mod = _manifest_scene_mod
+    sample = mod.sample_object_poses  # type: ignore[attr-defined]
+    overlap = mod._rects_overlap  # type: ignore[attr-defined]
+    corners = mod._rect_corners  # type: ignore[attr-defined]
+    tote = [[-0.14, -0.18], [0.094, 0.168]]
+    objs = [
+        _noisy(0.04, 0.07, -1.57, keep_inside_xy=tote),
+        _noisy(0.04, -0.01, -1.57, keep_inside_xy=tote),
+        {"xyz": [-0.06, -0.09, 0.2], "yaw": 0.0},  # no noise: always declared
+    ]
+    foot = [(0.0, 0.0, 0.0368, 0.0175)] * 3
+    first = sample(objs, foot, np.random.default_rng(7))
+    assert first == sample(objs, foot, np.random.default_rng(7))
+    assert first != sample(objs, foot, np.random.default_rng(8))
+    for seed in range(200):
+        poses = sample(objs, foot, np.random.default_rng(seed))
+        assert poses[2] == (-0.06, -0.09, 0.0, "declared")
+        quads = [corners(x, y, yaw, f) for (x, y, yaw, _), f in zip(poses, foot, strict=True)]
+        for (x, y, yaw, status), obj in zip(poses[:2], objs[:2], strict=True):
+            assert status == "sampled"
+            assert abs(x - obj["xyz"][0]) <= 0.02 + 1e-12  # type: ignore[index]
+            assert abs(y - obj["xyz"][1]) <= 0.02 + 1e-12  # type: ignore[index]
+            assert abs(yaw - obj["yaw"]) <= np.radians(20) + 1e-12  # type: ignore[operator]
+        assert not overlap(quads[0], quads[1], 0.002)
+        for q in quads[:2]:
+            assert np.all(q >= np.add(tote[0], 0.002)) and np.all(q <= np.subtract(tote[1], 0.002))
+
+
+def test_object_pose_noise_falls_back_to_the_declared_pose(_manifest_scene_mod: object) -> None:
+    sample = _manifest_scene_mod.sample_object_poses  # type: ignore[attr-defined]
+    # A carton wider than its keep-inside box can never be placed.
+    objs = [_noisy(0.0, 0.0, 0.0, keep_inside_xy=[[-0.01, -0.01], [0.01, 0.01]], max_tries=5)]
+    assert sample(objs, [(0.0, 0.0, 0.03, 0.03)], np.random.default_rng(0)) == [
+        (0.0, 0.0, 0.0, "declared_fallback")
+    ]
+
+
+def test_object_pose_noise_schema() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    opts = IsaacSimOptions(
+        objects=[
+            {
+                "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+                "name": "cracker_box",
+                "xyz": (0.0, 0.0, 0.2),
+                "pose_noise": {"xy_sigma_m": (0.01, 0.005), "yaw_sigma_deg": 6.0},
+            }
+        ]
+    )
+    noise = opts.objects[0].pose_noise
+    assert noise is not None and noise.clip_sigma == 2.0 and noise.keep_inside_xy is None
+    with pytest.raises(ValueError, match="xy_sigma_m"):
+        IsaacSimOptions(
+            objects=[
+                {
+                    "usd": "a.usd",
+                    "name": "a",
+                    "xyz": (0, 0, 0),
+                    "pose_noise": {"xy_sigma_m": (-1, 0)},
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="keep_inside_xy"):
+        IsaacSimOptions(
+            objects=[
+                {
+                    "usd": "a.usd",
+                    "name": "a",
+                    "xyz": (0, 0, 0),
+                    "pose_noise": {"keep_inside_xy": ((0.1, 0.0), (0.0, 0.1))},
+                }
+            ]
+        )
