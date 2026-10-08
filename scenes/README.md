@@ -338,6 +338,8 @@ raw training camera alongside a rectified depth camera:
     translucent_materials: true
     exposure_ev: 0.0
     image_blur_sigma_px: 0.9
+    robot_material_colors:
+      "*matte_black*": [0.03, 0.03, 0.03]
 ```
 
 These top-camera numbers describe the **unrectified ZED-M left lens** measured on
@@ -353,7 +355,10 @@ guarantee transparent plastic. `exposure_ev` selects fixed
 manual exposure (ISO 100, 20 ms, f/5 at zero; +1 doubles exposure), preventing automatic
 exposure changes between poses. `image_blur_sigma_px` blurs every RGB frame by that
 Gaussian sigma: RTX renders are sharper than a real camera's compressed stream (the
-restock training frames match about 0.9 px). All are opt-in; omitted values retain
+restock training frames match about 0.9 px). `robot_material_colors` recolours the imported
+robot's visual materials by name (`fnmatch` on the material prim name, diffuse RGB): the
+OpenArm meshes' "matte_black" ships at diffuse 0.247, which renders mid-grey next to the
+real near-black plastic. All are opt-in; omitted values retain
 runtime defaults.
 The complete resolved robot spec is hashed into the sidecar handshake, so changing
 calibration, initial state, or renderer settings cannot reuse a stale sidecar silently.

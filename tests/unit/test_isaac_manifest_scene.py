@@ -722,3 +722,59 @@ def test_image_blur_option_is_bounded() -> None:
         IsaacSimOptions(image_blur_sigma_px=-0.1)
     with pytest.raises(ValidationError):
         IsaacSimOptions(image_blur_sigma_px=6.0)
+
+
+def test_robot_material_recolour_targets_only_matching_robot_materials(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenArm's upstream `.dae` meshes ship a "matte_black" at diffuse 0.247 (renders grey);
+    the recolour sets only matching materials bound under the robot prim."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+
+    def material(path: str, rgb: tuple[float, float, float]) -> object:
+        mat = UsdShade.Material.Define(stage, path)
+        sh = UsdShade.Shader.Define(stage, f"{path}/Shader")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgb))
+        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+        return mat
+
+    black = material("/World/robot/Looks/palette_01_matte_black_001_material", (0.247,) * 3)
+    silver = material("/World/robot/Looks/palette_00_metal_silver_001_material", (0.65,) * 3)
+    shelf = material("/World/Looks/shelf_matte_black_material", (0.5,) * 3)  # not the robot's
+    for prim_path, mat in (
+        ("/World/robot/link1/visual_a", black),
+        ("/World/robot/link1/visual_b", silver),
+        ("/World/shelf/mesh", shelf),
+    ):
+        UsdShade.MaterialBindingAPI.Apply(UsdGeom.Mesh.Define(stage, prim_path).GetPrim()).Bind(mat)
+
+    changed = _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.03, 0.03, 0.03]}
+    )
+    assert list(changed) == ["/World/robot/Looks/palette_01_matte_black_001_material"]
+
+    def diffuse(path: str) -> tuple[float, ...]:
+        shader = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/Shader"))
+        return tuple(shader.GetInput("diffuseColor").Get())
+
+    assert diffuse("/World/robot/Looks/palette_01_matte_black_001_material") == pytest.approx(
+        (0.03, 0.03, 0.03)
+    )
+    assert diffuse("/World/robot/Looks/palette_00_metal_silver_001_material") == pytest.approx(
+        (0.65, 0.65, 0.65)
+    )
+    assert diffuse("/World/Looks/shelf_matte_black_material") == pytest.approx((0.5, 0.5, 0.5))
+
+
+def test_robot_material_colours_are_validated() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    opts = IsaacSimOptions(robot_material_colors={"*matte_black*": (0.03, 0.03, 0.03)})
+    assert opts.robot_material_colors["*matte_black*"] == (0.03, 0.03, 0.03)
+    with pytest.raises(ValidationError, match="RGB in"):
+        IsaacSimOptions(robot_material_colors={"*": (1.2, 0.0, 0.0)})

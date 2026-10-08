@@ -752,6 +752,11 @@ class IsaacSimOptions(BaseModel):
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
     # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
     image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
+    # Robot visual material name pattern (fnmatch) -> diffuse RGB in [0, 1], applied after
+    # the URDF import: upstream meshes carry their own colours (OpenArm's "matte_black"
+    # renders mid-grey). Simulation appearance only; collision/physics untouched.
+    robot_material_colors: dict[str, tuple[float, float, float]] = Field(default_factory=dict)
+
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
     # command_convention). Unnamed joints start at the URDF's zero. Teleported, not
@@ -773,6 +778,13 @@ class IsaacSimOptions(BaseModel):
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _colors_in_unit_range(self) -> IsaacSimOptions:
+        for pattern, rgb in self.robot_material_colors.items():
+            if not all(0.0 <= c <= 1.0 for c in rgb):
+                raise ValueError(f"robot_material_colors[{pattern!r}] must be RGB in [0, 1]")
         return self
 
 
@@ -1422,6 +1434,7 @@ def _write_robot_spec(
     translucent_materials: bool = False,
     exposure_ev: float | None = None,
     image_blur_sigma_px: float = 0.0,
+    robot_material_colors: dict[str, tuple[float, float, float]] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1477,6 +1490,7 @@ def _write_robot_spec(
     spec["translucent_materials"] = translucent_materials
     spec["exposure_ev"] = exposure_ev
     spec["image_blur_sigma_px"] = image_blur_sigma_px
+    spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1590,6 +1604,7 @@ def _placement(
             "translucent_materials",
             "exposure_ev",
             "image_blur_sigma_px",
+            "robot_material_colors",
         },
         exclude_defaults=True,
     )
@@ -1696,6 +1711,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.translucent_materials,
         opts.exposure_ev,
         opts.image_blur_sigma_px,
+        opts.robot_material_colors,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
