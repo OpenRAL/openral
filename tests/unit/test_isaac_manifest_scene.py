@@ -957,3 +957,46 @@ def test_object_pose_noise_schema() -> None:
                 }
             ]
         )
+
+
+def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
+    """OpenArm restock speed knobs: wrists rendered at 224 px high keep their field of view."""
+    from openral_sim.backends.isaac_sim import _render_desc
+
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    desc = RobotDescription.from_yaml(path)
+    desc = desc.model_copy(
+        update={
+            "sensors": apply_sensor_overlays(
+                desc.sensors, resolve_sensor_overlays(path, "thor", required=True)
+            )
+        }
+    )
+    before = {s.name: s for s in desc.sensors}
+    out, scale = _render_desc(desc, {"wrist_left": 224, "wrist_right": 224}, depth_cameras=False)
+    after = {s.name: s for s in out.sensors}
+    assert not any(s.modality == "depth" for s in out.sensors)
+    assert any(s.modality == "depth" for s in desc.sensors)  # the manifest has one to drop
+    for name in ("wrist_left", "wrist_right"):
+        k0, k1 = before[name].intrinsics, after[name].intrinsics
+        assert k0 is not None and k1 is not None
+        assert k1.height == 224 and scale[name] == pytest.approx(224 / k0.height)
+        assert k1.width == round(k0.width * scale[name])
+        # Same field of view: focal length over raster is unchanged.
+        assert k1.fx / k1.width == pytest.approx(k0.fx / k0.width, rel=2e-3)
+        assert k1.distortion_coeffs == k0.distortion_coeffs
+    untouched = [n for n, s in before.items() if s.modality == "rgb" and n not in scale]
+    assert all(after[n].intrinsics == before[n].intrinsics for n in untouched)
+
+
+def test_render_options_are_validated() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    opts = IsaacSimOptions(
+        physics_substeps=2, camera_render_height={"top": 224}, depth_cameras=False
+    )
+    assert opts.physics_substeps == 2
+    with pytest.raises(ValueError, match="camera_render_height"):
+        IsaacSimOptions(camera_render_height={"top": 8})
+    with pytest.raises(ValueError):
+        IsaacSimOptions(physics_substeps=0)

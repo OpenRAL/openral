@@ -1025,6 +1025,8 @@ class IsaacManifestScene(IsaacSceneBase):
     ) -> None:
         super().__init__(**kwargs)
         self._spec = robot_spec
+        # Physics steps per env step; cameras render once, on the last (spec physics_substeps).
+        self.physics_substeps = max(1, int(robot_spec.get("physics_substeps") or 1))
         # Auto-exposure state per camera: (scene-linear gain, sim time ns of that frame).
         self._ae_state: dict[str, tuple[float, int | None]] = {}
         self._environment_usd = environment_usd
@@ -1908,7 +1910,9 @@ class IsaacManifestScene(IsaacSceneBase):
             sigma = post.get("blur_sigma_px")
             if sigma is None:
                 sigma = self._spec.get("image_blur_sigma_px") or 0
-            frame = blur_rgb(self._grab(self._cameras[meta["name"]]), float(sigma))
+            # The blur is in manifest pixels: a camera rendered smaller blurs proportionally.
+            scale = float((self._spec.get("camera_render_scale") or {}).get(meta["name"], 1.0))
+            frame = blur_rgb(self._grab(self._cameras[meta["name"]]), float(sigma) * scale)
             wb = tuple(post.get("white_balance_rgb") or (1.0, 1.0, 1.0))
             target = post.get("auto_exposure_target")
             gain = 1.0
