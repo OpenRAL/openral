@@ -64,6 +64,31 @@ from numpy.typing import NDArray
 # heavy arm sags or a light one rings.
 _DRIVE_STIFFNESS = 1000.0
 _DRIVE_DAMPING = 100.0
+
+
+def drive_gain_overrides(
+    joint_drive_gains: dict[str, list[float]] | None,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """The importer's per-joint ``(stiffness, damping)`` pattern dicts.
+
+    ``joint_drive_gains`` is the spec's URDF joint-name regex -> ``[kp, kd]``
+    (``IsaacSimOptions.joint_drive_gains``). The importer applies patterns in
+    order, later matches winning, so a catch-all default goes first and every
+    joint no pattern names keeps the stiff default.
+
+    Example:
+        >>> s, d = drive_gain_overrides({"joint[12]$": [70.0, 2.75]})
+        >>> s
+        {'.*': 1000.0, 'joint[12]$': 70.0}
+        >>> d
+        {'.*': 100.0, 'joint[12]$': 2.75}
+    """
+    gains = joint_drive_gains or {}
+    stiffness = {".*": _DRIVE_STIFFNESS, **{p: float(kp) for p, (kp, _kd) in gains.items()}}
+    damping = {".*": _DRIVE_DAMPING, **{p: float(kd) for p, (_kp, kd) in gains.items()}}
+    return stiffness, damping
+
+
 # Coulomb friction of the robot's finger colliders. The URDF importer authors no physics
 # material, so the fingers get PhysX's default (~0.5) and a lifted object slips out of a
 # closed, stalled jaw (Isaac i58/i59: jaw squeezing at its 7 Nm effort cap, can sliding).
@@ -1641,7 +1666,7 @@ class IsaacManifestScene(IsaacSceneBase):
         The 6.x importer (``URDFImporter``, built on ``urdf-usd-converter``)
         replaced the ``URDFParseAndImportFile`` command. It resolves
         ``package://`` meshes from the spec's ``ros_package_paths`` and authors
-        position drives with explicit gains (``_DRIVE_STIFFNESS``). It converts
+        position drives with explicit gains (``drive_gain_overrides``). It converts
         a mimic-free copy (``strip_urdf_mimics``).
         """
         try:
@@ -1656,6 +1681,7 @@ class IsaacManifestScene(IsaacSceneBase):
         urdf = os.path.join(work, os.path.basename(source))
         with open(source, encoding="utf-8") as src, open(urdf, "w", encoding="utf-8") as dst:
             dst.write(strip_urdf_mimics(src.read(), os.path.dirname(source)))
+        stiffness, damping = drive_gain_overrides(self._spec.get("joint_drive_gains"))
         config = URDFImporterConfig(
             urdf_path=urdf,
             usd_path=os.path.join(work, "usd"),
@@ -1664,8 +1690,8 @@ class IsaacManifestScene(IsaacSceneBase):
             merge_fixed_joints=False,
             fix_base=bool(self._spec.get("fix_base", True)),
             joint_target_type="position",
-            override_joint_stiffness=_DRIVE_STIFFNESS,
-            override_joint_damping=_DRIVE_DAMPING,
+            override_joint_stiffness=stiffness,
+            override_joint_damping=damping,
             ros_package_paths=list(self._spec.get("ros_package_paths") or []),
         )
         return str(URDFImporter(config).import_urdf())
