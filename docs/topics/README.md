@@ -93,10 +93,11 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/perception/query_task_progress` | `openral_msgs/QueryTaskProgress` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_task_progress)<br>packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._maybe_verify_active_mission_task) |
 | `/openral/perception/segment_in_view` | `openral_msgs/SegmentInView` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) [param `segment_in_view_service`] | — |
 
-## Per-instance services (6)
+## Per-instance services (7)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
+| `/openral/{robot}/reset_episode` | `std_srvs/Trigger` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode._open_reset_episode_service) | — |
 | `/openral/{robot}/reset_to_pose` | `openral_msgs/ResetToPose` | python/hal/src/openral_hal/lifecycle.py (ManifestHALLifecycleNode.on_configure_post_hal) | — |
 | `/{ns}/torque_enable` | `interbotix_xs_msgs/TorqueEnable` | — | python/hal/src/openral_hal/interbotix_transport.py (InterbotixXSTransport.__init__) |
 | `{lifecycle_node_name}/get_state` | `lifecycle_msgs/GetState` | — | tools/wait_for_action_and_signal_palette.py (_lifecycle_active) |
