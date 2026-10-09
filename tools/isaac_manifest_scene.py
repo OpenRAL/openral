@@ -725,19 +725,18 @@ def blur_rgb(image: NDArray[np.uint8], sigma_px: float) -> NDArray[np.uint8]:
     """
     if sigma_px <= 0:
         return image
+    import cv2
+
+    # Same normalised Gaussian (radius ceil(3 sigma), reflect-101 border) as a hand-rolled
+    # separable convolution, but ~10x faster: this runs on every camera, every sim step.
     radius = max(1, int(np.ceil(3.0 * sigma_px)))
-    x = np.arange(-radius, radius + 1, dtype=np.float32)
-    kernel = np.exp(-0.5 * (x / np.float32(sigma_px)) ** 2)
-    kernel /= kernel.sum()
-    out = image.astype(np.float32)
-    for axis in (0, 1):
-        pad = [(0, 0)] * out.ndim
-        pad[axis] = (radius, radius)
-        padded = np.pad(out, pad, mode="reflect")
-        acc = np.zeros_like(out)
-        for i, weight in enumerate(kernel):
-            acc += weight * np.take(padded, np.arange(i, i + out.shape[axis]), axis=axis)
-        out = acc
+    out = cv2.GaussianBlur(
+        image.astype(np.float32),
+        (2 * radius + 1, 2 * radius + 1),
+        sigmaX=sigma_px,
+        sigmaY=sigma_px,
+        borderType=cv2.BORDER_REFLECT_101,
+    )  # float, not cv2's fixed-point uint8 path: same DN as the reference convolution
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
@@ -779,7 +778,20 @@ def relight_rgb(
         >>> bool((relight_rgb(img, (1.0, 1.0, 1.0)) == img).all())
         True
     """
-    scene = _SCENE_FROM_DN[image] * np.asarray(gain_rgb, dtype=np.float64)
+    # Each output DN depends only on its own channel's input DN: one 256-entry table per
+    # channel, applied with cv2.LUT (exact; ~20x faster than the per-pixel float path).
+    import cv2
+
+    lut = np.stack([_relight_lut(float(g)) for g in gain_rgb], axis=-1)  # (256, 3)
+    out: NDArray[np.uint8] = np.asarray(
+        cv2.LUT(np.ascontiguousarray(image), lut.reshape(1, 256, 3)), dtype=np.uint8
+    )
+    return out
+
+
+def _relight_lut(gain: float) -> NDArray[np.uint8]:
+    """256-entry DN -> DN table of ``relight_rgb`` for one channel's scene-linear gain."""
+    scene = _SCENE_FROM_DN * gain
     return np.clip(np.rint(_srgb_encode(_aces(scene)) * 255.0), 0, 255).astype(np.uint8)
 
 
