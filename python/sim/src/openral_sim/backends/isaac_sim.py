@@ -875,6 +875,10 @@ class IsaacSimOptions(BaseModel):
     # reads 0.28 rad on a 6 cm carton where the URDF finger touches it at 0.69, while the
     # open end must stay where the sim's approach works. Unlisted grippers stay linear.
     gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
+    # Fingers that share one motor (OpenArm's jaw): no finger may close more than this many
+    # radians past its partner's mirrored position, so the pair stops together on the
+    # object instead of one finger pinning it against the other. None = independent drives.
+    gripper_finger_coupling_rad: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @field_validator("joint_drive_gains")
     @classmethod
@@ -1692,6 +1696,7 @@ def _write_robot_spec(
     depth_cameras: bool = True,
     joint_drive_gains: dict[str, tuple[float, float]] | None = None,
     gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
+    gripper_finger_coupling_rad: float | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1756,6 +1761,7 @@ def _write_robot_spec(
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
     _curve_gripper_specs(spec, gripper_joint_curve or {})
+    spec["gripper_finger_coupling_rad"] = gripper_finger_coupling_rad
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1876,6 +1882,7 @@ def _placement(
             "depth_cameras",
             "joint_drive_gains",
             "gripper_joint_curve",
+            "gripper_finger_coupling_rad",
         },
         exclude_defaults=True,
     )
@@ -1989,6 +1996,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.depth_cameras,
         opts.joint_drive_gains,
         opts.gripper_joint_curve,
+        opts.gripper_finger_coupling_rad,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

@@ -1066,3 +1066,37 @@ def test_gripper_joint_curve_maps_commands_and_states_through_the_curve(
         IsaacSimOptions(
             gripper_joint_curve={"right_gripper": [(0.0, 0.0), (-0.3, 0.1), (-0.7, -0.7)]}
         )
+
+
+def test_finger_coupling_holds_the_free_finger_at_the_stalled_one(
+    _manifest_scene_mod: object,
+) -> None:
+    """One motor for both OpenArm fingers: a finger may close at most `margin` past its
+    partner's mirrored position; opening is never limited; free fingers close together."""
+    from openral_sim.registry import ROBOTS
+
+    mod: Any = _manifest_scene_mod
+    spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
+    g = next(g for g in spec["grippers"] if g["name"] == "right_gripper")
+    f = g["followers"][0]
+    idx = {g["leader"]: 0, f["dof"]: 1}
+    mirror = lambda lead: f["multiplier"] * lead + f["offset"]  # noqa: E731
+    closed, opened = g["closed"], g["open"]
+    cmd = np.array([closed, mirror(closed)], dtype=np.float32)
+    # Leader stalled near open on the object, follower already nearly shut: follower held.
+    q = np.array([0.88 * opened, mirror(0.05 * opened)], dtype=np.float32)
+    out = mod.couple_finger_targets(cmd, q, [g], idx, 0.1)
+    assert out[0] == pytest.approx(closed)
+    assert (out[1] - f["offset"]) / f["multiplier"] == pytest.approx(
+        0.88 * opened - 0.1 * np.sign(opened - closed), abs=1e-5
+    )
+    # Both free and level: each leads the other by at most the margin per step (the pair
+    # closes together, ~margin x control rate).
+    q_level = np.array([0.5 * opened, mirror(0.5 * opened)], dtype=np.float32)
+    step = mod.couple_finger_targets(cmd, q_level, [g], idx, 0.1)
+    toward_closed = 0.1 * np.sign(closed - opened)
+    assert step[0] == pytest.approx(0.5 * opened + toward_closed, abs=1e-5)
+    assert step[1] == pytest.approx(mirror(0.5 * opened + toward_closed), abs=1e-5)
+    # Opening is never limited.
+    cmd_open = np.array([opened, mirror(opened)], dtype=np.float32)
+    assert np.allclose(mod.couple_finger_targets(cmd_open, q, [g], idx, 0.1), cmd_open)
