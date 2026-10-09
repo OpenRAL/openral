@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -767,6 +768,7 @@ _RENDER_HEIGHT_RANGE_PX = (16, 4096)
 
 
 _LUT_SIZE = 256
+_GRIPPER_CURVE_MIN_POINTS = 2
 
 
 class IsaacCameraImagePost(BaseModel):
@@ -867,6 +869,12 @@ class IsaacSimOptions(BaseModel):
     # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
     # below its command, which a policy trained on that robot has learnt to expect.
     joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
+    # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
+    # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
+    # reads 0.28 rad on a 6 cm carton where the URDF finger touches it at 0.69, while the
+    # open end must stay where the sim's approach works. Unlisted grippers stay linear.
+    gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
 
     @field_validator("joint_drive_gains")
     @classmethod
@@ -880,6 +888,26 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
             if stiffness < 0 or damping < 0:
                 raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
+
+    @field_validator("gripper_joint_curve")
+    @classmethod
+    def _gripper_curve_valid(
+        cls, value: dict[str, list[tuple[float, float]]]
+    ) -> dict[str, list[tuple[float, float]]]:
+        for name, points in value.items():
+            if len(points) < _GRIPPER_CURVE_MIN_POINTS:
+                raise ValueError(f"gripper_joint_curve[{name!r}] needs at least 2 points")
+            pts = sorted(points)
+            m = [p[0] for p in pts]
+            u = [p[1] for p in pts]
+            rising = all(b > a for a, b in itertools.pairwise(u))
+            falling = all(b < a for a, b in itertools.pairwise(u))
+            if len(set(m)) != len(m) or not (rising or falling):
+                raise ValueError(
+                    f"gripper_joint_curve[{name!r}] must be strictly monotonic "
+                    "(distinct manifest values, URDF values all rising or all falling)"
+                )
         return value
 
     # The pose each reset starts the robot in: manifest joint name -> value in the
@@ -1569,6 +1597,33 @@ def default_camera_mounts(
     return out
 
 
+def _curve_gripper_specs(
+    spec: dict[str, Any], gripper_joint_curve: dict[str, list[tuple[float, float]]]
+) -> None:
+    """Attach each named gripper's calibration curve to its spec (``gripper_joint_curve``).
+
+    The sidecar then maps commands manifest -> URDF and joint states URDF -> manifest
+    through the curve instead of the linear closed/open ends.
+
+    Raises:
+        ROSConfigError: A name that is not one of the robot's grippers.
+
+    Example:
+        >>> spec = {"grippers": [{"name": "left_gripper", "closed": 0.0, "open": 0.785}]}
+        >>> _curve_gripper_specs(spec, {"left_gripper": [(0.0, 0.0), (0.785, 0.785)]})
+        >>> spec["grippers"][0]["curve"]
+        [[0.0, 0.0], [0.785, 0.785]]
+    """
+    by_name = {g["name"]: g for g in spec.get("grippers", [])}
+    unknown = sorted(set(gripper_joint_curve) - set(by_name))
+    if unknown:
+        raise ROSConfigError(
+            f"gripper_joint_curve names no gripper joint: {unknown} (grippers: {sorted(by_name)})"
+        )
+    for name, points in gripper_joint_curve.items():
+        by_name[name]["curve"] = [[float(m), float(u)] for m, u in sorted(points)]
+
+
 def _camera_image_post_spec(
     desc: RobotDescription, camera_image_post: dict[str, IsaacCameraImagePost]
 ) -> dict[str, Any]:
@@ -1636,6 +1691,7 @@ def _write_robot_spec(
     camera_render_height: dict[str, int] | None = None,
     depth_cameras: bool = True,
     joint_drive_gains: dict[str, tuple[float, float]] | None = None,
+    gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1699,6 +1755,7 @@ def _write_robot_spec(
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
+    _curve_gripper_specs(spec, gripper_joint_curve or {})
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1818,6 +1875,7 @@ def _placement(
             "camera_render_height",
             "depth_cameras",
             "joint_drive_gains",
+            "gripper_joint_curve",
         },
         exclude_defaults=True,
     )
@@ -1930,6 +1988,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.camera_render_height,
         opts.depth_cameras,
         opts.joint_drive_gains,
+        opts.gripper_joint_curve,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
