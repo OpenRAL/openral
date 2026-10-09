@@ -503,6 +503,8 @@ def couple_finger_targets(
     grippers: list[dict[str, Any]],
     dof_index: dict[str, int],
     margin: float,
+    qd: NDArray[np.float32] | None = None,
+    stall_speed: float = 0.2,
 ) -> NDArray[np.float32]:
     """Limit each finger's closing target to ``margin`` past its partner's mirrored position.
 
@@ -512,6 +514,11 @@ def couple_finger_targets(
     finger against the other. Opening is never limited. Positions are compared in leader
     units: a follower ``f = multiplier * leader + offset`` mirrors to
     ``(f - offset) / multiplier``. Returns a copy; ``target`` is untouched.
+
+    With joint velocities ``qd``, a partner still closing faster than ``stall_speed``
+    (rad/s, leader units) does not hold the other back, so two free fingers close at their
+    drives' own speed instead of ``margin`` per step; only a partner stalled on the object
+    holds the other at ``margin``.
 
     Example:
         >>> g = [
@@ -552,6 +559,12 @@ def couple_finger_targets(
         if len(fingers) < 2:
             continue
         pos = [openness((float(q[i]) - off) / mul) for i, mul, off in fingers]
+        if qd is not None:
+            # Closing lowers openness; a partner still closing freely constrains nothing.
+            pos = [
+                -np.inf if float(qd[i]) / mul / span < -stall_speed / abs(span) else p
+                for p, (i, mul, off) in zip(pos, fingers, strict=True)
+            ]
         for k, (i, mul, off) in enumerate(fingers):
             partner = max(p for j, p in enumerate(pos) if j != k)
             want = openness((float(out[i]) - off) / mul)
@@ -1934,6 +1947,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 self._grippers,
                 self._dof_index,
                 float(margin),
+                qd=np.asarray(self._robot.get_joint_velocities(), dtype=np.float32),
             )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)

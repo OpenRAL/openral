@@ -1100,3 +1100,10 @@ def test_finger_coupling_holds_the_free_finger_at_the_stalled_one(
     # Opening is never limited.
     cmd_open = np.array([opened, mirror(opened)], dtype=np.float32)
     assert np.allclose(mod.couple_finger_targets(cmd_open, q, [g], idx, 0.1), cmd_open)
+    # With velocities: a partner still closing freely holds nothing back, so the pair closes
+    # at drive speed; a stalled partner (qd = 0) still holds at the margin.
+    v_close = 3.0 * np.sign(closed - opened)  # leader units, rad/s toward closed
+    qd = np.array([v_close, f["multiplier"] * v_close], dtype=np.float32)
+    assert np.allclose(mod.couple_finger_targets(cmd, q_level, [g], idx, 0.1, qd=qd), cmd)
+    held = mod.couple_finger_targets(cmd, q, [g], idx, 0.1, qd=np.zeros(2, np.float32))
+    assert np.allclose(held, out)
