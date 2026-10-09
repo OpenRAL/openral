@@ -153,6 +153,19 @@ def map_dof_to_manifest(
         if g is None:
             out.append(float(v[idx]))
             continue
+        if g.get("curve"):
+            m_pts, u_pts = _curve_by_urdf(g["curve"])
+            u = float(v[idx])
+            if rates:
+                du = 1e-4  # local slope dm/du at the current finger position
+                q = float(np.asarray(values, dtype=np.float32).reshape(-1)[idx])
+                slope = (np.interp(q + du, u_pts, m_pts) - np.interp(q - du, u_pts, m_pts)) / (
+                    2 * du
+                )
+                out.append(u * float(slope))
+            else:
+                out.append(float(np.interp(u, u_pts, m_pts)))
+            continue
         span = float(g["open"]) - float(g["closed"])
         scale = (float(g["manifest_open"]) - float(g["manifest_closed"])) / span if span else 0.0
         if rates:
@@ -367,8 +380,26 @@ def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     span = float(gripper["command_open"]) - float(gripper["command_closed"])
     frac = (float(value) - float(gripper["command_closed"])) / span if span else 0.0
     frac = min(max(frac, 0.0), 1.0)
+    if gripper.get("curve"):
+        # Calibration curve (IsaacSimOptions.gripper_joint_curve): command -> manifest value
+        # -> URDF finger target, piecewise linear.
+        m_closed, m_open = float(gripper["manifest_closed"]), float(gripper["manifest_open"])
+        m = m_closed + frac * (m_open - m_closed)
+        pts = sorted(gripper["curve"])
+        return float(np.interp(m, [p[0] for p in pts], [p[1] for p in pts]))
     closed, opened = float(gripper["closed"]), float(gripper["open"])
     return closed + frac * (opened - closed)
+
+
+def _curve_by_urdf(curve: list[list[float]]) -> tuple[list[float], list[float]]:
+    """A gripper calibration curve as ``(manifest values, URDF values)`` sorted by URDF value.
+
+    Example:
+        >>> _curve_by_urdf([[0.0, 0.0], [-0.28, -0.69], [-0.785, -0.785]])
+        ([-0.785, -0.28, 0.0], [-0.785, -0.69, 0.0])
+    """
+    pts = sorted(curve, key=lambda p: p[1])
+    return [float(p[0]) for p in pts], [float(p[1]) for p in pts]
 
 
 @dataclass(frozen=True)

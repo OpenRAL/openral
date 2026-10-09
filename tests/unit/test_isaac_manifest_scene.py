@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -1038,3 +1039,30 @@ def test_color_lut_option_validates_and_maps_per_channel(_manifest_scene_mod: ob
         IsaacCameraImagePost(color_lut_rgb=(list(range(255)), list(range(256)), list(range(256))))
     with pytest.raises(ValueError, match="color_lut_rgb"):
         IsaacCameraImagePost(color_lut_rgb=([256] * 256, list(range(256)), list(range(256))))
+
+
+def test_gripper_joint_curve_maps_commands_and_states_through_the_curve(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenArm right jaw: reading -0.28 on a 6 cm carton <-> URDF finger -0.69; open stays 1:1.
+    A command lands on the finger through the curve and the finger reads back through it."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _curve_gripper_specs
+    from openral_sim.registry import ROBOTS
+
+    mod: Any = _manifest_scene_mod
+    curve = [(0.0, 0.0), (-0.28, -0.69), (-0.785, -0.785)]
+    spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
+    _curve_gripper_specs(spec, {"right_gripper": curve})
+    g = next(g for g in spec["grippers"] if g["name"] == "right_gripper")
+    assert mod.manifest_to_urdf_gripper(g, -0.28) == pytest.approx(-0.69)
+    assert mod.manifest_to_urdf_gripper(g, -0.785) == pytest.approx(-0.785)
+    assert mod.manifest_to_urdf_gripper(g, -0.14) == pytest.approx(-0.345)
+    m_pts, u_pts = mod._curve_by_urdf(g["curve"])
+    assert float(np.interp(-0.69, u_pts, m_pts)) == pytest.approx(-0.28)
+    with pytest.raises(ROSConfigError, match="gripper_joint_curve"):
+        _curve_gripper_specs(spec, {"right_joint1": curve})
+    with pytest.raises(ValueError, match="monotonic"):
+        IsaacSimOptions(
+            gripper_joint_curve={"right_gripper": [(0.0, 0.0), (-0.3, 0.1), (-0.7, -0.7)]}
+        )
