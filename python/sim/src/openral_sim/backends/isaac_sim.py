@@ -83,7 +83,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import IntrinsicsPinhole, scale_intrinsics_to
 from openral_core.exceptions import ROSConfigError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
 from openral_sim.registry import SCENES
@@ -849,6 +849,26 @@ class IsaacSimOptions(BaseModel):
     # False: no depth camera in the scene (no depth render, no point clouds), e.g. when
     # the world-collision check that consumes them is off.
     depth_cameras: bool = True
+    # Joint drive gains: URDF joint-name regex -> (stiffness Nm/rad, damping Nm*s/rad), in
+    # pattern order, later matches winning. Unmatched joints keep the sidecar's stiff
+    # defaults (1000 / 100). Set them to the real motors' PD gains and the arm sags under
+    # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
+    # below its command, which a policy trained on that robot has learnt to expect.
+    joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
+
+    @field_validator("joint_drive_gains")
+    @classmethod
+    def _drive_gains_valid(
+        cls, value: dict[str, tuple[float, float]]
+    ) -> dict[str, tuple[float, float]]:
+        for pattern, (stiffness, damping) in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
+            if stiffness < 0 or damping < 0:
+                raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
 
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
@@ -1603,6 +1623,7 @@ def _write_robot_spec(
     physics_substeps: int = 1,
     camera_render_height: dict[str, int] | None = None,
     depth_cameras: bool = True,
+    joint_drive_gains: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1665,6 +1686,7 @@ def _write_robot_spec(
         camera_image_post=_camera_image_post_spec(desc, camera_image_post or {}),
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
+    spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1783,6 +1805,7 @@ def _placement(
             "physics_substeps",
             "camera_render_height",
             "depth_cameras",
+            "joint_drive_gains",
         },
         exclude_defaults=True,
     )
@@ -1894,6 +1917,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.physics_substeps,
         opts.camera_render_height,
         opts.depth_cameras,
+        opts.joint_drive_gains,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

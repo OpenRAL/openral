@@ -1000,3 +1000,24 @@ def test_render_options_are_validated() -> None:
         IsaacSimOptions(camera_render_height={"top": 8})
     with pytest.raises(ValueError):
         IsaacSimOptions(physics_substeps=0)
+
+
+def test_joint_drive_gains_become_importer_pattern_dicts(_manifest_scene_mod: object) -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    drive_gain_overrides = _manifest_scene_mod.drive_gain_overrides  # type: ignore[attr-defined]
+
+    gains = {"joint[123]$": (70.0, 2.75), "joint[567]$": (10.0, 0.7)}
+    opts = IsaacSimOptions(joint_drive_gains=gains)
+    stiffness, damping = drive_gain_overrides(
+        {k: list(v) for k, v in opts.joint_drive_gains.items()}
+    )
+    # Catch-all default first, so joints no pattern names keep the stiff default.
+    assert list(stiffness) == [".*", "joint[123]$", "joint[567]$"]
+    assert stiffness[".*"] == 1000.0 and damping[".*"] == 100.0
+    assert stiffness["joint[567]$"] == 10.0 and damping["joint[567]$"] == 0.7
+    assert drive_gain_overrides(None) == ({".*": 1000.0}, {".*": 100.0})
+    with pytest.raises(ValueError, match="joint_drive_gains"):
+        IsaacSimOptions(joint_drive_gains={"joint1": (-1.0, 0.0)})
+    with pytest.raises(ValueError):
+        IsaacSimOptions(joint_drive_gains={"joint[": (1.0, 0.0)})
