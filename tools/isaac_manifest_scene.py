@@ -497,6 +497,70 @@ def recolor_robot_materials(
     return changed
 
 
+def couple_finger_targets(
+    target: NDArray[np.float32],
+    q: NDArray[np.float32],
+    grippers: list[dict[str, Any]],
+    dof_index: dict[str, int],
+    margin: float,
+) -> NDArray[np.float32]:
+    """Limit each finger's closing target to ``margin`` past its partner's mirrored position.
+
+    Emulates a jaw whose fingers share one motor (OpenArm): when either finger meets the
+    object, the other can close at most ``margin`` further, so the pair stops together
+    and an off-centre object is pushed to the middle instead of being pinned by one
+    finger against the other. Opening is never limited. Positions are compared in leader
+    units: a follower ``f = multiplier * leader + offset`` mirrors to
+    ``(f - offset) / multiplier``. Returns a copy; ``target`` is untouched.
+
+    Example:
+        >>> g = [
+        ...     {
+        ...         "leader": "f1",
+        ...         "closed": 0.0,
+        ...         "open": 0.785,
+        ...         "followers": [{"dof": "f2", "multiplier": -1.0, "offset": 0.0}],
+        ...     }
+        ... ]
+        >>> idx = {"f1": 0, "f2": 1}
+        >>> cmd = np.array([0.0, 0.0], dtype=np.float32)  # close both
+        >>> q = np.array([0.69, -0.04], dtype=np.float32)  # f1 stalled, f2 nearly shut
+        >>> [round(float(v), 2) for v in couple_finger_targets(cmd, q, g, idx, 0.1)]
+        [0.0, -0.59]
+    """
+    out = np.array(target, dtype=np.float32, copy=True)
+    for g in grippers:
+        lead = dof_index.get(str(g["leader"]))
+        if lead is None:
+            continue
+        closed, opened = float(g["closed"]), float(g["open"])
+        span = opened - closed
+        if not span:
+            continue
+
+        def openness(x: float, span: float = span, closed: float = closed) -> float:
+            return (x - closed) / span  # 0 = closed, 1 = open (leader units)
+
+        def from_openness(o: float, span: float = span, closed: float = closed) -> float:
+            return closed + o * span
+
+        fingers = [(lead, 1.0, 0.0)] + [
+            (dof_index[str(f["dof"])], float(f["multiplier"]), float(f["offset"]))
+            for f in g.get("followers", [])
+            if str(f["dof"]) in dof_index and float(f["multiplier"])
+        ]
+        if len(fingers) < 2:
+            continue
+        pos = [openness((float(q[i]) - off) / mul) for i, mul, off in fingers]
+        for k, (i, mul, off) in enumerate(fingers):
+            partner = max(p for j, p in enumerate(pos) if j != k)
+            want = openness((float(out[i]) - off) / mul)
+            limit = partner - margin / abs(span)
+            if want < limit:  # closing past the partner: hold at the margin
+                out[i] = from_openness(limit) * mul + off
+    return out
+
+
 def apply_finger_friction(
     stage: Any,
     robot_prim: str,
@@ -1859,6 +1923,18 @@ class IsaacManifestScene(IsaacSceneBase):
             self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
         target = self._target
         self._write_slots(target, action)
+        margin = self._spec.get("gripper_finger_coupling_rad")
+        if margin:
+            # One motor for both fingers (the real jaw's gearing): no finger closes more than
+            # `margin` past the other's mirrored position. The commanded target stays in
+            # self._target; only this step's drive targets are limited.
+            target = couple_finger_targets(
+                target,
+                np.asarray(self._robot.get_joint_positions(), dtype=np.float32),
+                self._grippers,
+                self._dof_index,
+                float(margin),
+            )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
