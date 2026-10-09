@@ -2105,6 +2105,14 @@ if _ROS2_AVAILABLE:
             if self._proprio is not None:
                 self._capture_proprio()
                 self._publish_joint_state()
+            # The reset teleported the hands open and re-placed every object, so
+            # whatever the attachment bridge believed held belongs to the previous
+            # episode: rebuild it, empty, rather than let the kernel check a payload
+            # that no longer exists against the new pose.
+            if self._vision_attachment is not None:
+                self._vision_attachment.teardown()
+                self._vision_attachment = None
+                self._setup_vision_attachment()
             self.get_logger().info(f"reset_episode: new episode, env seed {seed}")
             response.success = True  # type: ignore[attr-defined]
             response.message = f"seed={seed}"  # type: ignore[attr-defined]
