@@ -81,7 +81,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole
+from openral_core import IntrinsicsPinhole, scale_intrinsics_to
 from openral_core.exceptions import ROSConfigError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -763,6 +763,7 @@ class IsaacCameraMount(BaseModel):
 
 
 _WB_GAIN_MIN, _WB_GAIN_MAX = 0.25, 4.0
+_RENDER_HEIGHT_RANGE_PX = (16, 4096)
 
 
 class IsaacCameraImagePost(BaseModel):
@@ -837,6 +838,17 @@ class IsaacSimOptions(BaseModel):
     # the URDF import: upstream meshes carry their own colours (OpenArm's "matte_black"
     # renders mid-grey). Simulation appearance only; collision/physics untouched.
     robot_material_colors: dict[str, tuple[float, float, float]] = Field(default_factory=dict)
+    # Speed knobs (sim cost, not the scene's look):
+    # physics steps per env step; cameras render once, on the last. Isaac's physics runs at
+    # 1/60 s, so 2 renders at 30 Hz, the rate a 30 Hz policy consumes.
+    physics_substeps: int = Field(default=1, ge=1, le=8)
+    # RGB sensor name -> render raster height (px). The width, focal lengths and principal
+    # point scale with it (same field of view and lens), and so does the blur sigma: a
+    # policy that resizes to 224 px needs no larger render.
+    camera_render_height: dict[str, int] = Field(default_factory=dict)
+    # False: no depth camera in the scene (no depth render, no point clouds), e.g. when
+    # the world-collision check that consumes them is off.
+    depth_cameras: bool = True
 
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
@@ -859,6 +871,14 @@ class IsaacSimOptions(BaseModel):
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _render_heights_are_sane(self) -> IsaacSimOptions:
+        lo, hi = _RENDER_HEIGHT_RANGE_PX
+        bad = {k: v for k, v in self.camera_render_height.items() if not lo <= v <= hi}
+        if bad:
+            raise ValueError(f"camera_render_height must be {lo}..{hi} px: {bad}")
         return self
 
     @model_validator(mode="after")
@@ -1528,6 +1548,48 @@ def _camera_image_post_spec(
     return {k: v.model_dump(mode="json") for k, v in camera_image_post.items()}
 
 
+def _camera_render_scale(
+    desc: RobotDescription, camera_render_height: dict[str, int]
+) -> dict[str, float]:
+    """``camera_render_height`` as per-camera scale factors on the manifest raster.
+
+    Refuses names that are not RGB sensors with intrinsics (nothing to scale).
+    """
+    rgb = {s.name: s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None}
+    unknown = sorted(set(camera_render_height) - set(rgb))
+    if unknown:
+        raise ROSConfigError(
+            f"camera_render_height must name RGB sensors with intrinsics; invalid: {unknown}"
+        )
+    return {
+        name: h / rgb[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
+        for name, h in camera_render_height.items()
+    }
+
+
+def _render_desc(
+    desc: RobotDescription, camera_render_height: dict[str, int], depth_cameras: bool
+) -> tuple[RobotDescription, dict[str, float]]:
+    """The description the sidecar renders: scaled RGB rasters, depth sensors kept or dropped."""
+    scale = _camera_render_scale(desc, camera_render_height)
+    sensors = []
+    for sensor in desc.sensors:
+        if sensor.modality == "depth" and not depth_cameras:
+            continue
+        k = sensor.intrinsics
+        f = scale.get(sensor.name)
+        sensors.append(
+            sensor.model_copy(
+                update={
+                    "intrinsics": scale_intrinsics_to(k, round(k.width * f), round(k.height * f))
+                }
+            )
+            if f is not None and k is not None
+            else sensor
+        )
+    return desc.model_copy(update={"sensors": sensors}), scale
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
@@ -1538,6 +1600,9 @@ def _write_robot_spec(
     image_blur_sigma_px: float = 0.0,
     robot_material_colors: dict[str, tuple[float, float, float]] | None = None,
     camera_image_post: dict[str, IsaacCameraImagePost] | None = None,
+    physics_substeps: int = 1,
+    camera_render_height: dict[str, int] | None = None,
+    depth_cameras: bool = True,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1589,11 +1654,16 @@ def _write_robot_spec(
                 ]
             }
         )
-    spec = _build_robot_spec(desc, robot_id)
-    spec["translucent_materials"] = translucent_materials
-    spec["exposure_ev"] = exposure_ev
-    spec["image_blur_sigma_px"] = image_blur_sigma_px
-    spec["camera_image_post"] = _camera_image_post_spec(desc, camera_image_post or {})
+    render_desc, render_scale = _render_desc(desc, camera_render_height or {}, depth_cameras)
+    spec = _build_robot_spec(render_desc, robot_id)
+    spec.update(
+        physics_substeps=physics_substeps,
+        camera_render_scale=render_scale,
+        translucent_materials=translucent_materials,
+        exposure_ev=exposure_ev,
+        image_blur_sigma_px=image_blur_sigma_px,
+        camera_image_post=_camera_image_post_spec(desc, camera_image_post or {}),
+    )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
@@ -1710,6 +1780,9 @@ def _placement(
             "image_blur_sigma_px",
             "camera_image_post",
             "robot_material_colors",
+            "physics_substeps",
+            "camera_render_height",
+            "depth_cameras",
         },
         exclude_defaults=True,
     )
@@ -1818,6 +1891,9 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.image_blur_sigma_px,
         opts.robot_material_colors,
         opts.camera_image_post,
+        opts.physics_substeps,
+        opts.camera_render_height,
+        opts.depth_cameras,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
