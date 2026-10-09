@@ -124,10 +124,12 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 - `_load_or_build_env(args) -> SimEnvironment` — `--config` and `--rskill` are both required. Per-axis flags overlay the loaded config rather than conflicting with it, and the scene-fixed-robot guard raises `ROSConfigError` when `--robot` disagrees with the scene's fixed robot. `--dry-run` still runs the embodiment/sensor compatibility check. (L318)
 - `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L528)
 - `main(argv=None) -> int` — Thin wrapper invoking `sim_run_app` with `standalone_mode=False` so tests get a return code without `sys.exit`. (L454)
-- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L717)
-- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L822)
-- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`. (L837)
-- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`. (L881)
+- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L710)
+- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L833)
+- `_control_rate_hz(robot) -> float` (L815) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
+- `_robot_control_rate_hz(robot_id) -> float` (L826) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
+- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L848)
+- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`. (L894)
 
 ### `python/sim/src/openral_sim/_video.py`
 _Shared two-band rollout-debug MP4 helper (was `examples/_video.py`)._

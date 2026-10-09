@@ -140,3 +140,18 @@ def test_manifest_noop_on_empty_records(tmp_path: Path) -> None:
     manifest = tmp_path / "videos.json"
     append_video_manifest(manifest, [])
     assert not manifest.exists()
+
+
+def test_sim_run_videos_play_at_the_robot_control_rate() -> None:
+    """One frame per env step: sim-run videos are written at the robot's control rate
+    (OpenArm 30 Hz), not the writers' 20 fps default, so they play in real time."""
+    from openral_core import RobotDescription
+    from openral_sim.cli import _control_rate_hz, _robot_control_rate_hz
+
+    openarm = RobotDescription.from_yaml(
+        str(Path(__file__).parents[2] / "robots/openarm/robot.yaml")
+    )
+    assert openarm.action_spec is not None
+    assert _robot_control_rate_hz("openarm") == float(openarm.action_spec.control_freq_hz) == 30.0
+    assert _control_rate_hz(openarm.model_copy(update={"action_spec": None})) == 30.0
+    assert _robot_control_rate_hz(None) == 30.0
