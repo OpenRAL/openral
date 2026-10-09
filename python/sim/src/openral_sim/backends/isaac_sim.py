@@ -766,6 +766,9 @@ _WB_GAIN_MIN, _WB_GAIN_MAX = 0.25, 4.0
 _RENDER_HEIGHT_RANGE_PX = (16, 4096)
 
 
+_LUT_SIZE = 256
+
+
 class IsaacCameraImagePost(BaseModel):
     """Per-camera RGB post-process in the ``isaac_sim`` scene (``camera_image_post``).
 
@@ -775,6 +778,7 @@ class IsaacCameraImagePost(BaseModel):
     ``exposure_ev`` selects) toward the target, settling with ``auto_exposure_tau_s`` of
     sim time and converged at each reset. ``white_balance_rgb`` are scene-linear channel
     gains. Both need ``exposure_ev`` set (the only tonemap whose inverse is known).
+    ``color_lut_rgb`` is a per-channel 8-bit tone curve applied to the final frame.
 
     Example:
         >>> IsaacCameraImagePost(blur_sigma_px=1.5, auto_exposure_target=107).auto_exposure_tau_s
@@ -787,11 +791,19 @@ class IsaacCameraImagePost(BaseModel):
     auto_exposure_target: float | None = Field(default=None, gt=0.0, lt=255.0)
     auto_exposure_tau_s: float = Field(default=0.3, gt=0.0)
     white_balance_rgb: tuple[float, float, float] = Field(default=(1.0, 1.0, 1.0))
+    # Per-channel 8-bit tone curve (R, G, B; 256 entries each) applied last, after blur and
+    # relighting: e.g. a histogram match of the rendered frames onto the real camera's.
+    color_lut_rgb: tuple[list[int], list[int], list[int]] | None = None
 
     @model_validator(mode="after")
     def _gains_positive(self) -> IsaacCameraImagePost:
         if not all(_WB_GAIN_MIN <= g <= _WB_GAIN_MAX for g in self.white_balance_rgb):
             raise ValueError("camera_image_post: white_balance_rgb gains must be in [0.25, 4]")
+        if self.color_lut_rgb is not None and not all(
+            len(ch) == _LUT_SIZE and all(0 <= v < _LUT_SIZE for v in ch)
+            for ch in self.color_lut_rgb
+        ):
+            raise ValueError("camera_image_post: color_lut_rgb needs 3 x 256 values in [0, 255]")
         return self
 
     @property

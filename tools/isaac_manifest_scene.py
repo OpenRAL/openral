@@ -820,6 +820,23 @@ def _relight_lut(gain: float) -> NDArray[np.uint8]:
     return np.clip(np.rint(_srgb_encode(_aces(scene)) * 255.0), 0, 255).astype(np.uint8)
 
 
+def apply_color_lut(image: NDArray[np.uint8], lut_rgb: Any) -> NDArray[np.uint8]:
+    """Map an RGB frame through a per-channel 8-bit tone curve (``color_lut_rgb``).
+
+    Example:
+        >>> img = np.full((2, 2, 3), 10, dtype=np.uint8)
+        >>> ident = [list(range(256))] * 3
+        >>> bool((apply_color_lut(img, ident) == img).all())
+        True
+        >>> int(apply_color_lut(img, [[255 - v for v in range(256)]] * 3)[0, 0, 0])
+        245
+    """
+    import cv2
+
+    lut = np.asarray(lut_rgb, dtype=np.uint8).T.reshape(256, 1, 3)
+    return np.asarray(cv2.LUT(image, lut), dtype=np.uint8)
+
+
 def auto_exposure_gain(
     image: NDArray[np.uint8], target: float, wb_rgb: tuple[float, float, float]
 ) -> float:
@@ -1990,6 +2007,8 @@ class IsaacManifestScene(IsaacSceneBase):
                 self._ae_state[meta["name"]] = (gain, now)
             if gain != 1.0 or wb != (1.0, 1.0, 1.0):
                 frame = relight_rgb(frame, (gain * wb[0], gain * wb[1], gain * wb[2]))
+            if post.get("color_lut_rgb") is not None:
+                frame = apply_color_lut(frame, post["color_lut_rgb"])
             out[meta["key"]] = frame
         return out
 

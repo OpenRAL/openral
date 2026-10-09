@@ -1021,3 +1021,20 @@ def test_joint_drive_gains_become_importer_pattern_dicts(_manifest_scene_mod: ob
         IsaacSimOptions(joint_drive_gains={"joint1": (-1.0, 0.0)})
     with pytest.raises(ValueError):
         IsaacSimOptions(joint_drive_gains={"joint[": (1.0, 0.0)})
+
+
+def test_color_lut_option_validates_and_maps_per_channel(_manifest_scene_mod: object) -> None:
+    from openral_sim.backends.isaac_sim import IsaacCameraImagePost
+
+    apply_color_lut = _manifest_scene_mod.apply_color_lut  # type: ignore[attr-defined]
+    lut = ([v // 2 for v in range(256)], list(range(256)), [255 - v for v in range(256)])
+    post = IsaacCameraImagePost(color_lut_rgb=lut)
+    img = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(4, 5, 3) * 3
+    out = apply_color_lut(img, post.model_dump(mode="json")["color_lut_rgb"])
+    assert (out[..., 0] == img[..., 0] // 2).all()
+    assert (out[..., 1] == img[..., 1]).all()
+    assert (out[..., 2] == 255 - img[..., 2]).all()
+    with pytest.raises(ValueError, match="color_lut_rgb"):
+        IsaacCameraImagePost(color_lut_rgb=(list(range(255)), list(range(256)), list(range(256))))
+    with pytest.raises(ValueError, match="color_lut_rgb"):
+        IsaacCameraImagePost(color_lut_rgb=([256] * 256, list(range(256)), list(range(256))))
