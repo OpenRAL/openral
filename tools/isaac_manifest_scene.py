@@ -1910,6 +1910,42 @@ class IsaacManifestScene(IsaacSceneBase):
             self._ArticulationAction(joint_positions=self._target)
         )
 
+    # Hold-correction passes after the warmup and physics steps per pass: the softest
+    # real OpenArm joint (kp 10, kd 0.7) settles within ~0.5 s.
+    _HOLD_PASSES = 3
+    _HOLD_SETTLE_STEPS = 30
+
+    def _after_warmup(self) -> None:
+        """Raise the hold target until the drives hold the reset pose under gravity.
+
+        A position drive rests gravity torque / stiffness below its target. With real
+        motor gains (``joint_drive_gains``) the teleported start pose would sag by
+        centimetres, and the policy would open on an arm lower than the real robot's
+        measured start state, which is already a sagged pose held by a higher command.
+        Iterating ``target += pose - measured`` converges on that command; stiff
+        drives make it a no-op.
+        """
+        if self._target is None:
+            return
+        pose = self._target.copy()
+        for _ in range(self._HOLD_PASSES):
+            err = pose - np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+            err[np.isnan(err)] = 0.0
+            if float(np.abs(err).max()) < 1e-4:
+                break
+            self._target += err
+            self._robot.get_articulation_controller().apply_action(
+                self._ArticulationAction(joint_positions=self._target)
+            )
+            for _ in range(self._HOLD_SETTLE_STEPS):
+                self._world.step(render=False)
+        print(
+            "[isaac_manifest_scene] hold target raised by up to "
+            f"{float(np.abs(self._target - pose).max()):.4f} rad to hold the reset pose "
+            "under gravity",
+            flush=True,
+        )
+
     def _observe(self) -> dict[str, Any]:
         obs = super()._observe()
         if self._has_base:
