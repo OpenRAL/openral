@@ -83,12 +83,14 @@ def test_robot_is_at_its_spawn_and_props_rest_on_the_pallet(env: Any) -> None:
 
 
 def test_gripper_opens_and_closes_in_manifest_units(env: Any) -> None:
+    # Commands arrive in the end effector's command_convention: panda_mobile's is
+    # normalized_close_symmetric (+1 closed, -1 open, #342); /joint_states reads
+    # the manifest's normalised [0, 1] width (URDF: 0..0.04 m).
     action = np.zeros(env.action_dim, dtype=np.float32)
-    action[_GRIPPER_SLOT] = 1.0
+    action[_GRIPPER_SLOT] = -1.0
     opened = _steps(env, action, 40).observation["joint_positions"][10]
-    action[_GRIPPER_SLOT] = 0.0
+    action[_GRIPPER_SLOT] = 1.0
     closed = _steps(env, action, 40).observation["joint_positions"][10]
-    # panda_mobile's gripper is a normalised [0, 1] width (URDF: 0..0.04 m).
     assert opened == pytest.approx(1.0, abs=0.05)
     assert closed == pytest.approx(0.0, abs=0.05)
 
@@ -126,7 +128,8 @@ def test_hal_arm_command_moves_the_arm_and_not_the_base(env: Any) -> None:
     for _ in range(60):
         hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]))
     for _ in range(40):
-        hal.send_action(Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[1.0]))
+        # normalized_close_symmetric: -1 = open (the width reads 1.0).
+        hal.send_action(Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[-1.0]))
     end = env.step(hold)
     joints = dict(zip([j.name for j in desc.joints], hal.read_state().position, strict=True))
     for i, target in enumerate(arm, start=1):
