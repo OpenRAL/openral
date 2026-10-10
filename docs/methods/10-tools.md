@@ -54,13 +54,13 @@ _Pre-commit drift guard checking the mechanically verifiable half of `docs/archi
 
 - `REPO_ROOT` (L41) — Repo root, derived from this file's location.
 - `MAP_PATH = REPO_ROOT / "docs" / "architecture" / "repo-state-map.html"` (L42) — The map file this script checks.
-- module const `COUNT_TOLERANCE: float` (L54) — Counts are held to within 10%, not to the digit — an exact check would go red on every added test file and get disabled.
-- `iter_cards(html: str) -> list[tuple[str, str]]` — Pair each `pkg:` value with the `desc:` that follows it in the same card. (L80)
-- `_resolves(head: str, token: str) -> bool` — Whether a `pkg:` token names a real path under any of the three spellings the map uses: repo-root-relative, relative to the card's leading package under the workspace src layout, or a bare module name. (L89)
-- `check_paths(cards) -> list[str]` — Report `pkg:` tokens that name nothing on disk. (L110)
-- `check_counts(cards) -> list[str]` — Report `desc` counts that have drifted past `COUNT_TOLERANCE`. (L129)
-- `check_literals(html) -> list[str]` — Report card `title`/`pkg`/`status`/`desc` lines that are not one well-formed JS string literal (matched on the field name, so a field missing its opening quote is reported, not skipped); an unescaped `"` there blanks the whole page while the path/count regexes still parse the prefix. (L148)
-- `main(argv: list[str] | None = None) -> int` (L162) — CLI entry; `--quiet`; runs `check_literals` + `check_paths` + `check_counts`, prints drift and returns 1, else 0.
+- module const `COUNT_TOLERANCE: float` (L67) — Counts are held to within 10%, not to the digit — an exact check would go red on every added test file and get disabled.
+- `iter_cards(html: str) -> list[tuple[str, str]]` — Pair each `pkg:` value with the `desc:` that follows it in the same card. (L93)
+- `_resolves(head: str, token: str) -> bool` — Whether a `pkg:` token names a real path under any of the three spellings the map uses: repo-root-relative, relative to the card's leading package under the workspace src layout, or a bare module name. (L102)
+- `check_paths(cards) -> list[str]` — Report `pkg:` tokens that name nothing on disk. (L123)
+- `check_counts(cards) -> list[str]` — Report `desc` counts that have drifted past `COUNT_TOLERANCE`. (L142)
+- `check_literals(html) -> list[str]` — Report data lines whose string literals are not well-formed JS strings, each line shape checked whole: card `title`/`pkg`/`status`/`desc` scalars (matched on the field name, so a field missing its opening quote is reported, not skipped), card `inputs`/`outputs`/`schemas` arrays, and the one-line SCHEMAS rows; an unescaped `"` there blanks the whole page while the path/count regexes still parse the prefix. (L161)
+- `main(argv: list[str] | None = None) -> int` (L179) — CLI entry; `--quiet`; runs `check_literals` + `check_paths` + `check_counts`, prints drift and returns 1, else 0.
 
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table (`just sim-audit`). Two modes: a full rollout, or `--check-compatibility` for a cheap in-process gate with no subprocess or GPU._

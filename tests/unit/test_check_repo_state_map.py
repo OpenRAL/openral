@@ -120,6 +120,17 @@ class TestLiterals:
         problems = check_repo_state_map.check_literals(card)
         assert len(problems) == 1 and "malformed string literal" in problems[0]
 
+    def test_unescaped_quote_in_a_card_array_is_caught(self) -> None:
+        card = _card("tests/hil") + '\n        outputs: ["Image on /x (default "")", "y"],'
+        problems = check_repo_state_map.check_literals(card)
+        assert len(problems) == 1 and "malformed string literal" in problems[0]
+
+    def test_unescaped_quote_in_a_schemas_row_is_caught(self) -> None:
+        good = '  { name: "ClockOrigin", where: "core", kind: "enum", note: "a \\"b\\"" },'
+        bad = '  { name: "ClockOrigin", where: "core", kind: "enum", note: "a "b"" },'
+        assert check_repo_state_map.check_literals(good) == []
+        assert len(check_repo_state_map.check_literals(bad)) == 1
+
     def test_css_content_lines_are_not_cards(self) -> None:
         assert check_repo_state_map.check_literals('      content: ""; width: 10px;') == []
 

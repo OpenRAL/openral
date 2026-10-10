@@ -51,6 +51,19 @@ _COUNT_RE = re.compile(r"^(\d+)\s+(files|manifests)\b")
 # still checked (and reported) rather than skipped.
 _FIELD_LINE_RE = re.compile(r"^\s*(title|pkg|status|desc):\s")
 _WHOLE_FIELD_RE = re.compile(rf"\s*(?:title|pkg|status|desc):\s*{_STRING},?\s*")
+# A card's list field (`inputs` / `outputs` / `schemas`): one array of whole literals.
+_LIST_LINE_RE = re.compile(r"^\s*(inputs|outputs|schemas):\s")
+_WHOLE_LIST_RE = re.compile(
+    rf"\s*(?:inputs|outputs|schemas):\s*\[\s*(?:{_STRING}\s*(?:,\s*{_STRING}\s*)*,?)?\s*\],?\s*"
+)
+# A SCHEMAS row: one `{ key: "…", … }` object of whole literals on one line.
+_ROW_LINE_RE = re.compile(r"^\s*\{\s*name:\s")
+_WHOLE_ROW_RE = re.compile(rf"\s*\{{\s*(?:\w+:\s*{_STRING}\s*,?\s*)+\}},?\s*")
+_LITERAL_LINE_SHAPES = (
+    (_FIELD_LINE_RE, _WHOLE_FIELD_RE),
+    (_LIST_LINE_RE, _WHOLE_LIST_RE),
+    (_ROW_LINE_RE, _WHOLE_ROW_RE),
+)
 COUNT_TOLERANCE = 0.10
 
 # A parenthesised status marker means the token is a plan, not a path on disk.
@@ -146,16 +159,20 @@ def check_counts(cards: list[tuple[str, str]]) -> list[str]:
 
 
 def check_literals(html: str) -> list[str]:
-    """Report card fields whose string literal is not one well-formed JS string.
+    """Report data lines whose string literals are not well-formed JS strings.
 
     An unescaped ``"`` inside a ``desc`` closes the string early: the browser then
     rejects the whole script and the map renders blank, while the path/count
-    regexes above still parse the truncated prefix and report nothing.
+    regexes above still parse the truncated prefix and report nothing. Every line
+    shape that carries literals is checked whole: a card's scalar fields, its
+    ``inputs`` / ``outputs`` / ``schemas`` arrays, and the one-line SCHEMAS rows.
     """
     return [
         f"line {lineno}: malformed string literal (unescaped quote?): {line.strip()[:80]}"
         for lineno, line in enumerate(html.splitlines(), start=1)
-        if _FIELD_LINE_RE.match(line) and not _WHOLE_FIELD_RE.fullmatch(line)
+        if any(
+            head.match(line) and not whole.fullmatch(line) for head, whole in _LITERAL_LINE_SHAPES
+        )
     ]
 
 
