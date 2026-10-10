@@ -1437,6 +1437,15 @@ allowed_collision_pairs:
   - [panda_link5, panda_link6]
   - [panda_link6, panda_link7]
 
+# Control rate: the skill runner ticks at it (`rate_hz` ROS param 0 = read
+# this) and an Isaac scene derives its physics substeps from it so one sim step
+# is one control period (issue #355). provisional: the runner's former 30 Hz
+# default, not measured on a rig (robosuite's own control_freq is 20 Hz). A
+# skill trained at another rate declares action_contract.control_freq_hz and
+# the runner refuses the mismatch.
+action_spec:
+  control_freq_hz: 30.0
+
 # No real-HW HAL adapter (yet) -- robosuite owns the physics.
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).

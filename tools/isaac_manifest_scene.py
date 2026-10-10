@@ -49,12 +49,13 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from _isaac_scene_base import IsaacSceneBase
+from _isaac_scene_base import IsaacSceneBase, physics_dt_for
 from numpy.typing import NDArray
 
 # Joint drive gains applied when the Isaac >= 6 URDF importer converts the robot
@@ -534,7 +535,8 @@ class IsaacManifestScene(IsaacSceneBase):
     """A URDF-imported, manifest-driven Isaac Sim scene."""
 
     warmup_steps = 4
-    physics_substeps = 1
+    # physics_substeps stays None: derived in build() from the world's physics
+    # dt and the manifest's action_spec.control_freq_hz (one step = one tick).
 
     def __init__(
         self,
@@ -561,6 +563,16 @@ class IsaacManifestScene(IsaacSceneBase):
         self._base_joints: list[str] = list(robot_spec.get("base_joints") or [])
         action = robot_spec.get("action", {}) or {}
         self._has_base = bool(action.get("has_base", False))
+        # The robot's control rate (action_spec.control_freq_hz): one env.step is
+        # one control period, for the physics substeps and the base integration
+        # alike. _build_robot_spec refuses a manifest without it.
+        control_freq_hz = action.get("control_freq_hz")
+        if control_freq_hz is None or float(control_freq_hz) <= 0.0:
+            raise ValueError(
+                "robot spec action.control_freq_hz missing or <= 0: the manifest must declare "
+                "action_spec.control_freq_hz (the sidecar derives its physics substeps from it)."
+            )
+        self._control_freq_hz = float(control_freq_hz)
         # Action layout (openral_sim.backends.isaac_sim.IsaacActionLayout): one
         # ABSOLUTE target per non-base manifest joint in manifest order (arm in
         # rad, gripper in its end effector's command_convention; NaN = hold), then the
@@ -591,14 +603,14 @@ class IsaacManifestScene(IsaacSceneBase):
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
         # (x, y, yaw) pose driven by the action's last 3 base-twist channels
-        # (vx, vy, wyaw, base frame) — no PhysX base joints. Integrated by the
-        # BODY_TWIST command interval (one env.step = one /cmd_vel command), not
-        # the physics dt, matching SimAttachedHAL's body_twist_dt_s.
+        # (vx, vy, wyaw, base frame) — no PhysX base joints. Integrated by one
+        # control period per env.step (one step = one /cmd_vel command), the
+        # same interval the physics substeps span.
         self._base_pose = [0.0, 0.0, 0.0]  # odom x, y, yaw (relative to the spawn)
         self._mount_z = float(robot_spec.get("mount_z", 0.0))
         # base_frame link pose in the root frame, resolved at build (see _depth_clouds).
         self._root_to_base: NDArray[np.float64] = np.eye(4)
-        self._base_dt = float(action.get("body_twist_dt_s", 0.05))
+        self._base_dt = 1.0 / self._control_freq_hz
 
         self._robot: Any = None
         self._robot_prim = ""
@@ -717,7 +729,11 @@ class IsaacManifestScene(IsaacSceneBase):
         # NOTE: no device="cuda:0" — forcing GPU PhysX hangs the first warmup for
         # minutes on an 8 GB laptop GPU (per the PoC notes). Default device
         # renders the same scene in ~15 s.
-        self._world = World(stage_units_in_meters=1.0)
+        # One env.step = one control period: physics at the smallest multiple of the
+        # manifest control rate >= 60 Hz. rendering_dt must equal physics_dt: a
+        # rendered world.step() runs app.update(), which advances rendering_dt.
+        dt = physics_dt_for(self._control_freq_hz)
+        self._world = World(stage_units_in_meters=1.0, physics_dt=dt, rendering_dt=dt)
         if self._environment_usd:
             self._add_environment(self._environment_usd)
         else:
@@ -843,10 +859,31 @@ class IsaacManifestScene(IsaacSceneBase):
                 cam.add_distance_to_image_plane_to_frame()
         self._place_robot()
         self._resolve_dof_mapping()
+        self._fix_time_base()
         if self._lidar is not None:
             from omni.physx import get_physx_scene_query_interface
 
             self._scan_query = get_physx_scene_query_interface()
+
+    def _fix_time_base(self) -> None:
+        """Resolve the substeps from the dts the built World actually runs at.
+
+        Read after the stage is complete, so an environment USD that carries its own
+        physics scene cannot change the dt behind the resolved time base. Refuses a
+        rendering dt that differs from the physics dt (the rendered substep would then
+        advance a different interval). The kinematic base integrates the resolved tick.
+        """
+        physics_dt = float(self._world.get_physics_dt())
+        rendering_dt = float(self._world.get_rendering_dt())
+        if not math.isclose(rendering_dt, physics_dt, rel_tol=1e-6):
+            raise ValueError(
+                f"Isaac World runs physics at {physics_dt:.6f} s but renders every "
+                f"{rendering_dt:.6f} s; a rendered step would not advance one physics step."
+            )
+        self.resolve_time_base(physics_dt, self._control_freq_hz)
+        tick = self.sim_dt_per_tick_s
+        assert tick is not None  # reason: set by resolve_time_base
+        self._base_dt = tick
 
     def _add_environment(self, usd: str) -> None:
         """Reference an environment USD under ``/World/environment``.

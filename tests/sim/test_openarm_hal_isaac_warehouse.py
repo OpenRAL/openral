@@ -159,6 +159,46 @@ def test_each_jaw_opens_into_its_own_manifest_range(env: Any) -> None:
     assert np.max(np.abs(arm)) < 0.02
 
 
+def test_one_step_is_one_control_period_in_sim_time(env: Any) -> None:
+    """Regression for issue #355: 60 steps advance the sim clock by 60 / 30 Hz = 2 s.
+
+    Before the substeps were derived from the control rate each step advanced
+    one 1/60 s physics step, so this read 1.0 s and every deploy-sim rehearsal
+    traversed its trajectory at 2x speed in simulation time.
+    """
+    hold = np.full(env.action_dim, np.nan, dtype=np.float32)
+    _steps(env, hold, 1)
+    t0 = env.sim_time_ns()
+    _steps(env, hold, 60)
+    t1 = env.sim_time_ns()
+    assert t0 is not None and t1 is not None
+    assert (t1 - t0) / 1e9 == pytest.approx(60 / 30.0, rel=0.01)
+    assert env.sim_dt_per_tick_s == pytest.approx(1 / 30.0, rel=0.01)
+
+
+def test_a_0p1_rad_s_ramp_moves_at_0p1_rad_s_in_sim_time(env: Any) -> None:
+    """A ramp commanded at 0.1 rad/s per control tick moves at 0.1 rad/s of SIM time.
+
+    The direct regression for the issue #355 symptom ("the kernel's speed check
+    sees 0.2 rad/s, not 0.1"): absolute targets advance v / control_freq_hz per
+    tick, and the joint's velocity is measured against the sim clock over the
+    ramp's steady state (ticks 20..60), where the drive's tracking lag is
+    constant and cancels. With one physics step per tick this read 0.2 rad/s.
+    """
+    env.reset(seed=0)
+    hold = np.full(env.action_dim, np.nan, dtype=np.float32)
+    start = _steps(env, hold, 5).observation["joint_positions"][0]
+    v, n, rate = 0.1, 60, 30.0
+    samples: list[tuple[float, float]] = []
+    for k in range(1, n + 1):
+        action = hold.copy()
+        action[0] = start + v * k / rate
+        result = env.step(action)
+        samples.append((env.sim_time_ns() / 1e9, float(result.observation["joint_positions"][0])))
+    (t0, q0), (t1, q1) = samples[19], samples[-1]
+    assert (q1 - q0) / (t1 - t0) == pytest.approx(v, rel=0.05)
+
+
 def test_hal_commits_a_bimanual_slot_tick(env: Any) -> None:
     """Regression: the HAL refused every OpenArm slot tick (a zero-padded 16-wide
     JOINT_POSITION row vs its 14-wide arm packer). Placed by joint_names /

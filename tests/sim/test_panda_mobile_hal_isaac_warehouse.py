@@ -101,12 +101,30 @@ def test_base_twist_drives_the_robot_down_the_aisle(env: Any) -> None:
     action[_VX_SLOT] = 0.5  # forward in the base frame = +y (spawn faces down the aisle)
     end = _steps(env, action, 40)
     dx, dy = (end.info["robot_position"][i] - start.info["robot_position"][i] for i in range(2))
-    # 40 commands x 0.5 m/s x 0.05 s body_twist interval = 1.0 m, physically.
-    assert dy == pytest.approx(1.0, abs=0.02)
+    # 40 commands x 0.5 m/s x (1/30 s: one control period per step, the manifest's
+    # 30 Hz action_spec.control_freq_hz) = 0.667 m, physically (issue #355).
+    expected = 40 * 0.5 / 30.0
+    assert dy == pytest.approx(expected, abs=0.02)
     assert dx == pytest.approx(0.0, abs=0.02)
     assert end.observation["base_pose"][0] - start.observation["base_pose"][0] == pytest.approx(
-        1.0, abs=0.02
+        expected, abs=0.02
     )
+
+
+def test_one_step_is_one_control_period_in_sim_time(env: Any) -> None:
+    """Regression for issue #355: 60 steps advance the sim clock by 60 / 30 Hz = 2 s.
+
+    Before the substeps were derived from the control rate, each step advanced
+    one 1/60 s physics step and this read 1.0 s — every deploy-sim rehearsal ran
+    the trajectory at 2x speed in simulation time.
+    """
+    _steps(env, np.zeros(env.action_dim, dtype=np.float32), 1)
+    t0 = env.sim_time_ns()
+    _steps(env, np.zeros(env.action_dim, dtype=np.float32), 60)
+    t1 = env.sim_time_ns()
+    assert t0 is not None and t1 is not None
+    assert (t1 - t0) / 1e9 == pytest.approx(60 / 30.0, rel=0.01)
+    assert env.sim_dt_per_tick_s == pytest.approx(1 / 30.0, rel=0.01)
 
 
 def test_hal_arm_command_moves_the_arm_and_not_the_base(env: Any) -> None:

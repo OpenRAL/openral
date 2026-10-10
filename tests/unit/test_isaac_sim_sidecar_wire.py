@@ -20,8 +20,9 @@ import pytest
 zmq = pytest.importorskip("zmq", reason="sidecar-wire group (pyzmq) not installed")
 msgpack = pytest.importorskip("msgpack", reason="sidecar-wire group (msgpack) not installed")
 
-from openral_core import SceneSpec, TaskSpec  # noqa: E402
+from openral_core import RobotDescription, SceneSpec, TaskSpec  # noqa: E402
 from openral_core.schemas import PhysicsBackend  # noqa: E402
+from openral_hal.sim_attached import SimAttachedHAL  # noqa: E402
 from openral_sim.backends.isaac_sim import _IsaacSimSidecar  # noqa: E402
 from openral_sim.sidecar import (  # noqa: E402
     SidecarClient,
@@ -46,10 +47,22 @@ class _FakeSidecar:
     obs unwrapping are tested for real, not mocked.
     """
 
-    def __init__(self, port: int, obs_height: int = 64, obs_width: int = 48) -> None:
+    def __init__(
+        self,
+        port: int,
+        obs_height: int = 64,
+        obs_width: int = 48,
+        sim_dt_per_tick_s: float | None = None,
+        null_time_base: bool = False,
+    ) -> None:
         self.port = port
         self.obs_height = obs_height
         self.obs_width = obs_width
+        # Sim seconds per step the ping reports (the real sidecar derives it from
+        # the manifest control rate); None = a sidecar predating the field.
+        self.sim_dt_per_tick_s = sim_dt_per_tick_s
+        # Send the field as an explicit null (a scene that never resolved its tick).
+        self.null_time_base = null_time_base
         self.last_action: np.ndarray | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._stop = threading.Event()
@@ -78,6 +91,8 @@ class _FakeSidecar:
             data = req.get("data", {})
             if endpoint == "ping":
                 reply: dict = {"ok": True, "action_dim": 7}
+                if self.sim_dt_per_tick_s is not None or self.null_time_base:
+                    reply["sim_dt_per_tick_s"] = self.sim_dt_per_tick_s
             elif endpoint == "reset":
                 reply = {"observation": self._obs()}
             elif endpoint == "step":
@@ -187,6 +202,40 @@ class TestSidecarRollout:
         finally:
             rollout.close()
 
+    def test_sim_dt_per_tick_s_comes_from_the_ping(self) -> None:
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                assert rollout.sim_dt_per_tick_s == pytest.approx(1 / 30)
+                assert rollout.action_dim == 7  # same cached ping
+            finally:
+                rollout.close()
+
+    def test_a_null_time_base_fails_closed(self) -> None:
+        # The field present but null: the scene never resolved its tick. Reading it
+        # as an old sidecar would skip the HAL guard, so the rollout refuses.
+        from openral_core.exceptions import ROSConfigError
+
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), null_time_base=True) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                with pytest.raises(ROSConfigError, match="reports no time base"):
+                    _ = rollout.sim_dt_per_tick_s
+            finally:
+                rollout.close()
+
+    def test_sim_dt_per_tick_s_is_none_for_a_sidecar_without_the_field(
+        self, sidecar: _FakeSidecar
+    ) -> None:
+        scene, task = _scene_task()
+        rollout = _make_rollout(sidecar.port, scene, task)
+        try:
+            assert rollout.sim_dt_per_tick_s is None
+        finally:
+            rollout.close()
+
     def test_reset_returns_eval_shaped_observation(self, sidecar: _FakeSidecar) -> None:
         scene, task = _scene_task(h=64, w=48)
         rollout = _make_rollout(sidecar.port, scene, task)
@@ -293,3 +342,82 @@ class TestMockActionDimByLayout:
         from openral_sim.policies.mock import _resolve_action_dim
 
         assert _resolve_action_dim(self._env("manifest", action_dim=9)) == 9
+
+
+class TestHalTimeBaseGuard:
+    """``SimAttachedHAL.connect`` holds the env's tick to the manifest's control rate.
+
+    The real OpenArm manifest (30 Hz ``action_spec.control_freq_hz``) wrapped
+    around the sidecar rollout, over the real wire (issue #355).
+    """
+
+    @staticmethod
+    def _openarm() -> RobotDescription:
+        from pathlib import Path
+
+        here = Path(__file__).resolve()
+        root = next(p for p in here.parents if (p / "robots").is_dir())
+        return RobotDescription.from_yaml(str(root / "robots" / "openarm" / "robot.yaml"))
+
+    def _hal(self, port: int) -> SimAttachedHAL:
+        scene, task = _scene_task()
+        return SimAttachedHAL(_make_rollout(port, scene, task), self._openarm())
+
+    def test_one_control_period_per_step_is_accepted_and_recorded(self) -> None:
+        from openral_core.schemas import ClockOrigin
+
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30) as s:
+            hal = self._hal(s.port)
+            try:
+                hal.connect()
+                assert hal._sim_dt_per_tick_s == pytest.approx(1 / 30)
+                # The sidecar reports no sim clock on reset, so the authority
+                # stays host-wall; the tick is still what clock_authority
+                # would stamp once the clock is live.
+                assert hal.clock_authority().origin is ClockOrigin.HOST_WALL
+            finally:
+                hal.env.close()
+
+    def test_a_physics_step_per_tick_is_refused(self) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        # 1/60 s per step under a 30 Hz runner: the pre-#355 behaviour, 2x speed.
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 60) as s:
+            hal = self._hal(s.port)
+            try:
+                with pytest.raises(ROSConfigError, match=r"0\.016667 s.*30 Hz"):
+                    hal.connect()
+            finally:
+                hal.env.close()
+
+    def test_a_nan_tick_is_refused(self) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=float("nan")) as s:
+            hal = self._hal(s.port)
+            try:
+                with pytest.raises(ROSConfigError, match="One step must be one control period"):
+                    hal.connect()
+            finally:
+                hal.env.close()
+
+    def test_a_manifest_without_a_rate_cannot_be_held_to_the_tick(self) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        silent = self._openarm().model_copy(update={"action_spec": None})
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30) as s:
+            hal = SimAttachedHAL(_make_rollout(s.port, scene, task), silent)
+            try:
+                with pytest.raises(ROSConfigError, match=r"no action_spec\.control_freq_hz"):
+                    hal.connect()
+            finally:
+                hal.env.close()
+
+    def test_a_sidecar_without_the_field_is_not_checked(self, sidecar: _FakeSidecar) -> None:
+        hal = self._hal(sidecar.port)
+        try:
+            hal.connect()  # back-compat: older protocol, nothing to hold it to
+            assert hal._sim_dt_per_tick_s is None
+        finally:
+            hal.env.close()

@@ -266,6 +266,9 @@ def _serve(
                 reply: dict[str, Any] = {
                     "ok": True,
                     "action_dim": scene.action_dim,
+                    # Sim seconds per step (physics dt x substeps = one control
+                    # period); the HAL refuses a mismatch with the manifest rate.
+                    "sim_dt_per_tick_s": scene.sim_dt_per_tick_s,
                     "task": task,
                     "layout": layout,
                     "environment": environment,
