@@ -121,3 +121,19 @@ def test_policy_image_reverses_bgr8_to_rgb_for_runner_and_recorder_alike() -> No
     depth = decode_policy_image(_frame(FrameEncoding.DEPTH16, bytes(24), channels=1))
     assert depth is not None and depth.dtype == np.uint16
     assert decode_policy_image(_frame(FrameEncoding.RGB8, bytes(35), channels=3)) is None
+
+
+def test_recordable_images_keep_only_rgb_uint8_frames() -> None:
+    """Depth / mono frames beside the RGB ones are dropped, not rejected per frame."""
+    from openral_runner.dataset_recorder_bridge import decode_recordable_images
+
+    frames = {
+        "top": _frame(FrameEncoding.RGB8, bytes(range(36)), channels=3),
+        "head_zed": _frame(
+            FrameEncoding.DEPTH16, np.arange(12, dtype=np.uint16).tobytes(), channels=1
+        ),
+        "mono": _frame(FrameEncoding.MONO8, bytes(12), channels=1),
+    }
+    out = decode_recordable_images(frames, {"top": "top_cam"})
+    assert list(out) == ["top_cam"] and out["top_cam"].shape == (3, 4, 3)
+    assert decode_recordable_images(None, {}) == {}

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
 
 import structlog
 from openral_core import TickResult
@@ -127,8 +126,9 @@ class DeployRunner(InferenceRunnerBase):
         ``recorder`` is an optional
         ``openral_dataset.RolloutRecorder``. When set,
         ``episode_start`` / ``episode_end`` drive the recorder's
-        lifecycle and (PR3 follow-up wiring inside ``_tick_impl``) every
-        per-tick state + frame + action lands on the attached sinks.
+        lifecycle and every tick's state, action and native-resolution
+        camera frames (from the aggregator snapshot the skill stepped on)
+        land on the attached sinks.
         Typed as ``object`` here so ``openral_runner`` does not import
         ``openral_dataset`` (the dataset package imports observability,
         not the other way around — keeping the dep DAG one-way).
@@ -587,6 +587,11 @@ class DeployRunner(InferenceRunnerBase):
         # runner stays import-safe on hosts without numpy (the dataset
         # path is optional).
         import numpy as np  # noqa: PLC0415
+        from openral_core import sensor_name_to_slot  # noqa: PLC0415
+
+        from openral_runner.dataset_recorder_bridge import (  # noqa: PLC0415
+            decode_recordable_images,
+        )
 
         try:
             joint_state = getattr(snapshot, "joint_state", None)
@@ -607,20 +612,12 @@ class DeployRunner(InferenceRunnerBase):
                 action_dim = state_array.shape[0]
                 action_array = np.zeros(action_dim, dtype=np.float32)
 
-            # Per-camera images. Hardware reads frames from
-            # SensorReader; here we forward whatever was captured this
-            # tick. Frame keys come from the recorder so the schema
-            # matches the LeRobot v3 features dict.
-            images: dict[str, np.ndarray[Any, Any]] = {}
-            for cam_key in self._recorder.expected_image_keys():  # type: ignore[union-attr]
-                # Hardware-side per-camera frames are recorded via the
-                # ROS publisher (PR2) which writes its own dataset rows;
-                # the in-line path here doesn't have access to the raw
-                # uint8 buffers. Provide a zero placeholder so the
-                # schema is satisfied. PR4's converter will
-                # post-process by joining /openral/tick with the camera
-                # streams from the bag for the authoritative frames.
-                images[cam_key] = np.zeros((1, 1, 3), dtype=np.uint8)
+            # The camera frames the policy read this tick, at capture resolution,
+            # decoded by the same function the deploy graph's recorder bridge uses.
+            images = decode_recordable_images(
+                getattr(snapshot, "image_frames", None),
+                sensor_name_to_slot(self._hal.description),
+            )
 
             self._recorder.record_frame(  # type: ignore[union-attr]
                 observation_state=state_array,

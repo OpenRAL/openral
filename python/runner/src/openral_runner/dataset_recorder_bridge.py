@@ -41,6 +41,7 @@ active rSkill's ``state_contract`` rather than ``RobotDescription``;
 from __future__ import annotations
 
 import io
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -54,7 +55,12 @@ if TYPE_CHECKING:
     from openral_dataset import RolloutRecorder
     from openral_world_state.aggregator import WorldStateAggregator
 
-__all__ = ["DatasetRecorderBridge", "decode_inline_frame", "decode_policy_image"]
+__all__ = [
+    "DatasetRecorderBridge",
+    "decode_inline_frame",
+    "decode_policy_image",
+    "decode_recordable_images",
+]
 
 _log = structlog.get_logger(__name__)
 
@@ -176,6 +182,46 @@ def decode_policy_image(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
     if arr is not None and frame.encoding == FrameEncoding.BGR8:
         return np.ascontiguousarray(arr[..., ::-1])
     return arr
+
+
+def decode_recordable_images(
+    image_frames: Mapping[str, SensorFrame] | None, sensor_to_slot: Mapping[str, str]
+) -> dict[str, np.ndarray[Any, Any]]:
+    """Decode a ``WorldState.image_frames`` map into ``RolloutRecorder.record_frame`` images.
+
+    Each frame goes through ``decode_policy_image``, so the recorder writes the RGB
+    array the policy was fed. Keys are VLA slots (``openral_core.sensor_name_to_slot``;
+    an unmapped sensor keeps its own name). Only ``(H, W, 3) uint8`` frames are kept,
+    the ``record_frame`` contract, so a DEPTH16 or mono frame in the same world state
+    (the OpenArm bench's ``head_zed``) is dropped rather than rejected per frame, which
+    would stop the episode. Frames are capture resolution: the aggregator holds the
+    reader's native frame, never the sensor leg's downscaled ROS topic. The one image
+    path for ``DatasetRecorderBridge`` and ``DeployRunner``'s attached recorder.
+
+    Example:
+        >>> from openral_core.schemas import FrameEncoding, SensorFrame
+        >>> frame = SensorFrame(
+        ...     sensor_id="wrist",
+        ...     stamp_monotonic_ns=1,
+        ...     stamp_wall_ns=1,
+        ...     encoding=FrameEncoding.BGR8,
+        ...     width=2,
+        ...     height=1,
+        ...     channels=3,
+        ...     data=bytes([1, 2, 3, 4, 5, 6]),
+        ... )
+        >>> decode_recordable_images({"wrist": frame}, {"wrist": "wrist_cam"})["wrist_cam"].tolist()
+        [[[3, 2, 1], [6, 5, 4]]]
+    """
+    out: dict[str, np.ndarray[Any, Any]] = {}
+    for name, frame in (image_frames or {}).items():
+        arr = decode_policy_image(frame)
+        if arr is None:
+            continue  # topic/handle delivery, or a skip `decode_inline_frame` logged
+        if arr.dtype != np.uint8 or arr.ndim != _HWC_NDIM or arr.shape[2] != _RGB_CHANNELS:
+            continue
+        out[sensor_to_slot.get(name, name)] = arr
+    return out
 
 
 def _skip(frame: SensorFrame, reason: str) -> None:
@@ -417,7 +463,9 @@ class DatasetRecorderBridge:
             return  # no proprio for this tick — drop it
         state = np.asarray(joint_state.position, dtype=np.float32)
         action = np.asarray([v for _key, vals in accum for v in vals], dtype=np.float32)
-        images = self._decode_images(getattr(snapshot, "image_frames", None))
+        images = decode_recordable_images(
+            getattr(snapshot, "image_frames", None), self._sensor_to_slot
+        )
         try:
             self._recorder.record_frame(
                 observation_state=state,
@@ -441,21 +489,3 @@ class DatasetRecorderBridge:
             return
         self._n_frames += 1
         self._n_frames_total += 1
-
-    def _decode_images(self, image_frames: Any) -> dict[str, np.ndarray[Any, Any]]:  # noqa: ANN401
-        """Decode aggregator ``image_frames`` (sensor-name keyed) → slot-keyed HWC arrays."""
-        out: dict[str, np.ndarray[Any, Any]] = {}
-        if not image_frames:
-            return out
-        for name, frame in image_frames.items():
-            arr = decode_policy_image(frame)
-            if arr is None:
-                continue  # topic/handle delivery, or a skip `decode_inline_frame` logged
-            # `DatasetRecorder.record_frame` takes `(H, W, 3) uint8` RGB per
-            # camera key; a DEPTH16 or mono frame in the same world state (the
-            # OpenArm bench's `head_zed`) is not a dataset image feature and
-            # would be rejected per frame, stopping the episode.
-            if arr.dtype != np.uint8 or arr.ndim != _HWC_NDIM or arr.shape[2] != _RGB_CHANNELS:
-                continue
-            out[self._sensor_to_slot.get(name, name)] = arr
-        return out

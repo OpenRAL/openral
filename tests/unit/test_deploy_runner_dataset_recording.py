@@ -12,7 +12,8 @@ The covered surface:
     the recorder's episode lifecycle (and propagating through to the
     sink as PHASE_START / PHASE_END markers).
   * In-tick fan-out of state / action into the bag via the recorder's
-    ``record_frame`` path.
+    ``record_frame`` path, with the camera frames the skill stepped on at
+    capture resolution (this path used to write 1x1 zero placeholders).
   * Idempotent deactivation: a still-open recorder episode is closed as
     a failure on teardown.
 """
@@ -27,7 +28,7 @@ import pytest
 from openral_core import Action, ControlMode, RobotDescription
 from openral_core.schemas import WorldState
 from openral_dataset import RolloutRecorder, Rosbag2Sink
-from openral_dataset.bag import PHASE_END, PHASE_START, TOPIC_EPISODE, TOPIC_TICK
+from openral_dataset.bag import PHASE_END, PHASE_START, TOPIC_EPISODE, TOPIC_IMAGE, TOPIC_TICK
 from openral_hal.so100_follower import SO100FollowerHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_rskill.base import rSkillBase
@@ -185,6 +186,47 @@ def test_runner_episode_lifecycle_writes_bag_markers(
     assert end_msg["phase"] == PHASE_END
     assert end_msg["success"] is True
     assert end_msg["episode_idx"] == 0
+
+
+def test_runner_records_the_native_camera_frame_the_skill_saw(
+    real_runner_stack: tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path],
+) -> None:
+    """A BGR8 camera frame in the aggregator lands in the bag full-size and RGB."""
+    import base64
+    import time
+
+    import numpy as np
+    from openral_core.schemas import FrameEncoding, SensorFrame
+
+    runner, _recorder, _sink, bag_path = real_runner_stack
+    width, height = 96, 60  # 960x600 / 10: an Arducam's aspect, small enough for a unit test
+    bgr = np.zeros((height, width, 3), dtype=np.uint8)
+    bgr[..., 0] = 200  # blue, in BGR order
+    runner._aggregator.update_image_frame(
+        "wrist",
+        SensorFrame(
+            sensor_id="wrist",
+            stamp_monotonic_ns=time.monotonic_ns(),
+            stamp_wall_ns=time.time_ns(),
+            encoding=FrameEncoding.BGR8,
+            width=width,
+            height=height,
+            channels=3,
+            data=bgr.tobytes(),
+        ),
+    )
+    runner.episode_start("pick the cube")
+    runner.run(max_ticks=1)
+    runner.episode_end(success=True)
+    runner.deactivate()
+
+    images = [m for t, m in _read_bag(bag_path) if t == TOPIC_IMAGE]
+    assert len(images) == 1
+    img = images[0]
+    assert (img["camera"], img["width"], img["height"]) == ("wrist", width, height)
+    pixels = np.frombuffer(base64.b64decode(str(img["data_b64"])), dtype=np.uint8)
+    rgb = pixels.reshape(height, width, 3)
+    assert int(rgb[0, 0, 2]) == 200 and int(rgb[0, 0, 0]) == 0
 
 
 def test_runner_episode_start_twice_raises(
