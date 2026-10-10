@@ -16,6 +16,11 @@ from openral_observability import inference_span
 
 from openral_sim import _behavior_wire
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
+from openral_sim._sidecar_common import (
+    alloc_conf_var,
+    default_expandable_segments,
+    venv_torch_version,
+)
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
@@ -245,10 +250,15 @@ def build_behavior_groot_policy(
                 f"{_CHECKPOINT_ENV}, or place it at {_DEFAULT_CHECKPOINT}."
             )
         device = "cuda" if spec.device == "auto" else str(spec.device)
+        sidecar_python = _sidecar_python()
+        alloc_env: dict[str, str] = {}
+        default_expandable_segments(
+            alloc_env, var=alloc_conf_var(venv_torch_version(sidecar_python.parent.parent))
+        )
         launch_argv = [
             "env",
-            "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
-            str(_sidecar_python()),
+            *(f"{k}={v}" for k, v in alloc_env.items()),
+            str(sidecar_python),
             str(_locate_sidecar_script()),
             "--checkpoint",
             str(checkpoint),

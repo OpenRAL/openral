@@ -18,49 +18,10 @@ from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import rSkill
 from openral_sim.policies.molmoact2 import (
-    _CUDA_ALLOC_ENV,
-    _enable_expandable_segments,
     _hf_offline_if_cached,
     _resolve_max_crops,
     _split_repo_revision,
 )
-
-
-class TestEnableExpandableSegments:
-    """MolmoAct2 NF4: ~6 GiB resident, peaks ~7.63 GiB. On an 8 GiB card the
-    first forward's ~1.5 GiB embedding cat OOMs without the CUDA
-    expandable-segments allocator, enabled before the first CUDA allocation.
-    RTX 4070: OOM without, 7.63 GiB peak fit with.
-    """
-
-    # Follows the installed torch: the var was renamed in 2.9
-    # (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF) and the old spelling now
-    # emits a deprecation warning, so the adapter picks one rather than setting
-    # both. Reuses the adapter's own resolution so the test cannot drift from it.
-    _VAR = _CUDA_ALLOC_ENV
-
-    def test_sets_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(self._VAR, raising=False)
-        _enable_expandable_segments()
-        import os
-
-        assert os.environ[self._VAR] == "expandable_segments:True"
-
-    def test_noop_when_already_expandable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(self._VAR, "expandable_segments:True,max_split_size_mb:128")
-        _enable_expandable_segments()
-        import os
-
-        # left exactly as the operator set it
-        assert os.environ[self._VAR] == "expandable_segments:True,max_split_size_mb:128"
-
-    def test_respects_unrelated_preset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An operator's existing conf without expandable_segments is NOT overwritten."""
-        monkeypatch.setenv(self._VAR, "max_split_size_mb:64")
-        _enable_expandable_segments()
-        import os
-
-        assert os.environ[self._VAR] == "max_split_size_mb:64"
 
 
 class TestSplitRepoRevision:

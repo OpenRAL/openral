@@ -26,8 +26,12 @@ export OPENRAL_AUTO_INSTALL_DEPS=1
 # 6. 8 GB-GPU headroom: expandable segments reduces the first-forward spike OOM.
 #    torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF,
 #    the workspace .venv this script targets); the old name still works but logs
-#    a deprecation warning on every process start.
-export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+#    a deprecation warning on every process start. Never on a Jetson (L4T): torch's
+#    expandable path crashes on the iGPU's NVML fabric query (same gate as
+#    openral_sim._sidecar_common.default_expandable_segments).
+if [ ! -e /etc/nv_tegra_release ]; then
+  export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+fi
 
 # 7. GUI on the user's X display for the viewer + dashboard.
 export DISPLAY="${DISPLAY:-:1}"

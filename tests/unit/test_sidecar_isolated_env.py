@@ -18,9 +18,22 @@ from openral_sim._sidecar_common import make_isolated_env
 
 
 def test_defaults_expandable_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openral_core.gpu
+
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     env = make_isolated_env(Path("/tmp/sidecar/.venv"))
     assert env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+
+
+def test_no_expandable_segments_on_jetson(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Jetson iGPU cannot answer torch's NVML fabric query; leave it off."""
+    import openral_core.gpu
+
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    env = make_isolated_env(Path("/tmp/sidecar/.venv"))
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in env
 
 
 def test_caller_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -176,7 +176,7 @@ vla:
 > usable). The decisive enabler is the **CUDA expandable-segments allocator**:
 > without it the first forward's ~1.5 GiB embedding `cat` cannot be placed
 > contiguously and OOMs. The molmoact2 adapter turns this on automatically
-> (`expandable_segments:True`, via `_enable_expandable_segments`) before its
+> (`expandable_segments:True`, via `default_expandable_segments`) before its
 > first CUDA allocation; export it yourself if other GPU work in the process
 > allocates before the policy loads — as `PYTORCH_ALLOC_CONF` on torch ≥2.9,
 > `PYTORCH_CUDA_ALLOC_CONF` on older torch (the var was renamed in 2.9 and the

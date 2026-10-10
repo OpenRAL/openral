@@ -1714,6 +1714,9 @@ def test_bh_run_launch_invocation_sets_expandable_segments(
         return 0
 
     monkeypatch.setattr(_ds, "_run_launch", _fake_run_launch)
+    import openral_core.gpu
+
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
 
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
