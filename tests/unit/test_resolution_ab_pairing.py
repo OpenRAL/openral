@@ -9,7 +9,7 @@ overlapped. On 2026-09-10 `sink_cup` ran its arms 29 minutes apart and its
 one lane that stayed paired, was 3/10 against 3/10.
 
 Running the lanes genuinely concurrently fixed the pairing and broke the host:
-baseline occupancy on q-laptop is ~9.1 GB of 15.4 and one deploy graph adds
+baseline occupancy on laptop is ~9.1 GB of 15.4 and one deploy graph adds
 ~4.9 GB, so two exhausted all 4 GB of swap, drove load averages to 225, and
 returned 9 of 20 rounds unreadable.
 

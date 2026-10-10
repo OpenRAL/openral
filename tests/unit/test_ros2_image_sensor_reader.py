@@ -31,6 +31,7 @@ from openral_core.exceptions import ROSConfigError, ROSPerceptionStale
 from openral_runner.backends.ros2_image import (
     Ros2ImageSensorReader,
     _depth32f_to_depth16,
+    _strip_alpha,
 )
 from openral_runner.factory import make_sensor_readers
 
@@ -253,6 +254,23 @@ class TestDepthConversion:
         # 70 m > 65.535 m. Wrapping would report ~4.4 m — a confident near miss.
         out = _depth32f_to_depth16(np.array([[70.0]], np.float32))
         assert out.tolist() == [[0]]
+
+
+class TestAlphaStrip:
+    def test_a_pitch_padded_bgra_view_strips_to_packed_bgr(self) -> None:
+        """`_rows` hands back a strided view when `step` carries row padding
+        (NITROS pitch-aligned buffers); the SIMD strip must still yield packed
+        `(H, W, 3)` pixels in the original channel order."""
+        height, width, pad = 2, 3, 8
+        padded = np.full((height, width * 4 + pad), 7, np.uint8)
+        pixels = np.arange(height * width * 4, dtype=np.uint8).reshape(height, width, 4)
+        padded[:, : width * 4] = pixels.reshape(height, width * 4)
+        view = padded[:, : width * 4].reshape(height, width, 4)
+        assert not view.flags.c_contiguous
+        out = _strip_alpha(view)
+        assert out.shape == (height, width, 3)
+        assert out.flags.c_contiguous
+        assert out.tobytes() == pixels[..., :3].tobytes()
 
 
 class TestStalenessContract:

@@ -44,9 +44,25 @@ The executor owns its action deque, calling lerobot's
 ``predict_action_chunk`` directly; it never resets or consumes the
 policy's internal ``select_action`` queue from two threads.
 
-With an enabled lerobot ``RTCConfig`` the deque becomes a Real-Time-Chunking
-``ActionQueue``: a pre-fetched chunk replaces the queue tail as soon as it
-lands instead of being appended behind it.
+Without RTC a pre-fetched chunk is appended behind the queue tail minus its
+leading actions that are already in the past (``_merge_prefetched``): it was
+planned from the observation of the step that launched it, and the tail served
+those steps meanwhile. Appending it whole replayed ``prefetch_at`` stale steps at
+every boundary — the arm visibly snapped back each chunk. With an enabled lerobot
+``RTCConfig`` the deque becomes a Real-Time-Chunking ``ActionQueue``: a pre-fetched
+chunk replaces the queue tail as soon as it lands instead of being appended.
+
+``postprocess_action`` runs on every action of a chunk in the thread that
+produced it, right after inference, and the chunk is moved to host memory
+first with one copy. Two reasons, both measured on the OpenArm/Thor cell:
+a per-pop postprocessor that ends in a device-to-CPU move synchronises the
+default CUDA stream, so while a pre-fetch is running every control tick
+waits behind the model's kernels (100-460 ms stalls); and lerobot's
+``AbsoluteActionsProcessorStep`` adds the state cached by the *latest*
+preprocessor call, which a per-pop postprocess reads after the pre-fetch
+launch has already replaced it with the next chunk's state. Postprocessing
+the chunk right after its own inference is how lerobot's RTC loop and async
+policy server use the same pair.
 """
 
 from __future__ import annotations
@@ -79,6 +95,7 @@ class ChunkedExecutor:
         chunk_size: int | None = None,
         prefetch_at: int = 20,
         rtc_config: Any = None,
+        postprocess_action: Callable[[Any], Any] | None = None,
     ) -> None:
         """Initialise without starting any threads.
 
@@ -117,6 +134,16 @@ class ChunkedExecutor:
                 below the horizon cannot fill it, which shortens the blend and
                 logs a warning at construction. Requires ``prefetch_at >= 1``
                 and a producer returning a ``(1, chunk, action)`` tensor.
+            postprocess_action: Per-action postprocessor (``(batch, dof)`` in,
+                anything out), e.g. the adapter's lerobot postprocessor followed
+                by ``to_numpy_action``. Without RTC it runs on every action of
+                a chunk in the producing thread, straight after inference and
+                after one host copy of the chunk, so pops are free and the
+                postprocessor sees the state cached for *that* inference.
+                With RTC it runs at merge time, also in the producing thread:
+                lerobot's ``ActionQueue`` keeps the raw rows for the guidance
+                blend and serves the postprocessed ones, which must then be a
+                flat per-step vector (``select_action`` returns it as NumPy).
 
         Raises:
             ROSConfigError: ``prefetch_at`` is negative.
@@ -149,6 +176,7 @@ class ChunkedExecutor:
                 chunk_size=self._chunk_size,
             )
 
+        self._postprocess_action = postprocess_action
         self._buffer: deque[Any] = deque()
 
         # ── RTC (lerobot Real-Time Chunking) state ──────────────────────────
@@ -187,6 +215,11 @@ class ChunkedExecutor:
         self._bg_error: Exception | None = None
 
         self._chunk_index: int = 0
+        # Actions served so far, and the count before the step whose observation the
+        # pending pre-fetch read: their difference is how many of the pre-fetched chunk's
+        # leading actions are already in the past when it is merged (`_merge_prefetched`).
+        self._popped: int = 0
+        self._popped_at_launch: int = 0
 
         self._running = False
 
@@ -211,6 +244,8 @@ class ChunkedExecutor:
         self._bg_error = None
         self._buffer.clear()
         self._chunk_index = 0
+        self._popped = 0
+        self._popped_at_launch = 0
         if self._rtc_queue is not None:
             self._rtc_queue.clear()
         self._rtc_last_delay = 0
@@ -258,13 +293,17 @@ class ChunkedExecutor:
             self._bg_event.clear()
             if result is None:
                 raise ROSRuntimeError("ChunkedExecutor stopped while waiting on pre-fetch")
-            self._extend_buffer(result)
-            return self._pop_and_maybe_prefetch(batch)
+            fresh = self._merge_prefetched(result)
+            if fresh:
+                self._buffer.extend(fresh)
+                return self._pop_and_maybe_prefetch(batch)
+            # Every pre-fetched action is already in the past (the pre-fetch read an
+            # observation a whole chunk ago): replan from this step's observation below.
 
         # Cold start (first call after reset) — synchronous foreground chunk.
         self._chunk_index += 1
         chunk = self._produce(self._materialize(batch), self._chunk_index, "foreground")
-        self._extend_buffer(chunk)
+        self._buffer.extend(self._finish_chunk(chunk))
         return self._pop_and_maybe_prefetch(batch)
 
     # ── Internal ─────────────────────────────────────────────────────────────
@@ -275,10 +314,33 @@ class ChunkedExecutor:
         Every pop routes through this method so all branches share one trigger.
         """
         action = self._buffer.popleft()
+        self._popped += 1
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= len(self._buffer) and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
         return action
+
+    def _merge_prefetched(self, actions: list[Any]) -> list[Any]:
+        """Drop the pre-fetched chunk's actions that are already in the past.
+
+        A pre-fetch reads the observation of step *k* (the step whose pop launched it);
+        action *i* of that chunk targets step *k + i*, exactly as a synchronous chunk's
+        first action is served at its own observation step. Steps *k* … *k + elapsed - 1*
+        were already served from the previous chunk's tail, so its first ``elapsed``
+        actions are in the past.
+        Serving them would replay that stretch — the arm snaps back by ``prefetch_at``
+        steps at every boundary (measured on the OpenArm restock π0.5: the chunk-2 head
+        landed 0.46 rad from the live state). Returns ``[]`` when the whole chunk is
+        stale; the caller then replans synchronously from the current observation.
+        """
+        elapsed = max(self._popped - self._popped_at_launch, 0)
+        if elapsed:
+            log.debug(
+                "chunked_executor.prefetch_stale_dropped",
+                dropped=min(elapsed, len(actions)),
+                elapsed=elapsed,
+            )
+        return actions[elapsed:]
 
     # ── RTC mode ─────────────────────────────────────────────────────────────
 
@@ -314,6 +376,9 @@ class ChunkedExecutor:
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= self._rtc_queue.qsize() and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
+        if self._postprocess_action is not None:
+            # A processed row, finished at merge time (see `_rtc_merge`).
+            return action.numpy()
         return action.unsqueeze(0)
 
     def _rtc_merge(self, chunk: Any, *, idx_before: int) -> None:
@@ -331,6 +396,7 @@ class ChunkedExecutor:
                 f"batch dimension must be 1, got {int(chunk.shape[0])}"
             )
         actions = chunk.squeeze(0).detach()
+        processed = self._rtc_processed(actions)  # before the delay read: it counts every pop
         # Ground-truth delay: how many actions the consumer popped while this
         # inference ran. Valid in wall-clock deploy AND fast-forward sim, unlike
         # a latency/control-period estimate.
@@ -341,7 +407,21 @@ class ChunkedExecutor:
         # one action of staleness in the drop count, not a bug. Don't triage it as one.
         real_delay = max(0, self._rtc_queue.get_action_index() - idx_before)
         self._rtc_last_delay = real_delay
-        self._rtc_queue.merge(actions, actions, real_delay, idx_before)
+        self._rtc_queue.merge(actions, processed, real_delay, idx_before)
+
+    def _rtc_processed(self, actions: Any) -> Any:
+        """The robot-facing copy of an RTC chunk: raw rows, or host-side postprocessed ones.
+
+        ``ActionQueue`` keeps the raw actions for the guidance blend and serves
+        this copy to the robot, so postprocessing happens here, once per chunk and
+        in the producing thread, for the same two reasons as without RTC.
+        """
+        if self._postprocess_action is None:
+            return actions
+        import torch  # RTC implies torch; the module itself stays torch-free
+
+        rows = [self._postprocess_action(row.unsqueeze(0)) for row in actions.cpu()]
+        return torch.stack([torch.as_tensor(r).reshape(-1) for r in rows])
 
     def _raise_bg_error_if_any(self) -> None:
         """Re-raise a latched background error on the foreground thread."""
@@ -384,12 +464,14 @@ class ChunkedExecutor:
         """Resolve a lazy payload factory to the concrete payload."""
         return batch() if callable(batch) else batch
 
-    def _extend_buffer(self, chunk: Any) -> None:
-        """Slice one produced chunk into per-step actions.
+    def _finish_chunk(self, chunk: Any) -> list[Any]:
+        """Slice one produced chunk into per-step actions, host-side and postprocessed.
 
         Tensor producers may return more than ``chunk_size`` actions; lerobot
         consumes the configured prefix. Custom sequence producers must return
         exactly ``chunk_size`` actions so scheduling and telemetry stay honest.
+        A device tensor is copied to host once, whole, so no later pop touches
+        the GPU. Runs in the thread that produced the chunk.
         """
         if hasattr(chunk, "transpose") and hasattr(chunk, "dim"):  # torch tensor
             if chunk.dim() != _CHUNK_TENSOR_RANK or chunk.shape[1] < self._chunk_size:
@@ -398,7 +480,10 @@ class ChunkedExecutor:
                     f"with at least {self._chunk_size} actions, got shape "
                     f"{tuple(chunk.shape)!r}"
                 )
-            actions = list(chunk.transpose(0, 1)[: self._chunk_size])
+            chunk = chunk[:, : self._chunk_size]
+            if chunk.device.type != "cpu":  # CUDA, MPS, XPU, ...: one whole-chunk copy
+                chunk = chunk.cpu()
+            actions = list(chunk.transpose(0, 1))
         else:
             actions = list(chunk)
             if len(actions) != self._chunk_size:
@@ -406,7 +491,9 @@ class ChunkedExecutor:
                     f"ChunkedExecutor expected {self._chunk_size} actions, "
                     f"producer returned {len(actions)}"
                 )
-        self._buffer.extend(actions)
+        if self._postprocess_action is not None:
+            actions = [self._postprocess_action(a) for a in actions]
+        return actions
 
     def _launch_prefetch(self, batch: Any) -> None:
         """Start the background pre-fetch thread (no live policy state touched)."""
@@ -418,6 +505,8 @@ class ChunkedExecutor:
 
         self._chunk_index += 1
         prefetch_index = self._chunk_index
+        # Launched from the pop that served step k: count from before that pop.
+        self._popped_at_launch = self._popped - 1
 
         rtc_kwargs: dict[str, Any] | None = None
         idx_before = 0
@@ -450,8 +539,10 @@ class ChunkedExecutor:
                     with self._bg_lock:
                         self._bg_pending = False
                 else:
+                    # Finish here, not at pop: see the module docstring.
+                    finished = self._finish_chunk(result)
                     with self._bg_lock:
-                        self._bg_result = result
+                        self._bg_result = finished
             except Exception as exc:  # reason: propagate to foreground via event
                 with self._bg_lock:
                     self._bg_error = exc

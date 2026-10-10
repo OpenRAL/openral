@@ -33,7 +33,7 @@
 # 3/10, p = 1.0.
 #
 # Running the two lanes genuinely concurrently fixes the pairing and breaks the
-# host. Measured on q-laptop the same evening: baseline occupancy is ~9.1 GB of
+# host. Measured on laptop the same evening: baseline occupancy is ~9.1 GB of
 # 15.4 GB (browser, editor sessions, the shared XR-1 sidecar) and ONE deploy
 # graph adds ~4.9 GB — HAL/MuJoCo 3.2, runtime_node 0.9, the Nav2 stack ~0.8.
 # Two graphs is ~18.9 GB against 15.4. The second attempt exhausted all 4 GB of

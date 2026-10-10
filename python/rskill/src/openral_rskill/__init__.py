@@ -15,6 +15,8 @@ Public surface
   via the ``openral.policy_attach_hooks`` entry-point group.
 - ``hf_download_cached_first``: Cache-first HF Hub file resolution shared by
   the VLA adapters and ``openral_sim``'s quantization helpers.
+- ``local_snapshot_dir``: The resolved checkpoint as a local directory — the
+  directory itself for an installed rSkill snapshot, a Hub snapshot otherwise.
 - ``gpu_allocated_mb``: Current CUDA allocator usage in MB, the single GPU-memory
   probe shared by the phase-timer heartbeats and the rskill runner node's
   eviction accounting.
@@ -22,11 +24,9 @@ Public surface
   a start path.
 - ``validate_skill_ref``: Validate a bare rSkill reference string.
 
-Heavy-dependency adapters (``SmolVLAAdapter``, ``SO100SmolVLASkill``) and
-backends (``PyTorchRuntime``, ``ONNXRuntime``) are **not** imported here.
-Import them explicitly when their dependencies are installed:
+Heavy-dependency backends (``PyTorchRuntime``, ``ONNXRuntime``) are **not**
+imported here. Import them explicitly when their dependencies are installed:
 
-    from openral_rskill.smolvla import SmolVLAAdapter, SO100SmolVLASkill
     from openral_rskill.runtime_pytorch import PyTorchRuntime
     from openral_rskill.runtime_onnx import ONNXRuntime
 
@@ -38,7 +38,7 @@ TensorRT/NVMM fast path is a private OpenRAL Pro plugin); resolve it via
 from importlib.metadata import version as _pkg_version
 
 from openral_rskill._diagnostics import gpu_allocated_mb
-from openral_rskill._vla_core import hf_download_cached_first
+from openral_rskill._vla_core import hf_download_cached_first, local_snapshot_dir
 from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runtime_backend
 from openral_rskill.base import rSkillBase
 from openral_rskill.hub_search import HubRSkillHit, HubRSkillSearchResult, search_hub_rskills
@@ -67,6 +67,7 @@ __all__ = [
     "hf_download_cached_first",
     "intree_embodiment_tags",
     "known_benchmark_ids",
+    "local_snapshot_dir",
     "maybe_attach_pro_hooks",
     "rSkill",
     "rSkillBase",

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1387,4 +1388,105 @@ TEST(PayloadClearing, TheAttachPaddingNeverShrinksTheSteadyReach) {
   EXPECT_NEAR(bridge::attach_transition_padding(0.004, std::nan("")), 0.004, 1e-12);
   EXPECT_NEAR(bridge::attach_transition_padding(-1.0, kAttachSweepPadding), kAttachSweepPadding,
               1e-12);
+}
+
+// ── attach_link_tf_frames: the manifest link → the cell's TF frame ───────────
+//
+// The published attach link is the manifest's (the kernel's collision model
+// uses manifest names); the real OpenArm cell's TF tree names the same hand
+// body `openarm_left_ee_base_link`. These pin the parse and the lookup name the
+// bridge then asks tf2 for.
+
+TEST(AttachLinkTfFrames, NoMappingLooksEveryLinkUpByItsOwnName) {
+  bridge::AttachLinkTfFrames frames;
+  std::string error;
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({}, frames, error));
+  EXPECT_TRUE(frames.empty());
+  // The ROS default for an unset string array is [""]: still no mapping.
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({""}, frames, error));
+  EXPECT_TRUE(frames.empty());
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_left_link7"), "openarm_left_link7");
+  // The frozen release record attaches to the base frame: unchanged too.
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_base"), "openarm_base");
+}
+
+TEST(AttachLinkTfFrames, AMappedLinkIsLookedUpAsItsFrameAndOthersAsThemselves) {
+  bridge::AttachLinkTfFrames frames;
+  std::string error;
+  // The strings the HAL gets as `vision_attachment_tf_frames` for the Thor scene.
+  ASSERT_TRUE(
+      bridge::parse_attach_link_tf_frames({"openarm_left_link7=openarm_left_ee_base_link",
+                                           "openarm_right_link7=openarm_right_ee_base_link"},
+                                          frames, error))
+      << error;
+  EXPECT_EQ(frames.size(), 2U);
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_left_link7"), "openarm_left_ee_base_link");
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_right_link7"), "openarm_right_ee_base_link");
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_base"), "openarm_base");
+  // A repeated identical entry is the same mapping, not a conflict.
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({"a=b", "a=b"}, frames, error));
+  EXPECT_EQ(bridge::tf_frame_for(frames, "a"), "b");
+}
+
+TEST(AttachLinkTfFrames, AMalformedOrConflictingMappingIsRefusedWhole) {
+  for (const std::vector<std::string>& bad : std::vector<std::vector<std::string>>{
+           {"openarm_left_link7"},
+           {"=openarm_left_ee_base_link"},
+           {"openarm_left_link7="},
+           {"ok=frame", "no_separator"},
+           {"openarm_left_link7=a", "openarm_left_link7=b"},
+       }) {
+    // Pre-filled, to show a refusal leaves no partial map behind.
+    bridge::AttachLinkTfFrames frames{{"stale", "entry"}};
+    std::string error;
+    EXPECT_FALSE(bridge::parse_attach_link_tf_frames(bad, frames, error)) << bad.front();
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(frames.empty()) << "a refused mapping must leave every link at identity";
+  }
+}
+
+TEST(PayloadClearing, AnAnchoredBandOnlyNarrowsTheLiveOne) {
+  // Isaac i64/i70: the live plane rides up with a lifted payload; the anchor
+  // (the plane on the attestation's first grid) does not. A cell is withheld
+  // only when both claim it, so a cell above the anchored ceiling clears however
+  // high the live band has climbed — and the anchor never withholds a cell the
+  // live plane would not.
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  bridge::SupportPatch lifted = p.patches[0];
+  lifted.point += tf2::Vector3(0.0, 0.0, 0.012);
+  bridge::SupportPatch anchored = lifted;
+  anchored.has_anchor = true;
+  anchored.anchor_point = p.patches[0].point;
+  anchored.anchor_normal = p.patches[0].normal;
+
+  const tf2::Vector3 climbed(0.40, 0.0, kSupportFaceZ + kWithholdCeiling + 0.006);
+  EXPECT_TRUE(bridge::support_patch_withholds(lifted, climbed, kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(anchored, climbed, kResolution));
+  const tf2::Vector3 support(0.40, 0.0, kSupportFaceZ - 0.5 * kResolution);
+  EXPECT_TRUE(bridge::support_patch_withholds(anchored, support, kResolution));
+  // Sinking: the live plane is the lower one and still gates.
+  bridge::SupportPatch sunk = anchored;
+  sunk.point -= tf2::Vector3(0.0, 0.0, 0.024);
+  const tf2::Vector3 near_ceiling(0.40, 0.0, kSupportFaceZ + kWithholdCeiling - 0.001);
+  EXPECT_TRUE(bridge::support_patch_withholds(anchored, near_ceiling, kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(sunk, near_ceiling, kResolution));
+}
+
+TEST(PayloadClearing, AnAttestationKeepsItsFirstGridAnchorUntilItIsGone) {
+  bridge::SupportPatchAnchors anchors;
+  bridge::SupportPatch at_attach;
+  at_attach.point = tf2::Vector3(0.0, 0.0, 0.48);
+  const bridge::SupportWitnessKey key{"brick", "table", 7};
+  bridge::SupportPatch lifted = at_attach;
+  lifted.point += tf2::Vector3(0.0, 0.0, 0.016);
+
+  EXPECT_NEAR(anchors.anchor({{key, at_attach}})[0].point.z(), 0.48, 1e-12);
+  EXPECT_NEAR(anchors.anchor({{key, lifted}})[0].point.z(), 0.48, 1e-12) << "rides nowhere";
+  // A fresh attestation (new stamp: a regrasp, or the place leg's witness) anchors anew.
+  const bridge::SupportWitnessKey fresh{"brick", "table", 8};
+  EXPECT_NEAR(anchors.anchor({{fresh, lifted}})[0].point.z(), 0.496, 1e-12);
+  // Retired and re-seen under the old key: forgotten, so it anchors where it is now.
+  anchors.anchor({});
+  EXPECT_NEAR(anchors.anchor({{key, lifted}})[0].point.z(), 0.496, 1e-12);
 }

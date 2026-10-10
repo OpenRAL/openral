@@ -1177,42 +1177,6 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
   return finish_sweep(result, sweep_min);
 }
 
-CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const WorldModel& world, double margin) noexcept {
-  CollisionHit result;
-  double sweep_min = std::numeric_limits<double>::infinity();
-  const std::size_t n_caps = model.capsules.size();
-  const std::size_t n_world = world.capsules.size();
-  for (std::size_t i = 0; i < n_caps; ++i) {
-    const int li = model.capsule_link[i];
-    const Transform cap_i =
-        compose(scratch.link_world[static_cast<std::size_t>(li)], model.capsules[i].origin);
-    for (std::size_t w = 0; w < n_world; ++w) {
-      // World capsule origins are already absolute in the base frame.
-      const double d = capsule_distance(cap_i, model.capsules[i].radius,
-                                        model.capsules[i].half_length, world.capsules[w].origin,
-                                        world.capsules[w].radius, world.capsules[w].half_length);
-      // link_a: robot link; link_b: world obstacle index.
-      fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(w));
-    }
-  }
-  // Blocky links (OBB) are checked against every world obstacle too,
-  // so a boxed link is never invisible to the world check.
-  const std::size_t n_boxes = model.boxes.size();
-  for (std::size_t b = 0; b < n_boxes; ++b) {
-    const int lb = model.box_link[b];
-    const Transform box_w =
-        compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
-    for (std::size_t w = 0; w < n_world; ++w) {
-      const double d =
-          box_capsule_distance(box_w, model.boxes[b].half_extents, world.capsules[w].origin,
-                               world.capsules[w].radius, world.capsules[w].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(w));
-    }
-  }
-  return finish_sweep(result, sweep_min);
-}
-
 // ---------------------------------------------------------------------------
 // Working in GRID coordinates
 //
@@ -1273,6 +1237,43 @@ Vec3 obb_extent(const Transform& box, const Vec3& he) noexcept {
               std::fabs(box.r[6]) * he.x + std::fabs(box.r[7]) * he.y + std::fabs(box.r[8]) * he.z};
 }
 
+namespace {
+
+// Exact point-in-OBB: express `p` in the box's own frame (Rᵀ·(p - origin))
+// and compare against the half-extents. A degenerate or non-finite box
+// contains nothing. Shared by the place allowance and the grasp exemption so
+// the two declaration-scoped regions can never disagree on "inside".
+bool point_in_obb(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  if (!(half.x > 0.0) || !(half.y > 0.0) || !(half.z > 0.0) || !std::isfinite(half.x) ||
+      !std::isfinite(half.y) || !std::isfinite(half.z)) {
+    return false;
+  }
+  const Vec3 d = sub(p, box.t);
+  const double lx = box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z;
+  const double ly = box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z;
+  const double lz = box.r[2] * d.x + box.r[5] * d.y + box.r[8] * d.z;
+  // `<=`, so a non-finite point is never inside (fails closed).
+  return std::fabs(lx) <= half.x && std::fabs(ly) <= half.y && std::fabs(lz) <= half.z;
+}
+
+// Is `link` one the live grasp region may exempt at all? Evaluated once per
+// capsule/box, outside the cell loop, so a link outside the mask pays nothing.
+bool grasp_mask_has(const GraspTargetRegion& region, int link) noexcept {
+  return region.valid && link >= 0 && static_cast<std::size_t>(link) < kMaxGraspMaskLinks &&
+         region.link_mask[static_cast<std::size_t>(link)];
+}
+
+}  // namespace
+
+bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept {
+  return region.valid && point_in_obb(region.pose, region.half_extents, p);
+}
+
+bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
+  return grasp_mask_has(grid.grasp_region, link_index) &&
+         grasp_region_contains(grid.grasp_region, center);
+}
+
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin, double band_m) noexcept {
   CollisionHit result;
@@ -1309,6 +1310,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
+    const bool grasp_link = grasp_mask_has(grid.grasp_region, li);
     // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
     const double reach = r + margin + band_m + half_side;
     const auto [ix0, ix1] =
@@ -1328,7 +1330,11 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           voxel.t = voxel_center_local(grid, ix, iy, iz);
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
-          fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(idx));
+          // ADR-0115: a declared contact link vs a cell centred in the grasp
+          // region never trips and never supplies the reported evidence.
+          const bool exempt =
+              grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t));
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, li, static_cast<int>(idx));
         }
       }
     }
@@ -1353,6 +1359,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                 compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
+    const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
     TightPose tight;
     GjkWitness witness;
     if (hull_index >= 0) {
@@ -1375,6 +1382,15 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
             continue;
           }
           const Vec3 center = voxel_center_local(grid, ix, iy, iz);
+          // ADR-0115, as in the capsule pass. Decided BEFORE the narrow phase:
+          // an exempt pair cannot trip whatever its exact distance, so it must
+          // not spend the stage-2 budget the non-exempt pairs of this call
+          // share — a finger buried in its target puts dozens of in-region
+          // cells inside stage 1's margin, enough to exhaust the budget and
+          // leave a non-exempt link on the looser fallback bound (a false
+          // stop). Stage 1's lower bound is all its clamped slack needs.
+          const bool exempt =
+              grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
           double d;
           if (hull_index < 0) {
             Transform voxel;
@@ -1387,7 +1403,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               // Stage 2, on the cells stage 1 could not clear: the exact
               // hull-to-cell distance, or stage 1's bound again for a link that
               // ships no hull or a call that has spent its refinement budget.
-              if (tight.n_vertices > 0 && stage2_budget > 0) {
+              if (!exempt && tight.n_vertices > 0 && stage2_budget > 0) {
                 --stage2_budget;
                 d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
               }
@@ -1409,7 +1425,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               }
             }
           }
-          fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(idx));
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
         }
       }
     }
@@ -1780,33 +1796,6 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
   return AttachIngestStatus::kOk;
 }
 
-CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
-                                            const AttachedModel& attached,
-                                            const CollisionScratch& scratch,
-                                            const WorldModel& world, double margin) noexcept {
-  CollisionHit result;
-  double sweep_min = std::numeric_limits<double>::infinity();
-  const std::size_t n_world = world.capsules.size();
-  for (std::size_t i = 0; i < attached.n_objects; ++i) {
-    const AttachedObject& obj = attached.objects[i];
-    const Transform obj_xf = attached_object_transform(obj, scratch);
-    for (int p = 0; p < obj.prim_count; ++p) {
-      const AttachedPrimitive& prim =
-          attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
-      const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
-      for (std::size_t w = 0; w < n_world; ++w) {
-        const double d = attached_primitive_capsule_distance(
-            prim, prim_xf, world.capsules[w].origin, world.capsules[w].radius,
-            world.capsules[w].half_length);
-        // link_a: attached object index (evidence is object-level, not
-        // per-primitive); link_b: world obstacle index.
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), static_cast<int>(w));
-      }
-    }
-  }
-  return finish_sweep(result, sweep_min);
-}
-
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
@@ -2073,21 +2062,11 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
   if ((region.object_mask & (1U << object_index)) == 0) {
     return 0.0;
   }
-  const Vec3& half = region.half_extents;
-  if (!(half.x > 0.0) || !(half.y > 0.0) || !(half.z > 0.0) || !std::isfinite(half.x) ||
-      !std::isfinite(half.y) || !std::isfinite(half.z)) {
-    return 0.0;
-  }
-  // Exact point-in-OBB: express the cell centre in the region box's own frame
-  // (Rᵀ·(centre - box origin)) and compare against the half-extents. An oriented
-  // box is what the producer can actually measure — the axis-aligned hull of a
-  // rotated receptacle would be strictly larger, i.e. strictly more permissive.
-  const Vec3 d = sub(center, region.pose.t);
-  const double* r = region.pose.r;
-  const double lx = r[0] * d.x + r[3] * d.y + r[6] * d.z;
-  const double ly = r[1] * d.x + r[4] * d.y + r[7] * d.z;
-  const double lz = r[2] * d.x + r[5] * d.y + r[8] * d.z;
-  if (std::fabs(lx) > half.x || std::fabs(ly) > half.y || std::fabs(lz) > half.z) {
+  // Exact point-in-OBB (a degenerate or non-finite box contains nothing). An
+  // oriented box is what the producer can actually measure — the axis-aligned
+  // hull of a rotated receptacle would be strictly larger, i.e. strictly more
+  // permissive.
+  if (!point_in_obb(region.pose, region.half_extents, center)) {
     return 0.0;
   }
   // Condition 1 of the amendment (as calibrated by its Second Amendment,
@@ -2227,6 +2206,98 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
     return "bad_geometry";
   case PlaceRegionStatus::kGeometryOverflow:
     return "geometry_overflow";
+  }
+  return "unknown";
+}
+
+GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_extents,
+                                      const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                      GraspTargetRegion& out) noexcept {
+  out = GraspTargetRegion{};
+  if (link_mask.none()) {
+    return GraspRegionStatus::kNoLinks;
+  }
+  if (!std::isfinite(pose.t.x) || !std::isfinite(pose.t.y) || !std::isfinite(pose.t.z)) {
+    return GraspRegionStatus::kBadPose;
+  }
+  for (std::size_t k = 0; k < 9; ++k) {
+    if (!std::isfinite(pose.r[k])) {
+      return GraspRegionStatus::kBadPose;
+    }
+  }
+  const double hx = half_extents.x;
+  const double hy = half_extents.y;
+  const double hz = half_extents.z;
+  if (!std::isfinite(hx) || !std::isfinite(hy) || !std::isfinite(hz)) {
+    return GraspRegionStatus::kBadExtents;
+  }
+  if (hx <= 0.0 || hy <= 0.0 || hz <= 0.0) {
+    return GraspRegionStatus::kDegenerate;
+  }
+  if (hx > kMaxGraspRegionHalfExtentM || hy > kMaxGraspRegionHalfExtentM ||
+      hz > kMaxGraspRegionHalfExtentM) {
+    return GraspRegionStatus::kOversize;
+  }
+  if (8.0 * hx * hy * hz > kMaxGraspRegionVolumeM3) {
+    return GraspRegionStatus::kOversizeVolume;
+  }
+  out.valid = true;
+  out.link_mask = link_mask;
+  out.pose = pose;
+  out.half_extents = half_extents;
+  return GraspRegionStatus::kOk;
+}
+
+bool grasp_links_one_hand(const std::vector<int>& parent,
+                          const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                          const std::bitset<kMaxGraspMaskLinks>& mask) noexcept {
+  const std::size_t n = std::min(parent.size(), kMaxGraspMaskLinks);
+  if (mask.none()) {
+    return false;
+  }
+  bool seen = false;
+  int hand = -1;
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks; ++c) {
+    if (!mask[c]) {
+      continue;
+    }
+    if (c >= n) {
+      return false;  // a mask bit naming no link of the model
+    }
+    int mount = parent[c];
+    std::size_t steps = 0;
+    while (mount >= 0 && static_cast<std::size_t>(mount) < n &&
+           allowlist[static_cast<std::size_t>(mount)]) {
+      if (++steps > n) {
+        return false;  // a cyclic parent chain: fail closed
+      }
+      mount = parent[static_cast<std::size_t>(mount)];
+    }
+    if (seen && mount != hand) {
+      return false;
+    }
+    seen = true;
+    hand = mount;
+  }
+  return seen;
+}
+
+const char* grasp_region_status_reason(GraspRegionStatus status) noexcept {
+  switch (status) {
+  case GraspRegionStatus::kOk:
+    return "ok";
+  case GraspRegionStatus::kNoLinks:
+    return "no_links";
+  case GraspRegionStatus::kBadPose:
+    return "bad_pose";
+  case GraspRegionStatus::kBadExtents:
+    return "bad_extents";
+  case GraspRegionStatus::kDegenerate:
+    return "degenerate";
+  case GraspRegionStatus::kOversize:
+    return "oversize";
+  case GraspRegionStatus::kOversizeVolume:
+    return "oversize_volume";
   }
   return "unknown";
 }

@@ -46,6 +46,11 @@ sibling is **not** valid for paper claims; the loader-strictness gate
 # DeployScene — env-only playground (reasoner picks the rSkill at runtime).
 openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
 
+# The same robot on real hardware. `deploy run`, not `deploy sim`: it binds the
+# cell's real cameras and the real CAN/ros2_control HAL. Bringup MOVES BOTH ARMS
+# (openarm_bringup returns to zero on activate) — read the scene's header first.
+openral deploy run --config scenes/deploy/openarm_bench.yaml
+
 # BEHAVIOR-1K R1 Pro — official OmniGibson evaluator environment.
 openral deploy sim --config scenes/deploy/behavior_r1pro.yaml \
   --initial-task "turn on the radio"
@@ -117,6 +122,11 @@ catalogue and reports row-by-row latency + success metrics.
 
 ## Adding a new YAML
 
+A real-hardware `DeployScene` with a StereoLabs ZED (driver block, RGB + depth
+bindings, octomap topic, TF and USB-hub pitfalls) is worked through in
+[the deploy tutorial](../docs/tutorials/deploy/deploy-run-and-dashboard.md#cameras-whose-stream-only-exists-as-a-ros-topic-ros2_image);
+`scenes/deploy/openarm_bench.yaml` is the verified instance.
+
 See [Create a sim environment](../docs/tutorials/sim/create-a-sim-environment.md)
 for the long-form tutorial covering YAML authoring, adding a new robot
 manifest, and writing custom scene / policy adapters.
@@ -160,6 +170,7 @@ owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
 | Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`; SO-101 sim YAML pins pi0.5-style degree reset pose + top/front/wrist camera routing)                                                                                                                        | `python/sim/.../backends/tabletop_push/env.py` |
 | RoboTwin 2.0 (SAPIEN, sidecar) | `robotwin` (scene-fixed AgileX ALOHA; task selected via `backend_options`, e.g. `lift_pot`, `beat_block_hammer`, `handover_block`, `place_empty_cup`, `stack_blocks_two`)                                                                                                            | `python/sim/.../backends/robotwin.py`     |
 | VLABench (lerobot envs) | `vlabench` (scene-fixed Franka Panda; task selected via `backend_options`, e.g. `select_fruit`)                                                                                                                                                                                        | `python/sim/.../backends/vlabench.py`     |
+| Isaac Sim (sidecar) | `isaac_sim` (free-axis; any manifest robot imported from its URDF with `layout: manifest`, inside any environment USD named by `scene.assets_uri` — see [below](#isaac-sim-any-stage-any-robot)) | `python/sim/.../backends/isaac_sim.py` |
 
 `openral sim list` walks every subdirectory here and prints each scene YAML
 path — paste one straight into `--config`. The `--rskill` half comes from
@@ -195,7 +206,7 @@ Free-axis scenes (`tabletop_push`, `isaac_sim`, `mock`) require a robot.
 
 ## Placing robots with `base_pose:`
 
-Scenes registered with `base_pose=True` (free-axis `tabletop_push`; scene-fixed `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
+Scenes registered with `base_pose=True` (free-axis `tabletop_push` and `isaac_sim`; scene-fixed `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
 in the scene's world frame. Adapters write the `world → base_frame` transform
 (from the robot manifest's `RobotDescription.base_frame`) into the scene's
 MJCF at load. Example:
@@ -222,6 +233,100 @@ Setting `base_pose:` on a scene not registered with `base_pose=True` is a
 `ROSConfigError` — those scenes ship their own MJCF and the field has no
 physical meaning there. See
 the mandatory-mounting-pose design note for the rationale.
+
+### Isaac Sim: any stage, any robot
+
+The `isaac_sim` scene loads an external **environment USD** around any manifest
+robot. A deploy scene needs exactly three fields
+([`deploy/isaac_panda_mobile_warehouse.yaml`](deploy/isaac_panda_mobile_warehouse.yaml)):
+
+```yaml
+robot_id: panda_mobile              # imported from robots/<id>/ (its URDF)
+base_pose:                          # spawn in the stage's world frame
+  xyz: [-4.8, 0.0, 0.0]
+  quat_xyzw: [0.0, 0.0, 0.7071068, 0.7071068]   # yaw only — robots stand upright
+  frame_id: world
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  assets_uri: "isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+```
+
+`assets_uri` takes a local path (`file://` optional, relative to the working
+directory), an `http(s)://` / `omniverse://` URL, or `isaac:<path>` — a path
+under the sidecar's own Isaac asset root, so the asset matches the installed
+Isaac release. Either field implies `backend_options.layout: manifest`. The
+environment replaces the bring-up ground plane, so it must carry its own floor
+collider; a mobile base's odometry starts at the spawn. Assets authored in
+Blender or elsewhere load the same way once exported to USD. NVIDIA's Isaac
+assets are licensed for use inside Isaac Sim, where they are referenced at run
+time — never converted or vendored.
+
+**Pickable objects** go in `backend_options.objects` (validated by
+`IsaacSimOptions`, so a typo fails at load):
+
+```yaml
+  backend_options:
+    objects:
+      - name: cracker_box          # prim name; also the key in step info
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
+        xyz: [-0.45, 4.80, 0.40]   # world frame; dropped a few cm, it settles
+        yaw: 0.0                   # rad, optional
+        dynamic: true              # graspable rigid body (default) vs static prop
+```
+
+A dynamic object without physics gets a rigid body and convex-hull colliders;
+`world.reset()` returns every object to its declared pose. Step `info` carries
+`object_positions` and `robot_position` (simulator ground truth, not a policy
+observation).
+
+**Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
+1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at
+that aspect, no wider than `observation_width`) with their FOV. Each is mounted
+from the manifest, a selected robot unit's calibration included
+(`$OPENRAL_ROBOT_UNIT`, which `deploy` sets from the scene's `robot_unit`): a
+sensor that `shares_mount_with` another rides that one's mount, a sensor with
+`parent_frame` + `static_transform_xyz_rpy` rides that link, and one the robot's
+MJCF declares a camera for rides the MJCF body at that camera's pose (`axes:
+usd`, the MJCF's FOV unless the unit calibrated the intrinsics). A camera none of
+these places gets a generic base-relative viewpoint (not its `frame_id`'s view —
+the load prints every robot-framed camera left that way; one can render
+all-black inside the stage). `backend_options.camera_mounts` overrides a mount:
+
+```yaml
+    camera_mounts:
+      head_zed:                    # manifest sensor name
+        link: openarm_base         # URDF link, or the manifest base_frame; omit = robot root
+        xyz: [0.0, 0.0, 0.2]       # in that link's frame
+        quat_wxyz: [0.830285, -0.005106, 0.557306, 0.003427]  # or look_at: [x, y, z]
+        axes: world                # quat convention: world (x fwd, z up) | usd | ros
+        hfov_deg: 90.0             # optional; default from the manifest intrinsics
+```
+
+Depth clouds are published in the manifest `base_frame` with misses dropped,
+and since the camera renders the robot, `deploy sim` runs the robot self-filter
+in front of octomap for an `isaacsim` scene, as on real hardware.
+
+**Any manifest robot** with an `assets.urdf` imports — manifest joints are
+matched to URDF joints by the URDF's own structure, each gripper's mimic finger
+follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
+(a sourced workspace), an ancestor directory of the URDF, or — for known public
+packages such as Enactic's `openarm_description` — a pinned clone fetched into
+the openral cache. Shipped:
+[`isaac_panda_mobile_warehouse.yaml`](deploy/isaac_panda_mobile_warehouse.yaml)
+(navigate the aisle to a pallet of YCB props) and
+[`isaac_openarm_warehouse.yaml`](deploy/isaac_openarm_warehouse.yaml) (bimanual
+OpenArm at the same pallet).
+
+**Driving it**: the scene takes absolute joint targets — the meaning the HAL
+sends — and packs typed commands by name: JOINT_POSITION by `joint_names` (or a
+whole-vector row), GRIPPER_POSITION by `ee_name`, BODY_TWIST into the base; an
+untouched joint holds. A bimanual slot tick (left arm, left gripper, right arm,
+right gripper) commits as one simulator step.
+
+**Isaac install**: a host-wide binary install (`/opt/isaac-sim`, `~/isaacsim`)
+is picked up automatically after the pip venv; `OPENRAL_ISAAC_SIDECAR_PYTHON`
+overrides. Verified on Isaac Sim 6.1.
 
 ## rSkill compatibility check
 

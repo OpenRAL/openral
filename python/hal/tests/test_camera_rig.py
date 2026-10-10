@@ -80,3 +80,27 @@ def test_fovy_derived_from_intrinsics() -> None:
     fovy = float(re.search(r'name="front"[^>]*fovy="([0-9.]+)"', xml).group(1))
     # 2*atan(480/(2*480)) = 53.13 deg
     assert abs(fovy - 53.13) < 0.1
+
+
+def test_depth_sensor_camera_is_rigged() -> None:
+    # A depth sensor owns a sim camera too: the sim bridge ray-casts its depth and
+    # renders its registered colour from it, so the rig splices it like an RGB one.
+    depth = SensorSpec(
+        name="head",
+        modality="depth",
+        frame_id="head_link",
+        rate_hz=10.0,
+        sim_placement=CameraSimPlacement(
+            parent_body="gripper", pos=(0.0, 0.0, 0.2), target=(1.0, 0.0, 0.0)
+        ),
+    )
+    lidar = SensorSpec(
+        name="scan",
+        modality="lidar_2d",
+        frame_id="scan_link",
+        rate_hz=10.0,
+        sim_placement=CameraSimPlacement(pos=(0.0, 0.0, 0.5), target=(1.0, 0.0, 0.5)),
+    )
+    xml, changed = rig_cameras_into_mjcf(_BARE, [depth, lidar])
+    assert changed
+    assert re.findall(r'<camera[^>]*name="([^"]+)"', xml) == ["head"]

@@ -3,12 +3,12 @@
   "metadata": {
     "round_id": "2026-09-07-adr0101-live-1",
     "started_at": "2026-09-07T08:24:07.820209+00:00",
-    "host": "q-laptop",
+    "host": "laptop",
     "executed_sha": "60dcb2ff992cb7e4c06e5e362d8a000cd82a43e8",
     "worktree_clean": true,
     "overlay_built_at_ns": 1788769266592623702,
-    "launcher_path": "/home/allopart/workspace/openral-plan/.venv/bin/openral",
-    "repo_root": "/home/allopart/workspace/openral-plan",
+    "launcher_path": "/home/user/workspace/openral-plan/.venv/bin/openral",
+    "repo_root": "/home/user/workspace/openral-plan",
     "robot_manifest_path": null,
     "robot_id": null,
     "sync_groups": [

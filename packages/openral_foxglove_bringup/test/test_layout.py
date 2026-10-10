@@ -87,8 +87,8 @@ def _is_exposed(topic: str) -> bool:
     "cameras",
     [
         DEFAULT_CAMERAS,
-        ("top",),  # isaac_franka
-        ("top", "wrist"),  # isaac_franka_bowl
+        ("top",),  # single-camera arm
+        ("top", "wrist"),  # arm + wrist camera
         ("head", "left_wrist", "right_wrist"),  # behavior_r1pro
         ("agentview", "agentview_left", "cam_l", "cam_r"),  # LIBERO-style four-up
     ],
@@ -139,6 +139,30 @@ def test_every_panel_id_is_placed_in_the_layout_tree() -> None:
             placed.update(tab["layout"] for tab in config["tabs"])
     missing = set(layout["configById"]) - placed
     assert not missing, f"panels configured but never placed: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("panel_id", ["3D!scene", "3D!bucket2"])
+def test_point_cloud_panels_draw_the_robot_from_the_urdf_topic(panel_id: str) -> None:
+    """The panels showing the voxel clouds also draw the robot model.
+
+    Foxglove's 3D panel auto-loads a URDF only from the ``/robot_description``
+    *parameter* (the bridge withholds that capability); a ``topics`` entry for
+    the ``std_msgs/String`` topic draws nothing. Only a ``foxglove.Urdf`` layer
+    with ``sourceType: "topic"`` puts the robot beside the clouds — which is
+    what was missing on the OpenArm cell.
+    """
+    config = build_layout(["top"], follow_frame="openarm_base")["configById"][panel_id]
+    assert "/openral/world_voxels_cloud" in config["topics"]
+    urdf_layers = [
+        layer for layer in config["layers"].values() if layer["layerId"] == "foxglove.Urdf"
+    ]
+    assert len(urdf_layers) == 1
+    layer = urdf_layers[0]
+    assert layer["sourceType"] == "topic"
+    assert layer["topic"] == "/robot_description"
+    assert layer["visible"] is True
+    assert _is_exposed(layer["topic"])
+    assert config["followTf"] == "openarm_base"
 
 
 # ---------------------------------------------------------------------------

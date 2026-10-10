@@ -88,7 +88,7 @@ selected `DeliverStraw` below.
 
 ## The result
 
-All 50 `target50` tasks, seeds 1–3, on `q-laptop` (RTX 5070 Laptop) through the
+All 50 `target50` tasks, seeds 1–3, on the laptop workstation (RTX 5070 Laptop) through the
 provisioned RoboCasa: **129 measurements over 43 tasks.** The remaining 7 —
 `CloseBlenderLid`, `CloseToasterOvenDoor`, `NavigateKitchen`,
 `OpenStandMixerHead`, `SlideDishwasherRack`, `TurnOnElectricKettle`,
@@ -209,7 +209,7 @@ navigation-behaviour change made blind. This is that measurement.
 
 **Setup.** `openral deploy sim` on this scene with the full stack —
 `--enable-slam --enable-nav2 --enable-octomap --enable-octomap-kernel-check`,
-detector and scene VLM off, reasoner off — on `q-laptop` (i7 / RTX 5070 Laptop,
+detector and scene VLM off, reasoner off — on the laptop workstation (i7 / RTX 5070 Laptop,
 ROS 2 Jazzy). Nav2 reached `Managed nodes are active`; the safety kernel loaded
 its envelope (`12 links, margin=0 m`) and never fired. A real `NavigateToPose`
 goal was driven for 25 s per arm by

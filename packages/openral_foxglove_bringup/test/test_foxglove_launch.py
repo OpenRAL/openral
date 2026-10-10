@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
+from openral_core import CameraTopicKind, camera_topic
 
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _LAYOUT = _PKG_DIR / "config" / "openral_layout.json"
@@ -50,7 +51,7 @@ _FORBIDDEN_TOPICS = [
     "/openral/failure/safety",
     "/openral/prompt_in/dashboard",
     # Compressed patterns must not accidentally widen to safety topics either.
-    "/openral/cameras/base/image/compressed/estop",
+    camera_topic("base") + "/compressed/estop",
     "/openral/estop/compressed",
     "/openral/safe_action/compressed",
     # The command plane. Reading these leaks no actuation on its own — the
@@ -90,10 +91,10 @@ _TELEMETRY_TOPICS = [
 # The depth / reconstruction leg — present only under the matching deploy
 # posture, but exposed whenever it is.
 _DEPTH_TOPICS = [
-    "/openral/cameras/front_depth/depth/image",
-    "/openral/cameras/front_depth/depth/camera_info",
-    "/openral/cameras/front_depth/points",
-    "/openral/cameras/top/camera_info",
+    camera_topic("front_depth", CameraTopicKind.DEPTH_IMAGE),
+    camera_topic("front_depth", CameraTopicKind.DEPTH_CAMERA_INFO),
+    camera_topic("front_depth", CameraTopicKind.POINTS),
+    camera_topic("top", CameraTopicKind.CAMERA_INFO),
     "/openral/depth/image",
     "/openral/nvblox/depth_filtered/image",
     "/openral_nvblox/static_esdf_pointcloud",
@@ -121,7 +122,7 @@ def test_safety_topics_not_whitelisted(topic: str) -> None:
 @pytest.mark.parametrize(
     "topic",
     [
-        "/openral/cameras/top/image",
+        camera_topic("top"),
         "/map",
         "/octomap_point_cloud_centers",
         "/joint_states",
@@ -180,10 +181,10 @@ def test_no_pattern_matches_the_whole_openral_namespace() -> None:
 @pytest.mark.parametrize(
     "topic",
     [
-        "/openral/cameras/top/image/compressed",
-        "/openral/cameras/base/image/compressed",
-        "/openral/cameras/left_wrist/image/compressed",
-        "/openral/cameras/right_wrist/image/compressed",
+        camera_topic("top") + "/compressed",
+        camera_topic("base") + "/compressed",
+        camera_topic("left_wrist") + "/compressed",
+        camera_topic("right_wrist") + "/compressed",
     ],
 )
 def test_compressed_camera_topics_are_whitelisted(topic: str) -> None:

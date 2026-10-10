@@ -28,7 +28,8 @@ Parameters:
         camera ``primary_camera`` on ``image_topic``.
     primary_camera (str): id of the default camera (used when a request leaves
         ``camera`` empty).
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     manifest_path (str): rSkill manifest path (``kind: "vlm"``). Required.
     sidecar_host (str): ZMQ host of the scene-VLM sidecar. Default 127.0.0.1.
     sidecar_port (int): ZMQ port of the scene-VLM sidecar. Default 5759.
@@ -45,7 +46,7 @@ from openral_perception_ros.camera_topics import resolve_camera_topics
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the scene-VLM node, shut down cleanly."""
     import rclpy
-    from rclpy.executors import ExternalShutdownException
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
     from rclpy.node import Node
     from rclpy.qos import (
         QoSDurabilityPolicy,
@@ -64,7 +65,7 @@ def main(args: Any = None) -> None:
             super().__init__("openral_scene_vlm")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/agentview_left/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("manifest_path", "")
             self.declare_parameter("sidecar_host", "127.0.0.1")
             self.declare_parameter("sidecar_port", 5759)
@@ -140,7 +141,10 @@ def main(args: Any = None) -> None:
                 try:
                     bgr, w, h = image_to_bgr_bytes(msg)
                 except ImageConvertError as exc:
-                    self.get_logger().debug(f"cache_frame({cid}): convert failed: {exc}")
+                    self.get_logger().warning(
+                        f"camera {cid!r}: dropping {msg.encoding!r} frame: {exc}",
+                        throttle_duration_sec=5.0,
+                    )
                     return
                 self._frames[cid] = (bgr, w, h)
 
@@ -178,9 +182,7 @@ def main(args: Any = None) -> None:
     node = SceneVlmNode()
     try:
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            pass
+            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
         finally:
             node.destroy_node()
     finally:

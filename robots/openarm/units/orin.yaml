@@ -1,0 +1,79 @@
+# OpenArm cell on the Jetson AGX Orin. On 2026-10-07 the robot, its ZED-M (S/N 15956375)
+# and both Arducams moved from the Thor cell to this host unchanged, so head_zed's mount and
+# the wrist calibrations below are the Thor cell's 2026-10-02 measurements (see
+# units/thor.yaml for how they were taken). Checked on this host the same day: a fresh ZED
+# capture places the tote rim and board within 1-5 mm of the Thor capture under this mount,
+# and the camera's IMU gravity gives pitch 65.69 deg against the mount's 65.60 deg. Measure
+# again if the ZED head or a wrist camera is touched. (The earlier Orin estimate fitted from
+# hanging arms, 2026-09-25, is superseded.)
+#
+# Per-host camera bindings. Re-check the Arducam by-id paths with
+# `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
+# by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
+# `robot_unit`.
+schema_version: "0.1"
+robot_id: openarm
+unit: orin
+sensors:
+  - name: head_zed
+    static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
+  # `top` is the ZED's UNRECTIFIED left image (VGA, zedm_openarm_override.yaml): the
+  # restock policy was trained on raw frames, and the sim's `top` renders the raw Brown
+  # model too. Do not undistort it with the driver's raw CameraInfo: its factory D
+  # (k1 -0.103) is wrong for this lens — the SDK's own raw->rect mapping fits the Oct-2
+  # model (k1 -0.358), 1.6 px vs 8.9 px RMS (2026-10-07). Consumers that back-project
+  # pixels through K alone (the detector's world-state lift is pinhole) lose accuracy
+  # toward the image edges — the segmenter scenes bind rect topics instead.
+  - name: top
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/raw/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+  # Wrist Arducams calibrated on the Thor cell on 2026-10-02 (pinhole + Brown/plumb_bob,
+  # coefficients [k1, k2, p1, p2, k3]; validation RMS left 0.435 px, right 0.566 px). The
+  # calibration is at 960x600, so the capture is 960x600 too: a 4:3 capture would be a
+  # crop these intrinsics cannot be rescaled to. Recalibrate if a lens or mount is touched.
+  - name: wrist_left
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 960
+        height: 600
+        fps: 30
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 614.255921
+      fy: 613.585651
+      cx: 502.490468
+      cy: 308.959123
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.072761672, -0.056848830, 0.002163274, 0.001326299, 0.035500496]
+  - name: wrist_right
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 960
+        height: 600
+        fps: 30
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 616.019357
+      fy: 615.588168
+      cx: 483.154560
+      cy: 306.781145
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.085062635, -0.023430633, 0.000839384, -0.000490873, 0.001898197]

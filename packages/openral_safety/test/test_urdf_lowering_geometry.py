@@ -11,8 +11,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from openral_core import CapsuleShape, SphereShape
-from openral_safety.urdf_lowering import fit_capsule_to_vertices, lower_link_geometry
+from openral_core import BoxShape, CapsuleShape, SphereShape
+from openral_safety.urdf_lowering import (
+    CAPSULE_HEADROOM_M,
+    _xyzrpy_matrix,
+    fit_capsule_to_vertices,
+    lower_link_geometry,
+)
 
 
 def _point_in_capsule(p, shape: CapsuleShape, origin_xyz_rpy) -> bool:
@@ -62,6 +67,85 @@ def test_fit_capsule_diagonal_rod_containment() -> None:
     assert all(_point_in_capsule(p, shape, origin) for p in pts)
 
 
+def _capsule_local(pts, origin_xyz_rpy):
+    from openral_safety.mjcf_lowering import _rpy_to_mat
+
+    x, y, z, roll, pitch, yaw = origin_xyz_rpy
+    r = np.array(_rpy_to_mat(roll, pitch, yaw)).reshape(3, 3)
+    return (np.asarray(pts) - np.array([x, y, z])) @ r
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_fit_capsule_segment_is_the_shortest_that_contains(seed: int) -> None:
+    """Each end sits where pulling it in by 0.1 mm would drop a vertex.
+
+    The fit used to span the full axial projection, so each hemispherical cap
+    overhung the cloud by up to a radius — 9.4 cm on panda_link5, enough to put
+    the Franka's hand inside link 5's capsule at its SRDF ``ready`` pose.
+    """
+    rng = np.random.default_rng(seed)
+    pts = rng.normal(0.0, 1.0, (400, 3)) * np.array([0.15, 0.04, 0.03])
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    local = _capsule_local(pts, origin)
+    for sign in (-1.0, 1.0):
+        shorter = CapsuleShape(radius_m=shape.radius_m, length_m=shape.length_m - 1e-4)
+        shifted = local - np.array([0.0, 0.0, sign * 0.5e-4])
+        zero = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        assert not all(_point_in_capsule(p, shorter, zero) for p in shifted)
+
+
+def test_fit_capsule_of_a_thin_disk_is_its_bounding_sphere() -> None:
+    """A disk (H1's r = 0.04, 0.01 m shoulder cylinders) fits as one sphere."""
+    ang = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+    ring = np.stack([0.04 * np.cos(ang), 0.04 * np.sin(ang), np.zeros_like(ang)], axis=1)
+    lift = np.array([0.0, 0.0, 0.005])
+    pts = np.vstack([ring + lift, ring - lift])
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    assert shape.length_m == pytest.approx(0.0, abs=1e-9)
+    assert shape.radius_m == pytest.approx(np.hypot(0.04, 0.005))
+
+
+def test_fit_capsule_keeps_its_declared_headroom_around_every_vertex() -> None:
+    """The committed capsule clears every vertex by ``CAPSULE_HEADROOM_M``, not by zero."""
+    from openral_safety.urdf_lowering import CAPSULE_HEADROOM_M
+
+    rng = np.random.default_rng(3)
+    pts = rng.normal(0.0, 1.0, (300, 3)) * np.array([0.12, 0.05, 0.02])
+    tight, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    padded, padded_origin = fit_capsule_to_vertices(pts)
+    assert padded_origin == origin
+    assert padded.length_m == tight.length_m
+    assert padded.radius_m == pytest.approx(tight.radius_m + CAPSULE_HEADROOM_M)
+    local = _capsule_local(pts, origin)
+    half = padded.length_m / 2.0
+    gap = np.hypot(local[:, 0], local[:, 1]) ** 2 + (np.abs(local[:, 2]) - half).clip(0) ** 2
+    assert (padded.radius_m - np.sqrt(gap)).min() >= CAPSULE_HEADROOM_M - 1e-12
+
+
+def test_fit_capsule_is_never_larger_than_the_pca_axis_capsule() -> None:
+    """The PCA axis is a candidate of the search, so the result can only be smaller.
+
+    Checked on an L-shaped cloud, where the principal axis is not the best one.
+    """
+    import math
+
+    rng = np.random.default_rng(4)
+    noise = rng.normal(0, 0.01, (260, 3))
+    leg_a = noise[:200] + np.column_stack([rng.uniform(0, 0.3, 200), np.zeros(200), np.zeros(200)])
+    leg_b = noise[200:] + np.column_stack([np.zeros(60), rng.uniform(0, 0.08, 60), np.zeros(60)])
+    pts = np.vstack([leg_a, leg_b])
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    from openral_safety.urdf_lowering import _capsule_for_axis
+
+    pca_axis = np.linalg.svd(pts - pts.mean(axis=0), full_matrices=False)[2][0]
+    pca_volume = _capsule_for_axis(pts, pca_axis)[0]
+    volume = math.pi * shape.radius_m**2 * (shape.length_m + 4.0 * shape.radius_m / 3.0)
+    assert volume <= pca_volume * (1 + 1e-9)
+
+
 # ── lower_link_geometry: real + inline URDFs ──────────────────────────────────
 
 _BOX_URDF = """<robot name="t">
@@ -89,13 +173,20 @@ def _write_and_lower(tmp_path, urdf_text):
     return lower_link_geometry(str(path))
 
 
-def test_box_collision_fits_containing_capsule(tmp_path) -> None:
+def test_box_collision_lowers_to_the_box_itself(tmp_path) -> None:
+    """A box ``<collision>`` fits a box: it protrudes by the headroom alone.
+
+    The fitter picks the candidate with the least mean protrusion, and the
+    box's own OBB grown by ``CAPSULE_HEADROOM_M`` beats any capsule around it.
+    """
     geoms = _write_and_lower(tmp_path, _BOX_URDF)
     assert len(geoms) == 1
     g = geoms[0]
     assert g.link_name == "base"
-    assert isinstance(g.shape, CapsuleShape)
-    # box half-diagonal = sqrt(0.05^2+0.1^2+0.15^2) ≈ 0.187 → capsule must reach every corner.
+    assert isinstance(g.shape, BoxShape)
+    assert sorted(g.shape.half_extents_m) == pytest.approx(
+        [0.05 + CAPSULE_HEADROOM_M, 0.1 + CAPSULE_HEADROOM_M, 0.15 + CAPSULE_HEADROOM_M], abs=1e-6
+    )
     corners = np.array(
         [
             [0.01 + sx * 0.05, 0.02 + sy * 0.1, 0.03 + sz * 0.15]
@@ -105,7 +196,9 @@ def test_box_collision_fits_containing_capsule(tmp_path) -> None:
         ],
         dtype=float,
     )
-    assert all(_point_in_capsule(c, g.shape, g.origin_xyz_rpy) for c in corners)
+    tf = _xyzrpy_matrix(g.origin_xyz_rpy)
+    local = (corners - tf[:3, 3]) @ tf[:3, :3]
+    assert (np.abs(local) <= np.asarray(g.shape.half_extents_m) - 0.9 * CAPSULE_HEADROOM_M).all()
 
 
 def test_sphere_collision_maps_to_sphere(tmp_path) -> None:

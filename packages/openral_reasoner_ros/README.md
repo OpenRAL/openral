@@ -54,6 +54,27 @@ The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 `scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
 the mission and never reset the search budgets or retry-cap streak.
 
+**Grasp / place targets — the reasoner names, perception grounds, the producer
+measures** (real pick-and-place design §2.2-2.3). `ExecuteRskillTool` carries two
+optional fields:
+
+| Field | Type | Grounded at dispatch into |
+|---|---|---|
+| `grasp_target` | `GraspTargetRef{label, object_id?, contact_links=[]}` | a `GraspDeclaration` on the goal: `target_id="obj:<label or node_id>"`, `contact_links` (all `role: gripper` `child_link`s of ONE hand — a hand is the gripper joints hanging off one arm, so R1 Pro's two finger links are one hand; empty = the hand of a single-hand robot; with several hands an empty list is refused and the LLM must name the hand — defaulting would exempt both — and links of two hands, a non-gripper link, or only part of a hand's links — that would exempt one finger and the kernel would stop the grasp — are refused), `timeout_s` = patience + 10 s (capped), `search_box` = the 3D box of the recalled memory node (`object_id`) or of the ONE live lifted detection on `/openral/world_state_slow` carrying the label, padded by `grasp_target_voxel_m` (the deploy's octree cell, passed by `deploy_e2e`; no default — unset on a manifest with a gripper fails `on_configure` with `ROSConfigError`, never a per-call refusal the LLM would replan on) + `grasp_target_extrinsic_error_m` on every side (downward too, so the support layer the producer measures is inside it — a search hint with no support semantics) and gravity-aligned in the base frame. **Never a `region`.** |
+| `place_target` | `PlaceTargetRef{label, object_id? \| place_node_id?}` — **optional hint, normally unset** | where to set the payload down is the policy's job, and the real place producer measures the surface directly under the carried payload without being told. When set, a region-less `PlaceDeclaration(target_id="surface:<label or node_id>")` whose `search_box` is the padded, gravity-aligned box of the memory node or the ONE live lifted detection carrying the label (same padding as a grasp target); the producer refuses a patch measured outside it. A hint that does not ground (unknown or ambiguous label, unknown memory node, no detector or memory) refuses the goal — no goal is sent, never a fall-back to "place anywhere"; the refusal tells the LLM to omit `place_target`. Nothing about the cell is surveyed or listed in the prompt. |
+
+A target that grounds to nothing, to more than one instance with no
+`object_id`, or to a box outside the robot base frame refuses the dispatch: no
+goal is sent, the refusal is logged and recorded as a `failed` execution
+telling the LLM to disambiguate (recall the object and pass its `node_id`, or
+look for it). Naming a target arms
+nothing: the runner strips any region, the HAL producers measure, and the
+kernel trusts only the measured region — its trust boundary is unchanged.
+Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
+2D answer is not lifted), and the lift must run in the robot base frame
+(`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,
+not transformed.
+
 **Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter to a
 writable JSON path and the mission ledger + every replanning-ladder bound
 (attempts, subdivision offers, decompose nudges, per-task locate budget) is

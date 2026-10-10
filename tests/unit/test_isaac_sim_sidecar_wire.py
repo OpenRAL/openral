@@ -261,9 +261,9 @@ class TestSceneRegistration:
 class TestMockActionDimByLayout:
     """The mock policy default action dim is layout-, not scene.id-, determined.
 
-    Isaac layouts share scene.id="isaac_sim", but lift_cube is 8-D (joint-delta)
-    and bowl_plate is the LIBERO 7-D OSC-pose delta. Keying only on scene.id
-    silently fed an 8-D action into the 7-D bowl_plate scene.
+    Isaac scenes share scene.id="isaac_sim", but their width depends on the
+    robot (11-D panda_mobile, 16-D OpenArm). Keying only on scene.id would feed
+    one robot's width to another.
     """
 
     def _env(self, layout: str | None, action_dim: int | None = None):
@@ -282,14 +282,14 @@ class TestMockActionDimByLayout:
         )
 
     def test_layout_width_comes_from_the_sidecar_not_a_table(self) -> None:
-        # The layout-determined width (lift_cube 8-D, bowl_plate 7-D) is read
-        # from the live sidecar's `action_dim` by SimRunner, not guessed here.
+        # The robot-determined width is read from the live sidecar's
+        # `action_dim` by SimRunner, not guessed here.
         from openral_sim.policies.mock import _resolve_action_dim
 
-        assert _resolve_action_dim(self._env("lift_cube")) is None
-        assert _resolve_action_dim(self._env("bowl_plate")) is None
+        assert _resolve_action_dim(self._env("manifest")) is None
+        assert _resolve_action_dim(self._env(None)) is None
 
     def test_explicit_override_wins(self) -> None:
         from openral_sim.policies.mock import _resolve_action_dim
 
-        assert _resolve_action_dim(self._env("bowl_plate", action_dim=9)) == 9
+        assert _resolve_action_dim(self._env("manifest", action_dim=9)) == 9

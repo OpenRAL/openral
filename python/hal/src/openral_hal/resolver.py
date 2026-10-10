@@ -31,7 +31,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.protocol import HAL
 
-__all__ = ["build_hal"]
+__all__ = ["build_hal", "hal_joint_states_topic", "urdf_joint_names"]
 
 HalMode = Literal["sim", "real"]
 
@@ -83,7 +83,15 @@ def build_hal(
     # construction kwargs (serial port, robot_ip, …) so a parameterised robot
     # needs no bespoke lifecycle subclass. Explicit ``transport`` overrides
     # them; _construct() then drops any key the constructor does not accept.
-    resolved = {**description.hal.parameters.defaults, **(transport or {})}
+    # The joint-state window is a typed safety field, not a free-form default
+    # (the schema refuses both); it reaches every HAL that takes
+    # `staleness_limit_s`, sim-derived included, as before.
+    staleness = description.safety.joint_state_staleness_limit_s
+    resolved = {
+        **description.hal.parameters.defaults,
+        **({} if staleness is None else {"staleness_limit_s": staleness}),
+        **(transport or {}),
+    }
     if sim_env_yaml is not None and mode != "sim":
         raise ROSConfigError(
             "build_hal: sim_env_yaml is only valid with mode='sim' "
@@ -128,6 +136,116 @@ def build_hal(
             )
         return _construct(_import_object(entry), description, resolved)
     raise ROSConfigError(f"build_hal: unknown mode {mode!r}; expected 'sim' or 'real'.")
+
+
+def hal_joint_states_topic(
+    description: RobotDescription,
+    *,
+    mode: HalMode,
+    hal_node_name: str,
+    override: str | None = None,
+) -> str | None:
+    """The ``JointState`` topic the deploy runtime's Python nodes should read.
+
+    A real ros2_control arm's global ``/joint_states`` is the
+    ``joint_state_broadcaster``'s full-rate stream (0.5-1 kHz); every message
+    wakes the runtime's Python executor and starves an in-process VLA of the
+    GIL. Every HAL lifecycle node already republishes its state rate-limited on
+    ``~/joint_states`` (at ``action_spec.control_freq_hz``), so a real HAL that
+    ``HALLifecycleNodeBase`` wires to a ``RosControlTransport`` points the
+    runtime there. Every other HAL (serial SO-100, interbotix ALOHA, any sim
+    HAL) publishes ``/joint_states`` itself at its own rate and is left alone.
+
+    Membership mirrors ``_attach_ros_control_transport``: ``mode == "real"``
+    and the manifest's ``hal.real`` class exposes every
+    ``RosControlDrivable`` member, checked on the class without constructing
+    it (construction may open a bus).
+
+    Args:
+        description: The robot manifest.
+        mode: ``"sim"`` or ``"real"``, as passed to ``build_hal``.
+        hal_node_name: The HAL lifecycle node's name (``openral_hal_<robot_id>``).
+        override: ``DeployRuntime.joint_states_topic``; wins when set.
+
+    Returns:
+        The topic, or ``None`` for the default ``/joint_states``.
+
+    Raises:
+        ROSConfigError: ``hal.real`` is a malformed or unimportable entrypoint.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/ur5e/robot.yaml")  # doctest: +SKIP
+        >>> node = "openral_hal_ur5e"
+        >>> hal_joint_states_topic(desc, mode="real", hal_node_name=node)  # doctest: +SKIP
+        '/openral_hal_ur5e/joint_states'
+    """
+    if override:
+        return override
+    if mode != "real" or description.hal.real is None:
+        return None
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    cls = _import_object(description.hal.real)
+    members: frozenset[str] = RosControlDrivable.__protocol_attrs__  # type: ignore[attr-defined]  # reason: typing's 3.12 protocol member set, no public accessor before 3.13
+    if all(hasattr(cls, m) for m in members):
+        return f"/{hal_node_name}/joint_states"
+    return None
+
+
+def urdf_joint_names(description: RobotDescription, urdf_xml: str) -> list[str]:
+    """The URDF joint each manifest joint's state drives, or ``[]`` when the names agree.
+
+    A sim HAL publishes ``JointState`` under the manifest's logical joint names
+    (``left_joint1``) — what the kernel, the runner and every Skill read. The
+    manifest's URDF may name the same joints differently (the OpenArm's vendored
+    URDF says ``openarm_left_joint1``, which ``JointSpec.sim_joint_name`` carries),
+    and ``robot_state_publisher`` only moves links whose URDF joint names it is
+    sent: under the logical names every moving link is missing from ``/tf``, so
+    nothing that looks a link up through tf2 (the vision attachment leg's TCP and
+    attach link, the octomap bridge's payload clearing) can work. On real hardware
+    the vendor's ``joint_state_broadcaster`` already publishes the URDF names.
+
+    Each joint maps to its own ``name`` when the URDF declares it, else to its
+    ``sim_joint_name`` when the URDF declares that, else to ``""`` (no URDF joint;
+    left out of the renamed stream).
+
+    Args:
+        description: The robot manifest.
+        urdf_xml: The URDF ``robot_state_publisher`` is given.
+
+    Returns:
+        URDF names parallel to ``description.joints``, or ``[]`` when every joint is
+        already named as in the URDF (no renamed stream is needed).
+
+    Raises:
+        ROSConfigError: ``urdf_xml`` is not parseable XML.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")  # doctest: +SKIP
+        >>> urdf = open("robots/openarm/openarm.urdf").read()  # doctest: +SKIP
+        >>> urdf_joint_names(desc, urdf)[:2]  # doctest: +SKIP
+        ['openarm_left_joint1', 'openarm_left_joint2']
+    """
+    import xml.etree.ElementTree as ET  # reason: stdlib, only on this launch-time path
+
+    try:
+        root = ET.fromstring(urdf_xml)  # the manifest's own URDF, not untrusted input
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"urdf_joint_names: the URDF does not parse: {exc}") from exc
+    declared = {j.get("name") for j in root.iter("joint")}
+    names = []
+    for joint in description.joints:
+        if joint.name in declared:
+            names.append(joint.name)
+        elif joint.sim_joint_name and joint.sim_joint_name in declared:
+            names.append(joint.sim_joint_name)
+        else:
+            names.append("")
+    if names == [joint.name for joint in description.joints]:
+        return []
+    return names
 
 
 def _construct(obj: object, description: RobotDescription, transport: dict[str, object]) -> HAL:

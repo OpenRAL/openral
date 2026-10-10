@@ -21,7 +21,7 @@ task scenes (baguette, sink_cup, fridge_drawer, drawer_utensil, deliver_straw)
 render 512x512 (stride=4 -> 16384 rays); ``robocasa_vslam*`` render 256x256
 (4096 rays); ``robocasa_pnp``/``robocasa_navigate`` render 128x128 (1024
 rays). Measured on the four validation-matrix scenes at those settings
-(q-laptop, CPU): 83-129 ms/pass, up to the whole 100 ms budget; a payload
+(laptop, CPU): 83-129 ms/pass, up to the whole 100 ms budget; a payload
 frame casts the bundle twice.
 
 Budget one cast per camera per frame — derive cloud and image from a single

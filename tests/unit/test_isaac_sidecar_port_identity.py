@@ -20,11 +20,16 @@ from pathlib import Path
 
 import pytest
 import yaml
+from openral_core import Pose6D
 from openral_core.exceptions import ROSConfigError
+from openral_sim import SCENES
 from openral_sim.backends.isaac_sim import (
     _SIDECAR_PORT_MAX,
     _SIDECAR_PORT_MIN,
+    _objects_json,
+    _resolve_environment_usd,
     _scene_default_port,
+    _world_key,
 )
 from openral_sim.sidecar import SidecarClient
 
@@ -32,9 +37,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ─── per-scene port derivation ───────────────────────────────────────────────
 
-# Real Isaac scenes that collided on the old hard 5757 default.
-_LIFT = ("isaac_sim/lift_cube", "franka_panda", "lift_cube")
-_BOWL = ("isaac_sim/bowl_plate", "franka_panda", "bowl_plate")
+# Isaac scenes that differ only by robot (all three used to share 5757).
+_LIFT = ("isaac_sim/_hal_deploy_noop", "franka_panda", "manifest")
+_BOWL = ("isaac_sim/_hal_deploy_noop", "openarm", "manifest")
 _MANIFEST = ("isaac_sim/manifest", "panda_mobile", "manifest")
 
 
@@ -48,6 +53,18 @@ def test_scene_port_is_deterministic_across_calls() -> None:
     # Stable across processes (hashlib, not the PYTHONHASHSEED-salted builtin
     # hash) — the spawn process and a later client process must agree.
     assert _scene_default_port(*_MANIFEST) == _scene_default_port(*_MANIFEST)
+
+
+def test_unplaced_scene_keeps_its_pre_environment_port() -> None:
+    # An empty world key must not move any existing scene's port.
+    assert _scene_default_port(*_MANIFEST, "") == _scene_default_port(*_MANIFEST)
+
+
+def test_same_scene_in_another_stage_or_spawn_gets_another_port() -> None:
+    a = _scene_default_port(*_MANIFEST, "isaac:Isaac/a.usd|[0.0, 0.0, 0.0, 0.0]")
+    b = _scene_default_port(*_MANIFEST, "isaac:Isaac/b.usd|[0.0, 0.0, 0.0, 0.0]")
+    c = _scene_default_port(*_MANIFEST, "isaac:Isaac/a.usd|[1.0, 0.0, 0.0, 0.0]")
+    assert len({a, b, c, _scene_default_port(*_MANIFEST)}) == 4
 
 
 def test_distinct_scenes_get_distinct_ports() -> None:
@@ -101,13 +118,26 @@ def test_shipped_isaac_scenes_derive_distinct_ports() -> None:
         doc = yaml.safe_load(path.read_text())
         scene = doc["scene"]
         opts = scene.get("backend_options") or {}
-        layout = str(opts.get("layout", "lift_cube"))
+        layout = str(opts.get("layout", "manifest"))
         robot = doc.get("robot_id") or "franka_panda"
         # deploy scenes (no task:) get a synthesised noop task id, matching the
         # runtime path; sim scenes carry their own task.id.
         task = doc.get("task")
         task_id = task["id"] if task else _synthesise_deploy_task_id(scene["id"])
-        port = _scene_default_port(task_id, robot, layout)
+        # Same derivation as the factory: environment + spawn key the port too,
+        # so two deploy scenes differing only in stage/spawn stay distinct.
+        base_pose = doc.get("base_pose")
+        objects = (
+            SCENES.validate_options("isaac_sim", opts).objects  # type: ignore[union-attr]
+            if scene["id"] == "isaac_sim"
+            else []
+        )
+        world = _world_key(
+            _resolve_environment_usd(scene.get("assets_uri")),
+            Pose6D(**base_pose) if base_pose else None,
+            _objects_json(objects) if objects else "",
+        )
+        port = _scene_default_port(task_id, robot, layout, world)
         assert port not in ports, f"port {port} collides: {path.name} vs {ports[port]}"
         ports[port] = path.name
 

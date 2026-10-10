@@ -141,3 +141,66 @@ def test_sub_cap_source_is_not_upscaled() -> None:
     assert out is not None
     decoded = Image.open(io.BytesIO(out))
     assert (decoded.width, decoded.height) == (160, 120)
+
+
+# ── Downscale first: the rig's real frame sizes ───────────────────────────────
+
+
+def _solid(w: int, h: int, bgr: tuple[int, int, int]) -> bytes:
+    import numpy as np
+
+    arr = np.empty((h, w, 3), dtype=np.uint8)
+    arr[:] = bgr
+    return arr.tobytes()
+
+
+def _decode(b: bytes):  # type: ignore[no-untyped-def]  # reason: PIL Image return in a test helper
+    from PIL import Image
+
+    return Image.open(io.BytesIO(b)).convert("RGB")
+
+
+def test_full_resolution_frames_fit_the_thumbnail_box() -> None:
+    """The ZED (1280x720) and Arducam (1920x1200) frames come out within 320x240."""
+    for w, h in [(1280, 720), (1920, 1200), (641, 481)]:
+        out = encode_frame_thumbnail(
+            _make_frame(FrameEncoding.RGB8, w=w, h=h, data=_solid(w, h, (10, 20, 30)))
+        )
+        assert out is not None
+        img = _decode(out)
+        assert img.width <= 320 and img.height <= 240, (w, h, img.size)
+
+
+def test_bgr8_colours_come_out_as_rgb() -> None:
+    """A pure-blue BGR frame must render blue after the swap on the small view."""
+    w, h = 1920, 1200
+    out = encode_frame_thumbnail(
+        _make_frame(FrameEncoding.BGR8, w=w, h=h, data=_solid(w, h, (255, 0, 0)))
+    )
+    assert out is not None
+    r, g, b = _decode(out).getpixel((10, 10))
+    assert b > 200 and r < 40 and g < 40, (r, g, b)
+
+
+def test_flip_matches_encoding_a_full_resolution_flipped_frame() -> None:
+    """Flipping the subsampled view equals subsampling a fully flipped frame."""
+    import numpy as np
+
+    w, h = 1280, 720
+    arr = np.zeros((h, w, 3), dtype=np.uint8)
+    arr[: h // 3, : w // 4] = (250, 30, 30)  # asymmetric: a flip-invariant frame proves nothing
+    flipped = arr[::-1, ::-1].tobytes()
+    via_flag = encode_frame_thumbnail(
+        _make_frame(FrameEncoding.RGB8, w=w, h=h, data=arr.tobytes()), flip_180=True
+    )
+    via_copy = encode_frame_thumbnail(_make_frame(FrameEncoding.RGB8, w=w, h=h, data=flipped))
+    unflipped = encode_frame_thumbnail(
+        _make_frame(FrameEncoding.RGB8, w=w, h=h, data=arr.tobytes())
+    )
+    assert via_flag == via_copy
+    assert via_flag != unflipped
+
+
+def test_a_frame_whose_bytes_do_not_match_its_shape_is_skipped() -> None:
+    frame = _make_frame(FrameEncoding.RGB8, w=64, h=48, data=b"\x00" * 100)
+    assert encode_frame_thumbnail(frame) is None

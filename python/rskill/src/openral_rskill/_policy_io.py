@@ -18,7 +18,10 @@ Conversion order:
 * action, slot path: the SAME per-channel unit conversion, in policy order, per slot
   (JOINT_POSITION / JOINT_VELOCITY channels deg->rad, gripper channels and
   GRIPPER_POSITION slots descaled). No permutation: slots route by their own
-  ``joint_names``, and permuting first would shift every slot range.
+  ``joint_names``, and permuting first would shift every slot range. JOINT_POSITION
+  slot channels are then clamped like the joint path (``_CLAMP_EPS`` inside the
+  limits), keyed by the slot's ``joint_names`` or, when it declares none, by
+  ``RobotDescription.joints`` order.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import ActionRepresentation, ControlMode, JointUnits
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -109,6 +112,10 @@ class PolicyIOCodec(BaseModel):
         robot_joint_names: ``RobotDescription.joints`` names (slot-path gripper lookup).
         robot_is_gripper: Per robot joint, whether it is a gripper.
         joint_limits: Per robot joint ``(lo, hi)`` position limits, ``None`` if undeclared.
+        gripper_ranges: Per actuated end effector, the ``(lo, hi)`` command range the
+            kernel bounds its GRIPPER_POSITION channel to (``EndEffectorSpec.
+            resolved_command_range``); a GRIPPER_POSITION slot's ``ee`` channel is
+            clamped strictly inside it.
 
     Example:
         >>> import numpy as np
@@ -129,6 +136,9 @@ class PolicyIOCodec(BaseModel):
     robot_joint_names: list[str] = Field(default_factory=list)
     robot_is_gripper: list[bool] = Field(default_factory=list)
     joint_limits: list[tuple[float, float] | None] = Field(default_factory=list)
+    gripper_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # End effectors already reported for a clamp wider than the epsilon (once each).
+    _clamp_warned: set[str] = PrivateAttr(default_factory=set)
 
     @classmethod
     def from_manifest(
@@ -166,6 +176,13 @@ class PolicyIOCodec(BaseModel):
             else None
             for j in description.joints
         ]
+        # The kernel's per-end-effector bound (envelope_loader._extract_gripper_channels
+        # without a scene gripper_convention override, which the kernel alone applies).
+        gripper_ranges = {
+            ee.name: (float(rng[0]), float(rng[1]))
+            for ee in description.end_effectors
+            if ee.actuated and ee.kind != "tool" and (rng := ee.resolved_command_range())
+        }
         declared = ac.joint_names if ac is not None else None
         if declared is not None:
             unknown = [n for n in declared if n not in robot_names]
@@ -201,6 +218,7 @@ class PolicyIOCodec(BaseModel):
                     robot_joint_names=robot_names,
                     robot_is_gripper=robot_grip,
                     joint_limits=limits,
+                    gripper_ranges=gripper_ranges,
                 )
             policy_names = normalized
         perm = [policy_names.index(n) for n in robot_names]
@@ -216,6 +234,7 @@ class PolicyIOCodec(BaseModel):
             robot_joint_names=robot_names,
             robot_is_gripper=robot_grip,
             joint_limits=limits,
+            gripper_ranges=gripper_ranges,
         )
 
     @staticmethod
@@ -300,7 +319,10 @@ class PolicyIOCodec(BaseModel):
         """Policy action -> robot units (and robot order on the whole-vector path).
 
         With ``slots`` the vector stays in policy order (slots index it) and each
-        slot's channels get the unit conversion its control mode implies.
+        slot's channels get the unit conversion its control mode implies;
+        JOINT_POSITION slot channels are also clamped strictly inside their joint's
+        position limits, and a GRIPPER_POSITION slot inside its end effector's
+        ``gripper_ranges`` entry (the whole-vector path clamps separately via ``clamp``).
         """
         if slots:
             return self._slots_to_robot_units(policy_action, slots)
@@ -320,12 +342,17 @@ class PolicyIOCodec(BaseModel):
     ) -> NDArray[Any]:
         out = policy_action.copy()
         grip_by_name = dict(zip(self.robot_joint_names, self.robot_is_gripper, strict=True))
+        index_by_name = {n: i for i, n in enumerate(self.robot_joint_names)}
         for slot in slots:
             if slot.discard:
                 continue
             lo, hi = slot.range
             if slot.control_mode is ControlMode.GRIPPER_POSITION:
                 out[lo : hi + 1] = policy_action[lo : hi + 1] / self.gripper_scale
+                rng = self.gripper_ranges.get(slot.ee or "")
+                if rng is not None:
+                    for k in range(lo, hi + 1):
+                        out[k] = self._clamp_gripper(slot.ee or "", rng, float(out[k]))
                 continue
             if slot.control_mode not in _ANGULAR_SLOT_MODES:
                 continue
@@ -339,8 +366,40 @@ class PolicyIOCodec(BaseModel):
                     val /= self.gripper_scale
                 elif self.joint_units_are_degrees:
                     val = math.radians(val)
+                if slot.control_mode is ControlMode.JOINT_POSITION:
+                    joint = index_by_name.get(slot.joint_names[k]) if slot.joint_names else k
+                    val = self._clamp_joint(joint, val)
                 out[lo + k] = val
         return out
+
+    def _clamp_gripper(self, ee: str, rng: tuple[float, float], value: float) -> float:
+        """Pull a gripper command strictly inside its end effector's kernel bound.
+
+        A move wider than the epsilon is reported once per end effector: a quantile
+        de-normalised policy overshooting its range by float noise is expected (the
+        kernel would refuse it and e-stop), a large one is a contract mismatch.
+        """
+        clamped = min(max(value, rng[0] + _CLAMP_EPS), rng[1] - _CLAMP_EPS)
+        if abs(clamped - value) > _CLAMP_EPS and ee not in self._clamp_warned:
+            self._clamp_warned.add(ee)
+            _log.warning(
+                "policy_io.gripper_command_clamped",
+                ee=ee,
+                value=value,
+                clamped=clamped,
+                range=rng,
+                hint="the policy's gripper output exceeds the end effector's command_range",
+            )
+        return clamped
+
+    def _clamp_joint(self, joint: int | None, value: float) -> float:
+        """Pull one robot joint's target strictly inside its limits (unknown joint: as is)."""
+        if joint is None or joint >= len(self.joint_limits):
+            return value
+        lims = self.joint_limits[joint]
+        if lims is None:
+            return value
+        return min(max(value, lims[0] + _CLAMP_EPS), lims[1] - _CLAMP_EPS)
 
     def clamp(self, robot_action: NDArray[Any]) -> NDArray[Any]:
         """Pull each joint strictly inside its declared position limits.
@@ -351,7 +410,6 @@ class PolicyIOCodec(BaseModel):
         out = robot_action.copy()
         if not self.joint_limits or out.shape[0] != len(self.joint_limits):
             return out
-        for i, lims in enumerate(self.joint_limits):
-            if lims is not None:
-                out[i] = min(max(float(out[i]), lims[0] + _CLAMP_EPS), lims[1] - _CLAMP_EPS)
+        for i in range(len(self.joint_limits)):
+            out[i] = self._clamp_joint(i, float(out[i]))
         return out

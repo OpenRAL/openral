@@ -70,10 +70,11 @@ def test_reset_obs_has_11_joints_and_base_pose(env) -> None:
 
 
 def test_reset_obs_has_all_manifest_cameras(env) -> None:
-    # panda_mobile declares 3 RGB sensors → camera1/2/3, each a real RTX frame.
+    # panda_mobile declares 4 RGB sensors → camera1/2/3 (by vla_feature_key) plus
+    # `head` (no feature key, keyed by name), each a real RTX frame.
     obs = env.reset()
     images = obs["images"]
-    assert set(images) == {"camera1", "camera2", "camera3"}
+    assert set(images) == {"camera1", "camera2", "camera3", "head"}
     for key, frame in images.items():
         arr = np.asarray(frame)
         assert arr.shape == (256, 256, 3), key

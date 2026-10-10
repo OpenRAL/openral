@@ -347,3 +347,96 @@ def test_estop_latch_blocks_subsequent_safe_action(
 
     send_spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.send_action"]
     assert not send_spans, "estop latch let /openral/safe_action reach HAL send_action"
+
+
+def _openarm_slot_chunks(left_jaw: float, right_jaw: float, *, tick: int) -> list[Any]:
+    """The four ``ActionChunk`` s the real runner puts on the wire for one bimanual tick.
+
+    Built by the runner's own ``_dispatch_slots`` against the real manifest (arm slots
+    zero-padded to 16 dof, gripper slots ``GRIPPER_POSITION`` naming their ``ee``) and
+    encoded field-for-field as ``ROSPublishingHAL._action_to_chunk`` encodes them.
+    """
+    import numpy as np
+    from openral_core import CONTROL_MODE_TO_UINT8, ActionSlot, ControlMode, RobotDescription
+    from openral_msgs.msg import ActionChunk
+    from openral_runner.ros_publishing_hal import ROSPublishingHAL
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py"
+    )
+    spec = importlib.util.spec_from_file_location("_lifecycle_test_rskill_runner_node", src)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    slots = [
+        ActionSlot(
+            range=(0, 6),
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_names=[f"left_joint{i}" for i in range(1, 8)],
+        ),
+        ActionSlot(range=(7, 7), control_mode=ControlMode.GRIPPER_POSITION, ee="left_gripper"),
+        ActionSlot(
+            range=(8, 14),
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_names=[f"right_joint{i}" for i in range(1, 8)],
+        ),
+        ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
+    ]
+    vector = np.array([0.05] * 7 + [left_jaw] + [-0.05] * 7 + [right_jaw], dtype=np.float32)
+    group = runner._dispatch_slots(
+        slots, vector, description=RobotDescription.from_yaml(str(_OPENARM_YAML))
+    )
+    chunks = []
+    for action in group:
+        flat, n_dof, horizon = ROSPublishingHAL._flatten_action_payload(action)
+        chunk = ActionChunk()
+        chunk.control_mode = CONTROL_MODE_TO_UINT8[action.control_mode]
+        chunk.horizon, chunk.flat, chunk.n_dof = int(horizon), flat, int(n_dof)
+        chunk.ee_name = action.ee_name or ""
+        chunk.confidence = float(action.confidence)
+        chunk.tick_index = tick
+        chunk.tick_group_size = int(action.tick_group_size)
+        chunk.runner_session_id = 0xA11CE
+        chunk.joint_names = list(action.joint_names or ())
+        chunks.append(chunk)
+    return chunks
+
+
+def test_the_grasp_trigger_sees_the_command_the_hal_applied_after_a_rejected_slot() -> None:
+    """``_on_safe_action`` folds the HAL's applied (composed) command, not re-staged slots.
+
+    Tick 1 loses its right-gripper slot to the kernel, so the HAL never applies it. Tick 2's
+    first slot exposes the incomplete tick: the HAL raises (``_send_action_traced`` returns
+    False, nothing is observed) and opens tick 2 with it; the rest of tick 2 completes and is
+    applied — a close of both jaws. A bridge staging its own copy of the slots never saw that
+    first slot, so it held three of four forever and missed the close; folding in the HAL's
+    ``last_applied_action`` sees exactly what the jaws were told.
+    """
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+    )
+
+    with _lifecycle_harness() as (_executor, node, _observed):
+        hal = node._hal
+        bridge = VisionAttachmentBridge(
+            None, hal.description, config=VisionAttachmentConfig(camera="head_zed")
+        )
+        left, right = bridge._legs
+        node._vision_attachment = bridge  # the real wiring under test, no ROS side
+        try:
+            for chunk in _openarm_slot_chunks(0.7, -0.7, tick=1)[:3]:
+                node._on_safe_action(chunk)
+            assert hal.last_committed_tick == 0, "tick 1 was never whole"
+            assert left.trigger.last_command is None, "a staged slot commands nothing"
+            for chunk in _openarm_slot_chunks(0.0, 0.0, tick=2):
+                node._on_safe_action(chunk)
+        finally:
+            node._vision_attachment = None
+        assert hal.last_committed_tick == 2
+        names = [joint.name for joint in hal.description.joints]
+        applied = hal.last_applied_action.joint_targets[-1]
+        assert left.trigger.last_command == pytest.approx(applied[names.index("left_gripper")])
+        assert right.trigger.last_command == pytest.approx(applied[names.index("right_gripper")])
+        assert (left.trigger.last_command, right.trigger.last_command) == pytest.approx((0.0, 0.0))

@@ -137,6 +137,7 @@ def start_kernel(
     *,
     estop_reset_cooldown_s: float = 0.1,
     log_path: os.PathLike[str] | str | None = None,
+    params_file: os.PathLike[str] | str | None = None,
 ) -> Any:
     """Launch ``safety_kernel_node`` on an isolated DDS domain.
 
@@ -154,6 +155,12 @@ def start_kernel(
         estop_reset_cooldown_s: Tests use a short cooldown (≤100 ms).
         log_path: When given, redirects stdout+stderr to this file so
             the parent process can surface the kernel's logs on failure.
+        params_file: Dict sources only. When given, the parameters are
+            written to this YAML file and passed as ``--params-file``
+            instead of ``-p`` pairs. Needed for a real manifest's tight
+            collision geometry: OpenArm's hull-vertex array alone renders
+            to ~195 KB, over Linux's 128 KiB per-argument cap
+            (``MAX_ARG_STRLEN``), so ``exec`` fails with E2BIG.
 
     Returns:
         ``subprocess.Popen`` for the kernel; callers should pass it to
@@ -174,11 +181,25 @@ def start_kernel(
         stdout = subprocess.DEVNULL
         stderr = subprocess.DEVNULL
 
-    param_args = (
-        kernel_param_args_from_dict(source)
-        if isinstance(source, dict)
-        else kernel_param_args(source)
-    )
+    if params_file is not None:
+        if not isinstance(source, dict):
+            raise TypeError("params_file needs a parameter dict source")
+        import yaml
+
+        values = {
+            k: list(v) if isinstance(v, tuple) else v
+            for k, v in source.items()
+            if not (isinstance(v, (list, tuple)) and not v)  # untypeable, kernel defaults it
+        }
+        with open(params_file, "w", encoding="utf-8") as fp:
+            yaml.safe_dump({"/**": {"ros__parameters": values}}, fp)
+        param_args = ["--params-file", os.fspath(params_file)]
+    else:
+        param_args = (
+            kernel_param_args_from_dict(source)
+            if isinstance(source, dict)
+            else kernel_param_args(source)
+        )
 
     return subprocess.Popen(
         [
@@ -203,21 +224,25 @@ def start_kernel(
     )
 
 
-def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> None:
+def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> int | None:
     """SIGINT the kernel's process group, then escalate to SIGKILL.
 
     rclcpp::spin() exits on SIGINT but ignores SIGTERM, so plain
     ``proc.terminate()`` leaks the process. We send SIGINT to the
     whole process group (including any subprocesses the kernel may
     have spawned), wait briefly, then SIGKILL if still alive.
+
+    Returns:
+        The process's exit status (``0`` on a clean SIGINT shutdown; a
+        crash through ``ros2 run`` is non-zero), or ``None`` if it outlived
+        the SIGKILL wait.
     """
     if proc.poll() is not None:
-        return
+        return int(proc.returncode)
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGINT)
     try:
-        proc.wait(timeout=sigint_grace_s)
-        return
+        return int(proc.wait(timeout=sigint_grace_s))
     except subprocess.TimeoutExpired:
         pass
     # Escalate.
@@ -225,6 +250,7 @@ def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=2.0)
+    return None if proc.returncode is None else int(proc.returncode)
 
 
 def activate_kernel_node(

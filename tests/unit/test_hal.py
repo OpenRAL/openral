@@ -16,6 +16,7 @@ import time
 import pytest
 from openral_core import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     JointSpec,
@@ -58,7 +59,10 @@ def _make_description(
                 [ControlMode.JOINT_POSITION] if supported_modes is None else supported_modes
             ),
         ),
-        safety=SafetyEnvelope(),
+        # A real HAL has no staleness default: it reads the manifest's window.
+        safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),
+        # A ros2_control HAL refuses a manifest without a control rate (#303).
+        action_spec=ActionSpec(dim=len(joints), control_freq_hz=30.0),
     )
 
 

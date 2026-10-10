@@ -66,6 +66,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <tf2/LinearMath/Transform.h>
@@ -92,6 +93,16 @@ struct PayloadPrimitive {
   tf2::Vector3 half_extents{0.0, 0.0, 0.0};  ///< box half extents (m)
 };
 
+/// Signed distance from `local` (a point in the primitive's own frame) to the
+/// primitive's surface: negative inside a sphere or capsule, `0` anywhere
+/// inside a box (outside distance only). Shared by the payload clearing and the
+/// robot self-filter so both measure against the same shapes.
+double primitive_surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local) noexcept;
+
+/// Radius of a sphere about the primitive's origin that contains it: the broad
+/// phase in front of `primitive_surface_distance`.
+double primitive_bounding_radius(const PayloadPrimitive& prim) noexcept;
+
 /// One attested support-contact patch, already placed in the grid frame.
 ///
 /// The wire form (`openral_msgs/SupportContactWitness`, carried on
@@ -107,6 +118,13 @@ struct SupportPatch {
   tf2::Vector3 normal{0.0, 0.0, 1.0};  ///< unit outward support normal, grid frame
   double patch_radius{0.0};            ///< lateral radius of the supported patch (m, > 0)
   double max_penetration{0.0};         ///< attested PHYSICAL contact depth bound (m, >= 0)
+  /// Where this attestation's plane was on the first grid that carried it
+  /// (`SupportPatchAnchors`), grid frame. When set, a cell is withheld only if
+  /// BOTH planes claim it: the live plane rides with a lifted payload, the
+  /// support it attests does not.
+  bool has_anchor{false};
+  tf2::Vector3 anchor_point{0.0, 0.0, 0.0};   ///< first-grid contact point, grid frame
+  tf2::Vector3 anchor_normal{0.0, 0.0, 1.0};  ///< first-grid outward normal, grid frame
 };
 
 /// Place one wire object's primitives — and its support-contact attestation, if
@@ -305,6 +323,77 @@ private:
 
   std::vector<Window> windows_;
 };
+
+/// The kernel's support-witness re-arm key: (object id, support id, producer
+/// stamp). A heartbeated snapshot repeats it; a regrasp or re-attestation does not.
+struct SupportWitnessKey {
+  std::string object_id;
+  std::string support_id;
+  std::int64_t stamp_ns{0};
+  bool operator==(const SupportWitnessKey& other) const noexcept {
+    return stamp_ns == other.stamp_ns && object_id == other.object_id &&
+           support_id == other.support_id;
+  }
+};
+
+/// One attestation on one grid: its key and its patch in a WORLD-FIXED frame
+/// (the OctoMap's), for the same reason `AttachSweepObservation` uses it.
+struct SupportPatchObservation {
+  SupportWitnessKey key;
+  SupportPatch patch;
+};
+
+/// The plane each live attestation had on the first grid that carried it.
+///
+/// The attestation is stated in the object frame, so its plane rides with the
+/// payload; the supporting surface does not. Once the payload rises, the live
+/// band (up to half-width + depth + one voxel above the plane) climbs into the
+/// payload's OWN stale occupancy — cells the attach grid cleared, which the
+/// kernel therefore never baselined as embedded residue — and withholds them,
+/// re-publishing them inside the payload. The kernel's witness exempts them
+/// while it lives; the producer retires the witness at a 15 mm rise, the kernel
+/// drops it on ingest, and the grid it holds until the next publish was built
+/// under the old attestation: a stop on the payload's own top layer (Isaac
+/// i64/i70, 2026-10-05: -18.0 / -14.5 mm, 0.14-0.19 s after the retirement).
+/// Withholding a cell only when the first-grid plane ALSO claims it keeps the
+/// band on the support. It only ever narrows the withheld set, so
+/// `withheld ⊆ kernel-exempt` is untouched.
+///
+/// Same commit discipline as `AttachSweepLedger`: calling `anchor` records the
+/// grid; a key absent from `present` is forgotten; a frame that clears nothing
+/// does not call it, so a skipped frame never re-anchors at a lifted pose.
+/// Keyed as the kernel arms (`SupportWitnessKey`), so an attachment-revision
+/// bump that keeps the attestation keeps its anchor.
+class SupportPatchAnchors {
+public:
+  /// The first-seen patch for each of `present`, in order, in the same frame.
+  std::vector<SupportPatch> anchor(const std::vector<SupportPatchObservation>& present);
+
+private:
+  std::vector<SupportPatchObservation> anchors_;
+};
+
+/// Manifest attach link -> the TF frame it is looked up as.
+using AttachLinkTfFrames = std::unordered_map<std::string, std::string>;
+
+/// Parse the `attach_link_tf_frames` parameter: `"link=frame"` entries, the
+/// same strings the HAL takes as `vision_attachment_tf_frames` (one scene
+/// block, `DeployRuntime.vision_attachment.tf_frames`, feeds both).
+///
+/// `AttachedCollisionObject.attach_link` carries the MANIFEST link name,
+/// because the kernel's collision model uses manifest names; a real cell's TF
+/// tree may name the same body differently (OpenArm: `openarm_left_link7` is
+/// the vendor's `openarm_left_ee_base_link`). Empty entries are skipped (the
+/// ROS default `[""]` means none). A malformed entry (no `=`, an empty side) or
+/// one link mapped to two different frames returns `false`, sets `error` and
+/// leaves `out` EMPTY: the caller then looks every link up by its own name,
+/// which on such a cell fails and clears nothing — the payload stays an
+/// obstacle, never a cell cleared through a misread map.
+bool parse_attach_link_tf_frames(const std::vector<std::string>& entries, AttachLinkTfFrames& out,
+                                 std::string& error);
+
+/// The TF frame `attach_link` is looked up as: its mapping, else itself.
+const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::string& attach_link);
 
 /// The clearing padding one object's cells get on ONE published grid.
 ///

@@ -4,13 +4,13 @@ files are produced by the tool itself (`run` or `import-round`), from these
 files.
 
 Producer:
-    spark:/home/allopart/openral-runs/2026-08-22-master-1/{bag1,sink1,fridge1,utensil1}/
-    spark:/home/allopart/openral-runs/2026-08-16-master-1/bag1/
-    spark:/home/allopart/workspace/openral-matrix-baseline/outputs/validation-matrix/
+    spark:/home/user/openral-runs/2026-08-22-master-1/{bag1,sink1,fridge1,utensil1}/
+    spark:/home/user/openral-runs/2026-08-16-master-1/bag1/
+    spark:/home/user/workspace/openral-matrix-baseline/outputs/validation-matrix/
         2026-08-22-harness-1/{baguette,sink_cup,fridge,utensil}/
         2026-08-23-master-s1/{baguette,sink_cup,fridge,utensil}/
         2026-08-23-nav143-s1/{baguette,sink_cup}/
-    spark:/home/allopart/workspace/openral-193-battery/outputs/validation-matrix/
+    spark:/home/user/workspace/openral-193-battery/outputs/validation-matrix/
         2026-09-04-post200-2/sink_cup/
 
 The two `master-1` rounds ran stack tip 2edcf67c3b087958d475813fe19234c12e90698c
@@ -162,7 +162,7 @@ sim\.estop_initial_configuration|place_allowance_active=1|\
             --executed-sha 2edcf67c3b087958d475813fe19234c12e90698c \
             --stem seed1 --host nvidia --gpu-name "NVIDIA GB10" \
             --sync-group robocasa --sync-group sidecar-wire \
-            --imported-from /home/allopart/openral-runs/<round>
+            --imported-from /home/user/openral-runs/<round>
 
     Derived from the artifacts above: `stack_argv` (the resolved launch argv's
     stack tokens), `started_at` (the first ROS timestamp in the log), `repo_root`
@@ -187,7 +187,7 @@ Reproduce (needs the run store, which is not public):
 Consumed by:
     tests/unit/test_validation_matrix.py
 
-    spark:/home/allopart/workspace/openral-217-with204/outputs/validation-matrix/
+    spark:/home/user/workspace/openral-217-with204/outputs/validation-matrix/
         2026-09-05-217-with204-1/baguette/
 
 The 2026-09-05 round is the #204 A/B's first `with204` round (stack tip
@@ -201,7 +201,7 @@ exact pair certified at +65.5 mm alongside a `self_collision` budget of
 scored it against the payload's nearest WORLD body instead. Same two-line
 excerpt convention as the 2026-09-04 fixture.
 
-`2026-09-07-adr0101-live-1` is a single-scene round run on `q-laptop`
+`2026-09-07-adr0101-live-1` is a single-scene round run on the laptop workstation
 (RTX 5070 Laptop 8 GB) at `60dcb2ff992cb7e4c06e5e362d8a000cd82a43e8`, the first
 round after the harness DDS-scope and `--no-daemon` fixes, with
 `OPENRAL_ALLOW_REMOTE_CODE=1`. It is the first `validation_matrix` round since
@@ -210,7 +210,7 @@ stop only: `kind=world a=attached:sim:obj_main b=voxel_228622
 min_distance_m=-0.0040461`, certified 24.858349 mm clear of
 `counter_1_right_group_main`.
 
-    q-laptop:/home/allopart/workspace/openral-plan/outputs/validation-matrix/
+    laptop:/home/user/workspace/openral-plan/outputs/validation-matrix/
         2026-09-07-adr0101-live-1/
 
 `2026-09-07-adr0101-live-1/utensil/run_deploy.log`

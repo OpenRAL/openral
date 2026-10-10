@@ -75,9 +75,6 @@ _None — no test is silently shadowed by a later redefinition._
     - `tests/sim/test_aloha_bimanual_hal_mujoco.py::test_capabilities_bimanual`
     - `tests/unit/test_aloha.py::test_capabilities_declare_bimanual`
 - 2 identical bodies:
-    - `tests/sim/test_franka_isaac_deploy_hal.py::test_connect_resolves_action_dim`
-    - `tests/sim/test_franka_urdf_isaac.py::test_connect_resolves_action_dim`
-- 2 identical bodies:
     - `tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_before_step`
     - `tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_without_pixels`
 - 2 identical bodies:
@@ -226,8 +223,7 @@ These neither `assert` nor make a recognised validation call. Some are real (a s
 - `tests/unit/test_schemas_fuzz.py::test_fuzz_wait_tool` (line 1325)
 - `tests/unit/test_schemas_fuzz.py::test_fuzz_deploy_runtime` (line 1332)
 - `tests/unit/test_sidecar_torch_aarch64_pins.py::test_sidecar_requirement_files_have_aarch64_wheels` (line 128)
-- `tests/unit/test_smolvla_adapter.py::test_stop_is_idempotent` (line 251)
-- `tests/unit/test_smolvla_adapter.py::test_shutdown_is_idempotent` (line 438)
+- `tests/unit/test_chunked_executor.py::test_stop_is_idempotent` (line 176)
 - `tests/unit/test_so100_follower_hal.py::test_disconnect_idempotent` (line 203)
 - `tests/unit/test_so100_follower_hal.py::test_disconnect_without_connect_is_noop` (line 207)
 - `tests/unit/test_so100_follower_hal.py::test_sends_zero_action` (line 273)

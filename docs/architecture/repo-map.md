@@ -23,7 +23,7 @@ openral/                      ← THIS monorepo
 │  World Action Model (WAM) implementations: removed (ADR-0104) — they live in the private OpenRAL Pro monorepo, not this repo
 │  Planned: dispatcher (edge/cloud/split)
 ├─ packages/                      ← ROS 2 packages (colcon build)
-│  ├─ msgs/         (openral_msgs)        ← IDL (.msg, .action) — normative; WorldStateStamped carries detected_objects ✓
+│  ├─ msgs/         (openral_msgs)        ← IDL (.msg, .srv, .action) — normative; WorldStateStamped carries detected_objects ✓
 │  ├─ world_state/  (openral_world_state_ros) ← lifecycle node wrapping the aggregator ✓
 │  ├─ openral_hal_node/       ← the one manifest-driven HAL lifecycle node, every robot (`robot_yaml` picks it; node name `openral_hal_<robot_id>`) ✓
 │  ├─ openral_hal_openarm/    ← OpenArm real-HW bringup only (`real_bringup.launch.py`, via `hal.real_bringup`) ✓
@@ -32,20 +32,20 @@ openral/                      ← THIS monorepo
 │  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓
 │  ├─ openral_safety/         ← safety_node (geometric collision checking) ✓
 │  ├─ openral_safety_watchdog/ · openral_human_estop/ ← deadman watchdog + human E-stop forwarders ✓
-│  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift) ✓
-│  ├─ openral_octomap_bridge/ ← OctoMap → safety-kernel OccupancyVoxels lowering ✓
+│  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift) + segmenter_node (srv/SegmentInView) ✓
+│  ├─ openral_octomap_bridge/ ← OctoMap → safety-kernel OccupancyVoxels lowering + robot_self_filter (depth-cloud self-filter on the real octomap path) ✓
 │  ├─ openral_nav2_bringup/ · openral_slam_bringup/ ← reasoner-managed Nav2 / slam_toolbox services ✓
 │  └─ openral_foxglove_bringup/ ← read-only Foxglove live-scene bridge + Bucket-2 converter + MCAP ✓
 │  Planned: core_ros, sensors_ros, dispatcher_ros, launch
 ├─ cpp/                           ← openral_safety_kernel — C++ deny-by-default kernel (implemented + tested, certification pending) ✓
 ├─ rskills/                       ← rSkill packages (manifest + weights + eval/) — VLA + detector kinds ✓
-├─ scenes/                        ← SimEnvironment YAMLs (`sim run`) + native scenes ✓
+├─ scenes/                        ← {deploy,sim,benchmark}/ — DeployScene / SimScene / BenchmarkScene YAMLs (+ deploy/drivers/) ✓
 ├─ benchmarks/                    ← benchmark suite definitions ✓
 ├─ deployments/                   ← retired; deploy configs live in scenes/deploy ✓
-├─ robots/                        ← canonical RobotDescription manifests ✓
+├─ robots/                        ← canonical RobotDescription manifests + per-host units/<unit>.yaml sensor overlays (RobotUnit) ✓
 ├─ tests/{unit,integration,sim,hil}/  ← all four trees ✓
 ├─ docs/                          ← mkdocs-material; decision log lives in the private OpenRAL/management repo ✓
-├─ tools/                         ← schema_export.py, skill_publisher.py ✓
+├─ tools/                         ← schema_export.py, rskill_publisher.py, gen_ros_topic_graph.py ✓
 ├─ scripts/                       ← install.sh (Tier-0 curl-bash) + repair/dev helpers ✓
 │  Note: bootstrap_ubuntu.sh / bootstrap_macos.sh live in
 │  python/cli/src/openral_cli/bootstrap/ so they ship in the openral-cli

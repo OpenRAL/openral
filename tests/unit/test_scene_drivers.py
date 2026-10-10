@@ -11,9 +11,9 @@ downstream of it produces nothing, with every node reporting healthy.
 The driver's own config travels with the scene rather than living in a home
 directory, so a committed scene works on more than one machine.
 
-No in-tree scene currently declares `drivers:` (it is a real-hardware-only
-field — see `DeployScene.drivers`), so these tests write their own
-`zed_wrapper`-shaped fixture rather than depending on one. The shape (a
+`drivers:` is a real-hardware-only field (see `DeployScene.drivers`); these tests
+write their own `zed_wrapper`-shaped fixture rather than depending on a committed
+scene. The shape (a
 `ros2_image` sensor binding paired with a `zed_wrapper` driver entry pinning
 positional tracking off) is real — it is the pairing that `deploy_e2e.launch.py`
 resolves on any workcell wiring a ZED into the octomap leg.
@@ -64,10 +64,13 @@ def _scene(tmp_path: pathlib.Path) -> _Scene:
                 },
             }
         ],
+        # A workcell ZED (its own name): a deploy scene never touches a robot camera, so a
+        # ros2_image binding in a scene belongs to a camera the robot manifest does not define.
         "sensors": [
             {
-                "name": "top",
+                "name": "workcell_zed",
                 "modality": "rgb",
+                "frame_id": "workcell_zed_left_camera_optical_frame",
                 "deploy_binding": {
                     "backend": "ros2_image",
                     "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
@@ -146,6 +149,39 @@ def test_the_zed_override_keeps_positional_tracking_off(_scene: _Scene) -> None:
     # flag above until this was pinned — observed live on a real cell as
     # "POSITIONAL TRACKING disabled in the parameters, but forced to ENABLE".
     assert params["depth"]["depth_stabilization"] == 0
+
+
+_ZED_SCENES = sorted(
+    path
+    for path in (_ROOT / "scenes" / "deploy").glob("*.yaml")
+    if any(
+        d.get("package") == "zed_wrapper"
+        for d in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("drivers") or []
+    )
+)
+
+
+def test_committed_zed_scenes_exist() -> None:
+    """The parametrisation below is not vacuous."""
+    assert len(_ZED_SCENES) >= 3, _ZED_SCENES
+
+
+@pytest.mark.parametrize("scene_path", _ZED_SCENES, ids=lambda p: p.stem)
+def test_every_zed_driver_keeps_its_camera_tfs_static(scene_path: pathlib.Path) -> None:
+    """``enable_ipc`` off, or octomap_server stalls for seconds at a time.
+
+    With intra-process comms on (the wrapper's default) zed_wrapper publishes
+    ``zed_camera_center -> zed_left_camera_frame`` as a DYNAMIC /tf stamped per
+    grab. octomap_server's tf2 MessageFilter then inserts any cloud that beat its
+    TF on the TF listener's own thread, which stops ingesting /tf meanwhile; the
+    5-deep queue fills and the map stalls. Thor, 2026-10-04: max /octomap_binary
+    gap 1.7-3.0 s and kernel ``voxel_stale`` with IPC on; 0.40-0.67 s, no drops,
+    with it off.
+    """
+    doc = yaml.safe_load(scene_path.read_text(encoding="utf-8"))
+    for driver in doc["drivers"]:
+        if driver["package"] == "zed_wrapper":
+            assert driver["args"].get("enable_ipc") == "false", scene_path.name
 
 
 def test_drivers_are_included_on_the_real_path_only() -> None:

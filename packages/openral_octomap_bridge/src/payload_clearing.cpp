@@ -36,8 +36,11 @@ bool pose_from_msg(const geometry_msgs::msg::Pose& pose, tf2::Transform& out) {
   return true;
 }
 
+}  // namespace
+
 // Signed distance from a point to the primitive's surface (negative inside).
-double surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local) {
+double primitive_surface_distance(const PayloadPrimitive& prim,
+                                  const tf2::Vector3& local) noexcept {
   switch (prim.shape_type) {
   case Wire::SHAPE_SPHERE:
     return local.length() - prim.radius;
@@ -59,7 +62,7 @@ double surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local)
 }
 
 // Radius of a sphere at the primitive's origin that contains it.
-double bounding_radius(const PayloadPrimitive& prim) {
+double primitive_bounding_radius(const PayloadPrimitive& prim) noexcept {
   switch (prim.shape_type) {
   case Wire::SHAPE_SPHERE:
     return prim.radius;
@@ -70,8 +73,6 @@ double bounding_radius(const PayloadPrimitive& prim) {
     return prim.half_extents.length();
   }
 }
-
-}  // namespace
 
 bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& object,
                            const tf2::Transform& grid_from_link, std::vector<PayloadPrimitive>& out,
@@ -162,21 +163,19 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
   return true;
 }
 
-bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& center,
-                             double resolution) noexcept {
-  if (!(patch.patch_radius > 0.0) || !(resolution > 0.0)) {
-    return false;
-  }
-  const tf2::Vector3 delta = center - patch.point;
-  const double height = delta.dot(patch.normal);
+namespace {
+
+bool plane_withholds(const SupportPatch& patch, const tf2::Vector3& point,
+                     const tf2::Vector3& normal, const tf2::Vector3& center, double resolution) {
+  const tf2::Vector3 delta = center - point;
+  const double height = delta.dot(normal);
   const double lateral_sq = std::max(0.0, delta.length2() - height * height);
   const double half = 0.5 * resolution;
   // Both pads are exact discretisation geometry, not tuned tolerances, and are
   // the kernel's own: the cube's half-width projected on the normal, and the
   // cube's circumradius laterally.
   const double normal_half_width =
-      half *
-      (std::fabs(patch.normal.x()) + std::fabs(patch.normal.y()) + std::fabs(patch.normal.z()));
+      half * (std::fabs(normal.x()) + std::fabs(normal.y()) + std::fabs(normal.z()));
   const double lateral_pad = half * 1.7320508075688772;  // sqrt(3)
   const double reach = patch.patch_radius + lateral_pad;
   if (lateral_sq > reach * reach) {
@@ -192,6 +191,42 @@ bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& cent
   // No `slack` term (the kernel's `attached_contact_tolerance`): what this
   // withholds must stay a subset of what the kernel exempts.
   return height <= normal_half_width + patch.max_penetration + resolution;
+}
+
+}  // namespace
+
+bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& center,
+                             double resolution) noexcept {
+  if (!(patch.patch_radius > 0.0) || !(resolution > 0.0)) {
+    return false;
+  }
+  // The live plane is what the kernel exempts against, so it always gates. The
+  // anchor (`SupportPatchAnchors`) only ever narrows it: an AND, never an OR.
+  return plane_withholds(patch, patch.point, patch.normal, center, resolution) &&
+         (!patch.has_anchor ||
+          plane_withholds(patch, patch.anchor_point, patch.anchor_normal, center, resolution));
+}
+
+std::vector<SupportPatch>
+SupportPatchAnchors::anchor(const std::vector<SupportPatchObservation>& present) {
+  std::vector<SupportPatchObservation> next;
+  next.reserve(present.size());
+  std::vector<SupportPatch> out;
+  out.reserve(present.size());
+  for (const auto& observation : present) {
+    // First sighting anchors HERE: that grid is the attestation's own.
+    SupportPatchObservation kept = observation;
+    for (const auto& prior : anchors_) {
+      if (prior.key == observation.key) {
+        kept = prior;
+        break;
+      }
+    }
+    out.push_back(kept.patch);
+    next.push_back(std::move(kept));
+  }
+  anchors_ = std::move(next);
+  return out;
 }
 
 std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& grid,
@@ -230,13 +265,12 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
     // lattice we cannot place would remove cells somewhere the payload is not.
     return 0;
   }
-  const tf2::Transform base_from_grid(
-      q, tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
+  const tf2::Transform base_from_grid(q, tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
   const tf2::Transform grid_from_base = base_from_grid.inverse();
 
   std::size_t cleared = 0;
   for (const auto& prim : primitives) {
-    const double span = bounding_radius(prim) + reach;
+    const double span = primitive_bounding_radius(prim) + reach;
     const tf2::Vector3 origin = prim.pose.getOrigin();
     if (!std::isfinite(span) || !std::isfinite(origin.x()) || !std::isfinite(origin.y()) ||
         !std::isfinite(origin.z())) {
@@ -275,7 +309,7 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
               base_from_grid * tf2::Vector3((static_cast<double>(ix) + 0.5) * res,
                                             (static_cast<double>(iy) + 0.5) * res,
                                             (static_cast<double>(iz) + 0.5) * res);
-          if (surface_distance(prim, primitive_from_grid * center) > reach) {
+          if (primitive_surface_distance(prim, primitive_from_grid * center) > reach) {
             continue;
           }
           // The partition: a cell an attested support patch claims is the
@@ -344,6 +378,36 @@ double attach_transition_padding(double steady_padding_m, double attach_sweep_pa
                            : 0.0;
   return (std::isfinite(steady_padding_m) && steady_padding_m > 0.0 ? steady_padding_m : 0.0) +
          extra;
+}
+
+bool parse_attach_link_tf_frames(const std::vector<std::string>& entries, AttachLinkTfFrames& out,
+                                 std::string& error) {
+  out.clear();
+  AttachLinkTfFrames parsed;
+  for (const auto& entry : entries) {
+    if (entry.empty()) {
+      continue;
+    }
+    const auto eq = entry.find('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == entry.size()) {
+      error = "entry '" + entry + "' is not 'link=frame'";
+      return false;
+    }
+    const std::string link = entry.substr(0, eq);
+    const std::string frame = entry.substr(eq + 1);
+    const auto [it, inserted] = parsed.emplace(link, frame);
+    if (!inserted && it->second != frame) {
+      error = "link '" + link + "' is mapped to both '" + it->second + "' and '" + frame + "'";
+      return false;
+    }
+  }
+  out = std::move(parsed);
+  return true;
+}
+
+const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::string& attach_link) {
+  const auto it = frames.find(attach_link);
+  return it == frames.end() ? attach_link : it->second;
 }
 
 }  // namespace openral_octomap_bridge

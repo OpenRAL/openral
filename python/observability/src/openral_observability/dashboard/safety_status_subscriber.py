@@ -22,6 +22,8 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
+from openral_observability.rclpy_spin import spin_executor_until_shutdown
+
 if TYPE_CHECKING:
     from openral_observability.dashboard.store import TelemetryStore
 
@@ -109,7 +111,10 @@ class SafetyStatusSubscriber:
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
-            target=self._executor.spin, name="openral_dashboard_safety_status_spin", daemon=True
+            target=spin_executor_until_shutdown,
+            args=(self._executor,),
+            name="openral_dashboard_safety_status_spin",
+            daemon=True,
         )
         self._thread.start()
 

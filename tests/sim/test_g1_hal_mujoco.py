@@ -61,6 +61,8 @@ from openral_core import (
 )
 from openral_hal import G1_DESCRIPTION, G1MujocoHAL
 
+from tests.sim.conftest import mujoco_renderer_probe_error
+
 pytestmark = [
     pytest.mark.sim,
     pytest.mark.skipif(
@@ -592,11 +594,15 @@ class TestBodyTwistWalking:
             assert math.hypot(x1 - x0, y1 - y0) > 0.5
             assert hal._data is not None
             assert float(hal._data.qpos[2]) > 0.6
-            assert getattr(hal.read_images()["head"], "shape", None) == (480, 640, 3)
         finally:
             hal.disconnect()
 
 
+# Rendering SIGABRTs on a headless host without GL/EGL; probe in a subprocess first.
+@pytest.mark.skipif(
+    (_RENDERER_ERROR := mujoco_renderer_probe_error()) is not None,
+    reason=f"mujoco renderer unavailable: {_RENDERER_ERROR}",
+)
 class TestHeadCamera:
     def test_read_images_renders_head(self, connected_hal: G1MujocoHAL) -> None:
         frames = connected_hal.read_images()

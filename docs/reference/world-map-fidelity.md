@@ -424,7 +424,7 @@ premium is ever worth another attempt** — the swap cannot be justified on a
 mechanism nobody has pinned down.
 
 The cost that stays paid is larger than #111's ~1.9×: **4.2–6.2×** on these
-scenes (83–129 ms per pass per-pixel against 13.5–22.3 ms batched, q-laptop,
+scenes (83–129 ms per pass per-pixel against 13.5–22.3 ms batched, laptop,
 CPU cast), because a real kitchen fires the cull far more often than the
 1200-geom clutter scene #111 measured on. `tests/sim/safety/test_depth_multiray_equivalence_robocasa.py`
 holds both halves as a gate, and both run against `_cast_depth_rays` itself

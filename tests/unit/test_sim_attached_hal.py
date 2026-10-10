@@ -51,7 +51,7 @@ from openral_hal.sim_attached import (
 )
 
 from tests.unit.conftest import _CaptureProcessor
-from tests.unit.fakes.fake_sim_env import FakeSimEnv
+from tests.unit.fakes.fake_sim_env import FakeSimEnv, GroupStepFakeSimEnv
 
 # ── pack_action_for_env ──────────────────────────────────────────────
 
@@ -223,6 +223,213 @@ def test_multi_slot_tick_commits_one_atomic_env_step() -> None:
     assert env.last_action is not None
     assert list(env.last_action[3:9]) == pytest.approx(list(cart.cartesian_delta[0]))
     assert env.last_action[-1] == pytest.approx(-1.0)
+
+
+def test_group_of_an_already_committed_tick_is_refused() -> None:
+    """A replayed group of a committed tick must not step the sim again (audit B.md 3).
+
+    The stale-tick guard used to live only in the OpenArm MuJoCo twin; this
+    HAL serves the slot-dispatched R1Pro/B1K, RoboCasa365 and InternVLA-N1
+    skills, and re-applied a replayed group.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+
+    def _tick(tick: int) -> list[Action]:
+        return [
+            Action(
+                control_mode=ControlMode.CARTESIAN_DELTA,
+                cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
+                tick_index=tick,
+                tick_group_size=2,
+            ),
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[-1.0],
+                tick_index=tick,
+                tick_group_size=2,
+            ),
+        ]
+
+    for slot in _tick(3):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 3)
+    for stale in (3, 2):  # not 1: above a watermark of 1 that is a restarted runner
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_tick(stale)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (1, 3)
+    # Nothing was staged by the refusal: the next tick commits normally.
+    for slot in _tick(4):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 4)
+
+
+def _slot_tick(tick: int, session: int = 0) -> list[Action]:
+    """One two-slot tick (Cartesian arm + gripper), as the runner dispatches it."""
+    return [
+        Action(
+            control_mode=ControlMode.CARTESIAN_DELTA,
+            cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
+            tick_index=tick,
+            tick_group_size=2,
+            runner_session_id=session,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[-1.0],
+            tick_index=tick,
+            tick_group_size=2,
+            runner_session_id=session,
+        ),
+    ]
+
+
+_RUNNER_A = 0xA11CE
+_RUNNER_B = 0xB0B
+
+
+def test_same_session_replay_is_refused_including_tick_one() -> None:
+    """With a runner session id tick 1 is not a restart signal: it is a replay."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(7, _RUNNER_A):
+        hal.send_action(slot)
+    for stale in (7, 4, 1):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_slot_tick(stale, _RUNNER_A)[0])
+    assert (env.step_calls, hal.last_committed_tick, hal.last_committed_session) == (
+        1,
+        7,
+        _RUNNER_A,
+    )
+
+
+def test_new_session_adopted_on_commit_old_session_refused_after() -> None:
+    """A new runner is adopted only when its group commits; then the old one is dead."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(40, _RUNNER_A):
+        hal.send_action(slot)
+    first, second = _slot_tick(1, _RUNNER_B)
+    hal.send_action(first)  # a stray new-session slot: staged, watermark untouched
+    assert (hal.last_committed_tick, hal.last_committed_session) == (40, _RUNNER_A)
+    hal.send_action(second)
+    assert (env.step_calls, hal.last_committed_tick, hal.last_committed_session) == (
+        2,
+        1,
+        _RUNNER_B,
+    )
+    # A late group of the dead runner numbered ABOVE the new watermark: a
+    # tick-only rule would step it; the session rule refuses it.
+    for slot in _slot_tick(41, _RUNNER_A):
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(slot)
+    assert env.step_calls == 2
+
+
+def test_a_same_numbered_tick_of_two_sessions_never_merges() -> None:
+    """The group in flight is keyed by (session, tick), not the tick alone."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_slot_tick(3, _RUNNER_A)[0])
+    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+        hal.send_action(_slot_tick(3, _RUNNER_B)[1])
+    assert env.step_calls == 0
+
+
+def test_one_lost_slot_costs_one_tick_not_the_rest_of_the_run() -> None:
+    """The slot that exposes an incomplete tick opens the next one.
+
+    Regression: it was dropped with the partial tick, so the next tick was one slot short
+    forever and every later tick lost its first slot the same way (Isaac deploy sim:
+    3558 of 3584 policy ticks dropped, the arm never moved).
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_slot_tick(1, _RUNNER_A)[0])  # tick 1's second slot is lost
+    first, second = _slot_tick(2, _RUNNER_A)
+    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+        hal.send_action(first)
+    assert env.step_calls == 0  # the partial tick never steps
+    hal.send_action(second)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
+    for slot in _slot_tick(3, _RUNNER_A):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 3)
+
+
+def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay() -> (
+    None
+):
+    """The slot-group tick rule (hazard log Entry 036) on ``SimAttachedHAL``.
+
+    At or below the committed watermark is a replay, except tick 1 while the
+    watermark is above 1, which is a restarted runner's fresh numbering.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+
+    for slot in _slot_tick(7):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 7)
+    for stale in (7, 5):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_slot_tick(stale)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (1, 7)
+
+    for slot in _slot_tick(1):  # a restarted runner: adopted
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 1)
+
+    with pytest.raises(ROSRuntimeError, match="stale slot group"):
+        hal.send_action(_slot_tick(1)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (2, 1)
+
+
+def test_a_stray_tick_one_slot_does_not_drop_the_watermark() -> None:
+    """Adopting a restart is decided per slot but applied on commit.
+
+    One delayed tick-1 slot from the OLD runner must not reset the watermark: the
+    old runner's other in-flight ticks would then be re-admitted and stepped.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(9):
+        hal.send_action(slot)
+    hal.send_action(_slot_tick(1)[0])  # staged, not committed
+    assert hal.last_committed_tick == 9
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(_slot_tick(5)[0])
+    for slot in _slot_tick(5):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 9)
+
+
+def test_estop_keeps_the_watermark_so_a_pre_stop_tick_is_still_refused() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for tick in (1, 2, 3):
+        for slot in _slot_tick(tick):
+            hal.send_action(slot)
+    hal.estop()
+    hal.reset_estop()
+    assert hal.last_committed_tick == 3
+    with pytest.raises(ROSRuntimeError, match="stale slot group"):
+        hal.send_action(_slot_tick(3)[0])
+    assert env.step_calls == 3
+    # A reconnect (env reset) clears it: numbering restarts.
+    hal.disconnect()
+    hal.connect()
+    assert hal.last_committed_tick == 0
 
 
 def test_pack_action_gripper_position_packs_last_slot() -> None:
@@ -1136,3 +1343,141 @@ def test_task_success_final_re_reads_the_predicate_at_disconnect(
     hal.disconnect()
     final = cap.named("sim.task_success_final")[0]
     assert final["success"] is True
+
+
+def _panda_mobile_group(jaw: float, *, tick: int) -> list[Action]:
+    """One mobile-manipulator tick: a base twist, a padded arm slot and a gripper slot."""
+    arm = [f"panda_joint{i}" for i in range(1, 8)]
+    common = {"tick_index": tick, "tick_group_size": 3, "runner_session_id": 0xB0B}
+    return [
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.05)],
+            **common,
+        ),
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_targets=[[0.0] * 3 + [0.2] * 7 + [0.0]],
+            joint_names=arm,
+            **common,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[jaw],
+            ee_name="panda_gripper",
+            **common,
+        ),
+    ]
+
+
+def test_a_mobile_manipulator_group_records_its_jaw_target() -> None:
+    """A base-twist group does not compose into one joint command, yet the jaw was told.
+
+    Recording ``None`` there cleared the grasp trigger's command every tick on a mobile
+    manipulator twin: the vision leg could never see a stall. The jaw target is recorded
+    as a compact row the bridge reads positionally; a group with no readable gripper
+    target is still unknown.
+    """
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    hal = SimAttachedHAL(GroupStepFakeSimEnv(action_dim=12), description)
+    hal.connect()
+    for slot in _panda_mobile_group(0.03, tick=1):
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 1
+    applied = hal.last_applied_action
+    assert applied is not None
+    assert applied.control_mode is ControlMode.JOINT_POSITION
+    assert applied.joint_names == ["panda_gripper"]
+    assert applied.joint_targets == [[pytest.approx(0.03)]]
+    assert hal.base_twist[0] == pytest.approx(0.1), "the twist slot still drove the base"
+
+    blind = [a for a in _panda_mobile_group(0.0, tick=2) if a.ee_name is None]
+    blind = [a.model_copy(update={"tick_group_size": 2}) for a in blind]
+    for slot in blind:
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 2
+    assert hal.last_applied_action is None, "no gripper target: the command is unknown"
+
+
+def test_overlapping_gripper_targets_are_unknown() -> None:
+    """Two slots writing one jaw: which value the jaw got is unknown, so ``None``."""
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    twist, arm, grip = _panda_mobile_group(0.03, tick=1)
+    overlap = arm.model_copy(update={"joint_names": [*arm.joint_names, "panda_gripper"]})
+    assert sim_attached.gripper_targets_action([twist, overlap, grip], description) is None
+    alone = sim_attached.gripper_targets_action([twist, overlap], description)
+    assert alone is not None and alone.joint_targets == [[0.0]]
+
+
+def test_a_too_short_joint_row_naming_a_gripper_is_unknown() -> None:
+    """A row too short for a gripper it names is unreadable, not "jaw uncommanded"."""
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    twist, arm, _ = _panda_mobile_group(0.03, tick=1)
+    short = arm.model_copy(
+        update={"joint_names": [*arm.joint_names, "panda_gripper"], "joint_targets": [[0.2] * 10]}
+    )
+    assert sim_attached.gripper_targets_action([twist, short], description) is None
+
+
+_OPENARM = "robots/openarm/robot.yaml"
+
+
+def _openarm_jaw(ee_name: str | None, value: float) -> Action:
+    return Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[value], ee_name=ee_name)
+
+
+def test_bimanual_jaw_record_needs_every_gripper() -> None:
+    """Both jaws commanded: both recorded. One left out: ``None``, never a partial record.
+
+    A partial record would leave the uncovered jaw's previous command standing in the
+    grasp trigger — a phantom ATTACH on the twin. ``None`` clears both.
+    """
+    description = RobotDescription.from_yaml(_OPENARM)
+    twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+    left, right = _openarm_jaw("left_gripper", 0.01), _openarm_jaw("right_gripper", 0.02)
+    both = sim_attached.gripper_targets_action([twist, left, right], description)
+    assert both is not None
+    assert both.joint_names == ["left_gripper", "right_gripper"]
+    assert both.joint_targets == [[pytest.approx(0.01), pytest.approx(0.02)]]
+    assert sim_attached.gripper_targets_action([twist, left], description) is None
+
+
+def test_a_nameless_gripper_slot_is_unknown() -> None:
+    """A gripper slot with no ``ee_name`` set some jaw to something: ``None``, not skipped."""
+    description = RobotDescription.from_yaml(_OPENARM)
+    left = _openarm_jaw("left_gripper", 0.01)
+    assert (
+        sim_attached.gripper_targets_action([left, _openarm_jaw(None, 0.02)], description) is None
+    )
+    unknown = _openarm_jaw("no_such_gripper", 0.02)
+    assert sim_attached.gripper_targets_action([left, unknown], description) is None
+
+
+def test_reset_episode_resets_the_live_env_with_the_next_seed_each_time() -> None:
+    """A multi-episode harness: each `reset_episode` re-resets the SAME env (no rebuild)
+    with base seed + episode index, and clears the previous episode's pending ticks."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description(), env_reset_seed=7)
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[-1.0],
+            tick_index=1,
+            tick_group_size=2,
+        )
+    )
+    assert hal.reset_episode() == 8
+    assert hal.reset_episode() == 9
+    assert env.reset_calls == [7, 8, 9]
+    assert hal._pending_actions == {} or len(hal._pending_actions) == 0
+    hal.connect()  # a lifecycle re-connect keeps the base seed
+    assert env.reset_calls[-1] == 7
+
+
+def test_reset_episode_without_a_base_seed_counts_from_zero() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    assert [hal.reset_episode(), hal.reset_episode()] == [1, 2]
+    assert env.reset_calls == [None, 1, 2]

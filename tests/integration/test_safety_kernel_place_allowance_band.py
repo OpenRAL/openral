@@ -36,6 +36,21 @@ deleted: 20 mm is below the pre-Second-Amendment cap (``min(one voxel, 2.5 cm)``
 reverting ``kPlaceApproachAllowanceVoxels`` (1.5 -> 1.0) or ``kMaxPlaceApproachAllowanceM``
 (0.04 -> 0.025) turns that accept back to refusal.
 
+A second test drives the sibling exemption on the same carriage, stood upright: the
+support-contact witness (ADR-0092 D6, hazard log Entry 012) the vision pick now attaches at
+ATTACH (``vision_attachment_bridge.region_attachment``, Isaac i42). A grasp-target region
+payload pressed 2 mm into the support cell it was measured on (i42: -1.86 mm) is REFUSED
+without the witness and ACCEPTED with it; lifted three cells, the kernel retires the witness
+(``safety.support_witness_separated``), and the same witness republished cannot bring it back:
+set down again, the same contact is REFUSED.
+
+A third drives the vision pick's cell-closed region payload (Isaac i50): the tight held fit
+leaves the target's own boundary cell ~4 mm deep at the attach-time snapshot — not embedded
+residue — so a payload commanded 19 mm below its measured pose is REFUSED on it; the payload
+closed over the cells it touches (what the bridge attaches) is ACCEPTED, a foreign cell outside
+the closure still stops it, and a witness patch left at the tight footprint stops on the
+support under the closure's corners.
+
 Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + colcon-built kernel.
 ``scripts/ros_live_tests.sh`` is the only runner (``just test-ros-live``, docker-build
 workflow); ``tests/unit/test_ros_live_targets.py`` keeps this file in TARGETS.
@@ -50,7 +65,9 @@ import re
 import tempfile
 import time
 import uuid
+from typing import Any
 
+import numpy as np
 import pytest
 
 _LIVE = os.environ.get("OPENRAL_TEST_ROS_LIVE") == "1" and bool(os.environ.get("ROS_DISTRO"))
@@ -130,8 +147,8 @@ _OBJECT_ID = "sim:cup"
 _RSKILL_ID = "openral/place-approach-band"
 
 
-def _carriage_rig() -> RobotDescription:
-    """A 1-DoF prismatic carriage that translates the payload along +x.
+def _carriage_rig(axis_xyz: tuple[float, float, float] = (1.0, 0.0, 0.0)) -> RobotDescription:
+    """A 1-DoF prismatic carriage that translates the payload along ``axis_xyz`` (+x).
 
     The link's capsule sits 300 mm behind the carriage frame so only the attached payload can
     reach the obstacle. Arm-vs-world voxel checking stays enabled and never gets an allowance
@@ -146,7 +163,7 @@ def _carriage_rig() -> RobotDescription:
                 joint_type=JointType.PRISMATIC,
                 parent_link="base",
                 child_link="carriage",
-                axis_xyz=(1.0, 0.0, 0.0),
+                axis_xyz=axis_xyz,
                 origin_xyz=(0.0, 0.0, 0.0),
             )
         ],
@@ -165,7 +182,9 @@ def _carriage_rig() -> RobotDescription:
     )
 
 
-def _kernel_params() -> dict[str, object]:
+def _kernel_params(
+    rig: RobotDescription | None = None, *, attached_margin_m: float = _ATTACHED_MARGIN_M
+) -> dict[str, object]:
     params: dict[str, object] = {
         "n_dof": 1,
         "robot_name": "place_allowance_carriage",
@@ -175,16 +194,16 @@ def _kernel_params() -> dict[str, object]:
         "joint_torque_max": [100.0],
         "world_voxel_enabled": True,
         "world_voxel_margin_m": 0.0,
-        "world_voxel_deadline_ms": 30000.0,
+        "world_voxel_deadline_ms": 2000.0,
         "world_voxel_max_cells": 4096,
         "attached_collision_enabled": True,
-        "attached_collision_margin_m": _ATTACHED_MARGIN_M,
+        "attached_collision_margin_m": attached_margin_m,
         "attached_collision_deadline_ms": 30000.0,
         "collision_joint_names": ["carriage"],
         "collision_state_deadline_ms": 30000.0,
         "collision_seed_dt_s": 0.0,
     }
-    params.update(collision_params_from_description(_carriage_rig()))
+    params.update(collision_params_from_description(rig or _carriage_rig()))
     return params
 
 
@@ -484,6 +503,553 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration(
             # Every verdict this test asserts on has a matching line in the
             # kernel's own log; surfacing it turns a bare "not in safe" into a
             # diagnosis (which gate dropped the chunk, and why).
+            raise AssertionError(
+                f"{exc}\n\n--- safety_kernel_node log ---\n"
+                f"{log_path.read_text(encoding='utf-8', errors='replace')}"
+            ) from exc
+        finally:
+            terminate_kernel(proc)
+
+
+# ── The support-contact witness at a vision pick (Isaac i42) ─────────────────
+# 15 mm cells (i42's octomap). One support cell, (4, 4, 4), centred on the origin: the
+# support's top face — what ``support_top_from_voxels`` measures — is z = 7.5 mm.
+_W_RES = 0.015
+_W_GRID_N = 9
+_W_ORIGIN = -0.0675
+_W_CELL = 4 + _W_GRID_N * (4 + _W_GRID_N * 4)
+_W_SUPPORT_Z = 0.5 * _W_RES
+#: The tight fit, i42's footprint; its lower face one cell above the support
+#: (``target_region_from_mask``), measured with the carriage at q = 0.
+_W_HALF = (0.06, 0.06, 0.03)
+_W_CENTRE_Z = _W_SUPPORT_Z + _W_RES + _W_HALF[2]
+#: Pressed 2 mm into the support cell (i42 stopped at -1.86 mm); and three cells above that.
+_W_Q_REST = -(_W_RES + 0.002)
+_W_Q_LIFT = _W_Q_REST + 3 * _W_RES
+
+
+def test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift(
+    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+) -> None:
+    """The region payload's witness, built by the producer's own ``region_attachment``.
+
+    On the real cell's 0 mm attached margin (``deploy_e2e``): resting 2 mm into its support
+    it is refused without the witness and accepted with it; the lift retires it in the
+    kernel, and the very same witness (same object, support and stamp) does not re-arm.
+    """
+    import rclpy
+    from openral_core import GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import region_attachment
+    from openral_msgs.msg import (
+        ActionChunk,
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        FailureTrigger,
+        OccupancyVoxels,
+        WorldStateStamped,
+    )
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from sensor_msgs.msg import JointState
+    from std_msgs.msg import Empty
+    from std_srvs.srv import Trigger
+
+    rig = _carriage_rig(axis_xyz=(0.0, 0.0, 1.0))
+    node_name = f"safety_kernel_support_witness_{uuid.uuid4().hex[:8]}"
+    with tempfile.TemporaryDirectory() as td:
+        log_path = pathlib.Path(td) / "kernel.log"
+        proc = start_kernel(
+            _kernel_params(rig, attached_margin_m=0.0),
+            node_name,
+            isolated_domain_id(),
+            log_path=log_path,
+        )
+        try:
+            time.sleep(1.5)
+            rclpy.init()
+            try:
+                helper = rclpy.create_node("support_witness_helper")
+                assert activate_kernel_node(node_name, helper), "kernel activation failed"
+                safe: dict[str, ActionChunk] = {}
+                failures: list[FailureTrigger] = []
+                estops: list[Empty] = []
+                safe_sub = helper.create_subscription(
+                    ActionChunk,
+                    "/openral/safe_action",
+                    lambda m: safe.__setitem__(m.trace_id, m),
+                    10,
+                )
+                helper.create_subscription(
+                    FailureTrigger, "/openral/failure/safety", failures.append, 50
+                )
+                helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+                chunk_pub = helper.create_publisher(ActionChunk, "/openral/candidate_action", 10)
+                reliable_kl1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+                voxel_pub = helper.create_publisher(
+                    OccupancyVoxels, "/openral/world_voxels", reliable_kl1
+                )
+                state_pub = helper.create_publisher(
+                    WorldStateStamped, "/openral/world_state_fast", reliable_kl1
+                )
+                joint_pub = helper.create_publisher(JointState, "/joint_states", 10)
+                reset_client = helper.create_client(Trigger, "/openral/estop_reset")
+                executor = SingleThreadedExecutor()
+                executor.add_node(helper)
+
+                def spin(seconds: float) -> None:
+                    end = time.time() + seconds
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+
+                deadline = time.time() + 5.0
+                while time.time() < deadline and not (
+                    chunk_pub.get_subscription_count() >= 1 and safe_sub.get_publisher_count() >= 1
+                ):
+                    executor.spin_once(timeout_sec=0.05)
+
+                now_ns = helper.get_clock().now().nanoseconds
+                region = PlaceRegion(
+                    frame_id="base",
+                    pose=Pose6D(
+                        xyz=(0.0, 0.0, _W_CENTRE_Z), quat_xyzw=(0, 0, 0, 1), frame_id="base"
+                    ),
+                    half_extents=_W_HALF,
+                    evidence_ref="segment_in_view:support-witness-band@0",
+                    stamp_ns=now_ns,
+                )
+                declaration = GraspDeclaration(
+                    target_id="approach:carriage:1",
+                    contact_links=("carriage",),
+                    rskill_id=_RSKILL_ID,
+                    trace_id=uuid.uuid4().hex,
+                    timeout_s=60.0,
+                    stamp_ns=now_ns,
+                    region=region,
+                )
+                payload = {
+                    "attach_link": "carriage",
+                    "touch_links": ("carriage",),
+                    "t_link_from_region": np.eye(4),  # measured with the carriage at q = 0
+                    "stamp_ns": now_ns,
+                }
+                bare = region_attachment(declaration, **payload)
+                attested = region_attachment(declaration, support_z=_W_SUPPORT_Z, **payload)
+                assert bare.support_contact is None and attested.support_contact is not None
+
+                def publish_attachment(held: Any) -> None:
+                    """One payload at one revision: only its witness differs between rows."""
+                    obj = AttachedCollisionObject()
+                    held.fill_idl(obj, primitive_factory=AttachedCollisionPrimitive)
+                    state = WorldStateStamped()
+                    state.header.frame_id = "base"
+                    state.header.stamp = helper.get_clock().now().to_msg()
+                    state.stamp_ns = helper.get_clock().now().nanoseconds
+                    state.attached_objects = [obj]
+                    state.attachment_revision = 1
+                    state.attachment_stamp_ns = state.stamp_ns
+                    state_pub.publish(state)
+                    spin(0.4)
+
+                def at(q: float) -> None:
+                    publish_carriage_joint_state(
+                        joint_pub, helper, spin, joint_names=["carriage"], positions=[q]
+                    )
+
+                def send(trace: str, q: float, *, expect_accept: bool) -> None:
+                    seen = len(failures)
+                    chunk = ActionChunk()
+                    chunk.control_mode = 0  # JOINT_POSITION
+                    chunk.horizon = 1
+                    chunk.n_dof = 1
+                    chunk.flat = [q]
+                    chunk.rskill_id = _RSKILL_ID
+                    chunk.trace_id = trace
+                    chunk_pub.publish(chunk)
+                    end = time.time() + 10.0
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+                        if expect_accept and trace in safe:
+                            break
+                        if not expect_accept and len(failures) > seen and estops:
+                            break
+                    spin(0.4)
+                    if expect_accept:
+                        assert trace in safe and not estops, f"{trace} was refused"
+                    else:
+                        assert trace not in safe and estops, f"{trace} was accepted"
+                        evidence = json.loads(failures[-1].evidence_json)
+                        assert failures[-1].kind == FailureTrigger.KIND_COLLISION
+                        assert evidence["link_a"] == f"attached:{declaration.target_id}"
+                        assert evidence["link_b_or_object"] == f"voxel_{_W_CELL}"
+                        assert evidence["min_distance_m"] == pytest.approx(-0.002, abs=1e-9)
+
+                publish_occupancy_grid(
+                    voxel_pub,
+                    helper,
+                    spin,
+                    grid_origin_m=_W_ORIGIN,
+                    resolution_m=_W_RES,
+                    grid_n=_W_GRID_N,
+                    occ_index=_W_CELL,
+                )
+                at(_W_Q_REST)
+
+                # ── Resting on its measured support, no witness: the i42 stop ──
+                publish_attachment(bare)
+                send("rest-bare", _W_Q_REST, expect_accept=False)
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The producer's witness: the same contact is the support ────
+                publish_attachment(attested)
+                send("rest-attested", _W_Q_REST, expect_accept=True)
+
+                # ── Lifted three cells: the kernel retires it ─────────────────
+                at(_W_Q_LIFT)
+                send("lifted", _W_Q_LIFT, expect_accept=True)
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                assert "safety.support_witness_separated live=0x0 was=0x1" in log, log
+
+                # ── Set down again under the same witness: dead stays dead ─────
+                at(_W_Q_REST)
+                publish_attachment(attested)
+                send("rest-again", _W_Q_REST, expect_accept=False)
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                armed = f"safety.support_witness_armed object={declaration.target_id}"
+                assert log.count(armed) == 1, "a republished witness re-armed"
+                assert f"support=map_support_under:{declaration.target_id}" in log
+            finally:
+                rclpy.shutdown()
+        except AssertionError as exc:
+            raise AssertionError(
+                f"{exc}\n\n--- safety_kernel_node log ---\n"
+                f"{log_path.read_text(encoding='utf-8', errors='replace')}"
+            ) from exc
+        finally:
+            terminate_kernel(proc)
+
+
+# ── The cell-closed region payload at a vision pick (Isaac i50) ──────────────
+# 15 mm cells on a 16^3 lattice (4096 = `world_voxel_max_cells`), min corner -0.12 m on every
+# axis: cell centres on odd multiples of 7.5 mm. Layer k=7 (centre z = -7.5 mm) is the support,
+# its top z = 0; k=8 (7.5 mm) the target's bottom layer under the region; the region's lower
+# face is one cell above the support (`target_region_from_mask`), z = 15 mm.
+_C_RES = 0.015
+_C_GRID_N = 16
+_C_ORIGIN = -0.12
+_C_SUPPORT_Z = 0.0
+#: i50's yaw, off-lattice centre, a flat footprint: the tight (held) fit at q = 0.
+_C_YAW_DEG = -80.4
+_C_TIGHT_HALF = (0.045, 0.03, 0.015)
+_C_TIGHT_XYZ = (0.004, -0.003, _C_SUPPORT_Z + _C_RES + 0.015)
+#: Measured 2 mm down on the target (the snapshot pose), commanded 19 mm below that (i50).
+_C_Q_MEAS = -0.002
+_C_Q_PRESS = _C_Q_MEAS - 0.019
+#: Raised 14 mm into the shelf cell above the payload.
+_C_Q_UP = _C_Q_MEAS + 0.014
+
+
+def _c_index(i: int, j: int, k: int) -> int:
+    return i + _C_GRID_N * (j + _C_GRID_N * k)
+
+
+_C_SUPPORT = tuple(_c_index(i, j, 7) for i in range(_C_GRID_N) for j in range(_C_GRID_N))
+#: Under the payload's centre: the target's own bottom layer, touching the region's lower face.
+_C_BOTTOM = _c_index(8, 7, 8)
+#: The target's own boundary cell, centre (37.5, 7.5, 22.5) mm: -3.86 mm into the tight fit at
+#: the snapshot (not residue), -12.5 mm into its closure (residue) — i50's voxel_125244.
+_C_BOUNDARY = _c_index(10, 8, 9)
+#: A foreign cell (a shelf) over the payload, centre z = 67.5 mm: 9.5 mm clear of the closed
+#: payload at the snapshot, outside the closure.
+_C_FOREIGN = _c_index(8, 8, 12)
+#: A foreign cell higher up, cube z 90-105 mm: past the payload bloated by the 25 mm margin
+#: (top 77.5 mm at q = 0) — what the bloated payload is raised into.
+_C_FAR = _c_index(8, 8, 14)
+#: The grasp-target margin the bloated rows use (``VisionAttachmentRuntime`` default).
+_C_MARGIN_M = 0.025
+#: Raised 20 mm: the bloated payload's top into ``_C_FAR``.
+_C_Q_UP_FAR = _C_Q_MEAS + 0.020
+
+
+def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
+    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+) -> None:
+    """Isaac i50 on the real kernel: the region payload is the box the kernel latched.
+
+    After a clean region-payload ATTACH the kernel stopped on the target's own boundary
+    cell: against the tight held fit it sat ~4 mm deep at the attach-time snapshot — not the
+    half-cell embedded residue the kernel exempts — and the support witness's band, riding
+    with a payload commanded 19 mm below the measured pose, dropped below it. Built by the
+    producer's own ``region_attachment`` on a 1-DoF vertical carriage at the real cell's 0 mm
+    attached margin, one attachment revision per row (a fresh snapshot at the measured q):
+
+    * tight payload, pressed 19 mm: REFUSED on the boundary cell (the i50 stop);
+    * closed payload (``_kernel_closure``, what ``GraspTargetLeg.kernel_region`` publishes
+      and the bridge now attaches), same press: ACCEPTED — the boundary cell is residue;
+    * the closed payload raised into a foreign cell outside the closure: REFUSED on it;
+    * the closed payload whose witness patch is the *tight* footprint, same press: REFUSED
+      on a support cell under the closure's corners — why the witness patch is the
+      published footprint.
+
+    Then the payload bloated by the 25 mm grasp-target margin on the sides and the top (never
+    down; ``kernel_region(payload=True)``, HZ-0115-32):
+
+    * pressed 19 mm: ACCEPTED — the witness band (the bloated footprint) covers the support
+      under it, and the target's own cells are embedded residue;
+    * raised into a foreign cell past the bloat: REFUSED on it;
+    * the bloated payload whose witness patch is the unbloated closure's footprint, same
+      press: REFUSED on a support cell under the bloat's corners.
+    """
+    import rclpy
+    from openral_core import GraspDeclaration, PlaceRegion, Pose6D
+    from openral_core.geometry import yaw_to_quat_xyzw
+    from openral_hal._grasp_target import VoxelLattice
+    from openral_hal._grasp_target_leg import _kernel_closure
+    from openral_hal.vision_attachment_bridge import region_attachment
+    from openral_msgs.msg import (
+        ActionChunk,
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        FailureTrigger,
+        OccupancyVoxels,
+        WorldStateStamped,
+    )
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from sensor_msgs.msg import JointState
+    from std_msgs.msg import Empty
+    from std_srvs.srv import Trigger
+
+    rig = _carriage_rig(axis_xyz=(0.0, 0.0, 1.0))
+    node_name = f"safety_kernel_closed_payload_{uuid.uuid4().hex[:8]}"
+    with tempfile.TemporaryDirectory() as td:
+        log_path = pathlib.Path(td) / "kernel.log"
+        proc = start_kernel(
+            _kernel_params(rig, attached_margin_m=0.0),
+            node_name,
+            isolated_domain_id(),
+            log_path=log_path,
+        )
+        try:
+            time.sleep(1.5)
+            rclpy.init()
+            try:
+                helper = rclpy.create_node("closed_payload_helper")
+                assert activate_kernel_node(node_name, helper), "kernel activation failed"
+                safe: dict[str, ActionChunk] = {}
+                failures: list[FailureTrigger] = []
+                estops: list[Empty] = []
+                safe_sub = helper.create_subscription(
+                    ActionChunk,
+                    "/openral/safe_action",
+                    lambda m: safe.__setitem__(m.trace_id, m),
+                    10,
+                )
+                helper.create_subscription(
+                    FailureTrigger, "/openral/failure/safety", failures.append, 50
+                )
+                helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+                chunk_pub = helper.create_publisher(ActionChunk, "/openral/candidate_action", 10)
+                reliable_kl1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+                voxel_pub = helper.create_publisher(
+                    OccupancyVoxels, "/openral/world_voxels", reliable_kl1
+                )
+                state_pub = helper.create_publisher(
+                    WorldStateStamped, "/openral/world_state_fast", reliable_kl1
+                )
+                joint_pub = helper.create_publisher(JointState, "/joint_states", 10)
+                reset_client = helper.create_client(Trigger, "/openral/estop_reset")
+                executor = SingleThreadedExecutor()
+                executor.add_node(helper)
+
+                def spin(seconds: float) -> None:
+                    end = time.time() + seconds
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+
+                deadline = time.time() + 5.0
+                while time.time() < deadline and not (
+                    chunk_pub.get_subscription_count() >= 1 and safe_sub.get_publisher_count() >= 1
+                ):
+                    executor.spin_once(timeout_sec=0.05)
+
+                lattice = VoxelLattice(
+                    "base",
+                    (_C_ORIGIN,) * 3,
+                    (0.0, 0.0, 0.0, 1.0),
+                    _C_RES,
+                    (_C_GRID_N,) * 3,
+                    np.zeros(_C_GRID_N**3, dtype=np.uint8),
+                )
+                revision = 0
+
+                def payload(closed: bool, margin_m: float = 0.0) -> Any:
+                    """The producer's region payload, freshly stamped (a new witness key)."""
+                    now_ns = helper.get_clock().now().nanoseconds
+                    tight = PlaceRegion(
+                        frame_id="base",
+                        pose=Pose6D(
+                            xyz=_C_TIGHT_XYZ,
+                            quat_xyzw=yaw_to_quat_xyzw(np.deg2rad(_C_YAW_DEG)),
+                            frame_id="base",
+                        ),
+                        half_extents=_C_TIGHT_HALF,
+                        evidence_ref="segment_in_view:closed-payload-band@0",
+                        stamp_ns=now_ns,
+                    )
+                    region, note = (
+                        _kernel_closure(tight, lattice, margin_m=margin_m, down=False)
+                        if closed
+                        else (tight, "")
+                    )
+                    assert note == ""
+                    declaration = GraspDeclaration(
+                        target_id="approach:carriage:1",
+                        contact_links=("carriage",),
+                        rskill_id=_RSKILL_ID,
+                        trace_id=uuid.uuid4().hex,
+                        timeout_s=60.0,
+                        stamp_ns=now_ns,
+                        region=region,
+                    )
+                    held = region_attachment(
+                        declaration,
+                        attach_link="carriage",
+                        touch_links=("carriage",),
+                        t_link_from_region=np.eye(4),  # measured with the carriage at q = 0
+                        stamp_ns=now_ns,
+                        support_z=_C_SUPPORT_Z,
+                        extrinsic_error_m=0.015,
+                    )
+                    assert held.support_contact is not None
+                    return held
+
+                def publish_attachment(held: Any) -> None:
+                    """A new attachment revision: the kernel re-snapshots at the measured q."""
+                    nonlocal revision
+                    revision += 1
+                    obj = AttachedCollisionObject()
+                    held.fill_idl(obj, primitive_factory=AttachedCollisionPrimitive)
+                    state = WorldStateStamped()
+                    state.header.frame_id = "base"
+                    state.header.stamp = helper.get_clock().now().to_msg()
+                    state.stamp_ns = helper.get_clock().now().nanoseconds
+                    state.attached_objects = [obj]
+                    state.attachment_revision = revision
+                    state.attachment_stamp_ns = state.stamp_ns
+                    state_pub.publish(state)
+                    spin(0.4)
+
+                def send(trace: str, q: float, *, refused_on: tuple[int, ...] = ()) -> None:
+                    """One candidate; accepted, or refused on one of the ``refused_on`` cells."""
+                    seen = len(failures)
+                    chunk = ActionChunk()
+                    chunk.control_mode = 0  # JOINT_POSITION
+                    chunk.horizon = 1
+                    chunk.n_dof = 1
+                    chunk.flat = [q]
+                    chunk.rskill_id = _RSKILL_ID
+                    chunk.trace_id = trace
+                    chunk_pub.publish(chunk)
+                    end = time.time() + 10.0
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+                        if not refused_on and trace in safe:
+                            break
+                        if refused_on and len(failures) > seen and estops:
+                            break
+                    spin(0.4)
+                    if not refused_on:
+                        assert trace in safe and not estops, f"{trace} was refused"
+                        return
+                    assert trace not in safe and estops, f"{trace} was accepted"
+                    assert failures[-1].kind == FailureTrigger.KIND_COLLISION
+                    evidence = json.loads(failures[-1].evidence_json)
+                    assert evidence["link_a"] == "attached:approach:carriage:1"
+                    assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in refused_on}, (
+                        f"{trace}: stopped on {evidence['link_b_or_object']}"
+                    )
+
+                publish_occupancy_grid(
+                    voxel_pub,
+                    helper,
+                    spin,
+                    grid_origin_m=_C_ORIGIN,
+                    resolution_m=_C_RES,
+                    grid_n=_C_GRID_N,
+                    occ_index=(*_C_SUPPORT, _C_BOTTOM, _C_BOUNDARY, _C_FOREIGN, _C_FAR),
+                )
+                publish_carriage_joint_state(
+                    joint_pub, helper, spin, joint_names=["carriage"], positions=[_C_Q_MEAS]
+                )
+
+                # ── The tight held fit as the payload: i50's stop ─────────────
+                publish_attachment(payload(closed=False))
+                send("tight-pressed", _C_Q_PRESS, refused_on=(_C_BOUNDARY,))
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── Closed over the cells it touches: the boundary is residue ──
+                closed = payload(closed=True)
+                publish_attachment(closed)
+                send("closed-pressed", _C_Q_PRESS)
+
+                # ── Outside the closure, a foreign cell still stops it ─────────
+                send("closed-raised", _C_Q_UP, refused_on=(_C_FOREIGN,))
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The witness patch must be the published footprint ──────────
+                closed = payload(closed=True)
+                witness = closed.support_contact
+                tight_patch = float(np.linalg.norm(_C_TIGHT_HALF))
+                assert witness.patch_radius_m > tight_patch
+                publish_attachment(
+                    closed.model_copy(
+                        update={
+                            "support_contact": witness.model_copy(
+                                update={"patch_radius_m": tight_patch}
+                            )
+                        }
+                    )
+                )
+                send("closed-pressed-tight-patch", _C_Q_PRESS, refused_on=_C_SUPPORT)
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── Bloated by the margin (sides + top): pressed, still on the witness ──
+                bloated = payload(closed=True, margin_m=_C_MARGIN_M)
+                (prim,) = bloated.primitives
+                closed_half = payload(closed=True).primitives[0].shape.half_extents_m
+                assert all(
+                    b == pytest.approx(c + _C_MARGIN_M if i < 2 else c + _C_MARGIN_M / 2)
+                    for i, (b, c) in enumerate(
+                        zip(prim.shape.half_extents_m, closed_half, strict=True)
+                    )
+                ), (prim.shape.half_extents_m, closed_half)
+                publish_attachment(bloated)
+                send("bloated-pressed", _C_Q_PRESS)
+
+                # ── Past the bloat, a foreign cell still stops it ──────────────
+                send("bloated-raised", _C_Q_UP_FAR, refused_on=(_C_FAR,))
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The witness patch must be the bloated footprint ────────────
+                bloated = payload(closed=True, margin_m=_C_MARGIN_M)
+                witness = bloated.support_contact
+                closed_patch = float(np.linalg.norm(closed_half))
+                assert witness.patch_radius_m > closed_patch
+                publish_attachment(
+                    bloated.model_copy(
+                        update={
+                            "support_contact": witness.model_copy(
+                                update={"patch_radius_m": closed_patch}
+                            )
+                        }
+                    )
+                )
+                send("bloated-pressed-closed-patch", _C_Q_PRESS, refused_on=_C_SUPPORT)
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                assert log.count("safety.support_witness_armed object=approach:carriage:1") == 5
+            finally:
+                rclpy.shutdown()
+        except AssertionError as exc:
             raise AssertionError(
                 f"{exc}\n\n--- safety_kernel_node log ---\n"
                 f"{log_path.read_text(encoding='utf-8', errors='replace')}"

@@ -27,8 +27,8 @@ def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the depth-provider node, shut down cleanly."""
     import numpy as np
     import rclpy
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
     from PIL import Image as PILImage
-    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
@@ -44,9 +44,11 @@ def main(args: Any = None) -> None:
 
         def __init__(self) -> None:
             super().__init__("openral_depth_provider")
-            self.declare_parameter("image_topic", "/openral/cameras/front/image")
-            self.declare_parameter("depth_topic", "/openral/depth/image")
-            self.declare_parameter("camera_info_topic", "/openral/depth/camera_info")
+            # No topic defaults (ADR-0108): deploy_e2e passes the mono camera's
+            # ``camera_topic(<name>, IMAGE / DEPTH_IMAGE / DEPTH_CAMERA_INFO)``.
+            self.declare_parameter("image_topic", "")
+            self.declare_parameter("depth_topic", "")
+            self.declare_parameter("camera_info_topic", "")
             self.declare_parameter("depth_frame_id", "camera_depth_optical_frame")
             self.declare_parameter("sidecar_host", "127.0.0.1")
             self.declare_parameter("sidecar_port", 5771)
@@ -54,6 +56,15 @@ def main(args: Any = None) -> None:
             self.declare_parameter("request_timeout_ms", 2000)
 
             gp = self.get_parameter
+            missing = [
+                p
+                for p in ("image_topic", "depth_topic", "camera_info_topic")
+                if not gp(p).get_parameter_value().string_value
+            ]
+            if missing:
+                from openral_core import ROSConfigError
+
+                raise ROSConfigError(f"depth_provider: {missing} empty; pass camera_topic(...)")
             self._depth_frame = gp("depth_frame_id").get_parameter_value().string_value
             self._process_res = gp("process_res").get_parameter_value().integer_value
 
@@ -112,7 +123,9 @@ def main(args: Any = None) -> None:
             try:
                 bgr, w, h = image_to_bgr_bytes(msg)
             except ImageConvertError as exc:
-                self.get_logger().warning(f"skip frame: {exc}")
+                self.get_logger().warning(
+                    f"dropping {msg.encoding!r} frame: {exc}", throttle_duration_sec=5.0
+                )
                 return
             rgb = np.frombuffer(bgr, dtype=np.uint8).reshape(h, w, 3)[..., ::-1]
             buf = io.BytesIO()
@@ -159,9 +172,7 @@ def main(args: Any = None) -> None:
     rclpy.init(args=args)
     node = DepthProviderNode()
     try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+        spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
     finally:
         node.destroy_node()
         if rclpy.ok():

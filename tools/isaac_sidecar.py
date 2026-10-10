@@ -3,10 +3,12 @@
 
 Isaac side of the backend in ``openral_sim.backends.isaac_sim`` (py3.12),
 auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
-Omniverse Kit headless, builds a Franka arm + liftable cube + tiled RGB camera
-scene, and serves ZMQ REP + msgpack/ndarray framing:
+Omniverse Kit headless, builds the robot-agnostic manifest scene
+(``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
+environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout"}   reset->{"observation"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects"}
+    reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
@@ -26,6 +28,7 @@ import io
 import os
 import re
 import sys
+import traceback
 from typing import Any
 
 import numpy as np
@@ -55,7 +58,7 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="OpenRAL Isaac Sim scene sidecar")
-    p.add_argument("--task", required=True, help="task id, e.g. isaac_sim/lift_cube")
+    p.add_argument("--task", required=True, help="task id, e.g. isaac_sim/_hal_deploy_noop")
     p.add_argument("--robot", default="franka_panda")
     p.add_argument("--instruction", default="")
     p.add_argument("--obs-height", type=int, default=256)
@@ -67,18 +70,47 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--headless", action="store_true")
     p.add_argument(
         "--layout",
-        default="lift_cube",
-        choices=["lift_cube", "bowl_plate", "manifest"],
-        help=(
-            "lift_cube = 8-D joint-delta PoC; bowl_plate = LIBERO-shaped 7-D "
-            "EE-delta scene; manifest = robot-agnostic URDF-driven scene "
-            "(needs --robot-spec)"
-        ),
+        default="manifest",
+        choices=["manifest"],
+        help="manifest = robot-agnostic URDF-driven scene (needs --robot-spec)",
     )
     p.add_argument(
         "--robot-spec",
         default=None,
         help="path to the JSON isaac robot spec (manifest layout only)",
+    )
+    p.add_argument(
+        "--environment-usd",
+        default=None,
+        help=(
+            "environment USD referenced under /World/environment (manifest layout "
+            "only): a local path, an http(s):// or omniverse:// URL, or "
+            "isaac:<path> under the installed Isaac Sim asset root"
+        ),
+    )
+    p.add_argument(
+        "--spawn-pose",
+        type=float,
+        nargs=4,
+        default=[0.0, 0.0, 0.0, 0.0],
+        metavar=("X", "Y", "Z", "YAW"),
+        help="robot world placement, metres + radians (manifest layout only)",
+    )
+    p.add_argument(
+        "--objects-json",
+        default=None,
+        help=(
+            "JSON list of extra scene objects (manifest layout only): "
+            '[{"usd", "name", "xyz", "yaw", "dynamic"}, ...]'
+        ),
+    )
+    p.add_argument(
+        "--site-dir",
+        default=None,
+        help=(
+            "extra import dir prepended to sys.path (a binary Isaac Sim install's "
+            "pyzmq/msgpack, installed beside it rather than into it)"
+        ),
     )
     p.add_argument(
         "--require-min",
@@ -92,7 +124,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "with the actual versions instead of hanging (issue #89)."
         ),
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    return args
 
 
 def _check_required_versions(requirements: list[str]) -> None:
@@ -132,8 +165,19 @@ def _check_required_versions(requirements: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    if args.site_dir:
+        sys.path.insert(0, args.site_dir)
     # Before the ~50 s Kit boot: a stale venv must not cost a full boot timeout.
     _check_required_versions(args.require_min)
+
+    # A shared, root-owned binary install (/opt/isaac-sim) can't take Kit's
+    # caches + documents: point Kit at a per-user data root instead (Kit reads
+    # --portable-root off sys.argv).
+    isaac_root = os.environ.get("ISAAC_PATH")
+    if isaac_root and not os.access(os.path.join(isaac_root, "kit"), os.W_OK):
+        kit_data = os.path.expanduser("~/.cache/openral/isaac-sidecar/kit-data")
+        os.makedirs(kit_data, exist_ok=True)
+        sys.argv += ["--portable-root", kit_data]
 
     # 1) Launch the Kit app FIRST — every omni.* / isaaclab import below depends
     #    on a live SimulationApp.
@@ -142,44 +186,26 @@ def main(argv: list[str]) -> int:
     sim_app = SimulationApp({"headless": bool(args.headless)})
 
     try:
-        # 2) Heavy imports, only valid post-launch. Pick the scene by --layout.
-        if args.layout == "manifest":
-            import json
+        # 2) Heavy imports, only valid post-launch.
+        import json
 
-            from isaac_manifest_scene import IsaacManifestScene
+        from isaac_manifest_scene import IsaacManifestScene
 
-            if not args.robot_spec:
-                raise SystemExit("--layout manifest requires --robot-spec <path>")
-            with open(args.robot_spec, encoding="utf-8") as fh:
-                robot_spec = json.load(fh)
-            scene: Any = IsaacManifestScene(
-                robot_spec=robot_spec,
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
-        elif args.layout == "bowl_plate":
-            from isaac_bowl_plate_scene import IsaacBowlPlateScene
-
-            scene = IsaacBowlPlateScene(
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
-        else:
-            from isaac_scene import IsaacLiftScene
-
-            scene = IsaacLiftScene(
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
+        if not args.robot_spec:
+            raise SystemExit("--layout manifest requires --robot-spec <path>")
+        with open(args.robot_spec, encoding="utf-8") as fh:
+            robot_spec = json.load(fh)
+        scene = IsaacManifestScene(
+            robot_spec=robot_spec,
+            environment_usd=args.environment_usd,
+            spawn_pose=tuple(args.spawn_pose),
+            objects=json.loads(args.objects_json) if args.objects_json else None,
+            obs_height=args.obs_height,
+            obs_width=args.obs_width,
+            instruction=args.instruction,
+            success_key=args.success_key,
+            max_steps=args.max_steps,
+        )
         scene.build()
 
         # 3) Serve the ZMQ REP loop.
@@ -190,12 +216,35 @@ def main(argv: list[str]) -> int:
             sim_app=sim_app,
             task=args.task,
             layout=args.layout,
+            environment=args.environment_usd or "",
+            spawn=list(args.spawn_pose),
+            robot=args.robot,
+            objects=args.objects_json or "",
         )
+    except BaseException:
+        # Print before close(): Kit's fast shutdown ends the process inside
+        # close(), so an exception left to propagate is never printed — the
+        # sidecar would just vanish with exit code 0 mid-boot.
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
     finally:
         sim_app.close()
 
 
-def _serve(scene: Any, *, host: str, port: int, sim_app: Any, task: str, layout: str) -> int:
+def _serve(
+    scene: Any,
+    *,
+    host: str,
+    port: int,
+    sim_app: Any,
+    task: str,
+    layout: str,
+    environment: str,
+    spawn: list[float],
+    robot: str,
+    objects: str,
+) -> int:
     import msgpack
     import zmq
 
@@ -219,6 +268,10 @@ def _serve(scene: Any, *, host: str, port: int, sim_app: Any, task: str, layout:
                     "action_dim": scene.action_dim,
                     "task": task,
                     "layout": layout,
+                    "environment": environment,
+                    "spawn": spawn,
+                    "robot": robot,
+                    "objects": objects,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the

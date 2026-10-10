@@ -20,6 +20,7 @@ from openral_core import (
     CapsuleShape,
     CollisionShape,
     ContactForceWitness,
+    GraspDeclaration,
     JointSpec,
     PlaceDeclaration,
     PlaceRegion,
@@ -239,6 +240,57 @@ def subtree_region_box(
     if not np.all(np.isfinite(half_extents)) or float(half_extents.min()) <= 0.0:
         return None
     return 0.5 * (lower + upper), half_extents
+
+
+def lift_region_off_support(
+    region_local: tuple[NDArray[np.float64], NDArray[np.float64]],
+    rotation_base_from_body: NDArray[np.float64],
+    *,
+    resolution: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """Raise a resting target's body-frame box so its lowest point is one voxel up.
+
+    The sim mirror of the real producer's HZ-0115-6 rule
+    (``_grasp_target.target_region_from_mask``): a grasp region's lower face sits
+    at ``support_z + resolution``, so every cell holding the support surface (centres
+    up to half a voxel above the plane) stays outside the region and the kernel still
+    stops the fingers at the table under the target. In sim the support plane is the
+    box's own lowest point in the base frame (the target rests on it).
+
+    The box keeps its body-frame orientation: the face shrunk is the one on the body
+    axis closest to the base ``+z``, by ``resolution / |cos|`` of that axis' tilt, which
+    raises the lowest corner by exactly ``resolution`` (and is the real rule verbatim
+    for an upright target). Kept local rather than shared with ``_grasp_target`` because
+    the real producer fits a gravity-aligned box from a cloud, not a body-frame one.
+
+    Args:
+        region_local: ``(centre, half_extents)`` in the body frame.
+        rotation_base_from_body: ``(3, 3)`` body -> base rotation.
+        resolution: The voxel lattice's cell edge.
+
+    Returns:
+        The lifted ``(centre, half_extents)``, or ``None`` when the target is no
+        taller than one voxel (the real producer's ``NO_HEIGHT_ABOVE_SUPPORT``).
+
+    Example:
+        >>> import numpy as np
+        >>> c, h = lift_region_off_support(
+        ...     (np.zeros(3), np.array([0.02, 0.02, 0.04])), np.eye(3), resolution=0.02
+        ... )
+        >>> [round(float(v), 3) for v in (c[2] - h[2], c[2] + h[2])]
+        [-0.02, 0.04]
+    """
+    centre, half_extents = region_local
+    up = np.asarray(rotation_base_from_body, dtype=np.float64)[2, :]
+    axis = int(np.argmax(np.abs(up)))
+    lift = resolution / abs(float(up[axis]))
+    if lift >= 2.0 * float(half_extents[axis]):
+        return None
+    lifted_centre = np.array(centre, dtype=np.float64)
+    lifted_half = np.array(half_extents, dtype=np.float64)
+    lifted_centre[axis] += math.copysign(lift / 2.0, float(up[axis]))
+    lifted_half[axis] -= lift / 2.0
+    return lifted_centre, lifted_half
 
 
 def _root_motion_body(
@@ -1502,7 +1554,7 @@ def probe_contact_force(
 class SimAttachmentEvidenceTracker:
     """Confirm free-object grasp/release from exact MuJoCo contacts and motion."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915  # reason: flat attribute-init list
         self,
         model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         description: RobotDescription,
@@ -1539,6 +1591,24 @@ class SimAttachmentEvidenceTracker:
         self._place_target_body_name: str = ""
         self._place_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
         self._place_geometry_local: tuple[AttachedCollisionPrimitive, ...] | None = None
+        # -- Grasp-phase declaration (real pick-and-place design §2.1) --
+        # The grasp mirror of the place target: dispatch names it, this producer
+        # measures the target subtree's box (never its geometry — v1 is box-only)
+        # and the kernel bounds the exemption. No hysteresis lives here: the
+        # region simply dies with the declaration, and handover to the attached
+        # payload is the kernel's. The region is the PRE-grasp target volume: on
+        # the attach of the declared object it freezes at that instant's
+        # measurement, so the kernel's "payload origin left the region" handover
+        # can fire once the payload is carried out of it.
+        self._grasp_declaration: GraspDeclaration | None = None
+        self._grasp_target_body_id: int | None = None
+        self._grasp_target_body_name: str = ""
+        self._grasp_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+        self._grasp_frozen = False
+        self._grasp_frozen_region: PlaceRegion | None = None
+        # The occupancy lattice's cell edge (``set_voxel_resolution``), for the grasp
+        # region's one-voxel lift off its support. ``None`` until a grid is seen.
+        self._voxel_resolution_m: float | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -1734,6 +1804,7 @@ class SimAttachmentEvidenceTracker:
                     stamp_ns=stamp_ns,
                 ),
             )
+            self._freeze_grasp_region(data, object_id=f"sim:{body_name}", stamp_ns=stamp_ns)
             self._attached_root = root
             self._attached_translation = translation.copy()
             self._attached_rotation = rotation.copy()
@@ -1908,11 +1979,37 @@ class SimAttachmentEvidenceTracker:
                 return None
         if self._place_geometry_local is None:
             self._place_geometry_local = self._place_target_geometry(data)
-        centre_in_body, half_extents = self._place_region_local
+        return self._region_in_base(
+            data,
+            body_id=self._place_target_body_id,
+            body_name=self._place_target_body_name,
+            region_local=self._place_region_local,
+            geometry_local=self._place_geometry_local,
+            stamp_ns=stamp_ns,
+        )
+
+    def _region_in_base(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        body_id: int,
+        body_name: str,
+        region_local: tuple[NDArray[np.float64], NDArray[np.float64]],
+        geometry_local: tuple[AttachedCollisionPrimitive, ...],
+        stamp_ns: int,
+    ) -> PlaceRegion | None:
+        """Pose a body-frame measured box (and its primitives) in the robot base frame.
+
+        Shared by the place and the grasp region so both producers pose a
+        measurement identically; ``None`` when the schema refuses the box.
+        """
+        if self._base_body_id is None:
+            return None
+        centre_in_body, half_extents = region_local
         translation, rotation = _relative_pose(
             data,
             parent_body_id=self._base_body_id,
-            child_body_id=self._place_target_body_id,
+            child_body_id=body_id,
         )
         centre_in_base = translation + rotation @ centre_in_body
         try:
@@ -1920,7 +2017,7 @@ class SimAttachmentEvidenceTracker:
                 frame_id=self._base_frame_id,
                 geometry=tuple(
                     self._primitive_in_base(primitive, translation, rotation)
-                    for primitive in self._place_geometry_local
+                    for primitive in geometry_local
                 ),
                 pose=Pose6D(
                     xyz=(
@@ -1936,7 +2033,7 @@ class SimAttachmentEvidenceTracker:
                     float(half_extents[1]),
                     float(half_extents[2]),
                 ),
-                evidence_ref=f"mujoco_body_subtree:{self._place_target_body_name}",
+                evidence_ref=f"mujoco_body_subtree:{body_name}",
                 stamp_ns=stamp_ns,
             )
         except ValueError:
@@ -1945,6 +2042,172 @@ class SimAttachmentEvidenceTracker:
             # unlike a malformed witness, a bad region can only ever make the
             # kernel more permissive.
             return None
+
+    # -- Grasp-phase declaration (real pick-and-place design §2.1) ------------
+
+    def set_grasp_declaration(self, declaration: GraspDeclaration | None) -> None:
+        """Install, replace, or retract the active grasp-phase declaration.
+
+        The grasp mirror of :meth:`set_place_declaration`: ``target_id`` resolves
+        by the same ``sim:<body>`` convention to a MuJoCo body whose subtree is
+        measured, and an unresolvable target is an explicit refusal rather than
+        a silent no-op. A new declaration simply replaces the old one and clears
+        any region frozen at a previous attach; nothing else in this tracker is
+        reset by it (handover is the kernel's).
+
+        Args:
+            declaration: The declaration to install. ``None``, or one that is
+                already retracted, clears the grasp state.
+
+        Raises:
+            ROSConfigError: The declared ``target_id`` names no body in this
+                simulation. The declaration is refused (no region can arm).
+        """
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        self._grasp_declaration = None
+        self._grasp_target_body_id = None
+        self._grasp_target_body_name = ""
+        self._grasp_region_local = None
+        self._grasp_frozen = False
+        self._grasp_frozen_region = None
+        if declaration is None or not declaration.active:
+            return
+        body_name = declaration.target_id.removeprefix("sim:")
+        body_id = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+        if body_id < 0:
+            raise ROSConfigError(
+                f"Grasp declaration target {declaration.target_id!r} names no MuJoCo body; refused."
+            )
+        self._grasp_declaration = declaration
+        self._grasp_target_body_id = body_id
+        self._grasp_target_body_name = body_name
+
+    def grasp_declaration(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> GraspDeclaration | None:
+        """The live grasp declaration, with its region measured in the robot base frame.
+
+        Same contract as :meth:`place_declaration`: the region is always this
+        producer's own measurement (an incoming one is replaced or dropped), and
+        every path that cannot measure — dead declaration, no collision geometry,
+        unresolvable base frame, or a box past ``GraspDeclaration``'s own caps —
+        yields ``region=None``, which exempts nothing.
+
+        Until the declared object attaches the box is re-measured at the target's
+        live pose; from the attach edge on it is the region frozen at that edge
+        (its ``stamp_ns`` the measurement's), because the region is the
+        pre-grasp target volume the kernel hands over from — a region riding the
+        carried payload would never let the payload leave it. A release keeps it
+        frozen too: the kernel has retired the exemption, and only a new
+        declaration re-arms (and re-measures).
+
+        Args:
+            data: Live ``mujoco.MjData``.
+            stamp_ns: Consumer's current time, same clock as the declaration's.
+
+        Returns:
+            The live declaration (region attached when measurable), or ``None``
+            when no grasp declaration is in force at ``stamp_ns``.
+        """
+        declaration = self._grasp_declaration
+        if declaration is None or not declaration.is_live(now_ns=stamp_ns):
+            return None
+        region = (
+            self._grasp_frozen_region
+            if self._grasp_frozen
+            else self._grasp_region(data, stamp_ns=stamp_ns)
+        )
+        try:
+            # Re-validated, not model_copy'd: the grasp caps are far tighter than
+            # PlaceRegion's, and a model_copy would skip them.
+            return GraspDeclaration.model_validate(
+                {**declaration.model_dump(exclude={"region"}), "region": region}
+            )
+        except ValueError:
+            return declaration.model_copy(update={"region": None})
+
+    def set_voxel_resolution(self, resolution_m: float) -> None:
+        """Record the occupancy lattice's cell edge (from ``/openral/world_voxels``).
+
+        The grasp region's lower face sits one cell above the target's support plane,
+        the real producer's rule; until a resolution is known no grasp region is
+        published.
+
+        Raises:
+            ROSConfigError: ``resolution_m`` is not finite and positive.
+        """
+        if not math.isfinite(resolution_m) or resolution_m <= 0.0:
+            raise ROSConfigError(f"voxel resolution must be finite and > 0, got {resolution_m!r}")
+        self._voxel_resolution_m = float(resolution_m)
+
+    def _freeze_grasp_region(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        object_id: str,
+        stamp_ns: int,
+    ) -> None:
+        """On the attach edge of the declared object, freeze the grasp region there.
+
+        Called before the attachment is recorded, so the measurement is the
+        target's last pre-attach pose. ``object_id`` empty on the declaration
+        means any attached object is the declared one.
+        """
+        declaration = self._grasp_declaration
+        if (
+            declaration is None
+            or self._grasp_frozen
+            or declaration.object_id not in ("", object_id)
+        ):
+            return
+        self._grasp_frozen_region = self._grasp_region(data, stamp_ns=stamp_ns)
+        self._grasp_frozen = True
+        centre = None if self._grasp_frozen_region is None else self._grasp_frozen_region.pose.xyz
+        _LOGGER.info(
+            f"sim grasp region frozen at attach target={declaration.target_id} centre={centre}"
+        )
+
+    def _grasp_region(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> PlaceRegion | None:
+        """Pose the declared grasp target's measured box in the base frame, box only."""
+        if self._grasp_target_body_id is None:
+            return None
+        if self._grasp_region_local is None:
+            self._grasp_region_local = subtree_region_box(
+                self._model,
+                data,
+                root_body_id=self._grasp_target_body_id,
+            )
+            if self._grasp_region_local is None:
+                return None
+        # The real producer's lower-face rule needs the lattice's cell edge; without
+        # a grid yet there is no region (exempts nothing), as on real.
+        if self._voxel_resolution_m is None or self._base_body_id is None:
+            return None
+        _, rotation = _relative_pose(
+            data, parent_body_id=self._base_body_id, child_body_id=self._grasp_target_body_id
+        )
+        lifted = lift_region_off_support(
+            self._grasp_region_local, rotation, resolution=self._voxel_resolution_m
+        )
+        if lifted is None:
+            return None
+        return self._region_in_base(
+            data,
+            body_id=self._grasp_target_body_id,
+            body_name=self._grasp_target_body_name,
+            region_local=lifted,
+            geometry_local=(),
+            stamp_ns=stamp_ns,
+        )
 
     def _place_target_geometry(
         self,

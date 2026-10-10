@@ -20,10 +20,10 @@ Layout shape — one hero scene, the cameras beside it, everything else tabbed:
    ┌───────────────────────────┬──────────────┐
    │ 3D · robot + environment  │ camera 0     │
    │ (URDF · TF · map · voxels │ camera 1     │
-   │  · collisions · odom)     │ camera 2     │
+   │  · odom)                  │ camera 2     │
    ├───────────────────────────┼──────────────┤
    │ tabs: nav map · joints ·  │ tabs: log ·  │
-   │ collisions · policy state │ health · …   │
+   │ voxels · policy state     │ health · …   │
    └───────────────────────────┴──────────────┘
 
 Every topic referenced here is on ``topics.BUCKET1_TOPIC_WHITELIST`` — the
@@ -40,6 +40,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from openral_core import camera_topic
+
 #: Camera slots used by the shipped layout. ``top`` leads because it is the
 #: 3rd-person overview slot verified against the LIBERO + Franka-Panda deploy
 #: scene; the two wrist slots cover the three-camera humanoid scenes. A slot a
@@ -47,7 +49,7 @@ from typing import Any
 #: panel's topic dropdown, or regenerate with ``--cameras``.
 #: Camera slots the shipped layout is generated for. These are *sensor names*
 #: from the robot manifest, not free labels — `camera_image_topic` builds
-#: `/openral/cameras/<slot>/image` from them, and a slot that does not exist
+#: `openral_core.camera_topic(<slot>)` from them, and a slot that does not exist
 #: renders as "Image topic does not exist" in an otherwise healthy panel.
 #: `wrist_left` / `wrist_right` is the spelling `robots/*/robot.yaml` uses
 #: (openarm, and two other manipulators); the transposed `left_wrist` this
@@ -78,7 +80,56 @@ def camera_image_topic(camera: str, *, compressed: bool = False) -> str:
         '/openral/cameras/top/image/compressed'
     """
     suffix = "/compressed" if compressed else ""
-    return f"/openral/cameras/{camera}/image{suffix}"
+    return camera_topic(camera) + suffix
+
+
+#: Topic the URDF layer reads the robot model from. On ``deploy sim`` it is the
+#: manifest URDF (``robot_state_publisher`` in ``deploy_e2e.launch.py``); on
+#: ``deploy run`` the vendor bringup owns it. Same robot, same link names.
+ROBOT_DESCRIPTION_TOPIC: str = "/robot_description"
+
+
+def urdf_layer(topic: str = ROBOT_DESCRIPTION_TOPIC) -> dict[str, dict[str, Any]]:
+    """3D-panel ``layers`` entry that draws the robot model from a URDF topic.
+
+    Foxglove's 3D panel never subscribes to ``/robot_description`` on its own:
+    it auto-loads the URDF only from the ``/robot_description`` *parameter*,
+    which needs the bridge's ``parameters`` capability — deliberately withheld
+    here (``READ_ONLY_CAPABILITIES``). Listing the topic under ``topics`` does
+    nothing for a ``std_msgs/String``. The model has to come from a custom URDF
+    layer (``layerId: "foxglove.Urdf"``) with ``sourceType: "topic"``; its
+    ``package://`` meshes are then fetched through the bridge's ``assets``
+    capability (``ASSET_URI_ALLOWLIST``) and posed by ``/tf``.
+
+    Args:
+        topic: ``std_msgs/String`` topic carrying the URDF XML.
+
+    Returns:
+        A one-entry ``layers`` mapping, keyed by its ``instanceId``.
+
+    Example:
+        >>> layer = urdf_layer()["openral-urdf"]
+        >>> (layer["layerId"], layer["sourceType"], layer["topic"])
+        ('foxglove.Urdf', 'topic', '/robot_description')
+    """
+    instance_id = "openral-urdf"
+    return {
+        instance_id: {
+            "visible": True,
+            "frameLocked": True,
+            "label": "Robot (URDF)",
+            "instanceId": instance_id,
+            "layerId": "foxglove.Urdf",
+            "sourceType": "topic",
+            "url": "",
+            "filePath": "",
+            "parameter": "",
+            "topic": topic,
+            "framePrefix": "",
+            "displayMode": "auto",
+            "fallbackColor": "#ffffff",
+        }
+    }
 
 
 def _scene_panel(follow_frame: str) -> dict[str, Any]:
@@ -97,9 +148,7 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
             "far": 5000,
         },
         "topics": {
-            # The robot itself: URDF from /robot_description, posed by /tf.
-            "/robot_description": {"visible": True},
-            # The environment around it.
+            # The environment around the robot (the robot is `layers` below).
             "/map": {"visible": True},
             "/octomap_point_cloud_centers": {
                 "visible": True,
@@ -115,11 +164,13 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
                 "colorMap": "turbo",
                 "pointSize": 0.04,
             },
-            "/openral/world_collisions_markers": {"visible": True},
+            # Grasped-object collision primitives + grasp/place regions.
+            "/openral/viz/attachments": {"visible": True},
             "/odom": {"visible": True},
             "/scan": {"visible": True},
         },
-        "layers": {},
+        # The robot itself: URDF from /robot_description, posed by /tf.
+        "layers": urdf_layer(),
     }
 
 
@@ -165,11 +216,6 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
             "far": 5000,
         },
         "topics": {
-            "/openral/world_collisions_markers": {
-                "visible": True,
-                "colorField": "z",
-                "colorMode": "rgba",
-            },
             "/openral/world_voxels_cloud": {
                 "visible": True,
                 "colorField": "z",
@@ -177,8 +223,11 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
                 "colorMap": "turbo",
                 "pointSize": 0.04,
             },
+            # Grasped-object collision primitives + grasp/place regions.
+            "/openral/viz/attachments": {"visible": True},
         },
-        "layers": {},
+        # The robot in the close-up too: self-occupancy reads off the overlap.
+        "layers": urdf_layer(),
     }
 
 
@@ -233,7 +282,7 @@ def build_layout(
     """Build the OpenRAL Foxglove layout for a scene's camera slots.
 
     The hero 3D panel draws the robot (URDF + TF) inside its environment (map,
-    octomap voxels, Bucket-2 collision markers, odometry, laser). One Image
+    octomap voxels, odometry, laser). One Image
     panel per entry in ``cameras`` stacks beside it. The remaining telemetry —
     node logs, diagnostics, world state, mission/episode transitions, reward,
     detected objects, the topic graph — is tabbed so it is one click away
@@ -281,9 +330,9 @@ def build_layout(
         },
         # ---- scene-side tabs ---------------------------------------------
         "3D!nav": _nav_panel(),
-        # Bucket-2 close-up: the converter's collision capsules + voxel grid on
-        # their own, tight on the robot. The hero panel shows the same two
-        # topics in world context; this one is for inspecting the geometry.
+        # Bucket-2 close-up: the converter's voxel grid on its own, tight on
+        # the robot. The hero panel shows the same topic in world context;
+        # this one is for inspecting the geometry.
         "3D!bucket2": _bucket2_panel(follow_frame),
         # ``[:]`` slices every joint, so the plot fits any DOF count instead
         # of the six indices the hand-written layout hard-coded.
@@ -338,7 +387,7 @@ def build_layout(
             [
                 ("Nav · 2D map", "3D!nav"),
                 ("Joints", "Plot!joints"),
-                ("Collisions · voxels", "3D!bucket2"),
+                ("World voxels", "3D!bucket2"),
                 ("Policy state", "Plot!state"),
             ]
         ),

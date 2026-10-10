@@ -255,13 +255,14 @@ did rank visual geometry first.
 deaf monitor, and the notes say that separately.** The grid resolution is read
 from the monitor's first `world_voxels` record, so a scene that trips before the
 monitor has seen a grid has no voxel term to fall back on. The monitor attaches
-as early as it can, but **not** before the deploy's DDS purge — `openral deploy
-sim` unlinks every `/dev/shm/fastrtps_*` this user owns immediately before
-spawning `ros2 launch`, and a participant created earlier loses its segments
-silently and then receives nothing for the whole scene. It is therefore gated on
-the CLI's own `dds_transport_ready:` line, printed after the purge and before
-`ros2 launch`; the gate's outcome is recorded per scene in
-`<stem>_monitor_gate.txt`.
+as early as it can, but **not** before the deploy's DDS clean — `openral deploy
+sim` unlinks the stale `/dev/shm/fastrtps_*` files immediately before spawning
+`ros2 launch`. Until 2026-09-24 that purge took every such file this user owned,
+so a participant created earlier lost its segments silently and received nothing
+for the whole scene; it now keeps any file a live process has open, mapped or
+locked. The monitor is still gated on the CLI's own `dds_transport_ready:` line,
+printed after the clean and before `ros2 launch`; the gate's outcome is recorded
+per scene in `<stem>_monitor_gate.txt`.
 
 Both causes read identically in `verdicts.json` — `grid_resolution_m: null` —
 so `monitor_records` counts what the monitor actually received (its own

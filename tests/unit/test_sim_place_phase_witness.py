@@ -25,6 +25,7 @@ import pytest
 from openral_core import (
     AttachmentEvidenceKind,
     EndEffectorSpec,
+    GraspDeclaration,
     JointSpec,
     JointType,
     PlaceDeclaration,
@@ -184,6 +185,7 @@ class _Rig:
         self.model = mujoco.MjModel.from_xml_string(_MJCF)
         self.data = mujoco.MjData(self.model)
         self.tracker = SimAttachmentEvidenceTracker(self.model, _description(), stable_ticks=1)
+        self.tracker.set_voxel_resolution(_GRID_RES_M)
         for joint in ("gripper0_left_joint", "gripper0_right_joint"):
             self.data.qpos[_qpos_address(self.model, joint)] = -0.008
         self.tick = 0
@@ -844,3 +846,271 @@ def test_publishing_a_region_cannot_silently_drop_its_geometry() -> None:
     msg = WorldStateStamped()
     with pytest.raises(ROSConfigError, match="primitive_factory"):
         declaration.fill_idl(msg.place_declaration)
+
+
+# ── The grasp-target region (real pick-and-place design §2.1) ────────────────
+#
+# The grasp mirror of the place region: dispatch names the target, this producer
+# measures its subtree's box in the base frame, and nothing else — a grasp region
+# is box-only in v1. The cup is a sphere of radius 0.04 carried at world (0, 0,
+# 0.46); the base frame sits at (0.1, 0, 0.05), so its box centre is (-0.1, 0,
+# 0.41) in the base frame, half-extents 0.04 plus the measurement's 0.1 mm pad —
+# then, as on real (``_grasp_target.target_region_from_mask``), the lower face is
+# lifted one voxel off the support so the support cells stay outside the region:
+# centre up by half a voxel, z half-extent down by half a voxel.
+_GRID_RES_M = 0.02
+_LIFT_Z = _GRID_RES_M / 2.0
+_CUP_CENTRE_IN_BASE = (-_BASE_X, 0.0, _CARRY_Z - _BASE_Z + _LIFT_Z)
+_CUP_HALF_EXTENTS = (_CUP_RADIUS_M + 0.0001,) * 2 + (_CUP_RADIUS_M + 0.0001 - _LIFT_Z,)
+
+
+def _grasp(
+    *,
+    target_id: str = "sim:cup",
+    stamp_ns: int,
+    timeout_s: float = 60.0,
+    active: bool = True,
+    object_id: str = "",
+) -> GraspDeclaration:
+    return GraspDeclaration(
+        target_id=target_id,
+        object_id=object_id,
+        contact_links=("left_finger", "right_finger"),
+        rskill_id="openral/pi05-robocasa",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=timeout_s,
+        stamp_ns=stamp_ns,
+        active=active,
+    )
+
+
+def test_a_grasp_declaration_yields_a_box_around_the_target_and_no_geometry() -> None:
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    region = declaration.region
+    assert region is not None
+    assert region.geometry == (), "a grasp region is the measured box only in v1"
+    assert region.frame_id == "base_link"
+    assert region.evidence_ref == "mujoco_body_subtree:cup"
+    assert region.stamp_ns == rig.tick
+    np.testing.assert_allclose(region.pose.xyz, _CUP_CENTRE_IN_BASE, atol=1e-6)
+    np.testing.assert_allclose(region.half_extents, _CUP_HALF_EXTENTS, atol=1e-6)
+    # The box holds the target above its support: lower face exactly one voxel above
+    # the target's lowest point, upper face at its top.
+    centre_z, half_z = region.pose.xyz[2], region.half_extents[2]
+    bottom = _CARRY_Z - _BASE_Z - _CUP_RADIUS_M - 0.0001
+    assert centre_z - half_z == pytest.approx(bottom + _GRID_RES_M, abs=1e-9)
+    assert centre_z + half_z == pytest.approx(_CARRY_Z - _BASE_Z + _CUP_RADIUS_M + 0.0001)
+    # Everything dispatch said survives untouched.
+    assert declaration.contact_links == ("left_finger", "right_finger")
+    assert declaration.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
+def test_the_grasp_region_follows_the_target_in_the_base_frame() -> None:
+    """Measured once in the body frame, posed on every publication."""
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    rig.carry_to(x=0.2, z=0.5)
+    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+
+    assert region is not None
+    np.testing.assert_allclose(
+        region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.5 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )
+
+
+def test_no_voxel_resolution_means_no_grasp_region() -> None:
+    """The lift needs the lattice's cell edge: before a grid is seen, the declaration
+    rides region-less (exempts nothing), as on real."""
+    rig = _Rig()
+    rig.tracker = SimAttachmentEvidenceTracker(rig.model, _description(), stable_ticks=1)
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_a_target_no_taller_than_a_voxel_has_no_grasp_region() -> None:
+    """The real producer's NO_HEIGHT_ABOVE_SUPPORT: a cup 80 mm tall under 100 mm cells."""
+    rig = _Rig()
+    rig.tracker.set_voxel_resolution(0.1)
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_no_grasp_declaration_means_no_grasp_region() -> None:
+    rig = _Rig()
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_retracted_grasp_declaration_takes_its_region_with_it() -> None:
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is not None
+
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick, active=False))
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_timed_out_grasp_declaration_takes_its_region_with_it() -> None:
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick, timeout_s=1.0))
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is not None
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick + 5_000_000_000) is None
+
+
+def test_a_receptacle_sized_grasp_target_yields_no_region() -> None:
+    """The grasp caps are far below the place ones: a cabinet is not one graspable object."""
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(target_id="sim:cabinet", stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+
+    assert declaration is not None
+    assert declaration.target_id == "sim:cabinet"
+    assert declaration.region is None
+
+
+def test_an_unresolvable_grasp_target_is_refused_and_leaves_no_region() -> None:
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    with pytest.raises(ROSConfigError, match="names no MuJoCo body"):
+        rig.tracker.set_grasp_declaration(_grasp(target_id="cell:restock_box", stamp_ns=rig.tick))
+    assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is None
+
+
+def test_a_dispatch_supplied_grasp_region_is_replaced_by_the_measured_one() -> None:
+    rig = _Rig()
+    claimed = PlaceRegion(
+        frame_id="base_link",
+        pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"),
+        half_extents=(0.15, 0.15, 0.15),
+        evidence_ref="dispatch_claim:not_a_measurement",
+    )
+    rig.tracker.set_grasp_declaration(
+        _grasp(stamp_ns=rig.tick).model_copy(update={"region": claimed})
+    )
+    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+
+    assert region is not None
+    assert region.evidence_ref == "mujoco_body_subtree:cup"
+    np.testing.assert_allclose(region.half_extents, _CUP_HALF_EXTENTS, atol=1e-6)
+
+
+def test_a_grasp_declaration_does_not_touch_the_place_declaration() -> None:
+    rig = _Rig()
+    rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    rig.tracker.set_grasp_declaration(None)
+
+    place = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)
+    assert place is not None and place.region is not None
+
+
+def test_the_grasp_region_rides_the_attachment_envelope_unchanged() -> None:
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import AttachmentState
+
+    rig = _Rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None and declaration.region is not None
+
+    msg = AttachmentState()
+    assert msg.grasp_declaration_valid is False, "absent by default is no exemption"
+    msg.grasp_declaration_valid = True
+    declaration.fill_idl(msg.grasp_declaration)
+    assert msg.grasp_declaration.region_valid is True
+    assert list(msg.grasp_declaration.region.geometry) == []
+    assert GraspDeclaration.from_idl(msg.grasp_declaration) == declaration
+
+
+# ── The grasp region freezes at attach (the pre-grasp target volume) ─────────
+#
+# Twin control pair at 17d96f72: re-measured at the carried block's live pose,
+# the region rode the payload (centre z 0.1595 -> 0.2495 after the lift), so the
+# kernel's handover rule (payload origin leaves the region -> retire) never fired.
+
+
+def _open_rig() -> _Rig:
+    """The ``_Rig`` scene, but with the jaws open and nothing attached yet."""
+    rig = _Rig.__new__(_Rig)
+    rig.model = mujoco.MjModel.from_xml_string(_MJCF)
+    rig.data = mujoco.MjData(rig.model)
+    rig.tracker = SimAttachmentEvidenceTracker(rig.model, _description(), stable_ticks=1)
+    rig.tracker.set_voxel_resolution(_GRID_RES_M)
+    _set_jaws(rig, 0.01)
+    rig.tick = 0
+    assert rig.step() is None, "open jaws must not attach"
+    return rig
+
+
+def _set_jaws(rig: _Rig, qpos: float) -> None:
+    for joint in ("gripper0_left_joint", "gripper0_right_joint"):
+        rig.data.qpos[_qpos_address(rig.model, joint)] = qpos
+
+
+def _move_cup(rig: _Rig, *, x: float) -> None:
+    cup = _qpos_address(rig.model, "cup_joint")
+    rig.data.qpos[cup] = x
+    mujoco.mj_forward(rig.model, rig.data)
+
+
+def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() -> None:
+    rig = _open_rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+
+    # Before attach: the region follows re-measurement.
+    _move_cup(rig, x=0.02)
+    rig.step()
+    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    assert region is not None
+    np.testing.assert_allclose(
+        region.pose.xyz, (0.02 - _BASE_X, 0.0, _CARRY_Z - _BASE_Z + _LIFT_Z), atol=1e-6
+    )
+    _move_cup(rig, x=0.0)
+
+    # The attach edge of the declared object freezes the region there.
+    _set_jaws(rig, -0.008)
+    attachment = rig.step()
+    assert attachment and attachment[0].object_id == "sim:cup"
+    attach_tick = rig.tick
+    frozen = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    assert frozen is not None
+    np.testing.assert_allclose(frozen.pose.xyz, _CUP_CENTRE_IN_BASE, atol=1e-6)
+
+    # Carried away: the payload moves, still attached, the region does not.
+    cup_before = rig.data.xpos[mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_BODY, "cup")].copy()
+    rig.carry_to(x=0.2, z=0.55)
+    assert rig.step() is None, "still attached: no new attachment set"
+    cup_after = rig.data.xpos[mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_BODY, "cup")]
+    np.testing.assert_allclose(cup_after - cup_before, (0.2, 0.0, 0.09), atol=1e-6)
+    carried = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    assert carried == frozen
+    assert carried is not None and carried.stamp_ns == attach_tick < rig.tick
+
+    # A new declaration clears the freeze and re-measures at the live pose.
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    fresh = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    assert fresh is not None
+    np.testing.assert_allclose(
+        fresh.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )
+
+
+def test_an_attach_of_another_object_does_not_freeze_the_grasp_region() -> None:
+    rig = _open_rig()
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick, object_id="sim:other"))
+    _set_jaws(rig, -0.008)
+    assert rig.step()
+    rig.carry_to(x=0.2, z=0.55)
+    rig.step()
+    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    assert region is not None
+    np.testing.assert_allclose(
+        region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )

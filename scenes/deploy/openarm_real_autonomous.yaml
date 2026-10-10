@@ -1,0 +1,164 @@
+# OpenArm REAL cell, AUTONOMOUS posture: the reasoner picks and dispatches skills from a
+# spoken/typed goal ("pick up the boxes"), on top of the world-voxel check of
+# openarm_real_world_voxels.yaml. Identical to that scene except the runtime legs marked
+# AUTONOMOUS below (reasoner, open-vocab detector, spatial-memory ingest).
+#
+# !!! THIS SCENE DRIVES REAL MOTORS, LETS AN LLM CHOOSE THE MOTION AND A CAMERA STOP IT. !!!
+#
+# Runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md — follow it step by step
+# (the world-voxel preconditions are the same); this header is the short form.
+#
+# Preconditions, ALL of them, every run:
+#   1. Every precondition of openarm_real_world_voxels.yaml: OPENRAL_ROBOT_UNIT names this
+#      cell and its overlay declares head_zed's calibrated mount; a person at the cell for the
+#      WHOLE run with the hardware E-stop in hand (a second person for bringup: on_activate
+#      steps all 16 motors to zero UNRAMPED); OPENRAL_OPENARM_ALLOW_MOTION=1 and
+#      OPENRAL_OPENARM_ATTENDED=1 exported by that person for that run only. Presence is per
+#      run AND per goal: never queue a goal behind an unattended wait.
+#   2. OPENRAL_REASONER_MODEL names the planner (openral_core.REASONER_MODELS), with its
+#      endpoint/credentials. The wrapper refuses without it.
+#   Launch ONLY through `tools/openarm_world_voxel_run.sh --autonomous`, which refuses unless
+#   these hold. `openral deploy run` itself checks none of them.
+#
+# No task knowledge here, on purpose: no task names, no coordinates, no grasp_declaration,
+# no preloaded skill. The goal arrives as language; the open-vocabulary detector
+# (omdet-turbo-indoor, pinned below — no class list) lifts what it sees into the voxel frame,
+# spatial memory gives each instance a node id, and the reasoner names one instance per
+# skill (grasp_target.object_id) — grounding refuses a bare label that matches several.
+#
+# What this scene cannot do yet: the only OpenArm VLA today is task-specific (the restock
+# policy). A general "pick up X" needs a language-conditioned pick/place policy installed for
+# the OpenArm; until one exists the reasoner has nothing general to dispatch and should hand
+# off to the operator. The vision attachment leg stays OFF (pending Safety-WG), so a grasped
+# object is never cleared from the voxel map and stops the gripper holding it — see the
+# known gap in openarm_real_world_voxels.yaml.
+#
+# NOT verified: this posture has never run on the real arms.
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_real_autonomous
+
+# No `sensors:` entry: head_zed is a robot sensor, so its frames live in
+# robots/openarm/robot.yaml and its calibrated mount pose and real-hardware
+# binding in the unit overlay (robots/openarm/units/<unit>.yaml) — a deploy
+# scene never redefines a robot camera (openral_core.check_scene_sensor_overrides).
+# The cloud itself reaches octomap by topic: zed_wrapper publishes it and
+# `runtime.octomap_cloud_topic` points octomap at it.
+
+# The ZED wrapper comes up with the graph (real path only), so the
+# no-second-parent arguments are pinned here instead of remembered by hand:
+# with publish_tf true the wrapper publishes odom -> zed_camera_link from
+# visual odometry while the manifest parents zed_camera_link to the arm — two
+# parents, order-dependent tf2 lookups, and octomap_server silently drops
+# clouds. camera_name pins the `zed_` frame/topic prefix the manifest pose and
+# octomap_cloud_topic below both assume. Source the ZED colcon overlay before
+# launching, or the graph refuses to start.
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm
+      camera_name: zed
+      publish_tf: "false"
+      publish_map_tf: "false"
+      # IPC off: with intra-process comms on, zed_wrapper publishes
+      # zed_camera_center -> zed_left_camera_frame as a DYNAMIC /tf stamped per grab,
+      # so every cloud waits on it in octomap_server's tf2 MessageFilter. A cloud that
+      # beats its TF is inserted later on the TF listener's own thread, which then stops
+      # ingesting /tf; the filter's 5-deep queue fills and octomap stalls for 1-3 s
+      # (Thor 2026-10-04: max /octomap_binary gap 2.5-3.0 s, 9-32 "queue is full"
+      # drops per 2-3 min, kernel voxel_stale). With IPC off those camera TFs are
+      # static and the stalls are gone (max 0.40-0.67 s over 12.5 min, zero drops).
+      # Nothing here gains from IPC: every consumer is in another process.
+      enable_ipc: "false"
+      # The cloud octomap gets: 30 Hz (the ZED-M's grab rate), the wrapper's
+      # REDUCED grid (224x128 at HD1080, ~7 mm between returns at 1 m, fine for
+      # 20 mm cells) and nothing past 2.5 m — the coverage ball ends at ~1.6 m
+      # from the camera. Thor, 2026-10-02: the default 10 Hz COMPACT cloud with
+      # 10 m depth plus unclipped 4 m rays held octomap_server at ~2 Hz with
+      # multi-second gaps; with this, the launch's coverage-ball clip and
+      # enable_ipc "false" below it runs at ~15-18 Hz, worst gap 0.40 s at 20 mm
+      # cells and 0.67 s at 15 mm (Thor, 2026-10-04). Under `deploy sim`
+      # drivers are ignored: pass the same overrides to the hand-launched ZED
+      # (runbook step 3).
+      param_overrides: "depth.point_cloud_freq:=30.0;depth.point_cloud_res:=REDUCED;depth.max_depth:=2.5"
+
+runtime:
+  # AUTONOMOUS: the LLM reasoner chooses and dispatches skills; the attended operator keeps
+  # the E-stop. Needs OPENRAL_REASONER_MODEL (header).
+  enable_reasoner: true
+
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # world_voxel_deadline_s stays at the 1.0 s default. The grid reaches a RELIABLE subscriber
+  # (the kernel's QoS) at 10.0 Hz, max gap 0.36 s (Orin cell, mock hardware, 2026-09-26, 240 s);
+  # the 4.4-6 Hz once read here was a BEST_EFFORT probe dropping the fragmented 1.19 MB grid.
+  # Measured, not provisional, AT REST (2026-09-25; Thor and Orin ZED-M, arms unpowered at
+  # q = 0, each unit's arm-fitted mount, 40 stacked clouds): the robot's own returns end
+  # 5-7.5 mm outside the kernel's hulls, so 2 cm clears them with ~12 mm to spare. That spare
+  # is the motion budget: the filter pairs each cloud with the nearest 30 Hz joint state
+  # (<= ~17 ms off), i.e. ~8.5 mm at 0.5 m/s at the gripper. Do not tighten below 1.5 cm
+  # until the tail is measured with the arms MOVING (attended real bringup). Wider costs real
+  # obstacles: objects near the hanging grippers sit only a few cm from them.
+  robot_self_filter_padding_m: 0.02
+  # The point of this scene. Reaches the kernel as world_voxel_enabled: true
+  # with the real-hardware margin (deploy_e2e.launch.py::_world_voxel_margin_m
+  # -> 0.02 m), 20 mm cells and a 1000 ms freshness deadline.
+  enable_octomap_kernel_check: true
+  # The ZED stamps on wall-clock. Under `deploy sim` (the twin pass) a bare twin would run the
+  # graph on the simulated clock and octomap_server would drop every cloud as "from the
+  # future". Needs PR #315's runtime.clock_origin; `deploy run` is host_wall regardless.
+  clock_origin: host_wall
+
+  enable_slam: false
+  enable_nav2: false
+  # AUTONOMOUS: the open-vocab omdet-turbo-indoor detector, pinned so a host without the
+  # `omdet` group fails loud instead of silently falling back to fixed-class COCO-80 RT-DETR.
+  # No task class list: what to look for comes from the goal.
+  enable_object_detector: true
+  object_detector_manifest: ../../rskills/omdet-turbo-indoor/rskill.yaml
+  enable_reward_monitor: false
+  enable_critic: false
+  # AUTONOMOUS: per-instance node ids the reasoner names as grasp_target.object_id.
+  spatial_memory_ingest: true
+  approach_skill_id: null
+
+  # The vision attachment leg (SAM 2.1 segmenter + the HAL's attachment-evidence
+  # bridge), wired but OFF: its grasp trigger is the jaw's position stall, whose
+  # thresholds (robot.yaml `closure_calibration`: closed_rest_offset, stall_gap,
+  # settle_tolerance) are robot-type constants of the gripper mechanism from teleop
+  # data — no per-cell calibration; verified once by reading an empty close on the
+  # rig — and turning it on for real is pending Safety-WG review and a hazard-log entry
+  # (docs/reference/real-pick-place-design.md §3 rows 4-5, §4 items 3 and 6, §5).
+  # Enabled, `deploy run` also turns the kernel's attached-payload check on
+  # (1000 ms deadline) — never the leg alone. Topics are the Thor ZED-M driver's;
+  # the bridge and the segmenter project only through its CameraInfo, never the
+  # manifest's nominal intrinsics (driver fx 1498 vs nominal 960, 2026-10-02).
+  vision_attachment:
+    enabled: false
+    camera: head_zed
+    rgb_topic: /zed/zed_node/rgb/color/rect/image
+    rgb_camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
+    depth_topic: /zed/zed_node/depth/depth_registered
+    depth_camera_info_topic: /zed/zed_node/depth/camera_info
+    # Grasp-target bloat (used once grasp_target_enabled is on; the schema default is 0 =
+    # none). 0.03 m = 1.5 x this cell's 20 mm octomap resolution: the smallest margin whose
+    # pre-handover region takes in the support's top layer under the target, so the closing
+    # fingers are not stopped on it (docs/reference/real-pick-place-design.md "Grasp-target
+    # margin"; Safety-WG HZ-0115-32).
+    grasp_target_margin_m: 0.03
+    # The attach links are not frames of the real cell's TF tree (the vendored
+    # URDF describes a different assembly); renamed to the vendor bringup's
+    # frames. The identity holds in the models (link7 is the MJCF / vendor-URDF
+    # body ee_base_link, design doc §1.5); that the real cell's TF tree
+    # publishes these frames is UNVERIFIED.
+    tf_frames:
+      openarm_left_link7: openarm_left_ee_base_link
+      openarm_right_link7: openarm_right_ee_base_link
+
+# No grasp_declaration here on purpose: the reasoner names the target and perception grounds
+# the search box (docs/reference/real-pick-place-design.md §2.2). A local copy for an
+# attended direct dispatch follows the same rule as openarm_real_world_voxels.yaml (only
+# grasp_declaration may differ) and launches with `--autonomous --scene <copy>`.

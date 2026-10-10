@@ -292,6 +292,137 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
+class TestSendAction:
+    def test_slot_group_is_reassembled_and_applied_once_the_last_slot_lands(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """ADR-0102 on the twin: four slot actions become one 16-DoF step.
+
+        The runner emits the OpenArm's bimanual contract as four typed actions
+        per inference tick — two 7-joint JOINT_POSITION slots padded to 16-D
+        and carrying ``joint_names``, two GRIPPER_POSITION slots addressed by
+        ``ee_name``. Until this landed the twin refused the gripper slots
+        (``only supports joint_position``) and the tick never completed
+        (lab Orin, 2026-09-22). Nothing may move before the last slot arrives,
+        and ``last_committed_tick`` is what the lifecycle node acknowledges.
+        """
+        joints = connected_hal.description.joints
+        names = [j.name for j in joints]
+        left, left_grip = names[0:7], names[7]
+        right, right_grip = names[8:15], names[15]
+        before = list(connected_hal.read_state().position)
+
+        def _inside(name: str, value: float) -> float:
+            # The two sides mirror some joint conventions (see the robot README),
+            # so a target is only meaningful if it is inside THAT joint's range.
+            lims = joints[names.index(name)].position_limits
+            if lims is None:
+                return value
+            lo, hi = float(lims[0]), float(lims[1])
+            return min(max(value, lo + 0.05), hi - 0.05)
+
+        def _joint_slot(joint_names: list[str], value: float) -> Action:
+            padded = [0.0] * 16
+            for name in joint_names:
+                padded[names.index(name)] = _inside(name, value)
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[padded],
+                joint_names=joint_names,
+                tick_index=1,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        def _gripper_slot(ee: str, value: float) -> Action:
+            return Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                horizon=1,
+                gripper=[value],
+                ee_name=ee,
+                tick_index=1,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        connected_hal.send_action(_joint_slot(left, 0.1))
+        connected_hal.send_action(_gripper_slot(left_grip, 0.4))
+        connected_hal.send_action(_joint_slot(right, -0.1))
+        assert connected_hal.last_committed_tick == 0
+        assert list(connected_hal.read_state().position) == pytest.approx(before, abs=1e-6)
+
+        connected_hal.send_action(_gripper_slot(right_grip, -0.4))
+        assert connected_hal.last_committed_tick == 1
+        after = connected_hal.read_state().position
+        for name in left:
+            assert after[names.index(name)] == pytest.approx(_inside(name, 0.1), abs=0.03), name
+        for name in right:
+            assert after[names.index(name)] == pytest.approx(_inside(name, -0.1), abs=0.03), name
+        assert after[names.index(left_grip)] == pytest.approx(0.4, abs=0.05)
+        assert after[names.index(right_grip)] == pytest.approx(-0.4, abs=0.05)
+
+    @staticmethod
+    def _zero_tick(hal: OpenArmMujocoHAL, tick: int) -> list[Action]:
+        """The four slots of one grouped tick, every target at zero."""
+        names = [j.name for j in hal.description.joints]
+        left, left_grip, right, right_grip = names[0:7], names[7], names[8:15], names[15]
+
+        def _joints(joint_names: list[str]) -> Action:
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 16],
+                joint_names=joint_names,
+                tick_index=tick,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        def _gripper(ee: str) -> Action:
+            return Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                horizon=1,
+                gripper=[0.0],
+                ee_name=ee,
+                tick_index=tick,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        return [_joints(left), _gripper(left_grip), _joints(right), _gripper(right_grip)]
+
+    def test_a_tick_at_or_below_the_last_committed_one_is_refused(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """A whole group of an already-committed tick would replay stale targets.
+
+        The stager only guards the tick in flight, and the lifecycle node's
+        monotonic acknowledgement would hide the replay; the HAL refuses it
+        before staging. A reconnect restarts the numbering.
+        """
+        for slot in self._zero_tick(connected_hal, 1):
+            connected_hal.send_action(slot)
+        assert connected_hal.last_committed_tick == 1
+
+        stale = self._zero_tick(connected_hal, 1)[0]
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            connected_hal.send_action(stale)
+        assert connected_hal.last_committed_tick == 1
+
+        # The next tick is unaffected by the refusal.
+        connected_hal.send_action(self._zero_tick(connected_hal, 2)[0])
+        assert connected_hal.last_committed_tick == 1
+
+        connected_hal.disconnect()
+        assert connected_hal.last_committed_tick == 0
+
+    def test_a_slot_is_refused_while_disconnected(self, hal: OpenArmMujocoHAL) -> None:
+        """An incomplete group used to return success on a disconnected twin and keep the slot."""
+        with pytest.raises(ROSRuntimeError, match="not connected"):
+            hal.send_action(self._zero_tick(hal, 1)[0])
+
+
 # ── estop ─────────────────────────────────────────────────────────────────────
 # Standard estop contract is tested in test_hal_protocol_contracts.py (parametrized).
 # No OpenArm-specific estop behavior to test.
@@ -539,3 +670,88 @@ class TestFullLifecycle:
             hal.disconnect()
         with pytest.raises(ROSRuntimeError):
             hal.read_state()
+
+
+# ── Cameras the twin renders ──────────────────────────────────────────────────
+
+
+class TestTwinCameras:
+    """Every RGB sensor the manifest declares must come out of the twin's MJCF.
+
+    Thor, 2026-10-02: the wrist panels stayed on "Waiting for image messages"
+    through a whole twin pass because the manifest named the cameras
+    ``wrist_left`` / ``wrist_right`` while the MJCF names them with a
+    ``camera_`` prefix, and ``top`` had no twin camera at all.
+    """
+
+    def test_every_rgb_sensor_names_a_camera_the_twin_has(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        for sensor in OPENARM_DESCRIPTION.sensors:
+            if sensor.modality != "rgb":
+                continue
+            cam = sensor.sim_camera_name or sensor.name
+            assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cam) >= 0, (
+                f"{sensor.name}: MJCF has no camera {cam!r}"
+            )
+
+    def test_the_head_camera_is_rigged_at_the_zed_mount(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """``top`` is spliced in by the camera rig (the upstream MJCF ships none)."""
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        upstream = mujoco.MjModel.from_xml_path(_OPENARM_MJCF)
+        assert mujoco.mj_name2id(upstream, mujoco.mjtObj.mjOBJ_CAMERA, "top") < 0
+        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "top")
+        assert cam >= 0
+        # head_zed lives only in the manifest (the code constant mirrors the RGB set).
+        from openral_core import RobotDescription
+
+        repo = os.path.join(os.path.dirname(__file__), "..", "..")
+        manifest = os.path.join(repo, "robots", "openarm", "robot.yaml")
+        sensors = RobotDescription.from_yaml(manifest).sensors
+        zed = next(s for s in sensors if s.name == "head_zed")
+        assert zed.static_transform_xyz_rpy is not None
+        # In MJCF world coordinates (== openarm_base) the rigged camera sits at the mount.
+        body = model.cam_bodyid[cam]
+        world_pos = model.body_pos[body] + model.cam_pos[cam]
+        assert world_pos == pytest.approx(zed.static_transform_xyz_rpy[:3], abs=1e-6)
+
+
+# ── Depth self-filter bodies resolve once ─────────────────────────────────────
+
+
+class TestDepthSelfFilterResolvesOnce:
+    def test_a_second_resolve_is_a_no_op(self, connected_hal: OpenArmMujocoHAL) -> None:
+        """A fixed dual-arm resolves both base bodies to ``None``; that must not read as
+        "not resolved yet" (Thor, 2026-10-02: re-resolved on every depth frame). Built
+        through the real constructor: the first cut of this fix set the flag only in the
+        reset path and the HAL node died on its first frame."""
+        rclpy = pytest.importorskip("rclpy")
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        rclpy.init()
+        node = rclpy.create_node("test_depth_self_filter_resolve")
+        try:
+            bridge = SimSensorBridge(node, connected_hal, OPENARM_DESCRIPTION, viewer_enabled=False)
+            assert not bridge._depth_bodies_resolved
+            bridge._resolve_depth_base_body(model)
+            assert bridge._depth_bodies_resolved
+            assert bridge._depth_base_body is None  # the OpenArm case that looped
+            resolved = bridge._depth_self_bodies
+            assert resolved
+            bridge._depth_self_bodies = frozenset({-1})  # sentinel a re-resolve overwrites
+            bridge._resolve_depth_base_body(model)
+            assert bridge._depth_self_bodies == frozenset({-1})
+            bridge._depth_self_bodies = resolved
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()

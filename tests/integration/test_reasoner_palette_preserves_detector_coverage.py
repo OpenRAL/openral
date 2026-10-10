@@ -66,6 +66,9 @@ def test_seeded_palette_keeps_the_on_demand_locator_selectable() -> None:
             "-p",
             f"robot_yaml:={_ROBOT_YAML}",
             "-p",
+            # A gripper manifest needs it or configure fails (deploy_e2e passes it).
+            "grasp_target_voxel_m:=0.05",
+            "-p",
             f"rskill_search_paths:=[{_RSKILLS}]",
         ],
     )

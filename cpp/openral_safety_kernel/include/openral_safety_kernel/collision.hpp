@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -202,13 +204,6 @@ struct CollisionScratch {
   std::vector<Transform> link_world;  ///< per-link frame in the base frame
 };
 
-/// Bounded set of world obstacles, each a capsule already expressed in the
-/// robot base frame (`origin` is the absolute base-frame transform — no link
-/// composition). Ingested from perception into a pre-sized buffer.
-struct WorldModel {
-  std::vector<Capsule> capsules;
-};
-
 /// Binding absolute ceiling on the declaration-scoped place approach
 /// allowance (ADR-0097's 2026-08-14 amendment, Condition 1, calibrated by
 /// its Second Amendment 2026-08-15; hazard log HZ-0097-4 mitigation 1,
@@ -366,6 +361,132 @@ enum class PlaceRegionStatus : std::uint8_t {
   kGeometryOverflow = 8,  ///< more target primitives than kMaxPlaceTargetPrimitives
 };
 
+/// Capacity of a grasp region's contact-link mask: robot link indices
+/// `[0, kMaxGraspMaskLinks)`. A link index past it can never be exempt, so a
+/// robot with more links fails toward the unchanged margin, never toward an
+/// exemption; the lifecycle refuses such an allowlist entry at configure.
+inline constexpr std::size_t kMaxGraspMaskLinks = 256;
+
+/// Sanity bound on one side of a declared grasp-target region (ADR-0115
+/// draft, "Bounds (WG)"). **A Safety-WG placeholder, not a calibrated
+/// number** — see docs/reference/real-pick-place-adr-drafts.md. A grasp
+/// region names ONE graspable object, so it is two orders smaller than the
+/// place bound. Past it the region grants nothing.
+inline constexpr double kMaxGraspRegionHalfExtentM = 0.20;
+
+/// Sanity bound on a declared grasp-target region's volume (m³). **A
+/// Safety-WG placeholder** (same source as `kMaxGraspRegionHalfExtentM`);
+/// smaller than a cube at the half-extent cap (0.064 m³), so it binds on its
+/// own. Past it the region grants nothing.
+inline constexpr double kMaxGraspRegionVolumeM3 = 0.03;
+
+/// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
+/// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
+/// lifecycle refuses a declaration past it (or non-positive / non-finite)
+/// rather than trusting the schema ran. HZ-0115-3.
+inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
+
+/// Producer-measured region of a live grasp declaration (ADR-0115 draft,
+/// hazard HZ-0115), lowered into the kernel's frame convention: an oriented
+/// box in the robot base frame, like `PlaceApproachRegion`.
+///
+/// While valid, an occupied cell whose CENTRE lies inside the box does not
+/// trip the arm-vs-world voxel check for a robot link whose bit is set in
+/// `link_mask` — the declared gripper's contact links, i.e. the intersection
+/// of the launch-derived allowlist and the declaration's `contact_links`,
+/// built by the lifecycle. Every other link, every cell outside the box,
+/// self-collision, the attached checks and the force gate are untouched. An
+/// exempt (link, cell) pair reaches `sweep_min_distance` at its own (stage-1)
+/// depth, exactly as the attached path's exempted pairs do, and never supplies
+/// the reported identity or distance. The lifecycle's velocity band clamps an
+/// untripped check's slack to 0, so the exempt contact reads as the band's
+/// slowest rate and can never mask a non-exempt pair's graded slack.
+///
+/// valid == false (no declaration, feature off, retracted, expired, or a
+/// failed `ingest_grasp_region`) means no exemption anywhere — identical to
+/// the pre-ADR-0115 check, bit for bit.
+struct GraspTargetRegion {
+  bool valid{false};                            ///< a live, validated region is in force
+  std::bitset<kMaxGraspMaskLinks> link_mask{};  ///< bit l: robot link l may contact the target
+  Transform pose{};                             ///< region box centre pose, robot base frame
+  Vec3 half_extents{};                          ///< region box half-extents (m, all > 0)
+  /// Lifecycle bookkeeping, never read by the geometry: the declared object is
+  /// attached, so the exemption survives only while that payload's origin (FK of
+  /// the measured configuration) stays inside the box, then retires for good.
+  bool handover{false};
+  std::size_t object_index{0};  ///< attached-object index of that payload, when `handover`
+};
+
+/// Capacity of the kernel's retired grasp-identity set (`RetiredGraspSet`).
+/// **A Safety-WG placeholder**: a goal may run several approach-armed picks,
+/// each under its own `approach:<link>:<n>` identity; 16 covers any goal the
+/// pick rate and `kMaxGraspDeclarationTimeoutS` allow in practice. Past it the
+/// oldest is evicted (logged once per activation); an evicted identity could
+/// re-arm only if its producer re-sent it while its goal's `timeout_s`
+/// backstop — counted from the goal's own `stamp_ns` — still runs.
+inline constexpr std::size_t kGraspRetiredCapacity = 16;
+
+/// The grasp-declaration identities (target, stamp) the kernel retired —
+/// HZ-0115-3: "a retired declaration never re-arms" for every pick of a goal,
+/// not only the last one. A fixed ring: no allocation, so the candidate path
+/// (`handover_exit`) can retire. The target is held as its `std::hash`: a
+/// collision can only refuse a fresh identity as retired (fail closed), never
+/// let a retired one arm.
+class RetiredGraspSet {
+public:
+  /// Is (target hash, stamp) retired?
+  bool contains(std::size_t target_hash, std::int64_t stamp_ns) const noexcept {
+    for (std::size_t i = 0; i < count_; ++i) {
+      if (slots_[i].target_hash == target_hash && slots_[i].stamp_ns == stamp_ns) {
+        return true;
+      }
+    }
+    return false;
+  }
+  /// Retire (target hash, stamp). Returns true when the set was full and the
+  /// oldest identity was evicted for it; a held identity is a no-op.
+  bool insert(std::size_t target_hash, std::int64_t stamp_ns) noexcept {
+    if (contains(target_hash, stamp_ns)) {
+      return false;
+    }
+    const bool evicted = count_ == kGraspRetiredCapacity;
+    slots_[next_] = Slot{target_hash, stamp_ns};
+    next_ = (next_ + 1) % kGraspRetiredCapacity;
+    if (!evicted) {
+      ++count_;
+    }
+    return evicted;
+  }
+  void clear() noexcept {
+    count_ = 0;
+    next_ = 0;
+  }
+  std::size_t size() const noexcept { return count_; }
+
+private:
+  struct Slot {
+    std::size_t target_hash{0};
+    std::int64_t stamp_ns{0};
+  };
+  std::array<Slot, kGraspRetiredCapacity> slots_{};
+  std::size_t count_{0};
+  std::size_t next_{0};  ///< the slot the next insert writes — the oldest once full
+};
+
+/// Outcome of a grasp-region ingest attempt (`ingest_grasp_region`). Every
+/// value but kOk means *no exemption* to the geometry; the value exists for
+/// the `reason=` key of the lifecycle's `safety.grasp_region_rejected` line,
+/// mirroring `PlaceRegionStatus`.
+enum class GraspRegionStatus : std::uint8_t {
+  kOk = 0,
+  kNoLinks = 1,         ///< empty link mask — no allowlisted contact link was declared
+  kBadPose = 2,         ///< non-finite region pose
+  kBadExtents = 3,      ///< non-finite half-extent
+  kDegenerate = 4,      ///< half-extent <= 0: a box with no interior exempts nothing
+  kOversize = 5,        ///< a side past kMaxGraspRegionHalfExtentM
+  kOversizeVolume = 6,  ///< a box past kMaxGraspRegionVolumeM3
+};
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -396,6 +517,7 @@ struct VoxelGrid {
   double attached_contact_tolerance{0.0};              ///< physical slack on an attested depth (m)
   std::uint8_t support_witness_live{0};                ///< bit i: object i's witness is still live
   PlaceApproachRegion place_region{};                  ///< live place declaration's region, if any
+  GraspTargetRegion grasp_region{};                    ///< live grasp declaration's region, if any
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -894,14 +1016,6 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                   double margin) noexcept;
 
-/// Check every robot capsule (FK'd via `scratch`) against every world obstacle
-/// in `world` (base-frame capsules) at a `margin` clearance. On a hit,
-/// `link_a` is the robot link index and `link_b` is the world obstacle index
-/// of the deepest pair within the margin, and `min_distance` is that pair's
-/// distance (`CollisionHit`). Allocation-free.
-CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const WorldModel& world, double margin) noexcept;
-
 /// Maximum joint count the allocation-free Jacobian step supports (stack scratch
 /// is sized to this). Covers every in-tree robot (humanoids ~30 dof) with
 /// headroom; a model exceeding it makes `jacobian_dls_step` fail-safe (returns
@@ -959,6 +1073,29 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// tripping cell — what made the #188 velocity band dead code on its first
 /// implementation. Default 0.0 is the shipped window byte-for-byte; extra
 /// cells are scanned only when a deployment arms the band.
+///
+/// ONE exemption, narrowly scoped (ADR-0115 draft, hazard HZ-0115; default
+/// off — grid.grasp_region is invalid unless the lifecycle armed it): while
+/// grid.grasp_region is valid, a cell whose base-frame centre lies inside the
+/// region box does not trip for a link whose bit is set in its link_mask
+/// (`grasp_target_exempts`). The pair still reaches sweep_min_distance at its
+/// own depth (negative for a finger inside its target); the lifecycle's
+/// velocity band clamps an untripped check's slack to 0, so it reads as the
+/// band's slowest rate, never as a "tripped" negative that would discard every
+/// non-exempt pair's graded slowdown with it. It never supplies
+/// link_a/link_b/min_distance. An exempt pair never spends the call's
+/// shared stage-2 budget (`kMaxStage2PerCheck`): it cannot trip, so its stage-1
+/// bound is enough, and the budget is left to the pairs that can. Every link
+/// outside the mask runs the unchanged path; the only difference a region can
+/// make to it is MORE stage-2 budget, i.e. an exact hull distance where the
+/// budget would otherwise have run out — never a new stop. For a mask link,
+/// cells outside the box are unchanged likewise. Hence the tripping (link,
+/// cell) set with a region is a subset of the set without it, and the
+/// difference lies in {(mask link, cell centred in the region)} plus pairs the
+/// exact stage-2 distance clears. The region may LOWER sweep_min_distance — an
+/// exempt pair reads its own depth, and on a stage-2 hull link that is stage
+/// 1's bound, not the refined distance — but where nothing trips without it,
+/// it never raises max(sweep_min_distance - margin, 0): it may only slow.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin,
                                    double band_m = 0.0) noexcept;
@@ -982,16 +1119,6 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
                                            std::size_t max_objects, std::size_t max_primitives,
                                            std::size_t max_touch_links,
                                            AttachedModel& out) noexcept;
-
-/// Check every attached payload (FK'd via `scratch` through its attach link)
-/// against every world obstacle capsule at a `margin` clearance. On a hit,
-/// `link_a` is the attached-object index and `link_b` is the world obstacle
-/// index of the deepest pair within the margin, and `min_distance` is that
-/// pair's distance (`CollisionHit`). Allocation-free.
-CollisionHit check_attached_world_collision(const CollisionModel& model,
-                                            const AttachedModel& attached,
-                                            const CollisionScratch& scratch,
-                                            const WorldModel& world, double margin) noexcept;
 
 /// Checks every attached payload against the occupied cells of a dense
 /// voxel grid (same conservative per-voxel cube treatment as
@@ -1175,6 +1302,56 @@ double place_target_distance(const PlaceApproachRegion& region, const AttachedPr
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's place-region log lines. Never null; unknown values read `unknown`.
 const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
+
+/// Does the live grasp declaration exempt robot link `link_index` from
+/// occupied cell `center` (base frame)? The whole predicate, failing closed:
+///
+/// * No valid grasp region → false.
+/// * `link_index` negative, past `kMaxGraspMaskLinks`, or not in the mask →
+///   false. Only the declared gripper's contact links are ever exempt.
+/// * A degenerate or non-finite region box → false (re-checked here; a
+///   permissive answer is never the safe default).
+/// * The cell centre outside the box (the same exact point-in-OBB test as
+///   `place_approach_allowance`) → false.
+///
+/// Allocation-free.
+bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept;
+
+/// Is base-frame point `p` inside `region`'s box? The containment half of
+/// `grasp_target_exempts`, without the link test: the lifecycle asks it of the
+/// declared payload's origin during the handover. False for an invalid,
+/// degenerate or non-finite region, and for a non-finite point. Allocation-free.
+bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept;
+
+/// Validate a producer-measured grasp region and lower it into `out`.
+///
+/// The frame match (region frame == grid frame) is the lifecycle's job; this
+/// checks the geometry: a non-empty `link_mask`, a finite pose, finite and
+/// strictly positive half-extents, each <= `kMaxGraspRegionHalfExtentM`, and
+/// a volume <= `kMaxGraspRegionVolumeM3`. Returns kOk iff `out.valid` was set;
+/// every other value leaves `out` inert (no exemption). Not on the hot path.
+GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_extents,
+                                      const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                      GraspTargetRegion& out) noexcept;
+
+/// Do the declared contact links `mask` all belong to ONE hand?
+///
+/// A link's hand is its mount: its first ancestor (by `parent`) that is not
+/// itself in `allowlist` — so a chained finger climbs to the hand it hangs off,
+/// and two fingers sharing a hand link share a mount (the grouping of
+/// `openral_core.gripper_hands`). True iff `mask` is non-empty, every set bit
+/// indexes a link of `parent`, and all of them share one mount. Fails closed on
+/// a malformed (cyclic) parent chain. The grasp-target exemption arms for one
+/// hand at a time: with the target inferred from the robot's own approach rather
+/// than named, a declaration spanning two hands is refused at ingest
+/// (`reason=links_span_hands`). Not on the hot path; allocation-free.
+bool grasp_links_one_hand(const std::vector<int>& parent,
+                          const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                          const std::bitset<kMaxGraspMaskLinks>& mask) noexcept;
+
+/// Stable snake_case token naming `status`, for the `reason=` key of the
+/// kernel's grasp-region log lines. Never null; unknown values read `unknown`.
+const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
 
 /// Does object i's attested support contact explain occupied cell `center`?
 ///

@@ -38,6 +38,10 @@ _NVBLOX_PACKAGE = "nvblox_ros"
 _NVBLOX_PLUGIN = "nvblox::NvbloxNode"
 
 
+#: Suffix of every camera-topic launch argument: the caller supplies it (ADR-0108).
+_REQUIRED = " Required: deploy_e2e passes ``openral_core.camera_topic(<sensor>, ...)``."
+
+
 def _default_params_path() -> str:
     share = get_package_share_directory("openral_slam_bringup")
     return os.path.join(share, "config", "nvblox.yaml")
@@ -79,16 +83,19 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         # Depth + camera_info from the metric-depth provider (or a real
-        # RGB-D sensor); nvblox subscribes `depth/image` + `depth/camera_info`.
+        # RGB-D sensor); nvblox subscribes `depth/image` + `depth/camera_info`. No
+        # defaults (ADR-0108): deploy_e2e passes the manifest depth camera's
+        # ``camera_topic(<name>, DEPTH_IMAGE / DEPTH_CAMERA_INFO)``; the depth height
+        # filter refuses to start with an empty one.
         DeclareLaunchArgument(
             "depth_image_topic",
-            default_value="/openral/cameras/front_depth/depth/image",
-            description="Metric depth (32FC1, metres) → nvblox depth/image.",
+            default_value="",
+            description="Metric depth (32FC1, metres) → nvblox depth/image." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "depth_camera_info_topic",
-            default_value="/openral/cameras/front_depth/depth/camera_info",
-            description="Depth intrinsics → nvblox depth/camera_info.",
+            default_value="",
+            description="Depth intrinsics → nvblox depth/camera_info." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "height_filter_floor_clearance_m",

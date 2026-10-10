@@ -9,6 +9,8 @@ edge cases that only show up through rclpy: an unset string array arrives as
 
 from __future__ import annotations
 
+import pytest
+from openral_core import ROSConfigError, camera_topic
 from openral_perception_ros.camera_topics import resolve_camera_topics
 
 
@@ -20,15 +22,13 @@ def test_entries_resolve_in_declaration_order() -> None:
         image_topic="/ignored",
     )
     assert list(cameras) == ["wrist", "top"]
-    assert cameras["top"] == "/openral/cameras/top/image"
+    assert cameras["top"] == camera_topic("top")
 
 
 def test_an_unset_camera_array_falls_back_to_the_single_topic() -> None:
     """rclpy hands an unset string array through as [""], not []."""
-    cameras = resolve_camera_topics(
-        [""], primary_camera="wrist", image_topic="/openral/cameras/wrist/image"
-    )
-    assert cameras == {"wrist": "/openral/cameras/wrist/image"}
+    cameras = resolve_camera_topics([""], primary_camera="wrist", image_topic=camera_topic("wrist"))
+    assert cameras == {"wrist": camera_topic("wrist")}
 
 
 def test_an_unset_primary_camera_becomes_default() -> None:
@@ -44,7 +44,7 @@ def test_malformed_entries_are_skipped_not_guessed() -> None:
         primary_camera="wrist",
         image_topic="/unused",
     )
-    assert cameras == {"wrist": "/openral/cameras/wrist/image"}
+    assert cameras == {"wrist": camera_topic("wrist")}
 
 
 def test_a_repeated_id_keeps_the_last_topic() -> None:
@@ -53,3 +53,10 @@ def test_a_repeated_id_keeps_the_last_topic() -> None:
         ["wrist=/first", "wrist=/second"], primary_camera="wrist", image_topic="/unused"
     )
     assert cameras == {"wrist": "/second"}
+
+
+def test_no_camera_at_all_refuses_instead_of_subscribing_to_a_guess() -> None:
+    """ADR-0108: the nodes' ``image_topic`` default is empty; with no ``cameras`` either,
+    configure fails loudly rather than subscribing to a name nothing publishes."""
+    with pytest.raises(ROSConfigError, match="no camera configured"):
+        resolve_camera_topics([""], primary_camera="", image_topic="")

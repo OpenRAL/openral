@@ -379,8 +379,8 @@ distinguish anyway.
 
 What's genuinely given up: a payload sticking forward could clip a tall, thin
 obstacle the base itself clears. The kernel catches that in 3-D — its octomap
-bridge covers a ball of r = 1.05 m centred at z = 0.5 in `base_frame`
-(z ∈ [−0.55, 1.55], which contains the payload) — but as an E-stop, not an
+bridge covers the arm's measured reach ball, r = 1.04 m centred at z = 0.432 in
+`base_frame` (z ∈ [−0.61, 1.47], which contains the payload) — but as an E-stop, not an
 avoidance, since `/cmd_vel` never passes through it (ADR-0040/ADR-0099, above).
 
 ### What replaces it
@@ -507,7 +507,7 @@ radius is most of the 3 m local costmap), so it is left at 0.40 m.
 ### MEASURED 2026-08-28: the full cycle fits with the flag on
 
 `scenes/deploy/robocasa_deliver_straw.yaml` driven with the full stack (SLAM +
-Nav2 + octomap + kernel gate) on `q-laptop`; `controller_server`'s own CPU per
+Nav2 + octomap + kernel gate) on the laptop workstation; `controller_server`'s own CPU per
 published control cycle, all four arms, 2 runs each:
 
 | footprint | `consider_footprint` | CPU / cycle | of 50 ms |

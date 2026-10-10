@@ -6,8 +6,8 @@ A deploy-sim HAL node turns each depth ``SensorSpec`` into a
 feeding the safety kernel's world-collision check. Shared pieces so a node
 only wires publishers/timers:
 
-* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs``
-  — pure SensorSpec adapters (no ROS / MuJoCo import).
+* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs`` /
+  ``depth_optical_frame_id`` — pure SensorSpec adapters (no ROS / MuJoCo import).
 * ``camera_optical_tf_to_base`` — camera-optical-frame → base transform
   from the live MuJoCo poses.
 * ``points_from_depth_grid`` — back-project a depth raster into an
@@ -15,16 +15,22 @@ only wires publishers/timers:
   cloud; see ``openral_hal.sim_sensor_bridge``).
 * ``pointcloud2_from_points_xyz`` — pack an ``(N, 3)`` array into a
   ``sensor_msgs/PointCloud2``.
+* ``intrinsics_from_camera_info`` / ``resample_mask_nearest`` — real-camera
+  image geometry: the driver's live K, and an RGB-resolution mask brought onto
+  the depth raster.
 
 Synth: ``openral_sim.backends.depth_camera.synthesize_depth_image``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from openral_core.schemas import IntrinsicsPinhole
 
 # REP-103 optical (x right, y down, z forward) expressed in the MuJoCo
 # camera frame (x right, y up, z back): flip y and z.
@@ -39,14 +45,45 @@ _MIN_EYE_DISTANCE_M = 1e-6
 _VIEWER_LOOKAT_LIFT_M = 0.7
 _VIEWER_PULLBACK_M = 2.0
 
+# A CameraInfo K is a row-major 3x3.
+_CAMERA_INFO_K_LEN = 9
+
 
 def is_depth_sensor(spec: Any) -> bool:
     """True when ``spec`` is a depth/point-cloud camera with intrinsics.
 
     Intrinsics are required to back-project pixels, so a depth ``SensorSpec``
-    without them is not usable by the synth and is skipped.
+    without them is not usable by the synth and is skipped. The rule itself is
+    ``SensorSpec.is_depth_camera``; this is the HAL's name for it.
     """
-    return spec.modality in ("depth", "point_cloud") and spec.intrinsics is not None
+    return bool(spec.is_depth_camera)
+
+
+# REP-103 body frame (x forward, y left, z up) -> its optical child (x right,
+# y down, z forward): rpy (-pi/2, 0, -pi/2), as an xyzw quaternion.
+BODY_TO_OPTICAL_QUAT_XYZW: tuple[float, float, float, float] = (-0.5, 0.5, -0.5, 0.5)
+
+
+def depth_optical_frame_id(spec: Any) -> str:
+    """The optical frame a depth sensor's sim raster, cloud and colour are stamped in.
+
+    A sim depth raster is optical-convention by construction (x right, y down, z
+    forward). A sensor whose ``frame_id`` is already an ``*_optical_frame`` keeps
+    it; a body-convention ``frame_id`` (a camera *mount* such as the ZED's
+    ``zed_camera_link``) gets its REP-103 child ``<frame_id>_optical_frame``,
+    which ``SimSensorBridge`` publishes under the mount
+    (``BODY_TO_OPTICAL_QUAT_XYZW``). Stamping optical data with the body frame
+    rotates every consumer's geometry by 90 degrees about two axes.
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> depth_optical_frame_id(SimpleNamespace(frame_id="zed_camera_link"))
+        'zed_camera_link_optical_frame'
+        >>> depth_optical_frame_id(SimpleNamespace(frame_id="front_depth_optical_frame"))
+        'front_depth_optical_frame'
+    """
+    frame = str(spec.frame_id)
+    return frame if frame.endswith("_optical_frame") else f"{frame}_optical_frame"
 
 
 def mjcf_camera_name(spec: Any) -> str:
@@ -753,3 +790,103 @@ def camera_info_from_intrinsics(
     msg.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     msg.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
     return msg
+
+
+def intrinsics_from_camera_info(msg: Any) -> IntrinsicsPinhole:
+    """Read pinhole intrinsics back out of a ``sensor_msgs/CameraInfo``.
+
+    The inverse of :func:`camera_info_from_intrinsics`: ``fx = k[0]``,
+    ``fy = k[4]``, ``cx = k[2]``, ``cy = k[5]``, plus ``width``/``height``.
+    Duck-typed, so it takes the real ROS message or anything shaped like it.
+    This is how a consumer projects through the camera driver's **live**
+    calibration instead of a manifest's nominal ``SensorSpec.intrinsics`` —
+    on the OpenArm Thor cell the ZED Mini publishes fx = fy = 1498.18 where
+    the manifest declares 960 (2026-10-02). Distortion is not carried over:
+    the driver's rectified streams publish none.
+
+    Args:
+        msg: A ``sensor_msgs/CameraInfo`` (or duck-typed equivalent).
+
+    Returns:
+        The intrinsics at the message's own ``width`` x ``height``.
+
+    Raises:
+        ROSConfigError: ``k`` is absent or not nine values, a focal length is
+            not positive, or the resolution is zero — an uncalibrated
+            ``CameraInfo`` (the all-zero default) must never become a pinhole.
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> info = SimpleNamespace(
+        ...     width=1920,
+        ...     height=1080,
+        ...     k=[1498.18, 0.0, 936.11, 0.0, 1498.18, 541.81, 0.0, 0.0, 1.0],
+        ... )
+        >>> k = intrinsics_from_camera_info(info)
+        >>> (k.width, k.fx, k.cx, k.cy)
+        (1920, 1498.18, 936.11, 541.81)
+    """
+    from openral_core.exceptions import ROSConfigError  # reason: defer core import
+    from openral_core.schemas import IntrinsicsPinhole  # reason: defer core import
+
+    raw_k = getattr(msg, "k", None)  # a numpy array on a real rclpy message
+    k = [] if raw_k is None else [float(v) for v in raw_k]
+    width = int(getattr(msg, "width", 0) or 0)
+    height = int(getattr(msg, "height", 0) or 0)
+    if len(k) != _CAMERA_INFO_K_LEN or k[0] <= 0.0 or k[4] <= 0.0 or width <= 0 or height <= 0:
+        raise ROSConfigError(
+            f"intrinsics_from_camera_info: uncalibrated CameraInfo (k={k}, "
+            f"{width}x{height}); the camera driver published no usable K."
+        )
+    return IntrinsicsPinhole(width=width, height=height, fx=k[0], fy=k[4], cx=k[2], cy=k[5])
+
+
+def resample_mask_nearest(mask: NDArray[np.bool_], shape: tuple[int, int]) -> NDArray[np.bool_]:
+    """Resample a boolean mask to ``shape`` by nearest neighbour on pixel centres.
+
+    Brings a mask segmented on a camera's RGB stream onto that camera's depth
+    raster when the two publish at different resolutions of the same view
+    (the ZED Mini: RGB at native resolution, depth at ``pub_resolution``).
+    Destination pixel ``(r, c)`` samples source pixel
+    ``floor((r + 0.5) * H_src / H_dst)``, ``floor((c + 0.5) * W_src / W_dst)`` —
+    centre-to-centre, so a 2x downsample neither shifts the mask by half a
+    pixel nor favours one edge.
+
+    Args:
+        mask: ``(H_src, W_src)`` boolean mask.
+        shape: Target ``(H_dst, W_dst)``.
+
+    Returns:
+        ``(H_dst, W_dst)`` boolean mask.
+
+    Raises:
+        ROSConfigError: ``mask`` is not 2-D, ``shape`` is not positive, or the
+            two aspect ratios differ by more than 1 % — that is a different
+            crop, not a different resolution, and no resample can align it.
+
+    Example:
+        >>> import numpy as np
+        >>> m = np.zeros((4, 4), dtype=bool)
+        >>> m[2:, 2:] = True
+        >>> resample_mask_nearest(m, (2, 2)).tolist()
+        [[False, False], [False, True]]
+    """
+    from openral_core.exceptions import ROSConfigError  # reason: defer core import
+
+    src = np.asarray(mask, dtype=bool)
+    h_dst, w_dst = int(shape[0]), int(shape[1])
+    if src.ndim != 2 or h_dst <= 0 or w_dst <= 0:  # noqa: PLR2004 — reason: a mask is 2-D
+        raise ROSConfigError(
+            f"resample_mask_nearest: need a 2-D mask and a positive shape; "
+            f"got {src.shape} -> {(h_dst, w_dst)}."
+        )
+    h_src, w_src = src.shape
+    sy, sx = h_src / h_dst, w_src / w_dst
+    if abs(sy - sx) > 0.01 * max(sy, sx):
+        raise ROSConfigError(
+            f"resample_mask_nearest: aspect mismatch {src.shape} -> {(h_dst, w_dst)}; "
+            "the mask and the target are different crops, not different resolutions."
+        )
+    rows = np.minimum(((np.arange(h_dst) + 0.5) * sy).astype(np.intp), h_src - 1)
+    cols = np.minimum(((np.arange(w_dst) + 0.5) * sx).astype(np.intp), w_src - 1)
+    return np.asarray(src[np.ix_(rows, cols)], dtype=np.bool_)

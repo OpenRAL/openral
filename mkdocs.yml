@@ -76,10 +76,12 @@ nav:
     - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
     - Quantize an rSkill: tutorials/rskill/quantize-an-rskill.md
     - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
+    - OpenArm real-cell world-voxel check: tutorials/deploy/openarm-real-world-voxel-check.md
   - Architecture:
     - Overview: architecture/overview.md
     - Repo map: architecture/repo-map.md
     - Methods inventory: METHODS.md
+    - ROS 2 topic graph: topics/README.md
     # The repo state map ships as a static .html under docs/architecture/ —
     # mkdocs nav only renders Markdown, so it is linked from
     # architecture/overview.md instead of listed here. mkdocs copies it to
@@ -99,15 +101,19 @@ nav:
     - Sim environments: reference/sim-environments.md
     - aarch64 CUDA hosts (DGX Spark / Jetson): reference/aarch64-support.md
     - Telemetry (spans, metrics, logs): reference/telemetry.md
+    - DDS transport for large messages: reference/dds-large-messages.md
     - Collision-stack validation evidence: reference/collision-validation-evidence.md
     - Collision-primitive study (OBB vs sphere-swept box): reference/collision-primitive-study.md
     - Collision primitives, in pictures: reference/collision-primitive-images.md
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
     - Staged hull narrow phase in the safety kernel: reference/collision-hull-narrow-phase.md
+    - Collision geometry review (one fitter, capsules and hulls, per robot): reference/collision-geometry-review.md
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md
+    - Real pick and place on the OpenArm cell (investigation and plan): reference/real-pick-place-design.md
+    - Real pick and place, Safety-WG drafts (ADR + hazard log): reference/real-pick-place-adr-drafts.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md

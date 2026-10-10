@@ -87,7 +87,7 @@
     },
     "CameraSimPlacement": {
       "additionalProperties": false,
-      "description": "Where an RGB sensor's camera sits in the sim MJCF.\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the ``SensorSpec``, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    up: World-up hint used to level the camera roll. Defaults to ``(0, 0, 1)``.\n        A camera physically mounted upside-down (e.g. a wrist phone bolted\n        inverted on the gripper) uses ``(0, 0, -1)`` to roll the image 180\u00b0.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+      "description": "Where a camera sensor's (RGB or depth) camera sits in the sim MJCF.\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the ``SensorSpec``, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    up: World-up hint used to level the camera roll. Defaults to ``(0, 0, 1)``.\n        A camera physically mounted upside-down (e.g. a wrist phone bolted\n        inverted on the gripper) uses ``(0, 0, -1)`` to roll the image 180\u00b0.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
       "properties": {
         "parent_body": {
           "anyOf": [
@@ -179,7 +179,7 @@
     },
     "CapsuleShape": {
       "additionalProperties": false,
-      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``WorldCollisionPrimitive.pose`` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``AttachedCollisionPrimitive.pose_in_object`` for a payload).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
       "properties": {
         "shape": {
           "const": "capsule",
@@ -280,6 +280,68 @@
           ],
           "default": null,
           "title": "Octomap Cloud Topic"
+        },
+        "clock_origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "host_wall",
+                "simulation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Origin"
+        },
+        "world_voxel_deadline_s": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 2.0,
+          "title": "World Voxel Deadline S",
+          "type": "number"
+        },
+        "max_octree_age_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Octree Age S"
+        },
+        "world_voxel_data_age_budget_s": {
+          "default": 1.5,
+          "exclusiveMinimum": 0,
+          "maximum": 3.0,
+          "title": "World Voxel Data Age Budget S",
+          "type": "number"
+        },
+        "robot_self_filter_padding_m": {
+          "default": 0.02,
+          "maximum": 0.1,
+          "minimum": 0,
+          "title": "Robot Self Filter Padding M",
+          "type": "number"
+        },
+        "joint_states_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint States Topic"
         },
         "enable_object_detector": {
           "anyOf": [
@@ -440,6 +502,42 @@
           "default": null,
           "title": "Approach Skill Id"
         },
+        "preload_rskill_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preload Rskill Id"
+        },
+        "preload_rskill_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preload Rskill Revision"
+        },
+        "preload_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preload Prompt"
+        },
         "slam_visual_impl": {
           "anyOf": [
             {
@@ -494,9 +592,102 @@
           "default": true,
           "title": "Slam Depth Sidecar Autostart",
           "type": "boolean"
+        },
+        "vision_attachment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisionAttachmentRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grasp_allowance_enabled": {
+          "default": false,
+          "title": "Grasp Allowance Enabled",
+          "type": "boolean"
         }
       },
       "title": "DeployRuntime",
+      "type": "object"
+    },
+    "GraspDeclaration": {
+      "additionalProperties": false,
+      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-0115-2).\n    trace_id: OTel trace id, for attributability (HZ-0115-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n    search_box: Optional box (in the voxel grid's base frame) the target\n        producer searches the occupancy map in for a seed: a search hint only,\n        with no support semantics \u2014 the producer measures the support layer\n        from the voxel map itself (the box is padded so that layer lies inside\n        it). It only *seeds* perception and never arms anything:\n        the exemption is always the measured ``region``. The reasoner grounds\n        it from a named ``GraspTargetRef`` (the generic path); unlike\n        ``region`` a direct-dispatch scene may also supply it; dispatch passes\n        it through unchanged. ``None`` = no search, so the producer never\n        measures a region.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+      "properties": {
+        "target_id": {
+          "default": "",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "object_id": {
+          "default": "",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "contact_links": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Contact Links",
+          "type": "array"
+        },
+        "rskill_id": {
+          "default": "",
+          "title": "Rskill Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "default": "",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "timeout_s": {
+          "exclusiveMinimum": 0.0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        },
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "search_box": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "timeout_s",
+        "stamp_ns"
+      ],
+      "title": "GraspDeclaration",
       "type": "object"
     },
     "HalParameters": {
@@ -603,7 +794,7 @@
       "type": "object"
     },
     "PhysicsBackend": {
-      "description": "Physics / scene backend used to instantiate a ``SceneSpec``.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld,\n        and VLABench (native lerobot 0.6.0 VLABenchEnv, in-process).\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The\n        engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm\n        benchmark backend runs it out-of-process via a py3.10 sidecar.\n        ManiSkill3 scenes predate this slot and historically\n        declared ``MUJOCO`` \u2014 new SAPIEN backends use this value.\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.\n    COPPELIASIM: CoppeliaSim/PyRep \u2014 the RLBench benchmark backend, driven\n        out-of-process via a py3.10 sidecar.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
+      "description": "Physics / scene backend used to instantiate a ``SceneSpec``.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld,\n        and VLABench (native lerobot 0.6.0 VLABenchEnv, in-process).\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The\n        engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm\n        benchmark backend runs it out-of-process via a py3.10 sidecar.\n        ManiSkill3 scenes predate this slot and historically\n        declared ``MUJOCO`` \u2014 new SAPIEN backends use this value.\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse + PhysX + RTX, GPU) \u2014 the\n        ``isaac_sim`` scene, driven out-of-process via a py3.11 sidecar.\n    COPPELIASIM: CoppeliaSim/PyRep \u2014 the RLBench benchmark backend, driven\n        out-of-process via a py3.10 sidecar.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
       "enum": [
         "mujoco",
         "mujoco_mjx",
@@ -619,7 +810,7 @@
     },
     "PlaceDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -671,6 +862,17 @@
           "default": 0.0,
           "title": "Contact Force Threshold N",
           "type": "number"
+        },
+        "search_box": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -682,7 +884,7 @@
     },
     "PlaceRegion": {
       "additionalProperties": false,
-      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware measures the support\nslab directly under the carried payload from the live voxel map\n(``openral_hal._place_target_leg``, default off, drafted ADR amendments\npending). The kernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
       "properties": {
         "frame_id": {
           "minLength": 1,
@@ -791,7 +993,7 @@
       "type": "object"
     },
     "SafetyEnvelope": {
-      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.",
       "properties": {
         "workspace_box_min_xyz": {
           "anyOf": [
@@ -973,6 +1175,71 @@
           "default": 0.0,
           "title": "Self Collision Margin M",
           "type": "number"
+        },
+        "starting_pose_max_joint_speed_rad_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Max Joint Speed Rad S"
+        },
+        "starting_pose_tolerance_rad": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Tolerance Rad"
+        },
+        "starting_pose_max_joint_speed_m_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Max Joint Speed M S"
+        },
+        "starting_pose_tolerance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Tolerance M"
+        },
+        "joint_state_staleness_limit_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint State Staleness Limit S"
         }
       },
       "title": "SafetyEnvelope",
@@ -1000,7 +1267,7 @@
     },
     "SceneSpec": {
       "additionalProperties": false,
-      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI pointing at scene assets.  When ``None``,\n        the registered adapter resolves assets internally (LIBERO /\n        MetaWorld pull theirs from their own packages).  Read by the\n        ``isaac_sim`` scene as its environment USD (a local path, an\n        ``http(s)://`` / ``omniverse://`` URL, or ``isaac:<path>`` under\n        the installed Isaac Sim asset root); other adapters ignore it.\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
       "properties": {
         "id": {
           "title": "Id",
@@ -1055,7 +1322,7 @@
     },
     "SensorDeployBinding": {
       "additionalProperties": false,
-      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
       "properties": {
         "backend": {
           "$ref": "#/$defs/SensorReaderBackend",
@@ -1110,7 +1377,7 @@
       "type": "string"
     },
     "SensorSpec": {
-      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    shares_mount_with: Another sensor of this robot that is the same physical\n        device (a stereo camera's colour stream and its depth): this one sits at\n        THAT sensor's mount (``parent_frame`` + ``static_transform_xyz_rpy``, a\n        unit's calibration included), so a sim renders both from one pose.\n        ``None``: the sensor declares its own mount, if any.\n    ros2_topic: The image topic an *external* ROS 2 driver publishes\n        (``/camera/color/image_raw``, ``/zed/zed_node/...``). ``None`` (every\n        in-tree manifest) means OpenRAL itself produces the sensor (sim\n        bridge or sensor leg) under the canonical ``camera_topic(name, kind)``\n        layout. Today it is read only by the RealSense calibration command.\n        Nothing remaps it onto ``camera_topic(name)`` yet (ADR-0108 Decision\n        2, not implemented), so a camera served only by a vendor driver does\n        not reach the canonical topics: bind it through a ``deploy_binding``\n        (e.g. the ``ros2_image`` backend) to publish it there.\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
       "properties": {
         "name": {
           "title": "Name",
@@ -1242,6 +1509,18 @@
             }
           ],
           "default": null
+        },
+        "shares_mount_with": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shares Mount With"
         },
         "n_channels": {
           "anyOf": [
@@ -1540,6 +1819,146 @@
       ],
       "title": "TightCollisionGeometry",
       "type": "object"
+    },
+    "VisionAttachmentRuntime": {
+      "additionalProperties": false,
+      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The\noctomap bridge clears a published payload from the map and the robot self-filter removes it\nfrom the cloud regardless of the kernel flag, so a leg without the kernel check would make\nthe payload invisible to every collision check.\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngrasp trigger is the gripper's *position* stalling short of a close command (the OpenArm\ngripper reports no effort), its thresholds the manifest's robot-type constants\n(``JointSpec.closure_calibration``) derived from teleop data, not per cell.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for\n        every gripper may be before the attachment heartbeat stops (HAL param\n        ``vision_attachment_evidence_timeout_s``).\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n    grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param\n        ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's\n        grasp-target exemption arms with, so ``deploy run`` refuses\n        ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.\n    grasp_target_approach_m: Approach-armed grasp target (HAL param\n        ``vision_attachment_grasp_target_approach_m``; needs ``grasp_target_enabled``):\n        with no named target, a hand whose TCP comes within this many metres of\n        occupied voxels arms a one-hand declaration measured around its jaws, and\n        the rSkill runner arms a goal-scope declaration for every goal so the\n        policy, not the reasoner, picks what to grasp. ``None`` = off (default).\n        Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.\n    grasp_target_premeasure: Pre-measure every object instance near a hand (or in a\n        named search box) from head-camera segmentation before any hand arms, each\n        camera box confirmed by the voxel map, and arm the region from the tracked\n        instance nearest the hand on the arming tick (HAL param\n        ``vision_attachment_grasp_target_premeasure``; needs ``grasp_target_enabled``),\n        so the region exists before contact without the policy pausing for an\n        unoccluded view. Source order: camera instance first, the map confirms it and\n        holds it while the declared hand occludes it\n        (``docs/reference/object-primitives-design.md``, issue #349). Prototype;\n        default off.\n    grasp_target_margin_m: How far the grasp target is bloated, metres (HAL param\n        ``vision_attachment_grasp_target_margin_m``; design note \u00a72.1 \"Grasp-target\n        margin\"). Before the handover the region the kernel exempts for the declared\n        finger links is the measured target grown by this margin on every face,\n        **downward too** \u2014 the finger links may press up to this far into the support\n        under the target (and into anything else within it) without a stop. From the\n        handover on, the attached payload \u2014 the target lowered onto the measured support\n        top and grown by it on the four sides and the top, never down \u2014 is also the\n        region the kernel latches and keeps exempting the finger links over until the\n        payload leaves it, carried with the hand and checked against the environment.\n        The producer's own gates keep the measured region. Default ``0.0`` (no bloat,\n        the safer side): a scene that wants the wider exemption names it (the real\n        OpenArm cell's 20 mm octomap needs ``>= 0.03`` to cover the support layer,\n        design note \u00a72.1). In ``[0, MAX_GRASP_TARGET_MARGIN_M]`` (0.05 m); the margin,\n        not the measurement, shrinks when a bloated box would exceed the declaration's\n        caps (logged). Calibration point, task-dependent; a Safety-WG setting (hazard\n        row HZ-0115-32).\n    place_target_enabled: Run the real place producer (HAL param\n        ``vision_attachment_place_target_enabled``): while a payload is held it\n        measures the support surface directly under it from the voxel map, arms a\n        place region for it and attests the map-support proximity witness. No place\n        target needs naming. Default off.\n    release_timeout_s: How long the bridge's release window waits for the payload to\n        clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration\n        point. The window's grid age and clearance are not scene knobs: the deploy\n        launch derives them from the kernel's voxel deadline, world margin and octree\n        resolution.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "camera": {
+          "minLength": 1,
+          "title": "Camera",
+          "type": "string"
+        },
+        "rgb_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rgb Topic"
+        },
+        "rgb_camera_info_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rgb Camera Info Topic"
+        },
+        "depth_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Topic"
+        },
+        "depth_camera_info_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Camera Info Topic"
+        },
+        "segmenter_manifest": {
+          "default": "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml",
+          "title": "Segmenter Manifest",
+          "type": "string"
+        },
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "deadline_s": {
+          "default": 0.25,
+          "exclusiveMinimum": 0,
+          "title": "Deadline S",
+          "type": "number"
+        },
+        "evidence_timeout_s": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "title": "Evidence Timeout S",
+          "type": "number"
+        },
+        "tf_frames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Tf Frames",
+          "type": "object"
+        },
+        "grasp_target_enabled": {
+          "default": false,
+          "title": "Grasp Target Enabled",
+          "type": "boolean"
+        },
+        "grasp_target_approach_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 0.2,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grasp Target Approach M"
+        },
+        "grasp_target_margin_m": {
+          "default": 0.0,
+          "maximum": 0.05,
+          "minimum": 0.0,
+          "title": "Grasp Target Margin M",
+          "type": "number"
+        },
+        "grasp_target_premeasure": {
+          "default": false,
+          "title": "Grasp Target Premeasure",
+          "type": "boolean"
+        },
+        "place_target_enabled": {
+          "default": false,
+          "title": "Place Target Enabled",
+          "type": "boolean"
+        },
+        "release_timeout_s": {
+          "default": 3.0,
+          "exclusiveMinimum": 0,
+          "title": "Release Timeout S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "camera"
+      ],
+      "title": "VisionAttachmentRuntime",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -1622,6 +2041,18 @@
       "title": "Sensors",
       "type": "array"
     },
+    "robot_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Robot Unit"
+    },
     "drivers": {
       "items": {
         "$ref": "#/$defs/LaunchInclude"
@@ -1667,6 +2098,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/PlaceDeclaration"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "grasp_declaration": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraspDeclaration"
         },
         {
           "type": "null"

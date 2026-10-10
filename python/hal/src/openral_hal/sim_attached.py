@@ -52,6 +52,12 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
+from openral_hal._slot_group import (
+    TickWatermark,
+    compose_slot_group_action,
+    slot_group_targets,
+)
+
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
 _log = logging.getLogger(__name__)
@@ -101,9 +107,72 @@ __all__ = [
     "SIM_EXECUTABLE_CONTROL_MODES",
     "ActionPacker",
     "SimAttachedHAL",
+    "gripper_targets_action",
     "normalized_joint_index",
     "pack_action_for_env",
 ]
+
+
+def gripper_targets_action(group: list[Action], description: RobotDescription) -> Action | None:
+    """What one committed slot group set for every gripper joint, as a compact action.
+
+    The gripper-subset form of ``compose_slot_group_action`` for a group that does not
+    compose into one whole joint-position command (a BODY_TWIST or Cartesian slot,
+    arm joints left uncommanded): ``slot_group_targets`` places the group with the
+    composer's own strictness, and the ``role: "gripper"`` joints are read out as a
+    one-row ``JOINT_POSITION`` action (``joint_names`` = every gripper, manifest
+    order) — the compact row ``VisionAttachmentBridge.observe_command`` reads
+    positionally. Never a command to apply: the record of what the jaws were told.
+
+    All or nothing: a partial record would leave the uncovered jaw's previous command
+    standing in the grasp trigger (a phantom attach on the twin), so any gripper the
+    group left uncommanded, or any slot the composer cannot read, gives ``None``,
+    which clears every jaw's command.
+
+    Args:
+        group: Every slot action of the committed tick.
+        description: The robot manifest (gripper roles and joint order).
+
+    Returns:
+        Every gripper's target, or ``None`` when the manifest has no gripper, the
+        group left one uncommanded, or ``slot_group_targets`` refused the group
+        (an unreadable or overlapping slot: which value the jaw got is unknown).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+        >>> twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+        >>> grip = Action(
+        ...     control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.02], ee_name="panda_gripper"
+        ... )
+        >>> applied = gripper_targets_action([twist, grip], d)
+        >>> applied.joint_names, applied.joint_targets
+        (['panda_gripper'], [[0.02]])
+        >>> gripper_targets_action([twist], d) is None
+        True
+    """
+    names = [joint.name for joint in description.joints]
+    try:
+        targets = slot_group_targets(group, names)
+    except ROSConfigError:
+        return None
+    jaws: dict[str, float] = {}
+    for joint, target in zip(description.joints, targets, strict=True):
+        if joint.role == "gripper":
+            if target is None:
+                return None
+            jaws[joint.name] = target
+    if not jaws:
+        return None
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[list(jaws.values())],
+        joint_names=list(jaws),
+        stamp_ns=group[0].stamp_ns,
+        confidence=group[0].confidence,
+    )
+
 
 _ROBOSUITE_GROUP_PREFIX = re.compile(r"^[a-z]+[0-9]+_")  # robot0_ / gripper0_ / mobilebase0_
 
@@ -393,7 +462,9 @@ class SimAttachedHAL:
             description: The host ``RobotDescription`` — joint
                 ordering, ``base_joints`` + ``sim_joint_name`` map.
             action_packer: Per-composition Action-to-env-vec translator;
-                defaults to ``pack_action_for_env``.
+                defaults to the env's own ``pack_action(action, prev)`` when it
+                defines one (a backend that knows its slot layout — the Isaac
+                manifest scene), else ``pack_action_for_env``.
             env_reset_seed: Optional seed forwarded to ``env.reset``.
             env_action_dim: Override the auto-probed env action width;
                 useful for envs whose action space isn't introspectable.
@@ -416,8 +487,21 @@ class SimAttachedHAL:
         if callable(enable_continuous):
             enable_continuous()
         self.description = description
-        self._action_packer = action_packer if action_packer is not None else pack_action_for_env
+        # A backend that declares its own layout packs by name (env hook, like
+        # ``idle_action``); the default packer assumes the robosuite layout
+        # (base first, ONE gripper in the last slot, per-step deltas) and would
+        # misroute such an env's slots — an arm command into its base twist.
+        env_pack = getattr(env, "pack_action", None)
+        self._env_packs = action_packer is None and callable(env_pack)
+        if action_packer is not None:
+            self._action_packer: ActionPacker = action_packer
+        elif callable(env_pack):
+            self._action_packer = lambda action, _description, _dim, prev: env_pack(action, prev)
+        else:
+            self._action_packer = pack_action_for_env
         self._reset_seed = env_reset_seed
+        # Episodes started by `reset_episode` since construction (its seed offset).
+        self._episode_index = 0
         self._env_action_dim: int | None = env_action_dim
         self._connected: bool = False
         self._estop_latched: bool = False
@@ -435,6 +519,9 @@ class SimAttachedHAL:
         # publisher can republish whatever the env rendered without
         # re-stepping the simulator. ``None`` until ``connect``.
         self._last_obs: dict[str, Any] | None = None
+        # Newest registered colour + depth frames (``read_depth_frames``): a backend
+        # ships them on some steps only, so they outlive the step that carried them.
+        self._last_depth_frames: dict[str, dict[str, Any]] = {}
         self._body_twist_dt_s: float = body_twist_dt_s
         # Built once per env on first read_state; reset on connect.
         self._joint_index: dict[str, int] | None = None
@@ -451,9 +538,12 @@ class SimAttachedHAL:
         # ``step_action_group(actions)`` receive every safety-approved slot from
         # one ActionChunk.tick_index and step exactly once when their declared
         # ``action_group_size`` is complete.
-        self._pending_action_tick: int | None = None
+        # Keyed by (runner_session_id, tick_index): ticks restart per runner.
+        self._pending_action_key: tuple[int, int] | None = None
         self._pending_actions: list[Action] = []
-        self._last_committed_tick: int = 0
+        self._watermark = TickWatermark()
+        # What the last applied command was (``last_applied_action``).
+        self._last_applied_action: Action | None = None
         # Wall-clock stamp of the oldest pending slot so a skill that dies
         # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
@@ -521,17 +611,52 @@ class SimAttachedHAL:
         # (the lifecycle node re-resets on each configure→cleanup cycle) never
         # makes the published ``/clock`` jump backwards. On the very first
         # connect a freshly built env reads ~0, so this is a no-op there.
+        self._reset_env(self._reset_seed, "connect")
+        if self._env_action_dim is None:
+            self._env_action_dim = self._probe_env_action_dim()
+
+    def reset_episode(self) -> int:
+        """Start a fresh episode on the live env without rebuilding it (sim only).
+
+        Re-runs exactly what ``connect`` does to the scene (``env.reset`` plus the
+        HAL's per-episode bookkeeping) with the next seed of a deterministic
+        sequence: the base reset seed plus the episode index (1, 2, ...). A scene
+        with per-reset randomisation (Isaac ``pose_noise``) therefore draws a new
+        layout each episode, reproducible from the returned seed. Keeps the env,
+        its sidecar and every ROS node up: a multi-episode harness pays the boot
+        and policy load once. Call between goals, never during one.
+
+        Returns:
+            The seed the env was reset with.
+
+        Raises:
+            ROSRuntimeError: ``env.reset`` raised.
+
+        """
+        self._episode_index += 1
+        seed = (self._reset_seed or 0) + self._episode_index
+        self._reset_env(seed, "reset_episode")
+        return seed
+
+    def _reset_env(self, seed: int | None, caller: str) -> None:
+        """``env.reset(seed)`` and reset the HAL's per-episode state."""
         self._accumulate_sim_time_before_reset()
         try:
-            obs = self._env.reset(seed=self._reset_seed)
+            obs = self._env.reset(seed=seed)
         except Exception as exc:
-            raise ROSRuntimeError(f"SimAttachedHAL.connect: env.reset failed: {exc}") from exc
+            raise ROSRuntimeError(f"SimAttachedHAL.{caller}: env.reset failed: {exc}") from exc
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
+        self._keep_depth_frames(self._last_obs)
         self._last_state_ns = time.time_ns()
         self._connected = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
-        self._last_committed_tick = 0
+        self._watermark.reset()
+        self._last_applied_action = None
+        # The reset re-seeded the scene: commands from before it must not ride
+        # along as the next pack's ``prev`` (an absolute-target env would move
+        # the arm back to its pre-reset pose on the first base twist).
+        self._last_env_action = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -542,8 +667,6 @@ class SimAttachedHAL:
         self._task_success_first_ns = None
         self._task_success_transitions = 0
         self._step_count = 0
-        if self._env_action_dim is None:
-            self._env_action_dim = self._probe_env_action_dim()
 
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.
@@ -794,7 +917,8 @@ class SimAttachedHAL:
             if self._mujoco_handles() is not None:
                 self._apply_body_twist_to_qpos(row)
             else:
-                self._apply_body_twist_via_env_step(row)
+                self._apply_body_twist_via_env_step(row, action)
+            self._last_applied_action = action
             return
         # A non-BODY_TWIST action means the base is no longer being
         # velocity-commanded — clear the latched twist so /odom doesn't
@@ -842,6 +966,24 @@ class SimAttachedHAL:
                 flush=True,
             )
         self._step_and_cache(env_action, source="send_action")
+        self._last_applied_action = action
+
+    def discard_staged_slots(self) -> int:
+        """Drop a half-staged action group, keeping the committed watermark.
+
+        Called by the HAL lifecycle node at every ``/openral/estop`` latch and
+        ``/openral/estop_cleared`` (``_discard_staged_slots``), as for the MuJoCo and
+        real HALs: a tick cut short by a kernel stop never outlives it into the next
+        goal, whose first slot would otherwise report an incomplete group. A pre-stop
+        tick replayed afterwards is still refused as stale.
+
+        Returns:
+            How many staged slots were dropped.
+        """
+        dropped = len(self._pending_actions)
+        self._pending_actions.clear()
+        self._pending_action_key = None
+        return dropped
 
     def _stage_action_group(
         self,
@@ -861,32 +1003,46 @@ class SimAttachedHAL:
             raise ROSConfigError(
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
-        if self._pending_action_tick is not None and tick != self._pending_action_tick:
+        # Same replay guard as ``SlotGroupStager.stage`` (``TickWatermark``): a
+        # group of an already-committed tick of the same runner session, or any
+        # slot of a retired session, must not step the simulator again. A check
+        # only: the watermark moves (and a new session is adopted) when the
+        # group commits below, so one stray slot cannot move it.
+        session = int(action.runner_session_id)
+        self._watermark.check(tick, session=session)
+        key = (session, tick)
+        if self._pending_action_key is not None and key != self._pending_action_key:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-
             # tick barrier, any transition to a newer tick is a contract error.
             dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
                 f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)}/{group_size} "
                 f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
-            self._pending_actions.clear()
-            self._pending_action_tick = None
+            # Discard the abandoned tick but ADOPT the slot that exposed it, as
+            # ``SlotGroupStager.stage`` does: dropping it too left the new tick one
+            # slot short forever, so every following tick lost its first slot the
+            # same way and one lost slot froze the arm for the rest of the goal
+            # (Isaac deploy sim: 3558 of 3584 ticks dropped).
+            self._pending_actions = [action]
+            self._pending_action_key = key
+            self._pending_since_ns = time.monotonic_ns()
             raise ROSRuntimeError(
                 f"SimAttachedHAL: incomplete action group tick staged "
                 f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
                 "the safety supervisor rejected/dropped a slot or the rSkill contract "
-                "declared the wrong group size."
+                f"declared the wrong group size. Tick {tick} is staged from this slot."
             )
-        if self._pending_action_tick is None:
-            self._pending_action_tick = tick
+        if self._pending_action_key is None:
+            self._pending_action_key = key
         elif action.tick_group_size != self._pending_actions[0].tick_group_size:
             expected_group_size = self._pending_actions[0].tick_group_size
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} changed size from "
                 f"{expected_group_size} to {action.tick_group_size}."
@@ -897,16 +1053,16 @@ class SimAttachedHAL:
             return
         if len(self._pending_actions) > group_size:
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
         actions = list(self._pending_actions)
         self._pending_actions.clear()
-        self._pending_action_tick = None
+        self._pending_action_key = None
         if group_step is None:
             self._step_packed_action_group(actions)
-            self._last_committed_tick = tick
+            self._commit_group(actions, tick, session)
             return
         try:
             step_result = group_step(actions)
@@ -940,27 +1096,79 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
-        self._last_committed_tick = tick
+        self._commit_group(actions, tick, session)
+
+    def _commit_group(self, actions: list[Action], tick: int, session: int) -> None:
+        """Move the watermark and record the group's command as one full-dof action.
+
+        The command is ``compose_slot_group_action`` over the manifest joints, as the real
+        HAL composes it. A group that is not one whole joint-position command (a
+        BODY_TWIST or Cartesian slot, joints it leaves uncommanded) records what it set
+        for the gripper joints instead (``gripper_targets_action``), so the grasp trigger
+        still reads the jaw command on a mobile manipulator; ``None`` — command unknown,
+        every jaw's command in the trigger is cleared — unless every gripper was commanded
+        readably (never a partial record that leaves one jaw's stale command standing).
+        """
+        self._watermark.commit(tick, session=session)
+        try:
+            self._last_applied_action = compose_slot_group_action(
+                actions, [joint.name for joint in self.description.joints]
+            )
+        except ROSConfigError:
+            self._last_applied_action = gripper_targets_action(actions, self.description)
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
-        if any(action.control_mode is ControlMode.BODY_TWIST for action in actions):
+        has_twist = any(action.control_mode is ControlMode.BODY_TWIST for action in actions)
+        if has_twist and not self._env_packs:
             raise ROSConfigError(
                 "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
                 "use the backend's step_action_group implementation."
             )
         env_action: NDArray[np.float32] | None = None
-        if self._has_composite_split():
+        if self._env_packs:
+            # The env packs by name; slots after the first carry the twist an
+            # earlier slot of this same step packed (a mobile-manipulation tick).
+            env_pack = self._env.pack_action  # type: ignore[attr-defined]  # reason: duck-typed env hook, checked in __init__
+            for i, action in enumerate(actions):
+                env_action = env_pack(
+                    action, self._last_env_action if i == 0 else env_action, carry_twist=i > 0
+                )
+            if env_action is not None:
+                self._last_env_action = env_action.copy()
+            twist = next(
+                (
+                    a.body_twist[0]
+                    for a in actions
+                    if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
+                ),
+                None,
+            )
+            self._last_body_twist = (
+                (float(twist[0]), float(twist[1]), 0.0, 0.0, 0.0, float(twist[5]))
+                if twist is not None
+                else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            )
+        elif self._has_composite_split():
             for action in actions:
                 env_action = self._pack_with_composite_split(action)
         else:
-            previous = (
+            # Nothing commanded yet: an env that packs by name gets None (its
+            # own HOLD); the default packer's robosuite envs read 0 as hold.
+            previous: NDArray[np.float32] | None = (
                 self._last_env_action.copy()
                 if self._last_env_action is not None
+                else None
+                if self._env_packs
                 else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
             )
             for action in actions:
-                if action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+                if (
+                    previous is not None  # always, unless the env packs by name
+                    and not self._env_packs
+                    and action.control_mode is ControlMode.GRIPPER_POSITION
+                    and action.gripper
+                ):
                     env_action = previous.copy()
                     env_action[-1] = float(action.gripper[0])
                 else:
@@ -1024,6 +1232,13 @@ class SimAttachedHAL:
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
+            self._keep_depth_frames(self._last_obs)
+
+    def _keep_depth_frames(self, obs: dict[str, Any] | None) -> None:
+        """Keep the newest ``"depth_frames"`` an observation carried (see ``read_depth_frames``)."""
+        frames = obs.get("depth_frames") if obs is not None else None
+        if isinstance(frames, dict) and frames:
+            self._last_depth_frames = {str(k): v for k, v in frames.items() if isinstance(v, dict)}
 
     # ── Task-success signal (observability only) ────────────────────────
 
@@ -1242,13 +1457,13 @@ class SimAttachedHAL:
                 return False
             print(
                 f"[sim_attached.idle_step] ERROR discarding stale pending action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)} (no new slot for "
                 f"{_PENDING_GROUP_STALE_NS / 1e9:.0f}s); resuming idle stepping",
                 flush=True,
             )
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
         # No MuJoCo-handle gate: valid for ANY wrapped SimRollout, including
         # non-MuJoCo backends (Isaac Sim sidecar, ManiSkill3). Steps via the
         # same env.step idiom as send_action's tail (not robocasa.refresh_obs,
@@ -1564,16 +1779,16 @@ class SimAttachedHAL:
         # run at 2x the rate of the motion it was timing.
         data.time = float(data.time) + dt
 
-    def _apply_body_twist_via_env_step(self, row: list[float]) -> None:
+    def _apply_body_twist_via_env_step(self, row: list[float], action: Action) -> None:
         """Integrate a BODY_TWIST through ``env.step`` (non-MuJoCo planar base).
 
         For a backend without a qpos handle (the Isaac kinematic base)
         the planar base lives inside the env: the scene integrates ``(vx, vy, wz)``
-        and teleports its root each ``env.step``. We pack the body-frame twist into
-        the **final three** slots of the env action vector — the convention the
-        manifest scene uses (``[arm…, gripper, vx, vy, wz]``) — and leave the
-        arm/gripper slots at zero so a pure base move holds the arm. The scene
-        integrates by its own command-interval dt, so we pass the velocity raw.
+        and teleports its root each ``env.step``. An env with its own
+        ``pack_action`` packs the twist itself (holding every joint target);
+        otherwise we pack the body-frame twist into the **final three** slots and
+        leave the rest at zero. The scene integrates by its own command-interval
+        dt, so we pass the velocity raw.
         """
         if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
             raise ROSConfigError(
@@ -1590,8 +1805,14 @@ class SimAttachedHAL:
         vx_body, vy_body, _vz, _wx, _wy, wz = row
         # Latch the commanded twist for the /odom publisher (base_link frame).
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
-        env_action = np.zeros(self._env_action_dim, dtype=np.float32)
-        env_action[-3:] = (vx_body, vy_body, wz)
+        if self._env_packs:
+            env_action = self._action_packer(
+                action, self.description, self._env_action_dim, self._last_env_action
+            )
+            self._last_env_action = env_action.copy()
+        else:
+            env_action = np.zeros(self._env_action_dim, dtype=np.float32)
+            env_action[-3:] = (vx_body, vy_body, wz)
         self._step_and_cache(env_action, source="cmd_vel")
 
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]
@@ -1633,7 +1854,7 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
 
     # ── Helpers exposed to the lifecycle node ──────────────────────────
@@ -1650,9 +1871,26 @@ class SimAttachedHAL:
         return self._mujoco_handles()
 
     @property
+    def last_applied_action(self) -> Action | None:
+        """The command the simulator was last stepped with (``None`` = none, or unreadable).
+
+        For a slot group, the composed full-dof ``JOINT_POSITION`` action, set in step with
+        ``last_committed_tick`` — or, when the group is not one joint-position command,
+        its gripper targets as a compact action (``gripper_targets_action``; ``None``
+        when it set none); for an ungrouped action, the action itself. The lifecycle node
+        folds it into the grasp trigger.
+        """
+        return self._last_applied_action
+
+    @property
     def last_committed_tick(self) -> int:
         """Most recent atomic action-group tick committed to the simulator."""
-        return self._last_committed_tick
+        return self._watermark.tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
+        return self._watermark.session
 
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.
@@ -1808,7 +2046,27 @@ class SimAttachedHAL:
         clouds = self._last_obs.get("depth_points")
         if not isinstance(clouds, dict):
             return {}
-        return {str(k): np.asarray(v, dtype=np.float32).reshape(-1, 3) for k, v in clouds.items()}
+        out: dict[str, NDArray[np.float32]] = {}
+        for k, v in clouds.items():
+            arr = np.asarray(v, dtype=np.float32)
+            # The backend's own (N, 3) array, not a fresh view of it: SimSensorBridge
+            # publishes each cloud once, by identity.
+            out[str(k)] = arr if arr.shape[1:] == (3,) else arr.reshape(-1, 3)
+        return out
+
+    def read_depth_frames(self) -> dict[str, dict[str, Any]]:
+        """Return the newest registered colour + depth frame per depth sensor.
+
+        A non-MuJoCo backend (the Isaac manifest scene) renders each depth camera's
+        metric depth AND its RGB in one render and surfaces them under the
+        ``"depth_frames"`` obs slot as ``{name: {"depth": (H, W) float32 m,
+        "rgb": (H, W, 3) uint8, "k": [fx, fy, cx, cy], "optical_in_base": 4x4}}``.
+        The backend ships them on some steps only, so the newest frame is kept
+        until the next one replaces it; ``SimSensorBridge`` publishes each frame
+        once (by identity). Empty when the backend renders none (MuJoCo backends
+        ray-cast their depth instead). Never raises.
+        """
+        return dict(self._last_depth_frames)
 
     def read_scan(self) -> NDArray[np.float32] | None:
         """Return the 2-D LaserScan range fan, or ``None``.

@@ -87,10 +87,11 @@ class _XVLAAdapter:
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         if self._chunk_executor is not None:
-            action_tensor = self._chunk_executor.select_action(
+            # Finished by the executor, which runs `_postprocess_action` per chunk.
+            action: NDArray[np.float32] = self._chunk_executor.select_action(
                 lambda: self._prepared_batch(observation, instruction)
             )
-            return self._postprocess_action(action_tensor)
+            return action
 
         batch = self._prepared_batch(observation, instruction)
         action_tensor = run_inference(self._policy, batch)
@@ -326,5 +327,10 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         _camera_keys=cam_keys,
         _image_keys=image_keys,
     )
-    adapter._chunk_executor = build_chunk_executor(spec.extra, policy=policy, adapter_name="xvla")
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra,
+        policy=policy,
+        adapter_name="xvla",
+        postprocess_action=adapter._postprocess_action,
+    )
     return adapter
