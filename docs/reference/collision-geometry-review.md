@@ -637,9 +637,19 @@ rejects). Of 310 maps (4172 occupied cells, 913 at table level, objects in front
 cell centre to a torso box was 36.8 mm (median 36.8, max 47.5): the head camera does not see the
 surface within 2 cm of the foot plate. The real kernel judged a hold at q = 0 against four maps
 spread over the recording: accepted every time. The self-filter removed 0.0 % of points, so the
-camera does not see the robot here; the real arms' pose was not read. One cell, one camera
-mount: a cell whose camera sees closer to the foot plate can still trip, which is why Entry 058's
-remedy question stays open.
+camera does not see the robot here; the real arms' pose was not read.
+
+**Measured on the Thor cell, 2026-10-10 — accepted.** Same procedure, unit `thor`, empty
+workspace in front: 29 s recorded, 298 maps (median 915 occupied cells). No table-level cell
+comes within 30 cm of the torso (Orin: the closest is 56.4 mm from the foot-plate hull), so on
+neither cell does the head camera see the surface next to the foot plate. The real kernel judged
+a hold at q = 0 against five maps, the closest included: accepted every time. Thor's closest cell
+to any torso slab is not the table but something at shoulder height in front of the left arm mount
+(cell centre (0.09, 0.07, -0.07) in `openarm_base`, 39.2 mm from the shoulder-block hull, so its
+cube stays 22-29 mm away against the 20 mm margin) — an unmodelled part such as a cable, or the real
+left arm off zero. A thin margin, not a trip; a cable that moves closer would stop the cell at rest.
+Both cells share one camera mount; a different mount that sees closer to the foot plate can still
+trip, which is why Entry 058's remedy question stays open for other cells.
 
 ## 12. MJCF twins
 
