@@ -183,13 +183,14 @@ def read_last_messages(bag: Path, topics: list[str]) -> dict[str, Any]:
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
 
-    reader = rosbag2_py.SequentialReader()
+    # Any: rosbag2_py's pybind11 module is typed on some hosts and untyped on others
+    # (no ROS on CI), so no per-call ignore is right everywhere.
+    reader: Any = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=str(bag), storage_id=""),
         rosbag2_py.ConverterOptions("cdr", "cdr"),
     )
-    # reason: rosbag2_py's pybind11 module ships no type information.
-    types = {t.name: t.type for t in reader.get_all_topics_and_types()}  # type: ignore[no-untyped-call]
+    types = {t.name: t.type for t in reader.get_all_topics_and_types()}
     reader.set_filter(rosbag2_py.StorageFilter(topics=[t for t in topics if t in types]))
     last: dict[str, bytes] = {}
     while reader.has_next():
