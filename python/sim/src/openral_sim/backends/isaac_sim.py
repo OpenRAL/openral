@@ -410,9 +410,38 @@ class _IsaacSimSidecar(SidecarSimRollout):
         11 for panda_mobile, 16 for OpenArm); we cache it on first access.
         """
         if self._action_dim is None:
-            reply = self._client.call("ping")
-            self._action_dim = int(self._client.require(reply, "action_dim"))
+            self._ping()
+        assert self._action_dim is not None  # reason: set by _ping
         return self._action_dim
+
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Simulation seconds one ``step`` advances, from the sidecar ping; ``None`` if unreported.
+
+        The scene derives its physics substeps so this equals one control period
+        (``1 / action_spec.control_freq_hz``); ``SimAttachedHAL.connect`` refuses
+        the env when it does not. ``None`` for a sidecar predating the field.
+        """
+        if self._action_dim is None:
+            self._ping()
+        return self._sim_dt_per_tick_s
+
+    def _ping(self) -> None:
+        """One ping caches ``action_dim`` and the time base together."""
+        reply = self._client.call("ping")
+        self._action_dim = int(self._client.require(reply, "action_dim"))
+        if "sim_dt_per_tick_s" not in reply:
+            self._sim_dt_per_tick_s = None  # a sidecar predating the field: unchecked
+            return
+        dt = reply["sim_dt_per_tick_s"]
+        if dt is None:
+            # The field is there but the scene never resolved its time base: fail
+            # closed rather than read it as an old sidecar and skip the HAL guard.
+            raise ROSConfigError(
+                "Isaac sidecar reports no time base (sim_dt_per_tick_s is None): its scene "
+                "never called resolve_time_base, so one step's sim interval is unknown."
+            )
+        self._sim_dt_per_tick_s = float(dt)
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images_raw = raw.get("images", {})
@@ -1265,6 +1294,13 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
             }
         )
     has_base = layout.has_base
+    control_freq_hz = desc.control_rate_hz
+    if control_freq_hz is None:
+        raise ROSConfigError(
+            f"robot {robot_id!r} declares no action_spec.control_freq_hz; the Isaac scene "
+            "derives its physics substeps from it so one env.step is one control period "
+            "(issue #355). Add `action_spec: {control_freq_hz: <Hz>}` to the manifest."
+        )
 
     return {
         "robot_id": robot_id,
@@ -1286,6 +1322,9 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
             "dim": layout.dim,
             "control_mode": "joint_position",
             "has_base": has_base,
+            # The runner's tick: the scene runs physics_substeps = physics_hz /
+            # control_freq_hz per step and integrates the base by 1 / control_freq_hz.
+            "control_freq_hz": control_freq_hz,
         },
         "sensors": [_sensor_dict(s) for s in desc.sensors],
     }

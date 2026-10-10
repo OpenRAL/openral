@@ -25,15 +25,18 @@ from isaac_sidecar import _parse_args, _serve
 
 
 class _NoKitScene:
-    """Answers the sidecar contract with the robot spec's action width.
+    """Answers the sidecar contract with the robot spec's action width + time base.
 
     ``step`` appends every action it receives (NaN kept, as JSON ``null``) to the
     file named by ``OPENRAL_TEST_ISAAC_ACTIONS_OUT`` when set — the exact vector
-    Isaac would have applied.
+    Isaac would have applied. ``sim_dt_per_tick_s`` is what the real scene
+    reports after ``resolve_time_base``: one control period of the spec's
+    ``action.control_freq_hz`` (``None`` when the spec carries none).
     """
 
-    def __init__(self, action_dim: int) -> None:
+    def __init__(self, action_dim: int, sim_dt_per_tick_s: float | None) -> None:
         self.action_dim = action_dim
+        self.sim_dt_per_tick_s = sim_dt_per_tick_s
 
     def _obs(self) -> dict[str, Any]:
         return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
@@ -65,11 +68,15 @@ def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     Path(os.environ["OPENRAL_TEST_ISAAC_ARGV_OUT"]).write_text(json.dumps(argv))
     action_dim = 0
+    sim_dt_per_tick_s: float | None = None
     if args.robot_spec:
         with open(args.robot_spec, encoding="utf-8") as fh:
-            action_dim = int(json.load(fh)["action"]["dim"])
+            action = json.load(fh)["action"]
+        action_dim = int(action["dim"])
+        rate = action.get("control_freq_hz")
+        sim_dt_per_tick_s = None if rate is None else 1.0 / float(rate)
     return _serve(
-        _NoKitScene(action_dim),
+        _NoKitScene(action_dim, sim_dt_per_tick_s),
         host=args.host,
         port=args.port,
         sim_app=None,

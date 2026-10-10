@@ -75,6 +75,14 @@ _TASK_SUCCESS_LOGGER = "openral.sim.task_success"
 _EVENT_TASK_SUCCESS = "sim.task_success"
 _EVENT_TASK_SUCCESS_FINAL = "sim.task_success_final"
 _EVENT_TASK_SUCCESS_PROBE_FAILED = "sim.task_success_probe_failed"
+# The time base a deploy-sim session runs on (one line per connect): what one
+# env.step advances the sim clock by, against the manifest's control rate.
+# Dotted under ``openral.`` for the same OTel-bridge reason as the task-success
+# logger, but its own name so a logger filter does not mix the two.
+_TIME_BASE_LOGGER = "openral.sim.time_base"
+_EVENT_TIME_BASE = "sim.time_base"
+# Tolerance on sim_dt_per_tick x control_freq_hz == 1 (1 %).
+_TIME_BASE_TOL = 0.01
 
 if TYPE_CHECKING:
     from openral_sim.rollout import SimRollout
@@ -523,6 +531,11 @@ class SimAttachedHAL:
         # ships them on some steps only, so they outlive the step that carried them.
         self._last_depth_frames: dict[str, dict[str, Any]] = {}
         self._body_twist_dt_s: float = body_twist_dt_s
+        # Sim seconds one env.step advances, when the backend declares it
+        # (``env.sim_dt_per_tick_s``, the Isaac sidecar); checked against the
+        # manifest control rate in ``connect``. ``None`` for a backend that
+        # does not declare its tick.
+        self._sim_dt_per_tick_s: float | None = None
         # Built once per env on first read_state; reset on connect.
         self._joint_index: dict[str, int] | None = None
         # Last action vector applied via composite-split
@@ -614,6 +627,52 @@ class SimAttachedHAL:
         self._reset_env(self._reset_seed, "connect")
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
+        self._check_time_base()
+
+    def _check_time_base(self) -> None:
+        """Refuse an env whose step is not one control period of the robot.
+
+        Only a backend that declares ``sim_dt_per_tick_s`` (the Isaac sidecar)
+        is checked: the runner ticks at ``action_spec.control_freq_hz`` and
+        calls ``env.step`` once per tick, so a step that advances the sim by
+        any other interval traverses every trajectory at the wrong speed and
+        every kernel velocity / tracking check reads the wrong clock (issue
+        #355). Logs ``sim.time_base`` once per connect so a trace records the
+        time base it was captured on.
+
+        Raises:
+            ROSConfigError: the manifest declares no control rate, or the env's
+                tick differs from ``1 / control_freq_hz`` by more than 1 %.
+        """
+        dt = getattr(self._env, "sim_dt_per_tick_s", None)
+        if dt is None:
+            self._sim_dt_per_tick_s = None
+            return
+        dt = float(dt)
+        backend = type(self._env).__name__
+        rate = self.description.control_rate_hz
+        if rate is None:
+            raise ROSConfigError(
+                f"SimAttachedHAL: backend {backend!r} steps {dt:.6f} s of sim time per action, "
+                f"but robot {self.description.name!r} declares no action_spec.control_freq_hz "
+                "to hold it to. Declare the control rate in the manifest."
+            )
+        # ``not <=`` so a NaN tick is refused too (NaN compares False both ways).
+        if not abs(dt * rate - 1.0) <= _TIME_BASE_TOL:
+            raise ROSConfigError(
+                f"SimAttachedHAL: backend {backend!r} advances {dt:.6f} s of sim time per "
+                f"env.step, but robot {self.description.name!r} ticks at {rate:g} Hz "
+                f"({1.0 / rate:.6f} s). One step must be one control period, or the rehearsal "
+                "runs at the wrong speed; fix the scene's physics substeps, not the robot's rate."
+            )
+        self._sim_dt_per_tick_s = dt
+        structlog.get_logger(_TIME_BASE_LOGGER).info(
+            _EVENT_TIME_BASE,
+            backend=backend,
+            sim_dt_per_tick_s=round(dt, 6),
+            control_freq_hz=rate,
+            robot=self.description.name,
+        )
 
     def reset_episode(self) -> int:
         """Start a fresh episode on the live env without rebuilding it (sim only).
@@ -1954,13 +2013,15 @@ class SimAttachedHAL:
         A sim-attached HAL with a live backend clock is the simulation-time
         authority and may be projected onto ROS ``/clock`` by the lifecycle
         node. A clock-less wrapped rollout falls back to host wall time; callers
-        must then keep the graph on the host-wall clock authority.
+        must then keep the graph on the host-wall clock authority. The
+        ``timestep_s`` is the env's declared sim seconds per step when it
+        reports one (checked in ``connect``), else the body-twist interval.
         """
         if self.sim_time_ns() is None:
             return ClockAuthority.host_wall()
         return ClockAuthority.simulation(
             type(self._env).__name__,
-            timestep_s=self._body_twist_dt_s,
+            timestep_s=self._sim_dt_per_tick_s or self._body_twist_dt_s,
             publishes_ros_clock=True,
         )
 

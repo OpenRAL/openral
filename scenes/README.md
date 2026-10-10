@@ -262,6 +262,22 @@ Blender or elsewhere load the same way once exported to USD. NVIDIA's Isaac
 assets are licensed for use inside Isaac Sim, where they are referenced at run
 time — never converted or vendored.
 
+**Time base.** One scene step is one control period of the robot
+(`action_spec.control_freq_hz`, which the manifest must declare): the scene
+runs physics at the smallest multiple of the control rate at or above Isaac's
+default 60 Hz (60 Hz for a 30 Hz robot, 100 Hz for 50 Hz, 75 Hz for 25 Hz) and
+`physics_substeps = physics_hz / control_freq_hz` PhysX steps per action
+(2 for a 30 Hz robot), rendering only the last so cameras stay at the control
+rate; the kinematic base integrates the same tick. The robot's rate is never
+changed to suit the simulator. The
+sidecar reports the resulting `sim_dt_per_tick_s` in its `ping`, and
+`SimAttachedHAL.connect` refuses the scene if it is not one control period, so
+a `deploy sim` rehearsal on Isaac traverses a trajectory at the commanded speed
+in simulation time and the kernel's velocity / tracking checks read the real
+clock (issue #355). The HAL logs the time base once per connect as
+`sim.time_base`. A scene class may pin `physics_substeps` explicitly; the pin
+wins and is reported as an override.
+
 **Pickable objects** go in `backend_options.objects` (validated by
 `IsaacSimOptions`, so a typo fails at load):
 

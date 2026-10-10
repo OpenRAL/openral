@@ -17,14 +17,73 @@ Subclasses implement the divergent parts:
 and may override ``_on_reset`` (per-episode randomization), the class
 attributes ``warmup_steps`` / ``physics_substeps``, and set
 ``self.action_dim`` in ``__init__``.
+
+Time base: one ``step()`` is one control period of the robot
+(``action_spec.control_freq_hz``), so a deploy-sim tick advances the world by
+exactly ``1 / control_freq_hz`` — ``build`` calls ``resolve_time_base`` with
+the world's physics dt, which derives ``physics_substeps`` (issue #355).
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+#: Tolerance on ``physics_hz / control_freq_hz`` being an integer (1 %).
+_SUBSTEP_RATIO_TOL = 0.01
+#: Isaac's default physics rate, the rate the finger contacts were validated at;
+#: the physics rate never drops below it.
+_MIN_PHYSICS_HZ = 60.0
+
+
+def physics_dt_for(control_freq_hz: float) -> float:
+    """Physics dt for a robot: the smallest multiple of its control rate at or above 60 Hz.
+
+    So one control period is always a whole number of physics steps: a 30 Hz robot
+    keeps Isaac's default 60 Hz (2 steps per tick), a 50 Hz robot runs at 100 Hz,
+    a 25 Hz one at 75 Hz — instead of refusing every rate that does not divide 60.
+
+    Example:
+        >>> [round(1 / physics_dt_for(hz)) for hz in (30.0, 50.0, 25.0, 60.0, 120.0)]
+        [60, 100, 75, 60, 120]
+    """
+    if not control_freq_hz > 0.0:
+        raise ValueError(f"control rate {control_freq_hz!r} Hz must be > 0")
+    n = max(1, math.ceil(_MIN_PHYSICS_HZ / control_freq_hz - 1e-9))
+    return 1.0 / (n * control_freq_hz)
+
+
+def derive_physics_substeps(physics_dt_s: float, control_freq_hz: float) -> int:
+    """Physics steps per control tick so one ``step()`` is one control period.
+
+    Refuses (``ValueError``) a ratio that is not an integer within 1 % instead
+    of rounding silently: a 25 Hz robot on 60 Hz physics has no faithful
+    substep count, and the message says which rate to change.
+
+    Example:
+        >>> derive_physics_substeps(1 / 60, 30.0)
+        2
+        >>> derive_physics_substeps(1 / 200, 50.0)
+        4
+    """
+    if physics_dt_s <= 0.0 or control_freq_hz <= 0.0:
+        raise ValueError(
+            f"physics dt {physics_dt_s!r} s and control rate {control_freq_hz!r} Hz must be > 0"
+        )
+    ratio = 1.0 / (physics_dt_s * control_freq_hz)
+    n = round(ratio)
+    if n < 1 or abs(ratio - n) > _SUBSTEP_RATIO_TOL * n:
+        raise ValueError(
+            f"physics rate {1.0 / physics_dt_s:.4g} Hz is not an integer multiple of the "
+            f"control rate {control_freq_hz:.4g} Hz (ratio {ratio:.3f}); one scene step must be "
+            "one control period. Build the scene's World at physics_dt_for(control_freq_hz) "
+            "(a pinned physics_substeps is still held to one control period by "
+            "SimAttachedHAL.connect)."
+        )
+    return n
 
 
 class IsaacSceneBase:
@@ -32,9 +91,10 @@ class IsaacSceneBase:
 
     #: Physics steps to settle after a reset before the first observation.
     warmup_steps: int = 4
-    #: Physics steps per policy action so the controller tracks its target
-    #: (LIBERO/robosuite likewise run several sim steps per policy step).
-    physics_substeps: int = 1
+    #: Physics steps per policy action. ``None`` (default) = derived by
+    #: ``resolve_time_base`` so one step is one control period; an explicit
+    #: int is a scene-level override that wins and is logged at build.
+    physics_substeps: int | None = None
 
     def __init__(
         self,
@@ -54,6 +114,8 @@ class IsaacSceneBase:
         self._step_idx = 0
         self._last_rgb: NDArray[np.uint8] | None = None
         self._world: Any = None
+        # Physics dt the world runs at; set by ``resolve_time_base`` in ``build``.
+        self._physics_dt_s: float | None = None
 
     # ── public sidecar contract ──────────────────────────────────────────────
 
@@ -77,8 +139,9 @@ class IsaacSceneBase:
             # base twist as 0 (stop).
             action = np.pad(action, (0, self.action_dim - action.shape[0]), constant_values=np.nan)
         self._apply_action(action)
-        # Render only the final substep — it is the frame the obs reads.
-        for _ in range(max(0, self.physics_substeps - 1)):
+        # Render only the final substep — it is the frame the obs reads, so the
+        # camera observation stays at the control rate.
+        for _ in range(self._substeps() - 1):
             self._world.step(render=False)
         self._before_render()
         self._world.step(render=True)
@@ -97,6 +160,52 @@ class IsaacSceneBase:
             "sim_time_ns": self.sim_time_ns(),
         }
 
+    def resolve_time_base(self, physics_dt_s: float, control_freq_hz: float) -> int:
+        """Fix the scene's time base: physics dt + substeps so one step = one tick.
+
+        Called by ``build`` once the world exists. Derives ``physics_substeps``
+        from the physics dt and the robot's ``action_spec.control_freq_hz``
+        (``derive_physics_substeps``) unless the class pinned an explicit
+        value, which wins and is reported as an override. Returns the substep
+        count. Raises ``ValueError`` when no faithful integer count exists.
+        """
+        self._physics_dt_s = float(physics_dt_s)
+        pinned = type(self).physics_substeps
+        if pinned is None:
+            self.physics_substeps = derive_physics_substeps(physics_dt_s, control_freq_hz)
+            how = "derived"
+        else:
+            self.physics_substeps = int(pinned)
+            how = "pinned by the scene class (override)"
+        tick = self.physics_substeps * self._physics_dt_s
+        print(
+            f"[{type(self).__name__}] time base: physics {1.0 / self._physics_dt_s:.4g} Hz, "
+            f"control {control_freq_hz:.4g} Hz, physics_substeps={self.physics_substeps} ({how}), "
+            f"sim_dt_per_tick_s={tick:.6f}",
+            flush=True,
+        )
+        return self.physics_substeps
+
+    def _substeps(self) -> int:
+        """Resolved physics substeps; refuses to step before ``resolve_time_base``."""
+        if self.physics_substeps is None:
+            raise RuntimeError(
+                f"{type(self).__name__}: physics_substeps unresolved — build() must call "
+                "resolve_time_base() before the scene is stepped."
+            )
+        return max(1, int(self.physics_substeps))
+
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Simulation seconds one ``step()`` advances, or ``None`` before ``build``.
+
+        Reported in the sidecar ``ping`` reply so ``SimAttachedHAL.connect``
+        can refuse a tick that is not one control period.
+        """
+        if self._physics_dt_s is None or self.physics_substeps is None:
+            return None
+        return self._substeps() * self._physics_dt_s
+
     def sim_time_ns(self) -> int | None:
         """Elapsed simulation time in ns, or ``None`` if unavailable.
 
@@ -110,13 +219,12 @@ class IsaacSceneBase:
         current_time = getattr(world, "current_time", None)
         if current_time is not None:
             return int(round(float(current_time) * 1e9))
-        dt = getattr(self, "physics_dt", None)
+        dt = self._physics_dt_s
         if dt is None:
             get_dt = getattr(world, "get_physics_dt", None)
             dt = get_dt() if callable(get_dt) else None
-        if dt is not None:
-            substeps = max(1, int(getattr(self, "physics_substeps", 1)))
-            return int(round(self._step_idx * substeps * float(dt) * 1e9))
+        if dt is not None and self.physics_substeps is not None:
+            return int(round(self._step_idx * self._substeps() * float(dt) * 1e9))
         return None
 
     def render(self) -> NDArray[np.uint8] | None:

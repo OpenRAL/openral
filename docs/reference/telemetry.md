@@ -224,6 +224,7 @@ Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
 | `dashboard/app.py` write-control audit trail | warning | per operator write | Audit-by-design; keep at WARNING. |
 | `rskill/_diagnostics.py:132,142,166` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
 | `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
+| `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | The deploy-sim time base: `sim_dt_per_tick_s` (sim seconds one `env.step` advances), `control_freq_hz`, `backend`, `robot` — emitted only for a backend that declares its tick (the Isaac sidecar), after `connect` has verified it equals one control period. A trace replayed later knows which clock its velocities were measured on (issue #355). |
 
 ### The deploy-sim task-success signal
 

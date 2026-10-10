@@ -610,3 +610,119 @@ def test_a_width_meters_gripper_is_refused_in_the_isaac_scene() -> None:
     desc = desc.model_copy(update={"end_effectors": [ee, *desc.end_effectors[1:]]})
     with pytest.raises(ROSConfigError, match="width_meters"):
         _build_robot_spec(desc, "franka_panda")
+
+
+# ── time base: one scene step is one control period (issue #355) ─────────────
+
+
+@pytest.fixture(scope="module")
+def _scene_base_mod() -> object:
+    tools = str(_repo_root() / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import _isaac_scene_base
+
+    return _isaac_scene_base
+
+
+@pytest.mark.parametrize(
+    ("physics_dt_s", "control_freq_hz", "expected"),
+    [(1 / 60, 30.0, 2), (1 / 200, 50.0, 4), (1 / 60, 60.0, 1), (1 / 240, 30.0, 8)],
+)
+def test_substeps_derived_from_physics_and_control_rate(
+    _scene_base_mod: object, physics_dt_s: float, control_freq_hz: float, expected: int
+) -> None:
+    assert _scene_base_mod.derive_physics_substeps(physics_dt_s, control_freq_hz) == expected  # type: ignore[attr-defined]  # reason: tools module
+
+
+@pytest.mark.parametrize("control_freq_hz", [30.0, 50.0, 25.0, 60.0, 20.0, 15.0, 120.0])
+def test_physics_dt_gives_every_rate_a_whole_number_of_steps(
+    _scene_base_mod: object, control_freq_hz: float
+) -> None:
+    """The scene's World runs at physics_dt_for(rate): never below 60 Hz, and one
+    control period is always a whole number of physics steps — so a 50 Hz or 25 Hz
+    robot (the ALOHA manifests) gets a faithful tick instead of a boot refusal."""
+    mod = _scene_base_mod
+    dt = mod.physics_dt_for(control_freq_hz)  # type: ignore[attr-defined]  # reason: tools module
+    assert 1.0 / dt >= 60.0 - 1e-6
+    n = mod.derive_physics_substeps(dt, control_freq_hz)  # type: ignore[attr-defined]  # reason: tools module
+    assert n * dt == pytest.approx(1.0 / control_freq_hz)
+    assert (control_freq_hz != 30.0) or n == 2  # 30 Hz keeps Isaac's validated 60 Hz
+
+
+def test_non_integer_substep_ratio_is_refused_not_rounded(_scene_base_mod: object) -> None:
+    # 60 Hz physics / 25 Hz control = 2.4 steps: no faithful tick exists.
+    with pytest.raises(ValueError, match=r"60 Hz.*25 Hz.*ratio 2\.400"):
+        _scene_base_mod.derive_physics_substeps(1 / 60, 25.0)  # type: ignore[attr-defined]  # reason: tools module
+    with pytest.raises(ValueError, match="must be > 0"):
+        _scene_base_mod.derive_physics_substeps(1 / 60, 0.0)  # type: ignore[attr-defined]  # reason: tools module
+
+
+def test_build_robot_spec_carries_the_control_rate(
+    franka: RobotDescription, panda_mobile: RobotDescription
+) -> None:
+    assert _build_robot_spec(franka, "franka_panda")["action"]["control_freq_hz"] == 30.0
+    assert _build_robot_spec(panda_mobile, "panda_mobile")["action"]["control_freq_hz"] == 30.0
+
+
+def test_build_robot_spec_refuses_a_manifest_without_a_control_rate(
+    franka: RobotDescription,
+) -> None:
+    from openral_core.exceptions import ROSConfigError
+
+    silent = franka.model_copy(update={"action_spec": None})
+    with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+        _build_robot_spec(silent, "franka_panda")
+
+
+def test_manifest_scene_time_base_from_the_spec(
+    _manifest_scene_mod: object, panda_mobile: RobotDescription
+) -> None:
+    """GPU-free: the scene's constructor needs no Kit; build() resolves substeps."""
+    spec = _build_robot_spec(panda_mobile, "panda_mobile")
+    scene = _manifest_scene_mod.IsaacManifestScene(  # type: ignore[attr-defined]  # reason: tools module
+        robot_spec=spec,
+        obs_height=8,
+        obs_width=8,
+        instruction="hold",
+        success_key="is_success",
+        max_steps=10,
+    )
+    # The kinematic base integrates one control period per step, not a 0.05 s default.
+    assert scene._base_dt == pytest.approx(1 / 30)
+    assert scene.physics_substeps is None  # derived at build, never a silent pin
+    assert scene.sim_dt_per_tick_s is None  # unknown before the world exists
+    with pytest.raises(RuntimeError, match="resolve_time_base"):
+        scene._substeps()
+    # Isaac's default 1/60 s physics dt against the 30 Hz manifest rate → 2.
+    assert scene.resolve_time_base(1 / 60, 30.0) == 2
+    assert scene.sim_dt_per_tick_s == pytest.approx(1 / 30)
+
+
+def test_manifest_scene_refuses_a_spec_without_a_control_rate(
+    _manifest_scene_mod: object, franka: RobotDescription
+) -> None:
+    spec = _build_robot_spec(franka, "franka_panda")
+    spec["action"].pop("control_freq_hz")
+    with pytest.raises(ValueError, match=r"action\.control_freq_hz"):
+        _manifest_scene_mod.IsaacManifestScene(  # type: ignore[attr-defined]  # reason: tools module
+            robot_spec=spec,
+            obs_height=8,
+            obs_width=8,
+            instruction="hold",
+            success_key="is_success",
+            max_steps=10,
+        )
+
+
+def test_explicit_substep_pin_wins_over_derivation(
+    _scene_base_mod: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Pinned(_scene_base_mod.IsaacSceneBase):  # type: ignore[misc,name-defined]  # reason: tools module
+        physics_substeps = 3
+
+    scene = Pinned(obs_height=8, obs_width=8, instruction="x", success_key="s", max_steps=1)
+    # 60 Hz / 30 Hz would derive 2; the class pin wins and is reported as such.
+    assert scene.resolve_time_base(1 / 60, 30.0) == 3
+    assert scene.sim_dt_per_tick_s == pytest.approx(3 / 60)
+    assert "override" in capsys.readouterr().out

@@ -532,6 +532,9 @@ class SidecarSimRollout:
     _last_image: NDArray[np.uint8] | None = None
     _action_dim: int | None = None
     _last_sim_time_ns: int | None = None
+    # Sim seconds per ``step`` as the sidecar's ping reports it (Isaac); ``None``
+    # when the protocol does not carry it.
+    _sim_dt_per_tick_s: float | None = None
 
     def reset(self, seed: int | None = None) -> Observation:
         """Reset the sidecar env and return its first wrapped observation."""
