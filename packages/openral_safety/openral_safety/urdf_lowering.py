@@ -2296,16 +2296,29 @@ def lower_robot_auto(
 
     Raises:
         ROSConfigError: Propagated from ``select_lowering`` /
-            ``lower_robot`` / ``lower_robot_from_mjcf``.
+            ``lower_robot`` / ``lower_robot_from_mjcf``; and when a
+            ``tight_links`` name matches no link the lowering emitted geometry
+            for (a typo, or a link the source model does not carry) — a
+            silently ignored name would leave the operator believing the link
+            is refined.
     """
     if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
-        return lower_robot_from_mjcf(
+        model = lower_robot_from_mjcf(
             robot, manifest_dir=manifest_dir, acm_only=acm_only, tight_links=tight_links
         )
-    return lower_robot(
-        robot,
-        acm_only=acm_only,
-        geometry_only=geometry_only,
-        manifest_dir=manifest_dir,
-        tight_links=tight_links,
-    )
+    else:
+        model = lower_robot(
+            robot,
+            acm_only=acm_only,
+            geometry_only=geometry_only,
+            manifest_dir=manifest_dir,
+            tight_links=tight_links,
+        )
+    unknown = sorted(set(tight_links or ()) - {g.link_name for g in model.collision_geometry})
+    if unknown:
+        raise ROSConfigError(
+            f"{robot.name}: --tight-link names {unknown}, but the lowering emitted no "
+            "geometry for them (lowered links: "
+            f"{sorted({g.link_name for g in model.collision_geometry})})"
+        )
+    return model
