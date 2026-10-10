@@ -375,7 +375,9 @@ because the cooldown has not passed yet, and nothing was cleared. Wait a moment 
 Run these tests in order:
 
 1. **Idle.** Bring up and dispatch nothing for 60 s. Expect no stop. Note whether the arms
-   at zero appear as voxels (Foxglove).
+   at zero appear as voxels (Foxglove). With nothing dispatched the kernel judges no chunk,
+   so a quiet minute does not show that the map would let the robot move: the first
+   dispatch is the first world-voxel verdict.
 2. **Planted obstacle.** Put a soft obstacle (a foam block) on the table **in the camera's
    view**, in the path of the dispatched skill's first motion. Expect a `KIND_COLLISION`
    stop before contact, with the cell on the block and a `min_distance_m` consistent with
