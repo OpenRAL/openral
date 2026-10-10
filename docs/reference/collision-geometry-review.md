@@ -458,7 +458,7 @@ Three OpenArm models, same kernel harness and truths (§4, §6):
 
 | | hand-written (86789ab2) | #325 fit (58356ab1) | this PR |
 |---|---:|---:|---:|
-| primitives | 16 (14 capsule, 2 sphere) | 18 (14 box, 4 capsule) | 18 box + hull |
+| primitives | 16 (14 capsule, 2 sphere) | 18 (14 box, 4 capsule) | 18 box + hull (+3 torso slabs, §11.1) |
 | vertices outside (collision + visual) | 149,302 | 4,564 | 0 |
 | missed contacts, 3000 poses (hull truth) | 79 | 3 | 0 |
 | poses refused, 1000 (C++ kernel) | 264 | 167 | **40** |
@@ -523,6 +523,60 @@ Per link (support excess over the link's hull, box = the kernel's broad phase):
 The hulls themselves sit on the links: support excess 0.00-0.28 mm (the 320-vertex refinement of
 the larger meshes) and a sampled overhang past the mesh surface of 10-48 mm (concavities the hull
 bridges, e.g. link2's cut-out).
+
+### 11.1 The torso (issue #356, 2026-10-10)
+
+Everything above is the arms. The MJCF the manifest is lowered from has no torso body (its
+worldbody holds `openarm_*_base_link` directly), so the kernel never saw `openarm_body_link0` —
+the pedestal the hands swing into between the arms — and the 2026-10-08 wrist-camera
+calibration had to run an offline mesh check to drop a HOME candidate. The torso is now a
+*static link*: a `fixed_attachments` row under `openarm_base` at `[0, 0, -0.698]` (the URDF's
+`world -> body_link0 -> *_base_link` chain), lowered from `openarm.urdf`'s collision **and**
+visual meshes by the same fitter.
+
+**Why three slabs, not one hull.** The torso is a 250 × 190 × 70 mm foot plate, a 60 mm square
+column and a ~150 × 160 × 170 mm shoulder block. Measured on the collision mesh
+(`body_link0_symp.stl`, 4.47 L):
+
+| representation | hull volume | vertices | overhang past the mesh |
+|---|---:|---:|---:|
+| one hull | 24.9 L (5.6×) | 733 → 320 decimated | 0.12 m |
+| two slabs (best cut) | 11.9 L | | |
+| three equal thirds (`_capsule_chain`'s cut) | 10.2 L | | the bottom piece fills the full footprint up to z = 0.26, where the hands hang |
+| **three slabs, min-volume cuts z = 0.07 / 0.61** | **7.9 L (1.8×)** | 72 / 44 / 320 | ≈ 50 mm each |
+
+One hull stands 0.12 m off the column across the bimanual workspace and is over the 320-vertex
+cap besides. `--tight-link openarm_body_link0=3` cuts at the two grid planes that minimise the
+pieces' total hull volume (`urdf_lowering._split_tight_pieces`); the count is sticky through the
+manifest's entry count, the planes are recomputed from the mesh. As committed (collision + visual
+union, box frame):
+
+| slab | box (m) | box vol | hull vertices | hull overhang past the mesh |
+|---|---|---:|---:|---:|
+| foot plate (z 0 - 0.07) | 0.076 × 0.192 × 0.252 | 3.67 L | 235 | 37.6 mm |
+| column + flange (z 0.07 - 0.61) | 0.062 × 0.147 × 0.542 | 4.96 L | 95 | 68.1 mm |
+| shoulder block (z 0.61 - 0.77) | 0.152 × 0.162 × 0.166 | 4.09 L | 320 | 41.4 mm |
+
+**Rest-pose gaps against the torso** (kernel predicates on the committed primitives,
+`tests/unit/test_collision_geometry_zero_pose.py`, both arms symmetric):
+
+| pair | q = 0 | over the shoulder ranges | status |
+|---|---:|---|---|
+| link0 | -51.2 mm | rigid | **exempt** (SRDF): the pedestal is bolted inside the shoulder block |
+| link1 | +7.0 mm | +7.0 mm min over joint1 | checked |
+| link2 | +11.5 mm | +0.3 mm min over joint1 × joint2 | checked |
+| link3 | +38.9 mm | +0.0 mm min over joint1-3 (a touching pose exists in-limits) | checked |
+| finger_pair | +27.1 mm | | checked |
+| link4-7 | +65 - +85 mm | | checked |
+
+The two `link0` rows are the only new exemptions and the only possible channel: every torso slab
+carries a hull, and the MJCF sweep never auto-exempts a hulled pair (§8). Negative case pinned:
+the left hand folded back into the shoulder block (elbow 2.37 rad) puts the link7 box centre
+29 mm inside the torso's watertight collision mesh and trips `openarm_body_link0 ↔ openarm_left_link7`
+at -118 mm (`_REAL_COLLISIONS`); `tests/integration/test_safety_kernel_openarm_torso.py` asks the
+real kernel the same two questions. Not yet measured: the torso's effect on the kernel-refused pose
+fraction (the 1000-pose run above) and a rest-pose world-voxel check on the bench cell — the static
+slabs are voxel-checked like every box, and the self-filter now removes the torso's own returns.
 
 ## 12. MJCF twins
 

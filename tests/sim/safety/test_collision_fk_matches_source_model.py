@@ -196,6 +196,52 @@ def test_g1_lowers_exactly_onto_its_urdf() -> None:
     assert compared >= 25, f"only {compared} g1 links matched; the check is vacuous"
 
 
+def test_openarm_torso_sits_where_the_urdf_puts_it() -> None:
+    """The torso is the one OpenArm link lowered from the URDF; its mount must be the URDF's.
+
+    The arms are MJCF-placed and the torso has no MJCF body, so the only
+    kinematic fact that ties the two is the relative pose the URDF gives
+    between the torso and an arm base link (``openarm.urdf`` L31-35, L58-62:
+    body_link0 -> left_base_link = [0, 0.031, 0.698]). The manifest's two
+    fixed attachments must compose to exactly that, or the kernel checks the
+    hands against a body 0.698 m from where it stands.
+    """
+    yourdfpy = pytest.importorskip("yourdfpy", reason="URDF FK needs the [lowering] group")
+    import numpy as np
+
+    manifest_dir = _ROBOTS_DIR / "openarm"
+    robot = RobotDescription.from_yaml(str(manifest_dir / "robot.yaml"))
+    mounts = {a.child_link: a for a in robot.fixed_attachments}
+    torso, left = mounts["openarm_body_link0"], mounts["openarm_left_link0"]
+    assert torso.parent_link == left.parent_link == "openarm_base"
+
+    def tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> np.ndarray:
+        from scipy.spatial.transform import Rotation
+
+        m = np.eye(4)
+        m[:3, :3] = Rotation.from_euler("xyz", rpy).as_matrix()
+        m[:3, 3] = xyz
+        return m
+
+    manifest_rel = np.linalg.inv(tf(left.origin_xyz, left.origin_rpy)) @ tf(
+        torso.origin_xyz, torso.origin_rpy
+    )
+
+    urdf_path = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)  # type: ignore[union-attr]  # reason: openarm declares a vendored urdf
+    model = yourdfpy.URDF.load(str(urdf_path), load_meshes=False, build_collision_scene_graph=True)
+    model.update_cfg(np.zeros(model.num_actuated_joints))
+    urdf_rel = np.linalg.inv(
+        np.asarray(model.get_transform("openarm_left_base_link"), dtype=np.float64)
+    ) @ np.asarray(model.get_transform("openarm_body_link0"), dtype=np.float64)
+
+    assert manifest_rel == pytest.approx(urdf_rel, abs=_TOL_M), (
+        "the manifest's torso mount disagrees with openarm.urdf's left_base_link -> body_link0"
+    )
+    # And through the kernel's own lowering: the torso's frame is 0.698 m under the mounts.
+    positions = _link_world_positions(collision_params_from_description(robot))
+    assert positions["openarm_body_link0"] == pytest.approx((0.0, 0.0, -0.698), abs=_TOL_M)
+
+
 def test_g1_urdf_and_mjcf_differ_only_in_the_torso_frame() -> None:
     """Pins *why* ``g1`` is checked against its URDF and not its MJCF.
 

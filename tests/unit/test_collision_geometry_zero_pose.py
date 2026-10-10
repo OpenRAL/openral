@@ -234,7 +234,25 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
 #   rizon4: 93 base_link vertices inside link6.
 #   so100_follower: 207 wrist vertices inside base.
 #   g1: 163 torso_link vertices inside right_elbow_link.
+#   openarm: the left hand folded back into the shoulder block (elbow 2.37 rad,
+#     the posture family the 2026-10-08 wrist-cal HOME candidate was dropped
+#     for, issue #356): the link7 box centre sits 29.2 mm inside the torso's
+#     watertight collision mesh (body_link0_symp.stl) at body z = 0.661 m;
+#     kernel gap -118 mm. Found by a seeded search over the left arm's limits.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
+    (
+        "openarm",
+        {
+            "left_joint1": 0.02,
+            "left_joint2": 0.02,
+            "left_joint3": 1.41,
+            "left_joint4": 2.37,
+            "left_joint5": -0.15,
+            "left_joint6": 0.37,
+            "left_joint7": -1.4,
+        },
+        ("openarm_body_link0", "openarm_left_link7"),
+    ),
     (
         "franka_panda",
         {"panda_joint2": -0.3, "panda_joint4": -3.0, "panda_joint6": 0.2},

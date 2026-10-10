@@ -198,7 +198,9 @@ standard route and works for any robot with a gripper. What OpenRAL fixes is the
 
 - **Frames.** The pose is `parent_frame -> frame_id` of the manifest's `head_zed` entry:
   `openarm_base` (the manifest `base_frame`, at shoulder height; the URDF root `world` is
-  0.698 m below it) to `zed_camera_link`, the ZED **body** frame, midway between the
+  0.698 m below it, and since issue #356 the torso standing there is in the kernel's own
+  collision model — self-filtered out of the cloud like the arms, and checked against the
+  hands) to `zed_camera_link`, the ZED **body** frame, midway between the
   lenses. The ZED driver publishes its cloud in `zed_left_camera_frame` and places that
   frame relative to `zed_camera_link` from the camera's factory calibration (half the
   63 mm baseline), so a hand-eye result for the left lens is converted through the

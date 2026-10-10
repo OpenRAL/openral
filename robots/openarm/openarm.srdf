@@ -36,10 +36,29 @@
   poses and +16.6 mm at rest, so the pair is CHECKED again instead of exempted.
   The retired rows only ever removed a check; putting one back needs the same
   WG sign-off as any other row here.
+  TORSO (2026-10-10, issue #356): `openarm_body_link0` entered the kernel model
+  as three box+hull slabs lowered from openarm.urdf (static link; see the
+  manifest's fixed_attachments comment). Rest-pose gaps against it, kernel
+  predicates on the committed primitives (tests/unit/test_collision_geometry_zero_pose.py
+  `_tripping_pairs`), both arms symmetric:
+    link0        -51.2 mm   the pedestal is bolted INSIDE the shoulder block: rigid,
+                            every pose, nothing the kernel can act on -> exempt (rows below)
+    link1         +7.0 mm   checked; +7.0 mm is also the minimum over joint1's range
+    link2        +11.5 mm   checked; +0.3 mm minimum over the joint1 x joint2 ranges
+    link3        +38.9 mm   checked; a touching configuration (+0.0 mm) exists inside
+                            the joint1-3 limits, so the upper arm swung into the body
+                            is refused, as it should be
+    finger_pair  +27.1 mm   checked
+  Only the two rigid pedestal contacts are exempt. The sweep cannot add a torso
+  pair on its own (every torso slab carries a hull, and hulled pairs are never
+  auto-exempted), so these two rows are the whole channel.
+
   SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
   needs safety-WG sign-off to change.
 -->
 <robot name="openarm">
+  <disable_collisions link1="openarm_body_link0" link2="openarm_left_link0" reason="Rigid: the left pedestal is bolted inside the torso's shoulder block (d=-0.051 m at rest and in every pose); no motion can change it."/>
+  <disable_collisions link1="openarm_body_link0" link2="openarm_right_link0" reason="Rigid: the right pedestal is bolted inside the torso's shoulder block (d=-0.051 m at rest and in every pose); no motion can change it."/>
   <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link5" reason="Meshes never closer than 16.3 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
   <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link5" reason="Meshes never closer than 16.1 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
   <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link6" reason="Meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
