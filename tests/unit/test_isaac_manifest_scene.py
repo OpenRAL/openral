@@ -1267,3 +1267,29 @@ def test_reset_renders_after_the_warmup_hook(_manifest_scene_mod: object) -> Non
     assert steps[2:5] == [("step", False)] * 3  # the hook's unrendered settling
     # One rendered step after the hook, and nothing between it and the observation.
     assert calls[-2:] == [("step", True), ("observe", None)]
+
+
+def test_object_pose_noise_yaw_offsets_pick_one_orientation(_manifest_scene_mod: object) -> None:
+    """``(0, 90)`` offsets: every draw is square or quarter-turned, both occur."""
+    import numpy as np
+
+    sample = _manifest_scene_mod.sample_object_poses  # type: ignore[attr-defined]
+    obj = _noisy(0.0, 0.0, 0.0, yaw_sigma_deg=3.0, yaw_offsets_deg=[0.0, 90.0])
+    yaws = [
+        np.degrees(sample([obj], [(0, 0, 0.03, 0.05)], np.random.default_rng(s))[0][2])
+        for s in range(60)
+    ]
+    near0 = [y for y in yaws if abs(y) <= 6.0]
+    near90 = [y for y in yaws if abs(y - 90.0) <= 6.0]
+    assert len(near0) + len(near90) == len(yaws)
+    assert near0 and near90
+
+
+def test_object_pose_noise_single_offset_keeps_layouts(_manifest_scene_mod: object) -> None:
+    import numpy as np
+
+    sample = _manifest_scene_mod.sample_object_poses  # type: ignore[attr-defined]
+    rect = [(0, 0, 0.03, 0.05)]
+    old = sample([_noisy(0.0, 0.0, 0.0)], rect, np.random.default_rng(7))
+    new = sample([_noisy(0.0, 0.0, 0.0, yaw_offsets_deg=[0.0])], rect, np.random.default_rng(7))
+    assert old == new

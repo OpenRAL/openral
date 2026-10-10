@@ -703,15 +703,23 @@ class IsaacObjectPoseNoise(BaseModel):
     y_max]]``, e.g. a tote's floor); after ``max_tries`` rejections the object keeps
     its declared pose and the sidecar logs it.
 
+    ``yaw_offsets_deg`` adds a discrete yaw choice on top: each draw picks one offset
+    uniformly, then adds the yaw noise, so ``(0, 90)`` with a 3 deg sigma gives a box
+    either square or quarter-turned, never in between (a box set down in either of
+    two orientations).
+
     Example:
         >>> IsaacObjectPoseNoise(xy_sigma_m=(0.01, 0.008), yaw_sigma_deg=5.0).clip_sigma
         2.0
+        >>> IsaacObjectPoseNoise(yaw_sigma_deg=3.0, yaw_offsets_deg=(0.0, 90.0)).yaw_offsets_deg
+        (0.0, 90.0)
     """
 
     model_config = ConfigDict(extra="forbid")
 
     xy_sigma_m: tuple[float, float] = (0.0, 0.0)
     yaw_sigma_deg: float = Field(default=0.0, ge=0.0, le=180.0)
+    yaw_offsets_deg: tuple[float, ...] = Field(default=(0.0,), min_length=1)
     clip_sigma: float = Field(default=2.0, gt=0.0, le=5.0)
     keep_inside_xy: tuple[tuple[float, float], tuple[float, float]] | None = None
     max_tries: int = Field(default=100, ge=1, le=10000)
