@@ -1626,7 +1626,7 @@ def test_bh_deploy_sim_live_launch_openarm() -> None:
 
 
 def test_bh_prepare_launch_env_defaults_expandable_segments(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """_prepare_launch_env (shared by `deploy sim` AND `deploy run`) defaults the
     expandable-segments CUDA allocator so the runtime_node's VLA load doesn't
@@ -1647,8 +1647,9 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
 
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
-    # A discrete-GPU host; the Tegra branch has its own test below.
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
+    # A discrete-GPU host: the real Tegra probe finds no L4T release file. The
+    # Tegra branch has its own test below.
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", tmp_path / "nv_tegra_release")
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1678,7 +1679,10 @@ def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
     chosen = _alloc_conf_var()
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
+    # The real Tegra probe, pointed at a captured AGX Orin L4T release file.
+    orin_release = Path(__file__).parent / "fixtures" / "jetson" / "orin_agx" / "nv_tegra_release"
+    assert orin_release.is_file(), orin_release
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", orin_release)
     assert chosen not in _prepare_launch_env()
 
     monkeypatch.setenv(chosen, "expandable_segments:True")
