@@ -91,6 +91,8 @@ _MAX_FALLBACK_TOPIC_RATE_HZ = 3.0
 #: ~4x with the payload. The policy is untouched: it reads the aggregator
 #: in-process at full capture resolution, which is what ACT (no resize at all,
 #: 640x480 exact) and SmolVLA (its own 512x512 pad-resize) actually consume.
+#: A single camera opts out with ``backend_params["topic_native"]: true``
+#: (see ``_topic_native``) when a bus reader needs its pixels exact.
 _DEFAULT_TOPIC_MAX_SIZE: Final[tuple[int, int]] = (320, 240)
 
 
@@ -442,6 +444,39 @@ def _fallback_topic_rate_hz(spec: SensorSpec, uncapped: Collection[str] = ()) ->
     return min(_publish_rate_hz(spec), _MAX_FALLBACK_TOPIC_RATE_HZ)
 
 
+def _topic_native(spec: SensorSpec) -> bool:
+    """Whether ``spec`` opts its fallback topic out of the resolution ceiling.
+
+    ``backend_params["topic_native"]: true`` publishes the camera on the bus at
+    capture size (``CameraInfo`` then carries the manifest intrinsics unscaled)
+    for a bus reader that needs the pixels exact — Foxglove, ``openral record``,
+    calibration tooling — where the launch-wide ``topic_frame_size`` would hand
+    it a 320x240 thumbnail. The rate cap is separate and unchanged: at the
+    3 Hz cap a native 960x600 publish is ~55 ms of GIL per frame per camera,
+    which is why this is per camera and opt-in, never the default. The
+    in-process paths (the policy's aggregator read, ``--dataset-out``) are
+    native regardless. Only a real ``true`` counts: YAML ``1`` / ``"yes"``
+    are ignored, like ``topic_rate_hz``'s bool guard.
+
+    Example:
+        >>> from openral_core import SensorDeployBinding, SensorSpec
+        >>> def spec(**params):
+        ...     return SensorSpec(
+        ...         name="wrist_left",
+        ...         modality="rgb",
+        ...         frame_id="wrist_left",
+        ...         rate_hz=30.0,
+        ...         deploy_binding=SensorDeployBinding(backend_params=params),
+        ...     )
+        >>> _topic_native(spec(topic_native=True))
+        True
+        >>> _topic_native(spec(topic_native=1)), _topic_native(spec())
+        (False, False)
+    """
+    assert spec.deploy_binding is not None  # reason: caller filters on binding
+    return spec.deploy_binding.backend_params.get("topic_native") is True
+
+
 def _await_first_frame(
     reader: Any, sensor_id: str, *, attempts: int = 3, timeout_s: float = 6.0
 ) -> None:
@@ -511,7 +546,8 @@ def open_deploy_sensor_readers(
             (``_MAX_FALLBACK_TOPIC_RATE_HZ``). ``runtime_node`` fills this from
             ``slam_camera_names``.
         topic_max_size: Optional ``(width, height)`` ceiling for the fallback topic;
-            ``CameraInfo`` intrinsics are rescaled to match. Cameras in ``uncapped_sensors`` are
+            ``CameraInfo`` intrinsics are rescaled to match. Cameras in ``uncapped_sensors``
+            and cameras whose binding sets ``topic_native: true`` (``_topic_native``) are
             exempt. ``runtime_node`` fills this from ``topic_frame_size``. ``None`` publishes
             at capture size.
 
@@ -597,11 +633,12 @@ def open_deploy_sensor_readers(
                 # manifest's TF frame — this is what lets mono visual SLAM
                 # (cuVSLAM rig build + nvblox depth framing) run on real
                 # hardware. Specs without ``intrinsics`` publish images only.
+                native_pixels = spec.name in uncapped_sensors or _topic_native(spec)
                 publisher = SensorRosPublisher(
                     reader=reader,
                     topic=topic,
                     rate_hz=_fallback_topic_rate_hz(spec, uncapped_sensors),
-                    max_size=None if spec.name in uncapped_sensors else topic_max_size,
+                    max_size=None if native_pixels else topic_max_size,
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
                     info_topic=_sensor_topics(spec)[1],
@@ -621,6 +658,7 @@ def open_deploy_sensor_readers(
                 backend=binding.backend.value,
                 topic=topic,
                 direct_to_aggregator=aggregator is not None,
+                topic_native=native_tee or _topic_native(spec),
             )
         # Prepare every ROS entity while execution is still single-threaded.
         # SensorLeg.start() runs only after the composed lifecycle nodes have
