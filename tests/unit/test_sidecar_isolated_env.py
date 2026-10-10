@@ -16,11 +16,15 @@ from pathlib import Path
 import pytest
 from openral_sim._sidecar_common import make_isolated_env
 
+# The real Tegra probe, pointed at a captured AGX Orin L4T release file or at a
+# path that does not exist.
+_ORIN_RELEASE = Path(__file__).parent / "fixtures" / "jetson" / "orin_agx" / "nv_tegra_release"
 
-def test_defaults_expandable_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_defaults_expandable_segments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import openral_core.gpu
 
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", tmp_path / "nv_tegra_release")
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     env = make_isolated_env(Path("/tmp/sidecar/.venv"))
     assert env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
@@ -30,7 +34,8 @@ def test_no_expandable_segments_on_jetson(monkeypatch: pytest.MonkeyPatch) -> No
     """The Jetson iGPU cannot answer torch's NVML fabric query; leave it off."""
     import openral_core.gpu
 
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
+    assert _ORIN_RELEASE.is_file(), _ORIN_RELEASE
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", _ORIN_RELEASE)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     env = make_isolated_env(Path("/tmp/sidecar/.venv"))
     assert "PYTORCH_CUDA_ALLOC_CONF" not in env

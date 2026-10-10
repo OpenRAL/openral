@@ -14,6 +14,7 @@ before it was deleted.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from openral_sim._sidecar_common import sidecar_port_for_key
@@ -77,18 +78,25 @@ def test_shared_helper_algorithm_changes_the_port() -> None:
 # where torch's expandable path crashes on the iGPU's NVML fabric query.
 
 
+# The real probe, pointed at a captured AGX Orin L4T release file or at a path
+# that does not exist (``openral_core.gpu.is_tegra_host`` reads the constant at
+# call time for exactly this).
+_ORIN_RELEASE = Path(__file__).parent / "fixtures" / "jetson" / "orin_agx" / "nv_tegra_release"
+
+
 @pytest.fixture
-def _not_jetson(monkeypatch: pytest.MonkeyPatch) -> None:
+def _not_jetson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import openral_core.gpu
 
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", tmp_path / "nv_tegra_release")
 
 
 @pytest.fixture
 def _jetson(monkeypatch: pytest.MonkeyPatch) -> None:
     import openral_core.gpu
 
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
+    assert _ORIN_RELEASE.is_file(), _ORIN_RELEASE
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", _ORIN_RELEASE)
 
 
 @pytest.mark.usefixtures("_not_jetson")

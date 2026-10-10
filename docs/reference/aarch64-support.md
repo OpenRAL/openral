@@ -488,9 +488,11 @@ does, the probe would conservatively skip the default there.
 ### NF4 reward loaders verified on Jetson Orin and Thor
 
 `tests/sim/test_reward_nf4_buffer_equivalence.py` (issue #304) checks that the
-Robometer and TOPReward NF4 loaders leave no buffer uninitialised: the
+Robometer and TOPReward NF4 loaders leave no buffer uninitialised. Robometer's
 meta-device load must match a real-init reference in `named_buffers()` and in
-per-frame scores on a real LIBERO clip. Run 2026-10-10 on master `3c63d226`,
+per-frame scores on a real LIBERO clip. TOPReward's load is compared on
+`named_buffers()` only; its scores on the clip are checked separately by
+`tests/sim/test_topreward_reward.py`. Run 2026-10-10 on master `3c63d226`,
 in a fresh `just sync --group libero` venv (torch 2.13.0+cu130,
 bitsandbytes 0.49.2, transformers 5.5.4, lerobot 0.6.0):
 
@@ -499,8 +501,8 @@ bitsandbytes 0.49.2, transformers 5.5.4, lerobot 0.6.0):
 | lab AGX Orin | `sm_87` | 3 passed | 76 s |
 | lab Jetson Thor | `sm_110` | 3 passed | 46 s |
 
-The three tests are the two equivalence tests plus
-`tests/sim/test_topreward_reward.py`. Robometer progress on the 8-frame
+The three tests are the two equivalence tests plus the TOPReward clip test.
+Robometer progress on the 8-frame
 success demo was 0.25 to 0.85 and success 0.05 to 0.83 on both hosts. Played
 reversed, progress fell 0.74 to 0.24. That matches the x86 RTX 5070 run in
 PR #305 to two decimals. Replacing the rotary `inv_freq` buffers with

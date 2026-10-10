@@ -1686,7 +1686,7 @@ def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
 
 
 def test_bh_run_launch_invocation_sets_expandable_segments(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """run_launch_invocation defaults PYTORCH_ALLOC_CONF=expandable_segments:True.
 
@@ -1716,7 +1716,8 @@ def test_bh_run_launch_invocation_sets_expandable_segments(
     monkeypatch.setattr(_ds, "_run_launch", _fake_run_launch)
     import openral_core.gpu
 
-    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
+    # The real Tegra probe, pointed at a release file that does not exist.
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", tmp_path / "nv_tegra_release")
 
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
