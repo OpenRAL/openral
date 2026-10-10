@@ -69,6 +69,41 @@ def kernel_link_gap(
     return float(best)
 
 
+def tight_escape_per_point_m(geom: LinkCollisionGeometry, local: np.ndarray) -> np.ndarray:
+    """Per point, how far it reaches outside ``geom``'s DOP or hull (``<= 0``: inside).
+
+    For a link split into several refined boxes (``--tight-link NAME=K``), a
+    point need only sit inside ONE piece's refinement; this is the per-point
+    answer the minimum over pieces is taken of.
+
+    Args:
+        geom: A primitive carrying ``tight_geometry``.
+        local: Points ``(N, 3)`` in the box's own frame.
+
+    Returns:
+        ``(N,)`` largest excursion of each point past a DOP slab or a hull facet.
+    """
+    from openral_core.schemas import DOP_AXES
+    from scipy.spatial import ConvexHull
+
+    tight = geom.tight_geometry
+    assert tight is not None, f"{geom.link_name}: no tight_geometry to check"
+    proj = local @ np.asarray(DOP_AXES, dtype=float).T
+    worst = np.maximum(
+        (proj - np.asarray(tight.dop_hi_m)).max(axis=1),
+        (np.asarray(tight.dop_lo_m) - proj).max(axis=1),
+    )
+    if tight.hull_vertices_m:
+        key = id(tight)
+        if key not in _FACETS:  # the hull is fixed per primitive; pose-independent
+            eq = ConvexHull(np.asarray(tight.hull_vertices_m, dtype=float)).equations
+            norm = np.linalg.norm(eq[:, :3], axis=1)
+            _FACETS[key] = (eq[:, :3] / norm[:, None], eq[:, 3] / norm, tight)
+        normals, offsets, _ = _FACETS[key]
+        worst = np.maximum(worst, (local @ normals.T + offsets).max(axis=1))
+    return np.asarray(worst, dtype=float)
+
+
 def tight_escape_m(geom: LinkCollisionGeometry, local: np.ndarray) -> float:
     """How far box-frame points reach outside ``geom``'s DOP or hull (``<= 0``: inside).
 
@@ -83,27 +118,7 @@ def tight_escape_m(geom: LinkCollisionGeometry, local: np.ndarray) -> float:
     Returns:
         The largest excursion past a DOP slab or a hull facet, in metres.
     """
-    from openral_core.schemas import DOP_AXES
-    from scipy.spatial import ConvexHull
-
-    tight = geom.tight_geometry
-    assert tight is not None, f"{geom.link_name}: no tight_geometry to check"
-    proj = local @ np.asarray(DOP_AXES, dtype=float).T
-    worst = float(
-        max(
-            (proj - np.asarray(tight.dop_hi_m)).max(),
-            (np.asarray(tight.dop_lo_m) - proj).max(),
-        )
-    )
-    if tight.hull_vertices_m:
-        key = id(tight)
-        if key not in _FACETS:  # the hull is fixed per primitive; pose-independent
-            eq = ConvexHull(np.asarray(tight.hull_vertices_m, dtype=float)).equations
-            norm = np.linalg.norm(eq[:, :3], axis=1)
-            _FACETS[key] = (eq[:, :3] / norm[:, None], eq[:, 3] / norm, tight)
-        normals, offsets, _ = _FACETS[key]
-        worst = max(worst, float((local @ normals.T + offsets).max()))
-    return worst
+    return float(tight_escape_per_point_m(geom, local).max())
 
 
 # Unit facet planes per refinement, keyed by object identity (the refinement is
