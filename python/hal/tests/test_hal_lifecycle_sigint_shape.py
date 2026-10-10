@@ -92,33 +92,29 @@ def test_uses_try_shutdown() -> None:
     assert try_shutdown_lines, "HAL lifecycle must call rclpy.try_shutdown() on the teardown path."
 
 
-def test_spin_wrapped_in_sigint_except() -> None:
-    """Every ``rclpy.spin(node)`` must be in ``try / except (KI, ESE) / finally``.
+def _calls_in_body(node: ast.Try, attr: str | None = None, name: str | None = None) -> bool:
+    """True iff a statement in ``node.body`` calls ``.<attr>(...)`` or ``<name>(...)``."""
+    for stmt in node.body:
+        for sub in ast.walk(stmt):
+            if not isinstance(sub, ast.Call):
+                continue
+            if attr and isinstance(sub.func, ast.Attribute) and sub.func.attr == attr:
+                return True
+            if name and isinstance(sub.func, ast.Name) and sub.func.id == name:
+                return True
+    return False
 
-    Unlike the single-``main()`` nodes, this module has two spin-wrapping
-    factories, so *every* spin Try must catch both exceptions.
+
+def test_spin_wrapped_in_sigint_except() -> None:
+    """``rclpy.spin(node)`` runs inside ``try / except (KI, ESE)``.
+
+    Since #289 both ``main()`` factories call one ``spin_until_shutdown`` helper
+    that owns the ``rclpy.spin`` call and its signal handling; the Try that
+    wraps the spin itself must catch both exceptions.
     """
     tree = _parse()
-    spin_trys: list[ast.Try] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        for stmt in node.body:
-            for sub in ast.walk(stmt):
-                if (
-                    isinstance(sub, ast.Call)
-                    and isinstance(sub.func, ast.Attribute)
-                    and sub.func.attr == "spin"
-                ):
-                    spin_trys.append(node)
-                    break
-            else:
-                continue
-            break
-    assert len(spin_trys) >= 2, (
-        "expected both HAL lifecycle main() factories to wrap a `.spin()` "
-        f"call in a `try:`; found {len(spin_trys)} spin-wrapping Try block(s)."
-    )
+    spin_trys = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and _calls_in_body(n, "spin")]
+    assert spin_trys, "expected a `try:` wrapping `rclpy.spin(node)` in the HAL lifecycle"
 
     needs = {"KeyboardInterrupt", "ExternalShutdownException"}
     for try_node in spin_trys:
@@ -133,33 +129,28 @@ def test_spin_wrapped_in_sigint_except() -> None:
             "(KeyboardInterrupt, ExternalShutdownException)`; a spin Try at "
             f"line {try_node.lineno} catches only {sorted(names_in_excepts)}."
         )
-        assert try_node.finalbody, (
-            "a `finally:` clause must run cleanup (destroy_node / "
-            f"try_shutdown) on the spin Try at line {try_node.lineno}."
-        )
 
 
 def test_spin_finally_disconnects_the_hal() -> None:
-    """Every spin ``finally`` must call ``node.shutdown_hal()``.
+    """Every factory's spin ``finally`` must call ``node.shutdown_hal()``.
 
     SIGINT raises out of ``spin`` without requesting the lifecycle
     ``shutdown`` transition, so ``on_shutdown``/``on_cleanup`` — and with
-    them ``HAL.disconnect`` — never run. The ``finally`` is the only place on
-    the signal path that can reach it.
+    them ``HAL.disconnect`` — never run. The ``finally`` around
+    ``spin_until_shutdown(node)`` in each ``main()`` factory is the only place
+    on the signal path that can reach it; both factories must have one.
     """
     tree = _parse()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        spins = any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == "spin"
-            for stmt in node.body
-            for sub in ast.walk(stmt)
-        )
-        if not spins:
-            continue
+    factory_trys = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Try) and _calls_in_body(n, name="spin_until_shutdown")
+    ]
+    assert len(factory_trys) >= 2, (
+        "expected both HAL lifecycle main() factories to wrap `spin_until_shutdown(node)` "
+        f"in a `try:`; found {len(factory_trys)}."
+    )
+    for node in factory_trys:
         teardown = any(
             isinstance(sub, ast.Call)
             and isinstance(sub.func, ast.Attribute)
