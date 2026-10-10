@@ -12,7 +12,9 @@ process/network boundary double allowed by CLAUDE.md §1.11. No Isaac, no GPU.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -54,6 +56,8 @@ class _FakeSidecar:
         obs_width: int = 48,
         sim_dt_per_tick_s: float | None = None,
         null_time_base: bool = False,
+        obs_extra: dict | None = None,
+        sim_time_ns: int | None = None,
     ) -> None:
         self.port = port
         self.obs_height = obs_height
@@ -63,6 +67,10 @@ class _FakeSidecar:
         self.sim_dt_per_tick_s = sim_dt_per_tick_s
         # Send the field as an explicit null (a scene that never resolved its tick).
         self.null_time_base = null_time_base
+        # Observation keys merged over the default obs (e.g. ``image_time_ns``), and
+        # the ``sim_time_ns`` reset/step replies carry (None = left out).
+        self.obs_extra = obs_extra or {}
+        self.sim_time_ns = sim_time_ns
         self.last_action: np.ndarray | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._stop = threading.Event()
@@ -74,6 +82,7 @@ class _FakeSidecar:
             },
             "state": np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
             "task": "lift the cube",
+            **self.obs_extra,
         }
 
     def _serve(self) -> None:
@@ -95,6 +104,8 @@ class _FakeSidecar:
                     reply["sim_dt_per_tick_s"] = self.sim_dt_per_tick_s
             elif endpoint == "reset":
                 reply = {"observation": self._obs()}
+                if self.sim_time_ns is not None:
+                    reply["sim_time_ns"] = self.sim_time_ns
             elif endpoint == "step":
                 self.last_action = np.asarray(data["action"], dtype=np.float32)
                 reply = {
@@ -104,6 +115,8 @@ class _FakeSidecar:
                     "truncated": True,
                     "info": {"is_success": True},
                 }
+                if self.sim_time_ns is not None:
+                    reply["sim_time_ns"] = self.sim_time_ns
             elif endpoint == "close":
                 reply = {"ok": True}
             else:
@@ -421,3 +434,133 @@ class TestHalTimeBaseGuard:
             assert hal._sim_dt_per_tick_s is None
         finally:
             hal.env.close()
+
+
+# One 30 Hz control tick, and an image 4 ticks behind the state (issue #361).
+_TICK_NS = 33_333_333
+_STATE_NS = 2_000_000_000
+_IMAGE_NS = _STATE_NS - 4 * _TICK_NS
+
+
+class TestImageTime:
+    """The sim time each camera frame shows crosses the wire and reaches the ROS stamp.
+
+    Isaac's RTX pipeline delivers a frame ~4 steps after the physics it shows, so
+    the sidecar reports per camera the sim time its frame shows (issue #361). Real
+    OpenArm manifest, real ``SimAttachedHAL`` and ``SimSensorBridge`` on a real
+    rclpy node; the sidecar is the ZMQ boundary double.
+    """
+
+    _FRAMES: ClassVar[dict[str, Any]] = {
+        "images": {"top": np.full((64, 48, 3), 9, dtype=np.uint8)},
+        "image_time_ns": {"top": _IMAGE_NS, "head_zed": _IMAGE_NS - _TICK_NS},
+        "depth_points": {"head_zed": np.asarray([[1.0, 0.0, 0.5]], dtype=np.float32)},
+        "depth_frames": {
+            "head_zed": {
+                "depth": np.ones((4, 6), dtype=np.float32),
+                "rgb": np.zeros((4, 6, 3), dtype=np.uint8),
+                "k": np.asarray([3.0, 3.0, 3.0, 2.0]),
+                "optical_in_base": np.eye(4),
+            }
+        },
+    }
+
+    def _hal(self, port: int) -> SimAttachedHAL:
+        scene, task = _scene_task()
+        return SimAttachedHAL(_make_rollout(port, scene, task), TestHalTimeBaseGuard._openarm())
+
+    def test_frame_times_cross_the_wire(self) -> None:
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                assert rollout.reset(seed=0)["image_time_ns"] == {
+                    "top": _IMAGE_NS,
+                    "head_zed": _IMAGE_NS - _TICK_NS,
+                }
+            finally:
+                rollout.close()
+
+    def test_a_sidecar_without_frame_times_reports_none(self, sidecar: _FakeSidecar) -> None:
+        hal = self._hal(sidecar.port)
+        try:
+            hal.connect()
+            assert "image_time_ns" not in hal._last_obs
+            assert hal.read_image_times() == {}
+        finally:
+            hal.env.close()
+
+    def test_hal_frame_times_share_the_sim_clock_offset(self) -> None:
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            try:
+                hal.connect()
+                hal._sim_time_offset_ns = 7 * 10**9  # as after an earlier episode
+                times = hal.read_image_times()
+                # Same domain as sim_time_ns, so the difference is the frame's age.
+                assert hal.sim_time_ns() - times["top"] == 4 * _TICK_NS
+                assert times["head_zed"] == 7 * 10**9 + _IMAGE_NS - _TICK_NS
+            finally:
+                hal.env.close()
+
+    def test_bridge_stamps_each_frame_with_the_time_it_shows(self) -> None:
+        rclpy = pytest.importorskip("rclpy", reason="ROS 2 (rclpy) not sourced")
+        from openral_core import CameraTopicKind, camera_topic
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import Image, PointCloud2
+        from tf2_msgs.msg import TFMessage
+
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_frame_stamps")
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: dict[str, int] = {}
+
+            def keep(key: str) -> Any:
+                def cb(msg: Any) -> None:
+                    header = msg.transforms[0].header if isinstance(msg, TFMessage) else msg.header
+                    got[key] = header.stamp.sec * 10**9 + header.stamp.nanosec
+
+                return cb
+
+            sensor = qos_profile_sensor_data
+            for key, kind, topic in (
+                ("image", Image, camera_topic("top")),
+                ("colour", Image, camera_topic("head_zed")),
+                ("depth", Image, camera_topic("head_zed", CameraTopicKind.DEPTH_IMAGE)),
+                ("cloud", PointCloud2, camera_topic("head_zed", CameraTopicKind.POINTS)),
+                ("tf", TFMessage, "/tf"),
+            ):
+                node.create_subscription(kind, topic, keep(key), sensor)
+            try:
+                hal.connect()
+                # The camera and depth legs of ``setup()`` only: the rest needs the
+                # colcon-built openral_msgs, which the unit tier does not have.
+                bridge._setup_cameras()
+                bridge._setup_depth()
+                before = node.get_clock().now().nanoseconds
+                bridge._publish_images()
+                bridge._publish_depth_clouds_from_obs()
+                after = node.get_clock().now().nanoseconds
+                deadline = time.monotonic() + 5.0
+                while len(got) < 5 and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert set(got) == {"image", "colour", "depth", "cloud", "tf"}, got
+                # Each frame stamped its age back from the publish, not at it: the
+                # RGB image 4 ticks (133 ms), the depth camera's streams 5.
+                age = 4 * _TICK_NS
+                assert before - age <= got["image"] <= after - age
+                depth_age = age + _TICK_NS
+                for key in ("colour", "depth", "cloud"):
+                    assert before - depth_age <= got[key] <= after - depth_age, key
+                # The optical TF carries the pose measured now, so it keeps now.
+                assert before <= got["tf"] <= after
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()

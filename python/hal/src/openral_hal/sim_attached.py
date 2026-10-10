@@ -2079,6 +2079,25 @@ class SimAttachedHAL:
             return {}
         return dict(images)
 
+    def read_image_times(self) -> dict[str, int]:
+        """Sim time (ns) each cached camera frame shows, keyed like ``read_images``.
+
+        A backend whose renderer delivers frames behind the physics (the Isaac
+        sidecar: ~4 steps, issue #361) reports per camera the sim time its frame
+        shows under the ``"image_time_ns"`` obs slot. Returned in the
+        ``sim_time_ns`` domain (the cross-reset offset added), so
+        ``sim_time_ns() - read_image_times()[k]`` is that frame's age; depth
+        cameras are keyed by sensor name, as in ``read_depth_clouds``.
+        ``SimSensorBridge`` stamps each frame with it. Empty when the backend
+        reports none (its frames show the current step). Never raises.
+        """
+        if self._last_obs is None:
+            return {}
+        times = self._last_obs.get("image_time_ns")
+        if not isinstance(times, dict):
+            return {}
+        return {str(k): self._sim_time_offset_ns + int(v) for k, v in times.items()}
+
     def read_depth_clouds(self) -> dict[str, NDArray[np.float32]]:
         """Return per-depth-sensor point clouds ``{name: (N, 3) base_link}``.
 

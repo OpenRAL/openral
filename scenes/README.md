@@ -292,6 +292,16 @@ derive the physics steps per action from `action_spec.control_freq_hz` at
 connect (17 steps at 1/510 s for a 0.002 s MJCF at 30 Hz) and stop the
 wall-time idle stepper from pacing the clock while a skill is active.
 
+**Camera images lag the state, and say so.** Isaac's RTX pipeline delivers a
+camera frame 2–4 steps after the physics state it shows (133 ms at 30 Hz in the
+restock scene), and not at a constant lag. The scene does not render extra frames
+to hide it: every observation carries `image_time_ns`, the sim time each camera's
+frame shows, and `deploy sim` stamps `/openral/cameras/*` (RGB, depth, colour,
+clouds) with it, so consumers pair images with joint states and TF at the right
+time, as with a real camera's latency (issue #361). `sim run` hands the policy
+the latest frame with the current state, as a real robot would; it does not align
+the state to the image time.
+
 **Pickable objects** go in `backend_options.objects` (validated by
 `IsaacSimOptions`, so a typo fails at load):
 
