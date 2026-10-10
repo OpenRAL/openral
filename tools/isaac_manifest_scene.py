@@ -1866,7 +1866,7 @@ class IsaacManifestScene(IsaacSceneBase):
         import re
 
         from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
-        from pxr import Usd, UsdPhysics
+        from pxr import PhysxSchema, Usd, UsdPhysics
 
         prim_path = "/" + re.sub(r"\W", "_", str(self._spec.get("robot_id", "robot")))
         add_reference_to_stage(usd_path=robot_usd, prim_path=prim_path)
@@ -1888,11 +1888,29 @@ class IsaacManifestScene(IsaacSceneBase):
             # The converter puts the root API on a body, creating a floating
             # articulation restrained by a solver joint. Mark the world joint
             # instead so PhysX creates a genuinely fixed-base articulation.
+            # The importer's self-collision choice (allow_self_collision, False by
+            # default) lives on that root as newton:selfCollisionEnabled. Carry it
+            # over: a new root without it gets PhysX's default, self-collision ON,
+            # and the robot's own links then hold its joints off target (OpenArm
+            # left_joint1 0.265 rad for 0.3; panda wrists 0.2 rad off a zero pose).
+            self_collide = False
             for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
                 if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    flag = prim.GetAttribute("newton:selfCollisionEnabled")
+                    if flag and flag.HasAuthoredValue():
+                        self_collide = bool(flag.Get())
                     prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
             self._anchor_joint.GetBody0Rel().ClearTargets(True)
-            UsdPhysics.ArticulationRootAPI.Apply(self._anchor_joint.GetPrim())
+            root = self._anchor_joint.GetPrim()
+            UsdPhysics.ArticulationRootAPI.Apply(root)
+            PhysxSchema.PhysxArticulationAPI.Apply(root).CreateEnabledSelfCollisionsAttr(
+                self_collide
+            )
+            print(
+                f"[isaac_manifest_scene] fixed-base articulation rooted at {root.GetPath()}, "
+                f"self-collision {'on' if self_collide else 'off'} (as imported)",
+                flush=True,
+            )
         return prim_path
 
     def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
