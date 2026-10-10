@@ -33,7 +33,7 @@ pytest.importorskip("scipy")
 
 import trimesh
 from openral_core import RobotDescription
-from openral_core.assets import AssetRefError, resolve_package_uri
+from openral_core.assets import AssetFetchError, AssetRefError, resolve_package_uri
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     MAX_TIGHT_HULL_VERTICES,
@@ -43,6 +43,7 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
 )
 from openral_safety.urdf_lowering import (
+    _best_cuts,
     _fixed_link_world,
     _split_tight_pieces,
     _static_link_meshes,
@@ -90,7 +91,7 @@ def torso_mesh() -> trimesh.Trimesh:
     try:
         meshes = _static_link_meshes(robot, link_body, _OPENARM_DIR)
     except ROSConfigError as exc:
-        if isinstance(exc.__cause__, AssetRefError) and "fetching" in str(exc.__cause__):
+        if isinstance(exc.__cause__, AssetFetchError):
             pytest.skip(f"openarm_description clone unavailable on this host: {exc}")
         raise
     assert set(meshes) == {_TORSO}
@@ -113,10 +114,8 @@ def test_the_torso_collision_mesh_resolves_inside_the_pinned_clone() -> None:
     uri = "package://openarm_description/assets/robot/openarm_v2.0/meshes/body/collision/body_link0_symp.stl"
     try:
         path = resolve_package_uri(uri)
-    except AssetRefError as exc:
-        if "fetching" in str(exc):
-            pytest.skip(f"openarm_description clone unavailable on this host: {exc}")
-        raise
+    except AssetFetchError as exc:
+        pytest.skip(f"openarm_description clone unavailable on this host: {exc}")
     assert path.is_file() and path.name == "body_link0_symp.stl"
     with pytest.raises(AssetRefError, match="is not a file"):
         resolve_package_uri(uri.replace("body_link0_symp", "no_such_mesh"))
@@ -200,11 +199,16 @@ def test_the_torso_reads_as_collision_plus_visual_geometry(torso_mesh: trimesh.T
     assert len(fitting) > 0, "the visual geometry was not folded into the static link"
 
 
-def test_a_static_link_absent_from_the_urdf_or_half_loaded_fails_closed() -> None:
+def test_a_static_link_absent_from_the_urdf_or_half_loaded_fails_closed(
+    tmp_path: Path,
+) -> None:
     robot = _with_torso_mount(_openarm())
     link_body = {
         a.child_link: i for i, a in enumerate(robot.fixed_attachments) if a.child_link != _TORSO
     }
+    # The torso counted as MJCF-mapped here, so the ghost is the only static link
+    # and the refusal needs no mesh fetch.
+    ghost_body = {**link_body, _TORSO: -1}
     ghost = robot.model_copy(
         update={
             "fixed_attachments": [
@@ -220,25 +224,47 @@ def test_a_static_link_absent_from_the_urdf_or_half_loaded_fails_closed() -> Non
         }
     )
     with pytest.raises(ROSConfigError, match="openarm_no_such_link"):
-        _static_link_meshes(ghost, link_body, _OPENARM_DIR)
+        _static_link_meshes(ghost, ghost_body, _OPENARM_DIR)
     # A URDF whose torso mesh ref cannot resolve raises instead of warning.
-    broken = Path(str(_OPENARM_DIR / "openarm.urdf")).read_text(encoding="utf-8")
+    broken = (_OPENARM_DIR / "openarm.urdf").read_text(encoding="utf-8")
     broken = broken.replace("body_link0_symp.stl", "no_such_mesh.stl")
     assert "no_such_mesh.stl" in broken
-    tmp = Path(__file__).resolve().parent / "_static_links_broken.urdf"
-    tmp.write_text(broken, encoding="utf-8")
-    try:
-        urdf_asset = robot.assets.urdf.model_copy(update={"ref": f"file:{tmp.name}"})  # type: ignore[union-attr]  # reason: openarm declares assets.urdf
-        half = robot.model_copy(
-            update={"assets": robot.assets.model_copy(update={"urdf": urdf_asset})}
-        )
-        with pytest.raises(ROSConfigError, match="no_such_mesh"):
-            _static_link_meshes(half, link_body, tmp.parent)
-    finally:
-        tmp.unlink()
+    (tmp_path / "broken.urdf").write_text(broken, encoding="utf-8")
+    urdf_asset = robot.assets.urdf.model_copy(update={"ref": "file:broken.urdf"})  # type: ignore[union-attr]  # reason: openarm declares assets.urdf
+    half = robot.model_copy(update={"assets": robot.assets.model_copy(update={"urdf": urdf_asset})})
+    with pytest.raises(ROSConfigError, match="no_such_mesh") as excinfo:
+        try:
+            _static_link_meshes(half, link_body, tmp_path)
+        except ROSConfigError as exc:
+            if isinstance(exc.__cause__, AssetFetchError):
+                pytest.skip(f"openarm_description clone unavailable on this host: {exc}")
+            raise
+    assert not isinstance(excinfo.value.__cause__, AssetFetchError)
 
 
 # ── _split_tight_pieces ────────────────────────────────────────────────────────
+
+
+def test_the_cut_search_finds_the_cut_trying_every_cut_finds() -> None:
+    """``_best_cuts`` (a dynamic program) returns the minimum and the planes of brute force.
+
+    Pure: the slab volumes are seeded random numbers, so this is the search
+    alone, against ``itertools.combinations`` over every cut.
+    """
+    import itertools
+
+    rng = np.random.default_rng(356)
+    for _ in range(300):
+        n = int(rng.integers(1, 10))
+        k = int(rng.integers(2, min(4, n + 1) + 1))
+        vol = {(a, b): float(rng.random()) for a in range(-1, n) for b in range(a + 1, n + 1)}
+        brute = min(
+            (sum(vol[ab] for ab in itertools.pairwise((-1, *cut, n))), list(cut))
+            for cut in itertools.combinations(range(n), k - 1)
+        )
+        total, cut = _best_cuts(lambda a, b, vol=vol: vol[(a, b)], n, k)
+        assert total == pytest.approx(brute[0], abs=1e-12)
+        assert cut == brute[1]
 
 
 @pytest.fixture(scope="module")

@@ -29,7 +29,7 @@ import structlog
 
 _log = structlog.get_logger(__name__)
 
-__all__ = ["AssetKind", "AssetRefError", "resolve_asset", "resolve_package_uri"]
+__all__ = ["AssetFetchError", "AssetKind", "AssetRefError", "resolve_asset", "resolve_package_uri"]
 
 AssetKind = Literal["urdf", "mjcf", "srdf"]
 
@@ -42,6 +42,14 @@ _RD_ATTR = {"urdf": "URDF_PATH", "mjcf": "MJCF_PATH", "srdf": "SRDF_PATH"}
 
 class AssetRefError(ValueError):
     """A description-asset reference is malformed or cannot be resolved."""
+
+
+class AssetFetchError(AssetRefError):
+    """A well-formed reference whose pinned upstream could not be fetched on this host.
+
+    The one resolution failure an offline host can legitimately skip on; every
+    other ``AssetRefError`` is a broken reference.
+    """
 
 
 def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None:
@@ -104,8 +112,9 @@ def resolve_package_uri(uri: str) -> Path:
         The file inside the pinned clone.
 
     Raises:
-        AssetRefError: A malformed URI, a package OpenRAL does not fetch, a
-            failed fetch (the cause is the fetcher's ``ROSConfigError``), or a
+        AssetFetchError: The pinned clone could not be fetched (the cause is the
+            fetcher's ``ROSConfigError``).
+        AssetRefError: A malformed URI, a package OpenRAL does not fetch, or a
             path that is not a file in the clone.
 
     Example:
@@ -132,7 +141,7 @@ def resolve_package_uri(uri: str) -> Path:
     try:
         root = fetch_public_package(pkg)
     except ROSConfigError as exc:
-        raise AssetRefError(f"{uri!r}: fetching package {pkg!r} failed: {exc}") from exc
+        raise AssetFetchError(f"{uri!r}: fetching package {pkg!r} failed: {exc}") from exc
     if root is None:
         raise AssetRefError(
             f"{uri!r}: package {pkg!r} is not one OpenRAL fetches "

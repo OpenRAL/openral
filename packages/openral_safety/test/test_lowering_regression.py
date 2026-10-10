@@ -31,7 +31,7 @@ pytest.importorskip("robot_descriptions")
 
 from openral_cli.collision import render_blocks
 from openral_core import RobotDescription
-from openral_core.assets import AssetRefError
+from openral_core.assets import AssetFetchError
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import BoxShape, CapsuleShape, LinkCollisionGeometry
 from openral_safety.urdf_lowering import LoweredCollisionModel, lower_robot_auto, select_lowering
@@ -193,7 +193,7 @@ def test_lowering_output_unchanged(manifest: Path) -> None:
     except ROSConfigError as exc:
         # A static link's meshes come from a pinned clone fetched on first use
         # (openarm's torso from openarm_description); an offline runner skips.
-        if not (isinstance(exc.__cause__, AssetRefError) and "fetching" in str(exc.__cause__)):
+        if not isinstance(exc.__cause__, AssetFetchError):
             raise
         pytest.skip(f"{manifest.parent.name}: description clone unavailable ({exc})")
 

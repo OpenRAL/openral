@@ -700,12 +700,43 @@ def _slab_hull_points(mesh: Any, axis: _Arr, grid: _Arr) -> tuple[list[_Arr], li
                 pts = pts[ConvexHull(pts).vertices]
         bands.append(pts)
     crossings: list[_Arr] = []
+    ta, tb = t[edges[:, 0]], t[edges[:, 1]]
     for c in grid:
-        ta, tb = t[edges[:, 0]], t[edges[:, 1]]
         hit = (ta - c) * (tb - c) < 0.0
         w = ((c - ta[hit]) / (tb[hit] - ta[hit]))[:, None]
         crossings.append(verts[edges[hit, 0]] + w * (verts[edges[hit, 1]] - verts[edges[hit, 0]]))
     return bands, crossings
+
+
+def _best_cuts(slab_volume: Callable[[int, int], float], n: int, k: int) -> tuple[float, list[int]]:
+    """The ``k - 1`` grid planes (of ``n``) minimising the total of ``slab_volume``.
+
+    ``slab_volume(a, b)`` is the slab between planes ``a < b``, with ``-1`` the
+    link's start and ``n`` its end. The total is additive over slabs, so the
+    best ``m``-slab cover ending at plane ``b`` is the best ``(m - 1)``-slab
+    cover ending at some ``a < b`` plus slab ``(a, b)``: O(k·n²) slab
+    evaluations, against C(n, k - 1) for trying every cut. Ties keep the lower
+    plane, so the answer is a function of the mesh alone.
+
+    Returns:
+        ``(total, ascending plane indices)``; ``total`` is ``inf`` when every
+        cover has a degenerate slab.
+    """
+    best: dict[tuple[int, int], tuple[float, int]] = {
+        (1, b): (slab_volume(-1, b), -1) for b in range(n)
+    }
+    for m in range(2, k + 1):
+        for b in [n] if m == k else range(m - 1, n):
+            best[(m, b)] = min(
+                ((best[(m - 1, a)][0] + slab_volume(a, b), a) for a in range(m - 2, b)),
+                key=lambda option: (option[0], option[1]),
+            )
+    cut: list[int] = []
+    b = n
+    for m in range(k, 1, -1):
+        b = best[(m, b)][1]
+        cut.append(b)
+    return best[(k, n)][0], cut[::-1]
 
 
 def _split_tight_pieces(link_name: str, mesh: Any, k: int) -> list[LinkCollisionGeometry]:
@@ -728,10 +759,10 @@ def _split_tight_pieces(link_name: str, mesh: Any, k: int) -> list[LinkCollision
         ROSConfigError: ``k`` leaves no grid position to cut at, or a slab is
             degenerate (fewer than four vertices).
     """
-    # ponytail: an exhaustive (k-1)-cut search on a 1 cm grid, one axis only —
-    # O(n^2) slab hulls for k = 3 (n ≈ 80 bands on the torso, ~5 s). A convex
-    # decomposition (VHACD-style) is the upgrade if a link ever needs more.
-    import itertools
+    # ponytail: cut planes on a 1 cm grid along one axis only, chosen by a
+    # dynamic program over cached slab hulls — O(k·n²) for n grid planes
+    # (n ≈ 75 on the torso). A convex decomposition (VHACD-style) is the
+    # upgrade if a link ever needs cuts that are not parallel.
     import math
 
     import numpy as np
@@ -774,16 +805,10 @@ def _split_tight_pieces(link_name: str, mesh: Any, k: int) -> list[LinkCollision
                 volumes[key] = math.inf
         return volumes[key]
 
-    best: tuple[float, tuple[int, ...]] | None = None
-    for cut in itertools.combinations(range(len(grid)), k - 1):
-        stops = (-1, *cut, len(grid))
-        total = sum(slab_volume(a, b) for a, b in itertools.pairwise(stops))
-        if best is None or total < best[0]:
-            best = (total, cut)
-    assert best is not None  # len(grid) >= k - 1 guarantees one combination
-    if not math.isfinite(best[0]):
+    total, cut = _best_cuts(slab_volume, len(grid), k)
+    if not math.isfinite(total):
         raise ROSConfigError(f"{link_name}: every {k}-slab cut leaves a degenerate slab")
-    planes = [float(grid[c]) for c in best[1]]
+    planes = [float(grid[c]) for c in cut]
 
     out: list[LinkCollisionGeometry] = []
     for i in range(k):
@@ -802,9 +827,13 @@ def _as_tight_links(tight: Mapping[str, int] | Iterable[str] | None) -> dict[str
     """``{link: pieces}`` from either spelling of ``tight_links``; a bare name is one piece."""
     if tight is None:
         return {}
-    if isinstance(tight, Mapping):
-        return {name: int(k) for name, k in tight.items()}
-    return dict.fromkeys(tight, 1)
+    if not isinstance(tight, Mapping):
+        return dict.fromkeys(tight, 1)
+    out = {name: int(k) for name, k in tight.items()}
+    bad = sorted(name for name, k in out.items() if k < 1)
+    if bad:
+        raise ROSConfigError(f"tight_links {bad}: a piece count must be >= 1")
+    return out
 
 
 def _fit_link(
@@ -2133,7 +2162,8 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     ``_certified_always_colliding`` applies on the URDF path).
 
     A static link (``_static_link_meshes``) is placed by ``_fixed_link_world``
-    from the mounts the MJCF does carry and holds its pose through the sweep;
+    from the mounts the MJCF does carry, re-placed at every sample (it follows
+    its parent, which may move);
     it is adjacent to its ``fixed_attachments`` parent, and it is in scope, so
     an SRDF row naming it survives ``_scoped_sorted_pairs``.
 
@@ -2184,8 +2214,10 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     # Joint FK: parent→child transform at the rest pose, axis from the MJCF joint.
     mujoco.mj_resetData(model, data)
     mujoco.mj_kinematics(model, data)
-    # Static links: posed once, from the mounts the MJCF carries (rigid, so the
-    # rest pose is every pose).
+    # Static links: placed from the mounts the MJCF carries. Rigid to their
+    # parent, not to the world — a mount on a moving link moves with it — so the
+    # sweep re-places them at every sample below; this rest placement only
+    # names them.
     static_world = _fixed_link_world(robot, link_body, body_tf)
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = {}
     for j in robot.joints:
@@ -2258,8 +2290,9 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         for adr, lo, hi in sweep:
             data.qpos[adr] = lo + (hi - lo) * rng.random()
         mujoco.mj_kinematics(model, data)
+        placed = _fixed_link_world(robot, link_body, body_tf) if static_world else {}
         for ln in links:
-            world[ln][s] = static_world[ln] if ln in static_world else body_tf(link_body[ln])
+            world[ln][s] = placed[ln] if ln in placed else body_tf(link_body[ln])
     for i, a in enumerate(links):
         for b in links[i + 1 :]:
             # Conservative (no SRDF ground truth): disable only ALWAYS-colliding
@@ -2632,8 +2665,17 @@ def lower_robot_auto(
             ``tight_links`` name matches no link the lowering emitted geometry
             for (a typo, or a link the source model does not carry) — a
             silently ignored name would leave the operator believing the link
-            is refined.
+            is refined; when a piece count is below 1; and when ``tight_links``
+            is combined with ``acm_only``, which keeps the manifest geometry.
     """
+    tight = _as_tight_links(tight_links)
+    if tight and acm_only:
+        # acm_only keeps the manifest's geometry, so a refinement request would
+        # be dropped without a word; refuse the contradiction instead.
+        raise ROSConfigError(
+            f"{robot.name}: --tight-link {sorted(tight)} has no effect with --acm-only, "
+            "which keeps the manifest's geometry"
+        )
     if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
         model = lower_robot_from_mjcf(
             robot, manifest_dir=manifest_dir, acm_only=acm_only, tight_links=tight_links
@@ -2646,9 +2688,7 @@ def lower_robot_auto(
             manifest_dir=manifest_dir,
             tight_links=tight_links,
         )
-    unknown = sorted(
-        set(_as_tight_links(tight_links)) - {g.link_name for g in model.collision_geometry}
-    )
+    unknown = sorted(set(tight) - {g.link_name for g in model.collision_geometry})
     if unknown:
         raise ROSConfigError(
             f"{robot.name}: --tight-link names {unknown}, but the lowering emitted no "

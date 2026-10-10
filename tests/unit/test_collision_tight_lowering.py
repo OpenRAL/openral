@@ -119,6 +119,22 @@ def test_a_tight_link_that_names_no_lowered_link_is_refused() -> None:
         )
 
 
+def test_a_tight_link_with_acm_only_or_no_pieces_is_refused() -> None:
+    """``--acm-only`` keeps the manifest geometry, so a refinement request would be dropped
+    silently; a piece count below 1 would quietly mean "unrefined". Both are refused."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_safety.urdf_lowering import lower_robot_auto
+
+    robot, _ = _so100()
+    manifest_dir = _REPO / "robots" / "so100_follower"
+    with pytest.raises(ROSConfigError, match="no effect with --acm-only"):
+        lower_robot_auto(robot, acm_only=True, manifest_dir=manifest_dir, tight_links={"wrist"})
+    with pytest.raises(ROSConfigError, match="piece count"):
+        lower_robot_auto(
+            robot, geometry_only=True, manifest_dir=manifest_dir, tight_links={"wrist": 0}
+        )
+
+
 def test_a_refined_link_survives_the_manifest_round_trip(wrist: LinkCollisionGeometry) -> None:
     """``render_blocks`` writes the refinement exactly; the manifest loads it back equal."""
     from openral_cli.collision import render_blocks
