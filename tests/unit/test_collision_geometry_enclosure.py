@@ -220,7 +220,11 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     # URDF-lowered robot's twin to its meshes (the CAD), not its contact proxies.
     mjcf_lowered = select_lowering(robot, manifest_dir=manifest.parent) == "mjcf"
     declared = {g.link_name for g in robot.collision_geometry}
-    unmapped = sorted(declared - set(link_body))
+    # A static link (a `fixed_attachments` child the MJCF has no body for, the
+    # OpenArm torso) is lowered from the URDF and held to it by
+    # test_collision_geometry_enclosure_urdf.py; it has no twin body by design.
+    static = {a.child_link for a in robot.fixed_attachments} - set(link_body)
+    unmapped = sorted(declared - set(link_body) - static)
     if unmapped:
         pytest.skip(
             f"{robot_id}: the twin names no body for links {unmapped}; the URDF enclosure "

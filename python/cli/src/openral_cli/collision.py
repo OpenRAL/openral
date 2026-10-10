@@ -27,6 +27,7 @@ from __future__ import annotations
 import difflib
 import math
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -46,6 +47,7 @@ __all__ = [
     "collision_primitive_envelope",
     "geometry_loosening",
     "inject_joint_fk",
+    "parse_tight_links",
     "render_blocks",
     "splice_collision_blocks",
 ]
@@ -480,12 +482,47 @@ collision_app = typer.Typer(
 )
 
 
+def parse_tight_links(raw: Iterable[str]) -> dict[str, int]:
+    """``--tight-link NAME[=K]`` values as ``{link: pieces}``.
+
+    A bare name is one box plus its hull; ``NAME=K`` cuts the link into ``K``
+    slabs along its long axis, each a box plus its hull
+    (``urdf_lowering._split_tight_pieces``), for a link whose single hull would
+    swallow the space around it (the OpenArm torso: a foot plate, a thin
+    column and a shoulder block). Repeating a name keeps the larger ``K``.
+
+    Raises:
+        typer.BadParameter: ``K`` is not a positive integer.
+
+    Example:
+        >>> parse_tight_links(["wrist", "openarm_body_link0=3"])
+        {'wrist': 1, 'openarm_body_link0': 3}
+    """
+    out: dict[str, int] = {}
+    for item in raw:
+        name, sep, count = item.partition("=")
+        pieces = 1
+        if sep:
+            try:
+                pieces = int(count)
+            except ValueError:
+                raise typer.BadParameter(
+                    f"--tight-link {item!r}: K must be an integer (NAME[=K])"
+                ) from None
+            if pieces < 1:
+                raise typer.BadParameter(f"--tight-link {item!r}: K must be >= 1")
+        if not name:
+            raise typer.BadParameter(f"--tight-link {item!r}: missing the link name")
+        out[name] = max(out.get(name, 0), pieces)
+    return out
+
+
 def _lower(
     robot_path: Path,
     *,
     acm_only: bool,
     geometry_only: bool,
-    tight_links: tuple[str, ...] = (),
+    tight_links: Mapping[str, int] | Iterable[str] = (),
 ) -> tuple[RobotDescription, LoweredCollisionModel]:
     """Load a manifest and lower its collision model via the provenance dispatcher.
 
@@ -514,7 +551,7 @@ def _lowered_text(
     *,
     acm_only: bool,
     geometry_only: bool,
-    tight_links: tuple[str, ...] = (),
+    tight_links: Mapping[str, int] | Iterable[str] = (),
 ) -> tuple[str, str, list[GeometryLoosening]]:
     """``(current_manifest_text, spliced_manifest_text, loosening)`` for a manifest.
 
@@ -571,9 +608,13 @@ def lower(
     tight_link: list[str] = typer.Option(
         [],
         "--tight-link",
+        metavar="NAME[=K]",
         help=(
             "Lower this link as a box plus its exact convex hull (tight_geometry), "
-            "repeatable. Links the manifest already refines stay refined."
+            "repeatable. NAME=K cuts the link into K slabs along its long axis, each a "
+            "box plus hull, for a link one hull would swallow the space around (a "
+            "pedestal with a foot plate). Links the manifest already refines stay "
+            "refined, in as many pieces as it carries."
         ),
     ),
 ) -> None:
@@ -591,13 +632,12 @@ def lower(
     if not robot.exists():
         _console.print(f"[red]Robot description not found:[/red] {robot}")
         raise typer.Exit(code=2)
+    tight = parse_tight_links(tight_link)
     if emit_cumotion is not None:
         from openral_core.assets import resolve_asset
         from openral_safety.cumotion_config import render_cumotion_config
 
-        desc, model = _lower(
-            robot, acm_only=False, geometry_only=False, tight_links=tuple(tight_link)
-        )
+        desc, model = _lower(robot, acm_only=False, geometry_only=False, tight_links=tight)
         # The URDF lets the emitter re-derive the ACM against the spheres it
         # actually writes, instead of copying the kernel's (see
         # `render_cumotion_config`). A manifest with no URDF asset falls back to
@@ -620,7 +660,7 @@ def lower(
                 f"{emit_cumotion}."
             )
     current, spliced, loosening = _lowered_text(
-        robot, acm_only=acm_only, geometry_only=geometry_only, tight_links=tuple(tight_link)
+        robot, acm_only=acm_only, geometry_only=geometry_only, tight_links=tight
     )
     if current == spliced:
         _console.print("[green]No change — manifest already matches the lowered model.[/green]")

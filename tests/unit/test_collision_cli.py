@@ -127,3 +127,17 @@ def test_mutually_exclusive_flags_rejected(tmp_path: Path) -> None:
     )
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output
+
+
+def test_tight_link_values_parse_to_piece_counts() -> None:
+    """``--tight-link NAME[=K]``: a bare name is one piece; a repeat keeps the larger K."""
+    import typer
+    from openral_cli.collision import parse_tight_links
+
+    assert parse_tight_links(["wrist", "openarm_body_link0=3", "wrist=2", "wrist"]) == {
+        "wrist": 2,
+        "openarm_body_link0": 3,
+    }
+    for bad in ("torso=0", "torso=three", "=3"):
+        with pytest.raises(typer.BadParameter):
+            parse_tight_links([bad])

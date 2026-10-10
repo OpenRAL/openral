@@ -13,6 +13,10 @@ Grammar (``resolve_asset(ref, kind)``):
   robot-specific MJCF loaders (sim-only optional deps, lazy-imported).
 * ``ros2://robot_description`` — dynamic-detection marker (URDF only); not a
   file, returned as ``None`` for the launch to subscribe at runtime.
+
+``resolve_package_uri`` is the companion for one ROS ``package://<pkg>/<path>``
+mesh reference inside a vendored URDF, for the description packages OpenRAL
+fetches itself as pinned clones (``openral_hal.ros_package_overlay``).
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import structlog
 
 _log = structlog.get_logger(__name__)
 
-__all__ = ["AssetKind", "AssetRefError", "resolve_asset"]
+__all__ = ["AssetKind", "AssetRefError", "resolve_asset", "resolve_package_uri"]
 
 AssetKind = Literal["urdf", "mjcf", "srdf"]
 
@@ -82,6 +86,62 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
         f"file:<relpath>, gym_aloha:<scene>, openarm:<variant>, "
         f"menagerie:<model>, {_ROS2_DYNAMIC}"
     )
+
+
+def resolve_package_uri(uri: str) -> Path:
+    """Resolve a ROS ``package://<pkg>/<relpath>`` mesh URI to a file on disk.
+
+    Only for the description packages OpenRAL fetches itself as pinned clones
+    (``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`` — today
+    ``openarm_description``); a sourced ROS workspace is not consulted, so the
+    answer is the same on every host. Lazy import, as ``_resolve_openarm``: the
+    fetchers stay off the import path for robots that never need them.
+
+    Args:
+        uri: The ``package://`` reference as the URDF spells it.
+
+    Returns:
+        The file inside the pinned clone.
+
+    Raises:
+        AssetRefError: A malformed URI, a package OpenRAL does not fetch, a
+            failed fetch (the cause is the fetcher's ``ROSConfigError``), or a
+            path that is not a file in the clone.
+
+    Example:
+        >>> try:
+        ...     resolve_package_uri("file:///tmp/not_a_package.stl")
+        ... except AssetRefError as exc:
+        ...     print(type(exc).__name__)
+        AssetRefError
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    prefix = "package://"
+    if not uri.startswith(prefix):
+        raise AssetRefError(f"not a package:// URI: {uri!r}")
+    pkg, _, rel = uri[len(prefix) :].partition("/")
+    if not pkg or not rel:
+        raise AssetRefError(f"malformed package URI {uri!r}; expected package://<pkg>/<relpath>")
+    try:
+        from openral_hal.ros_package_overlay import PUBLIC_ROS_PACKAGES, fetch_public_package
+    except ImportError as exc:
+        raise AssetRefError(
+            f"{uri!r}: resolving package:// refs needs openral_hal ({type(exc).__name__}: {exc})"
+        ) from exc
+    try:
+        root = fetch_public_package(pkg)
+    except ROSConfigError as exc:
+        raise AssetRefError(f"{uri!r}: fetching package {pkg!r} failed: {exc}") from exc
+    if root is None:
+        raise AssetRefError(
+            f"{uri!r}: package {pkg!r} is not one OpenRAL fetches "
+            f"(known: {sorted(PUBLIC_ROS_PACKAGES)})"
+        )
+    path = root / rel
+    if not path.is_file():
+        raise AssetRefError(f"{uri!r}: {path!s} is not a file in the pinned {pkg!r} clone")
+    return path
 
 
 def _resolve_rd(module: str, kind: AssetKind) -> Path:
