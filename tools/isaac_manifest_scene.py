@@ -226,6 +226,128 @@ def _quat_mul(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.floa
     )
 
 
+#: ``IsaacPlacementSuccess`` grades and the reward each scores, best first.
+PLACEMENT_SCORES: dict[str, float] = {"complete": 1.0, "partial": 0.5, "semi": 0.25, "fail": 0.0}
+
+
+def _quat_rotate(q: NDArray[np.float64], v: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Rotate ``v`` by the ``(w, x, y, z)`` quaternion ``q`` (``q ⊗ v ⊗ q*``).
+
+    Example:
+        >>> import numpy as np
+        >>> np.round(_quat_rotate(_yaw_quat(np.pi / 2), np.array([1.0, 0.0, 0.0])), 6).tolist()
+        [0.0, 1.0, 0.0]
+    """
+    conj = np.array([q[0], -q[1], -q[2], -q[3]])
+    return _quat_mul(_quat_mul(q, np.array([0.0, *v])), conj)[1:]
+
+
+def object_up_axis(roll: float, pitch: float) -> NDArray[np.float64]:
+    """The object-frame axis pointing up (world +z) at a declared roll/pitch.
+
+    "Upright" in ``placement_grade`` means this axis still points up, so an asset
+    authored lying down and stood up by its declared roll is upright standing.
+
+    Example:
+        >>> import numpy as np
+        >>> np.round(object_up_axis(0.0, 0.0), 6).tolist()
+        [0.0, 0.0, 1.0]
+        >>> np.round(object_up_axis(np.pi / 2, 0.0), 6).tolist()
+        [0.0, 1.0, 0.0]
+    """
+    q = _rpy_quat(roll, pitch, 0.0)
+    return _quat_rotate(np.array([q[0], -q[1], -q[2], -q[3]]), np.array([0.0, 0.0, 1.0]))
+
+
+def _in_box(p: NDArray[np.float64], box: dict[str, Any]) -> bool:
+    return all(lo <= v <= hi for v, lo, hi in zip(p, box["min"], box["max"], strict=True))
+
+
+def placement_grade(
+    position: NDArray[np.float64],
+    quat_wxyz: NDArray[np.float64],
+    up_axis: NDArray[np.float64],
+    placement: dict[str, Any],
+    upright_tol_deg: float,
+) -> str:
+    """Grade one resting object against a placement (``IsaacPlacementSuccess``).
+
+    ``placement`` is one entry of the spec's ``placements``: ``target`` and
+    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame). The object is
+    upright when ``up_axis`` (``object_up_axis``) is within ``upright_tol_deg`` of
+    world up. Returns ``complete`` (centre in target, upright), ``partial`` (in
+    target, fallen), ``semi`` (in an adjacent box, upright) or ``fail``. Pure.
+
+    Example:
+        >>> import numpy as np
+        >>> slot = {
+        ...     "target": {"min": [0, 0, 0], "max": [1, 1, 1]},
+        ...     "adjacent": [{"min": [0, 1, 0], "max": [1, 2, 1]}],
+        ... }
+        >>> up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
+        >>> placement_grade(np.array([0.5, 0.5, 0.5]), level, up, slot, 20.0)
+        'complete'
+        >>> placement_grade(np.array([0.5, 1.5, 0.5]), level, up, slot, 20.0)
+        'semi'
+        >>> on_side = _rpy_quat(np.pi / 2, 0.0, 0.0)
+        >>> placement_grade(np.array([0.5, 0.5, 0.5]), on_side, up, slot, 20.0)
+        'partial'
+    """
+    up = _quat_rotate(
+        np.asarray(quat_wxyz, dtype=np.float64), np.asarray(up_axis, dtype=np.float64)
+    )
+    tilt = float(np.degrees(np.arccos(np.clip(up[2] / np.linalg.norm(up), -1.0, 1.0))))
+    upright = tilt <= upright_tol_deg
+    pos = np.asarray(position, dtype=np.float64)
+    if _in_box(pos, placement["target"]):
+        return "complete" if upright else "partial"
+    if upright and any(_in_box(pos, b) for b in placement.get("adjacent", ())):
+        return "semi"
+    return "fail"
+
+
+def worst_grade(grades: Iterable[str]) -> str:
+    """The lowest-scoring grade (``PLACEMENT_SCORES``); ``fail`` for none.
+
+    Example:
+        >>> worst_grade(["complete", "semi"]), worst_grade([])
+        ('semi', 'fail')
+    """
+    return min(grades, key=PLACEMENT_SCORES.__getitem__, default="fail")
+
+
+def rest_after(rest_s: float, moved_m: float | None, dt: float, rest_speed_m_s: float) -> float:
+    """Seconds an object has been at rest after one step that moved it ``moved_m``.
+
+    ``None`` (no previous position: the first graded step) restarts the timer, as
+    does any step faster than ``rest_speed_m_s``.
+
+    Example:
+        >>> rest_after(0.5, 0.0001, 1 / 30, 0.02) > 0.5, rest_after(0.5, 0.01, 1 / 30, 0.02)
+        (True, 0.0)
+    """
+    if moved_m is None or moved_m > rest_speed_m_s * dt:
+        return 0.0
+    return rest_s + dt
+
+
+def placement_reward(grade: str, last_step: bool) -> tuple[float, bool]:
+    """``(reward, terminated)`` for an episode's current grade.
+
+    ``complete`` ends the episode with full reward; on the last step any other grade
+    scores its partial credit (``PLACEMENT_SCORES``); every other step scores 0.
+
+    Example:
+        >>> placement_reward("complete", False), placement_reward("semi", True)
+        ((1.0, True), (0.25, False))
+        >>> placement_reward("partial", False)
+        (0.0, False)
+    """
+    if grade == "complete":
+        return PLACEMENT_SCORES["complete"], True
+    return (PLACEMENT_SCORES[grade] if last_step else 0.0), False
+
+
 def _footprint(prim: Any, obj: dict[str, Any]) -> tuple[float, float, float, float]:
     """``(cx, cy, hx, hy)`` of a scene object's USD bounds after its roll/pitch, in its yawed frame."""
     from pxr import Usd, UsdGeom
@@ -286,8 +408,8 @@ def sample_object_poses(
 
     ``objects`` are the sidecar's object dicts; one with a ``pose_noise`` block
     (``IsaacObjectPoseNoise``) draws truncated-normal offsets around its declared
-    ``xyz``/``yaw`` until its ``footprints`` rectangle (object frame, ``(cx, cy,
-    hx, hy)``) clears every object placed before it and stays inside
+    ``xyz``/``yaw`` (plus one ``yaw_offsets_deg`` entry, picked uniformly) until its
+    ``footprints`` rectangle (object frame, ``(cx, cy, hx, hy)``) clears every object placed before it and stays inside
     ``keep_inside_xy`` by ``margin_m``. ``status``: ``"declared"`` (no noise),
     ``"sampled"``, or ``"declared_fallback"`` (``max_tries`` draws all rejected).
     Deterministic for a given ``rng`` state.
@@ -331,6 +453,10 @@ def sample_object_poses(
                     bad = np.abs(z) > clip
                     z[bad] = rng.standard_normal(int(bad.sum()))
                 x, y, yaw = np.array([x0, y0, yaw0]) + z * sigma
+                offsets = noise.get("yaw_offsets_deg") or (0.0,)
+                # One offset draws nothing, so existing seeds keep their layouts.
+                pick = int(rng.integers(len(offsets))) if len(offsets) > 1 else 0
+                yaw += np.radians(float(offsets[pick]))
                 quad = _rect_corners(x, y, yaw, rect)
                 if box is not None and (
                     np.any(quad < np.add(box[0], margin_m))
@@ -1233,6 +1359,20 @@ class IsaacManifestScene(IsaacSceneBase):
         self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
         self._object_nominal: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
         self._object_prims: dict[str, Any] = {}
+        # Graded placement success, resolved host-side for this scene's prompt
+        # (openral_sim.backends.isaac_sim._placement_success_spec); None = no task reward.
+        self._placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
+        self._placement_grade = "fail"
+        self._rest_s: dict[str, float] = {}
+        self._last_pos: dict[str, NDArray[np.float64]] = {}
+        declared = {str(o["name"]): o for o in self._objects}
+        self._up_axis = {
+            str(p["object"]): object_up_axis(
+                float(declared[str(p["object"])].get("roll", 0.0)),
+                float(declared[str(p["object"])].get("pitch", 0.0)),
+            )
+            for p in (self._placement_success or {}).get("placements", [])
+        }
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -2060,6 +2200,9 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
+        self._placement_grade = "fail"
+        self._rest_s.clear()
+        self._last_pos.clear()
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
@@ -2317,9 +2460,48 @@ class IsaacManifestScene(IsaacSceneBase):
         joints = self._joint_positions()
         return joints if joints is not None else np.zeros(0, dtype=np.float32)
 
+    def _grade_placements(self) -> str:
+        """Advance each placed object's rest timer and grade the episode (worst placement)."""
+        ps = self._placement_success
+        assert ps is not None  # reason: only called when placement_success is set
+        dt = float(self.sim_dt_per_tick_s or 0.0)
+        grades = []
+        for placement in ps["placements"]:
+            name = str(placement["object"])
+            pos_raw, quat = self._object_prims[name].get_world_pose()
+            pos = np.asarray(pos_raw, dtype=np.float64)
+            last = self._last_pos.get(name)
+            moved = None if last is None else float(np.linalg.norm(pos - last))
+            self._rest_s[name] = rest_after(
+                self._rest_s.get(name, 0.0), moved, dt, float(ps["rest_speed_m_s"])
+            )
+            self._last_pos[name] = pos
+            # ponytail: rest-based release check -- a gripper holding the object still in
+            # the region for settle_s counts as placed; add a robot-contact test if needed.
+            if self._rest_s[name] + 1e-9 < float(ps["settle_s"]):
+                grades.append("fail")
+                continue
+            grades.append(
+                placement_grade(
+                    pos,
+                    np.asarray(quat),
+                    self._up_axis[name],
+                    placement,
+                    float(ps["upright_tol_deg"]),
+                )
+            )
+        return worst_grade(grades)
+
     def _reward_terminated(self) -> tuple[float, bool]:
-        # Bare bring-up scene: no task reward / termination.
-        return 0.0, False
+        """Graded placement success (``placement_success``), else no task reward.
+
+        Terminates with reward 1.0 once every placement is ``complete``; otherwise the
+        episode's last step scores its grade (``PLACEMENT_SCORES``), every other step 0.
+        """
+        if self._placement_success is None:
+            return 0.0, False  # bring-up scene: no task reward / termination
+        self._placement_grade = self._grade_placements()
+        return placement_reward(self._placement_grade, self._step_idx >= self.max_steps)
 
     def _extra_info(self) -> dict[str, Any]:
         """Simulator ground truth in the step ``info`` — never a policy observation.
@@ -2342,6 +2524,8 @@ class IsaacManifestScene(IsaacSceneBase):
                 name: [float(v) for v in prim.get_world_pose()[1]]
                 for name, prim in self._object_prims.items()
             }
+        if self._placement_success is not None:
+            info["placement_grade"] = self._placement_grade
         return info
 
     def _joint_positions(self) -> NDArray[np.float32] | None:
