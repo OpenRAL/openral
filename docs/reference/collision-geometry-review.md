@@ -605,8 +605,26 @@ One existing live test moved with it: `test_safety_kernel_slot_row_measured_fill
 target put the left link5 12 mm from the real torso, which the slabs refuse (a false stop of the
 column slab), so its X / M were re-found by the same search with the torso in the model.
 
-Still owed: a rest-pose world-voxel check on the bench cell (attended) — the static slabs are
-voxel-checked like every box, and the self-filter now removes the torso's own returns.
+**The foot plate against the surface the robot stands on** (world-voxel check). The foot-plate
+slab reaches 1 mm below that surface; the self-filter removes returns within 2 cm of the hulls;
+the kernel trips a 2 cm cell within 2 cm. Modelled — a flat surface at `z = -0.698` on the
+octree lattice, self-filtered exactly against the three hulls, replayed into the real kernel at
+the real cell's parameters by `tools/world_voxel_rest_verdict.py`
+(`tests/integration/test_world_voxel_rest_verdict_live.py`):
+
+| surface in the map | hold at q = 0 |
+|---|---|
+| all around the robot | refused, `openarm_body_link0`, 5 mm, cell (-0.17, 0.09, -0.69) |
+| only in front of the column (x > 0) | refused, 5 mm, cell (0.11, -0.09, -0.69) |
+| only in front of the foot plate's toe (x > 0.096) | refused, 5 mm, same cell |
+| only behind the column (x < -0.03) | refused, 5 mm, cell (-0.17, -0.09, -0.69) |
+| the same surface 0.10 m lower | accepted |
+
+So if the head camera's map holds the surface just in front of the robot, the kernel refuses
+every chunk near rest. Whether it does is the cell measurement still owed: the runbook's
+step 3b runs the tool on a twin-pass recording (motors unpowered). Before #360 the lowest
+kernel link was the pedestal at shoulder height, so this could not happen; the remedies are the
+Safety-WG's (hazard-log Entry 058).
 
 ## 12. MJCF twins
 

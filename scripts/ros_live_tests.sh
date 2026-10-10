@@ -52,6 +52,9 @@ TARGETS=(
     # shoulder block is refused as a self hit naming openarm_body_link0, and
     # the rest pose (pedestals inside the torso, SRDF-exempt) is accepted.
     tests/integration/test_safety_kernel_openarm_torso.py
+    # The offline rest verdict: the real kernel judges a hold row against a recorded
+    # world-voxel map (a modelled support surface at the OpenArm torso's foot refuses).
+    tests/integration/test_world_voxel_rest_verdict_live.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     tests/integration/test_sim_depth_registered_colour_live.py
     tests/integration/test_hal_sigint_teardown_live.py

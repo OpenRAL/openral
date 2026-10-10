@@ -156,7 +156,10 @@ inside the shoulder block (51 mm overlap, rigid); link1 clears the torso by
 7 mm at rest and link2 by 11.5 mm, and both stay checked. On 1000 seeded
 in-limit poses the kernel now refuses 8.2 % instead of 4.0 %: 61 of the new
 refusals put an arm vertex inside the real torso mesh (poses the old model
-accepted), 13 are slab false stops (review §11.1).
+accepted), 13 are slab false stops (review §11.1). The foot-plate slab also
+meets the world-voxel check: on a modelled support surface the kernel refuses a
+hold at rest. Run `tools/world_voxel_rest_verdict.py` on a twin-pass recording
+before the first attended run with this manifest (runbook step 3b).
 
 `tests/unit/test_collision_geometry_enclosure.py` places the meshes with
 MuJoCo and the primitives with the kernel's own model and FK, and fails if a

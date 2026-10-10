@@ -289,8 +289,34 @@ Record a bag for the write-up:
 
 ```bash
 ros2 bag record -s mcap -o ~/twin_pass_$(date +%F-%H%M) \
-    /openral/world_voxels /octomap_binary /openral/safety_status /tf /tf_static
+    /openral/world_voxels /octomap_binary /openral/safety_status /joint_states /tf /tf_static
 ```
+
+### 3b. Rest verdict from the recording [offline]
+
+Nothing dispatches in the twin pass, so the kernel judged nothing: a quiet `SafetyStatus` says
+nothing about whether the map would stop the robot at rest. Ask the real kernel, off the robot:
+
+```bash
+python tools/world_voxel_rest_verdict.py --bag ~/twin_pass_<stamp> --unit thor --pose zero
+```
+
+It composes this scene's real-hardware graph (as `deploy run` would; the ZED driver need not
+be installed where you run it), takes the kernel's parameters from it (20 mm world-voxel
+margin, the manifest collision model), replays the bag's last `/openral/world_voxels` grid
+into a real `safety_kernel_node` as fresh, and judges one `JOINT_POSITION` hold row. Exit 0
+is accepted; exit 1 is refused, with the link, the `voxel_<n>` cell's centre and the distance.
+
+Run it before step 4. Since issue #356 the torso's foot plate is in the kernel model and
+reaches 1 mm below the surface the robot stands on, while the self-filter only removes 2 cm
+around it: on a modelled surface the kernel refuses a hold at rest on `openarm_body_link0`,
+even with only the surface in front of the foot plate's toe in the map
+(`tests/integration/test_world_voxel_rest_verdict_live.py`). A refusal here is a measured
+finding for the Safety-WG (hazard-log Entry 058), not something to dispatch through.
+
+The twin pass maps at the sim tuning (15 mm cells, sim occupancy thresholds). To judge the
+deploy-tuned map instead, record the same topics during step 4's Idle test and run the tool
+on that bag with `--pose measured`.
 
 ## 4. Real arms, attended [human, rig]
 
@@ -371,7 +397,9 @@ because the cooldown has not passed yet, and nothing was cleared. Wait a moment 
 Run these tests in order:
 
 1. **Idle.** Bring up and dispatch nothing for 60 s. Expect no stop. Note whether the arms
-   at zero appear as voxels (Foxglove).
+   at zero appear as voxels (Foxglove). With nothing dispatched the kernel judges no chunk,
+   so this cannot show a stop at rest: record the step 3 topics and run step 3b's
+   `tools/world_voxel_rest_verdict.py --pose measured` on that bag for the verdict.
 2. **Planted obstacle.** Put a soft obstacle (a foam block) on the table **in the camera's
    view**, in the path of the dispatched skill's first motion. Expect a `KIND_COLLISION`
    stop before contact, with the cell on the block and a `min_distance_m` consistent with
@@ -456,3 +484,5 @@ For the write-up, record:
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
   gate `deploy run` applies.
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.
+- `tools/world_voxel_rest_verdict.py`: step 3b's offline verdict, the real kernel judging a
+  hold row against a recorded map.

@@ -22,6 +22,16 @@ _Wired as `just profile-load <rskill> [args]`. Families whose adapter lacks a ph
 - `_render(pairs, total_s) -> str` — Formats the captured pairs as `phase / elapsed_s / share` columns plus an `(unaccounted)` row when phase coverage misses >1 s. (L122)
 - `main(argv=None) -> int` (L149) — Late-imports `openral_sim.factory.make_policy` so the import cost lands inside the profiled total; reports `HF_HUB_OFFLINE` status alongside the result.
 
+### `tools/world_voxel_rest_verdict.py`
+_Offline: the real `safety_kernel_node` judges one hold row against a recorded `/openral/world_voxels` grid, with the parameters `openral deploy run` gives it. The kernel's world-voxel check only runs on a chunk it judges, so an idle cell never exercises it; this asks directly, without motion (issue #356: the OpenArm torso's foot plate against the surface it stands on). Needs ROS 2 Jazzy and this workspace's colcon `install/` sourced; reuses `tests/sim/safety/_kernel_subprocess` to start and activate the kernel. Exit 0 accepted, 1 refused, 3 dropped, 2 setup error. Pinned by `tests/integration/test_world_voxel_rest_verdict_live.py`._
+
+- `class RestVerdict` (L58) — Frozen dataclass: `outcome` (`accepted` / `refused` / `dropped`), `pose_rad`, `joint_names`, `occupied_cells`, `grid_frame`, a refusal's parsed `evidence` and its `voxel_<n>` `cell_centre_m` (grid frame), a drop's `drop_reason`.
+- `deploy_node_params(scene, unit) -> dict[str, dict]` (L108) — `{"kernel": ..., "self_filter": ...}` parameters from composing the scene's `hal_mode=real` graph with `resolve_launch_invocation` + `compose_runtime_graph`, nothing launched; the scene's `drivers:` are dropped first (a vendor driver need not be installed; none reaches the kernel). Raises `RuntimeError` when the graph has no kernel.
+- `read_last_messages(bag, topics) -> dict[str, Any]` (L180) — The last message of each topic in a rosbag2 bag (storage auto-detected), deserialised with `rosidl_runtime_py`.
+- `rest_row(joint_names, aliases, joint_state, pose) -> list[float]` (L201) — The row to judge: zeros, or the bag's last joint state mapped onto the kernel's `collision_joint_names` through the self-filter's `collision_joint_aliases` (a vendor `/joint_states` uses `sim_joint_name`); an unnamed joint raises `ValueError`, never a silent zero.
+- `judge_hold_row(kernel_params, grid, row, *, log_path, timeout_s=15.0) -> RestVerdict` (L248) — Starts the kernel on an isolated domain, republishes `grid` restamped (header and `source_stamp`) and joint states at `row` at 10 Hz, sends one `JOINT_POSITION` row equal to `row`, and reads `/openral/safe_action`, `/openral/failure/safety` and `/openral/safety_status`.
+- `main(argv=None) -> int` (L366) — CLI: `--bag` (required), `--scene` (default `scenes/deploy/openarm_real_world_voxels.yaml`), `--unit` (default `$OPENRAL_ROBOT_UNIT`), `--pose measured|zero`, `--json`.
+
 ### `tools/viz_collision.py`
 _Overlays a robot's kernel collision primitives — the shapes the C++ safety kernel checks — on its real meshes at any joint pose, for eyeballing whether they clear the robot without running a deploy. Standalone inspection tool, not a pytest test; run with `PYTHONPATH=packages/openral_safety`._
 
