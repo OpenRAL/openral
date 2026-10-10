@@ -100,3 +100,24 @@ def test_frames_without_inline_data_are_not_skips() -> None:
     with capture_logs() as logs:
         assert decode_inline_frame(frame) is None
     assert logs == []
+
+
+def test_policy_image_reverses_bgr8_to_rgb_for_runner_and_recorder_alike() -> None:
+    """The bag must hold the frame the policy saw.
+
+    OpenCV readers and the ZED's ``bgra8`` stream deliver ``BGR8``; the runner
+    reversed it to RGB for the policy while the recorder wrote the raw bytes
+    untagged, so ``from-bag`` produced a channel-swapped dataset.
+    """
+    from openral_runner.dataset_recorder_bridge import decode_policy_image
+
+    payload = bytes(range(36))
+    bgr = decode_policy_image(_frame(FrameEncoding.BGR8, payload, channels=3))
+    rgb = decode_policy_image(_frame(FrameEncoding.RGB8, payload, channels=3))
+    assert bgr is not None and rgb is not None
+    assert np.array_equal(bgr, rgb[..., ::-1])
+    assert bgr.flags.c_contiguous  # torch rejects negative strides
+    # Every other layout is untouched (a DEPTH16 slot keeps its uint16 millimetres).
+    depth = decode_policy_image(_frame(FrameEncoding.DEPTH16, bytes(24), channels=1))
+    assert depth is not None and depth.dtype == np.uint16
+    assert decode_policy_image(_frame(FrameEncoding.RGB8, bytes(35), channels=3)) is None

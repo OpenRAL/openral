@@ -3130,9 +3130,9 @@ def _decode_image_frames(
     """Decode ``WorldState.image_frames`` into a VLA-slot-keyed ``obs["images"]``.
 
     Each ``SensorFrame`` with inline ``data`` is decoded by
-    ``decode_inline_frame`` into an ``HxWxC`` array (uint8 colour/mono,
-    uint16 depth; JPEG/PNG decoded to RGB) and stored under its VLA slot
-    (``sensor_name_to_slot``). Sensors absent from ``sensor_to_slot`` pass
+    ``decode_policy_image`` into an ``HxWxC`` array (uint8 colour/mono,
+    uint16 depth; JPEG/PNG decoded to RGB; BGR8 reversed to RGB) and stored
+    under its VLA slot (``sensor_name_to_slot``). Sensors absent from ``sensor_to_slot`` pass
     through under their own name. Frames without inline pixels (``data is
     None`` — topic / handle delivery) are not decoded — zero-copy handle
     frames travel via ``_collect_image_handles`` instead.
@@ -3142,18 +3142,17 @@ def _decode_image_frames(
             decoded (``runner.frame_skipped`` logs why) and its slot is in
             ``required_slots``: the policy would otherwise run blind on that view.
     """
-    import numpy as np
     from openral_core.exceptions import ROSPerceptionStale
-    from openral_core.schemas import FrameEncoding
-    from openral_runner.dataset_recorder_bridge import decode_inline_frame
+    from openral_runner.dataset_recorder_bridge import decode_policy_image
 
     images: dict[str, Any] = {}
     for name, frame in image_frames.items():
         # One decoder for the runner and the dataset recorder: dtype comes
         # from the encoding, so a DEPTH16 frame sitting next to the RGB
         # slots (the OpenArm bench's `head_zed`) decodes as uint16 instead
-        # of aborting the whole observation.
-        arr = decode_inline_frame(frame)
+        # of aborting the whole observation, and a BGR8 camera reaches the
+        # policy and the bag as the same RGB array.
+        arr = decode_policy_image(frame)
         slot = sensor_to_slot.get(name, name)
         if arr is None:
             if frame.data is not None and slot in required_slots:
@@ -3162,11 +3161,7 @@ def _decode_image_frames(
                     f"{slot!r} but its frame could not be decoded (see runner.frame_skipped)"
                 )
             continue
-        # Policies are fed RGB. OpenCV readers publish BGR8, so reverse the
-        # channel axis (contiguous: torch rejects negative strides) rather than
-        # feed a real deploy swapped colours.
-        bgr = frame.encoding == FrameEncoding.BGR8
-        images[slot] = np.ascontiguousarray(arr[..., ::-1]) if bgr else arr
+        images[slot] = arr
     return images
 
 

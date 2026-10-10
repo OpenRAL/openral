@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from openral_dataset import RolloutRecorder
     from openral_world_state.aggregator import WorldStateAggregator
 
-__all__ = ["DatasetRecorderBridge"]
+__all__ = ["DatasetRecorderBridge", "decode_inline_frame", "decode_policy_image"]
 
 _log = structlog.get_logger(__name__)
 
@@ -143,6 +143,39 @@ def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
         _skip(frame, f"payload {len(data)} B != expected {expected} B")
         return None
     return np.frombuffer(data, dtype=dtype).reshape(shape)
+
+
+def decode_policy_image(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
+    """``decode_inline_frame``, with a ``BGR8`` frame reversed to RGB.
+
+    What the policy is fed: OpenCV readers (and a ``ros2_image`` source such as
+    the ZED's ``bgra8`` stream) deliver ``BGR8``, and policies take RGB. The
+    skill runner and the dataset recorder share this one decoder so the bag
+    holds the frame the policy saw — the recorder used to write the raw BGR
+    bytes untagged, and ``openral dataset from-bag`` read them back as RGB, so
+    every real-camera dataset came out channel-swapped. The reversed view is
+    made contiguous (torch rejects negative strides). Other encodings pass
+    through ``decode_inline_frame`` unchanged, ``None`` included.
+
+    Example:
+        >>> from openral_core.schemas import FrameEncoding, SensorFrame
+        >>> bgr = SensorFrame(
+        ...     sensor_id="wrist_left",
+        ...     stamp_monotonic_ns=1,
+        ...     stamp_wall_ns=1,
+        ...     encoding=FrameEncoding.BGR8,
+        ...     width=1,
+        ...     height=1,
+        ...     channels=3,
+        ...     data=bytes([1, 2, 3]),
+        ... )
+        >>> decode_policy_image(bgr).tolist()
+        [[[3, 2, 1]]]
+    """
+    arr = decode_inline_frame(frame)
+    if arr is not None and frame.encoding == FrameEncoding.BGR8:
+        return np.ascontiguousarray(arr[..., ::-1])
+    return arr
 
 
 def _skip(frame: SensorFrame, reason: str) -> None:
@@ -415,7 +448,7 @@ class DatasetRecorderBridge:
         if not image_frames:
             return out
         for name, frame in image_frames.items():
-            arr = decode_inline_frame(frame)
+            arr = decode_policy_image(frame)
             if arr is None:
                 continue  # topic/handle delivery, or a skip `decode_inline_frame` logged
             # `DatasetRecorder.record_frame` takes `(H, W, 3) uint8` RGB per
