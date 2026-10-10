@@ -777,3 +777,58 @@ def test_topics_follow_the_sensor_modality(
         camera_topic(sensor, CameraTopicKind[image_kind]),
         camera_topic(sensor, CameraTopicKind[info_kind]),
     )
+
+
+def test_topic_native_opts_one_camera_out_of_the_resolution_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``backend_params["topic_native"]: true`` lifts the size ceiling for that camera only.
+
+    A bus reader that needs exact pixels (calibration, ``openral record``) gets the
+    capture size; its neighbour keeps the thumbnail, and the 3 Hz rate cap holds for
+    both — the opt-out is resolution, not cadence. Only a real ``true`` counts.
+    """
+    from openral_rskill_ros.sensor_leg import _DEFAULT_TOPIC_MAX_SIZE, _topic_native
+    from openral_runner.factory import SENSOR_BACKEND_REGISTRY
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    class _Reader:
+        def __init__(self, sensor_id: str) -> None:
+            self.sensor_id = sensor_id
+
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    backend = SensorReaderBackend.OPENCV_THREAD
+    monkeypatch.setitem(
+        SENSOR_BACKEND_REGISTRY, backend.value, lambda config: _Reader(config.sensor_id)
+    )
+    monkeypatch.setattr(SensorRosPublisher, "prepare", lambda self: None)
+    monkeypatch.setattr(SensorRosPublisher, "stop", lambda self: None)
+
+    wrist = _spec(
+        "wrist_left",
+        binding=SensorDeployBinding(
+            backend=backend, backend_params={"fps": 30, "topic_native": True}
+        ),
+    )
+    top = _spec("top", binding=SensorDeployBinding(backend=backend, backend_params={"fps": 30}))
+    yaml_one = _spec(
+        "yaml_one", binding=SensorDeployBinding(backend=backend, backend_params={"topic_native": 1})
+    )
+    assert _topic_native(wrist) and not _topic_native(top) and not _topic_native(yaml_one)
+
+    leg = open_deploy_sensor_readers(
+        [wrist, top, yaml_one], ros_node=object(), topic_max_size=_DEFAULT_TOPIC_MAX_SIZE
+    )
+    try:
+        by_name = {p._reader.sensor_id: p for p in leg.publishers}  # type: ignore[attr-defined]
+        assert by_name["wrist_left"]._max_size is None
+        assert by_name["top"]._max_size == _DEFAULT_TOPIC_MAX_SIZE
+        assert by_name["yaml_one"]._max_size == _DEFAULT_TOPIC_MAX_SIZE
+        assert by_name["wrist_left"]._rate_hz == _MAX_FALLBACK_TOPIC_RATE_HZ
+    finally:
+        leg.close()

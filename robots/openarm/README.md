@@ -174,7 +174,12 @@ pinhole + plumb_bob from the 2026-10-02 calibration at 960x600, so the wrists ca
 neither names one. `top` is the ZED's UNRECTIFIED left image at VGA — what the restock
 policy was trained on (the driver override grabs VGA and advertises the raw topic) —
 `head_zed` its SDK depth, the two Arducams are
-`wrist_left` / `wrist_right`. The manifest's
+`wrist_left` / `wrist_right`. The wrists set `topic_native: true`, so their bus topic
+(`/openral/cameras/wrist_*/image`) carries the 960x600 capture rather than the sensor leg's
+320x240 thumbnail (still at its 3 Hz cap); `top` is already native on the driver's own
+`/zed/zed_node/rgb/color/raw/image`. To record what the policy saw, use
+`openral deploy run --dataset-out <file.mcap>`: it bags each tick's native frames straight
+from the aggregator, paired with that tick's state and action, with no bus hop. The manifest's
 `observation.images.top` key is what the skill requires: its published
 `rskill.yaml` lists `observation.images.top` / `wrist_left` / `wrist_right` in
 `sensors_required` and maps the checkpoint's `observation.images.context` input

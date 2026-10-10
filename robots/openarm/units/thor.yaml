@@ -53,6 +53,10 @@ sensors:
         width: 960
         height: 600
         fps: 30
+        # Publish this wrist on the bus at capture size, not the sensor leg's 320x240
+        # thumbnail: a recording or calibration pass reads these pixels exact. Still
+        # 3 Hz. The policy and `--dataset-out` read the native frame in-process anyway.
+        topic_native: true
     intrinsics:
       width: 960
       height: 600
@@ -70,6 +74,10 @@ sensors:
         width: 960
         height: 600
         fps: 30
+        # Publish this wrist on the bus at capture size, not the sensor leg's 320x240
+        # thumbnail: a recording or calibration pass reads these pixels exact. Still
+        # 3 Hz. The policy and `--dataset-out` read the native frame in-process anyway.
+        topic_native: true
     intrinsics:
       width: 960
       height: 600

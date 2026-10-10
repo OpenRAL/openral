@@ -273,6 +273,16 @@ RGB-only policy simply never reads it. Until 2026-09-22 the runner read every
 frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
 real OpenArm dispatch with `cannot reshape array of size 1843200`. A camera
 that delivers JPEG or PNG (an MJPEG USB camera) is decoded to RGB the same way.
+
+The bus is not the policy's path. Cameras without a GStreamer tee reach
+`/openral/cameras/<name>/image` through a Python republisher capped at 3 Hz and
+320x240 (the full-resolution rclpy copy holds the GIL; the policy reads the
+native frame in-process from the aggregator). Per camera, `backend_params`
+takes `topic_rate_hz: <hz>` to lift the rate and `topic_native: true` to
+publish at capture size — opt-ins for a bus reader that needs exact pixels,
+such as a calibration pass. To record the frames the policy actually saw, pass
+`--dataset-out <file.mcap>`: the recorder snapshots the aggregator at every
+tick (native frames + state + action) and never reads the bus.
 A frame the decoder cannot handle is logged as `runner.frame_skipped` with the
 sensor and encoding; if that sensor feeds one of the policy's required camera
 slots, the goal fails with `ROSPerceptionStale` rather than running the policy
