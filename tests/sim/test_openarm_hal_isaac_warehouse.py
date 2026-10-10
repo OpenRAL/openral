@@ -20,6 +20,7 @@ Enactic's public ``openarm_description`` (network on first use).
 from __future__ import annotations
 
 import importlib.util
+import itertools
 from collections.abc import Iterator
 from typing import Any
 
@@ -262,3 +263,66 @@ def test_hal_commits_a_bimanual_slot_tick(env: Any) -> None:
         assert q[name] == pytest.approx(want, abs=0.03), name
     assert q["left_gripper"] == pytest.approx(0.7, abs=0.03)
     assert q["right_gripper"] == pytest.approx(-0.7, abs=0.03)
+
+
+def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
+    """Issue #361: Isaac's RTX pipeline delivers a camera frame a few steps after the
+    physics state it shows, so every observation carries ``image_time_ns``: the sim
+    time each frame shows.
+
+    The joint-step check from the issue: hold still, step ``left_joint1`` by 0.3 rad,
+    and find the left wrist camera's first frame that differs from its predecessor by
+    more than the still window's noise. That frame must carry the time of the step that
+    moved the joint (within one tick), not the time of the step that returned it. And a
+    frame the renderer repeats keeps its time: equal times are equal images, for every
+    camera. The lag itself is not asserted: it is the renderer's and not constant
+    (Isaac 6.1, this scene: mostly 2 steps, with repeats and skips; 4 in the restock
+    scene of the issue), which is why the time header is the contract.
+    """
+    tick_ns = 1e9 / 30.0
+    # ``top`` does not see left_joint1 move in this scene; it still checks the pairing.
+    cams, mover = ("top", "wrist_left"), "wrist_left"
+    env.reset(seed=0)
+    hold = np.full(env.action_dim, np.nan, dtype=np.float32)
+    # (sim time after the step, {cam: frame time}, {cam: image})
+    rows: list[tuple[int, dict[str, int], dict[str, np.ndarray]]] = []
+
+    def record(action: np.ndarray) -> Any:
+        obs = env.step(action).observation
+        assert "image_time_ns" in obs, "the Isaac observation carries no image_time_ns"
+        rows.append(
+            (
+                int(env.sim_time_ns()),
+                {c: int(obs["image_time_ns"][c]) for c in cams},
+                {c: obs["images"][c].astype(np.float32) for c in cams},
+            )
+        )
+        return obs
+
+    for _ in range(30):  # settle, then a still window for the noise floor
+        obs = record(hold)
+    move = len(rows)  # index of the step that moves the joint
+    step = hold.copy()
+    step[0] = float(obs["joint_positions"][0]) + 0.3
+    for _ in range(12):
+        record(step)
+    t_move = rows[move][0]
+
+    for sim_ns, times, _ in rows:
+        assert all(t <= sim_ns for t in times.values()), "a frame claims a time not yet simulated"
+    for cam in cams:
+        for (_, t0, img0), (_, t1, img1) in itertools.pairwise(rows):
+            if t1[cam] == t0[cam]:
+                assert np.array_equal(img1[cam], img0[cam]), f"{cam}: one frame time, two images"
+    diff = [0.0] + [
+        float(np.mean(np.abs(rows[i][2][mover] - rows[i - 1][2][mover])))
+        for i in range(1, len(rows))
+    ]
+    floor = max(diff[10:move])  # the still window, after settling
+    first = next(i for i in range(move, len(rows)) if diff[i] > 3.0 * floor + 0.5)
+    shown = rows[first][1][mover]
+    assert abs(shown - t_move) <= tick_ns, (
+        f"{mover}: the first frame showing the move (returned by step {first} at "
+        f"{rows[first][0] / 1e9:.4f} s) is stamped {shown / 1e9:.4f} s, but the joint "
+        f"moved in the step ending {t_move / 1e9:.4f} s"
+    )

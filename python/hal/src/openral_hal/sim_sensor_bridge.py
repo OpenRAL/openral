@@ -209,6 +209,31 @@ def _rgb8_image(rgb: Any, *, frame_id: str, stamp: Any) -> Any:
     return msg
 
 
+def frame_stamp_ns(node_now_ns: int, frame_time_ns: int | None, sim_now_ns: int | None) -> int:
+    """Stamp for a sim sensor frame: the node's now minus the frame's age on the sim clock.
+
+    A renderer can deliver a frame steps after the physics state it shows (Isaac's
+    RTX pipeline: 4 steps, 133 ms at 30 Hz), and the HAL reports the sim time each
+    frame shows (``SimAttachedHAL.read_image_times``). Stamping at the node's now
+    labelled that frame as current (issue #361). Its age, ``sim_now_ns -
+    frame_time_ns``, carries into any clock domain by the same rule as the
+    joint-state republish (``joint_state_republish_stamp_ns``), so the frame pairs
+    with joint states and TF at the time it shows. No frame time or sim clock, or a
+    negative or >5 s age (another clock domain), keeps the node's now.
+
+    Example:
+        >>> frame_stamp_ns(10_000_000_000, 2_000_000_000, 2_133_000_000)
+        9867000000
+        >>> frame_stamp_ns(10_000_000_000, None, 2_133_000_000)
+        10000000000
+    """
+    if frame_time_ns is None or sim_now_ns is None:
+        return node_now_ns
+    from openral_hal.lifecycle import joint_state_republish_stamp_ns
+
+    return joint_state_republish_stamp_ns(node_now_ns, frame_time_ns, wall_now_ns=sim_now_ns)
+
+
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
     """Resolve a camera's frame from a ``read_images()`` dict, or ``None``.
 
@@ -2969,7 +2994,8 @@ class SimSensorBridge:
         images = reader()  # dict[str, ndarray HWC uint8]
         if not isinstance(images, dict) or not images:
             return
-        stamp = self._node.get_clock().now().to_msg()
+        now = self._node.get_clock().now()
+        image_times, sim_now_ns = self._frame_times()
         from openral_observability.producer import (
             encode_rgb_thumbnail,
             record_sensor_frame_attrs,
@@ -2999,6 +3025,9 @@ class SimSensorBridge:
             if arr.ndim != _IMAGE_DIM or arr.shape[2] not in (1, _RGB_CHANNELS, 4):
                 continue
             pub = self._advertise_camera(name)
+            # The time the frame shows, not the publish time (issue #361).
+            frame_time_ns = _frame_for_camera(image_times, obs_key, name)
+            stamp = self._frame_stamp(now, frame_time_ns, sim_now_ns)
             h, w, c = arr.shape
             msg = RosImage()
             msg.header.stamp = stamp
@@ -3041,6 +3070,19 @@ class SimSensorBridge:
                     age_ms=0.0,
                     thumbnail_bytes=thumb,
                 )
+
+    def _frame_times(self) -> tuple[dict[str, int], int | None]:
+        """The HAL's per-camera frame times and its sim now (``({}, None)`` without them)."""
+        read_times = getattr(self._hal, "read_image_times", None)
+        times = read_times() if callable(read_times) else {}
+        read_now = getattr(self._hal, "sim_time_ns", None)
+        sim_now_ns = read_now() if callable(read_now) else None
+        return (times if isinstance(times, dict) else {}), sim_now_ns
+
+    def _frame_stamp(self, now: Any, frame_time_ns: int | None, sim_now_ns: int | None) -> Any:
+        """``frame_stamp_ns`` as a header stamp in ``now``'s clock."""
+        ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns)
+        return type(now)(nanoseconds=ns, clock_type=now.clock_type).to_msg()
 
     def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
         """Pinhole ``CameraInfo`` for an RGB camera, from its MJCF ``fovy``.
@@ -5040,7 +5082,9 @@ class SimSensorBridge:
         """
         read = getattr(self._hal, "read_depth_clouds", None)
         clouds = read() if callable(read) else {}
-        stamp = self._node.get_clock().now().to_msg()
+        now = self._node.get_clock().now()
+        # Each cloud / RGB-D frame stamped with the time its render shows (issue #361).
+        frame_times, sim_now_ns = self._frame_times()
         if clouds:
             from openral_hal.depth_cloud import pointcloud2_from_points_xyz
 
@@ -5055,6 +5099,7 @@ class SimSensorBridge:
                 if self._depth_clouds_published.get(name) is pts:
                     continue
                 self._depth_clouds_published[name] = pts
+                stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
                 cloud = pointcloud2_from_points_xyz(pts, frame_id=base_frame_id, stamp=stamp)
                 pub.publish(cloud)
         read_frames = getattr(self._hal, "read_depth_frames", None)
@@ -5067,7 +5112,13 @@ class SimSensorBridge:
             if spec is None or self._depth_frames_published.get(name) is frame:
                 continue
             self._depth_frames_published[name] = frame
-            self._publish_depth_frame(name, spec, frame, stamp)
+            self._publish_depth_frame(
+                name,
+                spec,
+                frame,
+                self._frame_stamp(now, frame_times.get(name), sim_now_ns),
+                tf_stamp=now.to_msg(),
+            )
 
     def _colour_publishers(self, name: str) -> tuple[Any, Any]:
         """The depth camera's colour ``Image`` + ``CameraInfo`` publishers, created once.
@@ -5095,7 +5146,9 @@ class SimSensorBridge:
             self._depth_colour_pubs[name] = pubs
         return pubs
 
-    def _publish_depth_frame(self, name: str, spec: Any, frame: Any, stamp: Any) -> None:
+    def _publish_depth_frame(
+        self, name: str, spec: Any, frame: Any, stamp: Any, *, tf_stamp: Any
+    ) -> None:
         """One backend RGB-D frame → depth + colour ``Image``/``CameraInfo`` and the optical TF.
 
         The streams a real RGB-D driver publishes (the ZED's ``depth_registered`` +
@@ -5106,6 +5159,10 @@ class SimSensorBridge:
         camera's pose as the backend placed it. That is exactly what the vision
         attachment leg (segmenter + HAL bridge) consumes. A frame whose colour does
         not match its depth raster publishes the depth only, warned once.
+
+        ``stamp`` is the time the frame shows; ``tf_stamp`` (the node's now) stamps
+        the optical TF, which the backend measured at the current step, so the TF
+        history stays true and a lookup at ``stamp`` finds the pose of that time.
         """
         import numpy as np
         from geometry_msgs.msg import TransformStamped
@@ -5143,7 +5200,7 @@ class SimSensorBridge:
         if self._tf_broadcaster is not None:
             qw, qx, qy, qz = rotation_to_quat_wxyz(optical_in_base[:3, :3])
             tf = TransformStamped()
-            tf.header.stamp = stamp
+            tf.header.stamp = tf_stamp
             tf.header.frame_id = getattr(self._description, "base_frame", "base_link")
             tf.child_frame_id = optical
             tf.transform.translation.x = float(optical_in_base[0, 3])

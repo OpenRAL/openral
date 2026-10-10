@@ -96,6 +96,9 @@ without the pin both keep robosuite's native 20 Hz, the benchmark contract the
 eval tier and every published LIBERO number run at. The bare MuJoCo twins
 (`MujocoArmHAL`: OpenArm, SO-100/101, UR, Franka, ...) derive their physics
 steps per action from the same rate at connect (issue #358).
+Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
+observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
+with the time each image shows, not the publish time (issue #361).
 
 ## SimScene catalogue (`scenes/sim/`)
 

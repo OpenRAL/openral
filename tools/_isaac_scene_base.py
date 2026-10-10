@@ -11,6 +11,8 @@ Subclasses implement the divergent parts:
 * ``build`` — construct the stage (robot, props, cameras, controllers);
 * ``_apply_action`` — translate one policy action into actuator commands;
 * ``_images`` — return the ``{name: HWC uint8}`` camera dict;
+* ``_image_times`` — return ``{key: sim time ns}``, the time each camera's frame
+  shows (``_frame_time_ns``); default none;
 * ``_state`` — return the 1-D float32 proprioception vector;
 * ``_reward_terminated`` — return ``(reward, terminated)`` for the step.
 
@@ -22,6 +24,12 @@ Time base: one ``step()`` is one control period of the robot
 (``action_spec.control_freq_hz``), so a deploy-sim tick advances the world by
 exactly ``1 / control_freq_hz`` — ``build`` calls ``resolve_time_base`` with
 the world's physics dt, which derives ``physics_substeps`` (issue #355).
+
+Image time: a camera image is NOT from the step that returns it. ``Camera.get_rgba()``
+reads the last frame the RTX pipeline finished, a few steps (measured: 4 at 30 Hz on
+Isaac 6.1) behind the physics just stepped. Rather than render extra frames to catch
+up, every observation carries ``image_time_ns`` — the sim time each frame shows — so
+consumers pair images with state by time, as with a real camera's latency (issue #361).
 """
 
 from __future__ import annotations
@@ -116,6 +124,8 @@ class IsaacSceneBase:
         self._world: Any = None
         # Physics dt the world runs at; set by ``resolve_time_base`` in ``build``.
         self._physics_dt_s: float | None = None
+        # Cameras already reported as carrying no frame time (``_frame_time_ns``).
+        self._untimed_cameras: set[str] = set()
 
     # ── public sidecar contract ──────────────────────────────────────────────
 
@@ -130,8 +140,10 @@ class IsaacSceneBase:
             self._world.step(render=True)
         self._after_warmup()
         # The hook may step physics without rendering (a soft-driven arm settling
-        # onto its hold target): render once more so the reset observation's image
-        # comes from the same physics state as its joint state.
+        # onto its hold target): render once more after it. The frame the reset
+        # observation gets still trails that render by the RTX pipeline depth, so it
+        # can show the arm before the settle; its image_time_ns says which state it
+        # shows (issue #361).
         self._before_render()
         self._world.step(render=True)
         return self._observe()
@@ -264,6 +276,13 @@ class IsaacSceneBase:
     def _images(self) -> dict[str, NDArray[np.uint8]]:
         raise NotImplementedError
 
+    def _image_times(self) -> dict[str, int]:
+        """``{key: sim time ns}`` each camera frame shows, keyed as the obs keys it.
+
+        Default: none, and the observation carries no ``image_time_ns``.
+        """
+        return {}
+
     def _state(self) -> NDArray[np.float32]:
         raise NotImplementedError
 
@@ -302,6 +321,9 @@ class IsaacSceneBase:
             "state": self._state(),
             "task": self.instruction,
         }
+        image_times = self._image_times()
+        if image_times:
+            obs["image_time_ns"] = image_times
         joints = self._joint_positions()
         if joints is not None:
             obs["joint_positions"] = np.asarray(joints, dtype=np.float32)
@@ -316,3 +338,27 @@ class IsaacSceneBase:
         if rgba is None or np.asarray(rgba).size == 0:
             return np.zeros((self.obs_height, self.obs_width, 3), dtype=np.uint8)
         return np.asarray(rgba, dtype=np.uint8)[:, :, :3]
+
+    def _frame_time_ns(self, cam: Any, name: str) -> int | None:
+        """Sim time (ns) of the physics state the camera's current frame shows, or None.
+
+        Isaac's ``Camera`` records, on every frame the renderer delivers, the frame's
+        fabric reference time converted to simulation time
+        (``get_current_frame()["rendering_time"]``, seconds) — the same delivered frame
+        ``get_rgba()`` / ``get_depth()`` read, and in the ``world.current_time`` domain
+        ``sim_time_ns`` reports. ``0`` means no frame yet. A camera without it is
+        reported once: its images then go out as if they showed the current step.
+        """
+        frame = cam.get_current_frame()
+        seconds = frame.get("rendering_time") if isinstance(frame, dict) else None
+        if seconds:
+            return int(round(float(seconds) * 1e9))
+        if name not in self._untimed_cameras:
+            self._untimed_cameras.add(name)
+            print(
+                f"[{type(self).__name__}] camera {name!r} reports no frame time "
+                "(get_current_frame()['rendering_time']); its images are stamped as the "
+                "current step, which they are not (issue #361).",
+                flush=True,
+            )
+        return None

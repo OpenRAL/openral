@@ -1519,6 +1519,18 @@ class IsaacManifestScene(IsaacSceneBase):
         for meta in self._cam_meta:
             cam = self._cameras[meta["name"]]
             cam.initialize()
+            # The camera refreshes its frame time (``_frame_time_ns``) only once 1 /
+            # get_frequency() of sim time has passed (Kit's run-loop rate, 60 Hz by
+            # default). One frame per control tick at or above that rate would leave
+            # frames with a stale time beside fresh pixels (issue #361).
+            gate_hz = float(cam.get_frequency())
+            if 0.0 < gate_hz <= self._control_freq_hz:
+                print(
+                    f"[IsaacManifestScene] WARNING camera {meta['name']!r}: frame times "
+                    f"refresh at most at {gate_hz:.4g} Hz, but the robot steps at "
+                    f"{self._control_freq_hz:.4g} Hz; some image_time_ns will be stale.",
+                    flush=True,
+                )
             cam.set_clipping_range(_CAM_NEAR_M, _CAM_FAR_M)
             hfov = camera_hfov_deg(meta)
             if hfov is not None:
@@ -1866,7 +1878,7 @@ class IsaacManifestScene(IsaacSceneBase):
         import re
 
         from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
-        from pxr import Usd, UsdPhysics
+        from pxr import PhysxSchema, Usd, UsdPhysics
 
         prim_path = "/" + re.sub(r"\W", "_", str(self._spec.get("robot_id", "robot")))
         add_reference_to_stage(usd_path=robot_usd, prim_path=prim_path)
@@ -1888,11 +1900,29 @@ class IsaacManifestScene(IsaacSceneBase):
             # The converter puts the root API on a body, creating a floating
             # articulation restrained by a solver joint. Mark the world joint
             # instead so PhysX creates a genuinely fixed-base articulation.
+            # The importer's self-collision choice (allow_self_collision, False by
+            # default) lives on that root as newton:selfCollisionEnabled. Carry it
+            # over: a new root without it gets PhysX's default, self-collision ON,
+            # and the robot's own links then hold its joints off target (OpenArm
+            # left_joint1 0.265 rad for 0.3; panda wrists 0.2 rad off a zero pose).
+            self_collide = False
             for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
                 if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    flag = prim.GetAttribute("newton:selfCollisionEnabled")
+                    if flag and flag.HasAuthoredValue():
+                        self_collide = bool(flag.Get())
                     prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
             self._anchor_joint.GetBody0Rel().ClearTargets(True)
-            UsdPhysics.ArticulationRootAPI.Apply(self._anchor_joint.GetPrim())
+            root = self._anchor_joint.GetPrim()
+            UsdPhysics.ArticulationRootAPI.Apply(root)
+            PhysxSchema.PhysxArticulationAPI.Apply(root).CreateEnabledSelfCollisionsAttr(
+                self_collide
+            )
+            print(
+                f"[isaac_manifest_scene] fixed-base articulation rooted at {root.GetPath()}, "
+                f"self-collision {'on' if self_collide else 'off'} (as imported)",
+                flush=True,
+            )
         return prim_path
 
     def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
@@ -2066,6 +2096,17 @@ class IsaacManifestScene(IsaacSceneBase):
             )
 
     def _after_world_reset(self) -> None:
+        # The cameras are not in world.scene, so world.reset() does not reset them.
+        # Without it a camera's frame-rate gate sees sim time jump back and stops
+        # updating its frame time (get_current_frame) until the old episode's time
+        # is caught up, while get_rgba() keeps serving new frames (issue #361).
+        # post_reset() also restores the pose the camera was constructed at: re-mount
+        # the link-mounted ones; _place_robot below re-places the free ones.
+        for meta in self._cam_meta:
+            cam = self._cameras[meta["name"]]
+            cam.post_reset()
+            if meta.get("mount"):
+                self._mount_camera(cam, meta["mount"])
         # world.reset() puts the pinned root back at its import pose (the
         # origin); move it to the spawn before the warmup steps settle physics.
         self._place_robot()
@@ -2166,6 +2207,19 @@ class IsaacManifestScene(IsaacSceneBase):
             if post.get("color_lut_rgb") is not None:
                 frame = apply_color_lut(frame, post["color_lut_rgb"])
             out[meta["key"]] = frame
+        return out
+
+    def _image_times(self) -> dict[str, int]:
+        """Sim time each camera's frame shows, by obs key (a depth camera's key is its name).
+
+        Covers the RGB images, ``depth_frames`` and ``depth_points``: all three are
+        read from the same delivered frame of their camera.
+        """
+        out: dict[str, int] = {}
+        for meta in self._cam_meta:
+            t = self._frame_time_ns(self._cameras[meta["name"]], meta["name"])
+            if t is not None:
+                out[meta["key"]] = t
         return out
 
     def _world_from_base(self) -> NDArray[np.float64]:

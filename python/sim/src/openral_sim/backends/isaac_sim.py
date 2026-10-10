@@ -464,6 +464,12 @@ class _IsaacSimSidecar(SidecarSimRollout):
             "state": state,
             "task": raw.get("task", self.task.instruction),
         }
+        # Sim time (ns, the sidecar's ``sim_time_ns`` domain) each camera's frame
+        # shows, by obs key — the RTX pipeline delivers images a few steps behind the
+        # state (issue #361), so they are NOT from this step's time.
+        image_times = raw.get("image_time_ns")
+        if isinstance(image_times, dict):
+            obs["image_time_ns"] = {str(k): int(v) for k, v in image_times.items()}
         # Real robot joint angles (manifest order), when the sidecar provides
         # them — `openral deploy sim`'s SimAttachedHAL.read_state reads this for
         # a non-MuJoCo backend's /joint_states.

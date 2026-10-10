@@ -39,6 +39,7 @@ DOCTEST_TARGETS: list[str] = [
     "python/hal/src/openral_hal/ur_real.py",
     "python/hal/src/openral_hal/so100_sim.py",
     "python/hal/src/openral_hal/lifecycle.py",
+    "python/hal/src/openral_hal/sim_sensor_bridge.py",
     "python/hal/src/openral_hal/so100_follower.py",
     "python/hal/src/openral_hal/ros_control.py",
     "python/rskill/src/openral_rskill/backend_registry.py",
