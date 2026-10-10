@@ -35,6 +35,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypeVar
 
+from openral_core.gpu import is_tegra_host
+
 _Num = TypeVar("_Num", int, float)
 
 
@@ -341,6 +343,21 @@ def installed_alloc_conf_var() -> str:
         return alloc_conf_var(importlib.metadata.version("torch"))
     except importlib.metadata.PackageNotFoundError:
         return alloc_conf_var(None)
+
+
+def default_expandable_segments() -> None:
+    """Default *this* interpreter's CUDA allocator to expandable segments, except on Jetson.
+
+    For in-process loaders (the TOPReward monitor and its GPU tests). Must run
+    before the first CUDA allocation; an operator-set value is kept. Skipped on
+    a Tegra host for the reason ``openral deploy`` leaves it unset there: torch's
+    expandable path queries NVML GPU-fabric info, which the Jetson iGPU cannot
+    answer (lab AGX Orin, torch 2.13+cu130, 2026-09-22: ``Expected NVML_SUCCESS
+    == ... nvmlDeviceGetGpuFabricInfoV_``), and unified memory leaves no
+    fragmentation headroom to recover anyway.
+    """
+    if not is_tegra_host():
+        os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
 
 
 def venv_torch_version(venv: Path) -> str | None:

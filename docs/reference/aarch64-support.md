@@ -465,6 +465,9 @@ RuntimeError: Expected NVML_SUCCESS == DriverAPI::get()->nvmlDeviceGetGpuFabricI
 363 s into loading the OpenArm restock π0.5, while the identical load in the
 same venv without the variable succeeded (371 s, 7.8 GiB). An explicit
 `PYTORCH_ALLOC_CONF` in the operator's environment still passes through.
+The in-process TOPReward monitor, which sets the allocator on itself rather
+than inheriting it from the CLI, applies the same Jetson check through
+`default_expandable_segments()`.
 
 GB10 / DGX Spark keeps the default. It is unified-memory too, but it runs DGX
 OS rather than L4T, and expandable segments are reported to work there and to
@@ -501,9 +504,11 @@ PR #305 to two decimals. Replacing the rotary `inv_freq` buffers with
 the check bites on Tegra too.
 
 The Orin's torch warns that `sm_87` is not in its build list. bf16 matmul and
-a `Linear4bit` NF4 forward still run, and so does everything above. The tests
-set `expandable_segments:True`, as `TOPRewardMonitor` does in production, and
-neither 3 GB model tripped the NVML fabric-info error described above.
+a `Linear4bit` NF4 forward still run, and so does everything above. In that
+run the tests still set `expandable_segments:True`, and neither 3 GB model
+tripped the NVML fabric-info error described above. The TOPReward monitor and
+these tests now skip the setting on Jetson anyway, through
+`openral_sim._sidecar_common.default_expandable_segments`, matching the CLI.
 
 The `datasets` package these tests need comes only with the `libero` or `gr00t`
 group; without it they skip. Let the first run reach the Hub: on Orin, an HF

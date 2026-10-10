@@ -13,6 +13,9 @@ before it was deleted.
 
 from __future__ import annotations
 
+import os
+
+import pytest
 from openral_sim._sidecar_common import sidecar_port_for_key
 
 
@@ -68,3 +71,41 @@ def test_shared_helper_algorithm_changes_the_port() -> None:
     sha256_port = sidecar_port_for_key("x", algorithm="sha256")
     sha1_port = sidecar_port_for_key("x", algorithm="sha1")
     assert sha256_port != sha1_port
+
+
+# ``default_expandable_segments``: on by default for in-process loaders, never on
+# Jetson, where torch's expandable path crashes on the iGPU's NVML fabric query.
+
+
+def test_default_expandable_segments_sets_the_installed_var_off_jetson(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openral_sim import _sidecar_common as sc
+
+    var = sc.installed_alloc_conf_var()
+    monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(sc, "is_tegra_host", lambda: False)
+    sc.default_expandable_segments()
+    assert os.environ[var] == "expandable_segments:True"
+
+
+def test_default_expandable_segments_leaves_jetson_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_sim import _sidecar_common as sc
+
+    var = sc.installed_alloc_conf_var()
+    monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(sc, "is_tegra_host", lambda: True)
+    sc.default_expandable_segments()
+    assert var not in os.environ
+
+
+def test_default_expandable_segments_keeps_an_operator_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openral_sim import _sidecar_common as sc
+
+    var = sc.installed_alloc_conf_var()
+    monkeypatch.setenv(var, "max_split_size_mb:128")
+    monkeypatch.setattr(sc, "is_tegra_host", lambda: False)
+    sc.default_expandable_segments()
+    assert os.environ[var] == "max_split_size_mb:128"

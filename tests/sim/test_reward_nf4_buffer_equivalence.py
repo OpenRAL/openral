@@ -25,7 +25,6 @@ brings `datasets` for the LIBERO clip); GPU-less CI is the legitimate skip
 from __future__ import annotations
 
 import gc
-import os
 import pathlib
 import sys
 
@@ -79,9 +78,9 @@ def _clip(n_frames: int = 8) -> tuple[object, str]:
 
 
 def test_robometer_meta_load_matches_real_buffer_reference() -> None:
-    from openral_sim._sidecar_common import installed_alloc_conf_var
+    from openral_sim._sidecar_common import default_expandable_segments
 
-    os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
+    default_expandable_segments()
     sys.path.insert(0, str(_REPO / "tools"))
     import _robometer_scorer as scorer_mod
 
