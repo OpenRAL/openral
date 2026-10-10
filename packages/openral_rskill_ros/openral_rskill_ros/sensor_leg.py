@@ -455,8 +455,10 @@ def _topic_native(spec: SensorSpec) -> bool:
     3 Hz cap a native 960x600 publish is ~55 ms of GIL per frame per camera,
     which is why this is per camera and opt-in, never the default. The
     in-process paths (the policy's aggregator read, ``--dataset-out``) are
-    native regardless. Only a real ``true`` counts: YAML ``1`` / ``"yes"``
-    are ignored, like ``topic_rate_hz``'s bool guard.
+    native regardless. Only a boolean ``true`` counts (YAML 1.1 also reads an
+    unquoted ``yes`` / ``on`` as one); any other value — ``1``, ``"true"`` —
+    keeps the ceiling and logs ``sensor_leg.topic_native_ignored`` so a
+    calibration pass cannot read thumbnails without a trace.
 
     Example:
         >>> from openral_core import SensorDeployBinding, SensorSpec
@@ -470,11 +472,19 @@ def _topic_native(spec: SensorSpec) -> bool:
         ...     )
         >>> _topic_native(spec(topic_native=True))
         True
-        >>> _topic_native(spec(topic_native=1)), _topic_native(spec())
+        >>> _topic_native(spec(topic_native=False)), _topic_native(spec())
         (False, False)
     """
     assert spec.deploy_binding is not None  # reason: caller filters on binding
-    return spec.deploy_binding.backend_params.get("topic_native") is True
+    value = spec.deploy_binding.backend_params.get("topic_native")
+    if value is not None and not isinstance(value, bool):
+        log.warning(
+            "sensor_leg.topic_native_ignored",
+            sensor_id=spec.name,
+            value=repr(value),
+            hint="topic_native takes a YAML boolean (true/false); the 320x240 ceiling applies",
+        )
+    return value is True
 
 
 def _topic_max_size(
@@ -686,7 +696,11 @@ def open_deploy_sensor_readers(
                 backend=binding.backend.value,
                 topic=topic,
                 direct_to_aggregator=aggregator is not None,
-                topic_native=native_tee or _topic_native(spec),
+                # What the bus actually carries: a GStreamer tee is always native; a
+                # fallback camera is native when no ceiling applies to it (SLAM,
+                # a detector launch, or its own `topic_native`).
+                topic_native=native_tee
+                or _topic_max_size(spec, uncapped_sensors, topic_max_size) is None,
             )
         # Prepare every ROS entity while execution is still single-threaded.
         # SensorLeg.start() runs only after the composed lifecycle nodes have

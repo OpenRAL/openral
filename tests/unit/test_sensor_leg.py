@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 from openral_core import (
     CameraTopicKind,
     RobotDescription,
@@ -802,6 +803,10 @@ def test_topic_native_opts_one_camera_out_of_the_resolution_cap() -> None:
     yaml_one = _spec("yaml_one", binding=SensorDeployBinding(backend_params={"topic_native": 1}))
 
     assert _topic_native(wrist) and not _topic_native(top) and not _topic_native(yaml_one)
+    # A non-boolean is never honoured, and is never silent.
+    with structlog.testing.capture_logs() as logs:
+        assert not _topic_native(yaml_one)
+    assert [e["event"] for e in logs] == ["sensor_leg.topic_native_ignored"]
     assert _topic_max_size(wrist, (), _DEFAULT_TOPIC_MAX_SIZE) is None
     assert _topic_max_size(top, (), _DEFAULT_TOPIC_MAX_SIZE) == _DEFAULT_TOPIC_MAX_SIZE
     assert _topic_max_size(yaml_one, (), _DEFAULT_TOPIC_MAX_SIZE) == _DEFAULT_TOPIC_MAX_SIZE
