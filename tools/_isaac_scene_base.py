@@ -128,6 +128,12 @@ class IsaacSceneBase:
         for _ in range(self.warmup_steps):
             self._before_render()
             self._world.step(render=True)
+        self._after_warmup()
+        # The hook may step physics without rendering (a soft-driven arm settling
+        # onto its hold target): render once more so the reset observation's image
+        # comes from the same physics state as its joint state.
+        self._before_render()
+        self._world.step(render=True)
         return self._observe()
 
     def step(self, action: NDArray[np.float32]) -> dict[str, Any]:
@@ -243,6 +249,13 @@ class IsaacSceneBase:
 
         For state ``world.reset()`` overwrites (e.g. a robot root placed away
         from its import pose). Default: nothing.
+        """
+
+    def _after_warmup(self) -> None:
+        """Hook run after the warmup steps, before the reset observation.
+
+        For settling that needs live physics (e.g. a soft-driven arm that must
+        hold its start pose under gravity). Default: nothing.
         """
 
     def _apply_action(self, action: NDArray[np.float32]) -> None:

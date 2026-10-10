@@ -631,14 +631,7 @@ def _maybe_build_recorder(args: SimpleNamespace, env_cfg: SimEnvironment) -> Any
         )
         return None
 
-    # fps: pulled from the robot's action_spec.control_freq_hz (the
-    # authoritative source), with 30.0 fallback matching the workspace
-    # WorldStateAggregator default.
-    fps: float = (
-        float(robot.action_spec.control_freq_hz)
-        if robot.action_spec is not None and robot.action_spec.control_freq_hz
-        else 30.0
-    )
+    fps: float = _control_rate_hz(robot)
 
     # The sim-side state / action contract belongs on the
     # per-checkpoint rSkill manifest (state_contract / action_contract),
@@ -819,6 +812,24 @@ def _run(args: SimpleNamespace) -> int:
     return 0
 
 
+def _control_rate_hz(robot: Any) -> float:
+    """The robot's control rate: ``action_spec.control_freq_hz``, else 30 Hz.
+
+    The rate the sim steps (one env step per action), so recordings and datasets
+    written at it play in real time. 30.0 matches the workspace
+    ``WorldStateAggregator`` default.
+    """
+    spec = getattr(robot, "action_spec", None)
+    return float(spec.control_freq_hz) if spec is not None and spec.control_freq_hz else 30.0
+
+
+def _robot_control_rate_hz(robot_id: str | None) -> float:
+    """``_control_rate_hz`` of a registered robot (30 Hz for a scene with no robot id)."""
+    from openral_sim.registry import ROBOTS
+
+    return _control_rate_hz(ROBOTS.get(robot_id)()) if robot_id else 30.0
+
+
 def _write_videos(
     args: SimpleNamespace,
     results: list[Any],
@@ -865,6 +876,8 @@ def _write_debug_videos(
         stem = f"{env_cfg.robot_id}_{env_cfg.vla.id}"
 
     title = f"{env_cfg.vla.id} on {env_cfg.task.id} (robot={env_cfg.robot_id})"
+    # Real-time playback: one recorded frame per env step at the control rate.
+    fps = round(_robot_control_rate_hz(env_cfg.robot_id))
 
     for i, r in enumerate(results):
         if not r.frames and not r.vla_input_frames:
@@ -874,7 +887,7 @@ def _write_debug_videos(
             path = target if len(results) == 1 else out_dir / f"{target.stem}_ep{i}.mp4"
         else:
             path = out_dir / (f"{stem}.mp4" if len(results) == 1 else f"{stem}_ep{i}.mp4")
-        out = save_episode_mp4(r, path, title=title)
+        out = save_episode_mp4(r, path, title=title, fps=fps)
         print(f"  wrote {out}")
 
 
@@ -900,6 +913,7 @@ def _write_website_videos(
         rskill=Path(args.rskill).name if args.rskill else env_cfg.vla.id,
         section=Path(args.config).parent.name if args.config is not None else "sim",
         size=int(getattr(args, "video_size", 1024)),
+        fps=round(_robot_control_rate_hz(env_cfg.robot_id)),
     )
 
 

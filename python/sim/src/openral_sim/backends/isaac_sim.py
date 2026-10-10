@@ -69,6 +69,8 @@ launcher, accepts the NVIDIA Omniverse EULA via ``OMNI_KIT_ACCEPT_EULA=YES``).
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import itertools
 import json
 import math
 import os
@@ -80,8 +82,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core import IntrinsicsPinhole, scale_intrinsics_to
 from openral_core.exceptions import ROSConfigError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
 from openral_sim.registry import SCENES
@@ -682,6 +685,43 @@ def _locate_sidecar_script() -> Path:
 # ── backend options ──
 
 
+class IsaacObjectPoseNoise(BaseModel):
+    """Per-reset planar jitter of a scene object around its declared pose.
+
+    Each reset draws ``x``/``y``/``yaw`` offsets from zero-mean normals truncated at
+    ``clip_sigma`` (redrawn, not clamped), from the episode seed: a seed reproduces
+    its layout, a new seed gives a new one. ``z``, ``roll`` and ``pitch`` stay as
+    declared, so an object resting on a support keeps resting on it. A draw is
+    rejected while the object's footprint (its USD bounds) overlaps an object
+    already placed, or leaves ``keep_inside_xy`` (world ``[[x_min, y_min], [x_max,
+    y_max]]``, e.g. a tote's floor); after ``max_tries`` rejections the object keeps
+    its declared pose and the sidecar logs it.
+
+    Example:
+        >>> IsaacObjectPoseNoise(xy_sigma_m=(0.01, 0.008), yaw_sigma_deg=5.0).clip_sigma
+        2.0
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    xy_sigma_m: tuple[float, float] = (0.0, 0.0)
+    yaw_sigma_deg: float = Field(default=0.0, ge=0.0, le=180.0)
+    clip_sigma: float = Field(default=2.0, gt=0.0, le=5.0)
+    keep_inside_xy: tuple[tuple[float, float], tuple[float, float]] | None = None
+    max_tries: int = Field(default=100, ge=1, le=10000)
+
+    @model_validator(mode="after")
+    def _valid(self) -> IsaacObjectPoseNoise:
+        if min(self.xy_sigma_m) < 0.0:
+            raise ValueError(f"pose_noise.xy_sigma_m must be >= 0, got {self.xy_sigma_m}")
+        box = self.keep_inside_xy
+        if box is not None and not (box[0][0] < box[1][0] and box[0][1] < box[1][1]):
+            raise ValueError(
+                f"pose_noise.keep_inside_xy must be [[x_min, y_min], [x_max, y_max]]: {box}"
+            )
+        return self
+
+
 class IsaacSceneObject(BaseModel):
     """One extra USD object placed in the ``isaac_sim`` manifest scene.
 
@@ -690,7 +730,9 @@ class IsaacSceneObject(BaseModel):
     body + convex-hull colliders are added when the asset has none); static ones
     are fixed props. ``roll``/``pitch``/``yaw`` are radians about world x/y/z in the
     URDF ``rpy`` order (``Rz·Ry·Rx``): an asset authored lying down stands upright
-    with a quarter-turn roll or pitch.
+    with a quarter-turn roll or pitch. ``pose_noise`` (``IsaacObjectPoseNoise``)
+    jitters the planar pose at every reset; without it the pose is the same every
+    episode.
 
     Example:
         >>> IsaacSceneObject(
@@ -710,6 +752,7 @@ class IsaacSceneObject(BaseModel):
     pitch: float = 0.0
     yaw: float = 0.0
     dynamic: bool = True
+    pose_noise: IsaacObjectPoseNoise | None = None
 
 
 class IsaacCameraMount(BaseModel):
@@ -749,6 +792,57 @@ class IsaacCameraMount(BaseModel):
         return self
 
 
+_WB_GAIN_MIN, _WB_GAIN_MAX = 0.25, 4.0
+_RENDER_HEIGHT_RANGE_PX = (16, 4096)
+
+
+_LUT_SIZE = 256
+_GRIPPER_CURVE_MIN_POINTS = 2
+
+
+class IsaacCameraImagePost(BaseModel):
+    """Per-camera RGB post-process in the ``isaac_sim`` scene (``camera_image_post``).
+
+    ``blur_sigma_px`` overrides the scene-wide ``image_blur_sigma_px`` for this camera.
+    ``auto_exposure_target`` (mean BT.601 luma, 0-255) emulates a camera's auto exposure:
+    the frame is re-exposed in scene-linear light (inverse of the RTX ACES tonemap that
+    ``exposure_ev`` selects) toward the target, settling with ``auto_exposure_tau_s`` of
+    sim time and converged at each reset. ``white_balance_rgb`` are scene-linear channel
+    gains. Both need ``exposure_ev`` set (the only tonemap whose inverse is known).
+    ``color_lut_rgb`` is a per-channel 8-bit tone curve applied to the final frame.
+
+    Example:
+        >>> IsaacCameraImagePost(blur_sigma_px=1.5, auto_exposure_target=107).auto_exposure_tau_s
+        0.3
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    blur_sigma_px: float | None = Field(default=None, ge=0.0, le=5.0)
+    auto_exposure_target: float | None = Field(default=None, gt=0.0, lt=255.0)
+    auto_exposure_tau_s: float = Field(default=0.3, gt=0.0)
+    white_balance_rgb: tuple[float, float, float] = Field(default=(1.0, 1.0, 1.0))
+    # Per-channel 8-bit tone curve (R, G, B; 256 entries each) applied last, after blur and
+    # relighting: e.g. a histogram match of the rendered frames onto the real camera's.
+    color_lut_rgb: tuple[list[int], list[int], list[int]] | None = None
+
+    @model_validator(mode="after")
+    def _gains_positive(self) -> IsaacCameraImagePost:
+        if not all(_WB_GAIN_MIN <= g <= _WB_GAIN_MAX for g in self.white_balance_rgb):
+            raise ValueError("camera_image_post: white_balance_rgb gains must be in [0.25, 4]")
+        if self.color_lut_rgb is not None and not all(
+            len(ch) == _LUT_SIZE and all(0 <= v < _LUT_SIZE for v in ch)
+            for ch in self.color_lut_rgb
+        ):
+            raise ValueError("camera_image_post: color_lut_rgb needs 3 x 256 values in [0, 255]")
+        return self
+
+    @property
+    def relights(self) -> bool:
+        """Whether this camera is re-exposed (auto exposure or a non-unit white balance)."""
+        return self.auto_exposure_target is not None or self.white_balance_rgb != (1.0, 1.0, 1.0)
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -771,6 +865,82 @@ class IsaacSimOptions(BaseModel):
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
+    # Simulation-only image models, e.g. a raw training stream alongside rectified depth.
+    camera_intrinsics: dict[str, IntrinsicsPinhole] = Field(default_factory=dict)
+    # USD assets do not carry these process-level RTX settings.
+    translucent_materials: bool = False
+    exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
+    # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
+    # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
+    image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
+    # Per-camera overrides (RGB sensor name -> IsaacCameraImagePost): a camera whose real
+    # counterpart differs from the scene-wide look (OpenArm restock: the Arducam wrists run
+    # auto exposure / white balance and are softer than the top ZED).
+    camera_image_post: dict[str, IsaacCameraImagePost] = Field(default_factory=dict)
+    # Robot visual material name pattern (fnmatch) -> diffuse RGB in [0, 1], applied after
+    # the URDF import: upstream meshes carry their own colours (OpenArm's "matte_black"
+    # renders mid-grey). Simulation appearance only; collision/physics untouched.
+    robot_material_colors: dict[str, tuple[float, float, float]] = Field(default_factory=dict)
+    # Speed knobs (sim cost, not the scene's look). Physics substeps are no knob: the
+    # scene derives them from action_spec.control_freq_hz (one step = one tick, #355).
+    # RGB sensor name -> render raster height (px). The width, focal lengths and principal
+    # point scale with it (same field of view and lens), and so does the blur sigma: a
+    # policy that resizes to 224 px needs no larger render.
+    camera_render_height: dict[str, int] = Field(default_factory=dict)
+    # False: no depth camera in the scene (no depth render, no point clouds), e.g. when
+    # the world-collision check that consumes them is off.
+    depth_cameras: bool = True
+    # Joint drive gains: URDF joint-name regex -> (stiffness Nm/rad, damping Nm*s/rad), in
+    # pattern order, later matches winning. Unmatched joints keep the sidecar's stiff
+    # defaults (1000 / 100). Set them to the real motors' PD gains and the arm sags under
+    # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
+    # below its command, which a policy trained on that robot has learnt to expect.
+    joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
+    # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
+    # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
+    # reads 0.28 rad on a 6 cm carton where the URDF finger touches it at 0.69, while the
+    # open end must stay where the sim's approach works. Unlisted grippers stay linear.
+    gripper_joint_curve: dict[str, list[tuple[float, float]]] = Field(default_factory=dict)
+    # Fingers that share one motor (OpenArm's jaw): no finger may close more than this many
+    # radians past its partner's mirrored position, so the pair stops together on the
+    # object instead of one finger pinning it against the other. None = independent drives.
+    gripper_finger_coupling_rad: float | None = Field(default=None, gt=0.0, le=1.0)
+
+    @field_validator("joint_drive_gains")
+    @classmethod
+    def _drive_gains_valid(
+        cls, value: dict[str, tuple[float, float]]
+    ) -> dict[str, tuple[float, float]]:
+        for pattern, (stiffness, damping) in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
+            if stiffness < 0 or damping < 0:
+                raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
+
+    @field_validator("gripper_joint_curve")
+    @classmethod
+    def _gripper_curve_valid(
+        cls, value: dict[str, list[tuple[float, float]]]
+    ) -> dict[str, list[tuple[float, float]]]:
+        for name, points in value.items():
+            if len(points) < _GRIPPER_CURVE_MIN_POINTS:
+                raise ValueError(f"gripper_joint_curve[{name!r}] needs at least 2 points")
+            pts = sorted(points)
+            m = [p[0] for p in pts]
+            u = [p[1] for p in pts]
+            rising = all(b > a for a, b in itertools.pairwise(u))
+            falling = all(b < a for a, b in itertools.pairwise(u))
+            if len(set(m)) != len(m) or not (rising or falling):
+                raise ValueError(
+                    f"gripper_joint_curve[{name!r}] must be strictly monotonic "
+                    "(distinct manifest values, URDF values all rising or all falling)"
+                )
+        return value
+
     # The pose each reset starts the robot in: manifest joint name -> value in the
     # unit the HAL reports and commands it in (rad; a gripper in its end effector's
     # command_convention). Unnamed joints start at the URDF's zero. Teleported, not
@@ -792,6 +962,31 @@ class IsaacSimOptions(BaseModel):
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _render_heights_are_sane(self) -> IsaacSimOptions:
+        lo, hi = _RENDER_HEIGHT_RANGE_PX
+        bad = {k: v for k, v in self.camera_render_height.items() if not lo <= v <= hi}
+        if bad:
+            raise ValueError(f"camera_render_height must be {lo}..{hi} px: {bad}")
+        return self
+
+    @model_validator(mode="after")
+    def _relight_needs_known_tonemap(self) -> IsaacSimOptions:
+        relit = sorted(n for n, p in self.camera_image_post.items() if p.relights)
+        if relit and self.exposure_ev is None:
+            raise ValueError(
+                f"camera_image_post{relit}: auto exposure / white balance need exposure_ev "
+                "(they invert its ACES tonemap)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _colors_in_unit_range(self) -> IsaacSimOptions:
+        for pattern, rgb in self.robot_material_colors.items():
+            if not all(0.0 <= c <= 1.0 for c in rgb):
+                raise ValueError(f"robot_material_colors[{pattern!r}] must be RGB in [0, 1]")
         return self
 
 
@@ -933,6 +1128,8 @@ def _sensor_dict(sensor: SensorSpec) -> dict[str, Any]:
                 "fy": intr.fy,
                 "cx": intr.cx,
                 "cy": intr.cy,
+                "distortion_model": intr.distortion_model,
+                "distortion_coeffs": intr.distortion_coeffs,
             }
         ),
         "range_min_m": sensor.range_min_m,
@@ -1441,10 +1638,101 @@ def default_camera_mounts(
     return out
 
 
+def _curve_gripper_specs(
+    spec: dict[str, Any], gripper_joint_curve: dict[str, list[tuple[float, float]]]
+) -> None:
+    """Attach each named gripper's calibration curve to its spec (``gripper_joint_curve``).
+
+    The sidecar then maps commands manifest -> URDF and joint states URDF -> manifest
+    through the curve instead of the linear closed/open ends.
+
+    Raises:
+        ROSConfigError: A name that is not one of the robot's grippers.
+
+    Example:
+        >>> spec = {"grippers": [{"name": "left_gripper", "closed": 0.0, "open": 0.785}]}
+        >>> _curve_gripper_specs(spec, {"left_gripper": [(0.0, 0.0), (0.785, 0.785)]})
+        >>> spec["grippers"][0]["curve"]
+        [[0.0, 0.0], [0.785, 0.785]]
+    """
+    by_name = {g["name"]: g for g in spec.get("grippers", [])}
+    unknown = sorted(set(gripper_joint_curve) - set(by_name))
+    if unknown:
+        raise ROSConfigError(
+            f"gripper_joint_curve names no gripper joint: {unknown} (grippers: {sorted(by_name)})"
+        )
+    for name, points in gripper_joint_curve.items():
+        by_name[name]["curve"] = [[float(m), float(u)] for m, u in sorted(points)]
+
+
+def _camera_image_post_spec(
+    desc: RobotDescription, camera_image_post: dict[str, IsaacCameraImagePost]
+) -> dict[str, Any]:
+    """Serialise ``camera_image_post`` for the sidecar, refusing names that are not RGB sensors."""
+    rgb_sensors = {s.name for s in desc.sensors if s.modality == "rgb"}
+    unknown = sorted(set(camera_image_post) - rgb_sensors)
+    if unknown:
+        raise ROSConfigError(f"camera_image_post must name RGB sensors; invalid: {unknown}")
+    return {k: v.model_dump(mode="json") for k, v in camera_image_post.items()}
+
+
+def _camera_render_scale(
+    desc: RobotDescription, camera_render_height: dict[str, int]
+) -> dict[str, float]:
+    """``camera_render_height`` as per-camera scale factors on the manifest raster.
+
+    Refuses names that are not RGB sensors with intrinsics (nothing to scale).
+    """
+    rgb = {s.name: s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None}
+    unknown = sorted(set(camera_render_height) - set(rgb))
+    if unknown:
+        raise ROSConfigError(
+            f"camera_render_height must name RGB sensors with intrinsics; invalid: {unknown}"
+        )
+    return {
+        name: h / rgb[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
+        for name, h in camera_render_height.items()
+    }
+
+
+def _render_desc(
+    desc: RobotDescription, camera_render_height: dict[str, int], depth_cameras: bool
+) -> tuple[RobotDescription, dict[str, float]]:
+    """The description the sidecar renders: scaled RGB rasters, depth sensors kept or dropped."""
+    scale = _camera_render_scale(desc, camera_render_height)
+    sensors = []
+    for sensor in desc.sensors:
+        if sensor.modality == "depth" and not depth_cameras:
+            continue
+        k = sensor.intrinsics
+        f = scale.get(sensor.name)
+        sensors.append(
+            sensor.model_copy(
+                update={
+                    "intrinsics": scale_intrinsics_to(k, round(k.width * f), round(k.height * f))
+                }
+            )
+            if f is not None and k is not None
+            else sensor
+        )
+    return desc.model_copy(update={"sensors": sensors}), scale
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
     initial_joint_positions: dict[str, float] | None = None,
+    camera_intrinsics: dict[str, IntrinsicsPinhole] | None = None,
+    translucent_materials: bool = False,
+    exposure_ev: float | None = None,
+    image_blur_sigma_px: float = 0.0,
+    robot_material_colors: dict[str, tuple[float, float, float]] | None = None,
+    camera_image_post: dict[str, IsaacCameraImagePost] | None = None,
+    camera_render_height: dict[str, int] | None = None,
+    depth_cameras: bool = True,
+    joint_drive_gains: dict[str, tuple[float, float]] | None = None,
+    gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
+    gripper_finger_coupling_rad: float | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1476,7 +1764,39 @@ def _write_robot_spec(
             f"[isaac-sim] robot unit overlays: {', '.join(o.name for o in overlays)}",
             flush=True,
         )
-    spec = _build_robot_spec(desc, robot_id)
+    if camera_intrinsics:
+        rgb_names = {s.name for s in desc.sensors if s.modality == "rgb"}
+        unknown = sorted(set(camera_intrinsics) - rgb_names)
+        if unknown:
+            raise ROSConfigError(f"camera_intrinsics must name RGB sensors; invalid: {unknown}")
+        for name, k in camera_intrinsics.items():
+            if min(k.width, k.height, k.fx, k.fy) <= 0 or not all(
+                math.isfinite(v) for v in (k.fx, k.fy, k.cx, k.cy, *k.distortion_coeffs)
+            ):
+                raise ROSConfigError(f"camera_intrinsics[{name!r}]: invalid raster or projection")
+        desc = desc.model_copy(
+            update={
+                "sensors": [
+                    s.model_copy(update={"intrinsics": camera_intrinsics[s.name]})
+                    if s.name in camera_intrinsics
+                    else s
+                    for s in desc.sensors
+                ]
+            }
+        )
+    render_desc, render_scale = _render_desc(desc, camera_render_height or {}, depth_cameras)
+    spec = _build_robot_spec(render_desc, robot_id)
+    spec.update(
+        camera_render_scale=render_scale,
+        translucent_materials=translucent_materials,
+        exposure_ev=exposure_ev,
+        image_blur_sigma_px=image_blur_sigma_px,
+        camera_image_post=_camera_image_post_spec(desc, camera_image_post or {}),
+    )
+    spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
+    spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
+    _curve_gripper_specs(spec, gripper_joint_curve or {})
+    spec["gripper_finger_coupling_rad"] = gripper_finger_coupling_rad
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -1489,7 +1809,8 @@ def _write_robot_spec(
                 desc,
                 manifest.parent,
                 urdf_links,
-                {o.name for o in overlays if o.intrinsics is not None},
+                {o.name for o in overlays if o.intrinsics is not None}
+                | set(camera_intrinsics or {}),
             ).items()
             if k in cameras
         },
@@ -1582,7 +1903,27 @@ def _placement(
         if opts.initial_joint_positions
         else ""
     )
-    world = _world_key(environment_usd, env_cfg.base_pose, objects_json + mounts + initial)
+    image_settings = opts.model_dump(
+        mode="json",
+        include={
+            "camera_intrinsics",
+            "translucent_materials",
+            "exposure_ev",
+            "image_blur_sigma_px",
+            "camera_image_post",
+            "robot_material_colors",
+            "camera_render_height",
+            "depth_cameras",
+            "joint_drive_gains",
+            "gripper_joint_curve",
+            "gripper_finger_coupling_rad",
+        },
+        exclude_defaults=True,
+    )
+    image_key = json.dumps(image_settings, sort_keys=True) if image_settings else ""
+    world = _world_key(
+        environment_usd, env_cfg.base_pose, objects_json + mounts + initial + image_key
+    )
     return layout, environment_usd, spawn, objects_json, world
 
 
@@ -1675,9 +2016,23 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
     # it via --robot-spec.
     robot_spec_path, desc = _write_robot_spec(
-        env_cfg, opts.camera_mounts, opts.initial_joint_positions
+        env_cfg,
+        opts.camera_mounts,
+        opts.initial_joint_positions,
+        opts.camera_intrinsics,
+        opts.translucent_materials,
+        opts.exposure_ev,
+        opts.image_blur_sigma_px,
+        opts.robot_material_colors,
+        opts.camera_image_post,
+        opts.camera_render_height,
+        opts.depth_cameras,
+        opts.joint_drive_gains,
+        opts.gripper_joint_curve,
+        opts.gripper_finger_coupling_rad,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
+    robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
@@ -1705,10 +2060,17 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "spawn": [float(v) for v in spawn_args],
             "robot": robot_id,
             "objects": objects_json,
+            "robot_spec_hash": robot_spec_hash,
         },
     )
     try:
         client.connect()
+        if client.call("ping").get("robot_spec_hash") != robot_spec_hash:
+            client.close()
+            raise ROSConfigError(
+                "Isaac sidecar cannot confirm the resolved robot/camera/render spec; "
+                "restart it with the matching sidecar code before using this scene."
+            )
     finally:
         # The sidecar reads the spec once at boot (before it answers ping), so by
         # the time connect() returns or fails the temp file is consumed — unlink

@@ -317,8 +317,12 @@ class IntrinsicsPinhole(BaseModel):
         fy: Focal length in y (pixels).
         cx: Principal point x (pixels).
         cy: Principal point y (pixels).
-        distortion_model: Distortion model name.
-        distortion_coeffs: Distortion coefficients.
+        distortion_model: Distortion model name, in ROS ``CameraInfo`` naming:
+            ``plumb_bob`` (Brown, ``[k1, k2, p1, p2, k3]``), ``rational_polynomial``
+            (OpenCV rational, ``[k1, k2, p1, p2, k3, k4, k5, k6]``: the radial term
+            is ``(1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)``),
+            ``equidistant`` (fisheye, ``[k1, k2, k3, k4]``) or ``none``.
+        distortion_coeffs: Distortion coefficients, in the model's order.
 
     Example:
         >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)
@@ -331,7 +335,9 @@ class IntrinsicsPinhole(BaseModel):
     fy: float
     cx: float
     cy: float
-    distortion_model: Literal["plumb_bob", "equidistant", "none"] = "plumb_bob"
+    distortion_model: Literal["plumb_bob", "rational_polynomial", "equidistant", "none"] = (
+        "plumb_bob"
+    )
     distortion_coeffs: list[float] = Field(default_factory=list)
 
 

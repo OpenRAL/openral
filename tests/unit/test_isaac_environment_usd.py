@@ -293,6 +293,7 @@ def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
             "pitch": 0.0,
             "yaw": 0.0,
             "dynamic": True,
+            "pose_noise": None,
         }
     ]
     # Same stage + spawn, different props → a different sidecar.

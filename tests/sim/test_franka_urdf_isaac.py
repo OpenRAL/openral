@@ -78,6 +78,18 @@ def test_read_state_shaped_to_manifest(hal) -> None:
     assert state.name == [j.name for j in description.joints]
 
 
+def test_fixed_base_does_not_settle_away_from_spawn(hal) -> None:
+    import numpy as np
+
+    attached, _description = hal
+    env = attached._env
+    hold = np.full(env.action_dim, np.nan, dtype=np.float32)
+    start = np.asarray(env.step(hold).info["robot_position"])
+    for _ in range(60):
+        position = np.asarray(env.step(hold).info["robot_position"])
+        assert np.linalg.norm(position - start) < 1e-4
+
+
 # The RTX camera rig is robot-independent — the frame-shape/dtype check lives
 # in test_panda_mobile_isaac.py::test_reset_obs_has_all_manifest_cameras. Here
 # we only assert the URDF-import paths (action_dim source, state shape,
