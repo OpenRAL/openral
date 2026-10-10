@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from openral_core import BoxShape, RobotDescription, ROSConfigError
 from openral_slam_bringup.depth_height_filter_node import (
+    _collision_z_extent_m,
     _link_transforms_at_zero,
     derive_robot_relative_height_band,
     filter_depth_by_global_height,
@@ -118,51 +119,55 @@ def test_derive_height_band_from_real_robot_manifest_geometry() -> None:
     assert "collision_geometry" in band.source
 
 
-def test_derive_height_band_from_capsule_manifest() -> None:
-    """``rizon4`` bounds every link with a ``CapsuleShape``.
+def test_derive_height_band_from_box_manifest() -> None:
+    """``rizon4`` bounds every link with a mesh-fitted ``BoxShape`` (#324).
 
-    Its lowest capsule reaches below ``base_frame`` z=0, so the floor edge is
+    Its lowest box reaches below ``base_frame`` z=0, so the floor edge is
     driven by the geometry rather than clamped at the origin — the case where
     an over-approximated lower extent would drag the band down through the
     real floor and re-mark the floor this node exists to remove.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/rizon4/robot.yaml"))
-    assert {geom.shape.shape for geom in description.collision_geometry} == {"capsule"}
+    assert {geom.shape.shape for geom in description.collision_geometry} == {"box"}
 
     band = derive_robot_relative_height_band(description)
 
-    assert band.min_z_m == pytest.approx(0.0090, abs=1e-3)
-    assert band.max_z_m == pytest.approx(1.3930, abs=1e-3)
+    assert band.min_z_m == pytest.approx(0.0961, abs=1e-3)
+    assert band.max_z_m == pytest.approx(1.3430, abs=1e-3)
     assert band.source == "minimum+collision_geometry"
 
 
-def test_derive_height_band_from_sphere_and_capsule_manifest() -> None:
-    """``h1`` mixes ``SphereShape`` and ``CapsuleShape`` in one manifest."""
+def test_derive_height_band_from_box_and_capsule_manifest() -> None:
+    """``h1`` mixes ``BoxShape`` and ``CapsuleShape`` in one manifest."""
     description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/h1/robot.yaml"))
     kinds = {geom.shape.shape for geom in description.collision_geometry}
-    assert kinds == {"sphere", "capsule"}
+    assert kinds == {"box", "capsule"}
 
     band = derive_robot_relative_height_band(description)
 
-    assert band.min_z_m == pytest.approx(-0.9434, abs=1e-3)
-    assert band.max_z_m == pytest.approx(0.4721, abs=1e-3)
+    assert band.min_z_m == pytest.approx(-0.9751, abs=1e-3)
+    assert band.max_z_m == pytest.approx(0.7900, abs=1e-3)
     assert "collision_geometry" in band.source
 
 
 @pytest.mark.parametrize(
-    ("robot_id", "expected_max_z_m"),
-    [("ur5e", 0.3354), ("ur10e", 0.4204)],
+    ("robot_id", "expected_top_z_m"),
+    [("ur5e", 0.2417), ("ur10e", 0.2757)],
 )
 def test_derive_height_band_bridges_the_declared_urdf_root(
-    robot_id: str, expected_max_z_m: float
+    robot_id: str, expected_top_z_m: float
 ) -> None:
     """UR manifests place their arm through ``assets.urdf.root_frame``.
 
     ``joints`` enumerates only movable joints, so UR's upstream URDF root
     (``base_link``) is not a child of any of them; the bridge is
     ``assets.urdf.root_frame`` + ``base_to_root_xyz_rpy`` — the same pair
-    ``deploy_e2e.launch.py`` publishes as a static TF. Reading it keeps the band
-    covering the arm instead of collapsing onto the ``min_body_height_m`` floor.
+    ``deploy_e2e.launch.py`` publishes as a static TF. Reading it is what places
+    every volume: with the bridge unread, ``_collision_z_extent_m`` refuses.
+
+    At ``q = 0`` a UR arm lies stretched out horizontally at shoulder height, so
+    the mesh-fitted boxes (#324) top out below ``min_body_height_m`` and the
+    band's upper edge is the 0.30 m floor; the pin is on the measured extent.
     """
     description = RobotDescription.from_yaml(str(_REPO_ROOT / f"robots/{robot_id}/robot.yaml"))
     assert description.assets is not None
@@ -170,13 +175,11 @@ def test_derive_height_band_bridges_the_declared_urdf_root(
     assert description.assets.urdf.root_frame == "base_link"
     assert description.base_frame != "base_link"
 
-    band = derive_robot_relative_height_band(description)
+    extent = _collision_z_extent_m(description)
 
-    assert "collision_geometry" in band.source
-    assert band.max_z_m == pytest.approx(expected_max_z_m, abs=1e-3)
-    # The defect this pins: with the bridge unread every geom was skipped and
-    # the band was exactly the 0.30 m floor, hiding the arm from the map.
-    assert band.max_z_m > 0.30
+    assert extent is not None
+    assert extent[1] == pytest.approx(expected_top_z_m, abs=1e-3)
+    assert "collision_geometry" in derive_robot_relative_height_band(description).source
 
 
 def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
@@ -204,13 +207,14 @@ def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
 @pytest.mark.parametrize(
     ("robot_id", "recovered_link", "expected_max_z_m"),
     [
-        # 1 of 9 volumes unplaceable: the gripper at the chain's top.
-        ("franka_panda", "panda_hand", 1.175),
-        # 15 of 27 — every arm link plus the torso. Top set by the torso volume,
-        # stated in the URDF's waist convention (torso_link at z=0.054).
-        ("g1", "torso_link", 0.518),
-        # 16 of 16 — total. Both arms hang off ``openarm_*_link0``.
-        ("openarm", "openarm_left_link1", 0.150),
+        # The gripper at the chain's top. Top set by panda_link6's box.
+        ("franka_panda", "panda_hand", 1.1159),
+        # Every arm link plus the torso, stated in the URDF's waist convention
+        # (torso_link at z=0.054).
+        ("g1", "torso_link", 0.3568),
+        # Both arms hang off ``openarm_*_link0`` and point down at q = 0, so the
+        # top is link0/link1's own box at the mount.
+        ("openarm", "openarm_left_link1", 0.0661),
     ],
 )
 def test_derive_height_band_places_rigidly_mounted_links(
