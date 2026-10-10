@@ -143,6 +143,8 @@ class DeployRunner(InferenceRunnerBase):
             safety_client if safety_client is not None else NullSafetyClient()
         )
         self._recorder = recorder
+        # VLA slot per camera for the recorder, built on the first recorded tick.
+        self._recorder_slots: dict[str, str] | None = None
         # Tracks whether an episode is currently "open" on the recorder.
         # episode_start sets to True; episode_end clears. deactivate
         # closes a still-open episode as a failure (mirrors SimRunner).
@@ -625,9 +627,10 @@ class DeployRunner(InferenceRunnerBase):
 
             # The camera frames the policy read this tick, at capture resolution,
             # decoded by the same function the deploy graph's recorder bridge uses.
+            if self._recorder_slots is None:  # the manifest never changes; map it once
+                self._recorder_slots = sensor_name_to_slot(self._hal.description)
             images = decode_recordable_images(
-                getattr(snapshot, "image_frames", None),
-                sensor_name_to_slot(self._hal.description),
+                getattr(snapshot, "image_frames", None), self._recorder_slots
             )
 
             self._recorder.record_frame(  # type: ignore[union-attr]
