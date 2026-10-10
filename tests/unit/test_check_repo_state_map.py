@@ -4,7 +4,8 @@ Two jobs. ``test_repo_state_map_has_no_drift`` runs the checker against the
 *real* map and the *real* tree (CLAUDE.md §1.11) and is the regression guard the
 whole tool exists for. The rest prove it is not a rubber stamp: a checker that
 never fires would pass that first test forever, so each defect class the map has
-actually shipped — a dead ``pkg:`` pointer and a rotted ``desc`` count — is
+actually shipped — a dead ``pkg:`` pointer, a rotted ``desc`` count, and an
+unescaped quote that blanked the whole page — is
 re-seeded here and must be caught.
 """
 
@@ -101,6 +102,20 @@ class TestCounts:
     def test_desc_without_a_count_is_ignored(self) -> None:
         cards = check_repo_state_map.iter_cards(_card("tests/hil", "Prose with no leading count."))
         assert check_repo_state_map.check_counts(cards) == []
+
+
+class TestLiterals:
+    def test_escaped_quote_is_well_formed(self) -> None:
+        assert check_repo_state_map.check_literals(_card("tests/hil", 'a \\"b\\" c')) == []
+
+    def test_unescaped_quote_is_caught(self) -> None:
+        # The #289 regression: `image_topic (default "" — ...)` inside a desc.
+        card = _card("tests/hil", 'image_topic (default "")')
+        problems = check_repo_state_map.check_literals(card)
+        assert len(problems) == 1 and "malformed string literal" in problems[0]
+
+    def test_css_content_lines_are_not_cards(self) -> None:
+        assert check_repo_state_map.check_literals('      content: ""; width: 10px;') == []
 
 
 def test_repo_state_map_has_no_drift() -> None:

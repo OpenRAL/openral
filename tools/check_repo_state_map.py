@@ -1,7 +1,11 @@
 """Check ``docs/architecture/repo-state-map.html`` against the actual tree.
 
-The map is hand-edited (CLAUDE.md §4.3), so it drifts in two mechanically
-detectable ways. Both have shipped to master before:
+The map is hand-edited (CLAUDE.md §4.3), so it drifts in three mechanically
+detectable ways. All three have shipped to master before:
+
+* **A broken string literal.** One unescaped ``"`` inside a ``desc`` ends the
+  JS string early, the whole ``<script>`` fails to parse, and the page renders
+  nothing. ``image_topic (default "" — …)`` did exactly that.
 
 * **Dead ``pkg:`` pointers.** A card names a file or directory that no longer
   exists — or never did. The "Examples" card sat at ``status: green`` against
@@ -42,6 +46,9 @@ _STRING = r'"((?:[^"\\]|\\.)*)"'
 _PKG_RE = re.compile(rf"pkg:\s*{_STRING}")
 _DESC_RE = re.compile(rf"desc:\s*{_STRING}")
 _COUNT_RE = re.compile(r"^(\d+)\s+(files|manifests)\b")
+# A card's scalar field: the line must be ONE complete string literal and nothing else.
+_FIELD_LINE_RE = re.compile(r"^\s*(title|pkg|status|desc):\s*\"")
+_WHOLE_FIELD_RE = re.compile(rf"\s*(?:title|pkg|status|desc):\s*{_STRING},?\s*")
 COUNT_TOLERANCE = 0.10
 
 # A parenthesised status marker means the token is a plan, not a path on disk.
@@ -136,13 +143,28 @@ def check_counts(cards: list[tuple[str, str]]) -> list[str]:
     return problems
 
 
+def check_literals(html: str) -> list[str]:
+    """Report card fields whose string literal is not one well-formed JS string.
+
+    An unescaped ``"`` inside a ``desc`` closes the string early: the browser then
+    rejects the whole script and the map renders blank, while the path/count
+    regexes above still parse the truncated prefix and report nothing.
+    """
+    return [
+        f"line {lineno}: malformed string literal (unescaped quote?): {line.strip()[:80]}"
+        for lineno, line in enumerate(html.splitlines(), start=1)
+        if _FIELD_LINE_RE.match(line) and not _WHOLE_FIELD_RE.fullmatch(line)
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--quiet", action="store_true", help="exit code only, no report")
     args = parser.parse_args(argv)
 
-    cards = iter_cards(MAP_PATH.read_text(encoding="utf-8"))
-    problems = check_paths(cards) + check_counts(cards)
+    html = MAP_PATH.read_text(encoding="utf-8")
+    cards = iter_cards(html)
+    problems = check_literals(html) + check_paths(cards) + check_counts(cards)
 
     if not problems:
         if not args.quiet:
