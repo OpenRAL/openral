@@ -349,8 +349,9 @@ class H1MujocoHAL(MujocoArmHAL):
             ``None``, the file is fetched lazily from
             ``robot_descriptions`` (``mujoco_menagerie/unitree_h1/h1.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.  Defaults to ``1``; raise it in tests
-            that assert the body has converged at the commanded pose.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time — required for the contract-validation
             tests because the floating base falls otherwise.
@@ -370,7 +371,7 @@ class H1MujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
         description: RobotDescription | None = None,

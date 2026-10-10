@@ -48,6 +48,7 @@ from openral_core import (
     AttachedCollisionObject,
     ClockAuthority,
     RobotDescription,
+    check_time_base,
 )
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
@@ -81,8 +82,6 @@ _EVENT_TASK_SUCCESS_PROBE_FAILED = "sim.task_success_probe_failed"
 # logger, but its own name so a logger filter does not mix the two.
 _TIME_BASE_LOGGER = "openral.sim.time_base"
 _EVENT_TIME_BASE = "sim.time_base"
-# Tolerance on sim_dt_per_tick x control_freq_hz == 1 (1 %).
-_TIME_BASE_TOL = 0.01
 
 if TYPE_CHECKING:
     from openral_sim.rollout import SimRollout
@@ -632,17 +631,19 @@ class SimAttachedHAL:
     def _check_time_base(self) -> None:
         """Refuse an env whose step is not one control period of the robot.
 
-        Only a backend that declares ``sim_dt_per_tick_s`` (the Isaac sidecar)
-        is checked: the runner ticks at ``action_spec.control_freq_hz`` and
-        calls ``env.step`` once per tick, so a step that advances the sim by
-        any other interval traverses every trajectory at the wrong speed and
-        every kernel velocity / tracking check reads the wrong clock (issue
-        #355). Logs ``sim.time_base`` once per connect so a trace records the
-        time base it was captured on.
+        Only a backend that declares ``sim_dt_per_tick_s`` (the Isaac sidecar,
+        RoboCasa, LIBERO) is checked: the runner ticks at
+        ``action_spec.control_freq_hz`` and calls ``env.step`` once per tick,
+        so a step that advances the sim by any other interval traverses every
+        trajectory at the wrong speed and every kernel velocity / tracking
+        check reads the wrong clock (issues #355, #358). The rule itself is
+        ``openral_core.check_time_base``. Logs ``sim.time_base`` once per
+        connect so a trace records the time base it was captured on.
 
         Raises:
             ROSConfigError: the manifest declares no control rate, or the env's
-                tick differs from ``1 / control_freq_hz`` by more than 1 %.
+                tick differs from ``1 / control_freq_hz`` by more than
+                ``TIME_BASE_TOL`` (1 %).
         """
         dt = getattr(self._env, "sim_dt_per_tick_s", None)
         if dt is None:
@@ -651,20 +652,7 @@ class SimAttachedHAL:
         dt = float(dt)
         backend = type(self._env).__name__
         rate = self.description.control_rate_hz
-        if rate is None:
-            raise ROSConfigError(
-                f"SimAttachedHAL: backend {backend!r} steps {dt:.6f} s of sim time per action, "
-                f"but robot {self.description.name!r} declares no action_spec.control_freq_hz "
-                "to hold it to. Declare the control rate in the manifest."
-            )
-        # ``not <=`` so a NaN tick is refused too (NaN compares False both ways).
-        if not abs(dt * rate - 1.0) <= _TIME_BASE_TOL:
-            raise ROSConfigError(
-                f"SimAttachedHAL: backend {backend!r} advances {dt:.6f} s of sim time per "
-                f"env.step, but robot {self.description.name!r} ticks at {rate:g} Hz "
-                f"({1.0 / rate:.6f} s). One step must be one control period, or the rehearsal "
-                "runs at the wrong speed; fix the scene's physics substeps, not the robot's rate."
-            )
+        check_time_base(dt, rate, backend=f"SimAttachedHAL[{backend}]", robot=self.description.name)
         self._sim_dt_per_tick_s = dt
         structlog.get_logger(_TIME_BASE_LOGGER).info(
             _EVENT_TIME_BASE,

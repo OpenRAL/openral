@@ -41,3 +41,38 @@ def test_enable_continuous_survives_the_horizon() -> None:
         assert rs.done is False
     finally:
         env.close()
+
+
+@pytest.mark.sim
+def test_one_step_is_one_control_period_in_sim_time() -> None:
+    """Regression for issue #358: a deploy kitchen steps 1/30 s, not robosuite's 1/20 s.
+
+    The deploy scene pins ``control_freq_hz: 30.0`` (the panda_mobile rate), the
+    factory shrinks robosuite's physics dt to divide the period, and the env
+    reports the tick ``SimAttachedHAL.connect`` holds to the manifest. Before
+    this, 30 steps advanced 1.5 s and every rehearsal ran at 1.5x speed.
+    """
+    from openral_core import RobotDescription
+    from openral_hal.sim_attached import SimAttachedHAL
+    from openral_hal.sim_bringup import build_sim_env_from_yaml
+
+    env, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    try:
+        env.reset(seed=seed)
+        assert env.sim_dt_per_tick_s == pytest.approx(1 / 30, rel=0.01)
+        zero = np.zeros(env.action_dim, dtype=np.float32)
+        env.step(zero)
+        t0 = env.sim_time_ns()
+        for _ in range(30):
+            env.step(zero)
+        t1 = env.sim_time_ns()
+        assert t0 is not None and t1 is not None
+        assert (t1 - t0) / 1e9 == pytest.approx(1.0, rel=0.01)
+        # The guard that refused the 20 Hz kitchen under the 30 Hz robot now passes.
+        hal = SimAttachedHAL(
+            env, RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"), env_reset_seed=seed
+        )
+        hal.connect()
+        assert hal.clock_authority().timestep_s == pytest.approx(1 / 30, rel=0.01)
+    finally:
+        env.close()

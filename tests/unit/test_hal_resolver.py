@@ -80,11 +80,12 @@ class TestSimMode:
         """``hal.parameters.defaults`` reach the constructed HAL (ADR-0029).
 
         The manifest-driven node relies on build_hal threading these
-        kwargs; a silently-dropped default would run the sim with
-        gravity on and 1 settle step.
+        kwargs; a silently-dropped default would run the sim with gravity on.
+        The manifest pins no ``settle_steps`` (issue #358): the twin derives one
+        control period per action at connect, so the pin stays ``None`` here.
         """
         hal = build_hal(_load("anvil_openarm_v2"), mode="sim")
-        assert hal._settle_steps == 4  # type: ignore[attr-defined] # reason: sim-only introspection
+        assert hal._settle_steps_pinned is None  # type: ignore[attr-defined] # reason: sim-only introspection
         assert hal._gravity_enabled is False  # type: ignore[attr-defined] # reason: sim-only introspection
 
 

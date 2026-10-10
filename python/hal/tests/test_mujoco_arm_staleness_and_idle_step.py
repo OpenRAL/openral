@@ -169,7 +169,9 @@ def test_idle_step_advances_a_wall_time_slice() -> None:
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     hal = MujocoArmHAL.from_description(desc)
     hal.connect()
-    assert hal._step_while_active is True
+    # One action is one control period since issue #358, so the bridge yields
+    # the idle stepper to an active skill; idle ticks still advance wall slices.
+    assert hal._step_while_active is False
     model, data = hal.mujoco_handles()
     tick_s = 0.1  # the bridge's 10 Hz idle rate
 

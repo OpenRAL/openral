@@ -85,10 +85,17 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 | [`isaac_openarm_warehouse.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_openarm_warehouse.yaml) | `openarm` *(declared)* | `isaac_sim` | Isaac Sim | Bimanual OpenArm imported from its URDF, standing at a pallet of three pickable YCB props in the `Simple_Warehouse`; its meshes come from Enactic's public `openarm_description`, fetched on first use |
 | [`isaac_panda_mobile_warehouse.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_panda_mobile_warehouse.yaml) | `panda_mobile` *(declared)* | `isaac_sim` | Isaac Sim | Mobile-base Panda spawned in an aisle of NVIDIA's `Simple_Warehouse` (three shelf racks, lidar/SLAM/Nav2), three pickable YCB props on a pallet 5 m down the aisle. The generic template: `scene.assets_uri` (environment USD) + `robot_id` + `base_pose` (spawn) — see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot) |
 
-Isaac deploy scenes are timing-faithful: one scene step is one control period
-of the robot (`action_spec.control_freq_hz`; physics substeps derived at boot,
-non-integer ratios refused), and `SimAttachedHAL.connect` refuses a scene whose
-tick is anything else — see [Isaac Sim: any stage, any robot](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot).
+Deploy scenes are timing-faithful: one scene step is one control period of the
+robot (`action_spec.control_freq_hz`), and `SimAttachedHAL.connect` refuses a
+scene whose tick is anything else (`openral_core.check_time_base`, 1 %). Isaac
+derives its physics substeps at boot (non-integer ratios refused) — see
+[Isaac Sim: any stage, any robot](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot).
+RoboCasa and LIBERO deploy scenes pin `backend_options.control_freq_hz` to the
+robot's rate (robosuite's physics time step is shrunk to divide the period);
+without the pin both keep robosuite's native 20 Hz, the benchmark contract the
+eval tier and every published LIBERO number run at. The bare MuJoCo twins
+(`MujocoArmHAL`: OpenArm, SO-100/101, UR, Franka, ...) derive their physics
+steps per action from the same rate at connect (issue #358).
 
 ## SimScene catalogue (`scenes/sim/`)
 

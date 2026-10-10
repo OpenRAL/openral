@@ -237,7 +237,11 @@ filter's log line); a mount that is centimetres off shows up there first.
 ## 3. Twin pass: real ZED, MuJoCo twin, motors unpowered [human, rig]
 
 The same scene, pose and cloud are used, but the HAL is the MuJoCo twin, so no motor
-command exists. The arms stay unpowered. `drivers:` is ignored on the sim path, so start the
+command exists. The arms stay unpowered. The twin advances exactly one 30 Hz control
+period per action (17 physics steps at 1/510 s, derived from `action_spec.control_freq_hz`
+at connect and logged once as `sim.time_base`), so this pass is timing-equivalent to the
+real run: a speed or tracking verdict here is the verdict the real pass would give
+(issue #358). `drivers:` is ignored on the sim path, so start the
 ZED driver by hand as in step 1, before or after `deploy sim`: its launch purge
 (`dds_transport_ready: … shm_purged=N shm_kept_live=M`) only removes Fast-DDS files no live
 process uses, so a running driver keeps publishing (on Thor, 2026-09-24: ZED started first,

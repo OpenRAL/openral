@@ -343,7 +343,7 @@ hal:
   # the manifest-driven node needs no bespoke ROS params (ADR-0029).
   parameters:
     defaults:
-      settle_steps: 4
+      # No settle_steps pin: one action is one control period (issue #358).
       gravity_enabled: false
       staleness_limit_s: 0.5
 

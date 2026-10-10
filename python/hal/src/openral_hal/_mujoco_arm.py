@@ -15,10 +15,11 @@ Design notes
   module loads cleanly on hosts without it (matches the ``SO100FollowerHAL``
   convention for ``lerobot``).
 * ``send_action`` writes the **last** waypoint of an action chunk into
-  ``data.ctrl`` and steps the simulator ``settle_steps`` times.  The HAL is a
-  thin adapter — trajectory interpolation is the job of the controller above
-  it (a ``ros2_control`` joint trajectory controller in production, or the
-  test directly here).
+  ``data.ctrl`` and steps the simulator ``settle_steps`` times — by default
+  one control period of ``description.control_rate_hz`` (issue #358), so the
+  twin's clock is the robot's clock.  The HAL is a thin adapter — trajectory
+  interpolation is the job of the controller above it (a ``ros2_control``
+  joint trajectory controller in production, or the test directly here).
 * The gripper joint, when present, is a synthetic 1-DoF channel reported in
   ``[0, 1]`` regardless of the underlying actuator's native range.  The
   conversion is done by the per-robot adapter via ``gripper_ctrl_range``.
@@ -49,6 +50,7 @@ from openral_core.schemas import (
     RobotDescription,
     SimGripperDescription,
 )
+from openral_core.time_base import check_time_base, physics_steps_per_tick
 
 from openral_hal._base import HALBase
 from openral_hal._slot_group import SlotGroupStager, compose_slot_group_action
@@ -74,7 +76,7 @@ class _MujocoArmInitKwargs(TypedDict):
     grippers: Sequence[SimGripperDescription]
     keyframe_index: int | None
     seed_ctrl_from_qpos: bool
-    settle_steps: int
+    settle_steps: int | None
     gravity_enabled: bool
     staleness_limit_s: float
 
@@ -137,6 +139,9 @@ def _kinematic_group(joint_name: str, groups: Sequence[str], *, robot: str) -> s
 _IDLE_STEP_CAP = 200
 
 log = structlog.get_logger(__name__)
+# Shared with ``SimAttachedHAL``: one logger / event per time base (telemetry.md).
+_TIME_BASE_LOGGER = "openral.sim.time_base"
+_EVENT_TIME_BASE = "sim.time_base"
 
 
 class MujocoArmHAL(HALBase):
@@ -173,7 +178,13 @@ class MujocoArmHAL(HALBase):
             controllable joint so position actuators hold the initial pose
             (OpenArm v2).
         settle_steps: Number of ``mj_step`` calls in ``send_action`` to
-            advance toward the new target. Defaults to ``1``.
+            advance toward the new target. ``None`` (default) derives it at
+            ``connect`` so one action is one control period of
+            ``description.control_rate_hz`` (``physics_steps_per_tick``,
+            shrinking ``opt.timestep`` to divide the period exactly); an
+            explicit count is a pinned override, logged, that leaves the twin
+            wall-paced (``_step_while_active``). Without a declared rate the
+            legacy single step applies.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
             (useful for closed-loop tests asserting exact convergence).
         staleness_limit_s: Age (seconds) of the cached state above which
@@ -184,9 +195,10 @@ class MujocoArmHAL(HALBase):
         ROSConfigError: If ``description.joints`` is empty.
     """
 
-    # ponytail: keep the existing wall-time stepper running instead of adding a
-    # second controller loop. send_action() advances only one physics tick, so
-    # yielding the stepper during an active skill starves /clock and cameras.
+    # Wall-time idle stepping during an active skill: needed while send_action
+    # advances only a pinned/legacy step count (else /clock and cameras starve);
+    # switched off by ``_resolve_time_base`` once one action is one control
+    # period, so the sim clock is then driven by the runner's ticks alone.
     _step_while_active = True
 
     def __init__(
@@ -200,7 +212,7 @@ class MujocoArmHAL(HALBase):
         grippers: Sequence[SimGripperDescription] = (),
         keyframe_index: int | None = None,
         seed_ctrl_from_qpos: bool = False,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:
@@ -231,7 +243,13 @@ class MujocoArmHAL(HALBase):
                 )
         self._keyframe_index = keyframe_index
         self._seed_ctrl_from_qpos = seed_ctrl_from_qpos
-        self._settle_steps = settle_steps
+        self._settle_steps_pinned = settle_steps
+        # Resolved at ``connect`` (``_resolve_time_base``); the pinned count or
+        # the legacy single step until then.
+        self._settle_steps: int = 1 if settle_steps is None else int(settle_steps)
+        # Sim seconds one ``send_action`` advances once held to the control
+        # rate; ``None`` while pinned / rate-less (not timing-faithful).
+        self._sim_dt_per_tick_s: float | None = None
         self._gravity_enabled = gravity_enabled
         self._staleness_limit_s = staleness_limit_s
 
@@ -337,6 +355,7 @@ class MujocoArmHAL(HALBase):
                     continue
                 self._data.ctrl[act_idx] = float(self._data.qpos[qpos_addr])
 
+        self._resolve_time_base()
         self._connected = True
         self._last_state_time = time.monotonic()
         log.info(
@@ -345,6 +364,78 @@ class MujocoArmHAL(HALBase):
             mjcf=self._mjcf_path,
             n_joints=len(self._joint_names),
         )
+
+    def _resolve_time_base(self) -> None:
+        """Make one ``send_action`` one control period of the robot (issue #358).
+
+        With no pinned ``settle_steps`` and a declared
+        ``description.control_rate_hz``, derives the physics steps per action
+        via ``physics_steps_per_tick`` — shrinking ``opt.timestep`` (never
+        growing it) so the period is a whole number of steps — holds the result
+        with ``check_time_base``, switches the wall-time idle stepper off while
+        a skill is active, and logs ``sim.time_base`` once per connect. A pinned
+        count is honoured and logged as an override (``hal.time_base.pinned``);
+        a manifest without a rate keeps the legacy single step
+        (``hal.time_base.unresolved``). Neither of those is timing-faithful:
+        ``sim_dt_per_tick_s`` stays ``None`` and the idle stepper keeps pacing
+        the twin on wall time.
+        """
+        assert self._model is not None
+        rate = self.description.control_rate_hz
+        physics_dt = float(self._model.opt.timestep)
+        backend = type(self).__name__
+        if self._settle_steps_pinned is not None:
+            self._settle_steps = int(self._settle_steps_pinned)
+            log.warning(
+                "hal.time_base.pinned",
+                robot=self.description.name,
+                settle_steps=self._settle_steps,
+                sim_dt_per_action_s=round(self._settle_steps * physics_dt, 6),
+                control_freq_hz=rate,
+                hint="pinned settle_steps: wall-paced, not one control period per action",
+            )
+            return
+        if rate is None:
+            self._settle_steps = 1
+            log.warning(
+                "hal.time_base.unresolved",
+                robot=self.description.name,
+                hint="declare action_spec.control_freq_hz so one action is one control period",
+            )
+            return
+        steps, dt = physics_steps_per_tick(rate, physics_dt)
+        if dt != physics_dt:
+            self._model.opt.timestep = dt
+            log.info(
+                "hal.time_base.timestep_shrunk",
+                robot=self.description.name,
+                mjcf_timestep_s=physics_dt,
+                timestep_s=round(dt, 9),
+                control_freq_hz=rate,
+            )
+        tick = steps * dt
+        check_time_base(tick, rate, backend=backend, robot=self.description.name)
+        self._settle_steps = steps
+        self._sim_dt_per_tick_s = tick
+        self._step_while_active = False
+        structlog.get_logger(_TIME_BASE_LOGGER).info(
+            _EVENT_TIME_BASE,
+            backend=backend,
+            sim_dt_per_tick_s=round(tick, 6),
+            control_freq_hz=rate,
+            robot=self.description.name,
+            physics_dt_s=round(dt, 9),
+            physics_steps=steps,
+        )
+
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Sim seconds one ``send_action`` advances, once held to the control rate.
+
+        ``None`` before ``connect``, with a pinned ``settle_steps`` or a manifest
+        that declares no rate — the twin is then wall-paced, not timing-faithful.
+        """
+        return self._sim_dt_per_tick_s
 
     def disconnect(self) -> None:
         """Release the MuJoCo model + renderer; drop any staged slot group.  Idempotent.
@@ -404,7 +495,7 @@ class MujocoArmHAL(HALBase):
             return ClockAuthority.host_wall()
         return ClockAuthority.simulation(
             "mujoco",
-            timestep_s=float(self._model.opt.timestep),
+            timestep_s=self._sim_dt_per_tick_s or float(self._model.opt.timestep),
         )
 
     def read_images(self) -> dict[str, object]:

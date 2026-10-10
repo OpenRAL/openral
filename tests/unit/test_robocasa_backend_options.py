@@ -398,3 +398,31 @@ def test_registry_validates_through_the_backend_owned_model() -> None:
         SCENES.validate_options("robocasa/OpenDrawer", {"prebuilt_task": "X", "layout_ids": 0})
     assert SCENES.validate_options("libero_spatial", {"anything": 1}) is None
     assert SCENES.validate_options("not_a_scene", {"anything": 1}) is None
+
+
+def test_control_freq_hz_defaults_to_none_and_must_be_positive() -> None:
+    """``control_freq_hz`` (issue #358): ``None`` keeps robosuite's 20 Hz benchmark contract."""
+    opts = RoboCasaBackendOptions(mode="prebuilt", prebuilt_task="PnPCounterToCab")
+    assert opts.control_freq_hz is None
+    pinned = RoboCasaBackendOptions(
+        mode="prebuilt", prebuilt_task="PnPCounterToCab", control_freq_hz=30.0
+    )
+    assert pinned.control_freq_hz == 30.0
+    with pytest.raises(ValidationError):
+        RoboCasaBackendOptions(mode="prebuilt", prebuilt_task="PnPCounterToCab", control_freq_hz=0)
+
+
+def test_every_robocasa_deploy_scene_pins_the_robot_rate() -> None:
+    """A deploy scene without the pin would be refused at connect (20 Hz under a 30 Hz robot)."""
+    from pathlib import Path
+
+    import yaml
+    from openral_core import RobotDescription
+
+    for path in sorted(Path("scenes/deploy").glob("robocasa_*.yaml")):
+        doc = yaml.safe_load(path.read_text())
+        opts = RoboCasaBackendOptions.model_validate(doc["scene"]["backend_options"])
+        robot = RobotDescription.from_yaml(
+            f"robots/{doc.get('robot_id', 'panda_mobile')}/robot.yaml"
+        )
+        assert opts.control_freq_hz == robot.control_rate_hz, path

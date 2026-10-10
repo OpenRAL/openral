@@ -38,7 +38,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openral_sim._assets import ensure_robocasa_assets
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
+from openral_sim.rollout import (
+    StepResult,
+    pin_robosuite_time_base,
+    sim_dt_per_tick_from_robosuite_env,
+    sim_time_ns_from_mujoco_handles,
+)
 
 if TYPE_CHECKING:
     from openral_core import SceneSpec, SimEnvironment, TaskSpec
@@ -169,6 +174,15 @@ class RoboCasaBackendOptions(BaseModel):
             arm-style robots; the adapter validates against the
             controller config exposed by RoboCasa at import time.
         horizon: Maximum step budget for the underlying RoboCasa env.
+        control_freq_hz: The rate the kitchen env is built with
+            (robosuite ``control_freq``). ``None`` keeps robosuite's native
+            20 Hz — the benchmark contract the human300 policies were trained
+            at. A ``deploy sim`` scene sets it to the robot's
+            ``action_spec.control_freq_hz`` so one ``env.step`` is one control
+            period (issue #358); ``SimAttachedHAL.connect`` refuses any other
+            value, and the physics time step is shrunk to divide the period
+            (``pin_robosuite_time_base``). Not available on the GR1 gym path,
+            whose registered env owns its rate.
 
     Example:
         >>> opts = RoboCasaBackendOptions(mode="prebuilt", prebuilt_task="PnPCounterToCab")
@@ -188,6 +202,7 @@ class RoboCasaBackendOptions(BaseModel):
     robots: list[str] = Field(default_factory=lambda: ["PandaMobile"])
     controller: str = "OSC_POSE"
     horizon: int = Field(default=500, gt=0)
+    control_freq_hz: float | None = Field(default=None, gt=0)
     # Proprioception layout the wrapped policy expects. Each option
     # concatenates a different subset of `robot0_*` robosuite obs keys
     # into the `observation.state` vector emitted by `_RoboCasaSim`:
@@ -685,6 +700,17 @@ class _RoboCasaSim:
             )
             return
         obj.ignore_done = True
+
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Sim seconds one ``step`` advances: what robosuite's step loop integrates.
+
+        ``SimAttachedHAL.connect`` holds this to the robot's control rate
+        (issue #358): a kitchen built at robosuite's native 20 Hz under a 30 Hz
+        robot is refused instead of rehearsing at 1.5x speed. ``None`` when no
+        robosuite env is reachable through the wrappers.
+        """
+        return sim_dt_per_tick_from_robosuite_env(self._env)
 
     @property
     def action_dim(self) -> int:
@@ -2206,6 +2232,11 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
     sid = scene_id or env_cfg.scene.id
     env_name = _resolve_env_name(opts, sid)
     is_gr1 = _is_gr1_robot(opts.robots[0])
+    if is_gr1 and opts.control_freq_hz is not None:
+        raise ROSConfigError(
+            "robocasa: backend_options.control_freq_hz is not available on the GR1 gym path "
+            "(the registered gr1_unified env owns its control rate)."
+        )
 
     # robosuite's `controller_configs` shape changed in 1.5; the
     # documented helper accepts EITHER `controller=<name>` (a composite
@@ -2342,6 +2373,13 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         import robosuite  # reason: provisioned above; robocasa pins its own fork
 
         _require_registered_env(env_name)
+        # One env.step = one control period (issue #358): robosuite's native
+        # 20 Hz unless the scene pins the robot's rate; the physics dt is
+        # shrunk first so the period is a whole number of physics steps.
+        control_freq = 20.0 if opts.control_freq_hz is None else float(opts.control_freq_hz)
+        pin_robosuite_time_base(control_freq)
+        if control_freq.is_integer():
+            control_freq = int(control_freq)  # robosuite's own default is the int 20
         env = robosuite.make(
             env_name=env_name,
             robots=opts.robots,
@@ -2352,7 +2390,7 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
             camera_names=camera_names,
             camera_widths=env_cfg.scene.observation_width,
             camera_heights=env_cfg.scene.observation_height,
-            control_freq=20,
+            control_freq=control_freq,
             horizon=opts.horizon,
             ignore_done=opts.ignore_done,
             **extra_env_kwargs,
