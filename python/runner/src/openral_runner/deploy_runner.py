@@ -39,7 +39,7 @@ import time
 from collections.abc import Callable, Sequence
 
 import structlog
-from openral_core import TickResult
+from openral_core import SensorFrame, TickResult
 from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSSafetyViolation
 from openral_hal.protocol import HAL
 from openral_observability import metrics as ral_metrics
@@ -97,10 +97,11 @@ class DeployRunner(InferenceRunnerBase):
             feeds joint state + sensor topic refs into each tick.
         sensor_readers: Sequence of ``SensorReader`` instances. The
             runner opens each in ``activate`` and closes in
-            ``deactivate``. Frames whose carry-mode is ``topic`` are
-            forwarded to ``WorldStateAggregator.update_image``; frames
-            carrying inline ``data`` or ``handle`` are noted but not yet
-            attached to the snapshot (follow-up).
+            ``deactivate``. Frames carrying inline ``data`` or a device
+            ``handle`` go into ``WorldStateAggregator.update_image_frame``
+            (the snapshot's ``image_frames``, what the skill and the
+            recorder read); a ``topic`` frame only stamps its arrival via
+            ``update_image``.
         safety_client: Optional ``SafetyClient``. Defaults to a
             ``NullSafetyClient`` so digital-twin runs still emit
             ``safety.check`` spans even without the C++ kernel.
@@ -390,11 +391,7 @@ class DeployRunner(InferenceRunnerBase):
                     exc=str(exc),
                 )
                 continue
-            if frame.topic is not None:
-                self._aggregator.update_image(frame.sensor_id, frame.topic, frame.stamp_wall_ns)
-            # frame.data / frame.handle carry-modes are not yet wired into
-            # WorldState.image_frames — that's a follow-up PR (image_frames
-            # field exists on the schema today, just no producer).
+            self._attach_frame(frame)
         sensors_ms = (time.perf_counter() - sensors_t0) * 1e3
 
         # ── 2. HAL → WorldState snapshot ───────────────────────────────────
@@ -569,6 +566,20 @@ class DeployRunner(InferenceRunnerBase):
         if self._recorder is not None and self._recorder_episode_open:
             self._record_tick_to_recorder(snapshot, action, action_applied, stamp_ns)
         return result
+
+    def _attach_frame(self, frame: SensorFrame) -> None:
+        """Hand one fresh reader frame to the aggregator by its carry-mode.
+
+        Inline pixels or a device handle: the frame itself goes into
+        ``WorldState.image_frames`` — the same write the ROS runtime's
+        sensor-leg pump makes — so the skill steps on it and the attached
+        recorder bags it. A topic-ref frame only stamps the arrival; its
+        bytes stay on the bus.
+        """
+        if frame.data is not None or frame.handle is not None:
+            self._aggregator.update_image_frame(frame.sensor_id, frame)
+        elif frame.topic is not None:
+            self._aggregator.update_image(frame.sensor_id, frame.topic, frame.stamp_wall_ns)
 
     def _record_tick_to_recorder(
         self,
