@@ -20,7 +20,6 @@ lazily on the first ``TOPRewardMonitor.score``.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -76,12 +75,11 @@ class TOPRewardMonitor:
         """Load lerobot's stock TOPRewardModel (4-bit) + encoder once."""
         if self._model is not None:
             return
-        # expandable_segments must precede the first CUDA alloc (8 GB NF4 fit).
-        # torch renamed the var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
-        # and warns on every load when the old spelling is present.
-        from openral_sim._sidecar_common import installed_alloc_conf_var  # noqa: PLC0415
+        # expandable_segments must precede the first CUDA alloc (8 GB NF4 fit);
+        # never on Jetson, where it crashes torch's NVML fabric query.
+        from openral_sim._sidecar_common import default_expandable_segments  # noqa: PLC0415
 
-        os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
+        default_expandable_segments()
         try:
             from lerobot.rewards.topreward.configuration_topreward import (  # noqa: PLC0415
                 TOPRewardConfig,

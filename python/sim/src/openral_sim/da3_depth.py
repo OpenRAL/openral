@@ -32,6 +32,8 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
+from openral_sim._sidecar_common import default_expandable_segments
+
 _log = structlog.get_logger(__name__)
 
 # The DA3 sidecar's default bind port (tools/_da3_depth_server.py:--port and the
@@ -172,7 +174,7 @@ class Da3DepthClient:
     def _spawn(self) -> None:
         script = _locate_da3_boot_script()
         env = os.environ.copy()
-        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        default_expandable_segments(env)  # child runs this interpreter's torch
         argv = [sys.executable, str(script), "--port", str(self.port)]
         _log.info("da3.spawning", argv=argv)
         self._child = subprocess.Popen(argv, env=env, start_new_session=True)

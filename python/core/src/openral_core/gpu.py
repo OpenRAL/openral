@@ -23,10 +23,12 @@ __all__ = ["TEGRA_RELEASE_PATH", "detect_gpu_vram_gb", "is_tegra_host"]
 TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")
 
 
-def is_tegra_host(release_path: Path = TEGRA_RELEASE_PATH) -> bool:
+def is_tegra_host(release_path: Path | None = None) -> bool:
     """True on an NVIDIA Jetson / L4T host (``release_path`` exists).
 
-    The one Tegra probe; ``release_path`` lets tests point at a fixture. It
+    The one Tegra probe. ``release_path`` defaults to ``TEGRA_RELEASE_PATH``,
+    read at call time, so a test can select the Jetson path for every caller by
+    pointing that constant at a captured ``nv_tegra_release`` fixture. It
     answers "is this an L4T image", not "is the GPU integrated / unified
     memory": DGX Spark (GB10) is unified-memory but runs DGX OS.
 
@@ -34,7 +36,7 @@ def is_tegra_host(release_path: Path = TEGRA_RELEASE_PATH) -> bool:
         >>> is_tegra_host(Path("/nonexistent/nv_tegra_release"))
         False
     """
-    return release_path.exists()
+    return (TEGRA_RELEASE_PATH if release_path is None else release_path).exists()
 
 
 def detect_gpu_vram_gb(field: str) -> float:

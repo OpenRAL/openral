@@ -352,7 +352,10 @@ def main(argv: list[str]) -> int:
     # v1 held at 2.8 by lerobot's cap).
     _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
     _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
-    os.environ.setdefault(_alloc_var, "expandable_segments:True")
+    # Same Jetson gate as openral_sim._sidecar_common.default_expandable_segments,
+    # which this sidecar venv cannot import: never on L4T (NVML fabric-query crash).
+    if not os.path.exists("/etc/nv_tegra_release"):
+        os.environ.setdefault(_alloc_var, "expandable_segments:True")
     import torch
 
     if not torch.cuda.is_available():

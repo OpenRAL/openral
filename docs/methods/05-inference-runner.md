@@ -349,11 +349,11 @@ _Robometer reward-monitor backend — loads lerobot 0.6.0's native Robometer mod
 ### `python/runner/src/openral_runner/backends/reward/topreward_reward.py`
 _In-process TOPReward (arXiv 2602.19313) reward monitor — a zero-shot reward reading `P("True" | video, instruction)` from an off-the-shelf Qwen3-VL VLM, no fine-tuned checkpoint and no ZMQ sidecar. Nothing here imports torch / transformers at module load._
 
-- `class TOPRewardMonitor` (L36) — `__init__(*, model_id, weights_source, success_threshold=0.8, max_frames=8, num_samples=6, fps=2.0, device="cuda")` — stores config; the VLM is loaded lazily on first `score`.
-  - `score(frames, task) -> (progress, success)` (L134) — Prefix-sweep: scores `frames[:L]` at `num_samples` anchor lengths, min-max normalizes raw log-probs within the queried window, then interpolates to one value per frame. `success` mirrors `progress` (TOPReward has a single head).
-  - `assess(frames, task) -> dict` (L184) — Scores `frames` and summarizes the window for the Reasoner; same keys as `RobometerInProcessReward.assess`.
-  - `close() -> None` (L197) — Releases the in-process model + frees CUDA memory.
-- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` (L212) — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest.
+- `class TOPRewardMonitor` (L35) — `__init__(*, model_id, weights_source, success_threshold=0.8, max_frames=8, num_samples=6, fps=2.0, device="cuda")` — stores config; the VLM is loaded lazily on first `score`.
+  - `score(frames, task) -> (progress, success)` (L132) — Prefix-sweep: scores `frames[:L]` at `num_samples` anchor lengths, min-max normalizes raw log-probs within the queried window, then interpolates to one value per frame. `success` mirrors `progress` (TOPReward has a single head).
+  - `assess(frames, task) -> dict` (L182) — Scores `frames` and summarizes the window for the Reasoner; same keys as `RobometerInProcessReward.assess`.
+  - `close() -> None` (L195) — Releases the in-process model + frees CUDA memory.
+- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` (L210) — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/detector_runner.py`
 _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline — loads the `DetectorContract`, delegates backend construction to `build_manifest_detector` (ONNX CPU/NVMM tiers or the `VLM_SIDECAR` open-vocab tier), attaches the appropriate branch to the bus tee via `TeeManager`, and fires the `on_detection` callback for each non-`None` `ObjectsMetadata`. Imports `gi` + `DetectorTier`/`build_manifest_detector` + `nvmm_convert_element` eagerly at load._

@@ -1867,10 +1867,11 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     # excluded: expandable segments are reported to work and help there
     # (vllm-project/vllm#55569; unslothai/unsloth-zoo#1235 carves GB10 out of
     # the same Tegra exclusion). Not verified on our hosts.
-    from openral_core.gpu import is_tegra_host  # reason: deferred, tests patch the module
+    from openral_sim._sidecar_common import (  # reason: defer optional dep
+        default_expandable_segments,
+    )
 
-    if not is_tegra_host():
-        env.setdefault(_alloc_conf_var(), "expandable_segments:True")
+    default_expandable_segments(env, var=_alloc_conf_var())
     _apply_rmw_default(env)
     return env
 

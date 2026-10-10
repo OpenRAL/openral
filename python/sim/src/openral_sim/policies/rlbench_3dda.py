@@ -32,7 +32,11 @@ from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 
 from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
-from openral_sim._sidecar_common import alloc_conf_var, venv_torch_version
+from openral_sim._sidecar_common import (
+    alloc_conf_var,
+    default_expandable_segments,
+    venv_torch_version,
+)
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
 
@@ -219,10 +223,13 @@ def _build_diffuser_actor(env_cfg: SimEnvironment) -> _Diffuser3DActorAdapter:
     # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
     # and warns on every boot when the old spelling is present; resolve it from
     # the sidecar venv's actual torch rather than hardcoding a name.
-    alloc_var = alloc_conf_var(venv_torch_version(sidecar_python.parent.parent))
+    alloc_env: dict[str, str] = {}
+    default_expandable_segments(
+        alloc_env, var=alloc_conf_var(venv_torch_version(sidecar_python.parent.parent))
+    )
     launch_argv = [
         "env",
-        f"{alloc_var}=expandable_segments:True",
+        *(f"{k}={v}" for k, v in alloc_env.items()),
         str(sidecar_python),
         str(_locate_sidecar_script()),
         "--repo",
