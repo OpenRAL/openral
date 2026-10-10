@@ -3539,8 +3539,10 @@ class SimSensorBridge:
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
 
-        ``attachment_heartbeat=False`` opens nothing here — no publisher, no
-        timer, no evidence tracker, whatever the HAL. The HAL node sets it
+        ``attachment_heartbeat=False`` opens no publisher, no timer and no
+        evidence tracker, whatever the HAL; the staging subscriptions stay, so a
+        HAL with the attachment API still masks what the other authority attaches
+        and still holds the attachment barrier for it. The HAL node sets it
         (``lifecycle.sim_attachment_heartbeat``) when its vision attachment leg is
         on — that leg publishes revisions on the same latched topic, and a
         revision-0 heartbeat beside it would move the aggregator's revision
@@ -3558,9 +3560,6 @@ class SimSensorBridge:
                 "attachment heartbeat off: another attachment authority publishes "
                 "/openral/attachment_state"
             )
-            return
-        update = getattr(self._hal, "update_attached_objects", None)
-        read = getattr(self._hal, "read_attached_objects", None)
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -3573,15 +3572,16 @@ class SimSensorBridge:
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
-        self._attachment_pub = self._node.create_publisher(
-            AttachmentState,
-            "/openral/attachment_state",
-            qos,
-        )
-        self._attachment_timer = self._node.create_timer(
-            0.2,
-            self._publish_attachment_state,
-        )
+        if self._attachment_heartbeat:
+            self._attachment_pub = self._node.create_publisher(
+                AttachmentState,
+                "/openral/attachment_state",
+                qos,
+            )
+            self._attachment_timer = self._node.create_timer(
+                0.2,
+                self._publish_attachment_state,
+            )
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if not callable(update) or not callable(read):
@@ -3620,7 +3620,7 @@ class SimSensorBridge:
             voxel_qos,
         )
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
-        if handles is not None:
+        if handles is not None and self._attachment_heartbeat:
             from openral_core.exceptions import ROSConfigError
 
             from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
