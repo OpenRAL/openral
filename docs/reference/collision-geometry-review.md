@@ -624,9 +624,22 @@ hulls, replayed into the real kernel at the parameters `deploy run` composes for
 | the same surface 0.10 m lower | accepted |
 
 So if the head camera's map holds the surface just in front of the robot, the kernel refuses
-every chunk near rest. Whether it does is the cell measurement still owed (the harness run on a
-twin-pass recording, motors unpowered); the remedy is the Safety-WG's (hazard-log Entry 058).
-Before #360 the lowest kernel link was the pedestal at shoulder height, so this could not happen.
+every chunk near rest. Before #360 the lowest kernel link was the pedestal at shoulder height, so
+this could not happen.
+
+**Measured on the Orin cell, 2026-10-10 — accepted.** No motion: the real ZED-M (the scene's
+driver overrides) with the MuJoCo twin as HAL, so no CAN traffic; 28 s of the raw cloud and TF
+recorded; replayed through the real self-filter, `octomap_server` and voxel bridge at the
+parameters `deploy run` composes for `openarm_real_world_voxels.yaml` on unit `orin` (20 mm
+cells, occupancy 0.6, the #360 manifest), with the joints held at zero (the twin's recorded
+joint states, all within 1.4 mrad of zero, arrive in late bursts the filter's 0.1 s pairing
+rejects). Of 310 maps (4172 occupied cells, 913 at table level, objects in front), the nearest
+cell centre to a torso box was 36.8 mm (median 36.8, max 47.5): the head camera does not see the
+surface within 2 cm of the foot plate. The real kernel judged a hold at q = 0 against four maps
+spread over the recording: accepted every time. The self-filter removed 0.0 % of points, so the
+camera does not see the robot here; the real arms' pose was not read. One cell, one camera
+mount: a cell whose camera sees closer to the foot plate can still trip, which is why Entry 058's
+remedy question stays open.
 
 ## 12. MJCF twins
 
