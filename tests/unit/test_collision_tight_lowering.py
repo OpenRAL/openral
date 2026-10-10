@@ -100,6 +100,25 @@ def test_only_the_named_links_are_refined() -> None:
     assert {g.link_name for g in geoms if g.tight_geometry is not None} == {"wrist"}
 
 
+def test_a_tight_link_that_names_no_lowered_link_is_refused() -> None:
+    """A ``--tight-link`` typo must fail, not silently leave the link unrefined.
+
+    ``lower_robot_auto`` is the one entry the CLI and the regression test call,
+    so the check lives there and covers the URDF and MJCF paths alike.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_safety.urdf_lowering import lower_robot_auto
+
+    robot, _ = _so100()
+    with pytest.raises(ROSConfigError, match="no_such_link"):
+        lower_robot_auto(
+            robot,
+            geometry_only=True,
+            manifest_dir=_REPO / "robots" / "so100_follower",
+            tight_links={"no_such_link"},
+        )
+
+
 def test_a_refined_link_survives_the_manifest_round_trip(wrist: LinkCollisionGeometry) -> None:
     """``render_blocks`` writes the refinement exactly; the manifest loads it back equal."""
     from openral_cli.collision import render_blocks
