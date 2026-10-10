@@ -205,12 +205,12 @@ _Isaac Sim scene sidecar, running Isaac Lab/Kit in its own py3.11 venv, auto-spa
 _Shared base for the Isaac Sim sidecar scenes (py3.11 venv only), owning the obs/step lifecycle, RGBA→HWC frame grabbing, the warmup + physics-substep loop, and eval-layer observation assembly, so a new layout only overrides a few template methods._
 
 - `class IsaacSceneBase` (L30) — Lifecycle + obs skeleton common to the Isaac Sim sidecar scenes; class attrs `warmup_steps` / `physics_substeps`. Template methods `build`/`_on_reset`/`_after_world_reset`/`_after_warmup`/`_apply_action`/`_images`/`_state`/`_reward_terminated` are overridden per scene (`_after_warmup` runs after the warmup steps, for settling that needs live physics).
-  - `IsaacSceneBase.build() -> None` (L128) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
+  - `IsaacSceneBase.build() -> None` (L133) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
   - `IsaacSceneBase._after_world_reset() -> None` — Hook run right after `world.reset()`, before the warmup steps, for state the reset overwrites (e.g. a robot root placed away from its import pose).
   - `IsaacSceneBase.reset(seed: int | None = None) -> dict[str, Any]` (L60) — Per-episode reset: randomize, reset physics, warm up, observe.
-  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L123) — Last grabbed RGB frame, or `None`.
-  - `IsaacSceneBase.sim_time_ns() -> int | None` (L101) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
-  - `IsaacSceneBase.step(action: NDArray[np.float32]) -> dict[str, Any]` (L72) — Apply one action, advance physics (renders only the final substep), return a StepResult dict (`observation`/`reward`/`terminated`/`truncated`/`info`/`sim_time_ns`).
+  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L128) — Last grabbed RGB frame, or `None`.
+  - `IsaacSceneBase.sim_time_ns() -> int | None` (L106) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
+  - `IsaacSceneBase.step(action: NDArray[np.float32]) -> dict[str, Any]` (L77) — Apply one action, advance physics (renders only the final substep), return a StepResult dict (`observation`/`reward`/`terminated`/`truncated`/`info`/`sim_time_ns`).
 
 ### `tools/isaac_manifest_scene.py`
 _Robot-agnostic, URDF-driven Isaac Sim scene (the sidecar's only scene): imports the manifest robot's URDF and wires joints/sensors/control from a JSON robot spec marshaled across the venv boundary; absolute joint targets in manifest order (NaN = hold), base twist last._

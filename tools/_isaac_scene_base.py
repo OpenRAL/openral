@@ -67,6 +67,11 @@ class IsaacSceneBase:
             self._before_render()
             self._world.step(render=True)
         self._after_warmup()
+        # The hook may step physics without rendering (a soft-driven arm settling
+        # onto its hold target): render once more so the reset observation's image
+        # comes from the same physics state as its joint state.
+        self._before_render()
+        self._world.step(render=True)
         return self._observe()
 
     def step(self, action: NDArray[np.float32]) -> dict[str, Any]:
