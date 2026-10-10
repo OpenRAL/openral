@@ -477,6 +477,35 @@ def _topic_native(spec: SensorSpec) -> bool:
     return spec.deploy_binding.backend_params.get("topic_native") is True
 
 
+def _topic_max_size(
+    spec: SensorSpec, uncapped: Collection[str], ceiling: tuple[int, int] | None
+) -> tuple[int, int] | None:
+    """Resolution ceiling for ``spec``'s fallback topic, or ``None`` for capture size.
+
+    The per-camera counterpart of ``_fallback_topic_rate_hz``: a SLAM camera
+    (``uncapped``) or a ``topic_native: true`` binding publishes native pixels;
+    every other camera gets the launch-wide ``ceiling`` from ``topic_frame_size``.
+
+    Example:
+        >>> from openral_core import SensorDeployBinding, SensorSpec
+        >>> def spec(name, **params):
+        ...     return SensorSpec(
+        ...         name=name,
+        ...         modality="rgb",
+        ...         frame_id=name,
+        ...         rate_hz=30.0,
+        ...         deploy_binding=SensorDeployBinding(backend_params=params),
+        ...     )
+        >>> _topic_max_size(spec("wrist_left", topic_native=True), (), (320, 240))
+        >>> _topic_max_size(spec("left"), {"left"}, (320, 240))
+        >>> _topic_max_size(spec("top"), (), (320, 240))
+        (320, 240)
+    """
+    if spec.name in uncapped or _topic_native(spec):
+        return None
+    return ceiling
+
+
 def _await_first_frame(
     reader: Any, sensor_id: str, *, attempts: int = 3, timeout_s: float = 6.0
 ) -> None:
@@ -633,12 +662,11 @@ def open_deploy_sensor_readers(
                 # manifest's TF frame — this is what lets mono visual SLAM
                 # (cuVSLAM rig build + nvblox depth framing) run on real
                 # hardware. Specs without ``intrinsics`` publish images only.
-                native_pixels = spec.name in uncapped_sensors or _topic_native(spec)
                 publisher = SensorRosPublisher(
                     reader=reader,
                     topic=topic,
                     rate_hz=_fallback_topic_rate_hz(spec, uncapped_sensors),
-                    max_size=None if native_pixels else topic_max_size,
+                    max_size=_topic_max_size(spec, uncapped_sensors, topic_max_size),
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
                     info_topic=_sensor_topics(spec)[1],
