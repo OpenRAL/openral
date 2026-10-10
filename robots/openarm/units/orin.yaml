@@ -51,10 +51,11 @@ sensors:
         width: 960
         height: 600
         fps: 30
-        # Publish this wrist on the bus at capture size, not the sensor leg's 320x240
-        # thumbnail: a recording or calibration pass reads these pixels exact. Still
-        # 3 Hz. The policy and `--dataset-out` read the native frame in-process anyway.
-        topic_native: true
+        # For a calibration pass that reads this wrist off the bus, uncomment to publish
+        # it at capture size instead of the sensor leg's 320x240 thumbnail (still 3 Hz).
+        # Off by default: ~55 ms of GIL per 960x600 frame starves the Orin's policy
+        # thread, and the policy and `--dataset-out` read native frames in-process.
+        # topic_native: true
     intrinsics:
       width: 960
       height: 600
@@ -72,10 +73,11 @@ sensors:
         width: 960
         height: 600
         fps: 30
-        # Publish this wrist on the bus at capture size, not the sensor leg's 320x240
-        # thumbnail: a recording or calibration pass reads these pixels exact. Still
-        # 3 Hz. The policy and `--dataset-out` read the native frame in-process anyway.
-        topic_native: true
+        # For a calibration pass that reads this wrist off the bus, uncomment to publish
+        # it at capture size instead of the sensor leg's 320x240 thumbnail (still 3 Hz).
+        # Off by default: ~55 ms of GIL per 960x600 frame starves the Orin's policy
+        # thread, and the policy and `--dataset-out` read native frames in-process.
+        # topic_native: true
     intrinsics:
       width: 960
       height: 600
