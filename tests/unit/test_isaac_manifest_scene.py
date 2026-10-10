@@ -1107,3 +1107,49 @@ def test_finger_coupling_holds_the_free_finger_at_the_stalled_one(
     assert np.allclose(mod.couple_finger_targets(cmd, q_level, [g], idx, 0.1, qd=qd), cmd)
     held = mod.couple_finger_targets(cmd, q, [g], idx, 0.1, qd=np.zeros(2, np.float32))
     assert np.allclose(held, out)
+
+
+# ── sidecar side: IsaacSceneBase.reset renders after the warmup hook ─────────
+
+
+def test_reset_renders_after_the_warmup_hook(_manifest_scene_mod: object) -> None:
+    """The reset image must come from the physics state its joint state is read at.
+
+    ``_after_warmup`` may step physics without rendering (the manifest scene's
+    hold correction under soft drives: up to 90 steps); the image grabbed before
+    it would then be ~1.5 s older than the state it is paired with.
+    """
+    import _isaac_scene_base  # tools/ is on sys.path via the fixture
+
+    calls: list[tuple[str, bool | None]] = []
+
+    class World:
+        def reset(self) -> None:
+            calls.append(("reset", None))
+
+        def step(self, render: bool = False) -> None:
+            calls.append(("step", render))
+
+    class Scene(_isaac_scene_base.IsaacSceneBase):  # type: ignore[misc,name-defined]
+        warmup_steps = 2
+
+        def _after_warmup(self) -> None:
+            for _ in range(3):
+                self._world.step(render=False)
+
+        def _images(self) -> dict[str, Any]:
+            calls.append(("observe", None))
+            return {}
+
+        def _state(self) -> Any:
+            return np.zeros(1, dtype=np.float32)
+
+    scene = Scene(obs_height=1, obs_width=1, instruction="", success_key="s", max_steps=1)
+    scene._world = World()
+    scene.reset(seed=0)
+
+    steps = [c for c in calls if c[0] == "step"]
+    assert steps[:2] == [("step", True)] * 2  # warmup renders
+    assert steps[2:5] == [("step", False)] * 3  # the hook's unrendered settling
+    # One rendered step after the hook, and nothing between it and the observation.
+    assert calls[-2:] == [("step", True), ("observe", None)]
