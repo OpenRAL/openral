@@ -478,6 +478,39 @@ evidence, not an NVIDIA statement, and has not been reproduced on our GB10
 host; whether DGX OS ships `/etc/nv_tegra_release` is also unverified — if it
 does, the probe would conservatively skip the default there.
 
+### NF4 reward loaders verified on Jetson Orin and Thor
+
+`tests/sim/test_reward_nf4_buffer_equivalence.py` (issue #304) checks that the
+Robometer and TOPReward NF4 loaders leave no buffer uninitialised: the
+meta-device load must match a real-init reference in `named_buffers()` and in
+per-frame scores on a real LIBERO clip. Run 2026-10-10 on master `3c63d226`,
+in a fresh `just sync --group libero` venv (torch 2.13.0+cu130,
+bitsandbytes 0.49.2, transformers 5.5.4, lerobot 0.6.0):
+
+| host | GPU | result | wall time |
+|---|---|---|---|
+| lab AGX Orin | `sm_87` | 3 passed | 76 s |
+| lab Jetson Thor | `sm_110` | 3 passed | 46 s |
+
+The three tests are the two equivalence tests plus
+`tests/sim/test_topreward_reward.py`. Robometer progress on the 8-frame
+success demo was 0.25 to 0.85 and success 0.05 to 0.83 on both hosts. Played
+reversed, progress fell 0.74 to 0.24. That matches the x86 RTX 5070 run in
+PR #305 to two decimals. Replacing the rotary `inv_freq` buffers with
+`torch.empty_like` on the meta build made the Robometer test fail on Orin, so
+the check bites on Tegra too.
+
+The Orin's torch warns that `sm_87` is not in its build list. bf16 matmul and
+a `Linear4bit` NF4 forward still run, and so does everything above. The tests
+set `expandable_segments:True`, as `TOPRewardMonitor` does in production, and
+neither 3 GB model tripped the NVML fabric-info error described above.
+
+The `datasets` package these tests need comes only with the `libero` or `gr00t`
+group; without it they skip. Let the first run reach the Hub: on Orin, an HF
+cache copied in from another host still failed lerobot's offline dataset load.
+On Thor that means forcing IPv4, because its IPv6 route is dead and Hub calls
+stall.
+
 ## GStreamer colour conversion on plain L4T
 
 Jetson Thor images ship the L4T multimedia stack (`nvvidconv`) but **not**
