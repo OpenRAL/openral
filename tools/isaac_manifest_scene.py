@@ -65,6 +65,31 @@ from numpy.typing import NDArray
 # heavy arm sags or a light one rings.
 _DRIVE_STIFFNESS = 1000.0
 _DRIVE_DAMPING = 100.0
+
+
+def drive_gain_overrides(
+    joint_drive_gains: dict[str, list[float]] | None,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """The importer's per-joint ``(stiffness, damping)`` pattern dicts.
+
+    ``joint_drive_gains`` is the spec's URDF joint-name regex -> ``[kp, kd]``
+    (``IsaacSimOptions.joint_drive_gains``). The importer applies patterns in
+    order, later matches winning, so a catch-all default goes first and every
+    joint no pattern names keeps the stiff default.
+
+    Example:
+        >>> s, d = drive_gain_overrides({"joint[12]$": [70.0, 2.75]})
+        >>> s
+        {'.*': 1000.0, 'joint[12]$': 70.0}
+        >>> d
+        {'.*': 100.0, 'joint[12]$': 2.75}
+    """
+    gains = joint_drive_gains or {}
+    stiffness = {".*": _DRIVE_STIFFNESS, **{p: float(kp) for p, (kp, _kd) in gains.items()}}
+    damping = {".*": _DRIVE_DAMPING, **{p: float(kd) for p, (_kp, kd) in gains.items()}}
+    return stiffness, damping
+
+
 # Coulomb friction of the robot's finger colliders. The URDF importer authors no physics
 # material, so the fingers get PhysX's default (~0.5) and a lifted object slips out of a
 # closed, stalled jaw (Isaac i58/i59: jaw squeezing at its 7 Nm effort cap, can sliding).
@@ -129,6 +154,19 @@ def map_dof_to_manifest(
         if g is None:
             out.append(float(v[idx]))
             continue
+        if g.get("curve"):
+            m_pts, u_pts = _curve_by_urdf(g["curve"])
+            u = float(v[idx])
+            if rates:
+                du = 1e-4  # local slope dm/du at the current finger position
+                q = float(np.asarray(values, dtype=np.float32).reshape(-1)[idx])
+                slope = (np.interp(q + du, u_pts, m_pts) - np.interp(q - du, u_pts, m_pts)) / (
+                    2 * du
+                )
+                out.append(u * float(slope))
+            else:
+                out.append(float(np.interp(u, u_pts, m_pts)))
+            continue
         span = float(g["open"]) - float(g["closed"])
         scale = (float(g["manifest_open"]) - float(g["manifest_closed"])) / span if span else 0.0
         if rates:
@@ -168,6 +206,146 @@ def _rpy_quat(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
     )
 
 
+def _quat_mul(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Hamilton product ``a ⊗ b`` of ``(w, x, y, z)`` quaternions.
+
+    Example:
+        >>> import numpy as np
+        >>> np.allclose(_quat_mul(_yaw_quat(0.2), _yaw_quat(0.3)), _yaw_quat(0.5))
+        True
+    """
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ]
+    )
+
+
+def _footprint(prim: Any, obj: dict[str, Any]) -> tuple[float, float, float, float]:
+    """``(cx, cy, hx, hy)`` of a scene object's USD bounds after its roll/pitch, in its yawed frame."""
+    from pxr import Usd, UsdGeom
+
+    box = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+    rng_ = box.ComputeUntransformedBound(prim).ComputeAlignedRange()
+    lo, hi = np.array(rng_.GetMin()), np.array(rng_.GetMax())
+    corners = np.array(
+        [
+            [(lo, hi)[i][0], (lo, hi)[j][1], (lo, hi)[k][2]]
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ]
+    )
+    cr, sr = np.cos(float(obj.get("roll", 0.0))), np.sin(float(obj.get("roll", 0.0)))
+    cp, sp = np.cos(float(obj.get("pitch", 0.0))), np.sin(float(obj.get("pitch", 0.0)))
+    rot = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]) @ np.array(
+        [[1, 0, 0], [0, cr, -sr], [0, sr, cr]]
+    )
+    xy = (corners @ rot.T)[:, :2]
+    (x0, y0), (x1, y1) = xy.min(0), xy.max(0)
+    return float((x0 + x1) / 2), float((y0 + y1) / 2), float((x1 - x0) / 2), float((y1 - y0) / 2)
+
+
+def _rect_corners(
+    x: float, y: float, yaw: float, rect: tuple[float, float, float, float]
+) -> NDArray[np.float64]:
+    """World ``(4, 2)`` corners of a footprint ``(cx, cy, hx, hy)`` (object frame) at ``x, y, yaw``."""
+    cx, cy, hx, hy = rect
+    local = np.array(
+        [[cx + sx * hx, cy + sy * hy] for sx, sy in ((1, 1), (-1, 1), (-1, -1), (1, -1))]
+    )
+    c, s = np.cos(yaw), np.sin(yaw)
+    return local @ np.array([[c, s], [-s, c]]) + (x, y)
+
+
+def _rects_overlap(a: NDArray[np.float64], b: NDArray[np.float64], margin: float) -> bool:
+    """Separating-axis test of two convex quads ``(4, 2)``; ``margin`` (m) counts as contact."""
+    for quad in (a, b):
+        for i in range(4):
+            edge = quad[(i + 1) % 4] - quad[i]
+            axis = np.array([-edge[1], edge[0]]) / np.hypot(*edge)
+            pa, pb = a @ axis, b @ axis
+            if pa.max() + margin <= pb.min() or pb.max() + margin <= pa.min():
+                return False
+    return True
+
+
+def sample_object_poses(
+    objects: list[dict[str, Any]],
+    footprints: list[tuple[float, float, float, float]],
+    rng: np.random.Generator,
+    *,
+    margin_m: float = 0.002,
+) -> list[tuple[float, float, float, str]]:
+    """Per-reset ``(x, y, yaw, status)`` of each scene object, in order.
+
+    ``objects`` are the sidecar's object dicts; one with a ``pose_noise`` block
+    (``IsaacObjectPoseNoise``) draws truncated-normal offsets around its declared
+    ``xyz``/``yaw`` until its ``footprints`` rectangle (object frame, ``(cx, cy,
+    hx, hy)``) clears every object placed before it and stays inside
+    ``keep_inside_xy`` by ``margin_m``. ``status``: ``"declared"`` (no noise),
+    ``"sampled"``, or ``"declared_fallback"`` (``max_tries`` draws all rejected).
+    Deterministic for a given ``rng`` state.
+
+    Example:
+        >>> import numpy as np
+        >>> objs = [
+        ...     {
+        ...         "xyz": [0, 0, 0],
+        ...         "yaw": 0.0,
+        ...         "pose_noise": {
+        ...             "xy_sigma_m": [0.01, 0.01],
+        ...             "yaw_sigma_deg": 5.0,
+        ...             "clip_sigma": 2.0,
+        ...             "keep_inside_xy": None,
+        ...             "max_tries": 10,
+        ...         },
+        ...     }
+        ... ]
+        >>> x, y, yaw, status = sample_object_poses(
+        ...     objs, [(0, 0, 0.02, 0.02)], np.random.default_rng(0)
+        ... )[0]
+        >>> status, bool(abs(x) <= 0.02 and abs(y) <= 0.02 and abs(yaw) <= np.radians(10))
+        ('sampled', True)
+    """
+    placed: list[NDArray[np.float64]] = []
+    out: list[tuple[float, float, float, str]] = []
+    for obj, rect in zip(objects, footprints, strict=True):
+        x0, y0, yaw0 = float(obj["xyz"][0]), float(obj["xyz"][1]), float(obj.get("yaw", 0.0))
+        noise = obj.get("pose_noise")
+        pose = (x0, y0, yaw0, "declared")
+        if noise:
+            sigma = np.array(
+                [*noise["xy_sigma_m"], np.radians(noise["yaw_sigma_deg"])], dtype=np.float64
+            )
+            clip, box = float(noise["clip_sigma"]), noise.get("keep_inside_xy")
+            pose = (x0, y0, yaw0, "declared_fallback")
+            for _ in range(int(noise["max_tries"])):
+                z = rng.standard_normal(3)
+                while np.any(np.abs(z) > clip):  # truncate by redrawing, never by clamping
+                    bad = np.abs(z) > clip
+                    z[bad] = rng.standard_normal(int(bad.sum()))
+                x, y, yaw = np.array([x0, y0, yaw0]) + z * sigma
+                quad = _rect_corners(x, y, yaw, rect)
+                if box is not None and (
+                    np.any(quad < np.add(box[0], margin_m))
+                    or np.any(quad > np.subtract(box[1], margin_m))
+                ):
+                    continue
+                if any(_rects_overlap(quad, q, margin_m) for q in placed):
+                    continue
+                pose = (float(x), float(y), float(yaw), "sampled")
+                break
+        placed.append(_rect_corners(pose[0], pose[1], pose[2], rect))
+        out.append(pose)
+    return out
+
+
 def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     """4x4 rigid transform from a position and a ``(w, x, y, z)`` quaternion (normalised).
 
@@ -203,8 +381,26 @@ def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     span = float(gripper["command_open"]) - float(gripper["command_closed"])
     frac = (float(value) - float(gripper["command_closed"])) / span if span else 0.0
     frac = min(max(frac, 0.0), 1.0)
+    if gripper.get("curve"):
+        # Calibration curve (IsaacSimOptions.gripper_joint_curve): command -> manifest value
+        # -> URDF finger target, piecewise linear.
+        m_closed, m_open = float(gripper["manifest_closed"]), float(gripper["manifest_open"])
+        m = m_closed + frac * (m_open - m_closed)
+        pts = sorted(gripper["curve"])
+        return float(np.interp(m, [p[0] for p in pts], [p[1] for p in pts]))
     closed, opened = float(gripper["closed"]), float(gripper["open"])
     return closed + frac * (opened - closed)
+
+
+def _curve_by_urdf(curve: list[list[float]]) -> tuple[list[float], list[float]]:
+    """A gripper calibration curve as ``(manifest values, URDF values)`` sorted by URDF value.
+
+    Example:
+        >>> _curve_by_urdf([[0.0, 0.0], [-0.28, -0.69], [-0.785, -0.785]])
+        ([-0.785, -0.28, 0.0], [-0.785, -0.69, 0.0])
+    """
+    pts = sorted(curve, key=lambda p: p[1])
+    return [float(p[0]) for p in pts], [float(p[1]) for p in pts]
 
 
 @dataclass(frozen=True)
@@ -225,6 +421,158 @@ class FingerFrictionResult:
     missing_joints: list[str]
     displaced: list[str]
     combine_max: bool
+
+
+def recolor_robot_materials(
+    stage: Any, robot_prim: str, colors: dict[str, list[float]]
+) -> dict[str, list[float]]:
+    """Set the diffuse colour of the robot's visual materials whose name matches a pattern.
+
+    Upstream meshes carry their own materials (OpenArm's `.dae` "matte_black" is diffuse
+    0.247, which renders mid-grey; the real plastic is near-black), so the colour has to be
+    set after the URDF import. Only materials bound under ``robot_prim`` are touched; each
+    ``fnmatch`` pattern is tested against the material prim's name, first match wins.
+    Handles ``UsdPreviewSurface`` (``diffuseColor``) and OmniPBR MDL
+    (``diffuse_color_constant``) shaders. Returns ``{material path: colour}``.
+    """
+    import fnmatch
+
+    from pxr import Gf, Sdf, Usd, UsdShade
+
+    def match(name: str) -> list[float] | None:
+        return next((c for pat, c in colors.items() if fnmatch.fnmatch(name, pat)), None)
+
+    root = stage.GetPrimAtPath(robot_prim)
+    # The importer instances the visuals, so the bound materials are instance proxies,
+    # which cannot be edited: walk the proxies, then de-instance only the instances that
+    # hold a matching material; the rest (e.g. the collision geometry the finger pad binds)
+    # stay instanced.
+    paths = set()
+    for prim in Usd.PrimRange(root, Usd.TraverseInstanceProxies()):
+        mat, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        if mat and match(mat.GetPrim().GetName()) is not None:
+            paths.add(mat.GetPath())
+    for path in paths:
+        prim = stage.GetPrimAtPath(path)
+        while prim.IsInstanceProxy():
+            anc = prim.GetParent()
+            while not anc.IsInstance():
+                anc = anc.GetParent()
+            anc.SetInstanceable(False)
+            prim = stage.GetPrimAtPath(path)
+    changed: dict[str, list[float]] = {}
+    for path in sorted(paths, key=str):
+        mat = UsdShade.Material(stage.GetPrimAtPath(path))
+        rgb = match(mat.GetPrim().GetName())
+        if rgb is None:
+            continue
+        # The importer's materials expose the colour as a Material interface input that
+        # their UsdPreviewSurface reads; set it there when present.
+        iface = mat.GetInput("diffuseColor")
+        if iface:
+            iface.Set(Gf.Vec3f(*rgb))
+            changed[str(path)] = list(rgb)
+        for child in Usd.PrimRange(mat.GetPrim()):
+            shader = UsdShade.Shader(child)
+            if not shader:
+                continue
+            for input_name in ("diffuseColor", "diffuse_color_constant"):
+                inp = shader.GetInput(input_name) or (
+                    shader.CreateInput(input_name, Sdf.ValueTypeNames.Color3f)
+                    if shader.GetIdAttr().Get() == "UsdPreviewSurface"
+                    and input_name == "diffuseColor"
+                    else None
+                )
+                if not inp:
+                    continue
+                # A connected input reads its source (Isaac's URDF importer exposes the
+                # colour as a Material interface input): setting the shader's own value
+                # would be silently ignored, so write the source instead.
+                for source in inp.GetConnectedSources()[0] if inp.HasConnectedSource() else []:
+                    UsdShade.ConnectableAPI(source.source.GetPrim()).GetInput(
+                        source.sourceName
+                    ).Set(Gf.Vec3f(*rgb))
+                if not inp.HasConnectedSource():
+                    inp.Set(Gf.Vec3f(*rgb))
+                changed[str(path)] = list(rgb)
+    return changed
+
+
+def couple_finger_targets(
+    target: NDArray[np.float32],
+    q: NDArray[np.float32],
+    grippers: list[dict[str, Any]],
+    dof_index: dict[str, int],
+    margin: float,
+    qd: NDArray[np.float32] | None = None,
+    stall_speed: float = 0.2,
+) -> NDArray[np.float32]:
+    """Limit each finger's closing target to ``margin`` past its partner's mirrored position.
+
+    Emulates a jaw whose fingers share one motor (OpenArm): when either finger meets the
+    object, the other can close at most ``margin`` further, so the pair stops together
+    and an off-centre object is pushed to the middle instead of being pinned by one
+    finger against the other. Opening is never limited. Positions are compared in leader
+    units: a follower ``f = multiplier * leader + offset`` mirrors to
+    ``(f - offset) / multiplier``. Returns a copy; ``target`` is untouched.
+
+    With joint velocities ``qd``, a partner still closing faster than ``stall_speed``
+    (rad/s, leader units) does not hold the other back, so two free fingers close at their
+    drives' own speed instead of ``margin`` per step; only a partner stalled on the object
+    holds the other at ``margin``.
+
+    Example:
+        >>> g = [
+        ...     {
+        ...         "leader": "f1",
+        ...         "closed": 0.0,
+        ...         "open": 0.785,
+        ...         "followers": [{"dof": "f2", "multiplier": -1.0, "offset": 0.0}],
+        ...     }
+        ... ]
+        >>> idx = {"f1": 0, "f2": 1}
+        >>> cmd = np.array([0.0, 0.0], dtype=np.float32)  # close both
+        >>> q = np.array([0.69, -0.04], dtype=np.float32)  # f1 stalled, f2 nearly shut
+        >>> [round(float(v), 2) for v in couple_finger_targets(cmd, q, g, idx, 0.1)]
+        [0.0, -0.59]
+    """
+    out = np.array(target, dtype=np.float32, copy=True)
+    for g in grippers:
+        lead = dof_index.get(str(g["leader"]))
+        if lead is None:
+            continue
+        closed, opened = float(g["closed"]), float(g["open"])
+        span = opened - closed
+        if not span:
+            continue
+
+        def openness(x: float, span: float = span, closed: float = closed) -> float:
+            return (x - closed) / span  # 0 = closed, 1 = open (leader units)
+
+        def from_openness(o: float, span: float = span, closed: float = closed) -> float:
+            return closed + o * span
+
+        fingers = [(lead, 1.0, 0.0)] + [
+            (dof_index[str(f["dof"])], float(f["multiplier"]), float(f["offset"]))
+            for f in g.get("followers", [])
+            if str(f["dof"]) in dof_index and float(f["multiplier"])
+        ]
+        if len(fingers) < 2:
+            continue
+        pos = [openness((float(q[i]) - off) / mul) for i, mul, off in fingers]
+        if qd is not None:
+            # Closing lowers openness; a partner still closing freely constrains nothing.
+            pos = [
+                -np.inf if float(qd[i]) / mul / span < -stall_speed / abs(span) else p
+                for p, (i, mul, off) in zip(pos, fingers, strict=True)
+            ]
+        for k, (i, mul, off) in enumerate(fingers):
+            partner = max(p for j, p in enumerate(pos) if j != k)
+            want = openness((float(out[i]) - off) / mul)
+            limit = partner - margin / abs(span)
+            if want < limit:  # closing past the partner: hold at the margin
+                out[i] = from_openness(limit) * mul + off
+    return out
 
 
 def apply_finger_friction(
@@ -439,6 +787,286 @@ def camera_hfov_deg(meta: dict[str, Any]) -> float | None:
     return None
 
 
+def radial_fold_radius(coeffs: list[float]) -> float:
+    """The largest distorted normalised radius a Brown/rational radial model reaches.
+
+    ``r_d = r * (1 + k1 r^2 + k2 r^4 + k3 r^6) / (1 + k4 r^2 + k5 r^4 + k6 r^6)`` must
+    increase with the undistorted radius ``r`` for a pixel to have a ray. Beyond its
+    first turning point (or a pole) a distorted pixel has no preimage, so a renderer that
+    inverts the model per output pixel draws garbage there. Tangential terms are ignored.
+    Pure.
+
+    Example:
+        >>> round(radial_fold_radius([-0.358038981, 0.187982349, 0, 0, -0.056267709]), 3)
+        0.858
+        >>> radial_fold_radius([0.0] * 5) > 3.9
+        True
+    """
+    k1, k2, _p1, _p2, k3, k4, k5, k6 = (list(coeffs) + [0.0] * 8)[:8]
+    r = np.linspace(0.0, 4.0, 40001)[1:]
+    r2 = r * r
+    den = 1.0 + k4 * r2 + k5 * r2**2 + k6 * r2**3
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rd = r * (1.0 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / den
+    bad = np.flatnonzero(~np.isfinite(rd[1:]) | (den[1:] <= 0) | (np.diff(rd) <= 0))
+    rd = rd[: bad[0] + 1] if bad.size else rd
+    return float(np.max(rd))
+
+
+def check_radial_reaches_corners(name: str, k: dict[str, Any], coeffs: list[float]) -> None:
+    """Refuse an RGB lens model that folds before the image corners.
+
+    Isaac renders a distorted camera by inverting its model for every output pixel, so a
+    calibration whose radial curve turns over inside the frame renders swirls at the
+    edges (the Oct-2 ZED-M fit folds at 0.858 while its corners sit at 0.995). Extend it
+    with ``rational_polynomial`` terms that stay monotonic instead. Pure.
+
+    Example:
+        >>> k = {"width": 672, "height": 376, "fx": 388.5, "fy": 388.5, "cx": 336.7, "cy": 190.1}
+        >>> check_radial_reaches_corners("top", k, [-0.103, -0.002, 0.0, 0.0, 0.043])
+        >>> check_radial_reaches_corners("top", k, [-0.358, 0.188, 0.0, 0.0, -0.0563])
+        Traceback (most recent call last):
+        ...
+        ValueError: top: radial model folds at normalised radius 0.858, inside the image (corners at 0.995); extend it with rational_polynomial k4-k6
+    """
+    corner = max(
+        float(np.hypot((u - k["cx"]) / k["fx"], (v - k["cy"]) / k["fy"]))
+        for u in (0.0, float(k["width"]))
+        for v in (0.0, float(k["height"]))
+    )
+    fold = radial_fold_radius(coeffs)
+    if fold < corner:
+        raise ValueError(
+            f"{name}: radial model folds at normalised radius {fold:.3f}, inside the image "
+            f"(corners at {corner:.3f}); extend it with rational_polynomial k4-k6"
+        )
+
+
+def blur_rgb(image: NDArray[np.uint8], sigma_px: float) -> NDArray[np.uint8]:
+    """Separable Gaussian blur of an HWC uint8 frame; ``sigma_px <= 0`` returns it unchanged.
+
+    RTX renders are sharper than a real low-cost camera after compression; a sub-pixel
+    sigma matches their measured sharpness (scene option ``image_blur_sigma_px``). Pure.
+
+    Example:
+        >>> img = np.zeros((9, 9, 3), dtype=np.uint8)
+        >>> img[4, 4] = 255
+        >>> out = blur_rgb(img, 1.0)
+        >>> int(out[4, 4, 0]) < 255 and int(out[4, 3, 0]) > 0
+        True
+        >>> blur_rgb(img, 0.0) is img
+        True
+    """
+    if sigma_px <= 0:
+        return image
+    import cv2
+
+    # Same normalised Gaussian (radius ceil(3 sigma), reflect-101 border) as a hand-rolled
+    # separable convolution, but ~10x faster: this runs on every camera, every sim step.
+    radius = max(1, int(np.ceil(3.0 * sigma_px)))
+    out = cv2.GaussianBlur(
+        image.astype(np.float32),
+        (2 * radius + 1, 2 * radius + 1),
+        sigmaX=sigma_px,
+        sigmaY=sigma_px,
+        borderType=cv2.BORDER_REFLECT_101,
+    )  # float, not cv2's fixed-point uint8 path: same DN as the reference convolution
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+# RTX tonemap op 6 (what exposure_ev selects) is the Narkowicz ACES fit followed by the
+# sRGB encode: re-exposing a frame through its inverse matches a re-render at another
+# exposure_ev to ~1 DN, where a display-space gain misses by ~11 DN.
+_ACES_GRID: NDArray[np.float64] = np.linspace(0.0, 20.0, 200001, dtype=np.float64)
+
+
+def _aces(x: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.clip(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0)
+
+
+def _srgb_decode(v: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
+
+
+def _srgb_encode(v: NDArray[np.float64]) -> NDArray[np.float64]:
+    v = np.clip(v, 0.0, 1.0)
+    return np.where(v <= 0.0031308, v * 12.92, 1.055 * v ** (1 / 2.4) - 0.055)
+
+
+_ACES_Y = _aces(_ACES_GRID)
+# uint8 display value -> scene-linear radiance under the op-6 tonemap.
+_SCENE_FROM_DN = np.interp(
+    np.clip(_srgb_decode(np.arange(256) / 255.0), 0.0, _ACES_Y[-1]), _ACES_Y, _ACES_GRID
+)
+
+
+def relight_rgb(
+    image: NDArray[np.uint8], gain_rgb: tuple[float, float, float]
+) -> NDArray[np.uint8]:
+    """Re-expose an op-6-tonemapped RGB frame by scene-linear per-channel gains. Pure.
+
+    Example:
+        >>> img = np.full((2, 2, 3), 100, dtype=np.uint8)
+        >>> int(relight_rgb(img, (2.0, 2.0, 2.0))[0, 0, 0]) > 100
+        True
+        >>> bool((relight_rgb(img, (1.0, 1.0, 1.0)) == img).all())
+        True
+    """
+    # Each output DN depends only on its own channel's input DN: one 256-entry table per
+    # channel, applied with cv2.LUT (exact; ~20x faster than the per-pixel float path).
+    import cv2
+
+    lut = np.stack([_relight_lut(float(g)) for g in gain_rgb], axis=-1)  # (256, 3)
+    out: NDArray[np.uint8] = np.asarray(
+        cv2.LUT(np.ascontiguousarray(image), lut.reshape(1, 256, 3)), dtype=np.uint8
+    )
+    return out
+
+
+def _relight_lut(gain: float) -> NDArray[np.uint8]:
+    """256-entry DN -> DN table of ``relight_rgb`` for one channel's scene-linear gain."""
+    scene = _SCENE_FROM_DN * gain
+    return np.clip(np.rint(_srgb_encode(_aces(scene)) * 255.0), 0, 255).astype(np.uint8)
+
+
+def apply_color_lut(image: NDArray[np.uint8], lut_rgb: Any) -> NDArray[np.uint8]:
+    """Map an RGB frame through a per-channel 8-bit tone curve (``color_lut_rgb``).
+
+    Example:
+        >>> img = np.full((2, 2, 3), 10, dtype=np.uint8)
+        >>> ident = [list(range(256))] * 3
+        >>> bool((apply_color_lut(img, ident) == img).all())
+        True
+        >>> int(apply_color_lut(img, [[255 - v for v in range(256)]] * 3)[0, 0, 0])
+        245
+    """
+    import cv2
+
+    lut = np.asarray(lut_rgb, dtype=np.uint8).T.reshape(256, 1, 3)
+    return np.asarray(cv2.LUT(image, lut), dtype=np.uint8)
+
+
+def auto_exposure_gain(
+    image: NDArray[np.uint8], target: float, wb_rgb: tuple[float, float, float]
+) -> float:
+    """Scene-linear gain putting the frame's mean BT.601 luma at ``target`` (metered 1:8). Pure.
+
+    Example:
+        >>> img = np.full((16, 16, 3), 60, dtype=np.uint8)
+        >>> g = auto_exposure_gain(img, 120.0, (1.0, 1.0, 1.0))
+        >>> abs(float(relight_rgb(img, (g, g, g)).mean()) - 120.0) < 1.5
+        True
+    """
+    small = image[::8, ::8]
+    lo, hi = 1 / 16, 16.0
+    for _ in range(24):
+        g = (lo * hi) ** 0.5
+        y = relight_rgb(small, (g * wb_rgb[0], g * wb_rgb[1], g * wb_rgb[2])).astype(np.float64)
+        if float((y @ np.array([0.299, 0.587, 0.114])).mean()) < target:
+            lo = g
+        else:
+            hi = g
+    return (lo * hi) ** 0.5
+
+
+def _configure_rgb_projection(cam: Any, meta: dict[str, Any]) -> None:
+    """Apply calibrated RGB K/D through Isaac's native OmniLensDistortion schema.
+
+    Explicit mount FOVs keep their existing ideal pinhole model. Depth retains its
+    existing pinhole path: its pointcloud API does not support distorted deprojection.
+    """
+    k = meta.get("intrinsics")
+    if meta["modality"] != "rgb" or not k or (meta.get("mount") or {}).get("hfov_deg"):
+        return
+    width, height = cam.get_resolution()
+    sx, sy = width / k["width"], height / k["height"]
+    params = {"fx": k["fx"] * sx, "fy": k["fy"] * sy, "cx": k["cx"] * sx, "cy": k["cy"] * sy}
+    model = k.get("distortion_model", "none")
+    coeffs = list(k.get("distortion_coeffs") or [])
+    if model == "equidistant":
+        if len(coeffs) != 4:
+            raise ValueError(f"{meta['name']}: equidistant requires four coefficients")
+        cam.set_opencv_fisheye_properties(**params, fisheye=coeffs)
+        readback = cam.get_opencv_fisheye_properties()
+    elif model in ("none", "plumb_bob", "rational_polynomial"):
+        if model == "none" and any(coeffs):
+            raise ValueError(f"{meta['name']}: distortion_model none has nonzero coefficients")
+        counts = {"none": (0,), "plumb_bob": (0, 5), "rational_polynomial": (8,)}[model]
+        if len(coeffs) not in counts:
+            raise ValueError(
+                f"{meta['name']}: {model} requires {' or '.join(map(str, counts))} coefficients"
+            )
+        check_radial_reaches_corners(meta["name"], k, coeffs)
+        # Isaac's OpenCV pinhole takes [k1 k2 p1 p2 k3 k4 k5 k6 s1 s2 s3 s4]: the rational
+        # terms are positions 6-8, the thin-prism ones stay zero.
+        coeffs += [0.0] * (12 - len(coeffs))
+        cam.set_opencv_pinhole_properties(**params, pinhole=coeffs)
+        readback = cam.get_opencv_pinhole_properties()
+    else:
+        raise ValueError(f"{meta['name']}: unsupported distortion model {model!r}")
+    expected = [params[key] for key in ("cx", "cy", "fx", "fy")]
+    if not np.allclose(readback[:4], expected) or not np.allclose(readback[4], coeffs):
+        raise RuntimeError(f"{meta['name']}: camera calibration readback differs from request")
+    print(
+        f"[isaac_manifest_scene] {meta['name']} {width}x{height} K={params} "
+        f"D={coeffs} model={model} (native lens schema readback OK)",
+        flush=True,
+    )
+
+
+def _configure_rendering(spec: dict[str, Any]) -> None:
+    """Opt-in process settings required by solid clear-plastic environment assets."""
+    import carb
+
+    settings = carb.settings.get_settings()
+    values: dict[str, bool | int | float] = {}
+    if spec.get("translucent_materials"):
+        values.update(
+            {
+                "/rtx/material/enableRefraction": True,
+                "/rtx/material/translucencyAsOpacity": False,
+                "/rtx/sceneDb/translucencyAsOpacity": False,
+                "/rtx/translucency/enabled": True,
+                "/rtx/translucency/sampleRoughness": True,
+                "/rtx/translucency/reflectAtAllBounce": True,
+                "/rtx/translucency/maxRefractionBounces": 8,
+                # Isaac 6 defaults to Real-Time 2.0; legacy translucency limits alone
+                # do not change its three-bounce budget for a thick transparent shell.
+                "/rtx/rtpt/maxBounces": 8,
+                "/rtx/rtpt/maxSpecularAndTransmissionBounces": 12,
+                "/rtx/pathtracing/maxBounces": 8,
+                "/rtx/pathtracing/maxSpecularAndTransmissionBounces": 12,
+                "/rtx/indirectDiffuse/enabled": True,
+                "/rtx/indirectDiffuse/maxBounces": 4,
+                "/rtx/indirectDiffuse/scalingFactor": 1.0,
+                # Low-resolution policy cameras need the quality DLSS profile.
+                "/rtx/post/dlss/execMode": 2,
+            }
+        )
+    ev = spec.get("exposure_ev")
+    if ev is not None:
+        values.update(
+            {
+                "/rtx/post/histogram/enabled": False,
+                "/rtx/post/tonemap/op": 6,
+                "/rtx/post/tonemap/colorMode": 0,
+                "/rtx/post/tonemap/enableSrgbToGamma": True,
+                "/rtx/post/tonemap/filmIso": 100.0,
+                "/rtx/post/tonemap/exposureTime": 0.02,
+                "/rtx/post/tonemap/fNumber": 5.0 * 2.0 ** (-float(ev) / 2.0),
+                "/rtx/post/tonemap/responsivity": 1.1026709,
+            }
+        )
+    for name, value in values.items():
+        settings.set(name, value)
+    if values:
+        print(
+            f"[isaac_manifest_scene] rendering settings: "
+            f"{ {name: settings.get(name) for name in values} }",
+            flush=True,
+        )
+
+
 def points_in_frame(
     points: NDArray[np.float32], world_from_frame: NDArray[np.float64]
 ) -> NDArray[np.float32]:
@@ -549,6 +1177,8 @@ class IsaacManifestScene(IsaacSceneBase):
     ) -> None:
         super().__init__(**kwargs)
         self._spec = robot_spec
+        # Auto-exposure state per camera: (scene-linear gain, sim time ns of that frame).
+        self._ae_state: dict[str, tuple[float, int | None]] = {}
         self._environment_usd = environment_usd
         self._spawn = spawn_pose  # world x, y, z, yaw
         # Actuated manifest joints (the planar base is handled separately in M3;
@@ -598,6 +1228,10 @@ class IsaacManifestScene(IsaacSceneBase):
             dtype=np.float32,
         )
         self._objects: list[dict[str, Any]] = list(objects or [])
+        # Per object: footprint (cx, cy, hx, hy) in its yawed frame, and the default
+        # (position, wxyz) its prim was registered with -- the pose_noise anchor.
+        self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
+        self._object_nominal: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
         self._object_prims: dict[str, Any] = {}
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
@@ -756,11 +1390,48 @@ class IsaacManifestScene(IsaacSceneBase):
             self._root_body = (root_body, self._relative_to_root(root_body))
         from isaacsim.core.utils.stage import get_current_stage
 
+        # World.reset() initializes physics before the post-reset teleport.
+        # Seed the imported joints too, so its first contact pass uses the
+        # requested pose rather than the URDF zero pose among the scene props.
+        from pxr import PhysxSchema, Usd, UsdPhysics
+
+        initial_dofs: dict[str, float] = {}
+        for (kind, ref), value in zip(self._slot_plan, self._initial_slots, strict=True):
+            if np.isnan(value):
+                continue
+            if kind == "arm":
+                initial_dofs[ref] = float(value)
+            else:
+                lead = manifest_to_urdf_gripper(ref, float(value))
+                initial_dofs[ref["leader"]] = lead
+                for follower in ref["followers"]:
+                    initial_dofs[follower["dof"]] = float(follower["multiplier"]) * lead + float(
+                        follower["offset"]
+                    )
+        for prim in Usd.PrimRange(get_current_stage().GetPrimAtPath(prim_path)):
+            if prim.GetName() not in initial_dofs:
+                continue
+            angular = prim.IsA(UsdPhysics.RevoluteJoint)
+            axis = UsdPhysics.Tokens.angular if angular else UsdPhysics.Tokens.linear
+            value = initial_dofs[prim.GetName()]
+            PhysxSchema.JointStateAPI.Apply(prim, axis).CreatePositionAttr(
+                float(np.degrees(value)) if angular else value
+            )
+
         finger_joints = [
             name
             for g in self._spec.get("grippers") or []
             for name in (g["leader"], *(f["dof"] for f in g["followers"]))
         ]
+        colors = self._spec.get("robot_material_colors") or {}
+        if colors:
+            changed = recolor_robot_materials(get_current_stage(), prim_path, colors)
+            print(
+                f"[isaac_manifest_scene] robot material colours {colors}: "
+                f"{len(changed)} material(s) recoloured {sorted(changed)}"
+                + ("" if changed else " — WARNING: no robot material matched"),
+                flush=True,
+            )
         result = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
         print(
             f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} bound on "
@@ -842,6 +1513,9 @@ class IsaacManifestScene(IsaacSceneBase):
         # (OpenArm's openarm_base sits 0.698 m above it).
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
         self._world.reset()
+        # Opening/importing a stage can restore renderer defaults. Apply the
+        # requested settings after those operations and before the first image.
+        _configure_rendering(self._spec)
         for meta in self._cam_meta:
             cam = self._cameras[meta["name"]]
             cam.initialize()
@@ -852,6 +1526,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 cam.set_horizontal_aperture(aperture)
                 width, height = camera_resolution(meta, self.obs_width, self.obs_height)
                 cam.set_vertical_aperture(aperture * height / width)
+            _configure_rgb_projection(cam, meta)
             if meta.get("mount"):
                 self._mount_camera(cam, meta["mount"])
             if meta["modality"] == "depth":
@@ -860,6 +1535,7 @@ class IsaacManifestScene(IsaacSceneBase):
         self._place_robot()
         self._resolve_dof_mapping()
         self._fix_time_base()
+        self._after_world_reset()
         if self._lidar is not None:
             from omni.physx import get_physx_scene_query_interface
 
@@ -974,6 +1650,7 @@ class IsaacManifestScene(IsaacSceneBase):
                         prim_path=path, name=name, position=pos, orientation=quat
                     )
             self._object_prims[name] = self._world.scene.add(prim)
+            self._object_footprints[name] = _footprint(stage.GetPrimAtPath(path), obj)
             print(f"[isaac_manifest_scene] object {obj['name']} at {pos.tolist()}", flush=True)
 
     def _add_obstacles(self) -> None:
@@ -1149,7 +1826,7 @@ class IsaacManifestScene(IsaacSceneBase):
         The 6.x importer (``URDFImporter``, built on ``urdf-usd-converter``)
         replaced the ``URDFParseAndImportFile`` command. It resolves
         ``package://`` meshes from the spec's ``ros_package_paths`` and authors
-        position drives with explicit gains (``_DRIVE_STIFFNESS``). It converts
+        position drives with explicit gains (``drive_gain_overrides``). It converts
         a mimic-free copy (``strip_urdf_mimics``).
         """
         try:
@@ -1164,6 +1841,7 @@ class IsaacManifestScene(IsaacSceneBase):
         urdf = os.path.join(work, os.path.basename(source))
         with open(source, encoding="utf-8") as src, open(urdf, "w", encoding="utf-8") as dst:
             dst.write(strip_urdf_mimics(src.read(), os.path.dirname(source)))
+        stiffness, damping = drive_gain_overrides(self._spec.get("joint_drive_gains"))
         config = URDFImporterConfig(
             urdf_path=urdf,
             usd_path=os.path.join(work, "usd"),
@@ -1172,8 +1850,8 @@ class IsaacManifestScene(IsaacSceneBase):
             merge_fixed_joints=False,
             fix_base=bool(self._spec.get("fix_base", True)),
             joint_target_type="position",
-            override_joint_stiffness=_DRIVE_STIFFNESS,
-            override_joint_damping=_DRIVE_DAMPING,
+            override_joint_stiffness=stiffness,
+            override_joint_damping=damping,
             ros_package_paths=list(self._spec.get("ros_package_paths") or []),
         )
         return str(URDFImporter(config).import_urdf())
@@ -1206,6 +1884,15 @@ class IsaacManifestScene(IsaacSceneBase):
             ),
             None,
         )
+        if self._anchor_joint is not None and self._spec.get("fix_base", True):
+            # The converter puts the root API on a body, creating a floating
+            # articulation restrained by a solver joint. Mark the world joint
+            # instead so PhysX creates a genuinely fixed-base articulation.
+            for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
+                if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+            self._anchor_joint.GetBody0Rel().ClearTargets(True)
+            UsdPhysics.ArticulationRootAPI.Apply(self._anchor_joint.GetPrim())
         return prim_path
 
     def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
@@ -1284,6 +1971,19 @@ class IsaacManifestScene(IsaacSceneBase):
             self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
         target = self._target
         self._write_slots(target, action)
+        margin = self._spec.get("gripper_finger_coupling_rad")
+        if margin:
+            # One motor for both fingers (the real jaw's gearing): no finger closes more than
+            # `margin` past the other's mirrored position. The commanded target stays in
+            # self._target; only this step's drive targets are limited.
+            target = couple_finger_targets(
+                target,
+                np.asarray(self._robot.get_joint_positions(), dtype=np.float32),
+                self._grippers,
+                self._dof_index,
+                float(margin),
+                qd=np.asarray(self._robot.get_joint_velocities(), dtype=np.float32),
+            )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
@@ -1330,6 +2030,40 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
+        self._jitter_objects(rng)
+
+    def _jitter_objects(self, rng: np.random.Generator) -> None:
+        """Redraw every ``pose_noise`` object's default pose; ``world.reset()`` then applies it."""
+        if not any(o.get("pose_noise") for o in self._objects):
+            return
+        foot = [self._object_footprints[str(o["name"])] for o in self._objects]
+        for obj, (x, y, yaw, status) in zip(
+            self._objects, sample_object_poses(self._objects, foot, rng), strict=True
+        ):
+            if not obj.get("pose_noise"):
+                continue
+            name = str(obj["name"])
+            prim = self._object_prims[name]
+            if name not in self._object_nominal:
+                st = prim.get_default_state()
+                self._object_nominal[name] = (
+                    np.asarray(st.position, dtype=np.float64),
+                    np.asarray(st.orientation, dtype=np.float64),
+                )
+            p0, q0 = self._object_nominal[name]
+            # Planar move of the declared root pose, applied to the registered prim
+            # (the root, or a rigid child that rides it).
+            x0, y0, yaw0 = float(obj["xyz"][0]), float(obj["xyz"][1]), float(obj.get("yaw", 0.0))
+            d = yaw - yaw0
+            c, s_ = np.cos(d), np.sin(d)
+            rx, ry = p0[0] - x0, p0[1] - y0
+            pos = np.array([x + c * rx - s_ * ry, y + s_ * rx + c * ry, p0[2]])
+            prim.set_default_state(position=pos, orientation=_quat_mul(_yaw_quat(d), q0))
+            print(
+                f"[isaac_manifest_scene] object {name} {status}: x={x:.4f} y={y:.4f} "
+                f"yaw={np.degrees(yaw):.1f}deg (declared {x0:.4f} {y0:.4f} {np.degrees(yaw0):.1f}deg)",
+                flush=True,
+            )
 
     def _after_world_reset(self) -> None:
         # world.reset() puts the pinned root back at its import pose (the
@@ -1342,8 +2076,47 @@ class IsaacManifestScene(IsaacSceneBase):
             self._write_slots(self._target, self._initial_slots)
             self._robot.set_joint_positions(self._target)
             self._robot.set_joint_velocities(np.zeros_like(self._target))
+            self._robot.set_joints_default_state(
+                positions=self._target.copy(), velocities=np.zeros_like(self._target)
+            )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=self._target)
+        )
+
+    # Hold-correction passes after the warmup and physics steps per pass: the softest
+    # real OpenArm joint (kp 10, kd 0.7) settles within ~0.5 s.
+    _HOLD_PASSES = 3
+    _HOLD_SETTLE_STEPS = 30
+
+    def _after_warmup(self) -> None:
+        """Raise the hold target until the drives hold the reset pose under gravity.
+
+        A position drive rests gravity torque / stiffness below its target. With real
+        motor gains (``joint_drive_gains``) the teleported start pose would sag by
+        centimetres, and the policy would open on an arm lower than the real robot's
+        measured start state, which is already a sagged pose held by a higher command.
+        Iterating ``target += pose - measured`` converges on that command; stiff
+        drives make it a no-op.
+        """
+        if self._target is None:
+            return
+        pose = self._target.copy()
+        for _ in range(self._HOLD_PASSES):
+            err = pose - np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+            err[np.isnan(err)] = 0.0
+            if float(np.abs(err).max()) < 1e-4:
+                break
+            self._target += err
+            self._robot.get_articulation_controller().apply_action(
+                self._ArticulationAction(joint_positions=self._target)
+            )
+            for _ in range(self._HOLD_SETTLE_STEPS):
+                self._world.step(render=False)
+        print(
+            "[isaac_manifest_scene] hold target raised by up to "
+            f"{float(np.abs(self._target - pose).max()):.4f} rad to hold the reset pose "
+            "under gravity",
+            flush=True,
         )
 
     def _observe(self) -> dict[str, Any]:
@@ -1363,9 +2136,36 @@ class IsaacManifestScene(IsaacSceneBase):
 
     def _images(self) -> dict[str, NDArray[np.uint8]]:
         out: dict[str, NDArray[np.uint8]] = {}
+        posts = self._spec.get("camera_image_post") or {}
+        now = self.sim_time_ns()
         for meta in self._cam_meta:
-            if meta["modality"] == "rgb":
-                out[meta["key"]] = self._grab(self._cameras[meta["name"]])
+            if meta["modality"] != "rgb":
+                continue
+            post = posts.get(meta["name"], {})
+            sigma = post.get("blur_sigma_px")
+            if sigma is None:
+                sigma = self._spec.get("image_blur_sigma_px") or 0
+            # The blur is in manifest pixels: a camera rendered smaller blurs proportionally.
+            scale = float((self._spec.get("camera_render_scale") or {}).get(meta["name"], 1.0))
+            frame = blur_rgb(self._grab(self._cameras[meta["name"]]), float(sigma) * scale)
+            wb = tuple(post.get("white_balance_rgb") or (1.0, 1.0, 1.0))
+            target = post.get("auto_exposure_target")
+            gain = 1.0
+            if target is not None:
+                want = auto_exposure_gain(frame, float(target), wb)
+                prev = self._ae_state.get(meta["name"])
+                if prev is None or now is None or now <= prev[1]:  # first frame / reset
+                    gain = want
+                else:
+                    dt_s = (now - prev[1]) * 1e-9
+                    alpha = 1.0 - float(np.exp(-dt_s / post["auto_exposure_tau_s"]))
+                    gain = prev[0] * (want / prev[0]) ** alpha  # first-order, in log exposure
+                self._ae_state[meta["name"]] = (gain, now)
+            if gain != 1.0 or wb != (1.0, 1.0, 1.0):
+                frame = relight_rgb(frame, (gain * wb[0], gain * wb[1], gain * wb[2]))
+            if post.get("color_lut_rgb") is not None:
+                frame = apply_color_lut(frame, post["color_lut_rgb"])
+            out[meta["key"]] = frame
         return out
 
     def _world_from_base(self) -> NDArray[np.float64]:
@@ -1473,7 +2273,8 @@ class IsaacManifestScene(IsaacSceneBase):
         ``robot_position``: the articulation root's world ``[x, y, z]`` as PhysX
         holds it (where the robot physically is, vs. the integrated odometry);
         ``object_positions``: ``{name: [x, y, z]}`` per scene object, for
-        checking a grasp or a placement.
+        checking a grasp or a placement; ``object_orientations_wxyz``: their
+        orientations (``pose_noise`` draws a new yaw each reset).
         """
         info: dict[str, Any] = {
             "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
@@ -1481,6 +2282,10 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._object_prims:
             info["object_positions"] = {
                 name: [float(v) for v in prim.get_world_pose()[0]]
+                for name, prim in self._object_prims.items()
+            }
+            info["object_orientations_wxyz"] = {
+                name: [float(v) for v in prim.get_world_pose()[1]]
                 for name, prim in self._object_prims.items()
             }
         return info

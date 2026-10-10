@@ -323,6 +323,62 @@ Depth clouds are published in the manifest `base_frame` with misses dropped,
 and since the camera renders the robot, `deploy sim` runs the robot self-filter
 in front of octomap for an `isaacsim` scene, as on real hardware.
 
+For calibrated RGB cameras, Isaac applies the complete `fx`, `fy`, `cx`, `cy`
+and Brown (`plumb_bob`, 5), OpenCV rational (`rational_polynomial`, 8) or fisheye
+(`equidistant`, 4) coefficients through its native lens schema. A radial model that
+folds inside the image is refused at boot: Isaac inverts the lens per output pixel, and
+past the fold it has no ray, so it would render swirls along the edges. A strong Brown fit
+can fold (the Oct-2 ZED-M fit turns over at normalised radius 0.858, its corners sit at
+0.995); extend it with `rational_polynomial` k4-k6 fitted to stay monotonic. An explicit mount `hfov_deg` selects an ideal pinhole instead.
+Depth keeps its existing pinhole/deprojection path. The camera schema is read back
+and logged at boot; Isaac versions without this API fail rather than drop calibration.
+
+`backend_options.camera_intrinsics` overrides **RGB** image models for a simulation
+without changing the physical robot's stream bindings. For example, reproducing a
+raw training camera alongside a rectified depth camera:
+
+```yaml
+    camera_intrinsics:
+      top:
+        width: 672
+        height: 376
+        fx: 388.508267
+        fy: 388.527128
+        cx: 336.707405
+        cy: 190.106848
+        # The Oct-2 Brown fit extended with monotonic rational terms (equal to it within
+        # 0.007 px inside its calibrated radius; the 5-term fit folds inside the frame).
+        distortion_model: rational_polynomial
+        distortion_coeffs: [-1.441958182, 0.728991661, -0.000311155, 0.000069646,
+                            0.195321664, -1.082444798, 0.136938664, 0.568911907]
+    translucent_materials: true
+    exposure_ev: 0.0
+    image_blur_sigma_px: 0.9
+    robot_material_colors:
+      "*matte_black*": [0.03, 0.03, 0.03]
+```
+
+These top-camera numbers describe the **unrectified ZED-M left lens** measured on
+2 October 2026; they do not calibrate an SDK-rectified image. Use the profile that
+matches the recording pipeline. Native rasters are preserved before policy preprocessing.
+`translucent_materials` enables RTX refraction and indirect light, including the
+Real-Time 2.0/path-tracing limits (eight total bounces, twelve specular/transmission
+bounces), legacy refraction limit (eight), and the DLSS Quality profile for
+small camera rasters. Settings are applied after stage
+initialization; USD files alone do not transfer those process settings. Material
+compatibility still requires a rendered check; enabling this option alone does not
+guarantee transparent plastic. `exposure_ev` selects fixed
+manual exposure (ISO 100, 20 ms, f/5 at zero; +1 doubles exposure), preventing automatic
+exposure changes between poses. `image_blur_sigma_px` blurs every RGB frame by that
+Gaussian sigma: RTX renders are sharper than a real camera's compressed stream (the
+restock training frames match about 0.9 px). `robot_material_colors` recolours the imported
+robot's visual materials by name (`fnmatch` on the material prim name, diffuse RGB): the
+OpenArm meshes' "matte_black" ships at diffuse 0.247, which renders mid-grey next to the
+real near-black plastic. All are opt-in; omitted values retain
+runtime defaults.
+The complete resolved robot spec is hashed into the sidecar handshake, so changing
+calibration, initial state, or renderer settings cannot reuse a stale sidecar silently.
+
 **Any manifest robot** with an `assets.urdf` imports — manifest joints are
 matched to URDF joints by the URDF's own structure, each gripper's mimic finger
 follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
@@ -438,3 +494,5 @@ paste-able right now. Copy any name straight into `--rskill` (e.g.
 
 (`openral sim list` is the other half: it prints scene config paths for
 `--config`, not rSkills.)
+
+Isaac 6 manifest imports use the world fixed joint as the articulation root, so a fixed arm stays at its declared spawn rather than settling against a floating-base constraint. Scene initial joint positions are seeded before physics initialization and retained on reset.
