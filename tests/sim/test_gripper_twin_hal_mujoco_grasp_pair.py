@@ -608,7 +608,9 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
                     assert spin_until(
                         lambda: f"safety.grasp_region_armed target={_TARGET}" in kernel_log()
                     ), f"the kernel never armed the measured region\n{kernel_log()}"
-                    # The region the kernel armed is the producer's measurement.
+                    # The region the kernel armed is the producer's measurement. The
+                    # kernel's log can land before this test's own WorldState copy does.
+                    assert spin_until(lambda: any(m.grasp_declaration_valid for m in world_states))
                     measured = next(
                         m.grasp_declaration
                         for m in reversed(world_states)

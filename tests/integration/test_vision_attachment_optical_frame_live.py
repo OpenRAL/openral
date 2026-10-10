@@ -334,9 +334,13 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         centre_full = np.asarray(attached.pose_in_link.xyz)
         miss = float(np.linalg.norm(centre_full - tcp_in_link))
         assert miss <= gate_radius, f"centre {miss * 1000:.1f} mm from the TCP"
-        assert any(
-            f"depth header's frame '{_OPTICAL}'" in line and "'zed_camera_link'" in line
-            for line in logs
+        # /rosout is delivered asynchronously: wait for the line, never sample once.
+        assert _wait_until(
+            lambda: any(
+                f"depth header's frame '{_OPTICAL}'" in line and "'zed_camera_link'" in line
+                for line in logs
+            ),
+            timeout_s=3.0,
         ), "the frame substitution was not logged"
 
         # The old frame choice: the same camera-frame centroid, carried into the
