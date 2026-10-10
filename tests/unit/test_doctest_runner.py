@@ -51,6 +51,9 @@ DOCTEST_TARGETS: list[str] = [
     "python/rskill/src/openral_rskill/executor.py",
     "python/runner/src/openral_runner/clock.py",
     "python/runner/src/openral_runner/safety.py",
+    "python/runner/src/openral_runner/dataset_recorder_bridge.py",
+    # ROS packages' pure-Python modules are importable via the root conftest.
+    "packages/openral_rskill_ros/openral_rskill_ros/sensor_leg.py",
 ]
 
 

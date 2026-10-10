@@ -269,7 +269,9 @@ test-doctest:
         python/world_state/src/openral_world_state \
         python/hal/src/openral_hal \
         python/rskill/src/openral_rskill \
-        python/reasoner/src/openral_reasoner
+        python/reasoner/src/openral_reasoner \
+        python/runner/src/openral_runner/dataset_recorder_bridge.py \
+        packages/openral_rskill_ros/openral_rskill_ros/sensor_leg.py
 
 # Sim integration tests: real HF weights + GPU + simulated robots/envs (slow, opt-in)
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
