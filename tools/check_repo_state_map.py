@@ -47,7 +47,9 @@ _PKG_RE = re.compile(rf"pkg:\s*{_STRING}")
 _DESC_RE = re.compile(rf"desc:\s*{_STRING}")
 _COUNT_RE = re.compile(r"^(\d+)\s+(files|manifests)\b")
 # A card's scalar field: the line must be ONE complete string literal and nothing else.
-_FIELD_LINE_RE = re.compile(r"^\s*(title|pkg|status|desc):\s*\"")
+# Matched on the field name alone, so a field that lost its opening quote is
+# still checked (and reported) rather than skipped.
+_FIELD_LINE_RE = re.compile(r"^\s*(title|pkg|status|desc):\s")
 _WHOLE_FIELD_RE = re.compile(rf"\s*(?:title|pkg|status|desc):\s*{_STRING},?\s*")
 COUNT_TOLERANCE = 0.10
 

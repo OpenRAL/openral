@@ -114,6 +114,12 @@ class TestLiterals:
         problems = check_repo_state_map.check_literals(card)
         assert len(problems) == 1 and "malformed string literal" in problems[0]
 
+    def test_missing_opening_quote_is_caught(self) -> None:
+        # Matching on the opening quote skipped this line entirely.
+        card = _card("tests/hil").replace('desc: "",', 'desc: image_topic (default ""),')
+        problems = check_repo_state_map.check_literals(card)
+        assert len(problems) == 1 and "malformed string literal" in problems[0]
+
     def test_css_content_lines_are_not_cards(self) -> None:
         assert check_repo_state_map.check_literals('      content: ""; width: 10px;') == []
 
