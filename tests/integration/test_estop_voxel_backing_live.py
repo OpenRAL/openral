@@ -83,10 +83,19 @@ def _wait_until(predicate: Any, *, timeout_s: float = _DEADLINE_S) -> bool:
     return False
 
 
-def _logged(err: str, marker: str) -> dict[str, Any]:
-    """The JSON payload of the last ``marker`` line the node logged to stderr."""
-    lines = [line for line in err.splitlines() if marker in line]
-    assert lines, f"no {marker} line was logged"
+def _logged(capfd: Any, marker: str) -> dict[str, Any]:
+    """The JSON payload of the last ``marker`` line the node logged to stderr.
+
+    Polls: the bridge flips its state flags on the executor thread a moment before
+    it writes the line, so one read right after a flag can see nothing yet.
+    """
+    lines: list[str] = []
+
+    def _seen() -> bool:
+        lines.extend(line for line in capfd.readouterr().err.splitlines() if marker in line)
+        return bool(lines)
+
+    assert _wait_until(_seen), f"no {marker} line was logged"
     return dict(json.loads(lines[-1].split(marker, 1)[1].strip()))
 
 
@@ -228,7 +237,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         assert _wait_until(lambda: bridge._estop_awaiting_evidence), (
             "a stop whose evidence has not arrived must record that it is waiting"
         )
-        snapshot = _logged(capfd.readouterr().err, "sim.estop_ground_truth_snapshot")
+        snapshot = _logged(capfd, "sim.estop_ground_truth_snapshot")
 
         # Nothing is known about the cell yet, and the record says exactly
         # that. The stale evidence still cached from above addresses a
@@ -243,7 +252,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         trigger.header.stamp = peer.get_clock().now().to_msg()
         failure_pub.publish(trigger)
         assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
-        late = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+        late = _logged(capfd, "sim.estop_ground_truth_evidence")
 
         assert late["stop_seq"] == snapshot["stop_seq"], "the two lines join on stop_seq"
         assert late["collision_evidence"] is not None
@@ -311,7 +320,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         trigger.header.stamp = peer.get_clock().now().to_msg()
         failure_pub.publish(trigger)
         assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
-        frozen = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+        frozen = _logged(capfd, "sim.estop_ground_truth_evidence")
 
         preattach = frozen["evidence_voxel_backing"]["preattach"]
         assert preattach["available"] is True
@@ -340,7 +349,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         trigger.header.stamp = peer.get_clock().now().to_msg()
         failure_pub.publish(trigger)
         assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
-        neighbour = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+        neighbour = _logged(capfd, "sim.estop_ground_truth_evidence")
 
         neighbour_preattach = neighbour["evidence_voxel_backing"]["preattach"]
         assert neighbour_preattach["available"] is True
@@ -405,7 +414,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         trigger.header.stamp.nanosec = between % 1_000_000_000
         failure_pub.publish(trigger)
         assert _wait_until(lambda: not bridge._estop_awaiting_evidence)
-        matched = _logged(capfd.readouterr().err, "sim.estop_ground_truth_evidence")
+        matched = _logged(capfd, "sim.estop_ground_truth_evidence")
         backing_m = matched["evidence_voxel_backing"]
 
         # Decoded against A (the unshifted origin), not against the latest.
