@@ -150,13 +150,13 @@ three box + hull slabs (`--tight-link openarm_body_link0=3`, sticky on
 re-lower): the foot plate, the 60 mm column and the shoulder block. One hull
 of the whole pedestal has 5.6× the mesh volume and reaches 0.12 m past the
 column, right across the bimanual workspace; the three slabs cut at the
-computed minimum-volume planes (z = 0.07 / 0.61 m) hold the mesh within
-50-60 mm. The only new exemptions are the two arm pedestals, which are bolted
+computed minimum-volume planes (z = 0.07 / 0.61 m) hold the mesh with hull
+overhangs of 38-68 mm. The only new exemptions are the two arm pedestals, which are bolted
 inside the shoulder block (51 mm overlap, rigid); link1 clears the torso by
 7 mm at rest and link2 by 11.5 mm, and both stay checked. On 1000 seeded
-in-limit poses the kernel now refuses 8.2 % instead of 4.0 %: 61 of the new
-refusals put an arm vertex inside the real torso mesh (poses the old model
-accepted), 13 are slab false stops (review §11.1).
+in-limit poses the kernel now refuses 8.2 % instead of 4.0 %. Of the 42 new
+refusals, 29 put an arm vertex inside the real torso mesh (poses the old model
+accepted) and 13 are slab false stops (review §11.1).
 
 `tests/unit/test_collision_geometry_enclosure.py` places the meshes with
 MuJoCo and the primitives with the kernel's own model and FK, and fails if a

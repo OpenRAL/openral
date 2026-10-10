@@ -595,9 +595,11 @@ torso's watertight collision mesh (`body_link0_symp.stl`), signed distance:
 |---:|---:|---:|---:|---:|
 | 74 | **61** | 7 | 4 | 2 |
 
-So 61 of the 1000 sampled poses put an arm into the body and **master accepted every one of them**;
-the 13 that do not are slab false stops (median clearance of the 74: -19.9 mm, worst false stop
-56 mm, the column slab's hull overhang). The per-check cost rises ~15 µs at the median, inside the
+So 61 of the 1000 sampled poses put an arm into the body. Master already refused 32 of them for
+another pair (an arm against itself or the other arm) and **accepted 29**. The 13 torso trips with
+no contact are slab false stops, all new (median clearance of the 74: -19.9 mm, worst false stop
+56 mm, the column slab's hull overhang). The 42 new refusals are therefore 29 real contacts the
+kernel used to miss and 13 false stops. The per-check cost rises ~15 µs at the median, inside the
 ~0.1 ms arm figure above. The truth mesh omits the CAD fitting 22 mm behind the column, so a false
 stop near it could be a real contact; it never under-counts the contacts.
 
