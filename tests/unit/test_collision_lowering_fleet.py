@@ -19,6 +19,8 @@ import pytest
 pytest.importorskip("yourdfpy")
 
 from openral_cli.collision import _lowered_text
+from openral_core.assets import AssetRefError
+from openral_core.exceptions import ROSConfigError
 
 _TARGETS = [
     p
@@ -56,6 +58,12 @@ def test_manifest_matches_lowering_tool(manifest: Path) -> None:
         pytest.skip(f"{manifest.parent.name}: {exc}")
     except ImportError as exc:  # MJCF robots (openarm) need mujoco + openral_hal
         pytest.skip(f"{manifest.parent.name}: MJCF lowering deps unavailable ({exc})")
+    except ROSConfigError as exc:
+        # A static link's meshes come from a pinned clone fetched on first use
+        # (openarm's torso from openarm_description); an offline runner skips.
+        if not (isinstance(exc.__cause__, AssetRefError) and "fetching" in str(exc.__cause__)):
+            raise
+        pytest.skip(f"{manifest.parent.name}: description clone unavailable ({exc})")
     flag = "" if tool_generated else " --acm-only"
     assert current == spliced, (
         f"{manifest.parent.name} drifted from the lowering tool — "

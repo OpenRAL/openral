@@ -263,9 +263,14 @@ def test_openarm_fixture_loads_collision_geometry() -> None:
     desc = RobotDescription.from_yaml(_OPENARM_YAML)
 
     by_link = {g.link_name: g.shape for g in desc.collision_geometry}
-    # Every collision-geometry link names a real link in the kinematic chain
-    # (the lowering tool / authoring contract: no orphan geometry).
-    chain_links = {j.parent_link for j in desc.joints} | {j.child_link for j in desc.joints}
+    # Every collision-geometry link names a real link of the collision tree:
+    # the kinematic chain, or a rigid link `fixed_attachments` hangs on it (the
+    # torso, issue #356) — the lowering tool / authoring contract: no orphan geometry.
+    chain_links = (
+        {j.parent_link for j in desc.joints}
+        | {j.child_link for j in desc.joints}
+        | {a.child_link for a in desc.fixed_attachments}
+    )
     assert set(by_link).issubset(chain_links)
 
     # Every OpenArm link is lowered as a box refined by its exact hull

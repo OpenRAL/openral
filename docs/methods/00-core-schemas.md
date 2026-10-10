@@ -525,11 +525,12 @@ _Strict YAML loaders for the three scene tiers._
 ### `python/core/src/openral_core/assets.py`
 _The single resolver for robot description assets — URDF / MJCF / SRDF._
 
-- `class AssetRefError(ValueError)` (L39) — A description-asset reference is malformed or cannot be resolved.
-- `def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None` (L43) — Resolves one asset `ref` to a concrete file path for the requested kind; one grammar replacing several prior scheme-specific loaders. Raises `AssetRefError` for an unresolvable or malformed ref.
-- `_REPO_ROOT: Path` — Resolved repo root; the base `file:<relpath>` refs resolve against after the manifest dir. (L34)
-- `_ROS2_DYNAMIC: str = "ros2://robot_description"` — The dynamic-detection marker scheme; `resolve_asset` returns `None` for it so the caller subscribes at runtime instead. (L35)
-- `_RD_ATTR: dict[AssetKind, str]` — Maps `kind` to the `robot_descriptions` module attribute it reads for the `rd:<module>` scheme. (L36)
+- `class AssetRefError(ValueError)` (L43) — A description-asset reference is malformed or cannot be resolved.
+- `def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None` (L47) — Resolves one asset `ref` to a concrete file path for the requested kind; one grammar replacing several prior scheme-specific loaders. Raises `AssetRefError` for an unresolvable or malformed ref.
+- `def resolve_package_uri(uri: str) -> Path` (L91) — Resolves one ROS `package://<pkg>/<relpath>` mesh URI to a file inside the pinned clone OpenRAL fetches for `<pkg>` (`openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`, lazily imported as `_resolve_openarm` does); a sourced ROS workspace is not consulted. Raises `AssetRefError` for a malformed URI, a package OpenRAL does not fetch, a failed fetch (cause: the fetcher's `ROSConfigError`), or a missing file.
+- `_REPO_ROOT: Path` — Resolved repo root; the base `file:<relpath>` refs resolve against after the manifest dir. (L38)
+- `_ROS2_DYNAMIC: str = "ros2://robot_description"` — The dynamic-detection marker scheme; `resolve_asset` returns `None` for it so the caller subscribes at runtime instead. (L39)
+- `_RD_ATTR: dict[AssetKind, str]` — Maps `kind` to the `robot_descriptions` module attribute it reads for the `rd:<module>` scheme. (L40)
 
 `HalParameters` also carries `can_bus_bindings: dict[str, str]`, mapping a `defaults` key to the role token naming which physical CAN bus fills it — matched by token, never position, since a CAN interface name is a host property, not a robot one.
 
