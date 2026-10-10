@@ -212,9 +212,9 @@ def test_derive_height_band_refuses_an_unplaceable_collision_volume() -> None:
         # Every arm link plus the torso, stated in the URDF's waist convention
         # (torso_link at z=0.054).
         ("g1", "torso_link", 0.3568),
-        # Both arms hang off ``openarm_*_link0`` and point down at q = 0, so the
-        # top is link0/link1's own box at the mount.
-        ("openarm", "openarm_left_link1", 0.0661),
+        # The torso (issue #356) is the top: its shoulder block reaches 0.0779 m
+        # above ``openarm_base``, over link0/link1's boxes at the arm mounts.
+        ("openarm", "openarm_body_link0", 0.0779),
     ],
 )
 def test_derive_height_band_places_rigidly_mounted_links(
