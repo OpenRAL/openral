@@ -500,6 +500,8 @@ class SimAttachedHAL:
         else:
             self._action_packer = pack_action_for_env
         self._reset_seed = env_reset_seed
+        # Episodes started by `reset_episode` since construction (its seed offset).
+        self._episode_index = 0
         self._env_action_dim: int | None = env_action_dim
         self._connected: bool = False
         self._estop_latched: bool = False
@@ -609,11 +611,40 @@ class SimAttachedHAL:
         # (the lifecycle node re-resets on each configure→cleanup cycle) never
         # makes the published ``/clock`` jump backwards. On the very first
         # connect a freshly built env reads ~0, so this is a no-op there.
+        self._reset_env(self._reset_seed, "connect")
+        if self._env_action_dim is None:
+            self._env_action_dim = self._probe_env_action_dim()
+
+    def reset_episode(self) -> int:
+        """Start a fresh episode on the live env without rebuilding it (sim only).
+
+        Re-runs exactly what ``connect`` does to the scene (``env.reset`` plus the
+        HAL's per-episode bookkeeping) with the next seed of a deterministic
+        sequence: the base reset seed plus the episode index (1, 2, ...). A scene
+        with per-reset randomisation (Isaac ``pose_noise``) therefore draws a new
+        layout each episode, reproducible from the returned seed. Keeps the env,
+        its sidecar and every ROS node up: a multi-episode harness pays the boot
+        and policy load once. Call between goals, never during one.
+
+        Returns:
+            The seed the env was reset with.
+
+        Raises:
+            ROSRuntimeError: ``env.reset`` raised.
+
+        """
+        self._episode_index += 1
+        seed = (self._reset_seed or 0) + self._episode_index
+        self._reset_env(seed, "reset_episode")
+        return seed
+
+    def _reset_env(self, seed: int | None, caller: str) -> None:
+        """``env.reset(seed)`` and reset the HAL's per-episode state."""
         self._accumulate_sim_time_before_reset()
         try:
-            obs = self._env.reset(seed=self._reset_seed)
+            obs = self._env.reset(seed=seed)
         except Exception as exc:
-            raise ROSRuntimeError(f"SimAttachedHAL.connect: env.reset failed: {exc}") from exc
+            raise ROSRuntimeError(f"SimAttachedHAL.{caller}: env.reset failed: {exc}") from exc
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._keep_depth_frames(self._last_obs)
         self._last_state_ns = time.time_ns()
@@ -636,8 +667,6 @@ class SimAttachedHAL:
         self._task_success_first_ns = None
         self._task_success_transitions = 0
         self._step_count = 0
-        if self._env_action_dim is None:
-            self._env_action_dim = self._probe_env_action_dim()
 
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.

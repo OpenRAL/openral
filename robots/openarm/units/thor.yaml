@@ -26,11 +26,18 @@ sensors:
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 500
+  # `top` is the ZED's UNRECTIFIED left image (VGA, zedm_openarm_override.yaml): the
+  # restock policy was trained on raw frames, and the sim's `top` renders the raw Brown
+  # model too. Do not undistort it with the driver's raw CameraInfo: its factory D
+  # (k1 -0.103) is wrong for this lens — the SDK's own raw->rect mapping fits the Oct-2
+  # model (k1 -0.358), 1.6 px vs 8.9 px RMS (2026-10-07). Consumers that back-project
+  # pixels through K alone (the detector's world-state lift is pinhole) lose accuracy
+  # toward the image edges — the segmenter scenes bind rect topics instead.
   - name: top
     deploy_binding:
       backend: ros2_image
       backend_params:
-        topic: /zed/zed_node/rgb/color/rect/image
+        topic: /zed/zed_node/rgb/color/raw/image
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200

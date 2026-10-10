@@ -20,6 +20,7 @@
   <depend>trajectory_msgs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>openral_msgs</depend>
   <depend>lifecycle_msgs</depend>
   <!-- Mobile-base robots (panda_mobile): /odom, /cmd_vel and odom -> base_link TF. -->

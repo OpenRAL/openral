@@ -1916,6 +1916,7 @@ if _ROS2_AVAILABLE:
             # PandaMobileHAL / SimAttachedHAL do not), so a robot needs no
             # bespoke service wiring.
             self._reset_to_pose_srv: Any = None
+            self._reset_episode_srv: Any = None
 
         def _create_hal(self) -> HAL:
             from openral_core import RobotDescription
@@ -2024,6 +2025,7 @@ if _ROS2_AVAILABLE:
             assert self._hal is not None
             self._attach_ros_control_transport()
             self._attach_interbotix_transport()
+            self._open_reset_episode_service()
             if not callable(getattr(self._hal, "reset_to_pose", None)):
                 return TransitionCallbackReturn.SUCCESS
             from pathlib import Path
@@ -2049,6 +2051,72 @@ if _ROS2_AVAILABLE:
             )
             self.get_logger().info(f"ResetToPose service ready at {topic}")
             return TransitionCallbackReturn.SUCCESS
+
+        def _robot_id(self) -> str:
+            """The ``/openral/<robot>/...`` service segment: the manifest directory name."""
+            from pathlib import Path
+
+            assert self._hal is not None
+            robot_yaml = self.get_parameter("robot_yaml").get_parameter_value().string_value
+            return (
+                Path(robot_yaml).parent.name
+                if robot_yaml
+                else getattr(self._hal.description, "name", self._node_name)
+            )
+
+        def _open_reset_episode_service(self) -> None:
+            """Open ``/openral/<robot>/reset_episode`` iff the HAL can start a fresh episode.
+
+            Reflection, like ``reset_to_pose``: only a sim-attached HAL exposes
+            ``reset_episode``, so a real robot never gets the service.
+            """
+            if not callable(getattr(self._hal, "reset_episode", None)):
+                return
+            from std_srvs.srv import Trigger
+
+            robot = self._robot_id()
+            topic = f"/openral/{robot}/reset_episode"
+            self._reset_episode_srv = self.create_service(
+                Trigger, topic, self._handle_reset_episode
+            )
+            self.get_logger().info(f"reset_episode service ready at {topic}")
+
+        def _handle_reset_episode(self, request: object, response: object) -> object:
+            """Start a fresh sim episode on the live env; reply with the seed it used.
+
+            Runs on the executor thread that owns the env (single-threaded node), so
+            it never interleaves with a step. Refreshes the proprio snapshot and
+            publishes it at once, as the ``reset_to_pose`` handler does, so the
+            next goal's first tick reads the post-reset pose.
+            """
+            from openral_core.exceptions import ROSError
+
+            if self._hal is None:
+                response.success = False  # type: ignore[attr-defined]  # reason: rosidl srv response is untyped
+                response.message = "HAL not connected"  # type: ignore[attr-defined]
+                return response
+            try:
+                seed = self._hal.reset_episode()  # type: ignore[attr-defined]  # reason: presence guaranteed by _open_reset_episode_service reflection
+            except ROSError as exc:
+                self.get_logger().error(f"reset_episode: {exc!s}")
+                response.success = False  # type: ignore[attr-defined]
+                response.message = f"{type(exc).__name__}: {exc!s}"  # type: ignore[attr-defined]
+                return response
+            if self._proprio is not None:
+                self._capture_proprio()
+                self._publish_joint_state()
+            # The reset teleported the hands open and re-placed every object, so
+            # whatever the attachment bridge believed held belongs to the previous
+            # episode: rebuild it, empty, rather than let the kernel check a payload
+            # that no longer exists against the new pose.
+            if self._vision_attachment is not None:
+                self._vision_attachment.teardown()
+                self._vision_attachment = None
+                self._setup_vision_attachment()
+            self.get_logger().info(f"reset_episode: new episode, env seed {seed}")
+            response.success = True  # type: ignore[attr-defined]
+            response.message = f"seed={seed}"  # type: ignore[attr-defined]
+            return response
 
         def _attach_ros_control_transport(self) -> None:
             """Give a real ros2_control HAL the live transport it cannot build itself.
@@ -2512,6 +2580,9 @@ if _ROS2_AVAILABLE:
             if self._reset_to_pose_srv is not None:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None
+            if self._reset_episode_srv is not None:
+                self.destroy_service(self._reset_episode_srv)
+                self._reset_episode_srv = None
 
     # Back-compat alias for the manifest node's prior private name (issue
     # #191 promoted it to public API). Existing imports keep working.

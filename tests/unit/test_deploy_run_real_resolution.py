@@ -263,12 +263,10 @@ class TestDepthExtrinsicPreflight:
     def test_the_committed_openarm_units_gate_on_their_declared_mount(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Thor's overlay declares head_zed's calibrated mount, so bare `deploy run` with that
-        unit passes the gate (its correctness is the operator's); Orin's does not yet, so the
-        same launch refuses there."""
-        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
-        inv = _resolve_real("openarm")
-        assert "enable_octomap_kernel_check:=true" in inv.argv_template
-        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "orin")
-        with pytest.raises(ROSConfigError, match=r"head_zed: mount is the manifest's nominal"):
-            _resolve_real("openarm")
+        """Thor's and Orin's overlays declare head_zed's calibrated mount, so bare `deploy run`
+        with either unit passes the gate (its correctness is the operator's). The undeclared
+        refusal is pinned on a scratch robot above (`cell_a`)."""
+        for unit in ("thor", "orin"):
+            monkeypatch.setenv("OPENRAL_ROBOT_UNIT", unit)
+            inv = _resolve_real("openarm")
+            assert "enable_octomap_kernel_check:=true" in inv.argv_template

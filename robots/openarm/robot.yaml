@@ -540,7 +540,10 @@ sensors:
   # 1920x1080, with camera_info (/zed/zed_node/depth/camera_info,
   # .../rgb/color/rect/camera_info) K = [1498.18, 0, 936.11; 0, 1498.18, 541.81;
   # 0, 0, 1] (Thor cell, 2026-10-02): that focal length is 56 % longer than the
-  # nominal fx = fy = 960 below. Anything that projects or back-projects pixels
+  # nominal fx = fy = 960 below. (That was a 1920x1080 grab; the bench override now grabs
+  # VGA 672x376, where rect K is fx = fy = 356.3 and raw K is fx 384.9 with Brown
+  # distortion, and the units bind `top` to the raw image — Orin cell, 2026-10-07.)
+  # Anything that projects or back-projects pixels
   # MUST use the image header's frame_id and the driver's camera_info, never this
   # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
   #

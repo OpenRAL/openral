@@ -103,16 +103,15 @@ def test_the_run_script_refuses_when_deploy_would_load_another_manifest(tmp_path
     assert "openral deploy run would load" in proc.stderr
 
 
-def test_thors_declared_mount_passes_the_gate_and_orins_undeclared_one_does_not() -> None:
-    """Thor's overlay declares head_zed's mount, so the script gets past the mount gate and
-    stops at the last refusal before motion (no interactive terminal); Orin's does not yet."""
+def test_the_declared_unit_mounts_pass_the_gate() -> None:
+    """Thor's and Orin's overlays both declare head_zed's mount, so the script gets past the
+    mount gate and stops at the last refusal before motion (no interactive terminal). The
+    undeclared case is the next test's."""
     _skip_unless_ros_and_openral()
-    proc = _run_script(_gated("thor"))
-    assert proc.returncode == 2, proc.stderr
-    assert "not an interactive terminal" in proc.stderr, proc.stderr
-    proc = _run_script(_gated("orin"))
-    assert proc.returncode == 2, proc.stderr
-    assert "head_zed's mount is not declared for unit orin" in proc.stderr, proc.stderr
+    for unit in ("thor", "orin"):
+        proc = _run_script(_gated(unit))
+        assert proc.returncode == 2, proc.stderr
+        assert "not an interactive terminal" in proc.stderr, proc.stderr
 
 
 def test_the_run_script_refuses_a_unit_that_does_not_exist() -> None:

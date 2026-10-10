@@ -1451,3 +1451,33 @@ def test_a_nameless_gripper_slot_is_unknown() -> None:
     )
     unknown = _openarm_jaw("no_such_gripper", 0.02)
     assert sim_attached.gripper_targets_action([left, unknown], description) is None
+
+
+def test_reset_episode_resets_the_live_env_with_the_next_seed_each_time() -> None:
+    """A multi-episode harness: each `reset_episode` re-resets the SAME env (no rebuild)
+    with base seed + episode index, and clears the previous episode's pending ticks."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description(), env_reset_seed=7)
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[-1.0],
+            tick_index=1,
+            tick_group_size=2,
+        )
+    )
+    assert hal.reset_episode() == 8
+    assert hal.reset_episode() == 9
+    assert env.reset_calls == [7, 8, 9]
+    assert hal._pending_actions == {} or len(hal._pending_actions) == 0
+    hal.connect()  # a lifecycle re-connect keeps the base seed
+    assert env.reset_calls[-1] == 7
+
+
+def test_reset_episode_without_a_base_seed_counts_from_zero() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    assert [hal.reset_episode(), hal.reset_episode()] == [1, 2]
+    assert env.reset_calls == [None, 1, 2]
