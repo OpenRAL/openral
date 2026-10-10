@@ -20,11 +20,25 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription
-from openral_sim.backends.isaac_sim import _build_robot_spec
+from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
+from openral_sim.backends.isaac_sim import _build_robot_spec, _sensor_dict
+
+
+def test_thor_brown_calibration_survives_sidecar_serialization() -> None:
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    robot = RobotDescription.from_yaml(path)
+    sensors = apply_sensor_overlays(
+        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
+    )
+    for sensor in sensors:
+        if sensor.name not in ("wrist_left", "wrist_right"):
+            continue
+        assert sensor.intrinsics is not None
+        assert _sensor_dict(sensor)["intrinsics"] == sensor.intrinsics.model_dump()
 
 
 def _repo_root() -> Path:
@@ -97,7 +111,16 @@ def test_build_robot_spec_sensors_serialised(franka: RobotDescription) -> None:
     assert rgb, "franka manifest declares RGB cameras"
     cam = rgb[0]
     assert cam["intrinsics"] is not None
-    assert set(cam["intrinsics"]) == {"width", "height", "fx", "fy", "cx", "cy"}
+    assert set(cam["intrinsics"]) == {
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy",
+        "distortion_model",
+        "distortion_coeffs",
+    }
 
 
 def test_build_robot_spec_panda_mobile_base(panda_mobile: RobotDescription) -> None:
@@ -726,3 +749,521 @@ def test_explicit_substep_pin_wins_over_derivation(
     assert scene.resolve_time_base(1 / 60, 30.0) == 3
     assert scene.sim_dt_per_tick_s == pytest.approx(3 / 60)
     assert "override" in capsys.readouterr().out
+
+
+# ── RGB lens validity + render softening ──────────────────────────────────────
+
+# The OpenArm ZED-M left lens, VGA raw: the Oct-2 Brown fit (the policy's training camera)
+# and its monotonic rational extension (fitted 2026-10-07 to the SDK's raw->rect map; equal
+# to the Brown fit within 0.007 px inside its calibrated radius).
+_ZED_TOP_K = {"width": 672, "height": 376, "fx": 388.508267, "fy": 388.527128,
+              "cx": 336.707405, "cy": 190.106848}  # fmt: skip
+_ZED_TOP_BROWN = [-0.358038981, 0.187982349, -0.000311155, 0.000069646, -0.056267709]
+_ZED_TOP_RATIONAL = [-1.441958182143234, 0.7289916610988222, -0.000311155, 6.9646e-05,
+                     0.19532166359108094, -1.0824447975648817, 0.1369386641081563,
+                     0.5689119070450521]  # fmt: skip
+
+
+def test_a_brown_fit_that_folds_inside_the_frame_is_refused(_manifest_scene_mod: object) -> None:
+    """Isaac inverts the lens per output pixel; past the fold there is no ray, so the
+    renderer draws swirls at the image edge. The Oct-2 fit folds at r_d 0.858 < 0.995."""
+    mod = _manifest_scene_mod
+    assert mod.radial_fold_radius(_ZED_TOP_BROWN) == pytest.approx(0.858, abs=1e-3)  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match=r"folds at normalised radius 0\.858"):
+        mod.check_radial_reaches_corners("top", _ZED_TOP_K, _ZED_TOP_BROWN)  # type: ignore[attr-defined]
+
+
+def test_the_rational_extension_reaches_the_corners_and_keeps_the_brown_interior(
+    _manifest_scene_mod: object,
+) -> None:
+    mod = _manifest_scene_mod
+    mod.check_radial_reaches_corners("top", _ZED_TOP_K, _ZED_TOP_RATIONAL)  # type: ignore[attr-defined]
+
+    def radial(c: list[float], r: np.ndarray) -> np.ndarray:
+        k1, k2, _, _, k3, k4, k5, k6 = (c + [0.0] * 8)[:8]
+        r2 = r * r
+        return r * (1 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / (1 + k4 * r2 + k5 * r2**2 + k6 * r2**3)
+
+    r = np.linspace(0.0, 0.8, 200)  # well inside the Brown fit's valid range
+    px = np.abs(radial(_ZED_TOP_RATIONAL, r) - radial(_ZED_TOP_BROWN, r)) * _ZED_TOP_K["fx"]
+    assert px.max() < 0.05
+
+
+def test_the_thor_wrist_calibrations_pass_the_corner_check(_manifest_scene_mod: object) -> None:
+    """Real fixtures: the committed wrist Arducam calibrations are monotonic to their corners."""
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    robot = RobotDescription.from_yaml(path)
+    sensors = apply_sensor_overlays(
+        robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
+    )
+    for s in sensors:
+        if s.name in ("wrist_left", "wrist_right"):
+            assert s.intrinsics is not None
+            k = s.intrinsics.model_dump()
+            _manifest_scene_mod.check_radial_reaches_corners(s.name, k, k["distortion_coeffs"])  # type: ignore[attr-defined]
+
+
+def test_rational_polynomial_is_a_schema_model() -> None:
+    from openral_core import IntrinsicsPinhole
+
+    k = IntrinsicsPinhole(
+        **_ZED_TOP_K, distortion_model="rational_polynomial", distortion_coeffs=_ZED_TOP_RATIONAL
+    )
+    assert IntrinsicsPinhole.model_validate_json(k.model_dump_json()) == k
+
+
+def test_blur_softens_without_shifting_or_darkening(_manifest_scene_mod: object) -> None:
+    blur = _manifest_scene_mod.blur_rgb  # type: ignore[attr-defined]
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 256, size=(40, 60, 3), dtype=np.uint8)
+    assert blur(img, 0.0) is img
+    out = blur(img, 0.9)
+    assert out.shape == img.shape and out.dtype == np.uint8
+    assert abs(float(out.mean()) - float(img.mean())) < 0.5
+    assert float(np.abs(np.diff(out.astype(float), axis=1)).mean()) < float(
+        np.abs(np.diff(img.astype(float), axis=1)).mean()
+    )
+    dot = np.zeros((11, 11, 3), dtype=np.uint8)
+    dot[5, 5] = 255
+    peak = np.unravel_index(np.argmax(blur(dot, 1.0)[..., 0]), (11, 11))
+    assert peak == (5, 5)
+
+
+def test_image_blur_option_is_bounded() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    assert IsaacSimOptions().image_blur_sigma_px == 0.0
+    assert IsaacSimOptions(image_blur_sigma_px=0.9).image_blur_sigma_px == 0.9
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(image_blur_sigma_px=-0.1)
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(image_blur_sigma_px=6.0)
+
+
+def test_relight_matches_exposure_and_auto_exposure_hits_target(
+    _manifest_scene_mod: object,
+) -> None:
+    """One stop of scene-linear gain through the inverse op-6 tonemap is monotone, keeps
+    black at black, and the AE gain brings a dark frame's mean luma to the target."""
+    relight = _manifest_scene_mod.relight_rgb  # type: ignore[attr-defined]
+    ae_gain = _manifest_scene_mod.auto_exposure_gain  # type: ignore[attr-defined]
+    ramp = np.repeat(np.arange(256, dtype=np.uint8)[None, :, None], 3, axis=2)
+    up = relight(ramp, (2.0, 2.0, 2.0)).astype(int)
+    assert up[0, 0, 0] == 0 and (np.diff(up[0, :, 0]) >= 0).all() and (up >= ramp).all()
+    assert (relight(ramp, (1.0, 1.0, 1.0)) == ramp).all()
+    rng = np.random.default_rng(0)
+    dark = rng.integers(10, 90, size=(64, 96, 3), dtype=np.uint8)
+    g = ae_gain(dark, 107.0, (1.0, 1.0, 1.2))
+    lit = relight(dark, (g, g, 1.2 * g)).astype(float) @ np.array([0.299, 0.587, 0.114])
+    assert g > 1.0 and abs(float(lit.mean()) - 107.0) < 3.0
+
+
+def test_camera_image_post_needs_exposure_ev() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    post = {"wrist_left": {"blur_sigma_px": 1.5, "auto_exposure_target": 107}}
+    opts = IsaacSimOptions(exposure_ev=-1.0, image_blur_sigma_px=0.9, camera_image_post=post)
+    assert opts.camera_image_post["wrist_left"].blur_sigma_px == 1.5
+    IsaacSimOptions(camera_image_post={"wrist_left": {"blur_sigma_px": 1.5}})  # blur alone: fine
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(camera_image_post=post)
+    with pytest.raises(ValidationError):
+        IsaacSimOptions(exposure_ev=-1.0, camera_image_post={"w": {"white_balance_rgb": (0, 1, 1)}})
+
+
+def test_robot_material_recolour_targets_only_matching_robot_materials(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenArm's upstream `.dae` meshes ship a "matte_black" at diffuse 0.247 (renders grey);
+    the recolour sets only matching materials bound under the robot prim."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+
+    def material(path: str, rgb: tuple[float, float, float]) -> object:
+        mat = UsdShade.Material.Define(stage, path)
+        sh = UsdShade.Shader.Define(stage, f"{path}/Shader")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgb))
+        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+        return mat
+
+    black = material("/World/robot/Looks/palette_01_matte_black_001_material", (0.247,) * 3)
+    silver = material("/World/robot/Looks/palette_00_metal_silver_001_material", (0.65,) * 3)
+    shelf = material("/World/Looks/shelf_matte_black_material", (0.5,) * 3)  # not the robot's
+    for prim_path, mat in (
+        ("/World/robot/link1/visual_a", black),
+        ("/World/robot/link1/visual_b", silver),
+        ("/World/shelf/mesh", shelf),
+    ):
+        UsdShade.MaterialBindingAPI.Apply(UsdGeom.Mesh.Define(stage, prim_path).GetPrim()).Bind(mat)
+
+    changed = _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.03, 0.03, 0.03]}
+    )
+    assert list(changed) == ["/World/robot/Looks/palette_01_matte_black_001_material"]
+
+    def diffuse(path: str) -> tuple[float, ...]:
+        shader = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/Shader"))
+        return tuple(shader.GetInput("diffuseColor").Get())
+
+    assert diffuse("/World/robot/Looks/palette_01_matte_black_001_material") == pytest.approx(
+        (0.03, 0.03, 0.03)
+    )
+    assert diffuse("/World/robot/Looks/palette_00_metal_silver_001_material") == pytest.approx(
+        (0.65, 0.65, 0.65)
+    )
+    assert diffuse("/World/Looks/shelf_matte_black_material") == pytest.approx((0.5, 0.5, 0.5))
+
+
+def test_robot_material_recolour_writes_the_connected_material_input(
+    _manifest_scene_mod: object,
+) -> None:
+    """Isaac's URDF importer exposes the colour as a Material interface input that the
+    shader's diffuseColor is connected to; the recolour must write that source."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    mat = UsdShade.Material.Define(stage, "/World/robot/Materials/palette_01_matte_black")
+    iface = mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    iface.Set(Gf.Vec3f(0.05, 0.05, 0.05))
+    sh = UsdShade.Shader.Define(stage, "/World/robot/Materials/palette_01_matte_black/S")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(iface)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    mesh = UsdGeom.Mesh.Define(stage, "/World/robot/link1/visual").GetPrim()
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+
+    _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.01, 0.01, 0.01]}
+    )
+    assert tuple(iface.Get()) == pytest.approx((0.01, 0.01, 0.01))
+
+
+def test_robot_material_colours_are_validated() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    opts = IsaacSimOptions(robot_material_colors={"*matte_black*": (0.03, 0.03, 0.03)})
+    assert opts.robot_material_colors["*matte_black*"] == (0.03, 0.03, 0.03)
+    with pytest.raises(ValidationError, match="RGB in"):
+        IsaacSimOptions(robot_material_colors={"*": (1.2, 0.0, 0.0)})
+
+
+def test_robot_material_recolour_reaches_instanced_visuals(_manifest_scene_mod: object) -> None:
+    """Isaac's URDF importer instances the visuals, so their materials are read-only
+    instance proxies: the recolour de-instances only the instances holding a match."""
+    pytest.importorskip("pxr")
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    proto = "/Prototypes/link_visual"
+    mesh = UsdGeom.Mesh.Define(stage, f"{proto}/mesh").GetPrim()
+    mat = UsdShade.Material.Define(stage, f"{proto}/Looks/palette_01_matte_black")
+    mat.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.05, 0.05, 0.05))
+    UsdShade.MaterialBindingAPI.Apply(mesh).Bind(mat)
+    collider = stage.DefinePrim("/World/robot/link1/collisions")
+    collider.GetReferences().AddInternalReference(proto)
+    collider.SetInstanceable(True)
+    visual = stage.DefinePrim("/World/robot/link1/visuals")
+    visual.GetReferences().AddInternalReference(proto)
+    visual.SetInstanceable(True)
+    stage.GetPrimAtPath("/Prototypes").SetActive(False)
+    assert stage.GetPrimAtPath("/World/robot/link1/visuals/mesh").IsInstanceProxy()
+
+    changed = _manifest_scene_mod.recolor_robot_materials(  # type: ignore[attr-defined]
+        stage, "/World/robot", {"*matte_black*": [0.01, 0.01, 0.01]}
+    )
+    assert changed
+    for root in ("visuals", "collisions"):
+        prim = stage.GetPrimAtPath(f"/World/robot/link1/{root}/mesh")
+        bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        assert tuple(bound.GetInput("diffuseColor").Get()) == pytest.approx((0.01, 0.01, 0.01))
+
+
+def _noisy(x: float, y: float, yaw: float, **noise: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "xy_sigma_m": [0.01, 0.01],
+        "yaw_sigma_deg": 10.0,
+        "clip_sigma": 2.0,
+        "keep_inside_xy": None,
+        "max_tries": 200,
+    }
+    return {"xyz": [x, y, 0.2], "yaw": yaw, "pose_noise": {**base, **noise}}
+
+
+def test_object_pose_noise_is_seeded_truncated_and_collision_free(
+    _manifest_scene_mod: object,
+) -> None:
+    """Two tote cartons (OpenArm restock E14 footprints) 8 mm apart, inside a tote floor."""
+    mod = _manifest_scene_mod
+    sample = mod.sample_object_poses  # type: ignore[attr-defined]
+    overlap = mod._rects_overlap  # type: ignore[attr-defined]
+    corners = mod._rect_corners  # type: ignore[attr-defined]
+    tote = [[-0.14, -0.18], [0.094, 0.168]]
+    objs = [
+        _noisy(0.04, 0.07, -1.57, keep_inside_xy=tote),
+        _noisy(0.04, -0.01, -1.57, keep_inside_xy=tote),
+        {"xyz": [-0.06, -0.09, 0.2], "yaw": 0.0},  # no noise: always declared
+    ]
+    foot = [(0.0, 0.0, 0.0368, 0.0175)] * 3
+    first = sample(objs, foot, np.random.default_rng(7))
+    assert first == sample(objs, foot, np.random.default_rng(7))
+    assert first != sample(objs, foot, np.random.default_rng(8))
+    for seed in range(200):
+        poses = sample(objs, foot, np.random.default_rng(seed))
+        assert poses[2] == (-0.06, -0.09, 0.0, "declared")
+        quads = [corners(x, y, yaw, f) for (x, y, yaw, _), f in zip(poses, foot, strict=True)]
+        for (x, y, yaw, status), obj in zip(poses[:2], objs[:2], strict=True):
+            assert status == "sampled"
+            assert abs(x - obj["xyz"][0]) <= 0.02 + 1e-12  # type: ignore[index]
+            assert abs(y - obj["xyz"][1]) <= 0.02 + 1e-12  # type: ignore[index]
+            assert abs(yaw - obj["yaw"]) <= np.radians(20) + 1e-12  # type: ignore[operator]
+        assert not overlap(quads[0], quads[1], 0.002)
+        for q in quads[:2]:
+            assert np.all(q >= np.add(tote[0], 0.002)) and np.all(q <= np.subtract(tote[1], 0.002))
+
+
+def test_object_pose_noise_falls_back_to_the_declared_pose(_manifest_scene_mod: object) -> None:
+    sample = _manifest_scene_mod.sample_object_poses  # type: ignore[attr-defined]
+    # A carton wider than its keep-inside box can never be placed.
+    objs = [_noisy(0.0, 0.0, 0.0, keep_inside_xy=[[-0.01, -0.01], [0.01, 0.01]], max_tries=5)]
+    assert sample(objs, [(0.0, 0.0, 0.03, 0.03)], np.random.default_rng(0)) == [
+        (0.0, 0.0, 0.0, "declared_fallback")
+    ]
+
+
+def test_object_pose_noise_schema() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    opts = IsaacSimOptions(
+        objects=[
+            {
+                "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+                "name": "cracker_box",
+                "xyz": (0.0, 0.0, 0.2),
+                "pose_noise": {"xy_sigma_m": (0.01, 0.005), "yaw_sigma_deg": 6.0},
+            }
+        ]
+    )
+    noise = opts.objects[0].pose_noise
+    assert noise is not None and noise.clip_sigma == 2.0 and noise.keep_inside_xy is None
+    with pytest.raises(ValueError, match="xy_sigma_m"):
+        IsaacSimOptions(
+            objects=[
+                {
+                    "usd": "a.usd",
+                    "name": "a",
+                    "xyz": (0, 0, 0),
+                    "pose_noise": {"xy_sigma_m": (-1, 0)},
+                }
+            ]
+        )
+    with pytest.raises(ValueError, match="keep_inside_xy"):
+        IsaacSimOptions(
+            objects=[
+                {
+                    "usd": "a.usd",
+                    "name": "a",
+                    "xyz": (0, 0, 0),
+                    "pose_noise": {"keep_inside_xy": ((0.1, 0.0), (0.0, 0.1))},
+                }
+            ]
+        )
+
+
+def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
+    """OpenArm restock speed knobs: wrists rendered at 224 px high keep their field of view."""
+    from openral_sim.backends.isaac_sim import _render_desc
+
+    path = _repo_root() / "robots/openarm/robot.yaml"
+    desc = RobotDescription.from_yaml(path)
+    desc = desc.model_copy(
+        update={
+            "sensors": apply_sensor_overlays(
+                desc.sensors, resolve_sensor_overlays(path, "thor", required=True)
+            )
+        }
+    )
+    before = {s.name: s for s in desc.sensors}
+    out, scale = _render_desc(desc, {"wrist_left": 224, "wrist_right": 224}, depth_cameras=False)
+    after = {s.name: s for s in out.sensors}
+    assert not any(s.modality == "depth" for s in out.sensors)
+    assert any(s.modality == "depth" for s in desc.sensors)  # the manifest has one to drop
+    for name in ("wrist_left", "wrist_right"):
+        k0, k1 = before[name].intrinsics, after[name].intrinsics
+        assert k0 is not None and k1 is not None
+        assert k1.height == 224 and scale[name] == pytest.approx(224 / k0.height)
+        assert k1.width == round(k0.width * scale[name])
+        # Same field of view: focal length over raster is unchanged.
+        assert k1.fx / k1.width == pytest.approx(k0.fx / k0.width, rel=2e-3)
+        assert k1.distortion_coeffs == k0.distortion_coeffs
+    untouched = [n for n, s in before.items() if s.modality == "rgb" and n not in scale]
+    assert all(after[n].intrinsics == before[n].intrinsics for n in untouched)
+
+
+def test_render_options_are_validated() -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    opts = IsaacSimOptions(camera_render_height={"top": 224}, depth_cameras=False)
+    assert opts.depth_cameras is False
+    with pytest.raises(ValueError, match="camera_render_height"):
+        IsaacSimOptions(camera_render_height={"top": 8})
+    with pytest.raises(ValueError, match="physics_substeps"):
+        IsaacSimOptions(physics_substeps=2)  # derived from the control rate, not a knob
+
+
+def test_joint_drive_gains_become_importer_pattern_dicts(_manifest_scene_mod: object) -> None:
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    drive_gain_overrides = _manifest_scene_mod.drive_gain_overrides  # type: ignore[attr-defined]
+
+    gains = {"joint[123]$": (70.0, 2.75), "joint[567]$": (10.0, 0.7)}
+    opts = IsaacSimOptions(joint_drive_gains=gains)
+    stiffness, damping = drive_gain_overrides(
+        {k: list(v) for k, v in opts.joint_drive_gains.items()}
+    )
+    # Catch-all default first, so joints no pattern names keep the stiff default.
+    assert list(stiffness) == [".*", "joint[123]$", "joint[567]$"]
+    assert stiffness[".*"] == 1000.0 and damping[".*"] == 100.0
+    assert stiffness["joint[567]$"] == 10.0 and damping["joint[567]$"] == 0.7
+    assert drive_gain_overrides(None) == ({".*": 1000.0}, {".*": 100.0})
+    with pytest.raises(ValueError, match="joint_drive_gains"):
+        IsaacSimOptions(joint_drive_gains={"joint1": (-1.0, 0.0)})
+    with pytest.raises(ValueError):
+        IsaacSimOptions(joint_drive_gains={"joint[": (1.0, 0.0)})
+
+
+def test_color_lut_option_validates_and_maps_per_channel(_manifest_scene_mod: object) -> None:
+    from openral_sim.backends.isaac_sim import IsaacCameraImagePost
+
+    apply_color_lut = _manifest_scene_mod.apply_color_lut  # type: ignore[attr-defined]
+    lut = ([v // 2 for v in range(256)], list(range(256)), [255 - v for v in range(256)])
+    post = IsaacCameraImagePost(color_lut_rgb=lut)
+    img = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(4, 5, 3) * 3
+    out = apply_color_lut(img, post.model_dump(mode="json")["color_lut_rgb"])
+    assert (out[..., 0] == img[..., 0] // 2).all()
+    assert (out[..., 1] == img[..., 1]).all()
+    assert (out[..., 2] == 255 - img[..., 2]).all()
+    with pytest.raises(ValueError, match="color_lut_rgb"):
+        IsaacCameraImagePost(color_lut_rgb=(list(range(255)), list(range(256)), list(range(256))))
+    with pytest.raises(ValueError, match="color_lut_rgb"):
+        IsaacCameraImagePost(color_lut_rgb=([256] * 256, list(range(256)), list(range(256))))
+
+
+def test_gripper_joint_curve_maps_commands_and_states_through_the_curve(
+    _manifest_scene_mod: object,
+) -> None:
+    """OpenArm right jaw: reading -0.28 on a 6 cm carton <-> URDF finger -0.69; open stays 1:1.
+    A command lands on the finger through the curve and the finger reads back through it."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _curve_gripper_specs
+    from openral_sim.registry import ROBOTS
+
+    mod: Any = _manifest_scene_mod
+    curve = [(0.0, 0.0), (-0.28, -0.69), (-0.785, -0.785)]
+    spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
+    _curve_gripper_specs(spec, {"right_gripper": curve})
+    g = next(g for g in spec["grippers"] if g["name"] == "right_gripper")
+    assert mod.manifest_to_urdf_gripper(g, -0.28) == pytest.approx(-0.69)
+    assert mod.manifest_to_urdf_gripper(g, -0.785) == pytest.approx(-0.785)
+    assert mod.manifest_to_urdf_gripper(g, -0.14) == pytest.approx(-0.345)
+    m_pts, u_pts = mod._curve_by_urdf(g["curve"])
+    assert float(np.interp(-0.69, u_pts, m_pts)) == pytest.approx(-0.28)
+    with pytest.raises(ROSConfigError, match="gripper_joint_curve"):
+        _curve_gripper_specs(spec, {"right_joint1": curve})
+    with pytest.raises(ValueError, match="monotonic"):
+        IsaacSimOptions(
+            gripper_joint_curve={"right_gripper": [(0.0, 0.0), (-0.3, 0.1), (-0.7, -0.7)]}
+        )
+
+
+def test_finger_coupling_holds_the_free_finger_at_the_stalled_one(
+    _manifest_scene_mod: object,
+) -> None:
+    """One motor for both OpenArm fingers: a finger may close at most `margin` past its
+    partner's mirrored position; opening is never limited; free fingers close together."""
+    from openral_sim.registry import ROBOTS
+
+    mod: Any = _manifest_scene_mod
+    spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
+    g = next(g for g in spec["grippers"] if g["name"] == "right_gripper")
+    f = g["followers"][0]
+    idx = {g["leader"]: 0, f["dof"]: 1}
+    mirror = lambda lead: f["multiplier"] * lead + f["offset"]  # noqa: E731
+    closed, opened = g["closed"], g["open"]
+    cmd = np.array([closed, mirror(closed)], dtype=np.float32)
+    # Leader stalled near open on the object, follower already nearly shut: follower held.
+    q = np.array([0.88 * opened, mirror(0.05 * opened)], dtype=np.float32)
+    out = mod.couple_finger_targets(cmd, q, [g], idx, 0.1)
+    assert out[0] == pytest.approx(closed)
+    assert (out[1] - f["offset"]) / f["multiplier"] == pytest.approx(
+        0.88 * opened - 0.1 * np.sign(opened - closed), abs=1e-5
+    )
+    # Both free and level: each leads the other by at most the margin per step (the pair
+    # closes together, ~margin x control rate).
+    q_level = np.array([0.5 * opened, mirror(0.5 * opened)], dtype=np.float32)
+    step = mod.couple_finger_targets(cmd, q_level, [g], idx, 0.1)
+    toward_closed = 0.1 * np.sign(closed - opened)
+    assert step[0] == pytest.approx(0.5 * opened + toward_closed, abs=1e-5)
+    assert step[1] == pytest.approx(mirror(0.5 * opened + toward_closed), abs=1e-5)
+    # Opening is never limited.
+    cmd_open = np.array([opened, mirror(opened)], dtype=np.float32)
+    assert np.allclose(mod.couple_finger_targets(cmd_open, q, [g], idx, 0.1), cmd_open)
+    # With velocities: a partner still closing freely holds nothing back, so the pair closes
+    # at drive speed; a stalled partner (qd = 0) still holds at the margin.
+    v_close = 3.0 * np.sign(closed - opened)  # leader units, rad/s toward closed
+    qd = np.array([v_close, f["multiplier"] * v_close], dtype=np.float32)
+    assert np.allclose(mod.couple_finger_targets(cmd, q_level, [g], idx, 0.1, qd=qd), cmd)
+    held = mod.couple_finger_targets(cmd, q, [g], idx, 0.1, qd=np.zeros(2, np.float32))
+    assert np.allclose(held, out)
+
+
+# ── sidecar side: IsaacSceneBase.reset renders after the warmup hook ─────────
+
+
+def test_reset_renders_after_the_warmup_hook(_manifest_scene_mod: object) -> None:
+    """The reset image must come from the physics state its joint state is read at.
+
+    ``_after_warmup`` may step physics without rendering (the manifest scene's
+    hold correction under soft drives: up to 90 steps); the image grabbed before
+    it would then be ~1.5 s older than the state it is paired with.
+    """
+    import _isaac_scene_base  # tools/ is on sys.path via the fixture
+
+    calls: list[tuple[str, bool | None]] = []
+
+    class World:
+        def reset(self) -> None:
+            calls.append(("reset", None))
+
+        def step(self, render: bool = False) -> None:
+            calls.append(("step", render))
+
+    class Scene(_isaac_scene_base.IsaacSceneBase):  # type: ignore[misc,name-defined]
+        warmup_steps = 2
+
+        def _after_warmup(self) -> None:
+            for _ in range(3):
+                self._world.step(render=False)
+
+        def _images(self) -> dict[str, Any]:
+            calls.append(("observe", None))
+            return {}
+
+        def _state(self) -> Any:
+            return np.zeros(1, dtype=np.float32)
+
+    scene = Scene(obs_height=1, obs_width=1, instruction="", success_key="s", max_steps=1)
+    scene._world = World()
+    scene.reset(seed=0)
+
+    steps = [c for c in calls if c[0] == "step"]
+    assert steps[:2] == [("step", True)] * 2  # warmup renders
+    assert steps[2:5] == [("step", False)] * 3  # the hook's unrendered settling
+    # One rendered step after the hook, and nothing between it and the observation.
+    assert calls[-2:] == [("step", True), ("observe", None)]
