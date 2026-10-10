@@ -20,11 +20,18 @@ left slot T, right arm MEASURED at R (zero padding is clear)   REFUSED, ``KIND_C
 How the configurations were found: a seeded random search over the envelope's joint limits
 with a box-box (SAT) distance mirroring the kernel's stage-1 check over
 ``collision_params_from_description`` (the FK and SAT of
-``tests/unit/test_so101_base_box_collision.py``). Inter-arm box gaps: (X, 0) -75.1 mm,
-(X, M) +59.8 mm; (T, 0) +59.8 mm, (T, R) -41.0 mm; every same-arm pair at or above the
+``tests/unit/test_so101_base_box_collision.py``). Inter-arm box gaps for T / R:
+(T, 0) +59.8 mm, (T, R) -41.0 mm; every same-arm pair at or above the
 all-zero pose's own -1.9 mm, which the kernel's hull stage clears (the zero pose is accepted
 by every other OpenArm kernel test). The live kernel is the oracle; it re-checks these
 verdicts every run.
+
+X and M were re-found when the torso entered the model (issue #356): the first X put the left
+link5 12 mm from the real torso mesh, which the torso's box + hull slabs refuse, so the phantom
+row stopped on the body instead of passing. The same search, with the C++ ``collision.cpp`` as
+the oracle over the manifest that now carries the torso, gave the X / M below: (X, 0) is an
+inter-arm hit at -39.1 mm; (X, M) clears every non-allowed pair, +59.8 mm between the arms and
++6.0 mm to the torso (kernel predicates, hull-refined).
 
 Real throughout (CLAUDE.md §1.11): the real manifest, the parameters ``deploy_e2e.launch.py``
 builds (envelope + manifest collision model + ``collision_joint_names``), real
@@ -75,8 +82,8 @@ _ROBOT_YAML = pathlib.Path(__file__).resolve().parents[2] / "robots" / "openarm"
 _RSKILL_ID = "openral/slot-row-measured-fill"
 
 # Pinned configurations (see the module docstring). Arm joints 1-7; grippers stay at 0.
-_X = [0.551, 0.011, 1.02, 1.103, 1.034, 0.362, 0.06]  # left target, hits a zero right arm
-_M = [1.066, 3.091, -0.927, 0.335, -0.281, 0.031, -0.388]  # right measured, clear of X
+_X = [0.777, 0.043, 1.264, 1.675, 1.271, -0.673, -1.133]  # left target, hits a zero right arm
+_M = [-0.463, 2.049, 0.883, 1.091, 0.393, -0.085, -0.023]  # right measured, clear of X
 _T = [-1.497, 0.002, 0.59, 1.49, -0.661, 0.76, -0.809]  # left target, clear of a zero right
 _R = [-0.209, 3.049, 1.277, 1.51, 1.277, -0.326, -1.275]  # right measured, hits T
 

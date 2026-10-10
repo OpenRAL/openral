@@ -139,6 +139,25 @@ the kernel refuses 4.0 % of poses (1000-pose kernel run), against 16.7 % for
 the first fit (#325) and 26.4 % for the hand capsules, and it costs up to
 ~0.1 ms per configuration.
 
+The torso (`openarm_body_link0`) is the one link the MJCF does not carry — its
+worldbody hangs the two arm base links directly — so until issue #356 the
+kernel could not see a hand swung into the body between the arms. It is a
+*static link* now: a `fixed_attachments` row places it 0.698 m under
+`openarm_base` (the URDF's `world -> body_link0 -> *_base_link` chain), and
+the lowering takes its geometry from `openarm.urdf` (collision **and** visual
+meshes, fetched from the pinned `openarm_description` clone). It is lowered as
+three box + hull slabs (`--tight-link openarm_body_link0=3`, sticky on
+re-lower): the foot plate, the 60 mm column and the shoulder block. One hull
+of the whole pedestal has 5.6× the mesh volume and reaches 0.12 m past the
+column, right across the bimanual workspace; the three slabs cut at the
+computed minimum-volume planes (z = 0.07 / 0.61 m) hold the mesh with hull
+overhangs of 38-68 mm. The only new exemptions are the two arm pedestals, which are bolted
+inside the shoulder block (51 mm overlap, rigid); link1 clears the torso by
+7 mm at rest and link2 by 11.5 mm, and both stay checked. On 1000 seeded
+in-limit poses the kernel now refuses 8.2 % instead of 4.0 %. Of the 42 new
+refusals, 29 put an arm vertex inside the real torso mesh (poses the old model
+accepted) and 13 are slab false stops (review §11.1).
+
 `tests/unit/test_collision_geometry_enclosure.py` places the meshes with
 MuJoCo and the primitives with the kernel's own model and FK, and fails if a
 mesh vertex sits outside its primitives or its hull at 300 random poses.
@@ -306,7 +325,8 @@ hardware E-stop): 7 passed in 28.5 s against a live `deploy run` of
 all four `JointTrajectoryController`s plus `joint_state_broadcaster` active;
 `/joint_states` carrying all 16 ros2_control joints at 684 Hz; the TF tree
 complete to both end effectors; the C++ kernel ACTIVE at 16 DoF with
-self-collision armed over 19 links and emitting no `safe_action` unbidden;
+self-collision armed over 20 links (the torso included since #356) and
+emitting no `safe_action` unbidden;
 and a non-empty `/openral/world_voxels` fed by the real ZED cloud, which is
 the silent `octomap_cloud_topic` failure the bench scene exists to pin. The
 scene's `drivers:` block brought the ZED up as part of the graph, so there

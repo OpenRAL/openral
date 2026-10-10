@@ -458,7 +458,7 @@ Three OpenArm models, same kernel harness and truths (§4, §6):
 
 | | hand-written (86789ab2) | #325 fit (58356ab1) | this PR |
 |---|---:|---:|---:|
-| primitives | 16 (14 capsule, 2 sphere) | 18 (14 box, 4 capsule) | 18 box + hull |
+| primitives | 16 (14 capsule, 2 sphere) | 18 (14 box, 4 capsule) | 18 box + hull (+3 torso slabs, §11.1) |
 | vertices outside (collision + visual) | 149,302 | 4,564 | 0 |
 | missed contacts, 3000 poses (hull truth) | 79 | 3 | 0 |
 | poses refused, 1000 (C++ kernel) | 264 | 167 | **40** |
@@ -523,6 +523,133 @@ Per link (support excess over the link's hull, box = the kernel's broad phase):
 The hulls themselves sit on the links: support excess 0.00-0.28 mm (the 320-vertex refinement of
 the larger meshes) and a sampled overhang past the mesh surface of 10-48 mm (concavities the hull
 bridges, e.g. link2's cut-out).
+
+### 11.1 The torso (issue #356, 2026-10-10)
+
+Everything above is the arms. The MJCF the manifest is lowered from has no torso body (its
+worldbody holds `openarm_*_base_link` directly), so the kernel never saw `openarm_body_link0` —
+the pedestal the hands swing into between the arms — and the 2026-10-08 wrist-camera
+calibration had to run an offline mesh check to drop a HOME candidate. The torso is now a
+*static link*: a `fixed_attachments` row under `openarm_base` at `[0, 0, -0.698]` (the URDF's
+`world -> body_link0 -> *_base_link` chain), lowered from `openarm.urdf`'s collision **and**
+visual meshes by the same fitter.
+
+**Why three slabs, not one hull.** The torso is a 250 × 190 × 70 mm foot plate, a 60 mm square
+column and a ~150 × 160 × 170 mm shoulder block. Measured on the collision mesh
+(`body_link0_symp.stl`, 4.47 L):
+
+| representation | hull volume | vertices | overhang past the mesh |
+|---|---:|---:|---:|
+| one hull | 24.9 L (5.6×) | 733 → 320 decimated | 0.12 m |
+| two slabs (best cut) | 11.9 L | | |
+| three equal thirds (`_capsule_chain`'s cut) | 10.2 L | | the bottom piece fills the full footprint up to z = 0.26, where the hands hang |
+| **three slabs, min-volume cuts z = 0.07 / 0.61** | **7.9 L (1.8×)** | 72 / 44 / 320 | ≈ 50 mm each |
+
+One hull stands 0.12 m off the column across the bimanual workspace and is over the 320-vertex
+cap besides. `--tight-link openarm_body_link0=3` cuts at the two grid planes that minimise the
+pieces' total hull volume (`urdf_lowering._split_tight_pieces`); the count is sticky through the
+manifest's entry count, the planes are recomputed from the mesh. As committed (collision + visual
+union, box frame):
+
+| slab | box (m) | box vol | hull vertices | hull overhang past the mesh |
+|---|---|---:|---:|---:|
+| foot plate (z 0 - 0.07) | 0.076 × 0.192 × 0.252 | 3.67 L | 235 | 37.6 mm |
+| column + flange (z 0.07 - 0.61) | 0.062 × 0.147 × 0.542 | 4.96 L | 95 | 68.1 mm |
+| shoulder block (z 0.61 - 0.77) | 0.152 × 0.162 × 0.166 | 4.09 L | 320 | 41.4 mm |
+
+**Rest-pose gaps against the torso** (kernel predicates on the committed primitives,
+`tests/unit/test_collision_geometry_zero_pose.py`, both arms symmetric):
+
+| pair | q = 0 | over the shoulder ranges | status |
+|---|---:|---|---|
+| link0 | -51.2 mm | rigid | **exempt** (SRDF): the pedestal is bolted inside the shoulder block |
+| link1 | +7.0 mm | +7.0 mm min over joint1 | checked |
+| link2 | +11.5 mm | +0.3 mm min over joint1 × joint2 | checked |
+| link3 | +38.9 mm | +0.0 mm min over joint1-3 (a touching pose exists in-limits) | checked |
+| finger_pair | +27.1 mm | | checked |
+| link4-7 | +65 - +85 mm | | checked |
+
+The two `link0` rows are the only new exemptions and the only possible channel: every torso slab
+carries a hull, and the MJCF sweep never auto-exempts a hulled pair (§8). Negative case pinned:
+the left hand folded back into the shoulder block (elbow 2.37 rad) puts the link7 box centre
+29 mm inside the torso's watertight collision mesh and trips `openarm_body_link0 ↔ openarm_left_link7`
+at -118 mm (`_REAL_COLLISIONS`); `tests/integration/test_safety_kernel_openarm_torso.py` asks the
+real kernel the same two questions.
+
+**What it costs, and what it buys** (2026-10-10). The unmodified `collision.cpp`, model built as
+`lifecycle_kernel.cpp` builds it from `collision_params_from_description`, `forward_kinematics` +
+`check_self_collision` at the manifest margin (0), on the same 1000 seeded in-limit poses
+(seed 20260924, all 16 joints), master's manifest against this one; single core, shared laptop
+(±20 %):
+
+| model | poses refused | median / p99 / max µs per check |
+|---|---:|---:|
+| arms only (master) | 40 | 52.2 / 88.7 / 172.5 |
+| arms + torso | 82 | 67.4 / 106.5 / 152.9 |
+
+74 poses trip a torso pair. Each was checked against the real geometry: every collision **and**
+visual vertex of the tripping arm link (MuJoCo FK, followers set from the leader) against the
+torso's watertight collision mesh (`body_link0_symp.stl`), signed distance:
+
+| torso trips | an arm vertex inside the torso | clearance ≤ 20 mm | 20-50 mm | > 50 mm |
+|---:|---:|---:|---:|---:|
+| 74 | **61** | 7 | 4 | 2 |
+
+So 61 of the 1000 sampled poses put an arm into the body. Master already refused 32 of them for
+another pair (an arm against itself or the other arm) and **accepted 29**. The 13 torso trips with
+no contact are slab false stops, all new (median clearance of the 74: -19.9 mm, worst false stop
+56 mm, the column slab's hull overhang). The 42 new refusals are therefore 29 real contacts the
+kernel used to miss and 13 false stops. The per-check cost rises ~15 µs at the median, inside the
+~0.1 ms arm figure above. The truth mesh omits the CAD fitting 22 mm behind the column, so a false
+stop near it could be a real contact; it never under-counts the contacts.
+
+One existing live test moved with it: `test_safety_kernel_slot_row_measured_fill.py`'s phantom
+target put the left link5 12 mm from the real torso, which the slabs refuse (a false stop of the
+column slab), so its X / M were re-found by the same search with the torso in the model.
+
+**The foot plate against the surface the robot stands on** (world-voxel check). The foot-plate
+slab reaches 1 mm below that surface; the self-filter removes returns within 2 cm of the hulls;
+the kernel trips a 2 cm cell within 2 cm. Modelled with a one-off harness (branch
+`tool/world-voxel-rest-verdict`, `tools/world_voxel_rest_verdict.py`, kept out of the tree): a
+flat surface at `z = -0.698` on the octree lattice, self-filtered exactly against the three
+hulls, replayed into the real kernel at the parameters `deploy run` composes for
+`openarm_real_world_voxels.yaml`, one hold row at q = 0:
+
+| surface in the map | hold at q = 0 |
+|---|---|
+| all around the robot | refused, `openarm_body_link0`, 5 mm, cell (-0.17, 0.09, -0.69) |
+| only in front of the column (x > 0) | refused, 5 mm, cell (0.11, -0.09, -0.69) |
+| only in front of the foot plate's toe (x > 0.096) | refused, 5 mm, same cell |
+| only behind the column (x < -0.03) | refused, 5 mm, cell (-0.17, -0.09, -0.69) |
+| the same surface 0.10 m lower | accepted |
+
+So if the head camera's map holds the surface just in front of the robot, the kernel refuses
+every chunk near rest. Before #360 the lowest kernel link was the pedestal at shoulder height, so
+this could not happen.
+
+**Measured on the Orin cell, 2026-10-10 — accepted.** No motion: the real ZED-M (the scene's
+driver overrides) with the MuJoCo twin as HAL, so no CAN traffic; 28 s of the raw cloud and TF
+recorded; replayed through the real self-filter, `octomap_server` and voxel bridge at the
+parameters `deploy run` composes for `openarm_real_world_voxels.yaml` on unit `orin` (20 mm
+cells, occupancy 0.6, the #360 manifest), with the joints held at zero (the twin's recorded
+joint states, all within 1.4 mrad of zero, arrive in late bursts the filter's 0.1 s pairing
+rejects). Of 310 maps (4172 occupied cells, 913 at table level, objects in front), the nearest
+cell centre to a torso box was 36.8 mm (median 36.8, max 47.5): the head camera does not see the
+surface within 2 cm of the foot plate. The real kernel judged a hold at q = 0 against four maps
+spread over the recording: accepted every time. The self-filter removed 0.0 % of points, so the
+camera does not see the robot here; the real arms' pose was not read.
+
+**Measured on the Thor cell, 2026-10-10 — accepted.** Same procedure, unit `thor`, empty
+workspace in front: 29 s recorded, 298 maps (median 915 occupied cells). No table-level cell
+comes within 30 cm of the torso (Orin: the closest is 56.4 mm from the foot-plate hull), so on
+neither cell does the head camera see the surface next to the foot plate. The real kernel judged
+a hold at q = 0 against five maps, the closest included: accepted every time. Thor's closest cell
+to any torso slab is not the table but something at shoulder height in front of the left arm mount
+(cell centre (0.09, 0.07, -0.07) in `openarm_base`, 39.2 mm from the shoulder-block hull, so its
+cube stays 22-29 mm away against the 20 mm margin) — an unmodelled part such as a cable, or the real
+left arm off zero. A thin margin, not a trip; a cable that moves closer would stop the cell at rest.
+Both cells share one camera mount; a different mount that sees closer to the foot plate can still
+trip, which is why Entry 058's remedy question stays open for other cells.
 
 ## 12. MJCF twins
 
