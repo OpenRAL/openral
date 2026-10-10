@@ -832,3 +832,110 @@ def test_topic_native_opts_one_camera_out_of_the_resolution_cap(
         assert by_name["wrist_left"]._rate_hz == _MAX_FALLBACK_TOPIC_RATE_HZ
     finally:
         leg.close()
+
+
+# ── Native bus frames end to end (#354) ────────────────────────────────────
+
+
+def _openarm_wrist(name: str = "wrist_left") -> SensorSpec:
+    """The real OpenArm wrist Arducam spec on the Orin unit (960x600 calibrated intrinsics).
+
+    Merged the way ``compose_runtime`` does: the unit's overlay laid over the manifest.
+    """
+    from openral_core import apply_sensor_overlays, load_robot_unit
+
+    robot = "robots/openarm/robot.yaml"
+    sensors = apply_sensor_overlays(
+        RobotDescription.from_yaml(robot).sensors, load_robot_unit(robot, "orin").sensors
+    )
+    return next(s for s in sensors if s.name == name)
+
+
+def _with_binding(spec: SensorSpec, **update: object) -> SensorSpec:
+    """``spec`` with its deploy binding's fields replaced (``backend_params``, ``max_age_ms``)."""
+    assert spec.deploy_binding is not None
+    return spec.model_copy(update={"deploy_binding": spec.deploy_binding.model_copy(update=update)})
+
+
+def _write_video(path: Path, width: int, height: int) -> Path:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (width, height))
+    if not writer.isOpened():
+        pytest.skip("cv2.VideoWriter MJPG codec unavailable on this host")
+    try:
+        for i in range(10):
+            writer.write(np.full((height, width, 3), i * 20, dtype=np.uint8))
+    finally:
+        writer.release()
+    return path
+
+
+def test_native_wrist_publishes_capture_size_with_unscaled_k(tmp_path: Path) -> None:
+    """Real reader → real leg → real DDS: native vs capped cameras side by side.
+
+    Both OpenArm wrist specs (real 960x600 calibrated intrinsics) read a real
+    960x600 MJPG clip through `opencv_thread`; only `wrist_left` opts in. The
+    published Image and CameraInfo must be capture-size with the manifest K for
+    the native camera, and the 320x200 thumbnail with K scaled by 1/3 for the
+    other — consumers must never get native pixels with scaled K, or the reverse.
+    """
+    pytest.importorskip("rclpy")
+    pytest.importorskip("sensor_msgs.msg")
+    import rclpy
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import CameraInfo, Image
+
+    video = _write_video(tmp_path / "wrist.avi", 960, 600)
+    specs = []
+    for name, native in (("wrist_left", True), ("wrist_right", False)):
+        params: dict[str, object] = {"device": str(video), "width": 960, "height": 600, "fps": 30}
+        if native:
+            params["topic_native"] = True
+        # The clip ends after 10 frames; a long max_age keeps its last frame servable.
+        specs.append(_with_binding(_openarm_wrist(name), backend_params=params, max_age_ms=60_000))
+
+    owns_rclpy = not rclpy.ok()
+    if owns_rclpy:
+        rclpy.init()
+    node = rclpy.create_node("sensor_leg_native_test")
+    images: dict[str, Image] = {}
+    infos: dict[str, CameraInfo] = {}
+    for spec in specs:
+        image_topic, info_topic = _sensor_topics(spec)
+        node.create_subscription(
+            Image,
+            image_topic,
+            lambda m, n=spec.name: images.setdefault(n, m),
+            QoSProfile(depth=5, reliability=QoSReliabilityPolicy.BEST_EFFORT),
+        )
+        node.create_subscription(
+            CameraInfo,
+            info_topic,
+            lambda m, n=spec.name: infos.setdefault(n, m),
+            QoSProfile(depth=5, reliability=QoSReliabilityPolicy.RELIABLE),
+        )
+    # The production ceiling (`topic_frame_size` with no detector / SLAM).
+    leg = open_deploy_sensor_readers(specs, ros_node=node, topic_max_size=(320, 240))
+    try:
+        leg.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and (len(images) < 2 or len(infos) < 2):
+            rclpy.spin_once(node, timeout_sec=0.05)
+    finally:
+        leg.close()
+        node.destroy_node()
+        if owns_rclpy:
+            rclpy.shutdown()
+
+    assert set(images) == set(infos) == {"wrist_left", "wrist_right"}, (images, infos)
+    native, capped = specs[0].intrinsics, specs[1].intrinsics
+    assert native is not None and capped is not None
+    assert (images["wrist_left"].width, images["wrist_left"].height) == (960, 600)
+    assert (infos["wrist_left"].width, infos["wrist_left"].height) == (960, 600)
+    k = list(infos["wrist_left"].k)
+    assert (k[0], k[4], k[2], k[5]) == (native.fx, native.fy, native.cx, native.cy)
+    assert (images["wrist_right"].width, images["wrist_right"].height) == (320, 200)
+    k = list(infos["wrist_right"].k)
+    assert k[0] == pytest.approx(capped.fx / 3) and k[2] == pytest.approx(capped.cx / 3)
