@@ -2034,7 +2034,7 @@
     },
     "SimDescription": {
       "additionalProperties": false,
-      "description": "MuJoCo wiring for a single-arm robot, consumed by ``MujocoArmHAL``.\n\nThe MJCF itself is named by ``RobotDescription.assets.mjcf``;\nthis block carries only the joint\u2194qpos/qvel/actuator\nplumbing. All fields are optional with defaults derived from\n``RobotDescription.joints``.  The default mapping is \"1:1 in joint\norder, offset by 7 (qpos) / 6 (qvel) if ``floating_base`` is True\" \u2014\nwhich is correct for every robot in the open core today bar minor\ngripper bookkeeping.\n\nAttributes:\n    floating_base: If True, the robot's MJCF has a 6-DoF free joint\n        before the actuated joints (humanoids).  In that case the\n        default ``joint_qpos_addr[joints[i].name] = 7 + i`` and\n        ``joint_qvel_addr[joints[i].name] = 6 + i``.\n    joint_qpos_addr: Optional override of the joint\u2192qpos-index map.\n        When omitted, the default 1:1 mapping is used.\n    joint_qvel_addr: Optional override of the joint\u2192qvel-index map.\n        When omitted, defaults to ``joint_qpos_addr`` (or its default).\n    actuator_index: Optional override of the joint\u2192actuator-index map.\n        When omitted, defaults to the 1:1 mapping ``joints[i].name \u2192 i``.\n    grippers: Optional list of ``SimGripperDescription`` entries.\n        Each must reference a joint by name that is also present in\n        ``RobotDescription.joints``.  Single-arm robots have one\n        entry (or none); bimanual robots have two (left + right).\n    settle_steps_default: Default number of ``mj_step`` calls executed\n        per ``MujocoArmHAL.send_action``.  Defaults to 1.\n    keyframe_index: When set, ``MujocoArmHAL.connect`` calls\n        ``mj_resetDataKeyframe(model, data, keyframe_index)`` before\n        ``mj_forward``.  Required for MJCFs whose default\n        ``MjData.qpos`` (zeros) sits outside the actuator\n        ``ctrlrange`` \u2014 e.g. the gym-aloha parallel jaws, whose\n        fingers have ``ctrlrange=[0.021, 0.057]`` and never recover\n        from qpos = 0.\n    seed_ctrl_from_qpos: When True, ``MujocoArmHAL.connect``\n        seeds ``data.ctrl[actuator] = data.qpos[joint_qpos_addr]``\n        for every controllable joint so position actuators hold the\n        initial pose on the first ``mj_step``.  Required by the\n        OpenArm v2 MJCF (its position actuators with per-class PD\n        gains will drive ``qpos`` to ``ctrl == 0`` otherwise).\n\nExample:\n    >>> SimDescription(floating_base=True).floating_base\n    True",
+      "description": "MuJoCo wiring for a single-arm robot, consumed by ``MujocoArmHAL``.\n\nThe MJCF itself is named by ``RobotDescription.assets.mjcf``;\nthis block carries only the joint\u2194qpos/qvel/actuator\nplumbing. All fields are optional with defaults derived from\n``RobotDescription.joints``.  The default mapping is \"1:1 in joint\norder, offset by 7 (qpos) / 6 (qvel) if ``floating_base`` is True\" \u2014\nwhich is correct for every robot in the open core today bar minor\ngripper bookkeeping.\n\nAttributes:\n    floating_base: If True, the robot's MJCF has a 6-DoF free joint\n        before the actuated joints (humanoids).  In that case the\n        default ``joint_qpos_addr[joints[i].name] = 7 + i`` and\n        ``joint_qvel_addr[joints[i].name] = 6 + i``.\n    joint_qpos_addr: Optional override of the joint\u2192qpos-index map.\n        When omitted, the default 1:1 mapping is used.\n    joint_qvel_addr: Optional override of the joint\u2192qvel-index map.\n        When omitted, defaults to ``joint_qpos_addr`` (or its default).\n    actuator_index: Optional override of the joint\u2192actuator-index map.\n        When omitted, defaults to the 1:1 mapping ``joints[i].name \u2192 i``.\n    grippers: Optional list of ``SimGripperDescription`` entries.\n        Each must reference a joint by name that is also present in\n        ``RobotDescription.joints``.  Single-arm robots have one\n        entry (or none); bimanual robots have two (left + right).\n    settle_steps_default: Pinned number of ``mj_step`` calls executed\n        per ``MujocoArmHAL.send_action``. ``None`` (default) derives it at\n        connect so one action is one control period of\n        ``action_spec.control_freq_hz`` (issue #358); a pinned count is\n        honoured and logged as an override that leaves the twin wall-paced.\n    keyframe_index: When set, ``MujocoArmHAL.connect`` calls\n        ``mj_resetDataKeyframe(model, data, keyframe_index)`` before\n        ``mj_forward``.  Required for MJCFs whose default\n        ``MjData.qpos`` (zeros) sits outside the actuator\n        ``ctrlrange`` \u2014 e.g. the gym-aloha parallel jaws, whose\n        fingers have ``ctrlrange=[0.021, 0.057]`` and never recover\n        from qpos = 0.\n    seed_ctrl_from_qpos: When True, ``MujocoArmHAL.connect``\n        seeds ``data.ctrl[actuator] = data.qpos[joint_qpos_addr]``\n        for every controllable joint so position actuators hold the\n        initial pose on the first ``mj_step``.  Required by the\n        OpenArm v2 MJCF (its position actuators with per-class PD\n        gains will drive ``qpos`` to ``ctrl == 0`` otherwise).\n\nExample:\n    >>> SimDescription(floating_base=True).floating_base\n    True",
       "properties": {
         "floating_base": {
           "default": false,
@@ -2094,10 +2094,17 @@
           "type": "array"
         },
         "settle_steps_default": {
-          "default": 1,
-          "minimum": 1,
-          "title": "Settle Steps Default",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Settle Steps Default"
         },
         "keyframe_index": {
           "anyOf": [

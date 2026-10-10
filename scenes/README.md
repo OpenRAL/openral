@@ -278,6 +278,20 @@ clock (issue #355). The HAL logs the time base once per connect as
 `sim.time_base`. A scene class may pin `physics_substeps` explicitly; the pin
 wins and is reported as an override.
 
+The MuJoCo-backed deploy scenes follow the same rule (issue #358). RoboCasa
+and LIBERO build robosuite at its native 20 Hz, which under a 30 Hz robot would
+rehearse at 1.5x speed; every `scenes/deploy/robocasa_*.yaml` / `libero_*.yaml`
+therefore pins `backend_options.control_freq_hz` to the manifest rate, the
+factory shrinks robosuite's physics time step so the period is a whole number
+of steps (1/510 s for 30 Hz; `pin_robosuite_time_base`), the env reports what
+its step loop really integrates as `sim_dt_per_tick_s`, and the HAL guard
+refuses a scene that forgot the pin. Benchmark scenes leave it unset and keep
+the 20 Hz protocol their published numbers were measured at. The bare MuJoCo
+twins (`MujocoArmHAL`) need no scene knob: with no `settle_steps` pin they
+derive the physics steps per action from `action_spec.control_freq_hz` at
+connect (17 steps at 1/510 s for a 0.002 s MJCF at 30 Hz) and stop the
+wall-time idle stepper from pacing the clock while a skill is active.
+
 **Pickable objects** go in `backend_options.objects` (validated by
 `IsaacSimOptions`, so a typo fails at load):
 

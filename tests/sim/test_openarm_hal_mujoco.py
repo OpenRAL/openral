@@ -755,3 +755,33 @@ class TestDepthSelfFilterResolvesOnce:
         finally:
             node.destroy_node()
             rclpy.shutdown()
+
+
+def test_one_action_is_one_control_period_on_the_twin() -> None:
+    """Regression for issue #358: the OpenArm twin advances 1/30 s per action.
+
+    The manifest no longer pins ``settle_steps: 4`` (8 ms per action, the rest
+    of the clock wall-paced by the idle stepper); the HAL derives 17 physics
+    steps at 1/510 s from ``action_spec.control_freq_hz`` at connect, so 30
+    actions advance exactly 1.0 s of sim time and the twin pass of the voxel
+    tutorial is timing-equivalent to the real run.
+    """
+    from openral_core import Action, ControlMode
+
+    hal = OpenArmMujocoHAL(gravity_enabled=False)
+    hal.connect()
+    try:
+        model, data = hal.mujoco_handles()
+        assert hal.sim_dt_per_tick_s == pytest.approx(1 / 30, rel=1e-9)
+        assert hal._settle_steps * float(model.opt.timestep) == pytest.approx(1 / 30, rel=1e-9)
+        assert hal._step_while_active is False
+        hold = Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_targets=[list(hal.read_state().position)],
+        )
+        t0 = float(data.time)
+        for _ in range(30):
+            hal.send_action(hold)
+        assert float(data.time) - t0 == pytest.approx(1.0, rel=1e-6)
+    finally:
+        hal.disconnect()

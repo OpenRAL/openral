@@ -104,3 +104,61 @@ def test_enable_continuous_never_terminates_or_resets_past_horizon() -> None:
         assert max_jump < 0.5, f"arm teleported ({max_jump:.3f}) — the scene reset"
     finally:
         sim.close() if hasattr(sim, "close") else None
+
+
+def test_a_pinned_control_rate_makes_one_step_one_control_period() -> None:
+    """Regression for issue #358: ``backend_options.control_freq_hz`` holds LIBERO to the robot.
+
+    Without the pin LIBERO steps at its native 20 Hz (the published benchmark
+    protocol, unchanged); a deploy scene pins the 30 Hz ``franka_panda`` rate so
+    30 steps advance 1.0 s of sim time and ``SimAttachedHAL.connect`` accepts it.
+    """
+    from openral_core import RobotDescription, SceneSpec, SimEnvironment, TaskSpec, VLASpec
+    from openral_hal.sim_attached import SimAttachedHAL
+    from openral_sim.backends.libero import _build_libero_scene
+
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    env_cfg = SimEnvironment(
+        scene=SceneSpec(
+            id="libero_object",
+            backend="mujoco",
+            observation_height=128,
+            observation_width=128,
+            backend_options={"control_freq_hz": 30.0},
+        ),
+        task=TaskSpec(
+            id="libero_object/0",
+            scene_id="libero_object",
+            instruction="",
+            success_key="is_success",
+            max_steps=50,
+        ),
+        vla=VLASpec(id="zero", weights_uri="local://none"),
+        robot_id="franka_panda",
+    )
+    sim = _build_libero_scene(env_cfg)
+    try:
+        sim.reset(seed=0)
+        assert sim.sim_dt_per_tick_s == pytest.approx(1 / 30, rel=0.01)
+        zero = np.zeros(sim.action_dim, dtype=np.float32)
+        sim.step(zero)
+        t0 = sim.sim_time_ns()
+        for _ in range(30):
+            sim.step(zero)
+        t1 = sim.sim_time_ns()
+        assert t0 is not None and t1 is not None
+        assert (t1 - t0) / 1e9 == pytest.approx(1.0, rel=0.01)
+        hal = SimAttachedHAL(sim, RobotDescription.from_yaml("robots/franka_panda/robot.yaml"))
+        hal.connect()
+    finally:
+        sim.close() if hasattr(sim, "close") else None
+
+
+def test_the_benchmark_rate_stays_at_libero_native_20_hz() -> None:
+    """No pin: the eval tier keeps the 20 Hz protocol its published numbers were measured at."""
+    sim = _build(max_steps=50)
+    try:
+        sim.reset(seed=0)
+        assert sim.sim_dt_per_tick_s == pytest.approx(1 / 20, rel=0.01)
+    finally:
+        sim.close() if hasattr(sim, "close") else None

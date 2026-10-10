@@ -749,7 +749,10 @@ class AlohaMujocoHAL(MujocoArmHAL):
             the file is resolved through the ``gym_aloha:`` URI scheme
             from ``ALOHA_DESCRIPTION.assets.mjcf``.
         settle_steps: Number of MuJoCo physics steps per
-            ``send_action`` call.
+            ``send_action`` call. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
+
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -768,7 +771,7 @@ class AlohaMujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

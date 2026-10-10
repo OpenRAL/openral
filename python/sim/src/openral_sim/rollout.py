@@ -8,6 +8,7 @@ custom) without leaking framework specifics into the eval layer.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -16,6 +17,84 @@ from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from openral_core import SceneSpec, TaskSpec
+
+
+def pin_robosuite_time_base(control_freq_hz: float) -> float:
+    """Make robosuite's physics time step divide one control period (issue #358).
+
+    robosuite advances ``int(control_timestep / model_timestep)`` physics steps
+    per ``env.step`` and reads ``model_timestep`` from the process-global
+    ``robosuite.macros.SIMULATION_TIMESTEP`` (0.002 s) when the world is built
+    — at construction and on every reset. 1 / 30 s is 16.67 such steps, so a
+    30 Hz env would silently advance 0.032 s per step. This sets the macro to
+    the ``physics_steps_per_tick`` dt (shrunk, never grown) **before** the env
+    is built, and logs it, so one step is exactly one control period. Call it
+    from the backend factory, before ``robosuite.make`` / ``OffScreenRenderEnv``.
+
+    Args:
+        control_freq_hz: The rate the env is built with (``control_freq``).
+
+    Returns:
+        The physics dt now pinned in ``robosuite.macros.SIMULATION_TIMESTEP``.
+    """
+    import structlog  # reason: scoped; only this seam logs here
+    from openral_core import physics_steps_per_tick
+    from robosuite import macros  # reason: optional sim-only dep; provisioned by the caller
+
+    before = float(macros.SIMULATION_TIMESTEP)
+    steps, dt = physics_steps_per_tick(control_freq_hz, before)
+    # robosuite truncates ``int(control_timestep / model_timestep)``: nudge the
+    # dt down by ulps until that quotient cannot floor to ``steps - 1``.
+    while int((1.0 / control_freq_hz) / dt) < steps:
+        dt = math.nextafter(dt, 0.0)
+    if dt != before:
+        macros.SIMULATION_TIMESTEP = dt
+        structlog.get_logger(__name__).info(
+            "robosuite.time_base.timestep_shrunk",
+            control_freq_hz=control_freq_hz,
+            simulation_timestep_before_s=before,
+            simulation_timestep_s=round(dt, 9),
+            physics_steps_per_tick=steps,
+        )
+    return dt
+
+
+def sim_dt_per_tick_from_robosuite_env(env: Any) -> float | None:
+    """Sim seconds one ``env.step`` advances on a robosuite env, or ``None``.
+
+    Walks ``env`` / ``.env`` / ``.unwrapped`` / ``._env`` to the object that
+    carries ``control_timestep`` and ``model_timestep`` (robosuite's
+    ``MujocoEnv``) and returns what its step loop really integrates:
+    ``int(control_timestep / model_timestep) * model_timestep`` — the truth
+    ``SimAttachedHAL.connect`` holds to the robot's control rate, not the
+    nominal ``control_timestep`` the env adds to ``cur_time``.
+
+    Example:
+        >>> sim_dt_per_tick_from_robosuite_env(None) is None
+        True
+    """
+    seen: set[int] = set()
+    obj = env
+    for _ in range(8):  # wrapper depth bound; robocasa / lerobot nest at most ~4
+        if obj is None or id(obj) in seen:
+            return None
+        seen.add(id(obj))
+        ct = getattr(obj, "control_timestep", None)
+        mt = getattr(obj, "model_timestep", None)
+        if ct is not None and mt is not None:
+            ct_f, mt_f = float(ct), float(mt)
+            if mt_f <= 0:
+                return None
+            return int(ct_f / mt_f) * mt_f
+        obj = next(
+            (
+                getattr(obj, a)
+                for a in ("env", "unwrapped", "_env")
+                if getattr(obj, a, None) is not None and getattr(obj, a) is not obj
+            ),
+            None,
+        )
+    return None
 
 
 def sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None:

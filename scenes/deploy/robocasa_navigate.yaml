@@ -13,6 +13,9 @@ scene:
   observation_height: 128
   observation_width: 128
   backend_options:
+    # One env.step = one control period of the robot (issue #358): the
+    # panda_mobile manifest rate; SimAttachedHAL.connect refuses any other.
+    control_freq_hz: 30.0
     mode: prebuilt
     prebuilt_task: NavigateKitchen
     robots: ["PandaMobile"]

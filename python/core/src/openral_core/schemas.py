@@ -1874,8 +1874,11 @@ class SimDescription(BaseModel):
             Each must reference a joint by name that is also present in
             ``RobotDescription.joints``.  Single-arm robots have one
             entry (or none); bimanual robots have two (left + right).
-        settle_steps_default: Default number of ``mj_step`` calls executed
-            per ``MujocoArmHAL.send_action``.  Defaults to 1.
+        settle_steps_default: Pinned number of ``mj_step`` calls executed
+            per ``MujocoArmHAL.send_action``. ``None`` (default) derives it at
+            connect so one action is one control period of
+            ``action_spec.control_freq_hz`` (issue #358); a pinned count is
+            honoured and logged as an override that leaves the twin wall-paced.
         keyframe_index: When set, ``MujocoArmHAL.connect`` calls
             ``mj_resetDataKeyframe(model, data, keyframe_index)`` before
             ``mj_forward``.  Required for MJCFs whose default
@@ -1902,7 +1905,7 @@ class SimDescription(BaseModel):
     joint_qvel_addr: dict[str, int] | None = None
     actuator_index: dict[str, int] | None = None
     grippers: list[SimGripperDescription] = Field(default_factory=list)
-    settle_steps_default: int = Field(default=1, ge=1)
+    settle_steps_default: int | None = Field(default=None, ge=1)
     keyframe_index: int | None = None
     seed_ctrl_from_qpos: bool = False
 

@@ -27,6 +27,12 @@ full_run_globs = [
   ".github/workflows/test-ros2.yml",
   "tools/select_tests.py",
   "tools/test_selection.toml",
+  # openral_core is the root of the workspace dependency graph: every package
+  # depends on it, so a core change selects ~530 targets. That is the whole
+  # suite in all but name, and the single unsharded `core_selected` job cannot
+  # finish it inside its 15-minute box (three branches timed out on
+  # 2026-10-10). Route it to the sharded `core_full` run instead.
+  "python/core/src/**",
 ]
 
 # Source domains the *Python* suite legitimately does not cover, so a change

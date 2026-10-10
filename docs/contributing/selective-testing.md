@@ -33,7 +33,9 @@ suite.
 1. **Blast radius first.** If a changed path matches `full_run_globs` in
    [`tools/test_selection.toml`](https://github.com/OpenRAL/openral/blob/master/tools/test_selection.toml) — root
    `pyproject.toml`, `uv.lock`, a shared `conftest.py`, the selector's own
-   inputs — it emits `full_run = true` and the caller runs everything. We never
+   inputs, or `openral_core` source (the root of the dependency graph, whose
+   ~530-target fan-out only the sharded full run finishes in time) — it emits
+   `full_run = true` and the caller runs everything. We never
    try to be clever about a wide-blast change; a wrong *negative* would silently
    skip a regression.
 
@@ -355,7 +357,8 @@ composite action.
 | Change | Result |
 | --- | --- |
 | `python/state_adapter/src/openral_state_adapter/core.py` | `python/state_adapter/tests` only (leaf package) |
-| `python/core/src/openral_core/schemas.py` | broad — core fans out to ~every package's tests |
+| `python/hal/src/openral_hal/sim_attached.py` | broad — hal fans out to the runtime, CLI and sim tests |
+| `python/core/src/openral_core/schemas.py` | **full run** — core is depended on by every package |
 | `packages/openral_hal_node/**` | `packages/openral_hal_node/test` |
 | `rskills/act-aloha/**` | unit fixture checks + ALOHA sim tests, with the `sim` dependency lane |
 | `pyproject.toml` / `uv.lock` / shared `conftest.py` | **full run** |

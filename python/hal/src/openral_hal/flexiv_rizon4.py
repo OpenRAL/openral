@@ -191,8 +191,9 @@ class Rizon4MujocoHAL(MujocoArmHAL):
             ``robot_descriptions``
             (``mujoco_menagerie/flexiv_rizon4/flexiv_rizon4.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.  Defaults to ``1``; raise it in tests
-            that assert the arm has settled at the commanded pose.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -211,7 +212,7 @@ class Rizon4MujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

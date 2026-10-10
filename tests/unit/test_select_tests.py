@@ -73,12 +73,21 @@ def test_leaf_package_selects_only_its_own_tests() -> None:
     ]
 
 
-def test_core_change_fans_out_widely() -> None:
+def test_core_change_forces_full_run() -> None:
+    # core is depended on by every package: its selection is the whole suite,
+    # which only the sharded full run can finish inside the CI time box.
     result = select_tests.select(REPO_ROOT, ["python/core/src/openral_core/schemas.py"], CONFIG)
+    assert result.full_run
+    assert result.full_run_reason is not None
+    assert "python/core/src/**" in result.full_run_reason
+
+
+def test_hal_change_fans_out_widely() -> None:
+    result = select_tests.select(REPO_ROOT, ["python/hal/src/openral_hal/sim_attached.py"], CONFIG)
     assert not result.full_run
-    # core is depended on by ~every package, so the affected set is broad.
+    # hal is depended on by the runtime / CLI / sim surface, so the affected set is broad.
     assert "openral_hal" in result.affected_packages
-    assert "openral_rskill" in result.affected_packages
+    assert "openral_cli" in result.affected_packages
     assert len(result.targets) > 50  # fans out across the top-level tests/ tree
     # every selected target carries a reason (CLAUDE.md §1.4).
     for tgt in result.targets:
@@ -206,8 +215,8 @@ def test_config_declares_fork_isolation_globs() -> None:
 
 
 def test_isolated_test_is_peeled_out_of_targets() -> None:
-    # A core change selects the broad CLI surface, which imports the fork tests.
-    result = select_tests.select(REPO_ROOT, ["python/core/src/openral_core/schemas.py"], CONFIG)
+    # A hal change selects the broad CLI surface, which imports the fork tests.
+    result = select_tests.select(REPO_ROOT, ["python/hal/src/openral_hal/sim_attached.py"], CONFIG)
     assert _FORK_TEST in result.isolated_targets
     # Critically, it must NOT also be a normal target — that is what folds it
     # into the broad partition and trips the teardown crash.

@@ -30,7 +30,12 @@ from openral_core.exceptions import ROSConfigError
 
 from openral_sim.policies.act import _load_manifest_for_spec
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
+from openral_sim.rollout import (
+    StepResult,
+    pin_robosuite_time_base,
+    sim_dt_per_tick_from_robosuite_env,
+    sim_time_ns_from_mujoco_handles,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -65,6 +70,33 @@ def _resolve_control_mode(env_cfg: SimEnvironment) -> str:
     if declared:
         return str(declared)
     return "relative"
+
+
+def _resolve_control_freq_hz(env_cfg: SimEnvironment) -> float | None:
+    """``scene.backend_options["control_freq_hz"]`` as a positive float, or ``None``.
+
+    ``None`` keeps LIBERO's native 20 Hz — the published benchmark protocol
+    every ``rskills/*/eval/libero*.json`` number was measured at. A ``deploy
+    sim`` scene pins the robot's ``action_spec.control_freq_hz`` here so one
+    ``env.step`` is one control period (issue #358).
+
+    Raises:
+        ROSConfigError: a value that is not a positive number.
+    """
+    raw = env_cfg.scene.backend_options.get("control_freq_hz")
+    if raw is None:
+        return None
+    try:
+        hz = float(raw)  # type: ignore[arg-type]  # reason: opaque YAML value, validated below
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            f"libero: backend_options.control_freq_hz must be a positive number, got {raw!r}"
+        ) from exc
+    if not hz > 0:
+        raise ROSConfigError(
+            f"libero: backend_options.control_freq_hz must be a positive number, got {raw!r}"
+        )
+    return hz
 
 
 def _parse_task_id(task_id: str, scene_id: str) -> int:
@@ -307,6 +339,17 @@ class _LiberoSim:
         """
         return sim_time_ns_from_mujoco_handles(self.mujoco_handles())
 
+    @property
+    def sim_dt_per_tick_s(self) -> float | None:
+        """Sim seconds one ``step`` advances: what robosuite's step loop integrates.
+
+        ``SimAttachedHAL.connect`` holds this to the robot's control rate
+        (issue #358): LIBERO's native 20 Hz under the 30 Hz ``franka_panda``
+        runner is refused unless the scene pins ``control_freq_hz``. ``None``
+        until lerobot has built its robosuite env (first ``reset``).
+        """
+        return sim_dt_per_tick_from_robosuite_env(self._env)
+
     def _wrap_obs(self, obs: dict[str, Any]) -> Observation:
         """Translate LiberoEnv obs into the eval-layer Observation schema."""
         pixels = obs.get("pixels", {})
@@ -486,6 +529,7 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
     # ``sim_env_control_mode``, else the relative default — so xVLA runs on the
     # canonical libero_spatial.yaml without a per-policy scene variant.
     control_mode = _resolve_control_mode(env_cfg)
+    control_freq_hz = _resolve_control_freq_hz(env_cfg)
     env = LiberoEnv(
         task_suite=suite,
         task_id=task_index,
@@ -497,6 +541,29 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
         episode_length=env_cfg.task.max_steps or 100,
         control_mode=control_mode,
     )
+    if control_freq_hz is not None:
+        # lerobot's LiberoEnv builds its OffScreenRenderEnv lazily with no
+        # control rate (robosuite's native 20 Hz). A deploy scene pins the
+        # robot's rate so one env.step is one control period (issue #358):
+        # build the same env lerobot would (``LiberoEnv._ensure_env``) with
+        # ``control_freq`` set, after shrinking robosuite's physics dt to
+        # divide the period, and hand it to the wrapper before its first reset.
+        from libero.libero.envs import OffScreenRenderEnv  # reason: scoped sim-only dep
+
+        pin_robosuite_time_base(control_freq_hz)
+        inner = OffScreenRenderEnv(
+            bddl_file_name=env._task_bddl_file,
+            camera_heights=env.observation_height,
+            camera_widths=env.observation_width,
+            control_freq=control_freq_hz,
+        )
+        inner.reset()
+        env._env = inner
+        _log.info(
+            "libero.time_base.pinned",
+            control_freq_hz=control_freq_hz,
+            sim_dt_per_tick_s=round(sim_dt_per_tick_from_robosuite_env(inner) or 0.0, 6),
+        )
     return _LiberoSim(
         scene=env_cfg.scene,
         task=env_cfg.task,

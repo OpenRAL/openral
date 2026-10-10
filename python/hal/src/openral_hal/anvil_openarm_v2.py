@@ -301,9 +301,7 @@ ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(
         real=None,
         # Same manifest-driven construction defaults as the Enactic v2
         # arm; threaded by build_hal (ADR-0029).
-        parameters=HalParameters(
-            defaults={"settle_steps": 4, "gravity_enabled": False, "staleness_limit_s": 0.5}
-        ),
+        parameters=HalParameters(defaults={"gravity_enabled": False, "staleness_limit_s": 0.5}),
     ),
     # MuJoCo wiring — the Anvil 2.0 bimanual MJCF fetched at a pinned
     # SHA by ``ensure_anvil_openarm_v2_mjcf`` (``openarm:anvil_v2_bimanual``).
@@ -390,7 +388,10 @@ class AnvilOpenArmV2MujocoHAL(MujocoArmHAL):
             through ``ensure_anvil_openarm_v2_mjcf`` via the
             ``openarm:anvil_v2_bimanual`` URI scheme.
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
+
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -409,7 +410,7 @@ class AnvilOpenArmV2MujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

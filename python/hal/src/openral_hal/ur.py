@@ -353,7 +353,9 @@ class UR5eHAL(MujocoArmHAL):
             ``UR5e_DESCRIPTION.assets.mjcf`` is resolved at construction
             time (``robot_descriptions:ur5e_mj_description``).
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.  Defaults to 1.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
             time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -370,7 +372,7 @@ class UR5eHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:
@@ -400,7 +402,7 @@ class UR10eHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

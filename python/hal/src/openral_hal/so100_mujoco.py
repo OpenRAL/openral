@@ -86,8 +86,9 @@ class SO100MujocoHAL(MujocoArmHAL):
             ``None``, the file is fetched lazily from
             ``robot_descriptions`` (``mujoco_menagerie/trs_so_arm100/so_arm100.xml``).
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.  Defaults to ``1``; raise it in tests
-            that assert the arm has settled at the commanded pose.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -106,7 +107,7 @@ class SO100MujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

@@ -378,11 +378,11 @@ OPENARM_DESCRIPTION = RobotDescription(
         # manifest-driven node threads these kwargs via build_hal.  One flat
         # block serves both entrypoints: build_hal drops every key the target
         # constructor does not accept, so the sim HAL never sees the CAN
-        # interface names and the real HAL never sees `settle_steps`.
+        # interface names and the real HAL never sees `gravity_enabled`.
         parameters=HalParameters(
             defaults={
-                # sim (derived MujocoArmHAL)
-                "settle_steps": 4,
+                # sim (derived MujocoArmHAL); no settle_steps pin — one action
+                # is one control period of action_spec.control_freq_hz (#358)
                 "gravity_enabled": False,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
                 # four bimanual controllers openarm_bringup spawns. The two
@@ -489,7 +489,10 @@ class OpenArmMujocoHAL(MujocoArmHAL):
             ``openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf``
             via the ``openarm_v2:bimanual`` URI scheme.
         settle_steps: Number of MuJoCo physics steps performed in
-            ``send_action``.
+            ``send_action``. ``None`` (default) derives one control period of
+            ``description.control_rate_hz`` at ``connect`` (issue #358); an explicit
+            count is a pinned, logged override.
+
         gravity_enabled: When ``False``, gravity is zeroed at
             ``connect()`` time for deterministic closed-loop tests.
         staleness_limit_s: Maximum age of a cached state.
@@ -508,7 +511,7 @@ class OpenArmMujocoHAL(MujocoArmHAL):
         self,
         *,
         mjcf_path: str | None = None,
-        settle_steps: int = 1,
+        settle_steps: int | None = None,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
     ) -> None:

@@ -438,13 +438,14 @@ hal:
   #
   # One flat block serves both entrypoints: build_hal drops every key the
   # target constructor does not accept, so the sim HAL never sees the CAN
-  # interface names and the real HAL never sees `settle_steps`. The joint-state
+  # interface names and the real HAL never sees `gravity_enabled`. The joint-state
   # staleness window is `safety.joint_state_staleness_limit_s`, which build_hal
   # threads into both.
   parameters:
     defaults:
       # ── sim (derived MujocoArmHAL) ──────────────────────────────────
-      settle_steps: 4
+      # No settle_steps pin: the twin derives one control period of
+      # action_spec.control_freq_hz per action at connect (issue #358).
       gravity_enabled: false
       # ── real (OpenArmRealHAL) ───────────────────────────────────────
       # SocketCAN interface names. The OpenArm Jetson provisioning pins
