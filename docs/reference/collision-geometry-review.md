@@ -574,9 +574,39 @@ carries a hull, and the MJCF sweep never auto-exempts a hulled pair (§8). Negat
 the left hand folded back into the shoulder block (elbow 2.37 rad) puts the link7 box centre
 29 mm inside the torso's watertight collision mesh and trips `openarm_body_link0 ↔ openarm_left_link7`
 at -118 mm (`_REAL_COLLISIONS`); `tests/integration/test_safety_kernel_openarm_torso.py` asks the
-real kernel the same two questions. Not yet measured: the torso's effect on the kernel-refused pose
-fraction (the 1000-pose run above) and a rest-pose world-voxel check on the bench cell — the static
-slabs are voxel-checked like every box, and the self-filter now removes the torso's own returns.
+real kernel the same two questions.
+
+**What it costs, and what it buys** (2026-10-10). The unmodified `collision.cpp`, model built as
+`lifecycle_kernel.cpp` builds it from `collision_params_from_description`, `forward_kinematics` +
+`check_self_collision` at the manifest margin (0), on the same 1000 seeded in-limit poses
+(seed 20260924, all 16 joints), master's manifest against this one; single core, shared laptop
+(±20 %):
+
+| model | poses refused | median / p99 / max µs per check |
+|---|---:|---:|
+| arms only (master) | 40 | 52.2 / 88.7 / 172.5 |
+| arms + torso | 82 | 67.4 / 106.5 / 152.9 |
+
+74 poses trip a torso pair. Each was checked against the real geometry: every collision **and**
+visual vertex of the tripping arm link (MuJoCo FK, followers set from the leader) against the
+torso's watertight collision mesh (`body_link0_symp.stl`), signed distance:
+
+| torso trips | an arm vertex inside the torso | clearance ≤ 20 mm | 20-50 mm | > 50 mm |
+|---:|---:|---:|---:|---:|
+| 74 | **61** | 7 | 4 | 2 |
+
+So 61 of the 1000 sampled poses put an arm into the body and **master accepted every one of them**;
+the 13 that do not are slab false stops (median clearance of the 74: -19.9 mm, worst false stop
+56 mm, the column slab's hull overhang). The per-check cost rises ~15 µs at the median, inside the
+~0.1 ms arm figure above. The truth mesh omits the CAD fitting 22 mm behind the column, so a false
+stop near it could be a real contact; it never under-counts the contacts.
+
+One existing live test moved with it: `test_safety_kernel_slot_row_measured_fill.py`'s phantom
+target put the left link5 12 mm from the real torso, which the slabs refuse (a false stop of the
+column slab), so its X / M were re-found by the same search with the torso in the model.
+
+Still owed: a rest-pose world-voxel check on the bench cell (attended) — the static slabs are
+voxel-checked like every box, and the self-filter now removes the torso's own returns.
 
 ## 12. MJCF twins
 
