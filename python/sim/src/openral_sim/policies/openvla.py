@@ -35,7 +35,7 @@ NF4 quantization reuses the adapter-agnostic helpers in
 ``openral_sim._quantization``; the 7.5 B bf16 backbone is ~16 GB and OOMs an
 8 GB consumer GPU, so int4 (~7 GB, matching bf16 accuracy per the OpenVLA paper
 Table 2) brings it into reach. The CUDA expandable-segments allocator
-(``_enable_expandable_segments``) keeps the inference peak placeable on a
+(``default_expandable_segments``) keeps the inference peak placeable on a
 tight 8 GB card, mirroring the MolmoAct2 recipe.
 
 This module imports torch / transformers lazily so installing ``openral-sim``
@@ -72,6 +72,7 @@ from openral_sim._quantization import (
     require_supported_dtype,
     resolve_quant_plan,
 )
+from openral_sim._sidecar_common import default_expandable_segments
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
@@ -97,8 +98,6 @@ _DEFAULT_GENERATION_METHOD = "predict_action"
 _GENERATE_ACTION_VERL = "generate_action_verl"
 _ACTION_CHUNK_NDIM = 2
 
-_CUDA_ALLOC_ENV = "PYTORCH_CUDA_ALLOC_CONF"
-_EXPANDABLE_SEGMENTS = "expandable_segments:True"
 _ALLOW_REMOTE_CODE_ENV = "OPENRAL_ALLOW_REMOTE_CODE"
 
 
@@ -230,30 +229,6 @@ def _extra_positive_int_or_none(extra: dict[str, object], key: str) -> int | Non
 
 
 # ── Load-phase helpers (per-adapter, mirroring pi05 / molmoact2 convention) ──
-
-
-def _enable_expandable_segments() -> None:
-    """Enable the CUDA expandable-segments allocator before the OpenVLA load.
-
-    Sets ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` via
-    ``os.environ.setdefault`` semantics (an operator export wins) **before
-    the first CUDA allocation** in this process. The caching allocator reads the
-    variable lazily on its first allocation, so setting it at the top of the
-    build — ahead of the model's device placement — takes effect even though
-    torch is already imported. No-op when the variable is already set. Mirrors
-    the MolmoAct2 recipe that lets a 7B NF4 backbone fit an 8 GB card.
-    """
-    current = os.environ.get(_CUDA_ALLOC_ENV)
-    if current is not None:
-        if "expandable_segments" not in current:
-            _log.info(
-                "openvla_alloc_conf_preset",
-                value=current,
-                note="PYTORCH_CUDA_ALLOC_CONF already set; not adding expandable_segments.",
-            )
-        return
-    os.environ[_CUDA_ALLOC_ENV] = _EXPANDABLE_SEGMENTS
-    _log.info("openvla_expandable_segments_enabled", value=_EXPANDABLE_SEGMENTS)
 
 
 def _openvla_phase(name: str, **fields: Any) -> Any:
@@ -801,7 +776,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     device = resolve_device(spec)
 
     if device.startswith("cuda"):
-        _enable_expandable_segments()
+        default_expandable_segments()
 
     with _openvla_phase("imports"):
         import torch

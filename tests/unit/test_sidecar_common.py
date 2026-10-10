@@ -13,6 +13,10 @@ before it was deleted.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+import pytest
 from openral_sim._sidecar_common import sidecar_port_for_key
 
 
@@ -68,3 +72,69 @@ def test_shared_helper_algorithm_changes_the_port() -> None:
     sha256_port = sidecar_port_for_key("x", algorithm="sha256")
     sha1_port = sidecar_port_for_key("x", algorithm="sha1")
     assert sha256_port != sha1_port
+
+
+# ``default_expandable_segments``: the one allocator default, never on Jetson,
+# where torch's expandable path crashes on the iGPU's NVML fabric query.
+
+
+# The real probe, pointed at a captured AGX Orin L4T release file or at a path
+# that does not exist (``openral_core.gpu.is_tegra_host`` reads the constant at
+# call time for exactly this).
+_ORIN_RELEASE = Path(__file__).parent / "fixtures" / "jetson" / "orin_agx" / "nv_tegra_release"
+
+
+@pytest.fixture
+def _not_jetson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import openral_core.gpu
+
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", tmp_path / "nv_tegra_release")
+
+
+@pytest.fixture
+def _jetson(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openral_core.gpu
+
+    assert _ORIN_RELEASE.is_file(), _ORIN_RELEASE
+    monkeypatch.setattr(openral_core.gpu, "TEGRA_RELEASE_PATH", _ORIN_RELEASE)
+
+
+@pytest.mark.usefixtures("_not_jetson")
+def test_default_expandable_segments_sets_this_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_sim._sidecar_common import default_expandable_segments, installed_alloc_conf_var
+
+    var = installed_alloc_conf_var()
+    monkeypatch.delenv(var, raising=False)
+    default_expandable_segments()
+    assert os.environ[var] == "expandable_segments:True"
+
+
+@pytest.mark.usefixtures("_jetson")
+def test_default_expandable_segments_leaves_jetson_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_sim._sidecar_common import default_expandable_segments, installed_alloc_conf_var
+
+    var = installed_alloc_conf_var()
+    monkeypatch.delenv(var, raising=False)
+    child: dict[str, str] = {}
+    default_expandable_segments()
+    default_expandable_segments(child, var="PYTORCH_ALLOC_CONF")
+    assert var not in os.environ
+    assert child == {}
+
+
+@pytest.mark.usefixtures("_not_jetson")
+def test_default_expandable_segments_targets_a_child_env_and_var() -> None:
+    from openral_sim._sidecar_common import default_expandable_segments
+
+    child: dict[str, str] = {}
+    default_expandable_segments(child, var="PYTORCH_CUDA_ALLOC_CONF")
+    assert child == {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+
+
+@pytest.mark.usefixtures("_not_jetson")
+def test_default_expandable_segments_keeps_an_operator_value() -> None:
+    from openral_sim._sidecar_common import default_expandable_segments
+
+    child = {"PYTORCH_ALLOC_CONF": "max_split_size_mb:128"}
+    default_expandable_segments(child, var="PYTORCH_ALLOC_CONF")
+    assert child == {"PYTORCH_ALLOC_CONF": "max_split_size_mb:128"}

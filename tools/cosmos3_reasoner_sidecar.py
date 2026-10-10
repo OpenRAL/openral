@@ -55,6 +55,7 @@ from pathlib import Path
 
 from openral_sim._sidecar_common import (
     alloc_conf_var,
+    default_expandable_segments,
     ensure_pip_venv,
     run_cmd,
     venv_torch_version,
@@ -428,7 +429,8 @@ def main() -> int:
     # "reserved but unallocated"). Must precede the first CUDA allocation.
     # torch renamed the var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF,
     # warns on the old spelling), so resolve it from the venv's actual torch.
-    env.setdefault(alloc_conf_var(venv_torch_version(py.parent.parent)), "expandable_segments:True")
+    # Not on Jetson: see default_expandable_segments.
+    default_expandable_segments(env, var=alloc_conf_var(venv_torch_version(py.parent.parent)))
 
     # FlashInfer's sampler JIT-compiles and needs CUDA toolkit headers a
     # JetPack 7 Jetson lacks: engine init died in `determine_available_memory`

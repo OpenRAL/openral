@@ -948,7 +948,10 @@ def main(argv: list[str]) -> int:
     # metadata, not `import torch`, to avoid initializing CUDA before it's set.
     _torch_mm = tuple(int(part) for part in importlib.metadata.version("torch").split(".")[:2])
     _var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
-    os.environ.setdefault(_var, "expandable_segments:True")
+    # Same Jetson gate as openral_sim._sidecar_common.default_expandable_segments,
+    # which this sidecar venv cannot import: never on L4T (NVML fabric-query crash).
+    if not os.path.exists("/etc/nv_tegra_release"):
+        os.environ.setdefault(_var, "expandable_segments:True")
     args = _parse_args(argv)
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)

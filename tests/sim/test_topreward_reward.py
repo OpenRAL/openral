@@ -11,8 +11,6 @@ Gated on a local GPU + the topreward deps; CI runners without a GPU skip.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 pytest.importorskip("torch")
@@ -27,12 +25,9 @@ _HAS_GPU = torch.cuda.is_available()
 
 @pytest.mark.skipif(not _HAS_GPU, reason="needs a local GPU + lerobot TOPReward + NF4 checkpoint")
 def test_topreward_monitor_scores_real_clip() -> None:
-    # Only the spelling the installed torch reads: setting both
-    # PYTORCH_CUDA_ALLOC_CONF and PYTORCH_ALLOC_CONF is what triggers torch
-    # 2.9's deprecation warning for the old name.
-    from openral_sim._sidecar_common import installed_alloc_conf_var
+    from openral_sim._sidecar_common import default_expandable_segments
 
-    os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
+    default_expandable_segments()
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from openral_core.schemas import RSkillManifest
     from openral_runner.backends.reward import TOPRewardMonitor, build_reward_monitor

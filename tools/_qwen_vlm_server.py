@@ -38,10 +38,12 @@ import time
 # warns on the old spelling. `make_isolated_env` (the boot helper) usually
 # sets this already; duplicated here so running this file directly is still
 # correct — this module has no `openral_*` on the path to share the logic.
-if (_v := importlib.metadata.version("torch").split(".")[:2]) and tuple(map(int, _v)) >= (2, 9):
-    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-else:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Same Jetson gate as openral_sim._sidecar_common.default_expandable_segments,
+# which this sidecar venv cannot import: never on L4T (NVML fabric-query crash).
+if not os.path.exists("/etc/nv_tegra_release"):
+    _torch_mm = tuple(map(int, importlib.metadata.version("torch").split(".")[:2]))
+    _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    os.environ.setdefault(_alloc_var, "expandable_segments:True")
 
 import msgpack
 import torch

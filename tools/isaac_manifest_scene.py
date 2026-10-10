@@ -408,8 +408,8 @@ def sample_object_poses(
 
     ``objects`` are the sidecar's object dicts; one with a ``pose_noise`` block
     (``IsaacObjectPoseNoise``) draws truncated-normal offsets around its declared
-    ``xyz``/``yaw`` until its ``footprints`` rectangle (object frame, ``(cx, cy,
-    hx, hy)``) clears every object placed before it and stays inside
+    ``xyz``/``yaw`` (plus one ``yaw_offsets_deg`` entry, picked uniformly) until its
+    ``footprints`` rectangle (object frame, ``(cx, cy, hx, hy)``) clears every object placed before it and stays inside
     ``keep_inside_xy`` by ``margin_m``. ``status``: ``"declared"`` (no noise),
     ``"sampled"``, or ``"declared_fallback"`` (``max_tries`` draws all rejected).
     Deterministic for a given ``rng`` state.
@@ -453,6 +453,10 @@ def sample_object_poses(
                     bad = np.abs(z) > clip
                     z[bad] = rng.standard_normal(int(bad.sum()))
                 x, y, yaw = np.array([x0, y0, yaw0]) + z * sigma
+                offsets = noise.get("yaw_offsets_deg") or (0.0,)
+                # One offset draws nothing, so existing seeds keep their layouts.
+                pick = int(rng.integers(len(offsets))) if len(offsets) > 1 else 0
+                yaw += np.radians(float(offsets[pick]))
                 quad = _rect_corners(x, y, yaw, rect)
                 if box is not None and (
                     np.any(quad < np.add(box[0], margin_m))

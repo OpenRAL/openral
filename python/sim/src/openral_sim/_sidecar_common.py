@@ -31,9 +31,11 @@ import os
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from pathlib import Path
 from typing import TypeVar
+
+from openral_core import gpu
 
 _Num = TypeVar("_Num", int, float)
 
@@ -271,8 +273,8 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     (observed as ``rldx_sidecar_died_during_boot returncode=-9`` in
     ``openral benchmark run`` — the suite path doesn't export the var the way
     the ``benchmark scene`` smoke wrapper did). Set here so every sidecar boot
-    gets it regardless of how ``openral`` was launched; ``setdefault`` lets an
-    explicit caller value win.
+    gets it regardless of how ``openral`` was launched; an explicit caller value
+    wins, and a Jetson gets none (``default_expandable_segments``).
 
     Finally, points ``TRITON_PTXAS_PATH`` at a CUDA 12.9 ``ptxas`` when the venv
     ships one. Triton bundles its own ``ptxas``, and triton 3.5.1's is CUDA
@@ -296,7 +298,7 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     env["PATH"] = f"{venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
-    env.setdefault(alloc_conf_var(venv_torch_version(venv)), "expandable_segments:True")
+    default_expandable_segments(env, var=alloc_conf_var(venv_torch_version(venv)))
     ptxas = venv_ptxas(venv)
     if ptxas is not None:
         env.setdefault("TRITON_PTXAS_PATH", str(ptxas))
@@ -341,6 +343,35 @@ def installed_alloc_conf_var() -> str:
         return alloc_conf_var(importlib.metadata.version("torch"))
     except importlib.metadata.PackageNotFoundError:
         return alloc_conf_var(None)
+
+
+def default_expandable_segments(
+    env: MutableMapping[str, str] | None = None, *, var: str | None = None
+) -> None:
+    """Default a CUDA allocator config to expandable segments, except on Jetson.
+
+    The one place OpenRAL turns ``expandable_segments:True`` on. ``env`` is the
+    environment to edit: ``None`` means this process, which must call before its
+    first CUDA allocation; a mapping means a child's environment. ``var`` is the
+    allocator variable the target torch reads. It defaults to the one for the
+    torch installed here; a child on another venv's torch passes
+    ``alloc_conf_var(venv_torch_version(venv))``. An operator-set value is kept.
+
+    Skipped on a Tegra host: torch's expandable path queries NVML GPU-fabric
+    info, which the Jetson iGPU cannot answer (lab AGX Orin, torch 2.13+cu130,
+    2026-09-22: ``Expected NVML_SUCCESS == ... nvmlDeviceGetGpuFabricInfoV_``),
+    and unified memory leaves no fragmentation headroom to recover anyway.
+
+    Example:
+        >>> env: dict[str, str] = {"PYTORCH_ALLOC_CONF": "max_split_size_mb:128"}
+        >>> default_expandable_segments(env, var="PYTORCH_ALLOC_CONF")
+        >>> env["PYTORCH_ALLOC_CONF"]
+        'max_split_size_mb:128'
+    """
+    if gpu.is_tegra_host():
+        return
+    target = os.environ if env is None else env
+    target.setdefault(var or installed_alloc_conf_var(), "expandable_segments:True")
 
 
 def venv_torch_version(venv: Path) -> str | None:

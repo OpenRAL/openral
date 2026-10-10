@@ -15,7 +15,8 @@ modules' own ``__init__``:
 * TOPReward loads through stock ``transformers`` ``from_pretrained``. Its buffers
   must equal a real-init build of the same config.
 
-Gated on a local GPU + the native deps; GPU-less CI is the legitimate skip
+Gated on a local GPU + the native deps (`just sync --group libero`, which also
+brings `datasets` for the LIBERO clip); GPU-less CI is the legitimate skip
 (CLAUDE.md §12). Run with (single GPU — take the shared lock):
     flock /tmp/openral-gpu.lock -c \
       "./.venv/bin/pytest tests/sim/test_reward_nf4_buffer_equivalence.py -v"
@@ -24,7 +25,6 @@ Gated on a local GPU + the native deps; GPU-less CI is the legitimate skip
 from __future__ import annotations
 
 import gc
-import os
 import pathlib
 import sys
 
@@ -35,7 +35,7 @@ pytest.importorskip("lerobot")
 pytest.importorskip("bitsandbytes")
 pytest.importorskip("accelerate")
 pytest.importorskip("qwen_vl_utils")
-pytest.importorskip("datasets")
+pytest.importorskip("datasets", reason="lerobot dataset deps: just sync --group libero (or gr00t)")
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 _ROBOMETER = "OpenRAL/rskill-robometer_4b-any-general-nf4"
@@ -78,9 +78,9 @@ def _clip(n_frames: int = 8) -> tuple[object, str]:
 
 
 def test_robometer_meta_load_matches_real_buffer_reference() -> None:
-    from openral_sim._sidecar_common import installed_alloc_conf_var
+    from openral_sim._sidecar_common import default_expandable_segments
 
-    os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
+    default_expandable_segments()
     sys.path.insert(0, str(_REPO / "tools"))
     import _robometer_scorer as scorer_mod
 

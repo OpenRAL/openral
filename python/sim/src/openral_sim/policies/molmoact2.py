@@ -83,7 +83,7 @@ from openral_sim._quantization import (
     tie_transformers_weights,
     torch_dtype_for,
 )
-from openral_sim._sidecar_common import installed_alloc_conf_var
+from openral_sim._sidecar_common import default_expandable_segments
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
@@ -112,50 +112,11 @@ _BATCHED_CHUNK_NDIM = 3
 # `cat`), not vision crops — capping crops alone doesn't change the peak, and
 # transformers 5.x's fast MolmoAct2ImageProcessor doesn't honour `max_crops`
 # the way the slow one did. The actual 8 GiB enabler is the CUDA
-# expandable-segments allocator (``_enable_expandable_segments``); this
+# expandable-segments allocator (``default_expandable_segments``); this
 # knob is kept for the slow-processor path and larger frames. Precedence:
 # `vla.extra["image_max_crops"]` -> `OPENRAL_MOLMOACT2_MAX_CROPS` env ->
 # `manifest.image_preprocessing.image_max_crops` -> None (checkpoint default 8).
 _MAX_CROPS_ENV = "OPENRAL_MOLMOACT2_MAX_CROPS"
-
-# MolmoAct2 NF4 is ~6 GiB resident (bf16 vocab embeddings + vision tower
-# dominate; nf4 Linears are ~3.5 GiB) and peaks ~7.63 GiB during a chunk —
-# at the edge of an 8 GiB card (usable ~7.6 GiB). Without the CUDA caching
-# allocator's expandable-segments mode, the first forward's ~1.5 GiB
-# embedding `cat` can't be placed contiguously and OOMs with hundreds of MiB
-# nominally free; expandable_segments fixes the fragmentation so the rollout
-# fits reproducibly (bitsandbytes 4-bit + a tight card is the textbook case).
-# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
-# and warns on every process start when the old spelling is present, so
-# resolve it from the installed torch instead of hardcoding either name.
-_CUDA_ALLOC_ENV = installed_alloc_conf_var()
-_EXPANDABLE_SEGMENTS = "expandable_segments:True"
-
-
-def _enable_expandable_segments() -> None:
-    """Enable the CUDA expandable-segments allocator for the MolmoAct2 load.
-
-    Sets ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` via
-    ``os.environ.setdefault`` (an operator export wins) **before the first
-    CUDA allocation** in this process. The caching allocator reads the variable
-    lazily on its first allocation rather than at ``import torch``, so setting it
-    here — at the top of the molmoact2 build, ahead of the model's first
-    ``.to(cuda)`` — takes effect even though torch is already imported. Verified
-    on an 8 GiB RTX 4070: without it the SO-101 NF4 chunk OOMs at the embedding
-    `cat`; with it the rollout peaks ~7.63 GiB and fits. No-op when the variable
-    is already set or already contains ``expandable_segments``.
-    """
-    current = os.environ.get(_CUDA_ALLOC_ENV)
-    if current is not None:
-        if "expandable_segments" not in current:
-            _log.info(
-                "molmoact2_alloc_conf_preset",
-                value=current,
-                note="PYTORCH_CUDA_ALLOC_CONF already set; not adding expandable_segments.",
-            )
-        return
-    os.environ[_CUDA_ALLOC_ENV] = _EXPANDABLE_SEGMENTS
-    _log.info("molmoact2_expandable_segments_enabled", value=_EXPANDABLE_SEGMENTS)
 
 
 def _molmoact2_phase(name: str, **fields: Any) -> Any:
@@ -748,9 +709,12 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     device = resolve_device(spec)
 
     # Enable the CUDA expandable-segments allocator before any CUDA work so the
-    # ~7.6 GiB inference peak fits an 8 GiB card (see _enable_expandable_segments).
+    # ~7.6 GiB inference peak fits an 8 GiB card. Verified on an 8 GiB RTX 4070:
+    # without it the SO-101 NF4 chunk OOMs at the embedding `cat`; with it the
+    # rollout peaks ~7.63 GiB. The allocator reads the variable on its first
+    # allocation, so setting it after `import torch` still takes effect.
     if device.startswith("cuda"):
-        _enable_expandable_segments()
+        default_expandable_segments()
 
     with _molmoact2_phase("imports"):
         import torch

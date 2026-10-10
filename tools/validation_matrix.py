@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from openral_cli._dds_scope import confine_sim_scope
+from openral_sim._sidecar_common import default_expandable_segments
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 OUTPUT_ROOT: Final[Path] = REPO_ROOT / "outputs" / "validation-matrix"
@@ -2116,7 +2117,7 @@ def _launch_env(run_dir: Path, stem: str) -> dict[str, str]:
     env["MUJOCO_GL"] = env.get("MUJOCO_GL", "egl")
     env.setdefault("OPENRAL_AUTO_INSTALL_DEPS", "1")
     env.setdefault("OPENRAL_ALLOW_REMOTE_CODE", "1")
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    default_expandable_segments(env)
     cinecam = run_dir / f"{stem}_cinecam"
     cinecam.mkdir(parents=True, exist_ok=True)
     env["OPENRAL_CINECAM_DIR"] = str(cinecam)
