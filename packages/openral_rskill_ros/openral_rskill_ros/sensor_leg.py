@@ -290,8 +290,8 @@ def slam_camera_names(runtime: object | None) -> frozenset[str]:
     ``DeployRuntime`` rather than a hand-written per-binding override, so a stereo deploy can't
     silently degrade a tracking input by forgetting the flag.
 
-    Covers both spellings: explicit ``slam_stereo_cameras`` / ``slam_mono_camera``, and the
-    implicit ``left``/``right`` pair a ``None`` stereo field resolves to downstream.
+    Covers both spellings: explicit ``slam_stereo_cameras`` and ``slam_mono_camera``. There is
+    no implicit pair: a SLAM scene naming neither is refused before launch (ADR-0108).
 
     Args:
         runtime: A ``DeployRuntime`` (or ``None`` when the scene pins no runtime block).
@@ -351,7 +351,9 @@ def apply_launch_overrides(
         consumers read, with overrides applied.
 
     Example:
-        >>> merged = apply_launch_overrides(None, enable_slam=True)
+        >>> merged = apply_launch_overrides(
+        ...     None, enable_slam=True, slam_stereo_cameras=("left", "right")
+        ... )
         >>> sorted(slam_camera_names(merged))
         ['left', 'right']
     """
