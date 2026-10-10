@@ -188,45 +188,101 @@ def test_runner_episode_lifecycle_writes_bag_markers(
     assert end_msg["episode_idx"] == 0
 
 
+class _FrameWatchingSkill(_NoOpSkill):
+    """``_NoOpSkill`` that keeps the camera frame each step was given."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[object] = []
+
+    def _step_impl(self, world_state: WorldState) -> Action:
+        self.seen.append((world_state.image_frames or {}).get("wrist"))
+        return super()._step_impl(world_state)
+
+
 def test_runner_records_the_native_camera_frame_the_skill_saw(
-    real_runner_stack: tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path],
+    so100_robot_description: RobotDescription, tmp_path: Path
 ) -> None:
-    """A BGR8 camera frame in the aggregator lands in the bag full-size and RGB."""
+    """A real BGR8 reader's frame reaches the skill's snapshot and the bag, full-size and RGB.
+
+    The reader is a real ``opencv_thread`` on an MJPG clip, so the tick's sensor
+    phase — not the test — is what puts the frame into ``image_frames``; the
+    runner used to forward only topic refs, leaving the skill and the recorder
+    blind to every inline camera. The bag image must be byte-identical to the
+    array ``decode_policy_image`` builds from the frame the skill stepped on.
+    """
     import base64
     import time
 
     import numpy as np
-    from openral_core.schemas import FrameEncoding, SensorFrame
+    from openral_core.exceptions import ROSPerceptionStale
+    from openral_runner.backends.opencv_thread import OpenCVThreadSensorReader
+    from openral_runner.dataset_recorder_bridge import decode_policy_image
 
-    runner, _recorder, _sink, bag_path = real_runner_stack
-    width, height = 96, 60  # 960x600 / 10: an Arducam's aspect, small enough for a unit test
-    bgr = np.zeros((height, width, 3), dtype=np.uint8)
-    bgr[..., 0] = 200  # blue, in BGR order
-    runner._aggregator.update_image_frame(
-        "wrist",
-        SensorFrame(
-            sensor_id="wrist",
-            stamp_monotonic_ns=time.monotonic_ns(),
-            stamp_wall_ns=time.time_ns(),
-            encoding=FrameEncoding.BGR8,
-            width=width,
-            height=height,
-            channels=3,
-            data=bgr.tobytes(),
-        ),
+    cv2 = pytest.importorskip("cv2")
+    width, height = 96, 60  # an Arducam's 960x600 aspect, small enough for a unit test
+    clip = tmp_path / "wrist.avi"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (width, height))
+    if not writer.isOpened():
+        pytest.skip("cv2.VideoWriter MJPG codec unavailable on this host")
+    try:
+        for _ in range(30):
+            writer.write(np.full((height, width, 3), (200, 0, 0), dtype=np.uint8))  # blue, BGR
+    finally:
+        writer.release()
+
+    twin = SO100DigitalTwin(SO100DigitalTwinConfig())
+    hal = SO100FollowerHAL(robot=twin)
+    aggregator = WorldStateAggregator(so100_robot_description)
+    skill = _FrameWatchingSkill()
+    skill.configure()
+    skill.activate()
+    bag_path = tmp_path / "hardware.mcap"
+    recorder = RolloutRecorder(
+        robot=so100_robot_description,
+        task_string="pick the cube",
+        fps=30.0,
+        sinks=[Rosbag2Sink(bag_path=bag_path)],
     )
-    runner.episode_start("pick the cube")
-    runner.run(max_ticks=1)
-    runner.episode_end(success=True)
-    runner.deactivate()
+    # The clip's last frame stays the reader's latest after EOF; a wide age
+    # budget keeps it fresh for the tick however slow the host.
+    reader = OpenCVThreadSensorReader(
+        sensor_id="wrist", device=str(clip), fps=30, default_max_age_ms=10_000
+    )
+    runner = DeployRunner(
+        hal=hal, skill=skill, aggregator=aggregator, sensor_readers=[reader], recorder=recorder
+    )
+    runner.activate()
+    try:
+        deadline = time.monotonic() + 5.0
+        while True:  # first capture
+            try:
+                reader.read_latest()
+                break
+            except ROSPerceptionStale:
+                assert time.monotonic() < deadline, "opencv_thread never produced a frame"
+                time.sleep(0.02)
+        runner.episode_start("pick the cube")
+        runner.run(max_ticks=1)
+        runner.episode_end(success=True)
+    finally:
+        runner.deactivate()
+        skill.deactivate()
+        skill.shutdown()
+
+    seen = skill.seen[0]
+    assert seen is not None, "the skill stepped on a snapshot without the camera frame"
+    policy_rgb = decode_policy_image(seen)
+    assert policy_rgb is not None and policy_rgb.shape == (height, width, 3)
 
     images = [m for t, m in _read_bag(bag_path) if t == TOPIC_IMAGE]
     assert len(images) == 1
     img = images[0]
     assert (img["camera"], img["width"], img["height"]) == ("wrist", width, height)
-    pixels = np.frombuffer(base64.b64decode(str(img["data_b64"])), dtype=np.uint8)
-    rgb = pixels.reshape(height, width, 3)
-    assert int(rgb[0, 0, 2]) == 200 and int(rgb[0, 0, 0]) == 0
+    bagged = np.frombuffer(base64.b64decode(str(img["data_b64"])), dtype=np.uint8)
+    assert bagged.tobytes() == policy_rgb.tobytes()
+    # Blue in the BGR capture is blue in the RGB bag (MJPG is lossy; the hue is not).
+    assert policy_rgb[..., 2].mean() > 150 and policy_rgb[..., 0].mean() < 60
 
 
 def test_runner_episode_start_twice_raises(

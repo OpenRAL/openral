@@ -393,14 +393,14 @@ _``DeployRunner`` — concrete `InferenceRunnerBase` subclass composing HAL + Sk
 
 - module constant `_THUMBNAIL_HZ = 25.0` (L66) — fixed cadence for the dashboard JPEG thumbnail emission.
 - `class DeployRunner(InferenceRunnerBase)` — Closes the `WorldState → Skill → safety → HAL` loop on real hardware / digital twins. It is the safety-supervisor boundary: catches `ROSSafetyViolation` from the `SafetyClient`, records it on the `TickResult`, and withholds `HAL.send_action` rather than re-raising — withholding is today's mitigation. (L71)
-  - `__init__(*, hal, skill, aggregator, sensor_readers=(), safety_client=None, recorder=None, **base_kwargs)` — Caller must pre-`configure()`+`activate()` the skill; runner manages HAL + reader open/close. Defaults `safety_client` to `NullSafetyClient`. Dashboard JPEG thumbnails are emitted at a private fixed cadence. Optional `recorder` is a `openral_dataset.RolloutRecorder`; when set, `episode_start` / `episode_end` drive its lifecycle and every tick fans out via `record_frame` with the snapshot's camera frames (`decode_recordable_images`; it wrote 1x1 zero placeholders until #354). (L113)
-  - `episode_start(task_string: str) -> int` — Open a new episode on the attached recorder; returns the new `episode_idx` (or `-1` when no recorder is attached). Raises `RuntimeError` if called twice without `episode_end`. (L173)
-  - `episode_end(*, success: bool) -> None` — Close the current recorder episode with the success flag. No-op when no recorder is attached. Raises `RuntimeError` if called without `episode_start`. (L201)
-  - `activate() -> None` — `super().activate()` + `hal.connect()` + open every `SensorReader`. (L227)
-  - `deactivate() -> None` — Close every `SensorReader` (best-effort; logs + continues), `hal.disconnect()`, `super().deactivate()`. (L245)
-  - `_tick_impl(tick_idx) -> TickResult` — Five-phase tick: sensors → world_state → inference → safety → hal, each phase timed onto the `TickResult`/OTel span. Catches `ROSPerceptionStale` per reader and `ROSSafetyViolation` at the supervisor boundary, recording each rather than letting it crash the tick. (L316)
-  - `_tracer` [@property] — Per-call `trace.get_tracer("openral")` (never cached at `__init__`, would bind to the provider live at construction time). (L218)
-  - `_hal_adapter_label` — Lower-cased class name of the HAL adapter, used as the closed-set `openral.hal.adapter` value on spans + metrics. (L157)
+  - `__init__(*, hal, skill, aggregator, sensor_readers=(), safety_client=None, recorder=None, **base_kwargs)` — Caller must pre-`configure()`+`activate()` the skill; runner manages HAL + reader open/close. Defaults `safety_client` to `NullSafetyClient`. Dashboard JPEG thumbnails are emitted at a private fixed cadence. Optional `recorder` is a `openral_dataset.RolloutRecorder`; when set, `episode_start` / `episode_end` drive its lifecycle and every tick fans out via `record_frame` with the snapshot's camera frames (`decode_recordable_images`; it wrote 1x1 zero placeholders until #354). (L114)
+  - `episode_start(task_string: str) -> int` — Open a new episode on the attached recorder; returns the new `episode_idx` (or `-1` when no recorder is attached). Raises `RuntimeError` if called twice without `episode_end`. (L174)
+  - `episode_end(*, success: bool) -> None` — Close the current recorder episode with the success flag. No-op when no recorder is attached. Raises `RuntimeError` if called without `episode_start`. (L202)
+  - `activate() -> None` — `super().activate()` + `hal.connect()` + open every `SensorReader`. (L228)
+  - `deactivate() -> None` — Close every `SensorReader` (best-effort; logs + continues), `hal.disconnect()`, `super().deactivate()`. (L246)
+  - `_tick_impl(tick_idx) -> TickResult` — Five-phase tick: sensors → world_state → inference → safety → hal, each phase timed onto the `TickResult`/OTel span. Catches `ROSPerceptionStale` per reader and `ROSSafetyViolation` at the supervisor boundary, recording each rather than letting it crash the tick. (L317)
+  - `_tracer` [@property] — Per-call `trace.get_tracer("openral")` (never cached at `__init__`, would bind to the provider live at construction time). (L219)
+  - `_hal_adapter_label` — Lower-cased class name of the HAL adapter, used as the closed-set `openral.hal.adapter` value on spans + metrics. (L158)
 
 ### `python/runner/src/openral_runner/safety.py`
 _``SafetyClient`` stub — Python-side seam for the future C++ safety kernel._
