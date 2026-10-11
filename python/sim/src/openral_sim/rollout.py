@@ -9,6 +9,7 @@ custom) without leaking framework specifics into the eval layer.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -326,6 +327,80 @@ class SimRollout(Protocol):
         """Release any underlying engine resources."""
 
 
+ROBOT_CONTACTS_INFO_KEY = "robot_contacts"
+"""Step ``info`` key a backend fills with this step's robot-vs-world contacts.
+
+Each entry: ``{"link", "other_prim", "min_separation_m", "impulse_ns"}`` (separation
+negative = penetration; impulse in N*s). Isaac fills it from the PhysX contact report.
+"""
+
+
+def fold_robot_contacts(
+    stats: dict[tuple[str, str], dict[str, Any]],
+    contacts: Sequence[Mapping[str, Any]],
+    step: int,
+) -> None:
+    """Fold one step's robot-vs-world contacts into per-pair episode statistics.
+
+    One record per ``(link, other_prim)``: ``steps`` in contact, ``first_step`` /
+    ``last_step``, the deepest ``max_penetration_m`` (``max(0, -separation)``),
+    the closest ``min_separation_m`` and the largest per-step ``max_impulse_ns``.
+
+    Example:
+        >>> stats = {}
+        >>> fold_robot_contacts(
+        ...     stats,
+        ...     [
+        ...         {
+        ...             "link": "finger",
+        ...             "other_prim": "/World/box",
+        ...             "min_separation_m": 0.002,
+        ...             "impulse_ns": 0.0,
+        ...         }
+        ...     ],
+        ...     step=3,
+        ... )
+        >>> fold_robot_contacts(
+        ...     stats,
+        ...     [
+        ...         {
+        ...             "link": "finger",
+        ...             "other_prim": "/World/box",
+        ...             "min_separation_m": -0.004,
+        ...             "impulse_ns": 0.5,
+        ...         }
+        ...     ],
+        ...     step=4,
+        ... )
+        >>> rec = stats[("finger", "/World/box")]
+        >>> rec["steps"], rec["first_step"], rec["last_step"], rec["max_penetration_m"]
+        (2, 3, 4, 0.004)
+        >>> rec["min_separation_m"], rec["max_impulse_ns"]
+        (-0.004, 0.5)
+    """
+    for c in contacts:
+        sep = float(c["min_separation_m"])
+        imp = float(c["impulse_ns"])
+        rec = stats.setdefault(
+            (str(c["link"]), str(c["other_prim"])),
+            {
+                "link": str(c["link"]),
+                "other_prim": str(c["other_prim"]),
+                "steps": 0,
+                "first_step": step,
+                "last_step": step,
+                "min_separation_m": sep,
+                "max_penetration_m": 0.0,
+                "max_impulse_ns": 0.0,
+            },
+        )
+        rec["steps"] += 1
+        rec["last_step"] = step
+        rec["min_separation_m"] = min(rec["min_separation_m"], sep)
+        rec["max_penetration_m"] = max(rec["max_penetration_m"], -sep)
+        rec["max_impulse_ns"] = max(rec["max_impulse_ns"], imp)
+
+
 @dataclass
 class EpisodeResult:
     """Outcome of one episode rollout.
@@ -378,6 +453,10 @@ class EpisodeResult:
     # shows separate policy/world panels or collapses to one full-width tile.
     num_input_cameras: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Robot-vs-world contacts the simulator reported over the episode, one record
+    # per (robot link, other prim) pair (``fold_robot_contacts``). Empty when the
+    # backend does not report contacts (``info["robot_contacts"]`` absent).
+    contact_stats: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> str:
         """Human-readable single-line summary.

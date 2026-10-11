@@ -808,6 +808,7 @@ def _run(args: SimpleNamespace) -> int:
                     "total_reward": r.total_reward,
                     "mean_step_latency_ms": r.mean_step_latency_ms,
                     "max_step_latency_ms": r.max_step_latency_ms,
+                    "contact_stats": r.contact_stats,
                 }
                 for r in results
             ],

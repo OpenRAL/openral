@@ -2721,19 +2721,17 @@ class IsaacManifestScene(IsaacSceneBase):
                 n += 1
         print(f"[isaac_manifest_scene] contact reports on {n} robot rigid bodies", flush=True)
 
-    def contact_ground_truth(self) -> dict[str, Any]:
-        """PhysX robot-vs-world contacts of the last physics step (the sidecar ``contacts``).
+    def _contact_points(self) -> list[dict[str, Any]]:
+        """Every PhysX contact point of the last physics step, as plain dicts.
 
-        One record per (robot collider, other collider) pair from
-        ``aggregate_robot_contacts``, each with both colliders' authored
-        contact/rest offsets (``None`` = unauthored, PhysX-derived), plus the
-        ``CONTACTS_CAVEAT`` that says what an empty list means. There is no nearest
-        distance beyond the contactOffset band (``nearest_robot_world_pairs`` is
-        ``None`` with the reason): PhysX's Python API has no shape-to-shape distance.
+        The shape ``aggregate_robot_contacts`` folds: ``actor0``/``actor1``/
+        ``collider0``/``collider1`` (prim paths), ``separation`` (m, negative =
+        penetration), ``impulse`` and ``position`` (``(x, y, z)``). Covers only the
+        last physics step: a contact made and broken inside a control step's earlier
+        substeps is not reported.
         """
-        from isaacsim.core.utils.stage import get_current_stage
         from omni.physx import get_physx_simulation_interface
-        from pxr import PhysicsSchemaTools, PhysxSchema
+        from pxr import PhysicsSchemaTools
 
         headers, data = get_physx_simulation_interface().get_contact_report()[:2]
 
@@ -2758,7 +2756,22 @@ class IsaacManifestScene(IsaacSceneBase):
                         "position": f3(d.position),
                     }
                 )
-        pairs, self_points = aggregate_robot_contacts(points, self._robot_prim)
+        return points
+
+    def contact_ground_truth(self) -> dict[str, Any]:
+        """PhysX robot-vs-world contacts of the last physics step (the sidecar ``contacts``).
+
+        One record per (robot collider, other collider) pair from
+        ``aggregate_robot_contacts``, each with both colliders' authored
+        contact/rest offsets (``None`` = unauthored, PhysX-derived), plus the
+        ``CONTACTS_CAVEAT`` that says what an empty list means. There is no nearest
+        distance beyond the contactOffset band (``nearest_robot_world_pairs`` is
+        ``None`` with the reason): PhysX's Python API has no shape-to-shape distance.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import PhysxSchema
+
+        pairs, self_points = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
         stage = get_current_stage()
 
         def offsets(collider: str) -> dict[str, float | None]:
@@ -2797,7 +2810,10 @@ class IsaacManifestScene(IsaacSceneBase):
         holds it (where the robot physically is, vs. the integrated odometry);
         ``object_positions``: ``{name: [x, y, z]}`` per scene object, for
         checking a grasp or a placement; ``object_orientations_wxyz``: their
-        orientations (``pose_noise`` draws a new yaw each reset).
+        orientations (``pose_noise`` draws a new yaw each reset); ``robot_contacts``:
+        this step's robot-vs-world PhysX contacts (``{link, other_prim,
+        min_separation_m, impulse_ns}`` per pair, last physics step only), which
+        ``SimRunner`` folds into ``EpisodeResult.contact_stats``.
         """
         info: dict[str, Any] = {
             "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
@@ -2813,6 +2829,16 @@ class IsaacManifestScene(IsaacSceneBase):
             }
         if self._placement_success is not None:
             info["placement_grade"] = self._placement_grade
+        pairs, _ = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
+        info["robot_contacts"] = [
+            {
+                "link": p["link"],
+                "other_prim": p["other_prim"],
+                "min_separation_m": p["min_separation_m"],
+                "impulse_ns": p["impulse_ns"],
+            }
+            for p in pairs
+        ]
         return info
 
     def _joint_positions(self) -> NDArray[np.float32] | None:

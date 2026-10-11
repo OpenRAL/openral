@@ -117,3 +117,20 @@ def test_contacts_report_the_robot_link_inside_the_static_box(env: Any) -> None:
     assert record["backend"] == "isaacsim"
     assert record["max_penetration_m"] >= -deepest["min_separation_m"]
     assert "contactOffset" in str(record["contacts_caveat"])
+
+
+def test_step_info_carries_the_robot_contacts_and_the_runner_folds_them(env: Any) -> None:
+    """Every step's ``info["robot_contacts"]`` names the link inside the box, and
+    ``fold_robot_contacts`` turns the steps into one per-pair episode record."""
+    from openral_sim.rollout import ROBOT_CONTACTS_INFO_KEY, fold_robot_contacts
+
+    stats: dict[tuple[str, str], dict[str, Any]] = {}
+    for step in range(1, 4):
+        result = env.step(np.full(env.action_dim, np.nan, dtype=np.float32))  # hold
+        contacts = result.info[ROBOT_CONTACTS_INFO_KEY]
+        assert set(contacts[0]) == {"link", "other_prim", "min_separation_m", "impulse_ns"}
+        fold_robot_contacts(stats, contacts, step)
+    box = [r for r in stats.values() if r["other_prim"].startswith("/World/objects/contact_box")]
+    assert box, f"no robot/box pair folded from {list(stats)}"
+    assert box[0]["steps"] == 3 and box[0]["first_step"] == 1 and box[0]["last_step"] == 3
+    assert box[0]["max_penetration_m"] > 0.0

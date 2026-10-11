@@ -99,6 +99,8 @@ steps per action from the same rate at connect (issue #358).
 Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
 with the time each image shows, not the publish time (issue #361).
+Every Isaac step also carries `info["robot_contacts"]` (this step's PhysX robot-vs-world contacts), and `openral sim run` folds them into each episode's `contact_stats` in `summary.json`: which links touched what, for how many steps, how deep (`max_penetration_m`) and how hard (`max_impulse_ns`). That is the evidence for which contacts a successful episode needs, to compare against the safety kernel's stops.
+
 Isaac safety-kernel stops carry ground truth too: each `sim.estop_ground_truth_snapshot`
 line (`backend: "isaacsim"`) lists the PhysX robot-vs-world contact pairs of the
 stop's physics step (link, other prim, `min_separation_m` (negative = penetration),

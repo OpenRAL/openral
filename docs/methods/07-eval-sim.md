@@ -14,26 +14,29 @@ _Policy adapter protocol — the contract every VLA backend must satisfy._
 ### `python/sim/src/openral_sim/rollout.py`
 _Sim rollout protocol — the typed contract every scene adapter must satisfy._
 
-- `class StepResult` — One environment transition. (L209)
+- `class StepResult` — One environment transition. (L210)
   fields: `observation, reward, terminated, truncated, info`
-- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L228)
+- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L229)
   - attr `scene: SceneSpec`, `task: TaskSpec`
-  - `reset(seed=None) -> Observation` (L316)
-  - `step(action) -> StepResult` (L319)
-  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L322)
-  - `close() -> None` (L325)
+  - `reset(seed=None) -> Observation` (L317)
+  - `step(action) -> StepResult` (L320)
+  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L323)
+  - `close() -> None` (L326)
   - duck-typed extension: `mujoco_handles() -> tuple[mujoco.MjModel, mujoco.MjData] | None` — Optional, not part of the Protocol; MuJoCo-backed adapters implement it so `sim run --view` can open a passive viewer. Callers must `getattr(...)` and tolerate `None`.
   - duck-typed extension: `task_success() -> bool | None` — Optional, not part of the Protocol: the backend's own live task-success predicate, read on demand and side-effect free (not latched — an undone task reads `False` again). `None` means no predicate and must never be read as failure; used by `deploy sim`'s `SimAttachedHAL`, not by `sim run`/benchmark.
   - duck-typed extension: `sim_time_ns() -> int | None` — Optional, not part of the Protocol: the backend's elapsed sim time in ns, feeding a `/clock` publisher. Monotonic only within an episode; callers must treat missing and `None` alike as “no clock” (fall back to wall time).
   - duck-typed extension: `enable_intrinsic_viewer() -> None` — Optional, not part of the Protocol; adapters with their own render window (e.g. gym_pusht) implement it so `SimRunner` uses live-view mode instead of the MuJoCo viewer.
-- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L22) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and the LIBERO pin path (issue #358); returns the pinned dt.
-- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L62) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
-- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L100)
-- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L169)
-- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L131)
-- `class EpisodeResult` — Outcome of one episode. (L330)
+- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L23) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and the LIBERO pin path (issue #358); returns the pinned dt.
+- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L63) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
+- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L101)
+- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L170)
+- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L132)
+- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. (L405)
+  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L461)
+- `ROBOT_CONTACTS_INFO_KEY = "robot_contacts"` — Step `info` key a backend fills with that step's robot-vs-world contacts (`{link, other_prim, min_separation_m, impulse_ns}`); Isaac fills it from the PhysX contact report. (L330)
+- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L338)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L382)
+  - `summary() -> str` — Human-readable single line. (L461)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._
@@ -67,38 +70,38 @@ _Registries that map ID strings to backend factories._
 ### `python/sim/src/openral_sim/sim_runner.py`
 _Per-step `InferenceRunner` for the simulation runtime._
 
-- `class SimRunner(InferenceRunnerBase)` — One-tick = one-env-step inference runner that drives a `SimEnvironment` for `n_episodes` episodes. Subclasses `InferenceRunnerBase` so sim and hardware (`DeployRunner`) share the `InferenceRunner` Protocol. (L297)
-- `SimRunner.__init__(env_cfg, *, view=False, strict_view=False, instruction_override=None, deadline_overrun_policy=WARN, recorder=None)` — Defers env/policy construction to `activate()`; `rate_hz` is fixed at 1000 Hz (sim is not real-time). `instruction_override` (the `--instruction` CLI value) wins over a scene's per-episode language instruction. `recorder` is an optional `RolloutRecorder` fanned out alongside the episode buffer, additive not a substitute. (L341)
+- `class SimRunner(InferenceRunnerBase)` — One-tick = one-env-step inference runner that drives a `SimEnvironment` for `n_episodes` episodes. Subclasses `InferenceRunnerBase` so sim and hardware (`DeployRunner`) share the `InferenceRunner` Protocol. (L304)
+- `SimRunner.__init__(env_cfg, *, view=False, strict_view=False, instruction_override=None, deadline_overrun_policy=WARN, recorder=None)` — Defers env/policy construction to `activate()`; `rate_hz` is fixed at 1000 Hz (sim is not real-time). `instruction_override` (the `--instruction` CLI value) wins over a scene's per-episode language instruction. `recorder` is an optional `RolloutRecorder` fanned out alongside the episode buffer, additive not a substitute. (L348)
 - `SimRunner._record_to_recorder(action, reward, terminated, truncated) -> None` — Extracts per-step state/rendered frame/action and forwards to the attached recorder; broadcasts the single rendered viewpoint to every camera key declared on the robot. Errors are logged, not raised. (L380-ish)
-- `SimRunner.activate() -> None` — Validates the manifest, builds env + policy concurrently, arms the first reset-tick, opens the outer `sim.run` OTel span. (L418)
-- `SimRunner.deactivate() -> None` — Flush a trailing episode if any, close the viewer / policy / env, close the outer span. Idempotent. (L515)
-- `SimRunner._should_terminate() -> bool` — Returns True once `n_episodes` `EpisodeResult`s have been emitted. (L552)
-- `SimRunner._tick_impl(tick_idx) -> TickResult` — Dispatch reset-tick vs step-tick. (L600)
-- `SimRunner._reset_tick(tick_idx) -> TickResult` — env.reset + policy.reset; `action_applied=False`, `inference_ms=0.0`, `step_idx=None`. (L610)
-- `SimRunner._step_tick(tick_idx) -> TickResult` — policy.step + env.step; populates `step_idx`, `reward`, `terminated`, `truncated`, `action_applied=True`. (L664)
-- `SimRunner._finalize_episode() -> None` — Build an `EpisodeResult` from the per-step `_EpisodeBuffer`, append to `episode_results`, reset the buffer. (L866)
-- `class _EpisodeBuffer` — Private dataclass accumulating per-step latencies / frames / rewards inside one episode; reset on each boundary. (L265)
-- `_check_rskill_compatibility(env_cfg) -> RSkillManifest | None` — Load the rSkill manifest, run `rSkill.check_compatibility` against the registered `RobotDescription`, return the manifest or `None` for built-in mock policies. Strict-by-construction; also runs `_check_policy_units_owned`. (L1029)
-- `_check_policy_units_owned(manifest, robot, scene_id) -> None` — `ROSConfigError` when `PolicyIOCodec.from_manifest(manifest, robot)` is non-identity (degrees / `gripper_scale` / joint permutation) and `SCENES.meta(scene_id)["converts_policy_units"]` is not `True` — `sim run` applies no codec, so only a converting scene (`so101_box`, `tabletop_push`, `openarm_tabletop_pnp`) may take such a checkpoint. Fail-loud guard, never a conversion. (L943)
-- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1136)
-- `_policy_scene_cameras(scene_cameras, description, manifest) -> (list[str], dict[str, str])` — Camera keys the policy is built on plus the obs rekey (scene name → VLA slot): scene cameras that are all robot RGB sensor names become their slots; an empty `scene.cameras` becomes `required_vla_camera_slots`; anything else is unchanged. Makes slot-keyed `image_preprocessing.aliases` mean the same under `sim run` as on deploy. (L209)
-- `_rekey_obs_images(obs, rekey) -> Observation` — Returns `obs` with `images` rekeyed scene-name → slot (renamed keys win over an env's own slot alias); applied after every `env.reset`/`env.step`. (L243)
-- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1186)
-- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1279)
-- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1328)
-- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1390)
-- `SimRunner.episode_start(task_string) -> int` — No-op on `SimRunner`: sim derives episode boundaries from env signals, not this `InferenceRunner` hook. (L566)
-- `SimRunner.episode_end(*, success) -> None` — No-op on `SimRunner`: sim closes episodes inside `_finalize_episode`. (L575)
-- `const _VIDEO_FRAMES_INFO_KEY = '_openral_video_frames'` (L60)
-- `const _IMAGE_NDIM = 3` (L66)
-- `const _VIDEO_FRAME_CAP = 8192` (L65)
-- `const _GRAYSCALE_CHANNELS = 1` (L67)
-- `const _RGB_CHANNELS = 3` (L68)
-- `const _RGBA_CHANNELS = 4` (L69)
-- `const _MOCK_POLICY_IDS = frozenset({'zero', 'random'})` (L939)
-- `const _MOCK_PLACEHOLDER_URI = 'placeholder'` (L940)
-- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1144)
-- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1179)
+- `SimRunner.activate() -> None` — Validates the manifest, builds env + policy concurrently, arms the first reset-tick, opens the outer `sim.run` OTel span. (L425)
+- `SimRunner.deactivate() -> None` — Flush a trailing episode if any, close the viewer / policy / env, close the outer span. Idempotent. (L522)
+- `SimRunner._should_terminate() -> bool` — Returns True once `n_episodes` `EpisodeResult`s have been emitted. (L559)
+- `SimRunner._tick_impl(tick_idx) -> TickResult` — Dispatch reset-tick vs step-tick. (L607)
+- `SimRunner._reset_tick(tick_idx) -> TickResult` — env.reset + policy.reset; `action_applied=False`, `inference_ms=0.0`, `step_idx=None`. (L617)
+- `SimRunner._step_tick(tick_idx) -> TickResult` — policy.step + env.step; populates `step_idx`, `reward`, `terminated`, `truncated`, `action_applied=True`. (L671)
+- `SimRunner._finalize_episode() -> None` — Build an `EpisodeResult` from the per-step `_EpisodeBuffer`, append to `episode_results`, reset the buffer. (L876)
+- `class _EpisodeBuffer` — Private dataclass accumulating per-step latencies / frames / rewards inside one episode; reset on each boundary. (L270)
+- `_check_rskill_compatibility(env_cfg) -> RSkillManifest | None` — Load the rSkill manifest, run `rSkill.check_compatibility` against the registered `RobotDescription`, return the manifest or `None` for built-in mock policies. Strict-by-construction; also runs `_check_policy_units_owned`. (L1040)
+- `_check_policy_units_owned(manifest, robot, scene_id) -> None` — `ROSConfigError` when `PolicyIOCodec.from_manifest(manifest, robot)` is non-identity (degrees / `gripper_scale` / joint permutation) and `SCENES.meta(scene_id)["converts_policy_units"]` is not `True` — `sim run` applies no codec, so only a converting scene (`so101_box`, `tabletop_push`, `openarm_tabletop_pnp`) may take such a checkpoint. Fail-loud guard, never a conversion. (L954)
+- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1147)
+- `_policy_scene_cameras(scene_cameras, description, manifest) -> (list[str], dict[str, str])` — Camera keys the policy is built on plus the obs rekey (scene name → VLA slot): scene cameras that are all robot RGB sensor names become their slots; an empty `scene.cameras` becomes `required_vla_camera_slots`; anything else is unchanged. Makes slot-keyed `image_preprocessing.aliases` mean the same under `sim run` as on deploy. (L214)
+- `_rekey_obs_images(obs, rekey) -> Observation` — Returns `obs` with `images` rekeyed scene-name → slot (renamed keys win over an env's own slot alias); applied after every `env.reset`/`env.step`. (L248)
+- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1197)
+- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1290)
+- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1339)
+- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1401)
+- `SimRunner.episode_start(task_string) -> int` — No-op on `SimRunner`: sim derives episode boundaries from env signals, not this `InferenceRunner` hook. (L573)
+- `SimRunner.episode_end(*, success) -> None` — No-op on `SimRunner`: sim closes episodes inside `_finalize_episode`. (L582)
+- `const _VIDEO_FRAMES_INFO_KEY = '_openral_video_frames'` (L65)
+- `const _IMAGE_NDIM = 3` (L71)
+- `const _VIDEO_FRAME_CAP = 8192` (L70)
+- `const _GRAYSCALE_CHANNELS = 1` (L72)
+- `const _RGB_CHANNELS = 3` (L73)
+- `const _RGBA_CHANNELS = 4` (L74)
+- `const _MOCK_POLICY_IDS = frozenset({'zero', 'random'})` (L950)
+- `const _MOCK_PLACEHOLDER_URI = 'placeholder'` (L951)
+- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1155)
+- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1190)
 
 ### `python/sim/src/openral_sim/benchmark.py`
 _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benchmark_suite` + `raise_on_invalid_suite`) and emits a `RSkillEvalResult`._
@@ -127,11 +130,11 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 - `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L539)
 - `main(argv=None) -> int` — Thin wrapper invoking `sim_run_app` with `standalone_mode=False` so tests get a return code without `sys.exit`. (L465)
 - `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L721)
-- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L844)
-- `_control_rate_hz(robot) -> float` (L826) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
-- `_robot_control_rate_hz(robot_id) -> float` (L837) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
-- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L859)
-- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`; `--video-grid` adds the tiled clip. (L905)
+- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L845)
+- `_control_rate_hz(robot) -> float` (L827) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
+- `_robot_control_rate_hz(robot_id) -> float` (L838) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
+- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L860)
+- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`; `--video-grid` adds the tiled clip. (L906)
 
 ### `python/sim/src/openral_sim/_video.py`
 _Shared two-band rollout-debug MP4 helper (was `examples/_video.py`)._
