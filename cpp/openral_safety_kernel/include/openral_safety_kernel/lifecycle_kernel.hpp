@@ -481,6 +481,16 @@ private:
   /// dq_meas_ * period vs q_meas_, row-independent, in
   /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.
   bool workspace_speed_measured_{false};
+  /// #349 workspace brake (`workspace_contact_brake_enabled`, needs the workspace
+  /// rule): a JOINT_POSITION chunk whose ONLY reason to stop is the workspace's
+  /// measured hand speed is replaced by a hold at the measured pose (jaws keep
+  /// their command) instead of an E-stop. `ws_dry_run_` runs the checks without
+  /// reporting; `ws_speed_override_` reads the workspace hand speed as 0.
+  bool workspace_brake_enabled_{false};
+  bool ws_dry_run_{false};
+  bool ws_speed_override_{false};
+  std::uint64_t workspace_brakes_{0};
+  std::chrono::steady_clock::time_point workspace_brake_last_warn_{};
   double workspace_measured_speed_mps_{std::numeric_limits<double>::infinity()};
   bool workspace_speed_max_measured_{false};  ///< source of `workspace_speed_max_seen_`
   std::vector<std::uint8_t> attached_contact_mask_;

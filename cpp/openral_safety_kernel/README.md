@@ -1072,6 +1072,11 @@ payload's cells inside the workspace are exempt by the same predicate on its att
 support-witness and attach-residue exemptions; WARN `link=payload@<link>`); its self-collision
 check against the robot is unchanged.
 
+**Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
+JOINT_POSITION chunk's only reason to stop is the measured hand speed (it passes with that speed
+read as within bound, the measured pose included), the kernel publishes a hold — every commanded
+non-jaw joint at its measured value — instead of an E-stop, no latch. WARN `safety.workspace_brake`.
+
 **Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
 `timeout_s`, future stamp, retired identity — e.g. `handover_exit` or `released`); no
 `workspace_region`; a workspace in another frame, with geometry, a non-unit quaternion, over the caps

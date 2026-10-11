@@ -6050,6 +6050,39 @@ TEST_F(LifecycleKernelTest, AJawJointsMeasuredVelocityIsNotHandSpeed) {
   EXPECT_FALSE(rig.node->fault_latched());
 }
 
+// #349 workspace brake: the measured hand speed (0.03 m/s) is the ONLY reason to
+// stop, so the chunk is held at the measured pose instead — no latch.
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeHoldsTheMeasuredPoseWhenSpeedIsTheOnlyReason) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                             rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0) << "held at the measured pose, not the commanded 0.1";
+  EXPECT_GE(logs.count("safety.workspace_brake hand_speed_mps=0.030"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeverAnswersALeadOverTheBound) {
+  // Same fast hand and contact, but a 0.005 m lead bound: the 0.1 rad command
+  // leads 0.006 m. Not a speed-only stop, so it latches as before.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_lead",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.send_once(&b, 0.0, grasp_chunk(0.1)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U);
+}
+
 TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
   // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
   // rad into the cell — a 0.03 m lead over a 0.02 bound.
@@ -6136,6 +6169,10 @@ TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {
   EXPECT_TRUE(jaw_ok.configure());
   GraspRig jaw_bad("kernel_ws_cfg_jaw_bad", jaws({"left_gripper"}));
   EXPECT_FALSE(jaw_bad.configure()) << "a jaw joint the model does not have";
+  GraspRig brake_alone("kernel_ws_cfg_brake",
+                       with_param(workspace_params(false, 0.0, 0.0, {}),
+                                  "workspace_contact_brake_enabled", rclcpp::ParameterValue(true)));
+  EXPECT_FALSE(brake_alone.configure()) << "the brake needs the workspace rule";
   GraspRig off("kernel_ws_cfg_off", workspace_params(false, 0.0, 0.0, {}));
   EXPECT_TRUE(off.configure()) << "off, nothing is read";
 }

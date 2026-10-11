@@ -284,6 +284,17 @@ so PhysX cannot see them. Arm links, and hands outside the box, stop as before. 
 against the OTHER hand's links gets the same rule on its attach link (`check_attached_self_collision`,
 `link=payload-self@<attach link>`; p8_mix04); against its own arm's links it still stops.
 
+**Brake instead of stop (sim):** `workspace_contact_brake_enabled` (the launch sets it with the
+rule). A JOINT_POSITION chunk that trips as-is but passes with the measured hand speed read as
+within bound — the lead, every exemption and every other check unchanged, and the measured pose
+itself passing — has the speed as its ONLY reason to stop. The kernel then publishes the chunk
+with every commanded non-jaw joint set to its measured value: a hold, i.e. a controlled stop with
+power kept and no latch (the jaws keep their command so the payload is not dropped); the next chunk
+is judged afresh. WARN `safety.workspace_brake` ≤ 1 Hz with a running count. Why: across 9 place
+batches the most common remaining stop was contact at 0.35–0.41 m/s while 809 tolerated contact
+samples had p99 0.26 m/s — the fast tail, which slowing down answers and a higher bound would not
+(follow-up 3, PACS-style braking). Any other reason (lead, arm link, outside the box) stops as before.
+
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
 Cartesian control modes, the force/current contact layer.
 

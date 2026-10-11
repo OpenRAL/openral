@@ -1049,6 +1049,8 @@ def _workspace_contact_kernel_params(
         "workspace_contact_max_lead_m": float(max_lead_m),
         # The lead is the arm's push: taken with the jaws at their measured value.
         "workspace_contact_jaw_joints": [j.name for j in description.joints if j.role == "gripper"],
+        # A position chunk whose only reason to stop is the hand speed holds the measured pose.
+        "workspace_contact_brake_enabled": True,
         "workspace_contact_control_period_s": 1.0 / float(rate_hz),
     }
 

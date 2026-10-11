@@ -462,6 +462,9 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // gripper's own effort limit). Empty = every joint counts (the stricter reading).
   this->declare_parameter<std::vector<std::string>>("workspace_contact_jaw_joints",
                                                     std::vector<std::string>{});
+  // #349 workspace brake: with the workspace rule on, a position chunk whose only
+  // reason to stop is the measured hand speed holds the measured pose instead.
+  this->declare_parameter<bool>("workspace_contact_brake_enabled", false);
   this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
@@ -602,6 +605,14 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   // of a safety surface: configure fails rather than running with a rule whose
   // bound or scope it cannot state.
   workspace_contact_enabled_ = this->get_parameter("workspace_contact_enabled").as_bool();
+  workspace_brake_enabled_ = this->get_parameter("workspace_contact_brake_enabled").as_bool();
+  workspace_brakes_ = 0;
+  if (workspace_brake_enabled_ && !workspace_contact_enabled_) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "workspace_contact_brake_enabled refused: it requires workspace_contact_enabled");
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
   workspace_links_.reset();
   workspace_link_index_.clear();
   workspace_region_ = WorkspaceContactRegion{};
@@ -1290,6 +1301,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // the *measured* joints, where the two named links sit 53 mm apart.
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
+        if (ws_dry_run_) {
+          return;  // #349 brake dry run: the trip is the answer, nothing is reported
+        }
         ++chunks_dropped_;
         // Advisory band (#176): a declared payload's own receptacle contact is
         // refused, not latched — chunk dropped, skill may retry, instead of an
@@ -1483,7 +1497,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // WARN <= 1 Hz per link. `who` prefixes the link: "" for a hand link,
       // "payload@" for a payload carried by it.
       const auto disclose_workspace = [&](const CollisionHit& hit, int step, const char* who) {
-        if (hit.workspace_pairs <= 0) {
+        if (hit.workspace_pairs <= 0 || ws_dry_run_) {
           return;
         }
         const double speed = voxel_grid_.workspace_region.hand_speed_mps;
@@ -1542,6 +1556,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           fk_config(q);
           voxel_grid_.workspace_region.hand_speed_mps =
               !known                      ? std::numeric_limits<double>::infinity()
+              : ws_speed_override_        ? 0.0
               : workspace_speed_measured_ ? workspace_measured_speed_mps_
                                           : workspace_hand_speed(*workspace_prev);
         } else {
@@ -1739,34 +1754,97 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             }
           }
         }
-        for (std::uint16_t s = 0; s < view.horizon; ++s) {
-          const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
-          if (!slot_row) {
-            // A full row is the joint configuration itself.
-            if (check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
-              return;
+        const auto check_rows = [&]() -> bool {
+          for (std::uint16_t s = 0; s < view.horizon; ++s) {
+            const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+            if (!slot_row) {
+              // A full row is the joint configuration itself.
+              if (check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
+                return true;
+              }
+              continue;
             }
-            continue;
-          }
-          // Slot row: commanded joints from the row, the rest measured ...
-          for (std::size_t d = 0; d < robot_ndof; ++d) {
-            q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
-          }
-          if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
-            return;
-          }
-          // ... and, additionally, at this tick's other committed targets.
-          // Only ever an extra check: it can refuse, never accept.
-          if (tick_partner) {
+            // Slot row: commanded joints from the row, the rest measured ...
             for (std::size_t d = 0; d < robot_ndof; ++d) {
-              if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
-                q_check_[d] = tick_target_[d];
+              q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
+            }
+            if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
+              return true;
+            }
+            // ... and, additionally, at this tick's other committed targets.
+            // Only ever an extra check: it can refuse, never accept.
+            if (tick_partner) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+                  q_check_[d] = tick_target_[d];
+                }
+              }
+              if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_partner)) {
+                return true;
               }
             }
-            if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_partner)) {
-              return;
-            }
           }
+          return false;
+        };
+        // #349 workspace brake (sim-only draft). The hand is measured faster than
+        // the workspace bound: if the chunk trips as-is but passes with that speed
+        // read as within bound — every other check, the lead and every pair's
+        // exemption unchanged — the speed is the ONLY reason to stop, and a hold
+        // at the measured pose (a controlled stop, power kept, no latch) answers
+        // it: no further motion is commanded, the arm decelerates, and the next
+        // chunk is judged afresh. Jaw joints keep their command (a hold must not
+        // drop the payload). Any other reason stops exactly as before.
+        if (workspace_brake_enabled_ && voxel_grid_.workspace_region.valid &&
+            workspace_speed_measured_ &&
+            !(workspace_measured_speed_mps_ <= workspace_max_speed_mps_)) {
+          ws_dry_run_ = true;
+          const bool as_is = check_rows();
+          bool slowed = true;
+          if (as_is) {
+            ws_speed_override_ = true;
+            slowed = check_rows();
+            // The hold IS the measured pose: it must pass the reactive check too.
+            std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
+            slowed = slowed || check_config(q_check_.data(), -1, 0.0, ws_plain);
+            ws_speed_override_ = false;
+          }
+          ws_dry_run_ = false;
+          if (as_is && !slowed) {
+            scaled_chunk_ = *msg;
+            const bool full_row = msg->joint_names.empty();
+            for (std::uint16_t s = 0; s < view.horizon; ++s) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
+                const bool jaw = std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
+                                           static_cast<int>(d)) != workspace_jaw_cols_.end();
+                if ((full_row || slot_commanded_[d] != 0) && !jaw &&
+                    k < scaled_chunk_.flat.size()) {
+                  scaled_chunk_.flat[k] = q_meas_[d];
+                }
+              }
+            }
+            safe_pub_->publish(scaled_chunk_);
+            ++workspace_brakes_;
+            clear_workspace_commands();
+            const auto wall = std::chrono::steady_clock::now();
+            if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
+              workspace_brake_last_warn_ = wall;
+              RCLCPP_WARN(this->get_logger(),
+                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g brakes=%llu "
+                          "target=%s rskill_id=%s (held at the measured pose, no latch)",
+                          workspace_measured_speed_mps_, workspace_max_speed_mps_,
+                          static_cast<unsigned long long>(workspace_brakes_),
+                          workspace_target_.c_str(), msg->rskill_id.c_str());
+            }
+            span->SetAttribute("safety.severity", "info");
+            span->SetAttribute("safety.workspace_brake", true);
+            span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
+            span->End();
+            return;
+          }
+        }
+        if (check_rows()) {
+          return;
         }
         // #349: accepted — remember each commanded joint's final row as the
         // previous row of the next chunk's row 0, due once the chunk has
