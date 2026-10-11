@@ -23,7 +23,10 @@ from openral_core import RobotDescription
 from openral_hal import build_hal
 
 _FRANKA = "robots/franka_panda/robot.yaml"
-_LIBERO_SIM = "scenes/sim/libero_spatial.yaml"
+# The deploy scene, not scenes/sim/libero_spatial.yaml: that eval scene keeps LIBERO's
+# native 20 Hz, which SimAttachedHAL refuses for the 30 Hz Franka (issue #358); this one
+# is the same libero_spatial suite pinned to the robot's rate.
+_LIBERO_SIM = "scenes/deploy/libero_pnp.yaml"
 # A standard LIBERO suite scene (routes to openral_sim.backends.libero._LiberoSim).
 # Regression guard for the `_LiberoSim.action_dim` probe gap that broke
 # SimAttachedHAL.connect() on suite scenes.

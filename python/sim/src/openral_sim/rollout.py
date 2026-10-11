@@ -42,7 +42,11 @@ def pin_robosuite_time_base(control_freq_hz: float) -> float:
     from robosuite import macros  # reason: optional sim-only dep; provisioned by the caller
 
     before = float(macros.SIMULATION_TIMESTEP)
-    steps, dt = physics_steps_per_tick(control_freq_hz, before)
+    # Derive from robosuite's native dt, recorded on the macros module at the first
+    # pin — never from ``before``, which an earlier pin in this process may already
+    # have shrunk (a 30 Hz deploy env then left a 20 Hz eval env on 1/510 s).
+    native = float(macros.__dict__.setdefault("_OPENRAL_NATIVE_SIMULATION_TIMESTEP", before))
+    steps, dt = physics_steps_per_tick(control_freq_hz, native)
     # robosuite truncates ``int(control_timestep / model_timestep)``: nudge the
     # dt down by ulps until that quotient cannot floor to ``steps - 1``.
     while int((1.0 / control_freq_hz) / dt) < steps:
@@ -53,6 +57,7 @@ def pin_robosuite_time_base(control_freq_hz: float) -> float:
             "robosuite.time_base.timestep_shrunk",
             control_freq_hz=control_freq_hz,
             simulation_timestep_before_s=before,
+            simulation_timestep_native_s=native,
             simulation_timestep_s=round(dt, 9),
             physics_steps_per_tick=steps,
         )

@@ -564,6 +564,11 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
             control_freq_hz=control_freq_hz,
             sim_dt_per_tick_s=round(sim_dt_per_tick_from_robosuite_env(inner) or 0.0, 6),
         )
+    else:
+        # The lazily built env keeps robosuite's native 20 Hz, but reads the
+        # process-global physics dt at build time: restore the native one, in case
+        # a deploy env earlier in this process shrank it for its own rate.
+        pin_robosuite_time_base(20.0)
     return _LiberoSim(
         scene=env_cfg.scene,
         task=env_cfg.task,

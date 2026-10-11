@@ -14,26 +14,26 @@ _Policy adapter protocol — the contract every VLA backend must satisfy._
 ### `python/sim/src/openral_sim/rollout.py`
 _Sim rollout protocol — the typed contract every scene adapter must satisfy._
 
-- `class StepResult` — One environment transition. (L209)
+- `class StepResult` — One environment transition. (L214)
   fields: `observation, reward, terminated, truncated, info`
-- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L228)
+- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L233)
   - attr `scene: SceneSpec`, `task: TaskSpec`
-  - `reset(seed=None) -> Observation` (L316)
-  - `step(action) -> StepResult` (L319)
-  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L322)
-  - `close() -> None` (L325)
+  - `reset(seed=None) -> Observation` (L321)
+  - `step(action) -> StepResult` (L324)
+  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L327)
+  - `close() -> None` (L330)
   - duck-typed extension: `mujoco_handles() -> tuple[mujoco.MjModel, mujoco.MjData] | None` — Optional, not part of the Protocol; MuJoCo-backed adapters implement it so `sim run --view` can open a passive viewer. Callers must `getattr(...)` and tolerate `None`.
   - duck-typed extension: `task_success() -> bool | None` — Optional, not part of the Protocol: the backend's own live task-success predicate, read on demand and side-effect free (not latched — an undone task reads `False` again). `None` means no predicate and must never be read as failure; used by `deploy sim`'s `SimAttachedHAL`, not by `sim run`/benchmark.
   - duck-typed extension: `sim_time_ns() -> int | None` — Optional, not part of the Protocol: the backend's elapsed sim time in ns, feeding a `/clock` publisher. Monotonic only within an episode; callers must treat missing and `None` alike as “no clock” (fall back to wall time).
   - duck-typed extension: `enable_intrinsic_viewer() -> None` — Optional, not part of the Protocol; adapters with their own render window (e.g. gym_pusht) implement it so `SimRunner` uses live-view mode instead of the MuJoCo viewer.
-- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L22) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and the LIBERO pin path (issue #358); returns the pinned dt.
-- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L62) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
-- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L100)
-- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L169)
-- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L131)
-- `class EpisodeResult` — Outcome of one episode. (L330)
+- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L22) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, always derived from robosuite's native dt (recorded on the macros module at the first pin) so an earlier pin in the process never carries over, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and every LIBERO build (the eval path pins the native 20 Hz) (issue #358); returns the pinned dt.
+- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L67) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
+- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L105)
+- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L174)
+- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L136)
+- `class EpisodeResult` — Outcome of one episode. (L335)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L382)
+  - `summary() -> str` — Human-readable single line. (L387)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._
@@ -169,11 +169,11 @@ _Clean single-view world MP4 helper for website hero clips (overlays rendered by
 ### `python/sim/src/openral_sim/_assets.py`
 _Lazy asset-fetch helpers for sim backends with large CC-BY downloads (today only the RoboCasa adapter, named generically for a future MuJoCo backend with its own multi-GB bundle). Asset caches live under `$OPENRAL_CACHE_HOME` (default `~/.cache/openral/`), one subdirectory per backend, gated by a readiness sentinel + a Rich license banner + an env-var CI bypass. Sibling of `openral_sim._deps`, which handles the install-chain half of first-run provisioning._
 
-- `const _DEFAULT_CACHE_HOME = Path.home() / '.cache' / 'openral'` (L40)
-- `const _READY_SENTINEL = '.openral-ready'` — Marks "assets fully unpacked" so a re-run short-circuits. (L41)
-- `const _ROBOCASA_ALLOW_ENV = 'OPENRAL_ALLOW_ROBOCASA_ASSETS'` — CI bypass for the download-confirmation prompt. (L43)
-- `const _ROBOCASA_ASSETS_SIZE_GB = 11` (L44)
-- `ensure_robocasa_assets() -> Path` — Make sure the RoboCasa assets are on disk; download if needed. (L107)
+- `const _DEFAULT_CACHE_HOME = Path.home() / '.cache' / 'openral'` (L41)
+- `const _READY_SENTINEL = '.openral-ready'` — Marks "assets fully unpacked" so a re-run short-circuits. (L42)
+- `const _ROBOCASA_ALLOW_ENV = 'OPENRAL_ALLOW_ROBOCASA_ASSETS'` — CI bypass for the download-confirmation prompt. (L44)
+- `const _ROBOCASA_ASSETS_SIZE_GB = 11` (L45)
+- `ensure_robocasa_assets() -> Path` — Make sure the RoboCasa assets are on disk; download if needed. (L126)
 
 ### `python/sim/src/openral_sim/_deps.py`
 _Lazy auto-install helpers for sim backends with bespoke install chains that go beyond `uv sync --group <name>` (editable git clones, `--no-deps` robosuite pins, compiler env overrides). `BackendInstallPlan` declares a sequence of subprocess steps + probe imports; `ensure_backend_deps` short-circuits when the probes already pass, else prints a Rich banner and auto-installs (`OPENRAL_AUTO_INSTALL_DEPS=0` prompts instead). Sibling of `openral_sim._assets`, which handles the asset-download half._
