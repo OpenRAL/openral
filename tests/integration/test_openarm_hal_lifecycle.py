@@ -181,7 +181,12 @@ def test_cameras_publish_rgb_frames() -> None:
     assert frames, "no frame published on /openral/cameras/top/image"
     img = frames[0]
     assert img.encoding == "rgb8", img.encoding
-    assert img.width == 640 and img.height == 480, (img.width, img.height)
+    # The frame is rendered at the manifest's declared raster (672x376, the ZED-M view).
+    from openral_core import RobotDescription
+
+    (top,) = [s for s in RobotDescription.from_yaml(str(_OPENARM_YAML)).sensors if s.name == "top"]
+    assert top.intrinsics is not None
+    assert (img.width, img.height) == (top.intrinsics.width, top.intrinsics.height)
 
 
 def test_safe_action_drives_hal_send_action() -> None:
