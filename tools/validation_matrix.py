@@ -182,11 +182,12 @@ _SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
     "grasp_declaration",
 )
 
-# Inside `runtime:`, three keys are safety knobs rather than stack composition:
+# Inside `runtime:`, these keys are safety knobs rather than stack composition:
 # the octomap→kernel collision gate, the kernel's grasp-target exemption
-# (which the `allowance` pattern would also catch) and the vision attachment
+# (which the `allowance` pattern would also catch), the vision attachment
 # leg (enabling it turns the kernel's attached-payload check on; its tf_frames
-# decide which link a payload rides). `enable_reasoner`,
+# decide which link a payload rides) and the kernel's manipulation-workspace
+# contact rule with its hand speed bound (#349). `enable_reasoner`,
 # `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
 # compose the stack and are the whole point of pinning a scene, so they stay
 # pinnable.
@@ -194,6 +195,8 @@ _SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = (
     "enable_octomap_kernel_check",
     "grasp_allowance_enabled",
     "vision_attachment",
+    "workspace_contact_enabled",
+    "workspace_contact_max_speed_mps",
 )
 
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the

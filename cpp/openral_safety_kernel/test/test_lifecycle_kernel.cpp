@@ -3837,6 +3837,13 @@ struct GraspBeat {
   std::string second_attach_link{};
   double region_qx{0.0};  ///< the region's orientation x
   double region_qw{1.0};  ///< the region's orientation w
+  bool region{true};      ///< the producer measured a target region (region_valid)
+  /// #349: the producer-confirmed manipulation workspace (workspace_region_valid),
+  /// a box centred on the target cell, `workspace_half` on every side.
+  bool workspace{false};
+  double workspace_half{0.05};
+  std::int64_t workspace_stamp_ns{0};  ///< its confirmation stamp; 0 = declaration_stamp_ns
+  std::string workspace_frame{"base_link"};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3881,7 +3888,17 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.timeout_s = b.timeout_s;
   d.stamp_ns = b.declaration_stamp_ns;
   d.active = b.active;
-  d.region_valid = true;
+  d.region_valid = b.region;
+  d.workspace_region_valid = b.workspace;
+  d.workspace_region.frame_id = b.workspace_frame;
+  d.workspace_region.pose.position.x = 0.05;
+  d.workspace_region.pose.orientation.w = 1.0;
+  d.workspace_region.half_extents.x = b.workspace_half;
+  d.workspace_region.half_extents.y = b.workspace_half;
+  d.workspace_region.half_extents.z = b.workspace_half;
+  d.workspace_region.evidence_ref = "voxels:tote@grid7";
+  d.workspace_region.stamp_ns =
+      b.workspace_stamp_ns != 0 ? b.workspace_stamp_ns : b.declaration_stamp_ns;
   d.region.frame_id = b.region_frame;
   d.region.pose.position.x = b.region_x;
   d.region.pose.orientation.x = b.region_qx;
@@ -5558,4 +5575,177 @@ TEST_F(LifecycleKernelTest, MisShapedOrUnsoundMimicParamsFailConfigure) {
                                                             std::vector<std::int64_t>{0, 2, 7}))),
       osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
       << "an unknown joint code";
+}
+
+// ── Manipulation-workspace contact (issue #349, draft; Safety-WG pending) ────
+//
+// The grasp rig's finger on link0 (a hand link here), no target region: only
+// the producer-confirmed workspace around the occupied cell can let it touch.
+// Row 0 of a JOINT_POSITION chunk is reached from the measured state in one
+// control period; link0's reach is 60 mm (50 mm offset + 10 mm radius), so a
+// 0.3 rad step in one 1/30 s period bounds the hand at 0.54 m/s.
+
+namespace {
+
+constexpr double kWsPeriodS = 1.0 / 30.0;
+constexpr double kWsMaxMps = 0.10;
+
+std::vector<rclcpp::Parameter> workspace_params(bool enabled = true, double max_mps = kWsMaxMps,
+                                                double period_s = kWsPeriodS,
+                                                std::vector<std::string> links = {"link0"}) {
+  auto params = grasp_params();
+  params.emplace_back("workspace_contact_enabled", enabled);
+  params.emplace_back("workspace_contact_links", links);
+  params.emplace_back("workspace_contact_max_speed_mps", max_mps);
+  params.emplace_back("workspace_contact_control_period_s", period_s);
+  return params;
+}
+
+GraspBeat workspace_beat(std::int64_t stamp_ns) {
+  GraspBeat b;
+  b.declaration_stamp_ns = stamp_ns;
+  b.region = false;  // independent of the target region
+  b.workspace = true;
+  return b;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ASlowHandInsideTheConfirmedWorkspaceDoesNotTripAndIsDisclosed) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_slow", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
+  EXPECT_EQ(logs.count("safety.workspace_contact enabled"), 1U) << "configure WARNs the rule";
+  // The declaration ends: the exemption with it, and its summary is logged.
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=retracted"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube pairs="), 1U);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "no live declaration: today's stop";
+}
+
+TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_fast", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.3, 300);
+  // Measured at 0.3 rad, commanded to the cell at 0: 0.018 m in one period.
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("workspace_contact_active=1"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, NoConfirmedWorkspaceOrTheRuleOffMeansTodaysStop) {
+  {
+    GraspRig rig("kernel_ws_none", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace = false;
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+  {
+    GraspRig rig("kernel_ws_off", workspace_params(false));
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << "a workspace on the wire exempts nothing while off";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AStaleOrForeignFrameWorkspaceExemptsNothing) {
+  LogCapture logs;
+  {
+    GraspRig rig("kernel_ws_stale", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_stamp_ns = rig.now_ns() - std::int64_t{10'000'000'000};  // > 4 s max age
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=region_stale"), 1U)
+        << "a standing refusal is announced once";
+  }
+  {
+    GraspRig rig("kernel_ws_frame", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_frame = "map";
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=frame_mismatch"), 1U);
+  }
+}
+
+TEST_F(LifecycleKernelTest, AConfirmedWorkspaceAgesOutBetweenMessages) {
+  // The producer stops re-confirming: the same box, its stamp frozen, stops
+  // exempting once past grasp_region_max_age_s (0.6 s here), without a message —
+  // the stream itself stays fresh (2 s deadline), so the age alone ends it.
+  GraspRig rig("kernel_ws_age",
+               with_param(with_param(workspace_params(), "grasp_region_max_age_s",
+                                     rclcpp::ParameterValue(0.6)),
+                          "attached_collision_deadline_ms", rclcpp::ParameterValue(2000.0)));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 400));
+  rig.warm(nullptr, 0.0, 700);
+  EXPECT_FALSE(rig.offer(nullptr, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, NoMeasuredStateMeansTheHandSpeedIsUnknownAndItTrips) {
+  // /joint_states never maps (the rig publishes `j0`): row 0's speed cannot be
+  // measured, so the workspace exempts nothing — fail closed.
+  auto params = with_param(workspace_params(), "collision_joint_names",
+                           rclcpp::ParameterValue(std::vector<std::string>{"not_j0"}));
+  GraspRig rig("kernel_ws_no_state", params);
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, TheGraspTargetExemptionIsUnchangedWithTheWorkspaceRuleOn) {
+  // ADR-0115 alone (target region, no workspace) still exempts the finger at
+  // full speed: the workspace rule adds an exemption, it removes none.
+  GraspRig rig("kernel_ws_adr0115", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.3, 300);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
+}
+
+TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  GraspRig ok("kernel_ws_cfg_ok", workspace_params());
+  EXPECT_TRUE(ok.configure());
+  auto no_grasp =
+      with_param(workspace_params(), "grasp_allowance_enabled", rclcpp::ParameterValue(false));
+  GraspRig a("kernel_ws_cfg_grasp", no_grasp);
+  EXPECT_FALSE(a.configure()) << "the workspace rides the grasp declaration";
+  for (const double v : {0.0, -0.1, nan, std::numeric_limits<double>::infinity()}) {
+    GraspRig speed("kernel_ws_cfg_speed", workspace_params(true, v));
+    EXPECT_FALSE(speed.configure()) << "speed " << v;
+    GraspRig period("kernel_ws_cfg_period", workspace_params(true, kWsMaxMps, v));
+    EXPECT_FALSE(period.configure()) << "period " << v;
+  }
+  GraspRig empty("kernel_ws_cfg_empty", workspace_params(true, kWsMaxMps, kWsPeriodS, {}));
+  EXPECT_FALSE(empty.configure());
+  GraspRig unknown("kernel_ws_cfg_unknown",
+                   workspace_params(true, kWsMaxMps, kWsPeriodS, {"link0", "openarm_hand"}));
+  EXPECT_FALSE(unknown.configure());
+  GraspRig off("kernel_ws_cfg_off", workspace_params(false, 0.0, 0.0, {}));
+  EXPECT_TRUE(off.configure()) << "off, nothing is read";
 }

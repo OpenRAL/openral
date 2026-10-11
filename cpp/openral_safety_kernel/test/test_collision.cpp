@@ -6428,3 +6428,178 @@ TEST(NoAlloc, MimicForwardKinematicsAndTheVoxelCheckAreAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
 }
+
+// ── Manipulation-workspace contact (issue #349, draft; Safety-WG pending) ────
+//
+// Same OpenArm finger fixture as the grasp-target tests above. The workspace is
+// the source tote's interior: a declared, map-confirmed box. A HAND link (in
+// the workspace mask) vs a cell centred in the box does not trip while the
+// hand is slow; everything else is today's check bit for bit.
+
+namespace {
+
+constexpr double kWsMaxSpeed = 0.10;  // m/s, the test's bound
+
+osk::WorkspaceContactRegion workspace(double half, std::initializer_list<int> links,
+                                      double hand_speed_mps) {
+  osk::WorkspaceContactRegion ws;
+  EXPECT_EQ(osk::ingest_workspace_region(
+                translate(kFingerBoxCentre.x, kFingerBoxCentre.y, kFingerBoxCentre.z),
+                osk::Vec3{half, half, half}, grasp_mask(links), kWsMaxSpeed, ws),
+            osk::GraspRegionStatus::kOk);
+  EXPECT_TRUE(std::isinf(ws.hand_speed_mps)) << "ingest leaves the speed unknown";
+  ws.hand_speed_mps = hand_speed_mps;
+  return ws;
+}
+
+}  // namespace
+
+TEST(WorkspaceContact, ASlowHandLinkInsideTheWorkspaceDoesNotTripAndIsDisclosed) {
+  const osk::CollisionModel m = grasp_cell_model();
+  for (const int hand : {kGraspLeftFinger, kGraspCapFinger}) {  // box pass, capsule pass
+    osk::CollisionScratch s = grasp_scratch_all_away();
+    s.link_world[static_cast<std::size_t>(hand)] = identity();
+    const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}});
+    auto grid = grasp_grid(occ);
+    const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    ASSERT_TRUE(today.hit) << hand;
+    EXPECT_EQ(today.workspace_pairs, 0);
+
+    grid.workspace_region = workspace(0.10, {hand}, 0.5 * kWsMaxSpeed);
+    const auto slow = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    EXPECT_FALSE(slow.hit) << hand;
+    EXPECT_GE(slow.workspace_pairs, 1) << "never silent: every tolerated pair is counted";
+    EXPECT_EQ(slow.workspace_link, hand);
+    EXPECT_LE(slow.workspace_min_distance, kGraspMargin);
+    EXPECT_EQ(slow.sweep_min_distance, today.sweep_min_distance)
+        << "the tolerated pair still reaches the sweep minimum at its own depth";
+
+    // At the bound exactly it still holds; just above it, today's stop.
+    grid.workspace_region.hand_speed_mps = kWsMaxSpeed;
+    EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kGraspMargin).hit);
+    grid.workspace_region.hand_speed_mps = kWsMaxSpeed * 1.0001;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, AFastOrUnknownHandSpeedTripsExactlyAsToday) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  for (const double v : {2.0 * kWsMaxSpeed, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, v);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_pairs, 0) << v;
+  }
+  // A non-positive or non-finite bound exempts nothing either.
+  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
+    grid.workspace_region.max_speed_mps = bound;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, AnArmLinkInsideTheWorkspaceStillTrips) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspArm] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
+  auto grid = grasp_grid(occ);
+  const auto before = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(before.hit);
+  ASSERT_EQ(before.link_a, kGraspArm);
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger, kGraspCapFinger}, 0.0);
+  ASSERT_TRUE(osk::workspace_contact_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+  EXPECT_FALSE(osk::workspace_contact_exempts(grid, kGraspArm, grasp_centre(0, 0, 0)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  expect_same_hit(with, before);
+  EXPECT_EQ(with.workspace_pairs, 0);
+}
+
+TEST(WorkspaceContact, AHandLinkOutsideTheWorkspaceStillTrips) {
+  // Workspace tight around cell (0,0,0); the finger's margin also reaches the
+  // neighbour two cells over, outside the box: that one stops, as alone.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto near_only = grasp_occ({{2, 0, 0}});
+  const auto alone = osk::check_voxel_collision(m, s, grasp_grid(near_only), kGraspMargin);
+  ASSERT_TRUE(alone.hit);
+  const auto occ = grasp_occ({{0, 0, 0}, {2, 0, 0}});
+  auto grid = grasp_grid(occ);
+  grid.workspace_region = workspace(0.015, {kGraspLeftFinger}, 0.0);
+  ASSERT_FALSE(osk::workspace_contact_exempts(grid, kGraspLeftFinger, grasp_centre(2, 0, 0)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(with.hit);
+  EXPECT_EQ(with.link_b, grasp_index(2, 0, 0));
+  EXPECT_EQ(with.min_distance, alone.min_distance);
+}
+
+TEST(WorkspaceContact, TheGraspTargetExemptionKeepsPrecedence) {
+  // A cell both regions cover is the grasp target's (ADR-0115): it is not
+  // counted as a workspace contact. A cell only the workspace covers is.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
+  const auto both = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  EXPECT_FALSE(both.hit);
+  EXPECT_EQ(both.workspace_pairs, 0) << "the target's own cell is the grasp exemption's";
+
+  const auto occ2 = grasp_occ({{0, 0, 0}, {1, 0, 0}});
+  auto grid2 = grasp_grid(occ2);
+  grid2.grasp_region = grid.grasp_region;
+  grid2.workspace_region = grid.workspace_region;
+  const auto neighbour = osk::check_voxel_collision(m, s, grid2, kGraspMargin);
+  EXPECT_FALSE(neighbour.hit);
+  EXPECT_EQ(neighbour.workspace_pairs, 1) << "the neighbour carton is the workspace's";
+  EXPECT_EQ(neighbour.workspace_cell, grasp_index(1, 0, 0));
+}
+
+TEST(WorkspaceContact, IngestAppliesTheWorkspaceCaps) {
+  osk::WorkspaceContactRegion ws;
+  const auto mask = grasp_mask({kGraspLeftFinger});
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.30, 0.20, 0.15}, mask, 0.1, ws),
+            osk::GraspRegionStatus::kOk)
+      << "a 0.6 x 0.4 x 0.3 m tote interior";
+  EXPECT_TRUE(ws.valid);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.51, 0.1, 0.1}, mask, 0.1, ws),
+            osk::GraspRegionStatus::kOversize);
+  EXPECT_FALSE(ws.valid);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.45, 0.45, 0.2}, mask, 0.1, ws),
+            osk::GraspRegionStatus::kOversizeVolume);
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.1, 0.1}, grasp_mask({}), 0.1, ws),
+      osk::GraspRegionStatus::kNoLinks);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.0, 0.1}, mask, 0.1, ws),
+            osk::GraspRegionStatus::kDegenerate);
+  EXPECT_FALSE(ws.valid);
+}
+
+TEST(WorkspaceContact, TheDisplacementBoundCoversEveryPointOfTheLink) {
+  const osk::Transform a = identity();
+  EXPECT_NEAR(osk::link_displacement_bound(a, translate(0.03, 0.04, 0.0), 0.1), 0.05, 1e-12);
+  // A pure rotation by 0.2 rad about z: the origin stays, a point at 0.1 m
+  // moves 2·0.1·sin(0.1) < 0.1·0.2, the bound.
+  const osk::Transform rz = osk::transform_from_xyz_rpy(0, 0, 0, 0, 0, 0.2);
+  const double bound = osk::link_displacement_bound(a, rz, 0.1);
+  EXPECT_NEAR(bound, 0.02, 1e-9);
+  EXPECT_GE(bound, 2.0 * 0.1 * std::sin(0.1));
+  osk::Transform nan = identity();
+  nan.t.x = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isinf(osk::link_displacement_bound(a, nan, 0.1)));
+  // The reach is the farthest geometry from the frame origin.
+  const osk::CollisionModel m = grasp_cell_model();
+  const double cap = std::sqrt(0.0004 * 0.0004 + 0.0484 * 0.0484 + 0.0298 * 0.0298) + 0.02 + 0.01;
+  EXPECT_NEAR(osk::link_geometry_reach(m, kGraspCapFinger), cap, 1e-12);
+  EXPECT_EQ(osk::link_geometry_reach(m, 0), 0.0) << "no geometry, nothing to move";
+}

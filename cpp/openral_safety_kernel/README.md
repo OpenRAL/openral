@@ -1012,6 +1012,66 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   the declared left finger in its region is accepted, and the stop line and
   `/diagnostics` disclose the exemption.
 
+## Manipulation-workspace contact (issue #349, draft) — default off, sim-only
+
+**Draft for Safety-WG review; off unless `workspace_contact_enabled`; `openral deploy run` and a
+non-sim `deploy_e2e` refuse it.** Design and evidence:
+[`docs/reference/manipulation-workspace-contact.md`](../../docs/reference/manipulation-workspace-contact.md).
+A learned pick in a packed tote touches the neighbouring cartons, the staging board and the tote
+walls with the HAND only; the grasp-target exemption above covers the target alone, so every Isaac
+deploy-sim run stopped before the grasp with PhysX reporting no real contact.
+
+**The rule, per (robot link, occupied cell, checked row).** In `check_voxel_collision`, after the
+ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** hold:
+
+1. the link is a **hand link** — `workspace_contact_links`, which the launch derives from the
+   manifest (`RobotDescription.hand_links()`: every gripper leader and mimic follower plus the link
+   carrying them; OpenArm: both `finger_pair`s, both `finger_follower`s, both `link7`), never
+   configured by name;
+2. the cell centre lies inside the live **workspace** — `GraspDeclaration.workspace_region`, the
+   scene-declared `workspace_box` the HAL's grasp-target leg confirmed against a fresh voxel grid
+   (occupied cells covering ≥ 10 % of its footprint), re-stamped with that grid's `source_stamp`;
+3. the **hand is slow** — `hand_speed_mps ≤ workspace_contact_max_speed_mps`, where for row *s*
+   of a JOINT_POSITION chunk `hand_speed = max over hand links of link_displacement_bound(pose at
+   row s−1, pose at row s, reach) / workspace_contact_control_period_s`. Row −1 is the **measured
+   state** (`/joint_states`), so row 0 is checked against where the hand really is (a commanded
+   pose pushed into a blocked carton reads as a large step, i.e. as fast). `link_displacement_bound`
+   = |Δorigin| + θ·reach bounds the displacement of every point of the link's collision geometry
+   (`link_geometry_reach`), rotation included. A tick-partner slot row is measured against the
+   same construction one row earlier (the partner's committed target, constant across rows).
+
+**Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
+`timeout_s`, future stamp, retired identity — e.g. `handover_exit` or `released`); no
+`workspace_region`; a workspace in another frame, with geometry, a non-unit quaternion, over the caps
+(`kMaxWorkspaceRegionHalfExtentM` 0.50 m, `kMaxWorkspaceRegionVolumeM3` 0.25 m³ — WG placeholders)
+or confirmed longer ago than `grasp_region_max_age_s` (also between messages); a world-state stream
+older than `attached_collision_deadline_ms`; a stale or incomplete measured state; any control mode
+other than JOINT_POSITION (velocity / Cartesian rows carry no reconstructed hand speed); a hand
+speed above the bound or non-finite. Arm links, cells outside the box, self-collision and the
+attached-payload checks are untouched.
+
+**Parameters.** `workspace_contact_enabled` (default `false`), `workspace_contact_links`,
+`workspace_contact_max_speed_mps` and `workspace_contact_control_period_s` (the chunk row spacing,
+`1 / action_spec.control_freq_hz` from the launch). Configure refuses: enabled without
+`grasp_allowance_enabled`; a speed or period that is not finite and > 0 (there is no default the
+kernel would silently use); an empty link list or a name that is not a collision link. It WARNs
+`safety.workspace_contact enabled ... Safety-WG review pending` with the links and the bound.
+
+**Disclosure — never silent.** Every tolerated pair within the margin is counted
+(`CollisionHit::workspace_pairs`, the deepest one's link/cell/distance). The node WARNs
+`safety.workspace_contact link=<l> cell=<idx> depth_mm=<d> speed_mps=<v> max_mps=<m> pairs=<n>
+step=<s> target=<id>` at most once per second per link; logs `safety.workspace_region_armed` /
+`_dropped reason=` / `_rejected reason=` (a standing refusal once per change) and, when the
+workspace drops, `safety.workspace_contact_summary target= pairs= max_depth_mm= max_speed_mps=`;
+sets span attributes `safety.workspace_contact_active` (the workspace was live for the candidate),
+`safety.workspace_contact_pairs`, `safety.workspace_contact_max_depth_m`; and the `safety.collision`
+stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v>` for the reported row.
+
+Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle tests
+(`test_lifecycle_kernel.cpp`), the allocation-free check (`test_no_alloc.cpp`), and
+`tests/unit/test_workspace_contact.py` (schema, scene rejection, `hand_links`, launch/CLI, the
+producer on a real lattice).
+
 ## The contact-force gate (ADR-0100, survey Path C)
 
 Every check above discriminates on **position**. At the instant of a place the

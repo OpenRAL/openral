@@ -2390,6 +2390,8 @@ if _ROS2_AVAILABLE:
                     # Dispatch never publishes a region; the producer measures it.
                     # `search_box` passes through unchanged: it only seeds perception.
                     "region": None,
+                    # Nor a confirmed workspace (#349); `workspace_box` passes through.
+                    "workspace_region": None,
                 }
             )
             self._publish_grasp_declaration(declaration)

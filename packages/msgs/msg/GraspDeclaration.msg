@@ -59,3 +59,20 @@ PlaceRegion region
 # no search, so no region is ever measured. `search_box.geometry[]` MUST be empty.
 bool search_box_valid
 PlaceRegion search_box
+
+# Optional manipulation workspace (issue #349, docs/reference/manipulation-workspace-contact.md),
+# in the voxel grid's base frame: the box the task works in (the source tote's interior for a
+# pick). Like `search_box`, a scene may DECLARE it and dispatch passes it through unchanged; on
+# its own it exempts nothing. workspace_box_valid false = no workspace. `workspace_box.geometry[]`
+# MUST be empty.
+bool workspace_box_valid
+PlaceRegion workspace_box
+
+# The producer-confirmed workspace: `workspace_box` itself (never grown), stamped with the
+# source_stamp of the fresh voxel grid that confirmed it holds occupied cells. Only the producer
+# may set it — dispatch never does (the runner strips it) and a scene can never supply it. A
+# consumer that enables workspace contact lets the robot's HAND links touch occupied cells
+# centred inside it while the hand is slow; workspace_region_valid false — the default — means
+# NO workspace contact. `workspace_region.geometry[]` MUST be empty.
+bool workspace_region_valid
+PlaceRegion workspace_region

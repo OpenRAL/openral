@@ -437,6 +437,21 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // while the matching allowance is enabled.
   this->declare_parameter<double>("grasp_region_max_age_s", 0.0);
   this->declare_parameter<double>("place_region_max_age_s", 0.0);
+  // Manipulation-workspace contact (issue #349, draft; Safety-WG review
+  // pending). Default OFF. When on: a hand link (`workspace_contact_links`, the
+  // launch-derived hand links — gripper leaders, mimic followers and the link
+  // carrying them) inside the live grasp declaration's producer-confirmed
+  // `workspace_region` does not trip the world-voxel check while the hand's
+  // commanded speed is at most `workspace_contact_max_speed_mps`. The speed is
+  // measured over `workspace_contact_control_period_s` (the chunk row spacing).
+  // No default the kernel would silently use: enabled with a speed or period
+  // that is not finite and > 0 refuses configure, as does enabled without
+  // `grasp_allowance_enabled`.
+  this->declare_parameter<bool>("workspace_contact_enabled", false);
+  this->declare_parameter<std::vector<std::string>>("workspace_contact_links",
+                                                    std::vector<std::string>{});
+  this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
+  this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
   // `collision_joint_names` is the actuated joint order (length n_dof) the
@@ -571,6 +586,71 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
     RCLCPP_INFO(this->get_logger(), "safety.region_max_age grasp_s=%g place_s=%g",
                 grasp_region_max_age_s_, place_region_max_age_s_);
+  }
+  // Manipulation-workspace contact (#349). Every refusal is a misconfiguration
+  // of a safety surface: configure fails rather than running with a rule whose
+  // bound or scope it cannot state.
+  workspace_contact_enabled_ = this->get_parameter("workspace_contact_enabled").as_bool();
+  workspace_links_.reset();
+  workspace_link_index_.clear();
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  if (workspace_contact_enabled_) {
+    const auto refuse = [this](const std::string& why) {
+      RCLCPP_ERROR(this->get_logger(), "workspace_contact_enabled refused: %s", why.c_str());
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    };
+    if (!grasp_allowance_enabled_) {
+      return refuse("it requires grasp_allowance_enabled (the workspace rides the grasp "
+                    "declaration)");
+    }
+    workspace_max_speed_mps_ = this->get_parameter("workspace_contact_max_speed_mps").as_double();
+    workspace_control_period_s_ =
+        this->get_parameter("workspace_contact_control_period_s").as_double();
+    if (!std::isfinite(workspace_max_speed_mps_) || workspace_max_speed_mps_ <= 0.0) {
+      return refuse("workspace_contact_max_speed_mps must be finite and > 0, got " +
+                    std::to_string(workspace_max_speed_mps_));
+    }
+    if (!std::isfinite(workspace_control_period_s_) || workspace_control_period_s_ <= 0.0) {
+      return refuse("workspace_contact_control_period_s must be finite and > 0, got " +
+                    std::to_string(workspace_control_period_s_));
+    }
+    const auto names = this->get_parameter("workspace_contact_links").as_string_array();
+    if (names.empty()) {
+      return refuse("workspace_contact_links is empty");
+    }
+    std::string listed;
+    for (const auto& name : names) {
+      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
+          index >= collision_model_.n_links) {
+        return refuse("workspace_contact_links names '" + name +
+                      "', which is not a collision link of this model");
+      }
+      if (!workspace_links_[index]) {
+        workspace_links_.set(index);
+        workspace_link_index_.push_back(static_cast<int>(index));
+        listed += (listed.empty() ? "" : ",") + name;
+      }
+    }
+    const std::size_t n_links = collision_model_.n_links;
+    workspace_link_reach_.assign(n_links, 0.0);
+    for (const int l : workspace_link_index_) {
+      workspace_link_reach_[static_cast<std::size_t>(l)] = link_geometry_reach(collision_model_, l);
+    }
+    workspace_prev_plain_.assign(n_links, Transform{});
+    workspace_prev_partner_.assign(n_links, Transform{});
+    workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
+    q_workspace_.assign(envelope_.n_dof, 0.0);
+    RCLCPP_WARN(this->get_logger(),
+                "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
+                "hand links [%s] inside a live grasp declaration's map-confirmed workspace do "
+                "not trip the world-voxel check while the hand's commanded speed is <= %g m/s "
+                "(measured over %g s rows); arm links, contact outside the workspace and a "
+                "fast hand stop as before",
+                listed.c_str(), workspace_max_speed_mps_, workspace_control_period_s_);
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -860,6 +940,13 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_latched_stamp_ns_ = 0;
   grasp_latched_ = false;
   grasp_latched_moved_warned_ = false;
+  workspace_contact_enabled_ = false;
+  workspace_links_.reset();
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_target_.clear();
+  workspace_refusal_reason_.clear();
+  workspace_pairs_total_ = 0;
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
   status_msg_ = openral_msgs::msg::SafetyStatus{};
@@ -1196,14 +1283,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s",
+                     "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
                      static_cast<int>(hit.depth_is_box_bound),
                      static_cast<int>(voxel_grid_.grasp_region.valid),
-                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "");
+                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
+                     static_cast<int>(voxel_grid_.workspace_region.valid),
+                     voxel_grid_.workspace_region.hand_speed_mps);
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1289,6 +1378,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       }
       voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
       span->SetAttribute("safety.grasp_exemption_active", grasp_live);
+      // #349: the manipulation workspace, re-evaluated per candidate like the
+      // grasp region. Its hand speed is set per checked row below; it is known
+      // only for a JOINT_POSITION chunk with a fresh measured state (row 0 is
+      // measured against it). Every other mode keeps it +inf, i.e. no exemption.
+      const bool workspace_on = workspace_contact_enabled_ && workspace_live();
+      voxel_grid_.workspace_region = workspace_on ? workspace_region_ : WorkspaceContactRegion{};
+      const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
+      span->SetAttribute("safety.workspace_contact_active", workspace_on);
+      std::uint64_t workspace_chunk_pairs = 0;
+      double workspace_chunk_min = std::numeric_limits<double>::infinity();
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -1312,8 +1411,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           collision_min_slack_m = slack;
         }
       };
-      const auto check_config = [&](const double* q, int step, double extra_margin = 0.0) -> bool {
+      // `workspace_prev`: the hand links' poses at the previous row of the same
+      // construction (the measured state for row 0); nullptr = speed unknown.
+      const auto check_config = [&](const double* q, int step, double extra_margin = 0.0,
+                                    std::vector<Transform>* workspace_prev = nullptr) -> bool {
         fk_config(q);
+        if (voxel_grid_.workspace_region.valid) {
+          voxel_grid_.workspace_region.hand_speed_mps =
+              workspace_prev != nullptr ? workspace_hand_speed(*workspace_prev)
+                                        : std::numeric_limits<double>::infinity();
+        }
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
@@ -1346,6 +1453,33 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
+          if (hit.workspace_pairs > 0) {
+            // #349 disclosure, never silent: count, tally, WARN <= 1 Hz per link.
+            const double speed = voxel_grid_.workspace_region.hand_speed_mps;
+            workspace_chunk_pairs += static_cast<std::uint64_t>(hit.workspace_pairs);
+            workspace_chunk_min = std::min(workspace_chunk_min, hit.workspace_min_distance);
+            workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
+            workspace_min_distance_total_ =
+                std::min(workspace_min_distance_total_, hit.workspace_min_distance);
+            workspace_speed_max_seen_ = std::max(workspace_speed_max_seen_, speed);
+            const auto l = static_cast<std::size_t>(hit.workspace_link);
+            const auto wall = std::chrono::steady_clock::now();
+            if (l < workspace_last_warn_.size() &&
+                wall - workspace_last_warn_[l] >= std::chrono::seconds(1)) {
+              workspace_last_warn_[l] = wall;
+              RCLCPP_WARN(this->get_logger(),
+                          "safety.workspace_contact link=%s cell=%d depth_mm=%.1f "
+                          "speed_mps=%.3f max_mps=%g pairs=%d step=%d target=%s",
+                          link_name(hit.workspace_link).c_str(), hit.workspace_cell,
+                          std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
+                          workspace_max_speed_mps_, hit.workspace_pairs, step,
+                          workspace_target_.c_str());
+            }
+            span->SetAttribute("safety.workspace_contact_pairs",
+                               static_cast<int64_t>(workspace_chunk_pairs));
+            span->SetAttribute("safety.workspace_contact_max_depth_m",
+                               std::max(0.0, -workspace_chunk_min));
+          }
           if (hit.hit) {
             report("world", link_name(hit.link_a),
                    std::string("voxel_") + std::to_string(hit.link_b), step, hit);
@@ -1430,11 +1564,32 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       };
 
       if (is_position) {
+        // #349 hand speed: row s is reached from row s-1 (row 0 from the measured
+        // state) in one control period. Seed the previous-row hand poses with the
+        // measured state — and, for the tick-partner check, the measured state
+        // with the partner's committed targets, which stay put across rows.
+        std::vector<Transform>* ws_plain = nullptr;
+        std::vector<Transform>* ws_partner = nullptr;
+        if (workspace_speed_known) {
+          fk_config(q_meas_.data());
+          workspace_snapshot(workspace_prev_plain_);
+          ws_plain = &workspace_prev_plain_;
+          if (tick_partner) {
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              q_workspace_[d] = slot_commanded_[d] == 0 && tick_target_set_[d] != 0
+                                    ? tick_target_[d]
+                                    : q_meas_[d];
+            }
+            fk_config(q_workspace_.data());
+            workspace_snapshot(workspace_prev_partner_);
+            ws_partner = &workspace_prev_partner_;
+          }
+        }
         for (std::uint16_t s = 0; s < view.horizon; ++s) {
           const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
           if (!slot_row) {
             // A full row is the joint configuration itself.
-            if (check_config(row, static_cast<int>(s))) {
+            if (check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
               return;
             }
             continue;
@@ -1443,7 +1598,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           for (std::size_t d = 0; d < robot_ndof; ++d) {
             q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
           }
-          if (check_config(q_check_.data(), static_cast<int>(s))) {
+          if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
             return;
           }
           // ... and, additionally, at this tick's other committed targets.
@@ -1454,7 +1609,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                 q_check_[d] = tick_target_[d];
               }
             }
-            if (check_config(q_check_.data(), static_cast<int>(s))) {
+            if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_partner)) {
               return;
             }
           }
@@ -2098,6 +2253,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_latched_stamp_ns_ = 0;
   grasp_latched_ = false;
   grasp_latched_moved_warned_ = false;
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_target_.clear();
+  workspace_refusal_reason_.clear();
+  workspace_pairs_total_ = 0;
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
@@ -2652,6 +2812,9 @@ void SafetyKernelLifecycleNode::on_world_state(
   ingest_place_declaration(*msg);
   if (grasp_allowance_enabled_) {
     ingest_grasp_declaration(*msg);
+  }
+  if (workspace_contact_enabled_) {
+    ingest_workspace_contact(*msg);
   }
   attached_overflow_ = false;
   attached_received_ = true;
@@ -3265,6 +3428,165 @@ bool SafetyKernelLifecycleNode::grasp_declaration_live() const noexcept {
   // the handover has latched the box (see ingest_grasp_declaration).
   return grasp_region_.handover ||
          region_measurement_fresh(grasp_region_stamp_ns_, grasp_region_max_age_s_);
+}
+
+void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
+  if (workspace_region_.valid) {
+    RCLCPP_INFO(this->get_logger(), "safety.workspace_region_dropped reason=%s target=%s", reason,
+                workspace_target_.c_str());
+    RCLCPP_INFO(this->get_logger(),
+                "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
+                "max_speed_mps=%.3f max_mps=%g",
+                workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
+                workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3
+                                           : 0.0,
+                workspace_speed_max_seen_, workspace_max_speed_mps_);
+  }
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_pairs_total_ = 0;
+  workspace_min_distance_total_ = std::numeric_limits<double>::infinity();
+  workspace_speed_max_seen_ = 0.0;
+}
+
+void SafetyKernelLifecycleNode::ingest_workspace_contact(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  const std::string previous_target = workspace_target_;
+  const bool was_valid = workspace_region_.valid;
+  // A refusal the producer keeps re-sending is a standing state: WARN once per
+  // change of (reason, target), drop silently after.
+  const auto reject = [&](const char* reason, const std::string& target) {
+    drop_workspace(reason);
+    const std::string key = std::string(reason) + ":" + target;
+    if (workspace_refusal_reason_ == key) {
+      return;
+    }
+    workspace_refusal_reason_ = key;
+    RCLCPP_WARN(this->get_logger(), "safety.workspace_region_rejected reason=%s target=%s", reason,
+                target.c_str());
+  };
+  if (!msg.grasp_declaration_valid) {
+    drop_workspace("no_declaration");
+    return;
+  }
+  const auto& declaration = msg.grasp_declaration;
+  if (!declaration.active) {
+    drop_workspace("retracted");
+    return;
+  }
+  if (!declaration.workspace_region_valid) {
+    drop_workspace("no_workspace");
+    workspace_refusal_reason_.clear();
+    return;
+  }
+  if (declaration.target_id.empty()) {
+    reject("no_target", declaration.target_id);
+    return;
+  }
+  if (!std::isfinite(declaration.timeout_s) || declaration.timeout_s <= 0.0 ||
+      declaration.timeout_s > kMaxGraspDeclarationTimeoutS) {
+    reject("timeout_out_of_range", declaration.target_id);
+    return;
+  }
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - declaration.stamp_ns;
+  if (elapsed_ns < 0 || elapsed_ns > static_cast<std::int64_t>(declaration.timeout_s * 1e9)) {
+    drop_workspace("expired");
+    return;
+  }
+  // A retired identity (handover exit, release, a fault) ends its workspace
+  // with it: contact after the declaration ends is checked as today.
+  const std::size_t target_hash = std::hash<std::string>{}(declaration.target_id);
+  if (grasp_retired_.contains(target_hash, declaration.stamp_ns)) {
+    drop_workspace("retired");
+    return;
+  }
+  const auto& region = declaration.workspace_region;
+  if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
+    reject("frame_mismatch", declaration.target_id);
+    return;
+  }
+  if (!region.geometry.empty()) {
+    reject("geometry_not_supported", declaration.target_id);
+    return;
+  }
+  if (!region_measurement_fresh(region.stamp_ns, grasp_region_max_age_s_)) {
+    reject("region_stale", declaration.target_id);
+    return;
+  }
+  const Transform pose = transform_from_translation_quat(
+      region.pose.position.x, region.pose.position.y, region.pose.position.z,
+      region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
+      region.pose.orientation.w);
+  const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
+  WorkspaceContactRegion candidate;
+  const GraspRegionStatus status =
+      is_unit_quaternion(region.pose.orientation)
+          ? ingest_workspace_region(pose, half, workspace_links_, workspace_max_speed_mps_,
+                                    candidate)
+          : GraspRegionStatus::kBadPose;
+  if (status != GraspRegionStatus::kOk) {
+    reject(grasp_region_status_reason(status), declaration.target_id);
+    return;
+  }
+  if (was_valid && previous_target != declaration.target_id) {
+    drop_workspace("target_changed");  // the summary belongs to the previous identity
+  }
+  const bool announce = !workspace_region_.valid;
+  workspace_region_ = candidate;
+  workspace_region_stamp_ns_ = region.stamp_ns;
+  workspace_declaration_stamp_ns_ = declaration.stamp_ns;
+  workspace_declaration_timeout_s_ = declaration.timeout_s;
+  workspace_target_ = declaration.target_id;
+  workspace_target_hash_ = target_hash;
+  workspace_refusal_reason_.clear();
+  if (announce) {
+    RCLCPP_INFO(this->get_logger(),
+                "safety.workspace_region_armed target=%s links=%zu half_m=%g,%g,%g "
+                "max_speed_mps=%g rskill=%s trace=%s evidence=%s",
+                declaration.target_id.c_str(), workspace_links_.count(), half.x, half.y, half.z,
+                workspace_max_speed_mps_, declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str(), region.evidence_ref.c_str());
+  }
+}
+
+bool SafetyKernelLifecycleNode::workspace_live() const noexcept {
+  if (!workspace_contact_enabled_ || !workspace_region_.valid ||
+      workspace_declaration_timeout_s_ <= 0.0) {
+    return false;
+  }
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - workspace_declaration_stamp_ns_;
+  if (elapsed_ns < 0 ||
+      elapsed_ns > static_cast<std::int64_t>(workspace_declaration_timeout_s_ * 1e9)) {
+    return false;
+  }
+  // Retired on the candidate path (e.g. `handover_exit`) since the last message.
+  if (grasp_retired_.contains(workspace_target_hash_, workspace_declaration_stamp_ns_)) {
+    return false;
+  }
+  const double age_s = (this->now() - attached_stamp_).seconds();
+  if (!(attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+        age_s <= attached_collision_deadline_s_)) {
+    return false;
+  }
+  return region_measurement_fresh(workspace_region_stamp_ns_, grasp_region_max_age_s_);
+}
+
+void SafetyKernelLifecycleNode::workspace_snapshot(std::vector<Transform>& out) const noexcept {
+  for (const int l : workspace_link_index_) {
+    out[static_cast<std::size_t>(l)] = collision_scratch_.link_world[static_cast<std::size_t>(l)];
+  }
+}
+
+double SafetyKernelLifecycleNode::workspace_hand_speed(std::vector<Transform>& prev) noexcept {
+  double moved = 0.0;
+  for (const int l : workspace_link_index_) {
+    const auto i = static_cast<std::size_t>(l);
+    const Transform& now = collision_scratch_.link_world[i];
+    moved = std::max(moved, link_displacement_bound(prev[i], now, workspace_link_reach_[i]));
+    prev[i] = now;
+  }
+  const double speed = moved / workspace_control_period_s_;
+  return std::isfinite(speed) ? speed : std::numeric_limits<double>::infinity();
 }
 
 }  // namespace openral_safety_kernel

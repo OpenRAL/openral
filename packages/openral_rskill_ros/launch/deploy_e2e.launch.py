@@ -951,6 +951,68 @@ def _runner_joint_state_staleness_s(
     return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
+def _workspace_contact_kernel_params(
+    description: RobotDescription,
+    *,
+    enabled: bool,
+    max_speed_mps: float | None,
+    grasp_allowance_enabled: bool,
+    hal_mode: str,
+) -> dict[str, object]:
+    """The safety kernel's manipulation-workspace contact params (issue #349).
+
+    Off: ``{"workspace_contact_enabled": False}`` — the kernel exactly as without the
+    rule. On: the hand links come from the manifest (``RobotDescription.hand_links()``,
+    never configured by name) and the control period from its
+    ``action_spec.control_freq_hz`` (the chunk row spacing the kernel measures the hand
+    speed over); the speed bound is the scene's calibration point.
+
+    Raises:
+        ROSConfigError: Enabled on a non-sim HAL (sim-only until Safety-WG review),
+            without ``grasp_allowance_enabled``, without a positive speed bound, or for a
+            robot with no gripper or no ``action_spec.control_freq_hz``.
+    """
+    if not enabled:
+        return {"workspace_contact_enabled": False}
+    from openral_core.exceptions import ROSConfigError
+
+    if hal_mode != "sim":
+        raise ROSConfigError(
+            "workspace_contact_enabled is sim-only until Safety-WG review "
+            "(docs/reference/manipulation-workspace-contact.md); refused on hal_mode="
+            f"{hal_mode!r}."
+        )
+    if not grasp_allowance_enabled:
+        raise ROSConfigError(
+            "workspace_contact_enabled requires grasp_allowance_enabled: the workspace "
+            "rides the grasp declaration."
+        )
+    if max_speed_mps is None or not max_speed_mps > 0.0:
+        raise ROSConfigError(
+            f"workspace_contact_enabled needs workspace_contact_max_speed_mps > 0, got "
+            f"{max_speed_mps!r}: the hand speed bound is a calibration point, never a default."
+        )
+    links = list(description.hand_links())
+    if not links:
+        raise ROSConfigError(
+            f"workspace_contact_enabled but robot {description.name!r} declares no "
+            "role: gripper joint, so it has no hand links."
+        )
+    rate_hz = description.control_rate_hz
+    if rate_hz is None or not rate_hz > 0.0:
+        raise ROSConfigError(
+            f"workspace_contact_enabled but robot {description.name!r} declares no "
+            "action_spec.control_freq_hz: the kernel measures the hand speed over one "
+            "control period."
+        )
+    return {
+        "workspace_contact_enabled": True,
+        "workspace_contact_links": links,
+        "workspace_contact_max_speed_mps": float(max_speed_mps),
+        "workspace_contact_control_period_s": 1.0 / float(rate_hz),
+    }
+
+
 def _depth_camera(description: RobotDescription) -> str:
     """Name of the manifest's first depth sensor with intrinsics, else ``""``.
 
@@ -1584,6 +1646,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     grasp_allowance_enabled = LaunchConfiguration("grasp_allowance_enabled").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # Manipulation-workspace contact (DeployRuntime.workspace_contact_enabled, #349).
+    workspace_contact_enabled = LaunchConfiguration("workspace_contact_enabled").perform(
+        context
+    ).lower() in ("1", "true", "yes")
+    _ws_speed = LaunchConfiguration("workspace_contact_max_speed_mps").perform(context)
+    workspace_contact_max_speed_mps = float(_ws_speed) if _ws_speed else None
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -1925,6 +1993,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     kernel_params["place_region_max_age_s"] = 2.0 * world_voxel_deadline_s
     if grasp_contact_links:
         kernel_params["grasp_contact_links"] = grasp_contact_links
+    kernel_params.update(
+        _workspace_contact_kernel_params(
+            description,
+            enabled=workspace_contact_enabled,
+            max_speed_mps=workspace_contact_max_speed_mps,
+            grasp_allowance_enabled=grasp_allowance_enabled,
+            hal_mode=hal_mode,
+        )
+    )
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         assert coverage is not None  # reason: computed whenever enable_octomap
         kernel_params = {
@@ -4035,6 +4112,24 @@ def generate_launch_description() -> LaunchDescription:
                 "Safety kernel grasp-target exemption (DeployRuntime.grasp_allowance_enabled): "
                 "world-voxel cells inside a live GraspDeclaration's producer-measured region "
                 "do not trip the manifest's gripper contact links. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_enabled",
+            default_value="false",
+            description=(
+                "Safety kernel manipulation-workspace contact (DeployRuntime."
+                "workspace_contact_enabled, issue #349; sim-only until Safety-WG review): "
+                "the manifest's hand links may touch cells inside a live GraspDeclaration's "
+                "producer-confirmed workspace while the hand is slow. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_max_speed_mps",
+            default_value="",
+            description=(
+                "Hand speed bound (m/s) of the workspace contact rule; required when it is "
+                "enabled (DeployRuntime.workspace_contact_max_speed_mps)."
             ),
         ),
         DeclareLaunchArgument(

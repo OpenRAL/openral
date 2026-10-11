@@ -844,18 +844,19 @@ def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
     """
     grippers = [j for j in description.joints if j.role == "gripper"]
     parent_of = {j.child_link: j.parent_link for j in grippers}
-
-    def mount(link: str) -> str:
-        seen: set[str] = set()
-        while link in parent_of and link not in seen:  # climb a chained finger to its arm
-            seen.add(link)
-            link = parent_of[link]
-        return link
-
     hands: dict[str, list[str]] = {}
     for j in grippers:
-        hands.setdefault(mount(j.parent_link), []).append(j.child_link)
+        hands.setdefault(_gripper_mount(parent_of, j.parent_link), []).append(j.child_link)
     return tuple(tuple(links) for links in hands.values())
+
+
+def _gripper_mount(parent_of: Mapping[str, str], link: str) -> str:
+    """Climb a chained finger (``parent_of``: gripper child -> parent link) to its arm link."""
+    seen: set[str] = set()
+    while link in parent_of and link not in seen:
+        seen.add(link)
+        link = parent_of[link]
+    return link
 
 
 def resolve_sensor_overlays(
@@ -2945,6 +2946,30 @@ class RobotDescription(BaseModel):
             m.child_link for m in self.mimic_joints if m.mimics in names
         )
 
+    def hand_links(self) -> tuple[str, ...]:
+        """The robot's hand links: ``grasp_contact_links()`` plus the link each gripper hangs off.
+
+        Every ``role: gripper`` jaw and mimic follower (``grasp_contact_links``), then —
+        once per hand — the mount the hand's leader jaws hang off (a chained finger
+        climbed to its arm, as in ``gripper_hands``): the link that carries the gripper.
+        The launch passes this as the safety kernel's ``workspace_contact_links``
+        (issue #349): the only links the manipulation-workspace contact rule ever
+        relaxes. Derived from the manifest, never configured by name.
+
+        Example:
+            >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+            >>> d.hand_links()[-2:]
+            ('openarm_left_link7', 'openarm_right_link7')
+        """
+        grippers = [j for j in self.joints if j.role == "gripper"]
+        parent_of = {j.child_link: j.parent_link for j in grippers}
+        links = list(self.grasp_contact_links())
+        for j in grippers:
+            carrier = _gripper_mount(parent_of, j.parent_link)
+            if carrier not in links:
+                links.append(carrier)
+        return tuple(links)
+
     @model_validator(mode="after")
     def _validate_base_joints_against_joints(self) -> RobotDescription:
         """Ensure ``base_joints`` is well-formed: ≥3 entries, all real joint names.
@@ -3821,6 +3846,21 @@ class GraspDeclaration(BaseModel):
             ``region`` a direct-dispatch scene may also supply it; dispatch passes
             it through unchanged. ``None`` = no search, so the producer never
             measures a region.
+        workspace_box: Optional manipulation workspace (issue #349,
+            ``docs/reference/manipulation-workspace-contact.md``) in the voxel
+            grid's base frame — the box the task works in (the source tote's
+            interior for a pick). Like ``search_box`` a scene may *declare* it and
+            dispatch passes it through unchanged; it arms nothing on its own.
+            Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;
+            ``geometry`` must be empty. ``None`` = no workspace.
+        workspace_region: The producer-*confirmed* workspace: ``workspace_box``
+            itself (never grown), stamped with the ``source_stamp`` of the fresh
+            voxel grid that confirmed it holds occupied cells. Producer-supplied
+            only, exactly like ``region`` — a scene can never supply it
+            (``DeployScene._reject_scene_supplied_place_region``) and the rSkill
+            runner strips it. With the kernel's ``workspace_contact_enabled`` the
+            robot's hand links may touch occupied cells centred inside it while
+            the hand is slow. ``None`` = no workspace contact.
 
     Example:
         >>> declaration = GraspDeclaration(
@@ -3844,6 +3884,11 @@ class GraspDeclaration(BaseModel):
     MAX_HALF_EXTENT_M: ClassVar[float] = 0.20
     #: Ceiling on the region volume (Safety-WG placeholder).
     MAX_VOLUME_M3: ClassVar[float] = 0.03
+    #: Ceiling on one workspace half-extent (Safety-WG placeholder, #349): one
+    #: tote interior or shelf slot, not a room. Mirrored by the kernel.
+    MAX_WORKSPACE_HALF_EXTENT_M: ClassVar[float] = 0.50
+    #: Ceiling on the workspace volume (Safety-WG placeholder, #349).
+    MAX_WORKSPACE_VOLUME_M3: ClassVar[float] = 0.25
 
     target_id: str = ""
     object_id: str = ""
@@ -3855,6 +3900,8 @@ class GraspDeclaration(BaseModel):
     active: bool = True
     region: PlaceRegion | None = None
     search_box: PlaceRegion | None = None
+    workspace_box: PlaceRegion | None = None
+    workspace_region: PlaceRegion | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> GraspDeclaration:
@@ -3874,6 +3921,7 @@ class GraspDeclaration(BaseModel):
                 "GraspDeclaration.search_box.geometry must be empty; a search box is only "
                 "the oriented box the target producer looks for a seed in."
             )
+        self._check_workspace_boxes()
         if self.region is not None:
             if self.region.geometry:
                 raise ValueError(
@@ -3892,6 +3940,30 @@ class GraspDeclaration(BaseModel):
                     f"the {self.MAX_VOLUME_M3} m^3 bound."
                 )
         return self
+
+    def _check_workspace_boxes(self) -> None:
+        """``workspace_box`` / ``workspace_region``: an oriented box within the workspace caps."""
+        for name in ("workspace_box", "workspace_region"):
+            box: PlaceRegion | None = getattr(self, name)
+            if box is None:
+                continue
+            if box.geometry:
+                raise ValueError(
+                    f"GraspDeclaration.{name}.geometry must be empty; a workspace is an "
+                    "oriented box only."
+                )
+            for axis, value in zip("xyz", box.half_extents, strict=True):
+                if value > self.MAX_WORKSPACE_HALF_EXTENT_M:
+                    raise ValueError(
+                        f"GraspDeclaration {name} half-extent {axis}={value!r} exceeds the "
+                        f"{self.MAX_WORKSPACE_HALF_EXTENT_M} m bound; a workspace is one tote "
+                        "or shelf slot."
+                    )
+            if box.volume_m3() > self.MAX_WORKSPACE_VOLUME_M3:
+                raise ValueError(
+                    f"GraspDeclaration {name} volume {box.volume_m3()!r} m^3 exceeds the "
+                    f"{self.MAX_WORKSPACE_VOLUME_M3} m^3 bound."
+                )
 
     def is_live(self, *, now_ns: int) -> bool:
         """Is this declaration still in force at ``now_ns``?
@@ -3937,6 +4009,16 @@ class GraspDeclaration(BaseModel):
                 if bool(getattr(msg, "search_box_valid", False))
                 else None
             ),
+            workspace_box=(
+                PlaceRegion.from_idl(msg.workspace_box)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "workspace_box_valid", False))
+                else None
+            ),
+            workspace_region=(
+                PlaceRegion.from_idl(msg.workspace_region)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "workspace_region_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -3959,6 +4041,12 @@ class GraspDeclaration(BaseModel):
         msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
         if self.search_box is not None:
             self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
+        msg.workspace_box_valid = self.workspace_box is not None  # type: ignore[attr-defined]
+        if self.workspace_box is not None:
+            self.workspace_box.fill_idl(msg.workspace_box)  # type: ignore[attr-defined]
+        msg.workspace_region_valid = self.workspace_region is not None  # type: ignore[attr-defined]
+        if self.workspace_region is not None:
+            self.workspace_region.fill_idl(msg.workspace_region)  # type: ignore[attr-defined]
 
 
 class SupportContactWitness(BaseModel):
@@ -10557,6 +10645,41 @@ class DeployRuntime(BaseModel):
     ``openral deploy run`` refuses it on unless ``vision_attachment.enabled`` and
     ``vision_attachment.grasp_target_enabled`` are on too: the kernel would arm with no
     producer measuring the region (``deploy sim``'s MuJoCo evidence tracker measures it)."""
+    workspace_contact_enabled: bool = False
+    """Turn on the safety kernel's manipulation-workspace contact rule (issue #349, its
+    ``workspace_contact_enabled``; ``docs/reference/manipulation-workspace-contact.md``):
+    while a live ``GraspDeclaration`` carries a producer-confirmed ``workspace_region``,
+    world-voxel cells centred in that box do not trip the robot's **hand** links (the
+    launch derives them from the manifest, ``RobotDescription.hand_links()``) as long as the
+    hand's commanded speed is at most ``workspace_contact_max_speed_mps``. Arm links,
+    contact outside the workspace and a fast hand stop as before. Requires
+    ``grasp_allowance_enabled`` (the workspace rides the grasp declaration). Default off,
+    and off is the graph exactly as without it. **Sim-only until Safety-WG review:**
+    ``openral deploy run`` and ``deploy_e2e`` on a non-sim HAL refuse it on.
+    Backward-compatible addition."""
+    workspace_contact_max_speed_mps: float | None = Field(default=None, gt=0.0, le=1.0)
+    """The hand speed bound (m/s) of the workspace contact rule: the largest displacement
+    of any point of a hand link's collision geometry between consecutive commanded rows,
+    over one control period (``action_spec.control_freq_hz``). Required when
+    ``workspace_contact_enabled`` — there is no default the kernel would silently use.
+    **Calibration point** (from the sim-run contact data, issue #349 plan step 5); capped
+    at 1 m/s, beyond which the rule is not a contact-energy bound at all."""
+
+    @model_validator(mode="after")
+    def _check_workspace_contact(self) -> Self:
+        if not self.workspace_contact_enabled:
+            return self
+        if not self.grasp_allowance_enabled:
+            raise ValueError(
+                "workspace_contact_enabled requires grasp_allowance_enabled: the workspace "
+                "rides the grasp declaration."
+            )
+        if self.workspace_contact_max_speed_mps is None:
+            raise ValueError(
+                "workspace_contact_enabled requires workspace_contact_max_speed_mps (> 0): "
+                "the hand speed bound is a calibration point, never a silent default."
+            )
+        return self
 
     @property
     def voxel_freshness_s(self) -> tuple[float, float]:
@@ -10793,7 +10916,20 @@ class DeployScene(BaseModel):
         seed and arms nothing. The exemption is only ever the region the
         producer measured from the camera and cross-checked against the map
         inside that box (real pick-and-place design §2.2).
+
+        The same split holds for the manipulation workspace (issue #349): a
+        scene may declare ``grasp_declaration.workspace_box``, never the
+        confirmed ``workspace_region`` the kernel acts on.
         """
+        if (
+            self.grasp_declaration is not None
+            and self.grasp_declaration.workspace_region is not None
+        ):
+            raise ValueError(
+                "grasp_declaration.workspace_region is producer-supplied (issue #349): only "
+                "the producer that confirmed the workspace against a fresh voxel map may set "
+                "it. Declare grasp_declaration.workspace_box instead."
+            )
         if self.grasp_declaration is not None and self.grasp_declaration.region is not None:
             raise ValueError(
                 "grasp_declaration.region is producer-supplied (real pick-and-place design "

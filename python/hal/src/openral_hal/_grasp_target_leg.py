@@ -307,6 +307,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 
 __all__ = [
     "APPROACH_TARGET_PREFIX",
+    "WORKSPACE_MIN_COVER",
     "GraspTargetLeg",
     "GraspTargetTracker",
     "approach_box",
@@ -343,6 +344,13 @@ _PREMEASURE_MAX_HZ = 2.0
 #: band the hand crosses *before* it arms, so the instance it arms on is already tracked.
 #: *Calibration point.*
 _PREMEASURE_REACH_APPROACHES = 2.0
+#: Manipulation workspace (issue #349): the declared ``workspace_box`` is confirmed only
+#: while occupied cells centred in it cover at least this fraction of its footprint
+#: (``region_covers_occupied``) on a fresh grid. A tote interior holding its cartons
+#: covers most of its floor; a box declared over empty space (a wrong pose, the tote
+#: taken away) covers none. 10 % keeps a nearly-emptied tote confirmed while a stray
+#: cell or two cannot confirm an empty volume. *Calibration point.*
+WORKSPACE_MIN_COVER = 0.10
 
 
 _P = ParamSpec("_P")
@@ -534,7 +542,11 @@ class GraspTargetTracker:
         self._away.clear()
         self._away_since.clear()
         self._spent.clear()
-        self._declaration = declaration.model_copy(update={"region": None})
+        # Dispatch never supplies a measurement: the region and the confirmed workspace
+        # are this leg's to set (the declared ``workspace_box`` passes through).
+        self._declaration = declaration.model_copy(
+            update={"region": None, "workspace_region": None}
+        )
         self._transition(
             f"declared:{declaration.target_id}:{declaration.stamp_ns}",
             f"grasp target declared {declaration.target_id!r} "
@@ -1633,6 +1645,11 @@ class GraspTargetLeg:
         # The outcome kind of the last re-fit the frozen region ignored ("" while nothing
         # is held): logged once per change (``_refit_ignored``).
         self._ignored_kind = ""
+        # The confirmed manipulation workspace (#349): the declaration's ``workspace_box``
+        # stamped with the confirming grid's ``source_stamp``, or ``None``; and the last
+        # logged workspace state, so a transition is logged once (``_set_workspace``).
+        self._workspace: PlaceRegion | None = None
+        self._workspace_state = ""
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1719,6 +1736,9 @@ class GraspTargetLeg:
         msg.grasp_declaration_valid = declaration is not None
         if declaration is None:
             return
+        workspace = self.published_workspace(declaration, now_ns=now_ns)
+        if workspace is not None:
+            declaration = declaration.model_copy(update={"workspace_region": workspace})
         if declaration.region is not None:
             handed_over = self.tracker.handed_over is not None
             declaration = declaration.model_copy(
@@ -1856,6 +1876,100 @@ class GraspTargetLeg:
     def _now_ns(self) -> int:
         return int(self._node.get_clock().now().nanoseconds)
 
+    # ── manipulation workspace (#349) ────────────────────────────────────────
+
+    def _set_workspace(self, workspace: PlaceRegion | None, state: str, line: str) -> None:
+        """Hold ``workspace``; log ``line`` once per change of ``state``."""
+        self._workspace = workspace
+        if state != self._workspace_state:
+            self._workspace_state = state
+            self._node.get_logger().info(line)
+
+    @_locked
+    def _confirm_workspace(self, now_ns: int) -> None:
+        """Confirm the live declaration's ``workspace_box`` against the newest grid.
+
+        Confirmed — the same box, never grown, re-stamped with the grid's
+        ``source_stamp`` — when the grid is fresh (``_fresh_grid``: the freshness rules
+        of the region) and occupied cells centred in the box cover at least
+        ``WORKSPACE_MIN_COVER`` of its footprint. Retracted at once when the map no
+        longer holds it (or is in another frame) or no workspace is declared. A grid
+        that is merely stale or missing keeps the last confirmation, which then ages
+        out ``freeze_s`` after its stamp (``published_workspace``). Independent of the
+        target region: valid before it is measured and after it is handed over.
+        """
+        declaration = self.tracker.declaration
+        if (
+            declaration is None
+            or not declaration.is_live(now_ns=now_ns)
+            or declaration.workspace_box is None
+        ):
+            self._set_workspace(None, "none", "grasp workspace: none declared")
+            return
+        box = declaration.workspace_box
+        try:
+            grid, source_ns = self._fresh_grid(now_ns)
+        except _Refusal as refusal:
+            if self._workspace is not None and now_ns - self._workspace.stamp_ns > int(
+                self._freeze_s * 1e9
+            ):
+                self._set_workspace(
+                    None,
+                    f"aged:{refusal.kind}",
+                    f"grasp workspace retracted — no fresh grid for {self._freeze_s:.2f} s "
+                    f"({refusal.kind}: {refusal.detail})",
+                )
+            return
+        try:
+            count, covered = region_covers_occupied(grid, box, min_fraction=WORKSPACE_MIN_COVER)
+        except ROSConfigError as exc:
+            self._set_workspace(
+                None, "frame_mismatch", f"grasp workspace retracted — frame_mismatch: {exc}"
+            )
+            return
+        if not covered:
+            self._set_workspace(
+                None,
+                "map_disagrees",
+                f"grasp workspace retracted — map_disagrees: {count} occupied cell(s) in "
+                f"{box.frame_id} box at {tuple(round(v, 3) for v in box.pose.xyz)}, under "
+                f"{WORKSPACE_MIN_COVER:.0%} of its footprint",
+            )
+            return
+        confirmed = box.model_copy(update={"stamp_ns": source_ns})
+        self._set_workspace(
+            confirmed,
+            "confirmed",
+            f"grasp workspace confirmed for {declaration.target_id!r}: "
+            f"{count} occupied cell(s), box at {tuple(round(v, 3) for v in box.pose.xyz)} "
+            f"half_extents {tuple(round(v, 3) for v in box.half_extents)}",
+        )
+
+    @_locked
+    def published_workspace(
+        self, declaration: GraspDeclaration, *, now_ns: int
+    ) -> PlaceRegion | None:
+        """The confirmed workspace to publish with ``declaration`` now, or ``None``.
+
+        Only the confirmation of ``declaration``'s own ``workspace_box`` (same frame,
+        pose and extents) and only within ``freeze_s`` of its stamp — the kernel ages it
+        out at ``grasp_region_max_age_s`` anyway; publishing it longer would only be
+        refused there.
+        """
+        held = self._workspace
+        box = declaration.workspace_box
+        if held is None or box is None:
+            return None
+        if (held.frame_id, held.pose, held.half_extents) != (
+            box.frame_id,
+            box.pose,
+            box.half_extents,
+        ):
+            return None
+        if now_ns - held.stamp_ns > int(self._freeze_s * 1e9):
+            return None
+        return held
+
     # ── measurement ──────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -1866,6 +1980,7 @@ class GraspTargetLeg:
         outside it; the request is committed under the lock (``_commit_request``).
         """
         now_ns = self._now_ns()
+        self._confirm_workspace(now_ns)
         begun = self._begin_tick(now_ns)
         if self.tracker.region is None:
             self._ignored_kind = ""

@@ -1438,6 +1438,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # setdefault: an explicit ``--hal vision_attachment_*=`` still wins.
         for _va_key, _va_value in _vision_attachment_hal_params(vision_leg).items():
             hal_params.setdefault(_va_key, _va_value)
+    # Manipulation-workspace contact (#349) is sim-only until Safety-WG review.
+    if hal_mode == "real" and rt is not None and rt.workspace_contact_enabled:
+        raise ROSConfigError(
+            "runtime.workspace_contact_enabled is sim-only until Safety-WG review "
+            "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
+        )
     # On real hardware the vision bridge's target leg is the only grasp-region producer (in
     # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
     # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus
@@ -1615,6 +1621,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # unchanged. The launch always passes the kernel the manifest's gripper links.
     if rt is not None and rt.grasp_allowance_enabled:
         argv_template.append("grasp_allowance_enabled:=true")
+    # Manipulation-workspace contact (#349): forwarded only when enabled, with its speed
+    # bound (the schema requires one). The launch derives the hand links and the control
+    # period from the manifest.
+    if rt is not None and rt.workspace_contact_enabled:
+        argv_template.extend(
+            [
+                "workspace_contact_enabled:=true",
+                f"workspace_contact_max_speed_mps:={rt.workspace_contact_max_speed_mps}",
+            ]
+        )
     # Vision attachment leg: forwarded only when enabled, so a scene without it composes
     # exactly as before. The launch couples it to the kernel's attached check.
     if vision_leg is not None and vision_leg.enabled:

@@ -330,6 +330,9 @@ _grasp_declaration_st = st.builds(
     stamp_ns=_ns,
     active=st.booleans(),
     region=st.none() | _grasp_region_st,
+    # #349: under the grasp caps is under the workspace caps too.
+    workspace_box=st.none() | _grasp_region_st,
+    workspace_region=st.none() | _grasp_region_st,
 )
 
 _place_declaration_st = st.builds(

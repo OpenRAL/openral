@@ -216,6 +216,29 @@ private:
   bool attachment_on_grasp_chain(int attach_link,
                                  const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept;
 
+  // Manipulation-workspace contact (issue #349, draft; Safety-WG review
+  // pending). Resolve the producer-confirmed `workspace_region` riding the
+  // grasp declaration into `workspace_region_`. Only called with
+  // `workspace_contact_enabled`, after `ingest_grasp_declaration` (so a retired
+  // identity carries no workspace either). Every refusal yields NO workspace.
+  void ingest_workspace_contact(const openral_msgs::msg::WorldStateStamped& msg);
+  // Drop the ingested workspace (no-op when none): logs
+  // `safety.workspace_region_dropped reason=<reason>` and the declaration's
+  // `safety.workspace_contact_summary` once, then resets the tallies.
+  void drop_workspace(const char* reason);
+  // Is the ingested workspace in force at `now`? Dead on: no workspace, the
+  // declaration's `timeout_s` lapsed or stamped in the future, its identity
+  // retired, the world-state stream older than `attached_collision_deadline`,
+  // or the confirmation older than `grasp_region_max_age_s`.
+  bool workspace_live() const noexcept;
+  // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
+  // relative to `prev` (the hand links' poses at the previous row; updated to
+  // this row's): max over the workspace links of `link_displacement_bound` /
+  // `workspace_control_period_s_`.
+  double workspace_hand_speed(std::vector<Transform>& prev) noexcept;
+  // Copy the workspace links' current FK poses into `out`.
+  void workspace_snapshot(std::vector<Transform>& out) const noexcept;
+
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint
   // name) so a velocity chunk can be reconstructed into the configurations FK
@@ -382,6 +405,38 @@ private:
   /// only; the standing state is on the 1 Hz `/diagnostics` `grasp_region` key.
   std::string grasp_region_refusal_reason_;
   std::string grasp_region_refusal_target_;
+  /// Manipulation-workspace contact (#349, draft). Off unless
+  /// `workspace_contact_enabled` (which requires `grasp_allowance_enabled`).
+  /// `workspace_links_` is the launch-derived hand-link mask
+  /// (`workspace_contact_links`, resolved at configure); `workspace_link_index_`
+  /// lists the same links, `workspace_link_reach_` their geometry reach (per
+  /// link index). The control period is the chunk row spacing the hand speed
+  /// is measured over (`workspace_contact_control_period_s`, from the
+  /// manifest's `action_spec.control_freq_hz`).
+  bool workspace_contact_enabled_{false};
+  std::bitset<kMaxGraspMaskLinks> workspace_links_{};
+  std::vector<int> workspace_link_index_;
+  std::vector<double> workspace_link_reach_;
+  double workspace_max_speed_mps_{0.0};
+  double workspace_control_period_s_{0.0};
+  WorkspaceContactRegion workspace_region_{};
+  std::int64_t workspace_region_stamp_ns_{0};
+  std::int64_t workspace_declaration_stamp_ns_{0};
+  double workspace_declaration_timeout_s_{0.0};
+  std::string workspace_target_;
+  std::size_t workspace_target_hash_{0};
+  std::string workspace_refusal_reason_;  ///< last announced refusal (logged on change)
+  /// Disclosure tallies for the armed declaration (summary on drop).
+  std::uint64_t workspace_pairs_total_{0};
+  double workspace_min_distance_total_{std::numeric_limits<double>::infinity()};
+  double workspace_speed_max_seen_{0.0};
+  /// Per-link last WARN time (≤ 1 Hz per link), sized to the model's links.
+  std::vector<std::chrono::steady_clock::time_point> workspace_last_warn_;
+  /// Hand-link poses at the previous checked row (plain / tick-partner rows),
+  /// sized to the model's links at configure; never allocated on the hot path.
+  std::vector<Transform> workspace_prev_plain_;
+  std::vector<Transform> workspace_prev_partner_;
+  std::vector<double> q_workspace_;  ///< measured + partner-target seed (n_dof)
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
