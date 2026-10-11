@@ -1324,6 +1324,55 @@ def test_the_region_payload_is_clipped_at_the_tool_point() -> None:
     assert top == pytest.approx(-0.07) and bottom == pytest.approx(-0.15)
 
 
+def test_a_segmented_payload_is_clipped_at_the_tool_point() -> None:
+    """#349 d15_mix07: a mask that bled into the hand put a payload box behind the palm,
+    against the carrying wrist. Box primitives are clipped at the tool point (front face
+    kept); other shapes and a missing tool point leave the payload as it is."""
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+        SphereShape,
+    )
+    from openral_hal.vision_attachment_bridge import (
+        clip_payload_behind_tool_point,
+        primitive_poses,
+    )
+
+    def prim(shape: Any, z: float) -> AttachedCollisionPrimitive:
+        return AttachedCollisionPrimitive(
+            shape=shape,
+            pose_in_object=Pose6D(xyz=(0.0, 0.0, z), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="p"),
+        )
+
+    held = AttachedCollisionObject(
+        object_id="p",
+        attach_link="openarm_left_link7",
+        touch_links=["openarm_left_finger_pair"],
+        primitives=[
+            prim(BoxShape(half_extents_m=(0.03, 0.03, 0.05)), -0.10),  # z -0.15..-0.05
+            prim(SphereShape(radius_m=0.02), -0.06),
+        ],
+        pose_in_link=Pose6D(
+            xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_left_link7"
+        ),
+        confidence=0.5,
+        evidence_kind=AttachmentEvidenceKind.VISION_SEGMENTATION,
+        evidence_ref="test",
+        stamp_ns=1,
+    )
+    assert clip_payload_behind_tool_point(held, None) == held
+    clipped = clip_payload_behind_tool_point(held, (0.0, 0.0, -0.07))
+    box, sphere = clipped.primitives
+    assert isinstance(box.shape, BoxShape)
+    (t, _) = primitive_poses(clipped, np.eye(4))
+    assert t[2, 3] + box.shape.half_extents_m[2] == pytest.approx(-0.07)
+    assert t[2, 3] - box.shape.half_extents_m[2] == pytest.approx(-0.15)
+    assert sphere == held.primitives[1]
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);

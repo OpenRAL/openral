@@ -572,7 +572,7 @@ def _clip_behind_tool_point(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Shorten a box (``pose`` in the link, ``half``) so nothing lies behind the tool point.
 
-    Only along a box axis within 15 degrees of the approach ``u = tcp / |tcp|`` (an OBB
+    Only along a box axis within 30 degrees of the approach ``u = tcp / |tcp|`` (an OBB
     clipped by an oblique plane is no OBB); the front face stays, the half extent never
     drops below 2.5 mm. Unchanged when no axis is aligned or nothing is behind.
 
@@ -593,7 +593,7 @@ def _clip_behind_tool_point(
     rot = pose[:3, :3]
     proj = rot.T @ u  # each box axis . u
     i = int(np.argmax(np.abs(proj)))
-    if abs(proj[i]) < math.cos(math.radians(15.0)):
+    if abs(proj[i]) < math.cos(math.radians(30.0)):
         return pose, half
     back = float(pose[:3, 3] @ u) - float(np.abs(proj) @ half)
     excess = reach - back
@@ -606,6 +606,58 @@ def _clip_behind_tool_point(
     out_half[i] -= cut / 2.0
     out_pose[:3, 3] += rot[:, i] * math.copysign(cut / 2.0, proj[i])
     return out_pose, out_half
+
+
+def clip_payload_behind_tool_point(
+    obj: AttachedCollisionObject, tcp_in_link: tuple[float, float, float] | None
+) -> AttachedCollisionObject:
+    """``obj`` with every box primitive clipped so nothing lies behind the tool point.
+
+    A held object is between and beyond the jaws, never behind them in the palm; a
+    segmentation mask that bled into the hand put payload boxes there, against the
+    carrying wrist (#349 d15_mix07: payload vs ``openarm_right_link6``, -22.8 mm). Each
+    box is clipped like ``_clip_behind_tool_point``; other shapes are kept as they are.
+    ``None`` (no tool point) returns ``obj`` unchanged.
+    """
+    if tcp_in_link is None:
+        return obj
+    from openral_core import BoxShape, Pose6D
+    from openral_core.geometry import rotation_to_quat_wxyz
+
+    tcp = np.asarray(tcp_in_link, dtype=np.float64)
+    t_link_obj = homogeneous_from_quat_xyz(obj.pose_in_link.xyz, obj.pose_in_link.quat_xyzw)
+    t_obj_link = np.linalg.inv(t_link_obj)
+    out = []
+    for prim, t_link_prim in zip(obj.primitives, primitive_poses(obj, np.eye(4)), strict=True):
+        if not isinstance(prim.shape, BoxShape):
+            out.append(prim)
+            continue
+        half = np.asarray(prim.shape.half_extents_m, dtype=np.float64)
+        pose, clipped = _clip_behind_tool_point(t_link_prim, half, tcp)
+        if np.array_equal(clipped, half):
+            out.append(prim)
+            continue
+        t_obj_prim = t_obj_link @ pose
+        w, x, y, z = rotation_to_quat_wxyz(t_obj_prim[:3, :3])
+        out.append(
+            prim.model_copy(
+                update={
+                    "shape": BoxShape(
+                        half_extents_m=(float(clipped[0]), float(clipped[1]), float(clipped[2]))
+                    ),
+                    "pose_in_object": Pose6D(
+                        xyz=(
+                            float(t_obj_prim[0, 3]),
+                            float(t_obj_prim[1, 3]),
+                            float(t_obj_prim[2, 3]),
+                        ),
+                        quat_xyzw=(x, y, z, w),
+                        frame_id=prim.pose_in_object.frame_id,
+                    ),
+                }
+            )
+        )
+    return obj.model_copy(update={"primitives": out})
 
 
 def region_attachment(
@@ -657,7 +709,7 @@ def region_attachment(
         extrinsic_error_m: The depth extrinsic's accuracy bound (the witness's
             penetration bound, capped at the kernel's 10 mm).
         tcp_in_link: The tool point in ``attach_link``, or ``None``. Given, a box axis
-            within 15 degrees of the link-origin -> tool-point (approach) direction is
+            within 30 degrees of the link-origin -> tool-point (approach) direction is
             shortened so the box's back face sits on the tool point, front face fixed (never
             below 5 mm): the held object is between and beyond the jaws, never behind them
             in the palm. The bridge passes the tool point, or the measured (unpadded) region's
@@ -2168,6 +2220,8 @@ class VisionAttachmentBridge:
             reason = f"ROSConfigError: {exc}"
             self._node.get_logger().error(f"vision attachment producer rejected inputs: {exc}")
             attachment, report = _fit([], [])
+        if attachment is not None:
+            attachment = clip_payload_behind_tool_point(attachment, tcp_in_link)
         if reason:
             self._node.get_logger().warning(
                 f"vision attachment {leg.joint_name} fell back to GRIPPER_CLOSURE: {reason}"

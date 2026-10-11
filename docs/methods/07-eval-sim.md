@@ -612,14 +612,14 @@ _Tiny shared utility for VLA adapters to record what they fed the policy — the
 
 #### `python/sim/src/openral_sim/policies/mock.py`
 - `class _MockSim` — Tiny gym-like env for tests. (L32)
-- `class _ZeroPolicy` — Always emits zero-vector actions. (L128)
-- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L147)
-- `_coerce_int(value, default) -> int` (L89)
-- `_build_mock_scene(env_cfg) -> _MockSim` (L101)
-- `_resolve_action_dim(env_cfg) -> int | None` — Explicit mock width from `vla.extra` / `backend_options.action_dim`, else `None` (sized to the built env by `SimRunner` via `env_action_dim`; no per-scene table). (L170)
-- `_require_dim(action_dim) -> int` — `ROSConfigError` when a mock policy steps without a width. (L117)
-- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L188)
-- `_build_random_policy(env_cfg) -> _RandomPolicy` (L201)
+- `class _ZeroPolicy` — Always emits zero-vector actions. (L127)
+- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L146)
+- `_coerce_int(value, default) -> int` (L88)
+- `_build_mock_scene(env_cfg) -> _MockSim` (L100)
+- `_resolve_action_dim(env_cfg) -> int | None` — Explicit mock width from `vla.extra` / `backend_options.action_dim`, else `None` (sized to the built env by `SimRunner` via `env_action_dim`; no per-scene table). (L169)
+- `_require_dim(action_dim) -> int` — `ROSConfigError` when a mock policy steps without a width. (L116)
+- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L187)
+- `_build_random_policy(env_cfg) -> _RandomPolicy` (L200)
 
 #### `python/sim/src/openral_sim/policies/smolvla.py`
 - **Chunk-executor wiring (all chunked adapters)** — policy factories assign `build_chunk_executor(...)` to their adapter (SmolVLA/xVLA via `predict_action_chunk`; pi05/GR00T/MolmoAct2/OpenVLA via family-specific producers). pi05/SmolVLA/xVLA hand their lerobot postprocessor to the executor as `postprocess_action` and return its finished actions unchanged; GR00T/MolmoAct2/OpenVLA already decode inside their producers. Diffusion Policy is excluded (needs full observation history each tick); ZMQ sidecars stay synchronous (REQ sockets can't share a prefetch thread). **Real-Time Chunking**: an enabled `policy_extras.rtc` block (smolvla + pi05 only, requires `chunk_prefetch`) installs lerobot's `RTCProcessor` to blend prefetched chunks; the producer must accept the `inference_delay`/`prev_chunk_left_over` kwargs.
