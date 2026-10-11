@@ -2024,7 +2024,8 @@ class GraspTargetLeg:
             return
         try:
             grid, _ = self._fresh_grid(now_ns)
-        except _Refusal:
+        except _Refusal as refusal:
+            self._premeasured(f"idle: {refusal}")
             return  # the arming path refuses on the same grid; nothing to pre-measure on
         freeze_ns = int(self._freeze_s * 1e9)
         dropped = self._instances.prune(
@@ -2047,7 +2048,11 @@ class GraspTargetLeg:
             return
         refresh_ns = freeze_ns // 2
         self._prompted = {c: t for c, t in self._prompted.items() if now_ns - t <= refresh_ns}
-        for box, near_xy, armed in self._premeasure_columns(grid):
+        columns = self._premeasure_columns(grid)
+        if not columns:
+            self._premeasured("idle: no search box and no located free hand")
+            return
+        for box, near_xy, armed in columns:
             # The armed target's instance is re-fitted at every prompt, as the camera path
             # re-fits it every tick; elsewhere an instance is refreshed after half a freeze.
             prompt = self._next_prompt(grid, box, near_xy, now_ns - refresh_ns, armed=armed)
@@ -2064,6 +2069,7 @@ class GraspTargetLeg:
             except _Refusal as refusal:
                 self._premeasured(f"prompt {tuple(round(v, 3) for v in point)}: {refusal}")
             return
+        self._premeasured(f"idle: no raised surface to prompt in {len(columns)} column(s)")
 
     def _premeasure_columns(
         self, grid: VoxelLattice
