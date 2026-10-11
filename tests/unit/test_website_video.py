@@ -108,6 +108,24 @@ def test_write_world_grid_tiles_every_episode_keeping_aspect(tmp_path: Path) -> 
         write_world_grid([EpisodeResult(success=False)], tmp_path / "none.mp4")
 
 
+def test_write_world_grid_rounds_an_odd_tile_height_to_even(tmp_path: Path) -> None:
+    """yuv420p cannot encode odd sides; a single 91 px tile would otherwise fail in ffmpeg."""
+    import imageio.v2 as iio
+
+    out = write_world_grid(
+        [_result_with_frames(2, 64, 96, success=True)], tmp_path / "odd.mp4", tile_height=91
+    )
+    reader = iio.get_reader(out, format="ffmpeg")
+    try:
+        assert reader.get_data(0).shape[0] == 90
+    finally:
+        reader.close()
+    with pytest.raises(ValueError, match="at least 2"):
+        write_world_grid(
+            [_result_with_frames(2, 64, 96, success=True)], tmp_path / "x.mp4", tile_height=1
+        )
+
+
 def test_write_world_videos_can_add_the_grid(tmp_path: Path) -> None:
     write_world_videos(
         [

@@ -90,6 +90,15 @@ def test_a_static_object_cannot_be_graded() -> None:
         IsaacSimOptions.model_validate(opts)
 
 
+@pytest.mark.parametrize("bad", [float("inf"), float("nan")])
+def test_a_non_finite_yaw_offset_is_refused(bad: float) -> None:
+    from openral_sim.backends.isaac_sim import IsaacObjectPoseNoise
+
+    with pytest.raises(ValidationError, match="finite"):
+        IsaacObjectPoseNoise(yaw_offsets_deg=(0.0, bad))
+    assert IsaacObjectPoseNoise(yaw_offsets_deg=(0.0, 90.0)).yaw_offsets_deg == (0.0, 90.0)
+
+
 def test_rubric_names_must_be_unique_and_the_first_grade_scores_full_credit() -> None:
     level = {"name": "in", "score": 1.0, "region": "target"}
     with pytest.raises(ValidationError, match="unique names"):
@@ -101,6 +110,11 @@ def test_rubric_names_must_be_unique_and_the_first_grade_scores_full_credit() ->
     with pytest.raises(ValidationError, match=r"must score 1\.0"):
         IsaacSimOptions.model_validate(
             _warehouse_options(_shelf_success(grades=[{**level, "score": 0.5}]))
+        )
+    # A second full-credit level would tie the success grade in worst_grade.
+    with pytest.raises(ValidationError, match="only the success grade"):
+        IsaacSimOptions.model_validate(
+            _warehouse_options(_shelf_success(grades=[level, {**level, "name": "also"}]))
         )
 
 
@@ -273,7 +287,9 @@ def _rubrics(draw: st.DrawFn) -> list[IsaacPlacementGrade]:
     levels = [
         IsaacPlacementGrade(
             name=n,
-            score=1.0 if i == 0 else draw(st.floats(min_value=0.0, max_value=1.0, allow_nan=False)),
+            score=1.0
+            if i == 0
+            else draw(st.floats(min_value=0.0, max_value=1.0, exclude_max=True, allow_nan=False)),
             region=draw(st.sampled_from(["target", "adjacent"])),
             requires_upright=draw(st.booleans()),
         )

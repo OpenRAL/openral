@@ -735,6 +735,13 @@ class IsaacObjectPoseNoise(BaseModel):
             )
         return self
 
+    @field_validator("yaw_offsets_deg")
+    @classmethod
+    def _offsets_finite(cls, v: tuple[float, ...]) -> tuple[float, ...]:
+        if not all(math.isfinite(o) for o in v):
+            raise ValueError(f"yaw_offsets_deg must be finite degrees: {v}")
+        return v
+
 
 class IsaacSceneObject(BaseModel):
     """One extra USD object placed in the ``isaac_sim`` manifest scene.
@@ -972,7 +979,7 @@ class IsaacPlacementSuccess(BaseModel):
 
     @model_validator(mode="after")
     def _rubric_is_well_formed(self) -> IsaacPlacementSuccess:
-        """Grade names unique and not ``fail``; the first grade scores full credit."""
+        """Grade names unique and not ``fail``; the first grade, and only it, scores 1.0."""
         names = [g.name for g in self.grades]
         if len(set(names)) != len(names) or "fail" in names:
             raise ValueError(
@@ -982,6 +989,14 @@ class IsaacPlacementSuccess(BaseModel):
             raise ValueError(
                 f"placement_success.grades[0] ({self.grades[0].name!r}) is the success grade "
                 f"and must score 1.0, not {self.grades[0].score}"
+            )
+        # Only the success grade may score 1.0: a later full-credit level would tie it in
+        # worst_grade and end the episode as a success short of the success grade.
+        full = [g.name for g in self.grades[1:] if g.score >= 1.0]
+        if full:
+            raise ValueError(
+                f"placement_success.grades {full} score 1.0; only the success grade "
+                f"({self.grades[0].name!r}) may"
             )
         return self
 

@@ -9,6 +9,7 @@ meta); CLAUDE.md §1.11. The full-size parity against ``from_pretrained``
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -379,4 +380,29 @@ def test_direct_reader_refuses_a_header_that_points_outside_the_file(tmp_path: P
     forged = json.dumps(header).encode()
     path.write_bytes(struct.pack("<Q", len(forged)) + forged + raw[8 + n :])
     with pytest.raises(ROSConfigError, match="outside the file"):
+        read_safetensors_header(str(path))
+
+
+def _framed(header: bytes) -> bytes:
+    """A safetensors file: the header's little-endian length, the header, some data."""
+    return struct.pack("<Q", len(header)) + header + b"\x00" * 16
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (b"\x01\x02", "too short"),
+        (_framed(b"\xff\xfe\x00\x01"), "not valid JSON"),
+        (_framed(b"[]"), "not a JSON object"),
+        (_framed(b'{"w":{"dtype":"F32","data_offsets":7}}'), "malformed"),
+        (_framed(b'{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4,8]}}'), "malformed"),
+    ],
+    ids=["short", "binary", "list", "offsets-int", "offsets-triple"],
+)
+def test_direct_reader_refuses_every_malformed_header(
+    tmp_path: Path, payload: bytes, match: str
+) -> None:
+    path = tmp_path / "bad.safetensors"
+    path.write_bytes(payload)
+    with pytest.raises(ROSConfigError, match=match):
         read_safetensors_header(str(path))

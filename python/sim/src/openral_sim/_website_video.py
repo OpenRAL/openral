@@ -40,6 +40,8 @@ _GRAYSCALE_NDIM = 2
 _DEFAULT_SIZE = 1024
 #: Tile height of the ``--video-grid`` composite; 4 x 4 tiles of 448 px fit a 1792 px frame.
 _GRID_TILE_HEIGHT = 448
+#: yuv420p subsamples chroma 2x2, so every encoded side must be even (>= 2).
+_MIN_EVEN_SIDE = 2
 
 
 def save_world_mp4(
@@ -134,11 +136,13 @@ def write_world_grid(
     Args:
         episodes: The rollout results; episodes without ``frames`` are skipped.
         path: Output ``.mp4``.
-        tile_height: Height of one tile in pixels; the width follows the frame's aspect.
+        tile_height: Height of one tile in pixels (rounded down to even, as yuv420p
+            needs); the width follows the frame's aspect.
         fps: Playback frame rate.
 
     Raises:
-        ValueError: No episode carries frames, or ``path`` is not an ``.mp4``.
+        ValueError: No episode carries frames, ``path`` is not an ``.mp4``, or
+            ``tile_height`` is below 2.
 
     Example:
         >>> write_world_grid(results, Path("run_grid.mp4"), tile_height=360)  # doctest: +SKIP
@@ -150,6 +154,11 @@ def write_world_grid(
         raise ValueError("write_world_grid needs at least one episode with world frames")
     if path.suffix.lower() != ".mp4":
         raise ValueError(f"write_world_grid only writes MP4; got path={path!s}")
+    if tile_height < _MIN_EVEN_SIDE:
+        raise ValueError(f"tile_height must be at least {_MIN_EVEN_SIDE}; got {tile_height}")
+    tile_height -= (
+        tile_height % 2
+    )  # yuv420p (and imageio, with macro_block_size=1) needs even sides
     h0, w0 = clips[0][1].frames[0].shape[:2]
     tile_w = round(w0 * tile_height / h0 / 2) * 2
     cols = int(np.ceil(np.sqrt(len(clips))))

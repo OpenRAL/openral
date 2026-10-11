@@ -856,6 +856,10 @@ def expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) ->
     return expanded
 
 
+#: Bytes of the little-endian u64 header length a safetensors file starts with.
+_SAFETENSORS_PREFIX_BYTES = 8
+#: A header entry's ``data_offsets`` is a ``[start, end)`` pair.
+_OFFSETS_PAIR = 2
 #: safetensors header dtype tags -> torch dtype attribute names.
 _SAFETENSORS_DTYPES: dict[str, str] = {
     "BF16": "bfloat16",
@@ -877,9 +881,11 @@ def read_safetensors_header(path: str) -> tuple[dict[str, dict[str, Any]], int]:
     Returns ``(tensors, data_start)``: per key ``dtype``, ``shape`` and ``data_offsets``
     (relative to ``data_start``).
 
-    Validates what the reader relies on: a known dtype, and a byte span that lies inside
-    the file and matches ``shape`` × element size (``ROSConfigError`` otherwise), so a
-    truncated or hand-edited header cannot read past the file or mis-view a tensor.
+    Validates what the reader relies on -- a JSON object of entries with integer
+    ``data_offsets`` pairs and ``shape`` lists, a known dtype, and a byte span inside the
+    file (``_stream_safetensors_file`` also checks it against ``shape`` × element size).
+    Every malformed header raises ``ROSConfigError``, so a truncated or hand-edited file
+    cannot read past its end or mis-view a tensor.
 
     Example:
         >>> import tempfile, torch
@@ -892,14 +898,32 @@ def read_safetensors_header(path: str) -> tuple[dict[str, dict[str, Any]], int]:
     """
     size = os.path.getsize(path)
     with open(path, "rb") as fh:
-        (n,) = struct.unpack("<Q", fh.read(8))
-        if n > size - 8:
+        prefix = fh.read(_SAFETENSORS_PREFIX_BYTES)
+        if len(prefix) != _SAFETENSORS_PREFIX_BYTES:
+            raise ROSConfigError(f"{path}: too short for a safetensors header")
+        (n,) = struct.unpack("<Q", prefix)
+        if n > size - _SAFETENSORS_PREFIX_BYTES:
             raise ROSConfigError(f"{path}: safetensors header length {n} exceeds the file")
-        header = json.loads(fh.read(n))
+        try:
+            header = json.loads(fh.read(n))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ROSConfigError(f"{path}: safetensors header is not valid JSON") from exc
+    if not isinstance(header, dict):
+        raise ROSConfigError(f"{path}: safetensors header is not a JSON object")
     header.pop("__metadata__", None)
-    data_start = 8 + n
+    data_start = _SAFETENSORS_PREFIX_BYTES + n
     for key, meta in header.items():
-        start, end = meta["data_offsets"]
+        offsets = meta.get("data_offsets") if isinstance(meta, dict) else None
+        shape = meta.get("shape") if isinstance(meta, dict) else None
+        if not (
+            isinstance(offsets, list)
+            and len(offsets) == _OFFSETS_PAIR
+            and all(isinstance(o, int) for o in offsets)
+            and isinstance(shape, list)
+            and all(isinstance(d, int) and d >= 0 for d in shape)
+        ):
+            raise ROSConfigError(f"{path}: tensor {key!r} has a malformed header entry")
+        start, end = offsets
         if not 0 <= start <= end <= size - data_start:
             raise ROSConfigError(
                 f"{path}: tensor {key!r} spans {meta['data_offsets']} outside the file"
