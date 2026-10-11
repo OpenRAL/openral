@@ -40,7 +40,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
+import struct
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -854,6 +856,119 @@ def expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) ->
     return expanded
 
 
+#: safetensors header dtype tags -> torch dtype attribute names.
+_SAFETENSORS_DTYPES: dict[str, str] = {
+    "BF16": "bfloat16",
+    "F16": "float16",
+    "F32": "float32",
+    "F64": "float64",
+    "I64": "int64",
+    "I32": "int32",
+    "I16": "int16",
+    "I8": "int8",
+    "U8": "uint8",
+    "BOOL": "bool",
+}
+
+
+def read_safetensors_header(path: str) -> tuple[dict[str, dict[str, Any]], int]:
+    """A safetensors file's header entries and the byte its data section starts at.
+
+    Returns ``(tensors, data_start)``: per key ``dtype``, ``shape`` and ``data_offsets``
+    (relative to ``data_start``).
+
+    Validates what the reader relies on: a known dtype, and a byte span that lies inside
+    the file and matches ``shape`` × element size (``ROSConfigError`` otherwise), so a
+    truncated or hand-edited header cannot read past the file or mis-view a tensor.
+
+    Example:
+        >>> import tempfile, torch
+        >>> from safetensors.torch import save_file
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     save_file({"w": torch.zeros(2, 3)}, f"{d}/m.safetensors")
+        ...     tensors, start = read_safetensors_header(f"{d}/m.safetensors")
+        >>> tensors["w"]["dtype"], tensors["w"]["shape"], tensors["w"]["data_offsets"]
+        ('F32', [2, 3], [0, 24])
+    """
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        (n,) = struct.unpack("<Q", fh.read(8))
+        if n > size - 8:
+            raise ROSConfigError(f"{path}: safetensors header length {n} exceeds the file")
+        header = json.loads(fh.read(n))
+    header.pop("__metadata__", None)
+    data_start = 8 + n
+    for key, meta in header.items():
+        start, end = meta["data_offsets"]
+        if not 0 <= start <= end <= size - data_start:
+            raise ROSConfigError(
+                f"{path}: tensor {key!r} spans {meta['data_offsets']} outside the file"
+            )
+        if meta["dtype"] not in _SAFETENSORS_DTYPES:
+            raise ROSConfigError(f"{path}: tensor {key!r} has unsupported dtype {meta['dtype']!r}")
+    return header, data_start
+
+
+def _stream_safetensors_file(
+    path: str,
+    torch: Any,
+    targets: Mapping[str, Any],
+    key_map: KeyMap | None,
+    loaded: set[str],
+    unexpected: list[str],
+    *,
+    pin_memory: bool,
+) -> int:
+    """Copy one shard's tensors into ``targets`` (name -> parameter / buffer).
+
+    Returns the number of source keys ``key_map`` dropped on purpose.
+
+    Reads each tensor's bytes straight from the file into one reusable staging buffer
+    (pinned when the targets live on CUDA) and ``copy_``-es the typed view into its
+    target. ``safe_open``'s memory-mapped ``get_tensor`` + CUDA copy ran at ~0.2 GB/s on
+    a GB10 (a 3.4 B-param π0.5 took 34-45 s); plain reads into pinned memory stream at
+    >4 GB/s (1.7 s) -- the same bytes into the same slots.
+    """
+    header, data_start = read_safetensors_header(path)
+    raw = list(header)
+    mapping = key_map(raw) if key_map is not None else {k: k for k in raw}
+    by_source: dict[str, list[str]] = {}
+    for name, source in mapping.items():
+        if targets.get(name) is None:
+            unexpected.append(name)
+            continue
+        by_source.setdefault(source, []).append(name)
+    order = sorted(by_source, key=lambda k: header[k]["data_offsets"][0])
+    largest = max(
+        (header[k]["data_offsets"][1] - header[k]["data_offsets"][0] for k in order), default=0
+    )
+    staging = torch.empty(max(1, largest), dtype=torch.uint8, pin_memory=pin_memory)
+    view = memoryview(staging.numpy())
+    with open(path, "rb", buffering=0) as fh:
+        for source in order:
+            meta = header[source]
+            start, end = meta["data_offsets"]
+            nbytes = end - start
+            dtype = getattr(torch, _SAFETENSORS_DTYPES[meta["dtype"]])
+            if nbytes != math.prod(meta["shape"]) * torch.empty((), dtype=dtype).element_size():
+                raise ROSConfigError(
+                    f"{path}: tensor {source!r} byte span {nbytes} does not match its shape"
+                    f" {meta['shape']} and dtype {meta['dtype']}"
+                )
+            fh.seek(data_start + start)
+            got = 0
+            while got < nbytes:
+                read = fh.readinto(view[got:nbytes])
+                if not read:
+                    raise ROSConfigError(f"{path}: file ended inside tensor {source!r}")
+                got += read
+            tensor = staging[:nbytes].view(dtype).view(meta["shape"])
+            for name in by_source[source]:
+                targets[name].copy_(tensor)
+                loaded.add(name)
+    return len(set(raw) - set(mapping.values()))
+
+
 def stream_state_into_policy(
     policy: Any,
     repo_id: str,
@@ -867,9 +982,11 @@ def stream_state_into_policy(
 
     The meta-init substitute for a family's ``from_pretrained`` weight load. The
     policy is already materialised where it will run (``to_empty(device)``);
-    each tensor is read on the CPU and ``copy_``-ed into its target, which moves
-    and casts it — so the device peak is one model plus one tensor, never a
-    second full state dict, and never a source-dtype temporary on the GPU.
+    each tensor is read from the file into one staging buffer (pinned when the
+    policy is on CUDA; ``_stream_safetensors_file``) and ``copy_``-ed into its
+    target, which moves and casts it — so the device peak is one model plus one
+    tensor, never a second full state dict, and never a source-dtype temporary on
+    the GPU.
 
     ``key_map`` applies the family's own key normalisation first (π0.5:
     lerobot's ``_fix_pytorch_state_dict_keys`` + the ``model.`` prefix), so the
@@ -889,13 +1006,6 @@ def stream_state_into_policy(
     Raises:
         ROSConfigError: safetensors missing, or any missing / unexpected key.
     """
-    try:
-        from safetensors import safe_open
-    except ImportError as exc:  # pragma: no cover
-        raise ROSConfigError(
-            f"{family} fast meta-init requires safetensors; install with: "
-            "just sync --all-packages --group sim"
-        ) from exc
     paths = resolve_weights_files(repo_id, revision=revision)
     persistent, _ = _persistent_state_names(policy)
     targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
@@ -907,20 +1017,12 @@ def stream_state_into_policy(
     loaded: set[str] = set()
     unexpected: list[str] = []
     dropped = 0
+    pin = any(getattr(t, "is_cuda", False) for t in targets.values())
     with torch.no_grad():
         for path in paths:
-            # reason: safetensors ships no type stubs for safe_open
-            with safe_open(path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
-                raw = list(f.keys())
-                mapping = key_map(raw) if key_map is not None else {k: k for k in raw}
-                dropped += len(set(raw) - set(mapping.values()))
-                for name, source in mapping.items():
-                    target = targets.get(name)
-                    if target is None:
-                        unexpected.append(name)
-                        continue
-                    target.copy_(f.get_tensor(source))
-                    loaded.add(name)
+            dropped += _stream_safetensors_file(
+                path, torch, targets, key_map, loaded, unexpected, pin_memory=pin
+            )
     loaded_storage = {targets[n].untyped_storage().data_ptr() for n in loaded}
     missing = sorted(
         n
