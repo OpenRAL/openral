@@ -893,24 +893,53 @@ class IsaacPlacement(BaseModel):
     adjacent: list[str] = Field(default_factory=list)
 
 
+class IsaacPlacementGrade(BaseModel):
+    """One level of a placement rubric (``IsaacPlacementSuccess.grades``).
+
+    A resting object earns this grade when its centre is inside the placement's
+    ``region`` (``target``, or any ``adjacent`` box) and, if ``requires_upright``, its
+    declared up axis is within ``upright_tol_deg`` of world up. Levels are tried in
+    the rubric's order; the first match wins.
+
+    Example:
+        >>> IsaacPlacementGrade(name="semi", score=0.25, region="adjacent").requires_upright
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    score: float = Field(ge=0.0, le=1.0)
+    region: Literal["target", "adjacent"]
+    requires_upright: bool = False
+
+
+#: The default rubric: full credit upright in the target, half fallen in the target, a
+#: quarter anywhere in a neighbouring region. ``fail`` (0.0) is implicit.
+DEFAULT_PLACEMENT_GRADES: tuple[IsaacPlacementGrade, ...] = (
+    IsaacPlacementGrade(name="complete", score=1.0, region="target", requires_upright=True),
+    IsaacPlacementGrade(name="partial", score=0.5, region="target"),
+    IsaacPlacementGrade(name="semi", score=0.25, region="adjacent"),
+)
+
+
 class IsaacPlacementSuccess(BaseModel):
     """Graded task success for placement prompts (``IsaacSimOptions.placement_success``).
 
     ``tasks`` maps a prompt -- the scene's ``task.instruction``, verbatim -- to the
-    objects it asks to place. Each object is graded once it rests (moving slower than
-    ``rest_speed_m_s`` for ``settle_s`` of sim time; a moving object is ``fail``):
+    objects it asks to place. Each object is graded once it rests: moving slower than
+    ``rest_speed_m_s`` and turning slower than ``rest_turn_deg_s`` for ``settle_s`` of
+    sim time (a moving object is ``fail``). The rubric is the scene's ``grades``
+    (``IsaacPlacementGrade``, best first, first match wins; ``fail`` scores 0 when none
+    matches); the default is ``DEFAULT_PLACEMENT_GRADES``: ``complete`` 1.0 (in the
+    target, upright -- its declared up axis within ``upright_tol_deg`` of world up),
+    ``partial`` 0.5 (in the target, fallen), ``semi`` 0.25 (in an adjacent region).
 
-    * ``complete`` (score 1.0): centre inside ``target`` and upright -- its declared up
-      axis within ``upright_tol_deg`` of world up;
-    * ``partial`` (0.5): centre inside ``target`` but fallen over;
-    * ``semi`` (0.25): centre inside an ``adjacent`` region and upright;
-    * ``fail`` (0.0): anything else.
-
-    The episode's grade is its worst placement's. The scene terminates the episode with
-    ``info[success_key]`` true and reward 1.0 once every placement is ``complete``;
-    otherwise the last step's reward is the grade's score, so the episode's
-    ``total_reward`` carries the partial credit. Every step's ``info["placement_grade"]``
-    is the current grade.
+    The episode's grade is its worst placement's. The first grade (score 1.0) is the
+    success grade: the scene terminates the episode with ``info[success_key]`` true and
+    reward 1.0 once every placement reaches it; otherwise the last step's reward is the
+    grade's score, so the episode's ``total_reward`` carries the partial credit. Every
+    step's ``info["placement_grade"]`` is the current grade.
 
     Example:
         >>> box = IsaacPlacementRegion
@@ -933,15 +962,39 @@ class IsaacPlacementSuccess(BaseModel):
 
     regions: dict[str, IsaacPlacementRegion]
     tasks: dict[str, list[IsaacPlacement]] = Field(min_length=1)
+    grades: list[IsaacPlacementGrade] = Field(
+        default_factory=lambda: list(DEFAULT_PLACEMENT_GRADES), min_length=1
+    )
     upright_tol_deg: float = Field(default=20.0, gt=0.0, lt=90.0)
     settle_s: float = Field(default=1.0, ge=0.0)
     rest_speed_m_s: float = Field(default=0.02, gt=0.0)
+    rest_turn_deg_s: float = Field(default=10.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _rubric_is_well_formed(self) -> IsaacPlacementSuccess:
+        """Grade names unique and not ``fail``; the first grade scores full credit."""
+        names = [g.name for g in self.grades]
+        if len(set(names)) != len(names) or "fail" in names:
+            raise ValueError(
+                f"placement_success.grades needs unique names other than 'fail': {names}"
+            )
+        if self.grades[0].score != 1.0:
+            raise ValueError(
+                f"placement_success.grades[0] ({self.grades[0].name!r}) is the success grade "
+                f"and must score 1.0, not {self.grades[0].score}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _regions_known(self) -> IsaacPlacementSuccess:
         for prompt, placements in self.tasks.items():
             if not placements:
                 raise ValueError(f"placement_success.tasks[{prompt!r}] places no object")
+            objects = [p.object for p in placements]
+            if len(set(objects)) != len(objects):
+                raise ValueError(
+                    f"placement_success.tasks[{prompt!r}] places an object twice: {objects}"
+                )
             for p in placements:
                 unknown = sorted({p.target, *p.adjacent} - set(self.regions))
                 if unknown:
@@ -1078,16 +1131,22 @@ class IsaacSimOptions(BaseModel):
 
     @model_validator(mode="after")
     def _placements_name_scene_objects(self) -> IsaacSimOptions:
-        """Every ``placement_success`` object must be one of this scene's ``objects``."""
+        """Every ``placement_success`` object must be a dynamic object of this scene."""
         if self.placement_success is None:
             return self
-        names = {o.name for o in self.objects}
-        unknown = sorted(
-            {p.object for ps in self.placement_success.tasks.values() for p in ps} - names
-        )
+        dynamic = {o.name: o.dynamic for o in self.objects}
+        placed = {p.object for ps in self.placement_success.tasks.values() for p in ps}
+        unknown = sorted(placed - set(dynamic))
         if unknown:
             raise ValueError(
-                f"placement_success places {unknown}, which are not scene objects: {sorted(names)}"
+                f"placement_success places {unknown}, which are not scene objects: "
+                f"{sorted(dynamic)}"
+            )
+        static = sorted(name for name in placed if not dynamic[name])
+        if static:
+            raise ValueError(
+                f"placement_success places {static}, which are static (dynamic: false): a "
+                "fixed object resting in its target would grade itself"
             )
         return self
 
@@ -1860,6 +1919,8 @@ def _placement_success_spec(
         ... )
         >>> _placement_success_spec(ps, "put it in a")["placements"][0]["target"]
         {'min': [0.0, 0.0, 0.0], 'max': [1.0, 1.0, 1.0]}
+        >>> [g["name"] for g in _placement_success_spec(ps, "put it in a")["grades"]]
+        ['complete', 'partial', 'semi']
         >>> _placement_success_spec(None, "anything") is None
         True
     """
@@ -1881,9 +1942,11 @@ def _placement_success_spec(
             {"object": p.object, "target": box(p.target), "adjacent": [box(a) for a in p.adjacent]}
             for p in placements
         ],
+        "grades": [g.model_dump() for g in placement_success.grades],
         "upright_tol_deg": placement_success.upright_tol_deg,
         "settle_s": placement_success.settle_s,
         "rest_speed_m_s": placement_success.rest_speed_m_s,
+        "rest_turn_deg_s": placement_success.rest_turn_deg_s,
     }
 
 

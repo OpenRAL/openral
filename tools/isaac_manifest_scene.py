@@ -50,7 +50,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -226,10 +226,6 @@ def _quat_mul(a: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.floa
     )
 
 
-#: ``IsaacPlacementSuccess`` grades and the reward each scores, best first.
-PLACEMENT_SCORES: dict[str, float] = {"complete": 1.0, "partial": 0.5, "semi": 0.25, "fail": 0.0}
-
-
 def _quat_rotate(q: NDArray[np.float64], v: NDArray[np.float64]) -> NDArray[np.float64]:
     """Rotate ``v`` by the ``(w, x, y, z)`` quaternion ``q`` (``q ⊗ v ⊗ q*``).
 
@@ -263,20 +259,44 @@ def _in_box(p: NDArray[np.float64], box: dict[str, Any]) -> bool:
     return all(lo <= v <= hi for v, lo, hi in zip(p, box["min"], box["max"], strict=True))
 
 
+def _quat_angle(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
+    """Rotation angle (rad) between two ``(w, x, y, z)`` unit quaternions.
+
+    Example:
+        >>> import numpy as np
+        >>> round(_quat_angle(_yaw_quat(0.0), _yaw_quat(0.3)), 6)
+        0.3
+    """
+    dot = abs(float(np.dot(a, b))) / (float(np.linalg.norm(a)) * float(np.linalg.norm(b)))
+    return 2.0 * float(np.arccos(np.clip(dot, -1.0, 1.0)))
+
+
+def grade_scores(grades: Iterable[Mapping[str, Any]]) -> dict[str, float]:
+    """Grade name -> score for a rubric (``IsaacPlacementSuccess.grades``), plus ``fail`` 0.
+
+    Example:
+        >>> grade_scores([{"name": "in", "score": 1.0, "region": "target"}])
+        {'in': 1.0, 'fail': 0.0}
+    """
+    return {str(g["name"]): float(g["score"]) for g in grades} | {"fail": 0.0}
+
+
 def placement_grade(
     position: NDArray[np.float64],
     quat_wxyz: NDArray[np.float64],
     up_axis: NDArray[np.float64],
     placement: dict[str, Any],
     upright_tol_deg: float,
+    grades: Sequence[Mapping[str, Any]],
 ) -> str:
-    """Grade one resting object against a placement (``IsaacPlacementSuccess``).
+    """Grade one resting object against a placement by the scene's rubric.
 
     ``placement`` is one entry of the spec's ``placements``: ``target`` and
-    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame). The object is
+    ``adjacent`` boxes (``{"min": xyz, "max": xyz}``, world frame). ``grades`` is the
+    rubric (``IsaacPlacementSuccess.grades``: ``name``, ``score``, ``region`` =
+    ``target`` / ``adjacent``, ``requires_upright``), tried in order; the object is
     upright when ``up_axis`` (``object_up_axis``) is within ``upright_tol_deg`` of
-    world up. Returns ``complete`` (centre in target, upright), ``partial`` (in
-    target, fallen), ``semi`` (in an adjacent box, upright) or ``fail``. Pure.
+    world up. Returns the first matching grade's name, else ``fail``. Pure.
 
     Example:
         >>> import numpy as np
@@ -284,14 +304,21 @@ def placement_grade(
         ...     "target": {"min": [0, 0, 0], "max": [1, 1, 1]},
         ...     "adjacent": [{"min": [0, 1, 0], "max": [1, 2, 1]}],
         ... }
+        >>> rubric = [
+        ...     {"name": "complete", "score": 1.0, "region": "target", "requires_upright": True},
+        ...     {"name": "partial", "score": 0.5, "region": "target", "requires_upright": False},
+        ...     {"name": "semi", "score": 0.25, "region": "adjacent", "requires_upright": False},
+        ... ]
         >>> up, level = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])
-        >>> placement_grade(np.array([0.5, 0.5, 0.5]), level, up, slot, 20.0)
+        >>> placement_grade(np.array([0.5, 0.5, 0.5]), level, up, slot, 20.0, rubric)
         'complete'
-        >>> placement_grade(np.array([0.5, 1.5, 0.5]), level, up, slot, 20.0)
+        >>> placement_grade(np.array([0.5, 1.5, 0.5]), level, up, slot, 20.0, rubric)
         'semi'
         >>> on_side = _rpy_quat(np.pi / 2, 0.0, 0.0)
-        >>> placement_grade(np.array([0.5, 0.5, 0.5]), on_side, up, slot, 20.0)
+        >>> placement_grade(np.array([0.5, 0.5, 0.5]), on_side, up, slot, 20.0, rubric)
         'partial'
+        >>> placement_grade(np.array([0.5, 0.5, 0.5]), on_side, up, slot, 20.0, rubric[:1])
+        'fail'
     """
     up = _quat_rotate(
         np.asarray(quat_wxyz, dtype=np.float64), np.asarray(up_axis, dtype=np.float64)
@@ -299,53 +326,75 @@ def placement_grade(
     tilt = float(np.degrees(np.arccos(np.clip(up[2] / np.linalg.norm(up), -1.0, 1.0))))
     upright = tilt <= upright_tol_deg
     pos = np.asarray(position, dtype=np.float64)
-    if _in_box(pos, placement["target"]):
-        return "complete" if upright else "partial"
-    if upright and any(_in_box(pos, b) for b in placement.get("adjacent", ())):
-        return "semi"
+    inside = {
+        "target": _in_box(pos, placement["target"]),
+        "adjacent": any(_in_box(pos, b) for b in placement.get("adjacent", ())),
+    }
+    for grade in grades:
+        if inside[str(grade["region"])] and (upright or not grade.get("requires_upright")):
+            return str(grade["name"])
     return "fail"
 
 
-def worst_grade(grades: Iterable[str]) -> str:
-    """The lowest-scoring grade (``PLACEMENT_SCORES``); ``fail`` for none.
+def worst_grade(grades: Iterable[str], scores: Mapping[str, float]) -> str:
+    """The lowest-scoring grade under ``scores`` (``grade_scores``); ``fail`` for none.
 
     Example:
-        >>> worst_grade(["complete", "semi"]), worst_grade([])
+        >>> scores = {"complete": 1.0, "semi": 0.25, "fail": 0.0}
+        >>> worst_grade(["complete", "semi"], scores), worst_grade([], scores)
         ('semi', 'fail')
     """
-    return min(grades, key=PLACEMENT_SCORES.__getitem__, default="fail")
+    return min(grades, key=scores.__getitem__, default="fail")
 
 
-def rest_after(rest_s: float, moved_m: float | None, dt: float, rest_speed_m_s: float) -> float:
-    """Seconds an object has been at rest after one step that moved it ``moved_m``.
+def rest_after(
+    rest_s: float,
+    moved_m: float | None,
+    dt: float,
+    rest_speed_m_s: float,
+    turned_rad: float = 0.0,
+    rest_turn_rad_s: float = math.inf,
+) -> float:
+    """Seconds an object has been at rest after one step that moved it ``moved_m``
+    and turned it ``turned_rad``.
 
-    ``None`` (no previous position: the first graded step) restarts the timer, as
-    does any step faster than ``rest_speed_m_s``.
+    ``None`` (no previous pose: the first graded step) restarts the timer, as does any
+    step faster than ``rest_speed_m_s`` or turning faster than ``rest_turn_rad_s`` (an
+    object spinning on the spot is not at rest).
 
     Example:
         >>> rest_after(0.5, 0.0001, 1 / 30, 0.02) > 0.5, rest_after(0.5, 0.01, 1 / 30, 0.02)
         (True, 0.0)
+        >>> rest_after(0.5, 0.0, 1 / 30, 0.02, turned_rad=0.1, rest_turn_rad_s=0.2)
+        0.0
     """
-    if moved_m is None or moved_m > rest_speed_m_s * dt:
+    if moved_m is None or moved_m > rest_speed_m_s * dt or turned_rad > rest_turn_rad_s * dt:
         return 0.0
     return rest_s + dt
 
 
-def placement_reward(grade: str, last_step: bool) -> tuple[float, bool]:
+def placement_reward(
+    grade: str, last_step: bool, scores: Mapping[str, float], success_grade: str
+) -> tuple[float, bool]:
     """``(reward, terminated)`` for an episode's current grade.
 
-    ``complete`` ends the episode with full reward; on the last step any other grade
-    scores its partial credit (``PLACEMENT_SCORES``); every other step scores 0.
+    The ``success_grade`` (the rubric's first level) ends the episode with its score;
+    on the last step any other grade scores its credit under ``scores``; every other
+    step scores 0.
 
     Example:
-        >>> placement_reward("complete", False), placement_reward("semi", True)
-        ((1.0, True), (0.25, False))
-        >>> placement_reward("partial", False)
-        (0.0, False)
+        >>> scores = {"complete": 1.0, "partial": 0.5, "semi": 0.25, "fail": 0.0}
+        >>> placement_reward("complete", False, scores, "complete")
+        (1.0, True)
+        >>> (
+        ...     placement_reward("semi", True, scores, "complete"),
+        ...     placement_reward("partial", False, scores, "complete"),
+        ... )
+        ((0.25, False), (0.0, False))
     """
-    if grade == "complete":
-        return PLACEMENT_SCORES["complete"], True
-    return (PLACEMENT_SCORES[grade] if last_step else 0.0), False
+    if grade == success_grade:
+        return scores[grade], True
+    return (scores[grade] if last_step else 0.0), False
 
 
 def _footprint(prim: Any, obj: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -1365,6 +1414,9 @@ class IsaacManifestScene(IsaacSceneBase):
         self._placement_grade = "fail"
         self._rest_s: dict[str, float] = {}
         self._last_pos: dict[str, NDArray[np.float64]] = {}
+        self._last_quat: dict[str, NDArray[np.float64]] = {}
+        self._grades: list[dict[str, Any]] = list((self._placement_success or {}).get("grades", []))
+        self._grade_scores = grade_scores(self._grades)
         declared = {str(o["name"]): o for o in self._objects}
         self._up_axis = {
             str(p["object"]): object_up_axis(
@@ -2203,6 +2255,7 @@ class IsaacManifestScene(IsaacSceneBase):
         self._placement_grade = "fail"
         self._rest_s.clear()
         self._last_pos.clear()
+        self._last_quat.clear()
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
@@ -2465,17 +2518,25 @@ class IsaacManifestScene(IsaacSceneBase):
         ps = self._placement_success
         assert ps is not None  # reason: only called when placement_success is set
         dt = float(self.sim_dt_per_tick_s or 0.0)
+        turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
         for placement in ps["placements"]:
             name = str(placement["object"])
-            pos_raw, quat = self._object_prims[name].get_world_pose()
+            pos_raw, quat_raw = self._object_prims[name].get_world_pose()
             pos = np.asarray(pos_raw, dtype=np.float64)
-            last = self._last_pos.get(name)
+            quat = np.asarray(quat_raw, dtype=np.float64)
+            last, last_q = self._last_pos.get(name), self._last_quat.get(name)
             moved = None if last is None else float(np.linalg.norm(pos - last))
+            turned = 0.0 if last_q is None else _quat_angle(quat, last_q)
             self._rest_s[name] = rest_after(
-                self._rest_s.get(name, 0.0), moved, dt, float(ps["rest_speed_m_s"])
+                self._rest_s.get(name, 0.0),
+                moved,
+                dt,
+                float(ps["rest_speed_m_s"]),
+                turned,
+                turn_rate,
             )
-            self._last_pos[name] = pos
+            self._last_pos[name], self._last_quat[name] = pos, quat
             # ponytail: rest-based release check -- a gripper holding the object still in
             # the region for settle_s counts as placed; add a robot-contact test if needed.
             if self._rest_s[name] + 1e-9 < float(ps["settle_s"]):
@@ -2484,24 +2545,30 @@ class IsaacManifestScene(IsaacSceneBase):
             grades.append(
                 placement_grade(
                     pos,
-                    np.asarray(quat),
+                    quat,
                     self._up_axis[name],
                     placement,
                     float(ps["upright_tol_deg"]),
+                    self._grades,
                 )
             )
-        return worst_grade(grades)
+        return worst_grade(grades, self._grade_scores)
 
     def _reward_terminated(self) -> tuple[float, bool]:
         """Graded placement success (``placement_success``), else no task reward.
 
-        Terminates with reward 1.0 once every placement is ``complete``; otherwise the
-        episode's last step scores its grade (``PLACEMENT_SCORES``), every other step 0.
+        Terminates with reward 1.0 once every placement reaches the rubric's first grade;
+        otherwise the episode's last step scores its grade, every other step 0.
         """
         if self._placement_success is None:
             return 0.0, False  # bring-up scene: no task reward / termination
         self._placement_grade = self._grade_placements()
-        return placement_reward(self._placement_grade, self._step_idx >= self.max_steps)
+        return placement_reward(
+            self._placement_grade,
+            self._step_idx >= self.max_steps,
+            self._grade_scores,
+            str(self._grades[0]["name"]),
+        )
 
     def _extra_info(self) -> dict[str, Any]:
         """Simulator ground truth in the step ``info`` — never a policy observation.

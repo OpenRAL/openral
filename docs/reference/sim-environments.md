@@ -100,18 +100,31 @@ Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
 with the time each image shows, not the publish time (issue #361).
 
-Isaac scenes can grade placement prompts: `backend_options.placement_success`
+## SimScene catalogue (`scenes/sim/`)
+
+`DeployScene` + a single `task:` block. One CLI invocation, one or more
+`EpisodeResult`s; sized for ad-hoc development and smoke tests. The policy is
+supplied at the CLI via `--rskill <name>` — scene YAMLs no longer pin a VLA.
+Consumed by `openral sim run`.
+
+Isaac SimScenes can grade placement prompts: `backend_options.placement_success`
 (`IsaacPlacementSuccess`) maps a prompt, the scene's `task.instruction` verbatim,
 to the scene objects it asks to place and named world-frame `regions` (target and
-neighbours, e.g. shelf slots). Once an object rests for `settle_s`, it grades
-`complete` (in its target, upright: 1.0), `partial` (in its target, fallen: 0.5),
-`semi` (in a neighbouring region, upright: 0.25) or `fail`; the episode takes its
-worst object's grade. A `complete` episode terminates with `success`; otherwise
-the episode's `total_reward` is its final grade's score, and every step's
+neighbours, e.g. shelf slots). Once an object rests for `settle_s` (neither
+moving nor turning), it is graded by the scene's `grades` rubric
+(`IsaacPlacementGrade`: name, score, `target` / `adjacent` region, whether it
+must be upright; first match wins, else `fail` 0). The default rubric is
+`complete` (in its target, upright: 1.0), `partial` (in its target, fallen: 0.5)
+and `semi` (in a neighbouring region: 0.25); a scene declares its own levels to
+grade differently. The episode takes its worst object's grade. Reaching the first
+grade terminates the episode with `success`; otherwise the episode's
+`total_reward` is its final grade's score, and every step's
 `info["placement_grade"]` reports the grade so far. Without the block an Isaac
 scene has no task reward.
 
 ```yaml
+task:
+  instruction: "put the cracker box on the shelf"
 scene:
   backend_options:
     placement_success:
@@ -122,13 +135,6 @@ scene:
         "put the cracker box on the shelf":
           - {object: cracker_box, target: shelf_1, adjacent: [shelf_2]}
 ```
-
-## SimScene catalogue (`scenes/sim/`)
-
-`DeployScene` + a single `task:` block. One CLI invocation, one or more
-`EpisodeResult`s; sized for ad-hoc development and smoke tests. The policy is
-supplied at the CLI via `--rskill <name>` — scene YAMLs no longer pin a VLA.
-Consumed by `openral sim run`.
 
 | Config | Fixed / declared robot | `scene.id` | `task.id` | Notes |
 |---|---|---|---|---|
