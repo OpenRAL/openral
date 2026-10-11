@@ -458,7 +458,9 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
     assert attachment.primitives[0].shape.half_extents_m == (0.05, 0.05, 0.05)
-    assert attachment.pose_in_link.xyz == _TCP_IN_LINK
+    # In front of the tool point, its back face on it: never behind the jaws in the wrist.
+    tcp = np.asarray(_TCP_IN_LINK)
+    assert np.allclose(attachment.pose_in_link.xyz, tcp + tcp / np.linalg.norm(tcp) * 0.05)
     assert attachment.confidence < 0.5
     assert "vision_gate_rejected" in (attachment.evidence_ref or "")
 

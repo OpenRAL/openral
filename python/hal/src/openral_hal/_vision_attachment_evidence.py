@@ -407,7 +407,7 @@ def clustered_obb_primitives(
 def jaw_span_primitive(*, object_id: str, jaw_span_m: float) -> AttachedCollisionPrimitive:
     """Build the conservative fallback box used when a mask fails the gates.
 
-    A cube of half-extent ``jaw_span_m`` centred on the tool center point: "we
+    A cube of half-extent ``jaw_span_m`` (posed in front of the tool point by the caller): "we
     know *something* is held, we do not know its shape". Deliberately crude —
     the point is that a rejected mask still leaves geometry in front of the
     collision checker rather than an invisible payload.
@@ -789,7 +789,16 @@ class VisionAttachmentEvidenceProducer:
         Pure: ``on_grasp`` builds this before it knows the verdict (the
         rejection path needs it for every candidate outcome), so the attached
         flag is flipped by the caller at its return points, not here.
+
+        The box sits IN FRONT of the tool point, its back face on it, along the
+        attach-link-origin → tool-point direction: the held object is between and
+        beyond the jaws, never behind them in the wrist. Centred on the tool point
+        (an OpenArm's is the finger base) half the box sat inside the carrying arm
+        and stopped it on its own link5 (#349 p2_mix00).
         """
+        tcp = np.asarray(tcp_in_link, dtype=np.float64)
+        reach = float(np.linalg.norm(tcp))
+        centre = tcp + tcp / reach * self._config.jaw_span_m if reach > 0.0 else tcp
         return AttachedCollisionObject(
             object_id=object_id,
             attach_link=self._attach_link,
@@ -798,7 +807,7 @@ class VisionAttachmentEvidenceProducer:
                 jaw_span_primitive(object_id=object_id, jaw_span_m=self._config.jaw_span_m)
             ],
             pose_in_link=Pose6D(
-                xyz=tcp_in_link,
+                xyz=(float(centre[0]), float(centre[1]), float(centre[2])),
                 quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                 frame_id=self._attach_link,
             ),
