@@ -660,8 +660,8 @@ def region_attachment(
             within 15 degrees of the link-origin -> tool-point (approach) direction is
             shortened so the box's back face sits on the tool point, front face fixed (never
             below 5 mm): the held object is between and beyond the jaws, never behind them
-            in the palm. The bridge gives it only when the measured (unpadded) region lies
-            wholly in front of the tool point (``_padding_clip_point``), so only padding goes.
+            in the palm. The bridge passes the tool point, or the measured (unpadded) region's
+            back face when that is further back (``_padding_clip_point``): only padding goes.
             The margin bloat on the top otherwise reached the carrying wrist
             (#349 p8/p9/p11_mix02: payload vs ``openarm_left_link6``, -2.5 to -4.3 mm).
 
@@ -1702,19 +1702,30 @@ class VisionAttachmentBridge:
     ) -> tuple[float, float, float] | None:
         """The tool point to clip the region payload at, or ``None`` to keep it whole.
 
-        Only the margin padding may be clipped: given when the measured (unpadded) region
-        lies wholly in front of the tool point, so ``region_attachment`` removes padding
-        behind it and never measured geometry.
+        Only the margin padding may be clipped: the point on the approach at the tool
+        point, or at the measured (unpadded) region's back face when that reaches further
+        back, so ``region_attachment`` removes padding and never measured geometry.
         """
         tcp = self._tcp_in(leg, link)
         if tcp is None:
             return None
+        point = np.asarray(tcp, dtype=np.float64)
+        reach = float(np.linalg.norm(point))
+        if reach <= 0.0:
+            return None
+        u = point / reach
         pose = t_link_from_region @ homogeneous_from_quat_xyz(
             region.pose.xyz, region.pose.quat_xyzw
         )
         half = np.asarray(region.half_extents, dtype=np.float64)
-        _, clipped = _clip_behind_tool_point(pose, half, np.asarray(tcp, dtype=np.float64))
-        return tcp if np.array_equal(clipped, half) else None
+        # The measured region's back face along the approach: clip there when it reaches
+        # behind the tool point (p13_mix02: a few mm), so only the padding goes.
+        back = float(pose[:3, 3] @ u) - float(np.abs(pose[:3, :3].T @ u) @ half)
+        plane = min(reach, back)
+        if plane <= 0.0:
+            return None
+        clip = u * plane
+        return (float(clip[0]), float(clip[1]), float(clip[2]))
 
     def _note_close_region(self, leg: _GripperLeg) -> None:
         """Record where the live grasp-target region sits in the attach link, while closing.
@@ -2326,9 +2337,15 @@ class VisionAttachmentBridge:
             # slide retires it past the measurement's own uncertainty alone.
             slide = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
             rise = max(slide, self._config.release_clear_m)
-            # The payload frame's ATTACH pose (the closed box's centre), in the support's
+            # The payload frame's ATTACH pose (below: its origin), in the support's
             # frame: the region's, z up (``plane_witness``).
-            leg.support_anchor = (closed.frame_id, closed.pose.xyz, rise, slide)
+            # The payload origin itself (the tool-point clip may have moved it off the
+            # closed box's centre), back in the region's frame at the ATTACH.
+            origin = np.linalg.inv(t_link_from_region) @ np.append(
+                np.asarray(held.pose_in_link.xyz, dtype=np.float64), 1.0
+            )
+            anchor = (float(origin[0]), float(origin[1]), float(origin[2]))
+            leg.support_anchor = (closed.frame_id, anchor, rise, slide)
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
                 f"support witness ({held.support_contact.evidence_ref}); retired once the "

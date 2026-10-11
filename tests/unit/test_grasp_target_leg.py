@@ -1684,7 +1684,10 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
             "the payload's lower face rests on the support top, never below it"
         )
         (prim,) = held.primitives
-        assert prim.shape.half_extents_m == pytest.approx(closed.half_extents)
+        # #349: the top padding behind the measured top is clipped (it reached the carrying
+        # wrist in the cell); the sides keep the bloat and the bottom stays on the support.
+        assert prim.shape.half_extents_m[:2] == pytest.approx(closed.half_extents[:2])
+        assert prim.shape.half_extents_m[2] < closed.half_extents[2]
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
         # The horizontal footprint's half-diagonal (0.106 m), not the 3-D half-extent norm
         # (0.126 m): the vertical bloat must not widen the exemption past the footprint.
@@ -1700,6 +1703,8 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         )
         point = t_base_obj @ np.append(witness.contact_point_in_object, 1.0)
         np.testing.assert_allclose(point[:3], (0.45, 0.0, support_z), atol=1e-9)
+        lowest = t_base_obj[2, 3] - float(np.abs(t_base_obj[2, :3]) @ prim.shape.half_extents_m)
+        assert lowest == pytest.approx(support_z, abs=1e-6), "the clip never lifts the bottom"
         normal = t_base_obj[:3, :3] @ np.asarray(witness.contact_normal_in_object)
         np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
 
