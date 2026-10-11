@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import itertools
 import math
 import os
 import re
@@ -2319,56 +2318,6 @@ def check_tight_geometry_fits_box(
             raise ValueError(msg)
 
 
-class StrokeBin(BaseModel):
-    """Tight geometry that holds a link's geometry over one sub-range of a gripper stroke.
-
-    A link whose geometry depends on a gripper joint the kernel does not model
-    as its own link (the OpenArm's equality-coupled second finger, folded into
-    ``finger_pair``) carries one ``tight_geometry`` swept over the WHOLE
-    stroke. A ``StrokeBin`` is the same refinement swept over
-    ``[q_lo, q_hi]`` of that joint only, so the kernel's world-voxel check can
-    test the geometry at the opening the gripper actually has instead of the
-    union of every opening (``docs/reference/finger-stroke-geometry.md``).
-
-    Containment is per bin: ``tight_geometry`` holds the link's geometry for
-    EVERY joint value in ``[q_lo, q_hi]``, and must fit inside the box it
-    refines exactly as ``LinkCollisionGeometry.tight_geometry`` does.
-
-    Attributes:
-        q_lo: Lower end of the joint sub-range, in the joint's units.
-        q_hi: Upper end, strictly above ``q_lo``.
-        tight_geometry: The 26-DOP + hull holding the geometry over the range,
-            in the box's own frame.
-
-    Example:
-        >>> b = StrokeBin(
-        ...     q_lo=0.0,
-        ...     q_hi=0.1,
-        ...     tight_geometry=TightCollisionGeometry(
-        ...         dop_lo_m=(-0.05,) * 13, dop_hi_m=(0.05,) * 13
-        ...     ),
-        ... )
-        >>> b.q_hi
-        0.1
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    q_lo: float
-    q_hi: float
-    tight_geometry: TightCollisionGeometry
-
-    @model_validator(mode="after")
-    def _check_range(self) -> Self:
-        if not (math.isfinite(self.q_lo) and math.isfinite(self.q_hi)):
-            msg = f"stroke bin range [{self.q_lo}, {self.q_hi}] is not finite"
-            raise ValueError(msg)
-        if not self.q_lo < self.q_hi:
-            msg = f"stroke bin range [{self.q_lo}, {self.q_hi}] is empty or inverted"
-            raise ValueError(msg)
-        return self
-
-
 class LinkCollisionGeometry(BaseModel):
     """One convex collision volume rigidly attached to a robot link.
 
@@ -2391,16 +2340,6 @@ class LinkCollisionGeometry(BaseModel):
             box vs box. ``shape`` remains the broad-phase bound, the
             containment proof, and the geometry every other check uses. Only
             valid on a ``BoxShape``, and only when it fits inside it.
-        stroke_joint: The ``role: gripper`` joint ``stroke_bins`` are indexed
-            by. Set exactly when ``stroke_bins`` is non-empty.
-        stroke_bins: Optional per-sub-range refinements of ``tight_geometry``
-            (``StrokeBin``): sorted, contiguous (each bin's ``q_hi`` is the
-            next one's ``q_lo``), covering the joint's ``position_limits``.
-            The kernel's world-voxel check uses the bins covering the joint's
-            interval for the step it checks; ``tight_geometry`` (swept over
-            the whole stroke) stays what an unknown joint value, self-collision
-            and every consumer that ignores this field get. Requires
-            ``tight_geometry``.
 
     Example:
         >>> g = LinkCollisionGeometry(
@@ -2424,8 +2363,6 @@ class LinkCollisionGeometry(BaseModel):
         0.0,
     )
     tight_geometry: TightCollisionGeometry | None = None
-    stroke_joint: str | None = None
-    stroke_bins: tuple[StrokeBin, ...] = ()
 
     @model_validator(mode="after")
     def _tight_geometry_fits_inside_the_box(self) -> Self:
@@ -2434,34 +2371,6 @@ class LinkCollisionGeometry(BaseModel):
             check_tight_geometry_fits_box(
                 self.shape, self.tight_geometry, f"link {self.link_name!r}"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _stroke_bins_are_contiguous_and_inside_the_box(self) -> Self:
-        """Bins are sorted, gap-free, each inside the box, and refine a declared hull."""
-        owner = f"link {self.link_name!r}"
-        if bool(self.stroke_bins) != (self.stroke_joint is not None):
-            msg = f"{owner}: stroke_joint and stroke_bins must be declared together"
-            raise ValueError(msg)
-        if not self.stroke_bins:
-            return self
-        if self.tight_geometry is None:
-            msg = (
-                f"{owner}: stroke_bins refine tight_geometry, which the link does not "
-                "declare; the whole-stroke refinement is what an unknown joint value falls "
-                "back to"
-            )
-            raise ValueError(msg)
-        for i, b in enumerate(self.stroke_bins):
-            check_tight_geometry_fits_box(self.shape, b.tight_geometry, f"{owner} stroke bin {i}")
-        for i, (a, b) in enumerate(itertools.pairwise(self.stroke_bins)):
-            if a.q_hi != b.q_lo:
-                msg = (
-                    f"{owner}: stroke bins {i} and {i + 1} are not contiguous "
-                    f"(q_hi={a.q_hi} != q_lo={b.q_lo}); a gap is a joint value no bin "
-                    "covers and an overlap is an ambiguous one"
-                )
-                raise ValueError(msg)
         return self
 
 
@@ -2520,6 +2429,96 @@ class FixedAttachment(BaseModel):
     child_link: str
     origin_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     origin_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+class MimicJoint(BaseModel):
+    """A link posed by another joint's value: ``q = multiplier * q[mimics] + offset``.
+
+    The URDF ``<mimic>`` / MuJoCo joint-equality relation, for a link that
+    moves but has **no command channel of its own** — the OpenArm's second
+    (follower) finger, driven through the first by the gripper's linkage.
+    ``RobotDescription.joints`` is consumed unfiltered as the action width,
+    the sim ``qpos`` map and the runner's permutation, so a follower cannot be
+    a ``JointSpec``; and a ``FixedAttachment`` cannot move. This is the third
+    edge kind of the collision tree, and nothing else: no limits, no sensor,
+    no DoF, invisible to every ``joints`` consumer. The safety kernel poses
+    ``child_link`` rigidly at the mimicked value every check
+    (``JointKind::kMimicRevolute`` / ``kMimicPrismatic``), so the follower
+    finger is checked at the opening the gripper is commanded to, like every
+    other link, instead of swept over its whole stroke
+    (``docs/reference/finger-mimic-geometry.md``).
+
+    Every geometric value comes from the robot's real URDF/MJCF (``openral
+    collision lower`` re-injects ``origin_*`` / ``axis_xyz`` from the MJCF and
+    refuses a ``multiplier`` / ``offset`` the MJCF equality disagrees with).
+    Never hand-estimate one.
+
+    Attributes:
+        name: Joint name, matching the source URDF ``<joint>`` where one exists.
+        parent_link: The link this joint hangs from.
+        child_link: The link it poses. Defined by no other edge.
+        mimics: The ``JointSpec`` (by ``name``) whose value drives this one.
+        multiplier: ``q = multiplier * q[mimics] + offset``; finite, non-zero.
+        offset: Same relation; finite, in the joint's own unit.
+        joint_type: ``revolute`` (or ``continuous``) or ``prismatic``.
+        axis_xyz: This joint's own axis in its frame (the source model's, not
+            the leader's: the OpenArm follower's axis is the leader's negated
+            in the URDF, the same with ``multiplier = -1``; the MJCF spells it
+            as the same axis with ``multiplier = 1``).
+        origin_xyz: Translation (metres) of the joint frame in ``parent_link``.
+        origin_rpy: Orientation ``(roll, pitch, yaw)``, radians, same frame.
+        sim_joint_name: The MJCF joint this is, when the twin spells it
+            differently (the OpenArm's ``openarm_left_finger_joint2``).
+
+    Example:
+        >>> m = MimicJoint(
+        ...     name="openarm_left_finger_joint2",
+        ...     parent_link="openarm_left_link7",
+        ...     child_link="openarm_left_finger_follower",
+        ...     mimics="left_gripper",
+        ...     multiplier=1.0,
+        ...     axis_xyz=(1.0, 0.0, 0.0),
+        ...     origin_xyz=(-0.00143, 0.018, -0.068),
+        ... )
+        >>> m.value_at(0.5)
+        0.5
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    parent_link: str
+    child_link: str
+    mimics: str
+    multiplier: float = 1.0
+    offset: float = 0.0
+    joint_type: JointType = JointType.REVOLUTE
+    axis_xyz: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    origin_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    origin_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    sim_joint_name: str | None = None
+
+    @model_validator(mode="after")
+    def _check_relation(self) -> Self:
+        if self.child_link == self.parent_link:
+            raise ValueError(f"mimic_joints[{self.name!r}] attaches {self.child_link!r} to itself")
+        if not (math.isfinite(self.multiplier) and math.isfinite(self.offset)):
+            raise ValueError(f"mimic_joints[{self.name!r}]: multiplier/offset must be finite")
+        if self.multiplier == 0.0:
+            raise ValueError(
+                f"mimic_joints[{self.name!r}]: multiplier 0 makes the link fixed; declare a "
+                "fixed_attachments row instead"
+            )
+        if self.joint_type == JointType.FIXED:
+            raise ValueError(
+                f"mimic_joints[{self.name!r}]: a mimic joint moves; a fixed one is a "
+                "fixed_attachments row"
+            )
+        return self
+
+    def value_at(self, leader_value: float) -> float:
+        """This joint's value when the mimicked joint is at ``leader_value``."""
+        return self.multiplier * leader_value + self.offset
 
 
 class HalParameters(BaseModel):
@@ -2739,6 +2738,10 @@ class RobotDescription(BaseModel):
     # whose movable joints already connect every collision link. See
     # ``FixedAttachment``.
     fixed_attachments: list[FixedAttachment] = Field(default_factory=list)
+    # Links posed by another joint's value (URDF ``<mimic>``): the OpenArm's
+    # follower finger. Moving, but no command channel, so not a ``JointSpec``.
+    # See ``MimicJoint``.
+    mimic_joints: list[MimicJoint] = Field(default_factory=list)
     # Dashboard overlay — optional base footprint as a list of
     # base-frame ``(x, y)`` vertices in metres (CCW by convention). Used to
     # draw the robot's true outline on the SLAM occupancy grid; ``None``
@@ -2891,65 +2894,56 @@ class RobotDescription(BaseModel):
 
     @model_validator(mode="after")
     def _validate_fixed_attachments(self) -> RobotDescription:
-        """Each link may be defined by exactly one edge — a joint or an attachment.
+        """Each link may be defined by exactly one edge — a joint, an attachment or a mimic.
 
         Two edges claiming the same ``child_link`` make the link's pose
         ambiguous, and the safety kernel would silently take whichever the
-        loader visited last. Reject the ambiguity at load time instead.
+        loader visited last. Reject the ambiguity at load time instead. A
+        ``mimic_joints`` row must also name a ``joints`` entry to follow.
         """
-        if not self.fixed_attachments:
+        if not self.fixed_attachments and not self.mimic_joints:
             return self
         defined_by: dict[str, str] = {j.child_link: f"joint {j.name!r}" for j in self.joints}
-        for att in self.fixed_attachments:
-            if att.child_link == att.parent_link:
-                raise ValueError(
-                    f"fixed_attachments[{att.name!r}] attaches {att.child_link!r} to itself"
-                )
-            prior = defined_by.get(att.child_link)
+        edges = [(f"fixed_attachments[{a.name!r}]", a) for a in self.fixed_attachments] + [
+            (f"mimic_joints[{m.name!r}]", m) for m in self.mimic_joints
+        ]
+        for label, edge in edges:
+            if edge.child_link == edge.parent_link:
+                raise ValueError(f"{label} attaches {edge.child_link!r} to itself")
+            prior = defined_by.get(edge.child_link)
             if prior is not None:
                 raise ValueError(
-                    f"fixed_attachments[{att.name!r}] re-defines child_link "
-                    f"{att.child_link!r}, already defined by {prior}; a link's pose "
-                    "must have exactly one source"
+                    f"{label} re-defines child_link {edge.child_link!r}, already defined by "
+                    f"{prior}; a link's pose must have exactly one source"
                 )
-            defined_by[att.child_link] = f"fixed_attachments[{att.name!r}]"
+            defined_by[edge.child_link] = label
+        joint_names = {j.name for j in self.joints}
+        for m in self.mimic_joints:
+            if m.mimics not in joint_names:
+                raise ValueError(
+                    f"mimic_joints[{m.name!r}] mimics {m.mimics!r}, which is not in joints"
+                )
         return self
 
-    @model_validator(mode="after")
-    def _validate_stroke_bins_against_joints(self) -> RobotDescription:
-        """A link's ``stroke_bins`` name a ``role: gripper`` joint and cover its whole range.
+    def grasp_contact_links(self) -> tuple[str, ...]:
+        """The links a grasp may touch: every ``role: gripper`` jaw, follower fingers included.
 
-        The kernel falls back to the whole-stroke ``tight_geometry`` for a joint
-        value no bin covers, so a short cover is not unsound; it is a producer
-        bug that would silently forfeit the bins at the uncovered openings, and
-        is refused here instead.
+        The ``role: gripper`` joints' ``child_link`` first (the leader jaws the
+        HAL names in a ``GraspDeclaration``), then the ``child_link`` of every
+        ``mimic_joints`` row following one of those joints — the other jaw of
+        the same gripper, which the kernel must exempt in the grasp region too
+        (ADR-0115). The launch passes this as the kernel's ``grasp_contact_links``.
+
+        Example:
+            >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+            >>> d.grasp_contact_links()[:2]
+            ('openarm_left_finger_pair', 'openarm_right_finger_pair')
         """
-        joints = {j.name: j for j in self.joints}
-        for g in self.collision_geometry:
-            if g.stroke_joint is None:
-                continue
-            owner = f"collision_geometry[{g.link_name!r}]"
-            joint = joints.get(g.stroke_joint)
-            if joint is None:
-                raise ValueError(f"{owner}: stroke_joint {g.stroke_joint!r} is not in joints")
-            if joint.role != "gripper":
-                raise ValueError(
-                    f"{owner}: stroke_joint {g.stroke_joint!r} has role {joint.role!r}; "
-                    "stroke bins index a gripper's opening only"
-                )
-            if joint.position_limits is None:
-                raise ValueError(
-                    f"{owner}: stroke_joint {g.stroke_joint!r} declares no position_limits, "
-                    "so the bins cannot be shown to cover its range"
-                )
-            lo, hi = joint.position_limits
-            if g.stroke_bins[0].q_lo > lo or g.stroke_bins[-1].q_hi < hi:
-                raise ValueError(
-                    f"{owner}: stroke bins cover [{g.stroke_bins[0].q_lo}, "
-                    f"{g.stroke_bins[-1].q_hi}], not {g.stroke_joint!r}'s whole range "
-                    f"[{lo}, {hi}]"
-                )
-        return self
+        grippers = [j for j in self.joints if j.role == "gripper"]
+        names = {j.name for j in grippers}
+        return tuple(j.child_link for j in grippers) + tuple(
+            m.child_link for m in self.mimic_joints if m.mimics in names
+        )
 
     @model_validator(mode="after")
     def _validate_base_joints_against_joints(self) -> RobotDescription:

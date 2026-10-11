@@ -130,8 +130,10 @@ openral collision lower --robot robots/openarm/robot.yaml --write
 ```
 
 which fits every link with the same fitter the URDF robots use, from every
-MJCF geom of its body (collision **and** visual), with the second finger swept
-over the gripper stroke into `finger_pair`. Every link is lowered as a box
+MJCF geom of its body (collision **and** visual). The second finger is its own
+link, `openarm_<side>_finger_follower`, posed by the manifest's `mimic_joints`
+row (the URDF `<mimic>`) at the gripper's value — issue #349,
+`docs/reference/finger-mimic-geometry.md`. Every link is lowered as a box
 plus its exact convex hull (`tight_geometry`); a refined link stays refined on
 re-lowering, and the kernel re-asks a box pair of the two hulls. Measured over
 seeded in-limit poses (`docs/reference/collision-geometry-review.md` §11):
@@ -166,8 +168,12 @@ trips at the zero configuration.
 
 `openarm.srdf` carries the exemptions no convex representation can separate
 (finger_pair ↔ link5/link6, link5 ↔ link7), each with certified collision-mesh
-clearances (`openral_hal.convex_distance`; `mj_geomDistance` is wrong on these
-pairs under MuJoCo 3.8.0). The link1 ↔ link3 exemption was retired: the two
+clearances; the follower finger ↔ its leader and ↔ link7 are exempt by the
+lowering's adjacency rule (the two jaws of one gripper), and follower ↔
+link5/link6 stay checked (no trip in 500 seeded poses). The leader's rows were
+measured against the old swept hull (`openral_hal.convex_distance`;
+`mj_geomDistance` is wrong on these pairs under MuJoCo 3.8.0) and are up for WG
+re-measurement against its rigid hull. The link1 ↔ link3 exemption was retired: the two
 hulls are at least 12 mm apart, so the pair is checked again.
 
 ### Running a π0.5 policy

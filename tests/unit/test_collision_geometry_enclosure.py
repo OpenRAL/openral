@@ -104,15 +104,19 @@ def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
     origin = np.asarray(params["collision_origin_xyzrpy"], dtype=float).reshape(n, 6)
     axis = np.asarray(params["collision_axis"], dtype=float).reshape(n, 3)
     world: list[np.ndarray] = []
+    mult = params.get("collision_mimic_multiplier", [1.0] * n)
+    off = params.get("collision_mimic_offset", [0.0] * n)
     for i in range(n):
         motion = np.eye(4)
         dof = int(params["collision_dof_index"][i])
         if dof >= 0:
             kind = int(params["collision_joint_kind"][i])
-            if kind == 1:
-                motion[:3, :3] = _axis_angle(axis[i], q[dof])
-            elif kind == 2:
-                motion[:3, 3] = axis[i] * q[dof]
+            # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
+            qi = float(mult[i]) * q[dof] + float(off[i]) if kind in (3, 4) else q[dof]
+            if kind in (1, 3):
+                motion[:3, :3] = _axis_angle(axis[i], qi)
+            elif kind in (2, 4):
+                motion[:3, 3] = axis[i] * qi
         local = _tf(origin[i]) @ motion
         parent = int(params["collision_parent"][i])
         world.append(local if parent < 0 else world[parent] @ local)
@@ -232,10 +236,15 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         )
 
     # Which MJCF bodies each link's primitives have to hold: its own body, plus
-    # the bodies of joints equality-coupled to the joint that drives it (followers).
+    # the bodies of joints equality-coupled to the joint that drives it (followers)
+    # — unless the manifest models that follower as a `mimic_joints` link of its
+    # own (the OpenArm's follower finger), which then holds its own body.
     coupled = mjcf_coupled_joints(model)
     driven: dict[int, int] = {}  # MJCF joint the manifest drives -> its qpos address
     bodies_of: dict[str, list[int]] = {ln: [b] for ln, b in link_body.items()}
+    own_body = {
+        b for m in robot.mimic_joints for b in [link_body.get(m.child_link)] if b is not None
+    }
     dof_adr: list[int] = []
     limits: list[tuple[float, float]] = []
     for j in robot.joints:
@@ -243,7 +252,8 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         assert ji >= 0, f"{j.name}: neither sim_joint_name nor the joint name is in the MJCF"
         driven[ji] = int(model.jnt_qposadr[ji])
         for follower, _c0, _c1 in coupled.get(ji, []):
-            bodies_of.setdefault(j.child_link, []).append(int(model.jnt_bodyid[follower]))
+            if int(model.jnt_bodyid[follower]) not in own_body:
+                bodies_of.setdefault(j.child_link, []).append(int(model.jnt_bodyid[follower]))
         dof_adr.append(int(model.jnt_qposadr[ji]))
         lo, hi = j.position_limits if j.position_limits else (-np.pi, np.pi)
         limits.append((float(lo), float(hi)))
@@ -316,7 +326,6 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     for g in robot.collision_geometry:
         if g.tight_geometry is not None:
             refined.setdefault(g.link_name, []).append(g)
-    joint_column = {j.name: i for i, j in enumerate(robot.joints)}
     rng = np.random.default_rng(SEED)
     worst: dict[str, float] = {}
     escape: dict[str, float] = {}
@@ -349,27 +358,14 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
                 outside = np.minimum(outside, _signed_distance((pts - c) @ prim_rot, prim))
             worst[ln] = max(worst.get(ln, -np.inf), float(outside.max()))
             # A refined link's DOPs and hulls hold the mesh too, as a union (a
-            # point need sit inside one piece): first on each piece's whole
-            # tight_geometry, then as the kernel's world check sees the link at
-            # this q, a stroke-binned piece's bins covering its joint value.
+            # point need sit inside one piece — a link cut into slabs).
             if ln in refined:
-                whole = np.full(len(pts), np.inf)
-                binned = np.full(len(pts), np.inf)
+                union = np.full(len(pts), np.inf)
                 for g in refined[ln]:
                     placed = kw[link] @ _tf(np.asarray(g.origin_xyz_rpy, dtype=float))
                     local = (pts - (rot @ placed[:3, 3] + trans)) @ (rot @ placed[:3, :3])
-                    piece = tight_escape_per_point_m(g, local)
-                    whole = np.minimum(whole, piece)
-                    if not g.stroke_bins:
-                        binned = np.minimum(binned, piece)
-                        continue
-                    qj = q[joint_column[str(g.stroke_joint)]]
-                    covering = [b for b in g.stroke_bins if b.q_lo <= qj <= b.q_hi]
-                    assert covering, f"{ln}: no stroke bin covers {g.stroke_joint}={qj}"
-                    for b in covering:
-                        as_bin = g.model_copy(update={"tight_geometry": b.tight_geometry})
-                        binned = np.minimum(binned, tight_escape_per_point_m(as_bin, local))
-                escape[ln] = max(escape.get(ln, -np.inf), float(whole.max()), float(binned.max()))
+                    union = np.minimum(union, tight_escape_per_point_m(g, local))
+                escape[ln] = max(escape.get(ln, -np.inf), float(union.max()))
     # A link that folds in an equality follower (the OpenArm's second finger) is
     # fitted to STROKE_SAMPLES of the stroke, so a pose between two samples may
     # poke out by up to SWEPT_TOLERANCE_M; every other link keeps its headroom.

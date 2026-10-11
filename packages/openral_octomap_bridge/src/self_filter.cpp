@@ -413,6 +413,12 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
     error = "collision_* carries a non-finite origin or axis";
     return false;
   }
+  if (p.mimic_multiplier.size() != p.mimic_offset.size() ||
+      (!p.mimic_multiplier.empty() && p.mimic_multiplier.size() != n) ||
+      !all_finite(p.mimic_multiplier) || !all_finite(p.mimic_offset)) {
+    error = "collision_mimic_* arrays disagree with collision_n_links or are non-finite";
+    return false;
+  }
   SelfModel m;
   m.link_names = p.link_names;
   m.parent.resize(n);
@@ -426,13 +432,21 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
       error = "collision_parent is not topologically ordered (parent must precede child)";
       return false;
     }
-    if (p.joint_kind[i] < 0 || p.joint_kind[i] > 2) {
+    if (p.joint_kind[i] < 0 ||
+        p.joint_kind[i] > static_cast<std::int64_t>(SelfJointKind::kMimicPrismatic)) {
       error = "collision_joint_kind carries an unknown joint code";
       return false;
     }
     m.parent[i] = static_cast<int>(parent);
     m.joint_kind[i] = static_cast<SelfJointKind>(static_cast<std::uint8_t>(p.joint_kind[i]));
     m.dof_index[i] = static_cast<int>(p.dof_index[i]);
+    const bool mimic = m.joint_kind[i] == SelfJointKind::kMimicRevolute ||
+                       m.joint_kind[i] == SelfJointKind::kMimicPrismatic;
+    if (mimic &&
+        (m.dof_index[i] < 0 || p.mimic_multiplier.empty() || p.mimic_multiplier[i] == 0.0)) {
+      error = "a mimic link needs a dof column and a non-zero collision_mimic_multiplier";
+      return false;
+    }
     m.origin[i] = xyzrpy_at(p.origin_xyzrpy, i);
     m.axis[i] = tf2::Vector3(p.axis[3 * i + 0], p.axis[3 * i + 1], p.axis[3 * i + 2]);
     if (m.dof_index[i] >= 0) {
@@ -483,6 +497,8 @@ bool build_self_model(const SelfModelParams& p, SelfModel& out, std::string& err
     m.primitive_hull.push_back(box_hull_index[b]);
   }
   m.hulls = std::move(hulls);
+  m.mimic_multiplier = p.mimic_multiplier;
+  m.mimic_offset = p.mimic_offset;
   out = std::move(m);
   return true;
 }
@@ -495,10 +511,16 @@ void self_forward_kinematics(const SelfModel& model, const double* q, std::size_
     tf2::Transform motion = tf2::Transform::getIdentity();
     const int dof = model.dof_index[i];
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof) {
-      const double angle = q[static_cast<std::size_t>(dof)];
-      if (model.joint_kind[i] == SelfJointKind::kRevolute) {
+      const SelfJointKind kind = model.joint_kind[i];
+      double angle = q[static_cast<std::size_t>(dof)];
+      const bool mimic =
+          kind == SelfJointKind::kMimicRevolute || kind == SelfJointKind::kMimicPrismatic;
+      if (mimic && i < model.mimic_multiplier.size() && i < model.mimic_offset.size()) {
+        angle = model.mimic_multiplier[i] * angle + model.mimic_offset[i];  // the kernel's FK
+      }
+      if (kind == SelfJointKind::kRevolute || kind == SelfJointKind::kMimicRevolute) {
         motion.setRotation(tf2::Quaternion(model.axis[i], angle));
-      } else if (model.joint_kind[i] == SelfJointKind::kPrismatic) {
+      } else if (kind == SelfJointKind::kPrismatic || kind == SelfJointKind::kMimicPrismatic) {
         motion.setOrigin(model.axis[i] * angle);
       }
     }

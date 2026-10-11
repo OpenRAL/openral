@@ -171,14 +171,15 @@ def test_the_window_closes_on_separation_only_once_hand_and_jaws_are_clear(
     at_release, verdict = reason(0.0)
     assert at_release is not None and at_release <= 0.0, "the jaws surround the payload"
     assert verdict == ""
-    # 10 cm up the frozen payload still overlaps the finger box: the window holds.
-    assert reason(0.10)[1] == ""
-    # Pinned on the manifest's hand + finger boxes against the 10 cm jaw box: at 20 cm the
-    # gap is positive but inside margin + one voxel — still held; at 25 cm it is clear.
+    # 15 cm up the frozen payload still overlaps the finger boxes: the window holds.
+    assert reason(0.15)[1] == ""
+    # Pinned on the manifest's hand + both finger boxes (the leader `finger_pair` and the
+    # mimic follower, each one rigid finger since #349) against the 10 cm jaw box: at 17 cm
+    # the gap is positive but inside margin + one voxel — still held; at 20 cm it is clear.
+    gap_17, verdict_17 = reason(0.17)
+    assert gap_17 is not None and 0.0 < gap_17 <= _CLEAR_M and verdict_17 == ""
     gap_20, verdict_20 = reason(0.20)
-    assert gap_20 is not None and 0.0 < gap_20 <= _CLEAR_M and verdict_20 == ""
-    gap_25, verdict_25 = reason(0.25)
-    assert gap_25 is not None and gap_25 > _CLEAR_M and verdict_25 == "separation"
+    assert gap_20 is not None and gap_20 > _CLEAR_M and verdict_20 == "separation"
     # The payload never moved: the record's pose is the DETACH pose throughout.
     assert window.record.pose_in_link.xyz == pytest.approx(
         tuple((t_hand @ np.array([*_held(description).pose_in_link.xyz, 1.0]))[:3])

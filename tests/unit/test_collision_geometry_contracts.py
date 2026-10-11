@@ -270,6 +270,7 @@ def test_openarm_fixture_loads_collision_geometry() -> None:
         {j.parent_link for j in desc.joints}
         | {j.child_link for j in desc.joints}
         | {a.child_link for a in desc.fixed_attachments}
+        | {m.child_link for m in desc.mimic_joints}
     )
     assert set(by_link).issubset(chain_links)
 

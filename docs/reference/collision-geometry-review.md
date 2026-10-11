@@ -89,9 +89,9 @@ Facts that constrain the choice:
 
 **Truth** for every link is the union of its `<collision>` and `<visual>` geometry (URDF), or every
 geom of its body (MJCF: collision and visual, meshes and primitives, with the OpenArm's
-equality-coupled second finger swept over the gripper stroke into `finger_pair`; since #349 the
-refined `finger_pair` is two pieces, the leader finger rigid and the follower swept with per-stroke
-bins — [`finger-stroke-geometry.md`](finger-stroke-geometry.md)). For H1, Franka
+equality-coupled second finger swept over the gripper stroke into `finger_pair` until #349; since
+then the follower is its own rigid link on a mimic joint, `openarm_<side>_finger_follower` —
+[`finger-mimic-geometry.md`](finger-mimic-geometry.md)). For H1, Franka
 and Rizon 4 the MJCF twin's meshes are added too (§12). The vendor `<collision>` blocks
 under-cover the parts (H1's torso by 549 mm, G1's shoulders by 61 mm, SO-100's servo housings by
 26 mm), which is why the visual meshes count.
@@ -352,11 +352,11 @@ Reading:
   lowering folds it into `finger_pair`, swept over 9 stroke samples. The enclosure test allows a
   swept link 1 mm outside between samples. A kernel joint kind "follower of dof i with
   q = c0 + c1·q_i" would let the finger be its own link with exact geometry. Needs a new
-  `JointKind` in `collision.hpp` and the envelope loader. **Superseded by #349** (done
-  differently): `finger_pair` is split per finger and the follower carries stroke bins the
-  world-voxel check selects by the gripper's opening — kernel finger excess 84.2 → 26.3 mm max,
-  66.8 → 21.9 mm mean; the mimic joint kind would buy ~6 mm more
-  ([`finger-stroke-geometry.md`](finger-stroke-geometry.md); ADR draft and owed hazard row there).
+  `JointKind` in `collision.hpp` and the envelope loader. **Done in #349**: `RobotDescription.mimic_joints`
+  + `JointKind::kMimicRevolute` / `kMimicPrismatic`; the follower is `openarm_<side>_finger_follower`,
+  rigid, posed at the gripper's commanded value — kernel finger excess 84.2 → 16.9 mm max,
+  66.8 → 16.9 mm mean ([`finger-mimic-geometry.md`](finger-mimic-geometry.md); ADR draft and owed
+  hazard row there).
 - **Hull against capsule.** A refined box against a capsule link is checked on the box
   (`box_capsule_distance`, 669 ns). A GJK hull ↔ capsule (the capsule is `segment ⊕ ball`,
   exactly what `convex_distance` already solves in Python) would let one refined link pay off
@@ -423,8 +423,8 @@ reads the primitives, note the direction this change moves it:
   4.0 % in 1000 poses by the C++ kernel (#325's fit: 16.7 %, the hand capsules: 26.4 %), 0.8 % of them with no collision-mesh contact (#325: 15.8 %).
   - Residual: the swept finger may poke up to 1 mm out between the 9 stroke samples (enclosure
     test tolerance for swept links); cameras and cables absent from the MJCF are not modelled.
-    (Since #349 the follower is fitted at 33 stroke positions and per stroke bin; measured 0.033 mm
-    between samples — [`finger-stroke-geometry.md`](finger-stroke-geometry.md) §3.)
+    (Since #349 nothing on the OpenArm is swept: the follower is its own rigid link on a mimic
+    joint, enclosure 0 mm, placement vs the MJCF < 1 µm — [`finger-mimic-geometry.md`](finger-mimic-geometry.md) §3.)
 - **Entry 047 (update, URDF under-coverage), mitigation:** unchanged in kind (collision ∪ visual,
   1 mm headroom), now also the **surface** proven inside (not just vertices), and the MJCF twin's
   CAD folded in where its frames coincide (H1, Franka, Rizon 4). H1's twin forearm reaches 46 mm
@@ -488,8 +488,9 @@ which MuJoCo compiles convex, measured with the certified GJK/SAT of
 The real-contact count is the same because it is the robot's; everything else was slop, and
 95 % of it is gone. The remaining slop is the finger pair against link0/link1 of either arm
 (hull ↔ hull at the swept finger's hull, which covers the whole stroke). Measured before #349
-split `finger_pair` per finger; self-collision now checks the leader's exact hull and the
-follower's whole-stroke hull ([`finger-stroke-geometry.md`](finger-stroke-geometry.md) §2).
+split the fingers; self-collision now checks each finger's own exact hull, the follower on its mimic
+joint ([`finger-mimic-geometry.md`](finger-mimic-geometry.md) §2-3: follower ↔ link5/link6 checked,
+never tripping over 500 poses; follower ↔ leader and ↔ link7 auto-exempt).
 
 **Exemption margins** (`openarm.srdf`, same instrument, minimum and 1st percentile over 1500
 poses):

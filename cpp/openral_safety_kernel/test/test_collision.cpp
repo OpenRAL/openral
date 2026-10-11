@@ -5449,7 +5449,8 @@ TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
 //
 // The real OpenArm cell runs the world-voxel check at a 20 mm margin on 20 mm
 // cells, and the finger link (`openarm_left_finger_pair`, one box + 26-DOP
-// swept over the stroke) contains the grasp target during a grasp, so the
+// swept over the stroke when this was written; the leader finger alone since #349)
+// contains the grasp target during a grasp, so the
 // check stops on the target's own cells before any attachment can exist. The
 // exemption spares exactly (declared contact link, cell centred in the
 // producer-measured region) and nothing else; these tests pin that scope and
@@ -6225,243 +6226,203 @@ TEST(RetiredGraspSet, OverflowEvictsOnlyTheOldestAndSaysSo) {
   EXPECT_FALSE(retired.contains(5, 7));
 }
 
-// ── Stroke bins (docs/reference/finger-stroke-geometry.md) ───────────────────
+// ── Mimic joints (docs/reference/finger-mimic-geometry.md) ───────────────────
 //
-// One fixed link carries one box (x in [-0.15, 0.15]) standing for a gripper
-// finger that sweeps across it as joint column 0 goes from 0 to 1. Its
-// whole-stroke hull is the whole box; bin 0 (q in [0, 0.5], the closed half
-// of the stroke) is the whole box too, bin 1 (q in [0.5, 1], open) only the
-// slab x in [0.10, 0.15] where the finger sits when open. A cell centred at
-// x = -0.1 is "between the fingers": inside the whole-stroke hull, 0.15 m from
-// the open bin. A cell centred at x = +0.1 touches the finger in every bin.
+// A two-jaw gripper as the kernel now models the OpenArm's: link 1 is the
+// LEADER finger, revolute about -x on joint column 0 at y = -0.018; link 2 the
+// FOLLOWER finger, `kMimicRevolute` on the SAME column with multiplier -1 and
+// offset 0 about -x at y = +0.018 (the URDF `<mimic>` spelling). Each finger is
+// a box 0.02 x 0.01 x 0.08 hanging down its link's -z. At q = 0 the inner faces
+// are 26 mm apart; at q = 0.6 rad the jaws open mirror-symmetrically.
 
 namespace {
 
-osk::LinkHull aabb_hull(const osk::Vec3& lo, const osk::Vec3& hi, std::vector<osk::Vec3>& verts) {
-  osk::LinkHull hull;
-  hull.vertex_first = static_cast<int>(verts.size());
-  hull.vertex_count = 8;
-  for (int i = 0; i < osk::kDopAxes; ++i) {
-    hull.dop_lo[i] = std::numeric_limits<double>::infinity();
-    hull.dop_hi[i] = -std::numeric_limits<double>::infinity();
-  }
-  for (int c = 0; c < 8; ++c) {
-    const osk::Vec3 v{(c & 1) != 0 ? hi.x : lo.x, (c & 2) != 0 ? hi.y : lo.y,
-                      (c & 4) != 0 ? hi.z : lo.z};
-    verts.push_back(v);
-    for (int i = 0; i < osk::kDopAxes; ++i) {
-      const double s =
-          osk::kDopAxis[i][0] * v.x + osk::kDopAxis[i][1] * v.y + osk::kDopAxis[i][2] * v.z;
-      hull.dop_lo[i] = std::min(hull.dop_lo[i], s);
-      hull.dop_hi[i] = std::max(hull.dop_hi[i], s);
-    }
-  }
-  return hull;
-}
+constexpr int kMimicLeader = 1;
+constexpr int kMimicFollower = 2;
+constexpr double kMimicMultiplier = -1.0;
+constexpr double kMimicOffset = 0.0;
+constexpr double kMimicFingerY = 0.018;
+constexpr double kMimicMargin = 0.01;
 
-// with_bins = false: the same box and whole-stroke hull, no bins at all.
-osk::CollisionModel stroke_model(bool with_bins) {
+osk::CollisionModel mimic_model() {
   osk::CollisionModel m;
-  m.n_links = 1;
-  m.parent = {-1};
-  m.joint_kind = {osk::JointKind::kFixed};
-  m.dof_index = {-1};
-  m.origin = {identity()};
-  m.axis = {{0, 0, 1}};
-  m.box_link = {0};
-  m.boxes = {osk::Obb{{0.15, 0.04, 0.04}, identity()}};
-  std::vector<osk::Vec3> verts;
-  const osk::Vec3 lo{-0.15, -0.04, -0.04};
-  const osk::Vec3 hi{0.15, 0.04, 0.04};
-  m.hulls = {aabb_hull(lo, hi, verts)};
-  m.box_hull = {0};
-  if (with_bins) {
-    m.hulls.push_back(aabb_hull(lo, hi, verts));                             // bin 0: closed
-    m.hulls.push_back(aabb_hull(osk::Vec3{0.10, -0.04, -0.04}, hi, verts));  // bin 1: open
-    m.stroke_bins = {osk::StrokeBin{0, 0, 0.0, 0.5, 1}, osk::StrokeBin{0, 0, 0.5, 1.0, 2}};
-  }
-  m.hull_vertices = verts;
+  m.n_links = 3;
+  m.parent = {-1, 0, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kRevolute,
+                  osk::JointKind::kMimicRevolute};
+  m.dof_index = {-1, 0, 0};  // the follower reads the leader's column
+  m.origin = {identity(), translate(0.0, -kMimicFingerY, 0.0), translate(0.0, kMimicFingerY, 0.0)};
+  m.axis = {{0, 0, 1}, {-1, 0, 0}, {-1, 0, 0}};
+  m.mimic_multiplier = {1.0, 1.0, kMimicMultiplier};
+  m.mimic_offset = {0.0, 0.0, kMimicOffset};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.005, 0.04};
+  finger.origin = translate(0.0, 0.0, -0.04);
+  m.box_link = {kMimicLeader, kMimicFollower};
+  m.boxes = {finger, finger};
   return m;
 }
 
-osk::CollisionScratch stroke_scratch(const osk::CollisionModel& m) {
+osk::CollisionScratch mimic_scratch(const osk::CollisionModel& m) {
   osk::CollisionScratch s;
   s.link_world.resize(m.n_links);
-  s.box_bins.assign(m.boxes.size(), {-1, -1});
   return s;
 }
 
-constexpr double kStrokeMargin = 0.01;
+// One occupied 20 mm cell centred at `c`.
+struct MimicCell {
+  std::vector<std::uint8_t> occ{1};
+  osk::VoxelGrid grid;
+  explicit MimicCell(const osk::Vec3& c) {
+    grid.pose.t = {c.x - 0.01, c.y - 0.01, c.z - 0.01};
+    grid.resolution = 0.02;
+    grid.sx = 1;
+    grid.sy = 1;
+    grid.sz = 1;
+    grid.occupancy = occ.data();
+  }
+};
 
-// FK + selection + world check at gripper value `q` against reference
-// `q_ref` (nullptr = no measured state).
-osk::CollisionHit stroke_check(const osk::CollisionModel& m, osk::CollisionScratch& s,
-                               const osk::VoxelGrid& g, double q, const double* q_ref) {
+osk::CollisionHit mimic_check(const osk::CollisionModel& m, osk::CollisionScratch& s,
+                              const osk::VoxelGrid& g, double q) {
   const double qpos[1] = {q};
   osk::forward_kinematics(m, qpos, 1, s);
-  osk::select_stroke_bins(m, qpos, q_ref, 1, s);
-  return osk::check_voxel_collision(m, s, g, kStrokeMargin);
+  return osk::check_voxel_collision(m, s, g, kMimicMargin);
+}
+
+// Where the follower finger's inner-face centre (box-local (0, -0.005, 0),
+// i.e. the face toward the leader) sits in the base frame at gripper value q,
+// by hand: the follower rotates by (multiplier * q + offset) about -x, so by
+// -theta about +x, from its joint origin at y = +0.018.
+osk::Vec3 follower_inner_face_by_hand(double q) {
+  const double theta = -(kMimicMultiplier * q + kMimicOffset);  // about +x
+  const double y = -0.005;
+  const double z = -0.04;
+  return {0.0, kMimicFingerY + y * std::cos(theta) - z * std::sin(theta),
+          y * std::sin(theta) + z * std::cos(theta)};
 }
 
 }  // namespace
 
-TEST(StrokeBins, ACellBetweenTheOpenFingersTripsOnlyOnTheClosedBinOrAnUnknownGripper) {
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  std::vector<std::uint8_t> occ(125, 0);
-  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // centre x = -0.1
-  const auto g = make_grid(occ);
-  const double open = 0.8;
-  const double closed = 0.2;
-  EXPECT_FALSE(stroke_check(m, s, g, open, &open).hit) << "the open bin keeps the gap free";
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{1, 1}));
-  EXPECT_TRUE(stroke_check(m, s, g, closed, &closed).hit) << "closed: the cell is the finger";
-  EXPECT_TRUE(stroke_check(m, s, g, open, nullptr).hit)
-      << "no measured state: the whole-stroke hull, exactly as without bins";
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
-}
-
-TEST(StrokeBins, ACellOnTheFingerSurfaceTripsInEveryBin) {
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  std::vector<std::uint8_t> occ(125, 0);
-  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;  // centre x = +0.1
-  const auto g = make_grid(occ);
-  for (const double q : {0.0, 0.2, 0.5, 0.8, 1.0}) {
-    EXPECT_TRUE(stroke_check(m, s, g, q, &q).hit) << "q=" << q;
-  }
-  EXPECT_TRUE(stroke_check(m, s, g, 0.8, nullptr).hit);
-}
-
-TEST(StrokeBins, TheMeasuredToCommandedIntervalSelectsEveryBinItCrosses) {
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  std::vector<std::uint8_t> occ(125, 0);
-  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // between the fingers
-  const auto g = make_grid(occ);
-  // Opening from 0.2 (measured) to 0.8 (commanded) passes through the closed
-  // half: the jaw is solid there for part of the step, so the step stops.
-  const double measured = 0.2;
-  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &measured).hit);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
-  // Closing the other way round is the same interval.
-  const double measured_open = 0.8;
-  EXPECT_TRUE(stroke_check(m, s, g, 0.2, &measured_open).hit);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
-  // A bin edge belongs to both bins.
-  const double edge = 0.5;
-  stroke_check(m, s, g, 0.5, &edge);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
-  // Out of the bins' cover, or NaN: the whole-stroke hull.
-  const double past = 1.2;
-  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &past).hit);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &nan).hit);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
-}
-
-TEST(StrokeBins, ForwardKinematicsResetsASelectionSoItNeverOutlivesItsConfiguration) {
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  const double open = 0.8;
-  const double qpos[1] = {open};
-  osk::forward_kinematics(m, qpos, 1, s);
-  osk::select_stroke_bins(m, qpos, &open, 1, s);
-  ASSERT_EQ(s.box_bins[0], (std::pair<int, int>{1, 1}));
-  osk::forward_kinematics(m, qpos, 1, s);
-  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
-}
-
-TEST(StrokeBins, WithoutBinsTheCheckIsIdenticalToToday) {
-  const auto plain = stroke_model(false);
-  const auto binned = stroke_model(true);
-  auto ps = stroke_scratch(plain);
-  osk::CollisionScratch unsized;  // a caller that never sized box_bins
-  unsized.link_world.resize(binned.n_links);
-  auto bs = stroke_scratch(binned);
-  for (int cell = 0; cell < 125; ++cell) {
-    std::vector<std::uint8_t> occ(125, 0);
-    occ[static_cast<std::size_t>(cell)] = 1;
-    const auto g = make_grid(occ);
-    const double q = 0.8;
-    const auto a = stroke_check(plain, ps, g, q, &q);
-    const auto b = stroke_check(binned, bs, g, q, nullptr);
-    const auto c = stroke_check(binned, unsized, g, q, &q);
-    for (const auto& other : {b, c}) {
-      EXPECT_EQ(a.hit, other.hit) << "cell " << cell;
-      EXPECT_EQ(a.link_b, other.link_b) << "cell " << cell;
-      EXPECT_EQ(a.min_distance, other.min_distance) << "cell " << cell;
-      EXPECT_EQ(a.sweep_min_distance, other.sweep_min_distance) << "cell " << cell;
+TEST(MimicJoint, ForwardKinematicsPlacesTheFollowerAtMultiplierQPlusOffset) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  for (const double q : {0.0, 0.25, 0.6, 0.7854}) {
+    const double qpos[1] = {q};
+    osk::forward_kinematics(m, qpos, 1, s);
+    const double theta = -(kMimicMultiplier * q + kMimicOffset);  // the same rotation about +x
+    const double c = std::cos(theta);
+    const double sn = std::sin(theta);
+    const double expected_r[9] = {1, 0, 0, 0, c, -sn, 0, sn, c};
+    const auto& f = s.link_world[kMimicFollower];
+    for (int k = 0; k < 9; ++k) {
+      EXPECT_NEAR(f.r[k], expected_r[k], 1e-12) << "q=" << q << " r[" << k << "]";
     }
+    EXPECT_NEAR(f.t.x, 0.0, 1e-12);
+    EXPECT_NEAR(f.t.y, kMimicFingerY, 1e-12);
+    EXPECT_NEAR(f.t.z, 0.0, 1e-12);
+    // The leader rotates the other way about the same axis: a mirror pair.
+    const auto& l = s.link_world[kMimicLeader];
+    EXPECT_NEAR(l.r[4], f.r[4], 1e-12);
+    EXPECT_NEAR(l.r[5], -f.r[5], 1e-12);
   }
 }
 
-TEST(StrokeBins, NarrowingNeverAddsAStop) {
-  // Every cell, every interval: a bin selection may only clear what the
-  // whole-stroke hull stops, never stop what it clears (each bin hull lies
-  // inside the box, and the distance is a minimum over hulls that each hold
-  // the finger over their range).
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  for (int cell = 0; cell < 125; ++cell) {
-    std::vector<std::uint8_t> occ(125, 0);
-    occ[static_cast<std::size_t>(cell)] = 1;
-    const auto g = make_grid(occ);
-    const auto whole = stroke_check(m, s, g, 0.5, nullptr);
-    for (const double ref : {0.0, 0.3, 0.6, 1.0}) {
-      for (const double q : {0.1, 0.5, 0.9}) {
-        const auto narrowed = stroke_check(m, s, g, q, &ref);
-        EXPECT_TRUE(!narrowed.hit || whole.hit) << "cell " << cell << " q=" << q;
-      }
-    }
+TEST(MimicJoint, WithoutMimicArraysTheFollowerFollowsTheLeadersColumnUnchanged) {
+  // Identity relation: multiplier 1, offset 0 — the OpenArm MJCF spelling.
+  auto m = mimic_model();
+  m.mimic_multiplier.clear();
+  m.mimic_offset.clear();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.6};
+  osk::forward_kinematics(m, qpos, 1, s);
+  EXPECT_NEAR(s.link_world[kMimicFollower].r[5], s.link_world[kMimicLeader].r[5], 1e-12)
+      << "same axis, same value: the same rotation";
+}
+
+TEST(MimicJoint, ACellBetweenTheFingersClearsWhenOpenAndTripsWhenClosed) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const MimicCell between({0.0, 0.0, -0.06});
+  EXPECT_TRUE(mimic_check(m, s, between.grid, 0.0).hit) << "closed: 3 mm gap inside the margin";
+  const auto open = mimic_check(m, s, between.grid, 0.6);
+  EXPECT_FALSE(open.hit) << "open: both jaws swung clear of the gap, min=" << open.min_distance;
+  EXPECT_GT(open.min_distance, kMimicMargin);
+}
+
+TEST(MimicJoint, ACellOnTheFollowerSurfaceTripsAtThatOpening) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  for (const double q : {0.0, 0.2, 0.45, 0.7854}) {
+    // A cell whose centre sits 5 mm inside the follower's inner face: a real
+    // follower contact at this opening, and nowhere near the leader when open.
+    const osk::Vec3 face = follower_inner_face_by_hand(q);
+    const MimicCell touching({face.x, face.y + 0.005, face.z});
+    const auto hit = mimic_check(m, s, touching.grid, q);
+    EXPECT_TRUE(hit.hit) << "q=" << q;
+    EXPECT_EQ(hit.link_a, kMimicFollower) << "q=" << q;
   }
 }
 
-TEST(StrokeBins, ValidationRefusesBinsItCannotProve) {
-  std::size_t offending = 0;
-  EXPECT_EQ(osk::validate_tight_geometry(stroke_model(true), offending),
-            osk::TightGeometryStatus::kOk);
-  auto gapped = stroke_model(true);
-  gapped.stroke_bins[1].q_lo = 0.6;
-  EXPECT_EQ(osk::validate_tight_geometry(gapped, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto inverted = stroke_model(true);
-  inverted.stroke_bins[0].q_hi = 0.0;
-  EXPECT_EQ(osk::validate_tight_geometry(inverted, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto two_dofs = stroke_model(true);
-  two_dofs.stroke_bins[1].dof = 1;
-  EXPECT_EQ(osk::validate_tight_geometry(two_dofs, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto no_whole_hull = stroke_model(true);
-  no_whole_hull.box_hull = {-1};
-  EXPECT_EQ(osk::validate_tight_geometry(no_whole_hull, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto no_box_hull_at_all = stroke_model(true);
-  no_box_hull_at_all.box_hull.clear();
-  EXPECT_EQ(osk::validate_tight_geometry(no_box_hull_at_all, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto bad_hull = stroke_model(true);
-  bad_hull.stroke_bins[1].hull = 7;
-  EXPECT_EQ(osk::validate_tight_geometry(bad_hull, offending),
-            osk::TightGeometryStatus::kBadStrokeBins);
-  auto escapes = stroke_model(true);
-  escapes.hulls[2].dop_hi[0] = 0.2;  // past the box's 0.15
-  EXPECT_EQ(osk::validate_tight_geometry(escapes, offending),
-            osk::TightGeometryStatus::kEscapesBox);
+TEST(MimicJoint, TheGraspRegionExemptionCoversAFollowerInItsMask) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double q = 0.3;
+  const osk::Vec3 face = follower_inner_face_by_hand(q);
+  const MimicCell touching({face.x, face.y + 0.005, face.z});
+  auto grid = touching.grid;
+  ASSERT_TRUE(mimic_check(m, s, grid, q).hit);
+  std::bitset<osk::kMaxGraspMaskLinks> leader_only;
+  leader_only.set(kMimicLeader);
+  std::bitset<osk::kMaxGraspMaskLinks> both = leader_only;
+  both.set(kMimicFollower);
+  const osk::Vec3 half{0.03, 0.03, 0.03};
+  // Declared for the leader alone the follower still stops: the exemption is
+  // per masked link, so the lifecycle node widens the mask to the other jaw of
+  // the same joint column (tested in test_lifecycle_kernel).
+  ASSERT_EQ(osk::ingest_grasp_region(translate(face.x, face.y, face.z), half, leader_only,
+                                     grid.grasp_region),
+            osk::GraspRegionStatus::kOk);
+  EXPECT_TRUE(mimic_check(m, s, grid, q).hit);
+  ASSERT_EQ(
+      osk::ingest_grasp_region(translate(face.x, face.y, face.z), half, both, grid.grasp_region),
+      osk::GraspRegionStatus::kOk);
+  EXPECT_FALSE(mimic_check(m, s, grid, q).hit) << "both jaws declared: the target cell is exempt";
 }
 
-TEST(NoAlloc, StrokeBinSelectionAndTheBinnedVoxelCheckAreAllocationFree) {
-  const auto m = stroke_model(true);
-  auto s = stroke_scratch(m);
-  std::vector<std::uint8_t> occ(125, 1);
-  const auto g = make_grid(occ);
-  const double ref = 0.2;
+TEST(MimicJoint, LeaderAndFollowerSelfCollideOnlyWhenNotExempt) {
+  auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.0};
+  osk::forward_kinematics(m, qpos, 1, s);
+  // Closed, the inner faces are 26 mm apart: inside a 30 mm margin.
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.03).hit);
+  m.allowed_pairs.emplace_back(kMimicLeader, kMimicFollower);  // the regenerated ACM row
+  EXPECT_FALSE(osk::check_self_collision(m, s, 0.03).hit);
+}
+
+TEST(MimicJoint, AMimicLinkAddsNoJacobianColumn) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.2};
+  osk::forward_kinematics(m, qpos, 1, s);
+  const double twist[6] = {0.0, 0.01, 0.0, 0.0, 0.0, 0.0};
+  double dq[1] = {0.0};
+  // Through the leader the one column is its own.
+  EXPECT_TRUE(osk::jacobian_dls_step(m, s, kMimicLeader, twist, 0.01, dq, 1, nullptr));
+  // Through the follower there is no column at all: it never predicts.
+  EXPECT_FALSE(osk::jacobian_dls_step(m, s, kMimicFollower, twist, 0.01, dq, 1, nullptr));
+  EXPECT_EQ(dq[0], 0.0);
+}
+
+TEST(NoAlloc, MimicForwardKinematicsAndTheVoxelCheckAreAllocationFree) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const MimicCell between({0.0, 0.0, -0.06});
   g_alloc_count.store(0, std::memory_order_relaxed);
   g_count_enabled.store(true, std::memory_order_relaxed);
   for (int i = 0; i < 1000; ++i) {
-    const auto hit = stroke_check(m, s, g, 0.8, &ref);
+    const auto hit = mimic_check(m, s, between.grid, 0.3);
     (void)hit;
   }
   g_count_enabled.store(false, std::memory_order_relaxed);

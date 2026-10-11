@@ -77,8 +77,10 @@ expecting a clean pass:
 
    **Grasp-target exemption (off by default).** `runtime.grasp_allowance_enabled` (default
    `false`) forwards `grasp_allowance_enabled:=true` to the kernel; the launch always passes
-   `grasp_contact_links` = the manifest's `role: gripper` child links
-   (`openarm_left_finger_pair`, `openarm_right_finger_pair`). With it on, the exemption still
+   `grasp_contact_links` = the manifest's `role: gripper` child links and their mimic
+   followers (`openarm_left_finger_pair`, `openarm_right_finger_pair`,
+   `openarm_left_finger_follower`, `openarm_right_finger_follower`); a declaration naming a
+   leader jaw exempts its follower too. With it on, the exemption still
    applies only inside a producer-measured `GraspDeclaration` region, which nothing on the
    real graph measures yet. Do not enable it in this runbook.
 

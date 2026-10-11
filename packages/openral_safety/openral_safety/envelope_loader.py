@@ -623,6 +623,14 @@ _JOINT_KIND_CODE = {
     JointType.CONTINUOUS: 1,
     JointType.PRISMATIC: 2,
 }
+# A ``MimicJoint`` edge: the kernel's ``JointKind::kMimicRevolute`` /
+# ``kMimicPrismatic``, posed at ``multiplier * qpos[dof] + offset`` of the
+# mimicked joint's column (no qpos column of its own).
+_MIMIC_KIND_CODE = {
+    JointType.REVOLUTE: 3,
+    JointType.CONTINUOUS: 3,
+    JointType.PRISMATIC: 4,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -630,10 +638,12 @@ class _Edge:
     """One parent→child edge of the collision tree.
 
     ``dof_index`` is the edge's column in ``RobotDescription.joints`` for a
-    movable joint, or ``-1`` for a rigid ``FixedAttachment``
-    (which has no commanded column). ``joint_type`` is
-    ``JointType.FIXED`` for an attachment, so the existing
+    movable joint, the **mimicked** joint's column for a ``MimicJoint``, or
+    ``-1`` for a rigid ``FixedAttachment`` (which has no commanded column).
+    ``joint_type`` is ``JointType.FIXED`` for an attachment, so the existing
     ``_JOINT_KIND_CODE`` lookup already lowers it to the kernel's static kind.
+    ``mimic`` is ``(multiplier, offset)`` for a ``MimicJoint`` edge, else
+    ``None``.
     """
 
     parent_link: str
@@ -642,6 +652,7 @@ class _Edge:
     origin_xyz: tuple[float, float, float]
     origin_rpy: tuple[float, float, float]
     axis_xyz: tuple[float, float, float]
+    mimic: tuple[float, float] | None = None
 
 
 def _ordered_collision_links(
@@ -649,8 +660,9 @@ def _ordered_collision_links(
 ) -> tuple[list[str], dict[str, int], dict[str, _Edge]]:
     """Topologically order the kinematic links (every parent before its children).
 
-    The tree is the union of the robot's **movable** ``joints`` and its rigid
-    ``fixed_attachments``. Both are needed: ``joints`` alone is only the
+    The tree is the union of the robot's **movable** ``joints``, its rigid
+    ``fixed_attachments`` and its ``mimic_joints`` (a link posed by another
+    joint's value: the OpenArm's follower finger). All are needed: ``joints`` alone is only the
     actuated skeleton, so a robot with any rigid mount (a Franka hand on the
     flange, a bimanual rig's arm pedestals) would otherwise present as a
     *forest* of several disconnected components. A forest has no safe
@@ -689,6 +701,19 @@ def _ordered_collision_links(
             origin_xyz=att.origin_xyz,
             origin_rpy=att.origin_rpy,
             axis_xyz=(0.0, 0.0, 1.0),
+        )
+    # ``RobotDescription._validate_fixed_attachments`` also checks a mimic
+    # child is defined once and its ``mimics`` is a real joint.
+    column = {j.name: i for i, j in enumerate(robot.joints)}
+    for mim in robot.mimic_joints:
+        edge_of_child[mim.child_link] = _Edge(
+            parent_link=mim.parent_link,
+            joint_type=mim.joint_type,
+            dof_index=column[mim.mimics],
+            origin_xyz=mim.origin_xyz,
+            origin_rpy=mim.origin_rpy,
+            axis_xyz=mim.axis_xyz,
+            mimic=(float(mim.multiplier), float(mim.offset)),
         )
 
     children_of: dict[str, list[str]] = {}
@@ -772,7 +797,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
 
     Lowers ``RobotDescription.collision_geometry`` +
     ``RobotDescription.allowed_collision_pairs`` + the kinematic chain
-    (``joints`` **and** ``RobotDescription.fixed_attachments``, with their
+    (``joints``, ``RobotDescription.fixed_attachments`` **and** ``mimic_joints``, with their
     ``origin_xyz``/``origin_rpy``/``axis_xyz``) into the flat parallel arrays
     the C++ kernel's ``load_collision_model`` reads. The manifest stays the
     normative kinematic source; this never parses URDF/MJCF (the offline
@@ -795,11 +820,13 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
     these drive the kernel's staged arm-link-vs-world-voxel narrow phase; box
     arrays are still emitted unchanged since the box remains the broad-phase
-    bound. A manifest declaring none lowers exactly as before. A box carrying
-    ``stroke_bins`` also lowers each bin's hull into the same arrays and one
-    ``collision_stroke_bin_*`` row per bin (box, joint column, ``q_lo``,
-    ``q_hi``, hull index), which the kernel's world-voxel check selects from by
-    the gripper's interval (``docs/reference/finger-stroke-geometry.md``).
+    bound. A manifest declaring none lowers exactly as before. A ``MimicJoint``
+    edge lowers to joint kind 3 (revolute) / 4 (prismatic) on the mimicked
+    joint's ``collision_dof_index`` column, with the relation in the per-link
+    ``collision_mimic_multiplier`` / ``collision_mimic_offset`` arrays (emitted
+    only when the tree has a mimic edge; identity for every other link), so the
+    kernel poses the follower finger at the gripper's commanded value
+    (``docs/reference/finger-mimic-geometry.md``).
 
     Args:
         robot: The robot manifest. No collision geometry → returns
@@ -833,6 +860,8 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     dof_index: list[int] = []
     origin_xyzrpy: list[float] = []
     axis: list[float] = []
+    mimic_multiplier: list[float] = []
+    mimic_offset: list[float] = []
 
     for name in ordered:
         edge = edge_of_child.get(name)
@@ -844,12 +873,17 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
             dof_index.append(-1)
             origin_xyzrpy.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             axis.extend([0.0, 0.0, 1.0])
+            mimic_multiplier.append(1.0)
+            mimic_offset.append(0.0)
         else:
             parent.append(index[edge.parent_link])
-            joint_kind.append(_JOINT_KIND_CODE.get(edge.joint_type, 0))
-            dof_index.append(edge.dof_index if edge.joint_type in _JOINT_KIND_CODE else -1)
+            codes = _MIMIC_KIND_CODE if edge.mimic is not None else _JOINT_KIND_CODE
+            joint_kind.append(codes.get(edge.joint_type, 0))
+            dof_index.append(edge.dof_index if edge.joint_type in codes else -1)
             origin_xyzrpy.extend([float(v) for v in (*edge.origin_xyz, *edge.origin_rpy)])
             axis.extend([float(v) for v in edge.axis_xyz])
+            mimic_multiplier.append(edge.mimic[0] if edge.mimic is not None else 1.0)
+            mimic_offset.append(edge.mimic[1] if edge.mimic is not None else 0.0)
 
     # Each link's primitive is routed by shape: capsules/spheres to the capsule
     # arrays (sphere = zero-length capsule), boxes to the OBB arrays
@@ -871,16 +905,6 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     hull_vertex_first: list[int] = []
     hull_vertex_count: list[int] = []
     hull_vertices: list[float] = []
-    # Stroke bins (``LinkCollisionGeometry.stroke_bins``), one entry per bin,
-    # grouped by box in ascending box order and sorted within a box. Each bin's
-    # hull is appended to the same CSR hull arrays; the box's own ``box_hull``
-    # entry stays the whole-stroke hull the kernel falls back to.
-    stroke_box: list[int] = []
-    stroke_dof: list[int] = []
-    stroke_q_lo: list[float] = []
-    stroke_q_hi: list[float] = []
-    stroke_hull: list[int] = []
-    joint_column = {j.name: i for i, j in enumerate(robot.joints)}
 
     def add_hull(tight: TightCollisionGeometry) -> int:
         hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
@@ -903,12 +927,6 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
                     box_hull.append(-1)
                 else:
                     box_hull.append(add_hull(tight))
-                for stroke_bin in geom.stroke_bins:
-                    stroke_box.append(len(box_link) - 1)
-                    stroke_dof.append(joint_column[str(geom.stroke_joint)])
-                    stroke_q_lo.append(float(stroke_bin.q_lo))
-                    stroke_q_hi.append(float(stroke_bin.q_hi))
-                    stroke_hull.append(add_hull(stroke_bin.tight_geometry))
             elif isinstance(shape, CapsuleShape | SphereShape):
                 # A sphere is a zero-length capsule; both share `radius_m`.
                 half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
@@ -950,6 +968,9 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         "collision_axis": axis,
         "collision_link_names": ordered,
     }
+    if robot.mimic_joints:
+        params["collision_mimic_multiplier"] = mimic_multiplier
+        params["collision_mimic_offset"] = mimic_offset
     # Per-primitive arrays (capsules, boxes) and the allowed-pair list are omitted
     # when empty: launch_ros collapses an empty Python list to ``()`` and
     # ensure_argument_type rejects it. An all-box robot (SO-101) has zero
@@ -978,12 +999,6 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         params["collision_hull_vertex_count"] = hull_vertex_count
         if hull_vertices:
             params["collision_hull_vertices"] = hull_vertices
-    if stroke_box:
-        params["collision_stroke_bin_box"] = stroke_box
-        params["collision_stroke_bin_dof"] = stroke_dof
-        params["collision_stroke_bin_q_lo"] = stroke_q_lo
-        params["collision_stroke_bin_q_hi"] = stroke_q_hi
-        params["collision_stroke_bin_hull"] = stroke_hull
     if allowed_pairs:
         params["collision_allowed_pairs"] = allowed_pairs
     return params

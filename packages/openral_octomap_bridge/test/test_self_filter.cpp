@@ -71,7 +71,26 @@ osk::CollisionModel kernel_model(const bridge::SelfModelParams& p) {
         p.origin_xyzrpy[6 * i + 3], p.origin_xyzrpy[6 * i + 4], p.origin_xyzrpy[6 * i + 5]));
     m.axis.push_back(osk::Vec3{p.axis[3 * i + 0], p.axis[3 * i + 1], p.axis[3 * i + 2]});
   }
+  m.mimic_multiplier = p.mimic_multiplier;
+  m.mimic_offset = p.mimic_offset;
   return m;
+}
+
+// `chain_params()` plus a fifth link: a mimic-revolute follower of column 1
+// (l2's prismatic column) hung off l2, `q = -2 * q[1] + 0.3` about its own axis
+// — the kernel's `JointKind::kMimicRevolute`, as the OpenArm's follower finger.
+bridge::SelfModelParams chain_with_mimic_params() {
+  auto p = chain_params();
+  p.n_links = 5;
+  p.parent.push_back(2);
+  p.joint_kind.push_back(3);
+  p.dof_index.push_back(1);
+  p.origin_xyzrpy.insert(p.origin_xyzrpy.end(), {0.02, -0.01, 0.0, 0.0, 0.0, 0.2});
+  p.axis.insert(p.axis.end(), {0.0, 1.0, 0.0});
+  p.link_names.push_back("follower");
+  p.mimic_multiplier = {1.0, 1.0, 1.0, 1.0, -2.0};
+  p.mimic_offset = {0.0, 0.0, 0.0, 0.0, 0.3};
+  return p;
 }
 
 // Pack xyz points as FLOAT32 records with a 4-byte pad (point_step 16), like a
@@ -115,6 +134,60 @@ TEST(SelfFilterFk, MatchesTheSafetyKernelForwardKinematicsExactly) {
       EXPECT_NEAR(ours[i].getOrigin().z(), k.t.z, 1e-12) << "link " << i;
     }
   }
+}
+
+TEST(SelfFilterFk, AMimicLinkMatchesTheKernelForwardKinematicsExactly) {
+  const auto params = chain_with_mimic_params();
+  bridge::SelfModel model;
+  std::string error;
+  ASSERT_TRUE(bridge::build_self_model(params, model, error)) << error;
+  const auto kernel = kernel_model(params);
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(kernel.n_links);
+  std::vector<tf2::Transform> ours;
+  for (const auto& q :
+       std::vector<std::vector<double>>{{0.0, 0.0, 0.0}, {0.7, 0.12, -1.3}, {-2.1, -0.05, 2.9}}) {
+    osk::forward_kinematics(kernel, q.data(), q.size(), scratch);
+    bridge::self_forward_kinematics(model, q.data(), q.size(), ours);
+    const auto& k = scratch.link_world[4];
+    const tf2::Matrix3x3& r = ours[4].getBasis();
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        EXPECT_NEAR(r[row][col], k.r[row * 3 + col], 1e-12) << "r" << row << col;
+      }
+    }
+    EXPECT_NEAR(ours[4].getOrigin().x(), k.t.x, 1e-12);
+    EXPECT_NEAR(ours[4].getOrigin().y(), k.t.y, 1e-12);
+    EXPECT_NEAR(ours[4].getOrigin().z(), k.t.z, 1e-12);
+    // And it is the mimic relation, not the raw column: rotation about y by
+    // -2 * q[1] + 0.3 shows in the follower's basis relative to its parent.
+    const tf2::Transform rel = ours[2].inverse() * ours[4];
+    const double theta = -2.0 * q[1] + 0.3;
+    const tf2::Matrix3x3 expected = tf2::Matrix3x3(tf2::Quaternion(tf2::Vector3(0, 0, 1), 0.2)) *
+                                    tf2::Matrix3x3(tf2::Quaternion(tf2::Vector3(0, 1, 0), theta));
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        EXPECT_NEAR(rel.getBasis()[row][col], expected[row][col], 1e-12) << "rel r" << row << col;
+      }
+    }
+  }
+}
+
+TEST(SelfFilterModel, RefusesAMimicLinkTheKernelWouldRefuse) {
+  std::string error;
+  bridge::SelfModel model;
+  auto p = chain_with_mimic_params();
+  p.mimic_offset.pop_back();  // not per link
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_mimic_params();
+  p.mimic_multiplier[4] = 0.0;  // a fixed link wearing a moving kind
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_mimic_params();
+  p.dof_index[4] = -1;  // no column to read
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
+  p = chain_with_mimic_params();
+  p.joint_kind[4] = 5;  // past kMimicPrismatic
+  EXPECT_FALSE(bridge::build_self_model(p, model, error));
 }
 
 TEST(SelfFilterModel, RefusesShapesTheKernelWouldRefuse) {

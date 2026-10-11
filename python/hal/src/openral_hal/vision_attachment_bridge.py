@@ -137,6 +137,8 @@ from openral_core import (
     AttachmentEvidenceKind,
     CameraTopicKind,
     ControlMode,
+    JointSpec,
+    MimicJoint,
     VisionAttachmentRuntime,
     camera_topic,
 )
@@ -700,7 +702,9 @@ class ReleaseWindow:
         hand_boxes: The hand's collision primitives, bounded, in the hand frame.
         jaws: ``(joint, origin, boxes)`` per jaw link the record exempts: the
             jaw joint (hinged on the hand), its origin in the hand frame, and the
-            jaw's bounded primitives in the jaw frame.
+            jaw's bounded primitives in the jaw frame. A ``MimicJoint`` follower
+            of a jaw joint (the OpenArm's second finger, its own collision link
+            since #349) is a jaw too, posed at ``value_at`` of its leader's angle.
     """
 
     record: AttachedCollisionObject
@@ -731,14 +735,27 @@ class ReleaseWindow:
         Returns:
             The open window.
         """
+        jaw_joints = [
+            joint
+            for joint in description.joints
+            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
+        ]
+        # The other jaw of each gripper: a mimic follower of a jaw joint, hinged
+        # on the same hand, is part of what has to clear the payload too.
+        followers = [
+            mimic
+            for mimic in description.mimic_joints
+            if mimic.parent_link == held.attach_link
+            and any(mimic.mimics == joint.name for joint in jaw_joints)
+        ]
+        jaw_edges: list[JointSpec | MimicJoint] = [*jaw_joints, *followers]
         jaws = tuple(
             (
                 joint,
                 _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy),
                 _link_boxes(description, joint.child_link),
             )
-            for joint in description.joints
-            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
+            for joint in jaw_edges
         )
         return cls(
             record=freeze_released_attachment(
@@ -770,9 +787,12 @@ class ReleaseWindow:
             (t_base_from_hand, self.hand_boxes)
         ]
         for joint, origin, jaw_boxes in self.jaws:
-            if joint.name not in positions:
+            # A mimic follower reads its leader's angle: multiplier * q + offset.
+            driving = joint.mimics if isinstance(joint, MimicJoint) else joint.name
+            if driving not in positions:
                 return None
-            motion = _joint_motion(joint, positions[joint.name])
+            q = positions[driving]
+            motion = _joint_motion(joint, joint.value_at(q) if isinstance(joint, MimicJoint) else q)
             placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
         # The frozen record is attached to the base link: its link frame is the base.
         payload: list[_Box] = [

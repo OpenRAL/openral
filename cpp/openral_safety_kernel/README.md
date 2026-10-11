@@ -821,7 +821,7 @@ the unattested legacy case.
 **Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
 world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
 (`openarm_<side>_finger_pair`; one hull swept over the stroke when this was written, the
-leader finger + the follower's stroke bins since #349) contains the grasp
+leader finger alone since #349, the follower being its own mimic link) contains the grasp
 target during a grasp, so `check_voxel_collision` stops on the target's own
 cells before any attachment can exist. The spec is
 [`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
@@ -838,7 +838,9 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 
 * **Parameters.** `grasp_allowance_enabled` (default `false`) and
   `grasp_contact_links` (the launch-derived allowlist — the manifest's
-  `role: gripper` joints' child links). Enabled with an empty allowlist, or an
+  `role: gripper` joints' child links and their `mimic_joints` followers,
+  `RobotDescription.grasp_contact_links()`; a declaration naming one jaw exempts
+  every allowlisted link on the same joint column, i.e. the other jaw). Enabled with an empty allowlist, or an
   allowlist naming a link the collision model does not have, fails configure.
   Enabling it subscribes to the world state even with attached checking off.
 * **Region measurement age.** `grasp_region_max_age_s` and
@@ -1223,24 +1225,23 @@ Entry 012's lockstep is **not engaged** — `check_attached_self_collision` stil
 reads the same link boxes it always did. Carried payloads got their own staged
 path in #266, below.
 
-## Gripper stroke bins (issue #349)
+## Mimic joints: the follower finger as its own link (issue #349)
 
-A link whose geometry depends on a gripper joint the kernel does not model as a
-link — the OpenArm's equality-coupled second finger, folded into `finger_pair` —
-may carry `stroke_bins`: per sub-range of the gripper joint, a hull holding the
-geometry over that range only (`StrokeBin`, `collision_stroke_bin_*`). Before
-every check, after FK, `select_stroke_bins` narrows each such box to the bins
-covering `[min(q_measured, q_checked), max(...)]` of its joint; the voxel check
-runs the staged narrow phase once per selected bin and takes the minimum, so a
-cell between OPEN fingers no longer trips while a cell the fingers occupy at any
-opening of the step still does. The box keeps its whole-stroke hull — exactly
-the pre-#349 behaviour — with no fresh measured state, a non-finite value, an
-interval outside the bins' cover, or no selection (FK resets it). Configure
-refuses unsorted, gapped, ungrouped or unprovable bins, and bins on a joint no
-link follows. Self-collision keeps the whole-stroke hull. Each stopping
-configuration's log line and span say whether it ran on bins
-(`stroke_bins_narrowed`). Design, soundness, measurements and the owed ADR /
-hazard row: [`finger-stroke-geometry.md`](../../docs/reference/finger-stroke-geometry.md).
+A link the URDF poses by `<mimic>` — the OpenArm's second finger, equality-coupled
+to the first — is a `RobotDescription.mimic_joints` row and lowers to
+`collision_joint_kind` 3 (`JointKind::kMimicRevolute`) / 4 (`kMimicPrismatic`) on
+the **mimicked** joint's `collision_dof_index` column, with the relation in the
+per-link `collision_mimic_multiplier` / `collision_mimic_offset` arrays (empty =
+no mimic link). `forward_kinematics` reads the leader's column and moves the link
+by `multiplier * q + offset`: no qpos slot of its own, no Jacobian column
+(`jacobian_dls_step` skips it; configure refuses a mimic on the EE chain), counted
+once in the FK-dof set. So each finger is one rigid box + exact hull checked at the
+gripper's commanded value like every other link, instead of one hull swept over the
+whole stroke: a cell between OPEN fingers no longer trips while a cell a finger
+occupies at the commanded opening still does. Configure refuses a mimic link
+without a dof column, a non-finite or zero multiplier, mis-shaped mimic arrays and
+an unknown kind code. Design, measurements and the owed ADR / hazard row:
+[`finger-mimic-geometry.md`](../../docs/reference/finger-mimic-geometry.md).
 
 ## The same stages for a carried payload (issue #266)
 

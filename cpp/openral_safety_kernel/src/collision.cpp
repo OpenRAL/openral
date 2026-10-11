@@ -429,10 +429,7 @@ TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
                                             std::size_t& offending_box) noexcept {
   offending_box = 0;
   if (model.box_hull.empty()) {
-    // Nothing declared: the shipped path. Bins with no whole-stroke hull to
-    // fall back to are a producer bug.
-    return model.stroke_bins.empty() ? TightGeometryStatus::kOk
-                                     : TightGeometryStatus::kBadStrokeBins;
+    return TightGeometryStatus::kOk;  // nothing declared: the shipped path
   }
   if (model.box_hull.size() != model.boxes.size()) {
     return TightGeometryStatus::kBadArity;
@@ -448,32 +445,6 @@ TightGeometryStatus validate_tight_geometry(const CollisionModel& model,
     }
     const TightGeometryStatus status = validate_tight_hull(
         model.hulls[static_cast<std::size_t>(h)], model.boxes[b].half_extents, model.hull_vertices);
-    if (status != TightGeometryStatus::kOk) {
-      return status;
-    }
-  }
-  // Stroke bins: each a proved refinement of a box that has a whole-stroke
-  // hull to fall back to, one gap-free sorted group per box. A model that
-  // cannot prove this does not configure.
-  for (std::size_t k = 0; k < model.stroke_bins.size(); ++k) {
-    const StrokeBin& bin = model.stroke_bins[k];
-    offending_box = bin.box < 0 ? 0 : static_cast<std::size_t>(bin.box);
-    if (bin.box < 0 || static_cast<std::size_t>(bin.box) >= model.boxes.size() ||
-        model.box_hull[static_cast<std::size_t>(bin.box)] < 0 || bin.dof < 0 || bin.hull < 0 ||
-        static_cast<std::size_t>(bin.hull) >= model.hulls.size() || !std::isfinite(bin.q_lo) ||
-        !std::isfinite(bin.q_hi) || !(bin.q_lo < bin.q_hi)) {
-      return TightGeometryStatus::kBadStrokeBins;
-    }
-    if (k > 0) {
-      const StrokeBin& prev = model.stroke_bins[k - 1];
-      const bool same_box = prev.box == bin.box;
-      if (same_box ? (prev.dof != bin.dof || prev.q_hi != bin.q_lo) : prev.box > bin.box) {
-        return TightGeometryStatus::kBadStrokeBins;
-      }
-    }
-    const TightGeometryStatus status = validate_tight_hull(
-        model.hulls[static_cast<std::size_t>(bin.hull)],
-        model.boxes[static_cast<std::size_t>(bin.box)].half_extents, model.hull_vertices);
     if (status != TightGeometryStatus::kOk) {
       return status;
     }
@@ -496,9 +467,6 @@ const char* tight_geometry_status_reason(TightGeometryStatus status) noexcept {
     return "too_many_vertices";
   case TightGeometryStatus::kDegenerate:
     return "degenerate";
-  case TightGeometryStatus::kBadStrokeBins:
-    return "stroke bins out of range, unsorted, gapped, not grouped by box, or refining a box "
-           "with no whole-stroke hull";
   }
   return "unknown";
 }
@@ -941,10 +909,15 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
     Transform motion;  // identity for fixed joints
     const int dof = model.dof_index[i];
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof) {
-      const double q = qpos[static_cast<std::size_t>(dof)];
-      if (model.joint_kind[i] == JointKind::kRevolute) {
+      const JointKind kind = model.joint_kind[i];
+      double q = qpos[static_cast<std::size_t>(dof)];
+      if (is_mimic(kind) && i < model.mimic_multiplier.size() && i < model.mimic_offset.size()) {
+        // A mimic link reads its leader's column: q = multiplier * q_leader + offset.
+        q = model.mimic_multiplier[i] * q + model.mimic_offset[i];
+      }
+      if (kind == JointKind::kRevolute || kind == JointKind::kMimicRevolute) {
         axis_angle(model.axis[i], q, motion.r);
-      } else if (model.joint_kind[i] == JointKind::kPrismatic) {
+      } else if (kind == JointKind::kPrismatic || kind == JointKind::kMimicPrismatic) {
         motion.t = scale(model.axis[i], q);
       }
     }
@@ -952,49 +925,6 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
     const int parent = model.parent[i];
     scratch.link_world[i] =
         parent < 0 ? local : compose(scratch.link_world[static_cast<std::size_t>(parent)], local);
-  }
-  for (auto& bins : scratch.box_bins) {
-    bins = {-1, -1};
-  }
-}
-
-void select_stroke_bins(const CollisionModel& model, const double* qpos, const double* qpos_ref,
-                        std::size_t n_dof, CollisionScratch& scratch) noexcept {
-  if (qpos == nullptr || qpos_ref == nullptr || scratch.box_bins.size() != model.boxes.size()) {
-    return;
-  }
-  const std::size_t n_bins = model.stroke_bins.size();
-  std::size_t g0 = 0;
-  while (g0 < n_bins) {
-    // One box's bins: [g0, g1).
-    const StrokeBin& head = model.stroke_bins[g0];
-    std::size_t g1 = g0 + 1;
-    while (g1 < n_bins && model.stroke_bins[g1].box == head.box) {
-      ++g1;
-    }
-    if (head.dof >= 0 && static_cast<std::size_t>(head.dof) < n_dof && head.box >= 0 &&
-        static_cast<std::size_t>(head.box) < scratch.box_bins.size()) {
-      const double a = qpos[static_cast<std::size_t>(head.dof)];
-      const double b = qpos_ref[static_cast<std::size_t>(head.dof)];
-      const double lo = std::min(a, b);
-      const double hi = std::max(a, b);
-      // Outside the cover, or a non-finite end (checked on a and b: std::min
-      // drops a NaN), and no bin holds the link: the whole-stroke hull stays.
-      if (std::isfinite(a) && std::isfinite(b) && lo >= head.q_lo &&
-          hi <= model.stroke_bins[g1 - 1].q_hi) {
-        std::size_t first = g0;
-        while (model.stroke_bins[first].q_hi < lo) {
-          ++first;
-        }
-        std::size_t last = first;
-        while (last + 1 < g1 && model.stroke_bins[last + 1].q_lo <= hi) {
-          ++last;
-        }
-        scratch.box_bins[static_cast<std::size_t>(head.box)] = {static_cast<int>(first),
-                                                                static_cast<int>(last)};
-      }
-    }
-    g0 = g1;
   }
 }
 
@@ -1025,6 +955,13 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
     const int dof = model.dof_index[li];
     if (dof < 0 || static_cast<std::size_t>(dof) >= n_dof) {
       continue;  // fixed joint (or out-of-range) — no column
+    }
+    if (is_mimic(model.joint_kind[li])) {
+      // No column of its own: a mimic link rides its leader's column, which
+      // this walk adds when it reaches the leader. A mimic on the EE chain
+      // (no gripper finger is: both jaws are leaves) would need the chain
+      // rule folded into that column; refused at configure instead.
+      continue;
     }
     if (dof_blocked != nullptr && dof_blocked[static_cast<std::size_t>(dof)] != 0) {
       continue;  // excluded (e.g. mobile-base dof) — not driven by the arm twist
@@ -1433,7 +1370,15 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
         compose(grid_from_base,
                 compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
+    const int hull_index = has_tight ? model.box_hull[b] : -1;
     const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
+    TightPose tight;
+    GjkWitness witness;
+    if (hull_index >= 0) {
+      tight_pose_init(model.hulls[static_cast<std::size_t>(hull_index)],
+                      model.hull_vertices.empty() ? nullptr : model.hull_vertices.data(), box_w,
+                      half_side, tight);
+    }
     // Bounding half-size of the oriented box on the grid's axes (`box_w` is
     // already expressed in them), which is what sizes an index window.
     const Vec3 ext = obb_extent(box_w, he);
@@ -1441,82 +1386,61 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     const auto [ix0, ix1] = rng(box_w.t.x - ext.x - reach, box_w.t.x + ext.x + reach, grid.sx);
     const auto [iy0, iy1] = rng(box_w.t.y - ext.y - reach, box_w.t.y + ext.y + reach, grid.sy);
     const auto [iz0, iz1] = rng(box_w.t.z - ext.z - reach, box_w.t.z + ext.z + reach, grid.sz);
-    // Which tight representations stand for this box: its own `box_hull`
-    // (k == -1), or the stroke bins `select_stroke_bins` chose. A cell's
-    // distance to their union is the minimum over them, which `fold_pair`
-    // already takes across repeated (link, cell) visits.
-    int k0 = -1;
-    int k1 = -1;
-    if (scratch.box_bins.size() == n_boxes && scratch.box_bins[b].first >= 0) {
-      k0 = scratch.box_bins[b].first;
-      k1 = scratch.box_bins[b].second;
-    }
-    for (int k = k0; k <= k1; ++k) {
-      const int hull_index = k < 0 ? (has_tight ? model.box_hull[b] : -1)
-                                   : model.stroke_bins[static_cast<std::size_t>(k)].hull;
-      TightPose tight;
-      GjkWitness witness;
-      if (hull_index >= 0) {
-        tight_pose_init(model.hulls[static_cast<std::size_t>(hull_index)],
-                        model.hull_vertices.empty() ? nullptr : model.hull_vertices.data(), box_w,
-                        half_side, tight);
-      }
-      for (int iz = iz0; iz <= iz1; ++iz) {
-        for (int iy = iy0; iy <= iy1; ++iy) {
-          for (int ix = ix0; ix <= ix1; ++ix) {
-            const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
-            if (grid.occupancy[idx] == 0) {
-              continue;
-            }
-            const Vec3 center = voxel_center_local(grid, ix, iy, iz);
-            // ADR-0115, as in the capsule pass. Decided BEFORE the narrow phase:
-            // an exempt pair cannot trip whatever its exact distance, so it must
-            // not spend the stage-2 budget the non-exempt pairs of this call
-            // share — a finger buried in its target puts dozens of in-region
-            // cells inside stage 1's margin, enough to exhaust the budget and
-            // leave a non-exempt link on the looser fallback bound (a false
-            // stop). Stage 1's lower bound is all its clamped slack needs.
-            const bool exempt =
-                grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
-            double d;
-            if (hull_index < 0) {
-              Transform voxel;
-              voxel.t = center;
-              d = box_box_distance(box_w, he, voxel, voxel_half);
-            } else {
-              Vec3 seed;
-              d = dop_cell_lower_bound(tight, center, half_side, &seed);
+    for (int iz = iz0; iz <= iz1; ++iz) {
+      for (int iy = iy0; iy <= iy1; ++iy) {
+        for (int ix = ix0; ix <= ix1; ++ix) {
+          const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+          if (grid.occupancy[idx] == 0) {
+            continue;
+          }
+          const Vec3 center = voxel_center_local(grid, ix, iy, iz);
+          // ADR-0115, as in the capsule pass. Decided BEFORE the narrow phase:
+          // an exempt pair cannot trip whatever its exact distance, so it must
+          // not spend the stage-2 budget the non-exempt pairs of this call
+          // share — a finger buried in its target puts dozens of in-region
+          // cells inside stage 1's margin, enough to exhaust the budget and
+          // leave a non-exempt link on the looser fallback bound (a false
+          // stop). Stage 1's lower bound is all its clamped slack needs.
+          const bool exempt =
+              grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
+          double d;
+          if (hull_index < 0) {
+            Transform voxel;
+            voxel.t = center;
+            d = box_box_distance(box_w, he, voxel, voxel_half);
+          } else {
+            Vec3 seed;
+            d = dop_cell_lower_bound(tight, center, half_side, &seed);
+            if (d <= margin) {
+              // Stage 2, on the cells stage 1 could not clear: the exact
+              // hull-to-cell distance, or stage 1's bound again for a link that
+              // ships no hull or a call that has spent its refinement budget.
+              if (!exempt && tight.n_vertices > 0 && stage2_budget > 0) {
+                --stage2_budget;
+                d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
+              }
               if (d <= margin) {
-                // Stage 2, on the cells stage 1 could not clear: the exact
-                // hull-to-cell distance, or stage 1's bound again for a link that
-                // ships no hull or a call that has spent its refinement budget.
-                if (!exempt && tight.n_vertices > 0 && stage2_budget > 0) {
-                  --stage2_budget;
-                  d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
-                }
-                if (d <= margin) {
-                  // Still stopping. Fold in the shipped bound first: the DOP's
-                  // 16 separating axes are NOT a superset of the OBB SAT's 15 —
-                  // the box's edge-cross axes beat every DOP axis at some
-                  // cells, so the tighter SOLID can still yield the looser
-                  // BOUND. Max of two lower bounds is a lower bound, so this
-                  // costs no soundness and guarantees the staged path can
-                  // never stop where box_box_distance alone would not have —
-                  // this change removes false stops, it must not add one.
-                  Transform voxel;
-                  voxel.t = center;
-                  const double shipped = box_box_distance(box_w, he, voxel, voxel_half);
-                  if (shipped > d) {
-                    d = shipped;
-                  }
+                // Still stopping. Fold in the shipped bound first: the DOP's
+                // 16 separating axes are NOT a superset of the OBB SAT's 15 —
+                // the box's edge-cross axes beat every DOP axis at some
+                // cells, so the tighter SOLID can still yield the looser
+                // BOUND. Max of two lower bounds is a lower bound, so this
+                // costs no soundness and guarantees the staged path can
+                // never stop where box_box_distance alone would not have —
+                // this change removes false stops, it must not add one.
+                Transform voxel;
+                voxel.t = center;
+                const double shipped = box_box_distance(box_w, he, voxel, voxel_half);
+                if (shipped > d) {
+                  d = shipped;
                 }
               }
             }
-            fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
           }
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
         }
       }
-    }  // k: stroke bins
+    }
   }
   return finish_sweep(result, sweep_min);
 }

@@ -65,6 +65,8 @@ public:
     params.dof_index = declare_ints("collision_dof_index");
     params.origin_xyzrpy = declare_doubles("collision_origin_xyzrpy");
     params.axis = declare_doubles("collision_axis");
+    params.mimic_multiplier = declare_doubles("collision_mimic_multiplier");
+    params.mimic_offset = declare_doubles("collision_mimic_offset");
     params.link_names = declare_strings("collision_link_names");
     params.capsule_link = declare_ints("collision_capsule_link");
     params.capsule_radius = declare_doubles("collision_capsule_radius");

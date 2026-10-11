@@ -326,17 +326,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::int64_t>>("collision_hull_vertex_count",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<double>>("collision_hull_vertices", std::vector<double>{});
-  // Stroke bins (`LinkCollisionGeometry.stroke_bins`): one row per bin, grouped
-  // by box. Each names a box, the joint column it is indexed by, its [q_lo,
-  // q_hi] and its hull in the `collision_hull_*` arrays. Empty = none.
-  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_box",
-                                                     std::vector<std::int64_t>{});
-  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_dof",
-                                                     std::vector<std::int64_t>{});
-  this->declare_parameter<std::vector<double>>("collision_stroke_bin_q_lo", std::vector<double>{});
-  this->declare_parameter<std::vector<double>>("collision_stroke_bin_q_hi", std::vector<double>{});
-  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_hull",
-                                                     std::vector<std::int64_t>{});
+  // Mimic joints (`RobotDescription.mimic_joints`, the URDF `<mimic>`): a link
+  // of `collision_joint_kind` 3/4 reads the column `collision_dof_index` names
+  // and moves by `multiplier * q + offset`. Per link, parallel to
+  // `collision_parent`; empty = no mimic link (identity for every link).
+  this->declare_parameter<std::vector<double>>("collision_mimic_multiplier", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("collision_mimic_offset", std::vector<double>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
@@ -604,13 +599,17 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
   }
 
-  if (!collision_model_.stroke_bins.empty()) {
+  if (!collision_model_.mimic_multiplier.empty()) {
+    std::size_t n_mimic = 0;
+    for (const JointKind kind : collision_model_.joint_kind) {
+      if (is_mimic(kind)) {
+        ++n_mimic;
+      }
+    }
     RCLCPP_INFO(this->get_logger(),
-                "world-voxel stroke bins: %zu bins narrow the gripper geometry to the "
-                "interval [measured, checked] of its joint; whole-stroke hull when the "
-                "measured state is stale or the interval leaves the bins' cover; "
-                "self-collision keeps the whole-stroke hull",
-                collision_model_.stroke_bins.size());
+                "collision model: %zu mimic link(s) posed from another joint's column "
+                "(multiplier * q + offset), rigid, checked at the commanded value",
+                n_mimic);
   }
 
   // Set up the measured joint-state seed used to reconstruct
@@ -670,6 +669,21 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       static_cast<std::size_t>(collision_ee_link_) >= collision_model_.n_links) {
     collision_ee_link_ = -1;  // out of range → disable predictive (fail-safe to reactive)
   }
+  // The EE Jacobian walks root -> ee and gives a mimic link no column of its
+  // own (`jacobian_dls_step`); a mimic ON that chain would move the EE without
+  // a column, so the prediction would be wrong. No finger is on it (both jaws
+  // are leaves); refuse rather than predict wrongly.
+  for (int l = collision_ee_link_; l >= 0;
+       l = collision_model_.parent[static_cast<std::size_t>(l)]) {
+    if (is_mimic(collision_model_.joint_kind[static_cast<std::size_t>(l)])) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "collision_ee_link_index %d has a mimic link on its chain; the EE Jacobian "
+                   "cannot predict through a mimic joint",
+                   collision_ee_link_);
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+  }
 
   joint_name_to_dof_.clear();
   for (std::size_t i = 0; i < collision_joint_names_.size() && i < ndof; ++i) {
@@ -677,7 +691,10 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   }
   collision_fk_dofs_.clear();
   for (const int d : collision_model_.dof_index) {
-    if (d >= 0 && static_cast<std::size_t>(d) < ndof) {
+    // Once per column: a mimic link shares its leader's column.
+    if (d >= 0 && static_cast<std::size_t>(d) < ndof &&
+        std::find(collision_fk_dofs_.begin(), collision_fk_dofs_.end(), d) ==
+            collision_fk_dofs_.end()) {
       collision_fk_dofs_.push_back(d);
     }
   }
@@ -1129,10 +1146,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // (depends on the kernel's own DLS Jacobian, lambda, dt) — the
       // drawer-opening stop that opened this issue was adjudicated against
       // the *measured* joints, where the two named links sit 53 mm apart.
-      // Disclosure for the evidence: whether the configuration being checked
-      // ran any gripper on stroke bins rather than its whole-stroke hull
-      // (`select_stroke_bins`). Set by check_config, read by report.
-      bool stroke_narrowed = false;
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         ++chunks_dropped_;
@@ -1183,16 +1196,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s stroke_bins_narrowed=%d",
+                     "grasp_target=%s",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
                      static_cast<int>(hit.depth_is_box_bound),
                      static_cast<int>(voxel_grid_.grasp_region.valid),
-                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
-                     static_cast<int>(stroke_narrowed));
-        span->SetAttribute("safety.stroke_bins_narrowed", stroke_narrowed);
+                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "");
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1301,19 +1312,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           collision_min_slack_m = slack;
         }
       };
-      // Gripper stroke bins span [measured, checked] per gripper, so they need a
-      // trustworthy measured state; without one every gripper keeps its
-      // whole-stroke hull (select_stroke_bins with a null reference).
-      const double* const stroke_ref =
-          !collision_model_.stroke_bins.empty() && measured_state_fresh() ? q_meas_.data()
-                                                                          : nullptr;
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0) -> bool {
         fk_config(q);
-        select_stroke_bins(collision_model_, q_fk_.data(), stroke_ref, robot_ndof,
-                           collision_scratch_);
-        stroke_narrowed =
-            std::any_of(collision_scratch_.box_bins.begin(), collision_scratch_.box_bins.end(),
-                        [](const std::pair<int, int>& r) { return r.first >= 0; });
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
@@ -1968,7 +1968,6 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_model_ = CollisionModel{};
   collision_link_names_.clear();
   collision_scratch_.link_world.clear();
-  collision_scratch_.box_bins.clear();
   collision_required_dof_ = 0;
   self_collision_enabled_ = this->get_parameter("self_collision_enabled").as_bool();
 
@@ -2156,11 +2155,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   const auto hull_verts = this->get_parameter("collision_hull_vertices").as_double_array();
   const auto pairs = this->get_parameter("collision_allowed_pairs").as_integer_array();
   const auto names = this->get_parameter("collision_link_names").as_string_array();
-  const auto bin_box = this->get_parameter("collision_stroke_bin_box").as_integer_array();
-  const auto bin_dof = this->get_parameter("collision_stroke_bin_dof").as_integer_array();
-  const auto bin_lo = this->get_parameter("collision_stroke_bin_q_lo").as_double_array();
-  const auto bin_hi = this->get_parameter("collision_stroke_bin_q_hi").as_double_array();
-  const auto bin_hull = this->get_parameter("collision_stroke_bin_hull").as_integer_array();
+  const auto mimic_mult = this->get_parameter("collision_mimic_multiplier").as_double_array();
+  const auto mimic_off = this->get_parameter("collision_mimic_offset").as_double_array();
 
   // Per-link arrays are sized to n_links; capsule/box arrays are sized to the
   // (independent) primitive count — a link may carry zero, one, or several.
@@ -2190,10 +2186,10 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     error = "collision_hull_* supplied without collision_box_hull";
     return false;
   }
-  const std::size_t n_bins = bin_box.size();
-  if (bin_dof.size() != n_bins || bin_lo.size() != n_bins || bin_hi.size() != n_bins ||
-      bin_hull.size() != n_bins) {
-    error = "collision_stroke_bin_* array shapes disagree";
+  // Mimic relation: all-or-nothing per model, one entry per link.
+  if (mimic_mult.size() != mimic_off.size() ||
+      (!mimic_mult.empty() && mimic_mult.size() != n_links)) {
+    error = "collision_mimic_* array shapes disagree with collision_n_links";
     return false;
   }
 
@@ -2204,10 +2200,29 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   m.dof_index.resize(n_links);
   m.origin.resize(n_links);
   m.axis.resize(n_links);
+  m.mimic_multiplier.assign(mimic_mult.begin(), mimic_mult.end());
+  m.mimic_offset.assign(mimic_off.begin(), mimic_off.end());
   for (std::size_t i = 0; i < n_links; ++i) {
     m.parent[i] = static_cast<int>(parent[i]);
+    if (kind[i] < 0 || kind[i] > static_cast<std::int64_t>(JointKind::kMimicPrismatic)) {
+      error = "collision_joint_kind carries an unknown joint code";
+      return false;
+    }
     m.joint_kind[i] = static_cast<JointKind>(static_cast<std::uint8_t>(kind[i]));
     m.dof_index[i] = static_cast<int>(dof[i]);
+    if (is_mimic(m.joint_kind[i])) {
+      // A mimic link reads another joint's column: it needs that column, a
+      // finite relation and a non-zero multiplier (zero is a fixed link
+      // wearing a moving kind), all of which the manifest schema also
+      // refuses — the kernel does not trust the producer for it.
+      if (m.dof_index[i] < 0 || m.mimic_multiplier.empty() ||
+          !std::isfinite(m.mimic_multiplier[i]) || !std::isfinite(m.mimic_offset[i]) ||
+          m.mimic_multiplier[i] == 0.0) {
+        error = "a mimic link (collision_joint_kind 3/4) needs a dof column and a finite, "
+                "non-zero collision_mimic_multiplier / finite collision_mimic_offset";
+        return false;
+      }
+    }
     m.origin[i] = transform_from_xyz_rpy(origin[6 * i + 0], origin[6 * i + 1], origin[6 * i + 2],
                                          origin[6 * i + 3], origin[6 * i + 4], origin[6 * i + 5]);
     m.axis[i] = Vec3{axis[3 * i + 0], axis[3 * i + 1], axis[3 * i + 2]};
@@ -2270,16 +2285,6 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       }
       m.box_hull[b] = static_cast<int>(h);
     }
-    m.stroke_bins.resize(n_bins);
-    for (std::size_t k = 0; k < n_bins; ++k) {
-      // Range-checked by validate_tight_geometry below; a value past int's
-      // range lands as -1, which it refuses too.
-      const auto narrow = [](std::int64_t v) {
-        return v < 0 || v > std::numeric_limits<int>::max() ? -1 : static_cast<int>(v);
-      };
-      m.stroke_bins[k] = StrokeBin{narrow(bin_box[k]), narrow(bin_dof[k]), bin_lo[k], bin_hi[k],
-                                   narrow(bin_hull[k])};
-    }
     // The containment proof, enforced at load and never assumed: every declared
     // representation must sit inside the OBB whose broad-phase window it will be
     // checked in. Fail-closed -- a model that cannot prove it does not configure.
@@ -2296,25 +2301,9 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     m.allowed_pairs.emplace_back(static_cast<int>(pairs[k]), static_cast<int>(pairs[k + 1]));
   }
 
-  if (box_hull.empty() && n_bins != 0) {
-    error = "collision_stroke_bin_* supplied without collision_box_hull";
-    return false;
-  }
-  // A bin's joint must be one FK reads: measured_state_fresh() vouches only for
-  // those dofs, and the [measured, checked] interval is built from it.
-  for (const StrokeBin& bin : m.stroke_bins) {
-    if (std::find(m.dof_index.begin(), m.dof_index.end(), bin.dof) == m.dof_index.end()) {
-      error = "collision_stroke_bin_dof names a joint no collision link is driven by";
-      return false;
-    }
-  }
-
   collision_model_ = std::move(m);
   collision_link_names_.assign(names.begin(), names.end());
   collision_scratch_.link_world.resize(n_links);
-  // Sized only when there is something to narrow: an empty box_bins is the
-  // "every box on its whole hull" state, exactly as before stroke bins.
-  collision_scratch_.box_bins.assign(n_bins == 0 ? 0 : n_boxes, {-1, -1});
   return true;
 }
 
@@ -3070,6 +3059,23 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
       return;
     }
     mask.set(index);
+  }
+  // The other jaw of the same gripper: a link posed from the SAME joint column
+  // as a declared contact link (the follower finger, a `kMimic*` link of the
+  // gripper joint, or the leader when the producer named the follower) is the
+  // same hand's finger and is exempt with it — the exemption is per gripper,
+  // not per jaw. Only an allowlisted link joins; one off the allowlist stays
+  // checked (and fails the declaration if named, above).
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks && c < collision_model_.n_links; ++c) {
+    const int d = collision_model_.dof_index[c];
+    if (!mask[c] || d < 0) {
+      continue;
+    }
+    for (std::size_t k = 0; k < kMaxGraspMaskLinks && k < collision_model_.n_links; ++k) {
+      if (collision_model_.dof_index[k] == d && grasp_allowlist_[k]) {
+        mask.set(k);
+      }
+    }
   }
   // One hand per declaration. The producer may infer the target from the
   // robot's own approach instead of a named one, and it arms one hand at a

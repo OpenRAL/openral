@@ -510,6 +510,14 @@ class _ReachModel:
         )
         self.origin = _xyzrpy_to_matrices(floats("collision_origin_xyzrpy", 6))
         self.axis = floats("collision_axis", 3)
+        n_links = len(self.parent)
+        # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
+        self.mimic_mult = [float(v) for v in params.get("collision_mimic_multiplier", [])] or [
+            1.0
+        ] * n_links
+        self.mimic_off = [float(v) for v in params.get("collision_mimic_offset", [])] or [
+            0.0
+        ] * n_links
         self.base = set(base_dofs)
         n = len(self.parent)
         moving = [False] * n
@@ -544,10 +552,12 @@ class _ReachModel:
         world: list[np.ndarray] = []
         for i in range(len(self.parent)):
             motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
-            if self.dof[i] >= 0 and self.kind[i] in (1, 2):
+            if self.dof[i] >= 0 and self.kind[i] in (1, 2, 3, 4):
                 qi = q[:, self.dof[i]]
+                if self.kind[i] in (3, 4):
+                    qi = self.mimic_mult[i] * qi + self.mimic_off[i]
                 a = self.axis[i] / np.linalg.norm(self.axis[i])
-                if self.kind[i] == 1:  # revolute: Rodrigues about the joint axis
+                if self.kind[i] in (1, 3):  # revolute: Rodrigues about the joint axis
                     k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
                     motion[:, :3, :3] = (
                         np.eye(3)
@@ -1873,10 +1883,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         }
     # Grasp-target exemption (real pick-and-place design §2.1; ADR draft in
     # docs/reference/real-pick-place-adr-drafts.md). The allowlist is ALWAYS the manifest's
-    # gripper links, on or off, so the kernel resolves the same names either way and a
-    # GraspDeclaration can never name a link the robot does not grip with. Omitted when
-    # empty (an empty list has no ROS parameter type), and refused when the flag is on.
-    grasp_contact_links = [j.child_link for j in description.joints if j.role == "gripper"]
+    # gripper links — every `role: gripper` jaw and its mimic follower jaw — on or off, so
+    # the kernel resolves the same names either way and a GraspDeclaration can never name a
+    # link the robot does not grip with. Omitted when empty (an empty list has no ROS
+    # parameter type), and refused when the flag is on.
+    grasp_contact_links = list(description.grasp_contact_links())
     if grasp_allowance_enabled and not grasp_contact_links:
         from openral_core.exceptions import ROSConfigError
 

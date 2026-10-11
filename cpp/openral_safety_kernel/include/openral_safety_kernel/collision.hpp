@@ -36,12 +36,26 @@ struct Transform {
   Vec3 t{};
 };
 
-/// Joint connecting a link to its parent.
+/// Joint connecting a link to its parent. A MIMIC kind (`MimicJoint` in the
+/// manifest, the URDF `<mimic>` relation) has no qpos column of its own: FK
+/// reads the mimicked joint's column `dof_index` and poses the link at
+/// `mimic_multiplier * qpos[dof] + mimic_offset` — the OpenArm's follower
+/// finger, rigid in its own link frame and checked at the gripper's commanded
+/// value like every other link (docs/reference/finger-mimic-geometry.md). A
+/// mimic link adds no Jacobian column (`jacobian_dls_step`) and is never a
+/// DOF of the envelope.
 enum class JointKind : std::uint8_t {
   kFixed = 0,
   kRevolute = 1,
   kPrismatic = 2,
+  kMimicRevolute = 3,
+  kMimicPrismatic = 4,
 };
+
+/// Whether `kind` poses its link from another joint's column.
+constexpr bool is_mimic(JointKind kind) noexcept {
+  return kind == JointKind::kMimicRevolute || kind == JointKind::kMimicPrismatic;
+}
 
 /// A capsule attached to a link, expressed in that link's frame.
 struct Capsule {
@@ -172,21 +186,6 @@ struct LinkHull {
   double dop_hi[kDopAxes]{};  ///< per-axis upper slab, box-local frame
 };
 
-/// One stroke bin of a box's tight geometry (`LinkCollisionGeometry.stroke_bins`):
-/// `hulls[hull]` holds the box's link geometry for EVERY value of joint
-/// column `dof` in [q_lo, q_hi]. A box's bins are contiguous in
-/// CollisionModel::stroke_bins, sorted, gap-free (one bin's q_hi is the next
-/// one's q_lo), and refine a box that also declares the whole-stroke hull in
-/// `box_hull` — what the check falls back to whenever no bin applies.
-/// See docs/reference/finger-stroke-geometry.md.
-struct StrokeBin {
-  int box{-1};       ///< index into CollisionModel::boxes
-  int dof{-1};       ///< joint column the bin is indexed by
-  double q_lo{0.0};  ///< lower end of the joint sub-range
-  double q_hi{0.0};  ///< upper end, > q_lo
-  int hull{-1};      ///< index into CollisionModel::hulls
-};
-
 /// Flattened kinematic + collision model. Links are topologically ordered so
 /// every parent index is < its children's. A link may carry zero, one, or
 /// several capsules (real MJCF bodies often have several collision geoms);
@@ -199,10 +198,15 @@ struct CollisionModel {
   std::vector<int> dof_index;         ///< qpos index for revolute/prismatic; -1 if fixed
   std::vector<Transform> origin;      ///< fixed parent-link -> joint transform
   std::vector<Vec3> axis;             ///< joint axis (unit) in the joint frame
-  std::vector<int> capsule_link;      ///< link index each capsule attaches to
-  std::vector<Capsule> capsules;      ///< parallel to capsule_link
-  std::vector<int> box_link;          ///< link index each OBB attaches to
-  std::vector<Obb> boxes;             ///< parallel to box_link (blocky links)
+  /// Parallel to links when the model has a mimic joint, else empty (identity
+  /// for every link): a `kMimic*` link's value is
+  /// `mimic_multiplier[i] * qpos[dof_index[i]] + mimic_offset[i]`.
+  std::vector<double> mimic_multiplier;
+  std::vector<double> mimic_offset;
+  std::vector<int> capsule_link;  ///< link index each capsule attaches to
+  std::vector<Capsule> capsules;  ///< parallel to capsule_link
+  std::vector<int> box_link;      ///< link index each OBB attaches to
+  std::vector<Obb> boxes;         ///< parallel to box_link (blocky links)
   /// Parallel to `boxes`: index into `hulls` for the tight geometry refining
   /// that box in the world-voxel check, or -1 for none. Empty means no box
   /// carries tight geometry — the pre-#166 behaviour, which every
@@ -211,22 +215,12 @@ struct CollisionModel {
   std::vector<LinkHull> hulls;                     ///< tight geometry, box-local frame
   std::vector<Vec3> hull_vertices;                 ///< CSR-packed stage-2 vertices, box-local
   std::vector<std::pair<int, int>> allowed_pairs;  ///< unordered link pairs to skip
-  /// Stroke bins, grouped by box in ascending box order. Empty for every
-  /// model without `stroke_bins`, which then behaves exactly as before.
-  std::vector<StrokeBin> stroke_bins;
 };
 
 /// Pre-sized scratch reused across calls; resize `link_world` to `n_links`
 /// once at configure time so the hot path never allocates.
 struct CollisionScratch {
   std::vector<Transform> link_world;  ///< per-link frame in the base frame
-  /// Parallel to CollisionModel::boxes when the model has stroke bins (size it
-  /// at configure time; left empty, every box keeps its whole-stroke hull):
-  /// the inclusive [first, last] range of CollisionModel::stroke_bins the
-  /// world-voxel check uses for that box, or {-1, -1} for its `box_hull`.
-  /// `forward_kinematics` resets every entry to {-1, -1}; only
-  /// `select_stroke_bins` narrows one.
-  std::vector<std::pair<int, int>> box_bins;
 };
 
 /// Binding absolute ceiling on the declaration-scoped place approach
@@ -847,7 +841,6 @@ enum class TightGeometryStatus : std::uint8_t {
   kHullEscapesDop = 3,   ///< a stage-2 vertex sits outside its own DOP
   kTooManyVertices = 4,  ///< stage-2 hull over kMaxTightHullVertices
   kDegenerate = 5,       ///< non-finite or inverted slab
-  kBadStrokeBins = 6,    ///< stroke bins out of range, unsorted, gapped or not grouped by box
 };
 
 /// The containment proof for ONE tight representation against ONE box, shared
@@ -1024,24 +1017,11 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
 /// Allocation-free; `scratch.link_world` must already be sized to
-/// `model.n_links`. Also resets every `scratch.box_bins` entry to {-1, -1}
-/// (whole-stroke hull), so a stroke-bin selection never outlives the
-/// configuration it was made for.
+/// `model.n_links`. A `kMimic*` link reads its mimicked joint's column and
+/// moves by `mimic_multiplier * q + mimic_offset` (identity relation when the
+/// model's mimic arrays are empty).
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept;
-
-/// Narrow each stroke-binned box to the bins covering the joint interval the
-/// check spans: [min(qpos[dof], qpos_ref[dof]), max(...)] — for a commanded
-/// row with `qpos_ref` the measured configuration, every opening the jaw
-/// passes through between the two. Run AFTER `forward_kinematics`, which
-/// resets every box to its whole-stroke hull.
-///
-/// Fail-closed: a box keeps its whole-stroke hull when `qpos_ref` is null
-/// (no trustworthy measured state), the dof is past `n_dof`, either value is
-/// non-finite, or the interval reaches outside the bins' cover. Allocation-
-/// free; a no-op unless `scratch.box_bins` is sized to `model.boxes`.
-void select_stroke_bins(const CollisionModel& model, const double* qpos, const double* qpos_ref,
-                        std::size_t n_dof, CollisionScratch& scratch) noexcept;
 
 /// Check every non-allowed capsule pair against a `margin` clearance using the
 /// link frames in `scratch`. On a hit the returned pair is the deepest pair
@@ -1093,13 +1073,6 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// cube at the cell centre. On a hit, link_a is the robot link index,
 /// link_b the linear index of the deepest cell within margin, min_distance
 /// that cell's distance (CollisionHit). Allocation-free.
-///
-/// A stroke-binned box narrowed by `select_stroke_bins` runs the staged
-/// narrow phase once per selected bin hull instead of once on its
-/// whole-stroke hull, and a cell's distance is the minimum over them (the
-/// distance to their union, which holds the link at every joint value of the
-/// interval). Every bin hull is proved inside the same OBB, so the window is
-/// unchanged. Self-collision never narrows: it keeps the whole-stroke hull.
 ///
 /// A boxed link whose box_hull entry names a LinkHull runs the STAGED
 /// narrow phase instead of box_box_distance: a 26-DOP separating-axis bound
