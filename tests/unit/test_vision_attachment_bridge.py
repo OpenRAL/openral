@@ -1281,6 +1281,49 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
 
 
+def test_the_region_payload_is_clipped_at_the_tool_point() -> None:
+    """#349 p8/p9/p11_mix02: the margin's top bloat put the region box into the carrying
+    wrist (payload vs openarm_left_link6). Given the tool point, nothing of the payload
+    lies behind it along the approach; without it the box is the region's."""
+    from openral_core import BoxShape, GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import primitive_poses, region_attachment
+
+    region = PlaceRegion(
+        frame_id="openarm_left_link7",
+        pose=Pose6D(xyz=(0.0, 0.0, -0.10), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="l"),
+        half_extents=(0.06, 0.04, 0.05),
+        evidence_ref="test",
+        stamp_ns=1,
+    )
+    declaration = GraspDeclaration(
+        target_id="cell:box",
+        contact_links=["openarm_left_finger_pair"],
+        rskill_id="r",
+        trace_id="t",
+        timeout_s=10.0,
+        stamp_ns=1,
+        active=True,
+        region=region,
+    )
+    kwargs: dict[str, Any] = {
+        "attach_link": "openarm_left_link7",
+        "touch_links": ["openarm_left_finger_pair"],
+        "t_link_from_region": np.eye(4),
+        "stamp_ns": 2,
+    }
+    tcp = (0.0, 0.0, -0.07)
+    whole = region_attachment(declaration, **kwargs)
+    clipped = region_attachment(declaration, **kwargs, tcp_in_link=tcp)
+    assert isinstance(whole.primitives[0].shape, BoxShape)
+    assert whole.primitives[0].shape.half_extents_m == (0.06, 0.04, 0.05)
+    shape = clipped.primitives[0].shape
+    assert isinstance(shape, BoxShape)
+    (t,) = primitive_poses(clipped, np.eye(4))
+    top = t[2, 3] + shape.half_extents_m[2]
+    bottom = t[2, 3] - shape.half_extents_m[2]
+    assert top == pytest.approx(-0.07) and bottom == pytest.approx(-0.15)
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);

@@ -124,6 +124,7 @@ executor's one thread, so the lock is uncontended and behaviour is unchanged.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -566,6 +567,47 @@ def freeze_released_attachment(
     )
 
 
+def _clip_behind_tool_point(
+    pose: NDArray[np.float64], half: NDArray[np.float64], tcp: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Shorten a box (``pose`` in the link, ``half``) so nothing lies behind the tool point.
+
+    Only along a box axis within 15 degrees of the approach ``u = tcp / |tcp|`` (an OBB
+    clipped by an oblique plane is no OBB); the front face stays, the half extent never
+    drops below 2.5 mm. Unchanged when no axis is aligned or nothing is behind.
+
+    Example:
+        >>> import numpy as np
+        >>> pose = np.eye(4)
+        ... pose[2, 3] = -0.10  # a box below the link origin
+        >>> p, h = _clip_behind_tool_point(
+        ...     pose, np.array([0.05, 0.05, 0.05]), np.array([0.0, 0.0, -0.07])
+        ... )
+        >>> round(float(p[2, 3]), 3), round(float(h[2]), 3)  # back face at z = -0.07
+        (-0.11, 0.04)
+    """
+    reach = float(np.linalg.norm(tcp))
+    if reach <= 0.0:
+        return pose, half
+    u = tcp / reach
+    rot = pose[:3, :3]
+    proj = rot.T @ u  # each box axis . u
+    i = int(np.argmax(np.abs(proj)))
+    if abs(proj[i]) < math.cos(math.radians(15.0)):
+        return pose, half
+    back = float(pose[:3, 3] @ u) - float(np.abs(proj) @ half)
+    excess = reach - back
+    if excess <= 0.0:
+        return pose, half
+    cut = min(excess / abs(proj[i]), 2.0 * (half[i] - 0.0025))
+    if cut <= 0.0:
+        return pose, half
+    out_pose, out_half = pose.copy(), half.copy()
+    out_half[i] -= cut / 2.0
+    out_pose[:3, 3] += rot[:, i] * math.copysign(cut / 2.0, proj[i])
+    return out_pose, out_half
+
+
 def region_attachment(
     declaration: GraspDeclaration,
     *,
@@ -575,6 +617,7 @@ def region_attachment(
     stamp_ns: int,
     support_z: float | None = None,
     extrinsic_error_m: float = MAX_PLANAR_ERR_M,
+    tcp_in_link: tuple[float, float, float] | None = None,
 ) -> AttachedCollisionObject:
     """The grasp-target leg's latched pre-grasp region as the held payload (design §2.2).
 
@@ -613,6 +656,14 @@ def region_attachment(
             (z up), or ``None``.
         extrinsic_error_m: The depth extrinsic's accuracy bound (the witness's
             penetration bound, capped at the kernel's 10 mm).
+        tcp_in_link: The tool point in ``attach_link``, or ``None``. Given, a box axis
+            within 15 degrees of the link-origin -> tool-point (approach) direction is
+            shortened so the box's back face sits on the tool point, front face fixed (never
+            below 5 mm): the held object is between and beyond the jaws, never behind them
+            in the palm. The bridge gives it only when the measured (unpadded) region lies
+            wholly in front of the tool point (``_padding_clip_point``), so only padding goes.
+            The margin bloat on the top otherwise reached the carrying wrist
+            (#349 p8/p9/p11_mix02: payload vs ``openarm_left_link6``, -2.5 to -4.3 mm).
 
     Returns:
         The attachment, evidence ``GRASP_TARGET_REGION``.
@@ -636,6 +687,9 @@ def region_attachment(
         raise ROSConfigError(f"grasp target {declaration.target_id!r} carries no region.")
     object_id = declaration.object_id or declaration.target_id
     pose = t_link_from_region @ homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    half = np.asarray(region.half_extents, dtype=np.float64)
+    if tcp_in_link is not None:
+        pose, half = _clip_behind_tool_point(pose, half, np.asarray(tcp_in_link, dtype=np.float64))
     w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
     held = _Attached(
         object_id=object_id,
@@ -643,7 +697,7 @@ def region_attachment(
         touch_links=list(touch_links),
         primitives=[
             AttachedCollisionPrimitive(
-                shape=BoxShape(half_extents_m=tuple(float(h) for h in region.half_extents)),
+                shape=BoxShape(half_extents_m=(float(half[0]), float(half[1]), float(half[2]))),
                 pose_in_object=Pose6D(
                     xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=object_id
                 ),
@@ -1639,6 +1693,29 @@ class VisionAttachmentBridge:
         if self._place_target is not None:
             self._place_target.on_joint_state()
 
+    def _padding_clip_point(
+        self,
+        leg: _GripperLeg,
+        link: str,
+        region: PlaceRegion,
+        t_link_from_region: NDArray[np.float64],
+    ) -> tuple[float, float, float] | None:
+        """The tool point to clip the region payload at, or ``None`` to keep it whole.
+
+        Only the margin padding may be clipped: given when the measured (unpadded) region
+        lies wholly in front of the tool point, so ``region_attachment`` removes padding
+        behind it and never measured geometry.
+        """
+        tcp = self._tcp_in(leg, link)
+        if tcp is None:
+            return None
+        pose = t_link_from_region @ homogeneous_from_quat_xyz(
+            region.pose.xyz, region.pose.quat_xyzw
+        )
+        half = np.asarray(region.half_extents, dtype=np.float64)
+        _, clipped = _clip_behind_tool_point(pose, half, np.asarray(tcp, dtype=np.float64))
+        return tcp if np.array_equal(clipped, half) else None
+
     def _note_close_region(self, leg: _GripperLeg) -> None:
         """Record where the live grasp-target region sits in the attach link, while closing.
 
@@ -2235,6 +2312,7 @@ class VisionAttachmentBridge:
             stamp_ns=stamp_ns,
             support_z=self._grasp_target.measured_support(region),
             extrinsic_error_m=extrinsic,
+            tcp_in_link=self._padding_clip_point(leg, link, region, t_link_from_region),
         )
         leg.support_anchor = None
         if held.support_contact is not None:
