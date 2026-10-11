@@ -185,6 +185,15 @@ def main(argv: list[str]) -> int:
     from isaacsim import SimulationApp
 
     sim_app = SimulationApp({"headless": bool(args.headless)})
+    if args.headless:
+        # Kit keeps rendering its 1280x720 editor viewport every frame even headless;
+        # nothing reads it and it costs ~20 % of a scene step (26 -> 20.5 ms measured
+        # on GB10). The scene's own cameras render through their render products.
+        from omni.kit.viewport.utility import get_active_viewport
+
+        viewport = get_active_viewport()
+        if viewport is not None:
+            viewport.updates_enabled = False
 
     try:
         # 2) Heavy imports, only valid post-launch.
