@@ -171,12 +171,19 @@ jobs:
             fi
             if [ "$rc" -eq 0 ]; then
               if [ "$group" = "simpler-env" ] || [ "$group" = "robocasa-gr1" ]; then
-                # verify_test_envs.py drives its own pytest, so there is no
-                # junit report to account from — judge it by exit code alone.
+                # verify_test_envs.py provisions these manual-install lanes and
+                # drives their pytest; its junit report goes through the same
+                # lane_report accounting as every other lane, so a declared
+                # capability gap (no Vulkan on a hosted runner) is a skip, not a
+                # failure. PIPESTATUS, not `| tee || rc=$?`: the step shell has
+                # no pipefail, so that captured tee's 0 and these two lanes
+                # reported green whatever verify_test_envs.py exited with.
+                lane_xml="$RUNNER_TEMP/lane-${group}.xml"
                 OPENRAL_ALLOW_ROBOCASA_ASSETS=1 uv run python tools/verify_test_envs.py \
-                  --include-provisioned --groups "$group" 2>&1 | tee "$log" || rc=$?
+                  --include-provisioned --groups "$group" --junit-xml "$lane_xml" 2>&1 | tee "$log"
+                rc=${PIPESTATUS[0]}
                 python3 scripts/repair_hf_libero_install.py || true
-                report_lane "$group" "$rc" --from-exit-code || rc=1
+                report_lane "$group" "$rc" --junit-xml "$lane_xml" || rc=1
               else
                 # Partition selected targets: files flagged for per-process
                 # isolation (ISOLATED_TARGETS, from tools/test_selection.toml
