@@ -90,6 +90,30 @@ Contact classes, per (robot link, world cell, task state):
   the declaration ends are unchanged.** This is what keeps catastrophic collisions — arm into
   shelf/table/person, fast hand strikes, hand outside the task volume — stopped.
 
+### 3.1 Static geometry: what the camera has not seen is not free
+
+**Evidence (deliberate-collision probes, 2026-10-11):** single-joint sweeps from the restock
+start pose, published on `/openral/candidate_action` with no goal active, kernel and Isaac live.
+Three sweeps hit joint-envelope limits and were stopped (`safety.envelope_violation`); two sweeps
+toward the shelf/tote were stopped by the world check before any PhysX contact. But two sweeps
+that swung an arm **outward, out of the head camera's view** — `right_joint1` to +1.5 rad and
+`left_joint2` to −1.5 rad — drove the arm into the cell's side wall / shelf frame and were
+**not stopped**: the joint ended 0.9 rad and 0.65 rad short of its command, blocked by the wall,
+with no kernel verdict. Unobserved space is free end to end (octomap → bridge → kernel), so a
+fixed wall the camera has not seen does not exist for the kernel. That is a missed
+catastrophic-class collision, independent of the workspace rule.
+
+**Rule:** a scene declares its static fixtures (walls, shelf frame, table, tote shell) as
+geometry in the robot's base frame, and the world grid the kernel checks is the union of the
+camera's occupancy and that declared geometry, always — regardless of what the camera has seen
+or cleared. A scene may only **add** occupancy (the fail-closed direction), so declared static
+geometry needs no measurement before it counts, unlike an exemption. The workspace rule then
+applies to it like any other cell: hand links may graze the declared tote/shelf inside a live,
+confirmed workspace, slowly; arm links stop on it everywhere. For Isaac scenes the fixtures come
+from the stage's static colliders; for a real cell, from its measured cell description. The
+safety envelope's `no_go_zones` are declared today but enforced nowhere — this layer is where
+declared geometry becomes enforced.
+
 ## 4. Why this is sound enough to propose
 
 - **Scope is measured, not asserted:** the exemption volume is map-confirmed, bounded by the
