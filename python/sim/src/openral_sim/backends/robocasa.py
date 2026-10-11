@@ -720,6 +720,13 @@ class _RoboCasaSim:
         return int(self._env.action_dim)
 
     def reset(self, seed: int | None = None) -> Observation:
+        # robosuite re-reads its process-global physics dt at every world rebuild,
+        # and another scene in this process may have pinned its own rate since this
+        # env was built: re-pin ours first (issue #358). The GR1 gym path has no
+        # robosuite control_timestep at this level and was never pinned.
+        control_timestep = getattr(self._env, "control_timestep", None)
+        if control_timestep:
+            pin_robosuite_time_base(1.0 / float(control_timestep))
         if seed is not None and hasattr(self._env, "rng"):
             # robocasa's own gym_wrapper.reset uses this exact pattern;
             # robosuite envs don't expose set_random_state, so reseeding

@@ -166,11 +166,13 @@ def test_the_benchmark_rate_stays_at_libero_native_20_hz() -> None:
 
 def test_a_deploy_pin_earlier_in_the_process_does_not_leak_into_the_benchmark_rate() -> None:
     """robosuite's physics dt is process-global: a 30 Hz deploy pin (1/510 s) used to leave
-    the next 20 Hz eval env integrating 25 x 1/510 = 0.049 s per step instead of 0.05 s."""
+    the next 20 Hz eval env integrating 25 x 1/510 = 0.049 s per step instead of 0.05 s —
+    whether the pin came before the build or between the build and the first reset."""
     from openral_sim.rollout import pin_robosuite_time_base
 
     pin_robosuite_time_base(30.0)
     sim = _build(max_steps=50)
+    pin_robosuite_time_base(30.0)  # another scene built before this one's first reset
     try:
         sim.reset(seed=0)
         assert sim.sim_dt_per_tick_s == pytest.approx(1 / 20, rel=1e-6)
