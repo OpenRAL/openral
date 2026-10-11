@@ -275,6 +275,13 @@ tote and the prompt's target slot (one box — the hull of both; neighbouring sl
 are in it too, two boxes are the follow-up). Arm links still always stop; a payload against the
 robot itself (`check_attached_self_collision`) is unchanged.
 
+**Two hands meeting (sim):** `check_self_collision` takes the live workspace; a pair of two hand
+links whose link origins both lie inside the box does not trip while the hands are slow (same speed
+and lead predicate), counted and disclosed as `link=self@<a> cell=<b index>`. Why: across the place
+batches at least 6 stops were the two OpenArm hands touching inside the tote/shelf workspace, real
+on the MuJoCo meshes (0.07–1.9 mm overlap) at 0.10–0.20 m/s — Isaac runs with self-collision off,
+so PhysX cannot see them. Arm links, and hands outside the box, stop as before.
+
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
 Cartesian control modes, the force/current contact layer.
 

@@ -1104,8 +1104,17 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 /// stage-2 hull. The OBB result stays the broad phase and the fallback, so a
 /// pair the boxes already clear costs nothing extra and a manifest without
 /// `tight_geometry` is bit-for-bit unchanged.
+///
+/// `workspace` (#349, draft): with a live manipulation workspace, a pair of two
+/// HAND links (both in its link mask) whose link origins both lie inside its box
+/// does not trip while the hands are slow (`workspace_contact_exempts`' speed and
+/// lead predicate on both) — two hands meeting inside the workspace are the same
+/// low-speed contact a hand meeting an object there is. The pair is counted in
+/// `workspace_pairs` and reaches `sweep_min_distance` at its own depth. Arm links
+/// and everything outside the box are unchanged; `nullptr` = today's check.
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin) noexcept;
+                                  double margin,
+                                  const WorkspaceContactRegion* workspace = nullptr) noexcept;
 
 /// Maximum joint count the allocation-free Jacobian step supports (stack scratch
 /// is sized to this). Covers every in-tree robot (humanoids ~30 dof) with

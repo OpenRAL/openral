@@ -6678,6 +6678,39 @@ TEST(WorkspaceContact, ASlowHandsPayloadInsideTheWorkspaceDoesNotTrip) {
       << "cell outside the workspace";
 }
 
+// Two hands meeting inside the workspace (#349: 6+ deploy-sim stops were the two
+// OpenArm hands' fingers touching, 0.07-1.9 mm on the meshes, at 0.10-0.20 m/s).
+TEST(WorkspaceContact, TwoSlowHandsMeetingInsideTheWorkspaceDoNotTrip) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 2, 0.05, 0.0, identity());
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.08, 0.0, 0.0)};
+  const auto today = osk::check_self_collision(m, s, 0.0);
+  ASSERT_TRUE(today.hit) << "the two capsules overlap by 2 cm";
+
+  osk::WorkspaceContactRegion ws;
+  ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({2, 3}),
+                                         kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.hand_lead_m = 0.0;
+  const auto slow = osk::check_self_collision(m, s, 0.0, &ws);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_EQ(slow.workspace_pairs, 1) << "never silent";
+  EXPECT_EQ(slow.sweep_min_distance, today.sweep_min_distance);
+
+  ws.hand_speed_mps = 2.0 * kWsMaxSpeed;
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "fast hands";
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.link_mask = grasp_mask({2});
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "link 3 is not a hand link";
+  ws.link_mask = grasp_mask({2, 3});
+  s.link_world[3] = translate(0.25, 0.0, 0.0);
+  s.link_world[2] = translate(0.17, 0.0, 0.0);
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "link 3 outside the box";
+}
+
 TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
   osk::AttachedModel att;
   append_object(att, 1, translate(0.05, 0.0, 0.0),

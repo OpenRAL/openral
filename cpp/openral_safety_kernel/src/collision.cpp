@@ -1119,8 +1119,17 @@ double refine_self_pair(const CollisionModel& model, std::size_t bi, const Trans
 
 }  // namespace
 
+namespace {
+bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScratch& scratch, int a,
+                           int b) noexcept;
+// Fold one self pair, exempting a slow hand-hand pair inside the workspace (#349).
+void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
+                    const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
+                    bool depth_is_box_bound = false) noexcept;
+}  // namespace
+
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin) noexcept {
+                                  double margin, const WorkspaceContactRegion* workspace) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
@@ -1141,7 +1150,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           capsule_distance(cap_i, model.capsules[i].radius, model.capsules[i].half_length, cap_j,
                            model.capsules[j].radius, model.capsules[j].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, li, lj);
+      fold_self_pair(result, sweep_min, d, margin, li, lj, workspace, scratch);
     }
   }
   // Blocky links carry an OBB instead of a capsule (issue #84):
@@ -1164,7 +1173,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           box_capsule_distance(box_i, model.boxes[bi].half_extents, cap_j,
                                model.capsules[cj].radius, model.capsules[cj].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, lb, lc);
+      fold_self_pair(result, sweep_min, d, margin, lb, lc, workspace, scratch);
     }
     for (std::size_t bj = bi + 1; bj < n_boxes; ++bj) {
       const int lb2 = model.box_link[bj];
@@ -1182,8 +1191,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
         // ship one; otherwise `d` comes back unchanged.
         d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d, &depth_is_box_bound);
       }
-      fold_pair(result, sweep_min, d, d <= margin, lb, lb2, /*allowance_active=*/false,
-                /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
+      fold_self_pair(result, sweep_min, d, margin, lb, lb2, workspace, scratch, depth_is_box_bound);
     }
   }
   return finish_sweep(result, sweep_min);
@@ -1308,6 +1316,30 @@ void note_workspace_pair(CollisionHit& hit, double d, int link, int cell) noexce
     hit.workspace_link = link;
     hit.workspace_cell = cell;
   }
+}
+
+bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScratch& scratch, int a,
+                           int b) noexcept {
+  if (ws == nullptr || !workspace_link_slow(*ws, a) || !workspace_link_slow(*ws, b)) {
+    return false;
+  }
+  const auto inside = [&](int l) {
+    return static_cast<std::size_t>(l) < scratch.link_world.size() &&
+           point_in_obb(ws->pose, ws->half_extents,
+                        scratch.link_world[static_cast<std::size_t>(l)].t);
+  };
+  return inside(a) && inside(b);
+}
+
+void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
+                    const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
+                    bool depth_is_box_bound) noexcept {
+  const bool exempt = d <= margin && workspace_self_exempt(ws, scratch, a, b);
+  if (exempt) {
+    note_workspace_pair(result, d, a, b);
+  }
+  fold_pair(result, sweep_min, d, d <= margin && !exempt, a, b, /*allowance_active=*/false,
+            /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
 }
 
 }  // namespace

@@ -1548,8 +1548,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           fk_config(q);
         }
         if (self_collision_enabled_) {
-          const auto hit = check_self_collision(collision_model_, collision_scratch_,
-                                                self_collision_margin_m_ + extra_margin);
+          // #349: two slow hands meeting inside the live workspace are tolerated
+          // like a hand meeting an object there (WARN `link=self@<a> cell=<b index>`).
+          const auto hit = check_self_collision(
+              collision_model_, collision_scratch_, self_collision_margin_m_ + extra_margin,
+              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr);
+          disclose_workspace(hit, step, "self@");
           // NOT folded into the graded band (#188), deliberately, since #191.
           // A robot's tightest self-pair is a property of how it is BUILT, not
           // of where it is going: on `panda_mobile`, `panda_link5` <->
