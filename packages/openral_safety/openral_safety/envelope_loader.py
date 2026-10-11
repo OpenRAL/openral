@@ -1068,11 +1068,19 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
         params: The dict from ``collision_params_from_description`` (or
             ``lower_collision_params``).
 
+    A link with a mimic joint (``_MIMIC_KIND_CODE``) on its chain is never picked:
+    the Jacobian has no column for a mimic joint, and the kernel refuses such an
+    EE at configure. A gripper's follower finger hangs one level below its leader,
+    so without this it would win the depth contest.
+
     Returns:
-        The deepest collision-link index, or ``-1`` when there is no collision
-        model (predictive Cartesian stays disabled — reactive check only).
+        The deepest collision-link index whose chain has no mimic joint, or ``-1``
+        when there is no collision model (predictive Cartesian stays disabled —
+        reactive check only).
     """
     parent = cast("list[int]", params.get("collision_parent") or [])
+    kinds = cast("list[int]", params.get("collision_joint_kind") or [])
+    mimic_codes = set(_MIMIC_KIND_CODE.values())
     n = len(parent)
     if n == 0:
         return -1
@@ -1082,10 +1090,14 @@ def ee_link_index_from_collision_params(params: Mapping[str, object]) -> int:
         depth = 0
         p = parent[i]
         guard = 0
+        mimic = i < len(kinds) and kinds[i] in mimic_codes
         while p is not None and p >= 0 and guard <= n:
             depth += 1
+            mimic = mimic or (p < len(kinds) and kinds[p] in mimic_codes)
             p = parent[p]
             guard += 1
+        if mimic:
+            continue
         if depth > best_depth:
             best_depth = depth
             best_index = i
