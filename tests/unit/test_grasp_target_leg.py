@@ -1409,12 +1409,11 @@ class _LiveLeg:
             config=VisionAttachmentConfig(
                 camera="head_zed",
                 grasp_target_enabled=True,
-                grasp_target_approach_m=0.10,
                 tf_frames={
                     "openarm_left_link7": "openarm_left_ee_base_link",
                     "openarm_right_link7": "openarm_right_ee_base_link",
                 },
-                **config,
+                **{"grasp_target_approach_m": 0.10, **config},
             ),
         )
         self.buffer = tf2_ros.Buffer()
@@ -3719,3 +3718,147 @@ def test_a_named_search_box_refuses_a_broad_fit_outside_its_target() -> None:
         leg._tick()
         assert leg.tracker.region is None
         assert leg.tracker._status == "retracted:outside_named_search_box"
+
+
+# ── Isaac s_mix07: a partially occluded re-fit while the hand approaches (#349) ──────
+
+#: The s_mix07 cell in ``openarm_base``: 15 mm voxels, the shelf board's top at z=-0.57,
+#: the carton 4 x 3 cells (x 0.12-0.18) and 5 layers tall on it.
+_MIX07_RES = 0.015
+_MIX07_ORIGIN = (0.075, -0.15, -0.585)
+_MIX07_DIMS = (12, 8, 9)
+_MIX07_SUPPORT_Z = -0.57
+#: The held instance (``support unseen``: it stood on its own lowest point + one voxel)
+#: and the re-fit made as the right hand descended onto it, both verbatim from the log.
+_MIX07_HELD_SUPPORT_Z = -0.552
+_MIX07_YAW = np.deg2rad(-177.9)
+
+
+def _mix07_box(
+    xyz: tuple[float, float, float], half: tuple[float, float, float], stamp_ns: int
+) -> PlaceRegion:
+    quat = (0.0, 0.0, float(np.sin(_MIX07_YAW / 2)), float(np.cos(_MIX07_YAW / 2)))
+    return PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=xyz, quat_xyzw=quat, frame_id="openarm_base"),
+        half_extents=half,
+        evidence_ref="segment_in_view:/openral/perception/segment_in_view@3883333333",
+        stamp_ns=stamp_ns,
+    )
+
+
+def _mix07_lattice(*, carton_dj: int = 0, carton: bool = True) -> VoxelLattice:
+    """The board (layer 0, every cell) and, unless taken away, the carton ``carton_dj`` cells
+    along +y from where it was held."""
+    nx, ny, nz = _MIX07_DIMS
+    occ = np.zeros((nz, ny, nx), dtype=np.uint8)
+    occ[0] = 1
+    if carton:
+        occ[1:6, 2 + carton_dj : 5 + carton_dj, 3:7] = 1
+    return VoxelLattice(
+        "openarm_base", _MIX07_ORIGIN, (0.0, 0.0, 0.0, 1.0), _MIX07_RES, _MIX07_DIMS, occ.ravel()
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "status"),
+    [
+        ("occluded", None),
+        ("occluded_no_hand", "retracted:unoccluded_refit"),
+        ("map_cleared", "retracted:map_disagrees"),
+        ("translated", "retracted:target_moved"),
+    ],
+)
+def test_isaac_s_mix07_an_occluded_refit_with_the_hand_approaching_keeps_the_held_region(
+    case: str, status: str | None
+) -> None:
+    """Isaac s_mix07: the carton's instance was held 7 s, then — the right hand descending
+    onto it, partly occluding it from the head camera — a pre-measurement re-fit came back
+    shifted 18 mm and shrunk on the hand's side, its bottom 19 mm lower (on the measured
+    board, where the held fit had stood on its own lowest point). It was retracted as
+    ``target_moved``; 0.9 s later the finger reached the carton with no exemption live and
+    the kernel stopped (PhysX: the carton had not moved). Revision 3 of the design:
+
+    * the target cannot move into its support, so the re-fit's lower bottom is no move;
+    * the hand approaching (within the approach distance of the held box, not yet over
+      it) while the map still confirms the held box: the map holds it — the same box,
+      re-stamped on the confirming grid, never the re-fit;
+    * the same re-fit with no hand near stays the contradiction ``unoccluded_refit``;
+    * the map cleared (the carton taken away) retracts, hand or not (``map_disagrees``);
+    * the carton really moved two voxels, the map agreeing, retracts (``target_moved``).
+    """
+    from openral_hal._object_primitives import PrimitiveFit, PrimitiveTracker
+
+    with _live_leg(
+        f"test_s_mix07_{case}", grasp_target_premeasure=True, grasp_target_approach_m=0.20
+    ) as live:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        held_ns, refit_ns, grid_ns = now_ns - 900_000_000, now_ns - 300_000_000, now_ns
+        grid = _mix07_lattice()
+        leg._bridge._grid = (grid, held_ns, time.monotonic())
+        held = _mix07_box((0.150, -0.091, -0.508), (0.059, 0.044, 0.028), held_ns)
+
+        def instance(region: PlaceRegion, support_z: float) -> None:
+            leg._instances = PrimitiveTracker()
+            leg._instances.update(
+                [PrimitiveFit(region, 60, support_z)],
+                stamp_ns=region.stamp_ns,
+                tol_m=_MIX07_RES,
+                scanned=region,
+            )
+
+        search_box = PlaceRegion(
+            frame_id="openarm_base",
+            pose=Pose6D(
+                xyz=(0.1571, -0.0909, -0.4925), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"
+            ),
+            half_extents=(0.0833, 0.1052, 0.12),
+            evidence_ref="scene:mix_07 spawn pose of carton_led2308c2_b",
+        )
+        live.place("left", (0.20, 0.30, 0.40))
+        live.place("right", (0.15, -0.60, 0.40))  # parked: far from the carton
+        instance(held, _MIX07_HELD_SUPPORT_Z)
+        leg.tracker.on_declaration(
+            _dispatched(stamp_ns=now_ns).model_copy(
+                update={
+                    "target_id": "cell:carton_led2308c2_b",
+                    "contact_links": ("openarm_right_finger_pair",),
+                    "search_box": search_box,
+                }
+            )
+        )
+        leg._tick()
+        assert leg.tracker.region == held
+        assert leg.measured_support(held) == pytest.approx(_MIX07_HELD_SUPPORT_Z)
+
+        # The right hand's TCP 10 cm beside the held box's -y face, 9 cm over its top: within
+        # the approach distance (0.20 m) of it, not over it (one voxel + the 5 cm occluder
+        # margin around the footprint) — where the log's re-fit landed.
+        approaching = (0.150, -0.091 - 0.044 - 0.10, -0.39)
+        refit = _mix07_box((0.168, -0.088, -0.517), (0.047, 0.041, 0.038), refit_ns)
+        if case == "occluded_no_hand":
+            approaching = (0.15, -0.60, 0.40)
+        elif case == "map_cleared":
+            grid = _mix07_lattice(carton=False)
+        elif case == "translated":
+            grid = _mix07_lattice(carton_dj=2)
+            refit = _mix07_box((0.150, -0.061, -0.508), (0.059, 0.044, 0.028), refit_ns)
+        live.place("right", approaching)
+        instance(refit, _MIX07_SUPPORT_Z if case != "translated" else _MIX07_HELD_SUPPORT_Z)
+        leg._bridge._grid = (grid, grid_ns, time.monotonic())
+        leg._tick()
+
+        if status is not None:
+            assert leg.tracker.region is None, f"{case}: the held region stayed exempt"
+            assert leg.tracker._status == status
+            return
+        kept = leg.tracker.region
+        assert kept is not None, f"retracted: {leg.tracker._status}"
+        assert kept == held.model_copy(update={"stamp_ns": grid_ns}), "the re-fit replaced it"
+        assert leg.measured_support(kept) == pytest.approx(_MIX07_HELD_SUPPORT_Z)
+        # The next grid without the carton retracts it at once, the hand still there.
+        leg._bridge._grid = (_mix07_lattice(carton=False), grid_ns + 1, time.monotonic())
+        leg._tick()
+        assert leg.tracker.region is None
+        assert leg.tracker._status == "retracted:map_disagrees"
