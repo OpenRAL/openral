@@ -106,21 +106,40 @@ def test_a_scene_may_declare_a_workspace_box_but_never_supply_the_confirmed_one(
         DeployScene.model_validate(raw)
 
 
-def test_deploy_runtime_workspace_contact_needs_the_grasp_allowance_and_a_speed() -> None:
+def test_deploy_runtime_workspace_contact_needs_the_grasp_allowance_a_speed_and_a_lead() -> None:
     assert DeployRuntime().workspace_contact_enabled is False
     with pytest.raises(ValidationError, match="requires grasp_allowance_enabled"):
-        DeployRuntime(workspace_contact_enabled=True, workspace_contact_max_speed_mps=0.05)
+        DeployRuntime(
+            workspace_contact_enabled=True,
+            workspace_contact_max_speed_mps=0.05,
+            workspace_contact_max_lead_m=0.05,
+        )
     with pytest.raises(ValidationError, match="requires workspace_contact_max_speed_mps"):
-        DeployRuntime(workspace_contact_enabled=True, grasp_allowance_enabled=True)
+        DeployRuntime(
+            workspace_contact_enabled=True,
+            grasp_allowance_enabled=True,
+            workspace_contact_max_lead_m=0.05,
+        )
+    with pytest.raises(ValidationError, match="requires workspace_contact_max_lead_m"):
+        DeployRuntime(
+            workspace_contact_enabled=True,
+            grasp_allowance_enabled=True,
+            workspace_contact_max_speed_mps=0.05,
+        )
     for bad in (0.0, -0.1, 1.5):
         with pytest.raises(ValidationError):
             DeployRuntime(workspace_contact_max_speed_mps=bad)
+    for bad in (0.0, -0.01, 0.1001, float("nan"), float("inf")):
+        with pytest.raises(ValidationError):
+            DeployRuntime(workspace_contact_max_lead_m=bad)
     on = DeployRuntime(
         workspace_contact_enabled=True,
         grasp_allowance_enabled=True,
         workspace_contact_max_speed_mps=0.05,
+        workspace_contact_max_lead_m=0.10,
     )
     assert on.workspace_contact_max_speed_mps == 0.05
+    assert on.workspace_contact_max_lead_m == 0.10
 
 
 # ── manifest ──────────────────────────────────────────────────────────────────
@@ -164,15 +183,26 @@ def test_the_launch_derives_the_kernel_params_from_the_manifest(launch_module: A
     robot = RobotDescription.from_yaml(str(_ROBOT))
     derive = launch_module._workspace_contact_kernel_params
     assert derive(
-        robot, enabled=False, max_speed_mps=None, grasp_allowance_enabled=False, hal_mode="real"
+        robot,
+        enabled=False,
+        max_speed_mps=None,
+        max_lead_m=None,
+        grasp_allowance_enabled=False,
+        hal_mode="real",
     ) == {"workspace_contact_enabled": False}
     params = derive(
-        robot, enabled=True, max_speed_mps=0.05, grasp_allowance_enabled=True, hal_mode="sim"
+        robot,
+        enabled=True,
+        max_speed_mps=0.05,
+        max_lead_m=0.04,
+        grasp_allowance_enabled=True,
+        hal_mode="sim",
     )
     assert params == {
         "workspace_contact_enabled": True,
         "workspace_contact_links": list(robot.hand_links()),
         "workspace_contact_max_speed_mps": 0.05,
+        "workspace_contact_max_lead_m": 0.04,
         "workspace_contact_control_period_s": pytest.approx(1.0 / robot.control_rate_hz),
     }
 
@@ -184,6 +214,9 @@ def test_the_launch_derives_the_kernel_params_from_the_manifest(launch_module: A
         ({"grasp_allowance_enabled": False}, "requires grasp_allowance_enabled"),
         ({"max_speed_mps": None}, "max_speed_mps > 0"),
         ({"max_speed_mps": 0.0}, "max_speed_mps > 0"),
+        ({"max_lead_m": None}, "max_lead_m <= 0.10"),
+        ({"max_lead_m": 0.0}, "max_lead_m <= 0.10"),
+        ({"max_lead_m": 0.11}, "max_lead_m <= 0.10"),
     ],
 )
 def test_the_launch_refuses_an_unsound_workspace_contact(
@@ -193,6 +226,7 @@ def test_the_launch_refuses_an_unsound_workspace_contact(
     args: dict[str, Any] = {
         "enabled": True,
         "max_speed_mps": 0.05,
+        "max_lead_m": 0.05,
         "grasp_allowance_enabled": True,
         "hal_mode": "sim",
         **kwargs,
@@ -238,11 +272,13 @@ def test_deploy_sim_forwards_workspace_contact_and_deploy_run_refuses_it(
             "grasp_allowance_enabled": True,
             "workspace_contact_enabled": True,
             "workspace_contact_max_speed_mps": 0.05,
+            "workspace_contact_max_lead_m": 0.04,
         },
     )
     argv = _invoke(scene, "sim").argv_template
     assert "workspace_contact_enabled:=true" in argv
     assert "workspace_contact_max_speed_mps:=0.05" in argv
+    assert "workspace_contact_max_lead_m:=0.04" in argv
     with pytest.raises(ROSConfigError, match="sim-only until Safety-WG review"):
         _invoke(scene, "real")
 

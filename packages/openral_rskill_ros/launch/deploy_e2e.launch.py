@@ -985,6 +985,7 @@ def _workspace_contact_kernel_params(
     *,
     enabled: bool,
     max_speed_mps: float | None,
+    max_lead_m: float | None,
     grasp_allowance_enabled: bool,
     hal_mode: str,
 ) -> dict[str, object]:
@@ -994,12 +995,13 @@ def _workspace_contact_kernel_params(
     rule. On: the hand links come from the manifest (``RobotDescription.hand_links()``,
     never configured by name) and the control period from its
     ``action_spec.control_freq_hz`` (the chunk row spacing the kernel measures the hand
-    speed over); the speed bound is the scene's calibration point.
+    speed over); the speed and lead (push) bounds are the scene's calibration points.
 
     Raises:
         ROSConfigError: Enabled on a non-sim HAL (sim-only until Safety-WG review),
-            without ``grasp_allowance_enabled``, without a positive speed bound, or for a
-            robot with no gripper or no ``action_spec.control_freq_hz``.
+            without ``grasp_allowance_enabled``, without a positive speed bound, without a
+            lead bound in (0, 0.10] m, or for a robot with no gripper or no
+            ``action_spec.control_freq_hz``.
     """
     if not enabled:
         return {"workspace_contact_enabled": False}
@@ -1021,6 +1023,12 @@ def _workspace_contact_kernel_params(
             f"workspace_contact_enabled needs workspace_contact_max_speed_mps > 0, got "
             f"{max_speed_mps!r}: the hand speed bound is a calibration point, never a default."
         )
+    if max_lead_m is None or not 0.0 < max_lead_m <= 0.10:
+        raise ROSConfigError(
+            f"workspace_contact_enabled needs 0 < workspace_contact_max_lead_m <= 0.10, got "
+            f"{max_lead_m!r}: the hand lead (push) bound is a calibration point, never a "
+            "default."
+        )
     links = list(description.hand_links())
     if not links:
         raise ROSConfigError(
@@ -1038,6 +1046,7 @@ def _workspace_contact_kernel_params(
         "workspace_contact_enabled": True,
         "workspace_contact_links": links,
         "workspace_contact_max_speed_mps": float(max_speed_mps),
+        "workspace_contact_max_lead_m": float(max_lead_m),
         "workspace_contact_control_period_s": 1.0 / float(rate_hz),
     }
 
@@ -1692,6 +1701,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     ).lower() in ("1", "true", "yes")
     _ws_speed = LaunchConfiguration("workspace_contact_max_speed_mps").perform(context)
     workspace_contact_max_speed_mps = float(_ws_speed) if _ws_speed else None
+    _ws_lead = LaunchConfiguration("workspace_contact_max_lead_m").perform(context)
+    workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -2038,6 +2049,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             description,
             enabled=workspace_contact_enabled,
             max_speed_mps=workspace_contact_max_speed_mps,
+            max_lead_m=workspace_contact_max_lead_m,
             grasp_allowance_enabled=grasp_allowance_enabled,
             hal_mode=hal_mode,
         )
@@ -4184,7 +4196,8 @@ def generate_launch_description() -> LaunchDescription:
                 "Safety kernel manipulation-workspace contact (DeployRuntime."
                 "workspace_contact_enabled, issue #349; sim-only until Safety-WG review): "
                 "the manifest's hand links may touch cells inside a live GraspDeclaration's "
-                "producer-confirmed workspace while the hand is slow. Default off."
+                "producer-confirmed workspace while the hand is slow and close to its "
+                "measured pose. Default off."
             ),
         ),
         DeclareLaunchArgument(
@@ -4193,6 +4206,15 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Hand speed bound (m/s) of the workspace contact rule; required when it is "
                 "enabled (DeployRuntime.workspace_contact_max_speed_mps)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_max_lead_m",
+            default_value="",
+            description=(
+                "Hand lead (push) bound (m) of the workspace contact rule: commanded vs "
+                "measured hand displacement; required when it is enabled "
+                "(DeployRuntime.workspace_contact_max_lead_m)."
             ),
         ),
         DeclareLaunchArgument(

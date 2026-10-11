@@ -1622,13 +1622,14 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if rt is not None and rt.grasp_allowance_enabled:
         argv_template.append("grasp_allowance_enabled:=true")
     # Manipulation-workspace contact (#349): forwarded only when enabled, with its speed
-    # bound (the schema requires one). The launch derives the hand links and the control
-    # period from the manifest.
+    # and lead bounds (the schema requires both). The launch derives the hand links and
+    # the control period from the manifest.
     if rt is not None and rt.workspace_contact_enabled:
         argv_template.extend(
             [
                 "workspace_contact_enabled:=true",
                 f"workspace_contact_max_speed_mps:={rt.workspace_contact_max_speed_mps}",
+                f"workspace_contact_max_lead_m:={rt.workspace_contact_max_lead_m}",
             ]
         )
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,

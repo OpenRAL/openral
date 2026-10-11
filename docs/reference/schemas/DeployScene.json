@@ -628,6 +628,20 @@
           "default": null,
           "title": "Workspace Contact Max Speed Mps"
         },
+        "workspace_contact_max_lead_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 0.1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Contact Max Lead M"
+        },
         "static_geometry_file": {
           "anyOf": [
             {

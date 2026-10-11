@@ -1288,14 +1288,16 @@ bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& cen
 
 namespace {
 
-// Is `link` a hand link of a live workspace whose hand is slow? Evaluated once
-// per capsule/box, outside the cell loop. `!(v <= max)` also fails a NaN speed;
-// an infinite speed (the lifecycle's "unknown") is never <= a finite bound.
+// Is `link` a hand link of a live workspace whose hand is slow and close to its
+// measured pose (speed AND lead within their bounds)? Evaluated once per
+// capsule/box, outside the cell loop. A NaN/inf speed or lead (the lifecycle's
+// "unknown") or an unsound bound never passes.
 bool workspace_link_slow(const WorkspaceContactRegion& ws, int link) noexcept {
   return ws.valid && link >= 0 && static_cast<std::size_t>(link) < kMaxGraspMaskLinks &&
          ws.link_mask[static_cast<std::size_t>(link)] && std::isfinite(ws.max_speed_mps) &&
          ws.max_speed_mps > 0.0 && std::isfinite(ws.hand_speed_mps) &&
-         ws.hand_speed_mps <= ws.max_speed_mps;
+         ws.hand_speed_mps <= ws.max_speed_mps && std::isfinite(ws.max_lead_m) &&
+         ws.max_lead_m > 0.0 && std::isfinite(ws.hand_lead_m) && ws.hand_lead_m <= ws.max_lead_m;
 }
 
 // Disclose one tolerated workspace pair (within the margin, exempted).
@@ -2360,7 +2362,7 @@ GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_ex
 
 GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& half_extents,
                                           const std::bitset<kMaxGraspMaskLinks>& link_mask,
-                                          double max_speed_mps,
+                                          double max_speed_mps, double max_lead_m,
                                           WorkspaceContactRegion& out) noexcept {
   out = WorkspaceContactRegion{};
   const GraspRegionStatus status = check_region_box(
@@ -2373,6 +2375,7 @@ GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& hal
   out.pose = pose;
   out.half_extents = half_extents;
   out.max_speed_mps = max_speed_mps;
+  out.max_lead_m = max_lead_m;
   return GraspRegionStatus::kOk;
 }
 

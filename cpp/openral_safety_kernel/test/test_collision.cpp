@@ -6439,16 +6439,20 @@ TEST(NoAlloc, MimicForwardKinematicsAndTheVoxelCheckAreAllocationFree) {
 namespace {
 
 constexpr double kWsMaxSpeed = 0.10;  // m/s, the test's bound
+constexpr double kWsMaxLead = 0.05;   // m, the test's lead (push) bound
 
 osk::WorkspaceContactRegion workspace(double half, std::initializer_list<int> links,
-                                      double hand_speed_mps) {
+                                      double hand_speed_mps, double hand_lead_m = 0.0) {
   osk::WorkspaceContactRegion ws;
   EXPECT_EQ(osk::ingest_workspace_region(
                 translate(kFingerBoxCentre.x, kFingerBoxCentre.y, kFingerBoxCentre.z),
-                osk::Vec3{half, half, half}, grasp_mask(links), kWsMaxSpeed, ws),
+                osk::Vec3{half, half, half}, grasp_mask(links), kWsMaxSpeed, kWsMaxLead, ws),
             osk::GraspRegionStatus::kOk);
   EXPECT_TRUE(std::isinf(ws.hand_speed_mps)) << "ingest leaves the speed unknown";
+  EXPECT_TRUE(std::isinf(ws.hand_lead_m)) << "ingest leaves the lead unknown";
+  EXPECT_DOUBLE_EQ(ws.max_lead_m, kWsMaxLead);
   ws.hand_speed_mps = hand_speed_mps;
+  ws.hand_lead_m = hand_lead_m;
   return ws;
 }
 
@@ -6501,6 +6505,34 @@ TEST(WorkspaceContact, AFastOrUnknownHandSpeedTripsExactlyAsToday) {
   for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
     grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
     grid.workspace_region.max_speed_mps = bound;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, ALeadAboveTheBoundTripsEvenWhenTheHandIsStill) {
+  // The push bound: a hand whose commanded target is stationary (speed 0) but
+  // sits deep past where the hand really is would keep pressing. Above
+  // `max_lead_m`, or unknown, or with an unsound bound: today's stop.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, kWsMaxLead);
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kGraspMargin).hit) << "at the bound";
+  for (const double lead : {kWsMaxLead * 1.0001, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, lead);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_pairs, 0) << lead;
+  }
+  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, 0.0);
+    grid.workspace_region.max_lead_m = bound;
     expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
   }
 }
@@ -6568,19 +6600,22 @@ TEST(WorkspaceContact, TheGraspTargetExemptionKeepsPrecedence) {
 TEST(WorkspaceContact, IngestAppliesTheWorkspaceCaps) {
   osk::WorkspaceContactRegion ws;
   const auto mask = grasp_mask({kGraspLeftFinger});
-  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.30, 0.20, 0.15}, mask, 0.1, ws),
-            osk::GraspRegionStatus::kOk)
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.30, 0.20, 0.15}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOk)
       << "a 0.6 x 0.4 x 0.3 m tote interior";
   EXPECT_TRUE(ws.valid);
-  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.51, 0.1, 0.1}, mask, 0.1, ws),
-            osk::GraspRegionStatus::kOversize);
-  EXPECT_FALSE(ws.valid);
-  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.45, 0.45, 0.2}, mask, 0.1, ws),
-            osk::GraspRegionStatus::kOversizeVolume);
   EXPECT_EQ(
-      osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.1, 0.1}, grasp_mask({}), 0.1, ws),
-      osk::GraspRegionStatus::kNoLinks);
-  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.0, 0.1}, mask, 0.1, ws),
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.51, 0.1, 0.1}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOversize);
+  EXPECT_FALSE(ws.valid);
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.45, 0.45, 0.2}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOversizeVolume);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.1, 0.1}, grasp_mask({}), 0.1,
+                                         0.05, ws),
+            osk::GraspRegionStatus::kNoLinks);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.0, 0.1}, mask, 0.1, 0.05, ws),
             osk::GraspRegionStatus::kDegenerate);
   EXPECT_FALSE(ws.valid);
 }

@@ -196,10 +196,11 @@ TEST(NoAlloc, VoxelCheckWithALiveGraspRegionIsAllocationFree) {
   // allocation-free and really tolerates pairs.
   osk::Transform ws_pose;
   ws_pose.t = {0.0, 0.0, 0.0};
-  ASSERT_EQ(osk::ingest_workspace_region(ws_pose, osk::Vec3{0.15, 0.15, 0.15}, mask, 0.1,
+  ASSERT_EQ(osk::ingest_workspace_region(ws_pose, osk::Vec3{0.15, 0.15, 0.15}, mask, 0.1, 0.05,
                                          grid.workspace_region),
             osk::GraspRegionStatus::kOk);
   grid.workspace_region.hand_speed_mps = 0.05;
+  grid.workspace_region.hand_lead_m = 0.01;
   const osk::Transform moved = osk::transform_from_xyz_rpy(0.001, 0.0, 0.0, 0.0, 0.0, 0.01);
   g_alloc_count.store(0, std::memory_order_relaxed);
   g_count_enabled.store(true, std::memory_order_relaxed);

@@ -442,15 +442,18 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // launch-derived hand links — gripper leaders, mimic followers and the link
   // carrying them) inside the live grasp declaration's producer-confirmed
   // `workspace_region` does not trip the world-voxel check while the hand's
-  // commanded speed is at most `workspace_contact_max_speed_mps`. The speed is
-  // measured over `workspace_contact_control_period_s` (the chunk row spacing).
-  // No default the kernel would silently use: enabled with a speed or period
-  // that is not finite and > 0 refuses configure, as does enabled without
-  // `grasp_allowance_enabled`.
+  // commanded speed is at most `workspace_contact_max_speed_mps` AND its lead
+  // over the measured pose is at most `workspace_contact_max_lead_m`. The speed
+  // is measured over `workspace_contact_control_period_s` (the chunk row
+  // spacing), row 0 from the previously accepted command while fresh.
+  // No default the kernel would silently use: enabled with a speed, lead or
+  // period that is not finite and > 0 (lead also <= kMaxWorkspaceContactLeadM)
+  // refuses configure, as does enabled without `grasp_allowance_enabled`.
   this->declare_parameter<bool>("workspace_contact_enabled", false);
   this->declare_parameter<std::vector<std::string>>("workspace_contact_links",
                                                     std::vector<std::string>{});
   this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
+  this->declare_parameter<double>("workspace_contact_max_lead_m", 0.0);
   this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
@@ -616,6 +619,13 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       return refuse("workspace_contact_control_period_s must be finite and > 0, got " +
                     std::to_string(workspace_control_period_s_));
     }
+    workspace_max_lead_m_ = this->get_parameter("workspace_contact_max_lead_m").as_double();
+    if (!std::isfinite(workspace_max_lead_m_) || workspace_max_lead_m_ <= 0.0 ||
+        workspace_max_lead_m_ > kMaxWorkspaceContactLeadM) {
+      return refuse("workspace_contact_max_lead_m must be finite, > 0 and <= " +
+                    std::to_string(kMaxWorkspaceContactLeadM) + ", got " +
+                    std::to_string(workspace_max_lead_m_));
+    }
     const auto names = this->get_parameter("workspace_contact_links").as_string_array();
     if (names.empty()) {
       return refuse("workspace_contact_links is empty");
@@ -642,15 +652,23 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
     workspace_prev_plain_.assign(n_links, Transform{});
     workspace_prev_partner_.assign(n_links, Transform{});
+    workspace_meas_pose_.assign(n_links, Transform{});
     workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
     q_workspace_.assign(envelope_.n_dof, 0.0);
+    workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
+    workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
+    workspace_cmd_set_.assign(envelope_.n_dof, 0);
+    clear_workspace_commands();
     RCLCPP_WARN(this->get_logger(),
                 "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
                 "hand links [%s] inside a live grasp declaration's map-confirmed workspace do "
-                "not trip the world-voxel check while the hand's commanded speed is <= %g m/s "
-                "(measured over %g s rows); arm links, contact outside the workspace and a "
-                "fast hand stop as before",
-                listed.c_str(), workspace_max_speed_mps_, workspace_control_period_s_);
+                "not trip the world-voxel check while BOTH the hand's commanded speed is <= %g "
+                "m/s (over %g s rows; row 0 from the previously accepted command while it is "
+                "fresh, %g periods, else from the measured state) AND its lead over the "
+                "measured pose is <= %g m (the push bound); arm links, contact outside the "
+                "workspace and a fast or far-leading hand stop as before",
+                listed.c_str(), workspace_max_speed_mps_, workspace_control_period_s_,
+                kWorkspaceCommandFreshPeriods, workspace_max_lead_m_);
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -864,6 +882,7 @@ SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_activate(const rclcpp_lifecycle::State& state) {
   // rclcpp_lifecycle::LifecycleNode::on_activate() default activates all
   // registered managed publishers; we still call it via the base.
+  clear_workspace_commands();
   safe_pub_->on_activate();
   estop_pub_->on_activate();
   failure_pub_->on_activate();
@@ -947,6 +966,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   workspace_target_.clear();
   workspace_refusal_reason_.clear();
   workspace_pairs_total_ = 0;
+  clear_workspace_commands();
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
   status_msg_ = openral_msgs::msg::SafetyStatus{};
@@ -992,6 +1012,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                              },
                              span_opts);
   auto span_scope = opentelemetry::trace::Scope(span);
+
+  // #349: a refused chunk (any drop path, latching or not) since the last
+  // candidate ends the previous-command chain — the robot's command is no
+  // longer known to be the last accepted row. Checked here, once, so no drop
+  // path can forget to do it.
+  if (chunks_dropped_ != workspace_cmd_drops_seen_) {
+    workspace_cmd_drops_seen_ = chunks_dropped_;
+    clear_workspace_commands();
+  }
 
   if (fault_latch_) {
     ++chunks_dropped_;
@@ -1283,7 +1312,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g",
+                     "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g "
+                     "hand_lead_m=%g",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
@@ -1292,7 +1322,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      static_cast<int>(voxel_grid_.grasp_region.valid),
                      voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
                      static_cast<int>(voxel_grid_.workspace_region.valid),
-                     voxel_grid_.workspace_region.hand_speed_mps);
+                     voxel_grid_.workspace_region.hand_speed_mps,
+                     voxel_grid_.workspace_region.hand_lead_m);
+        if (voxel_grid_.workspace_region.valid) {
+          span->SetAttribute("safety.workspace_hand_speed_mps",
+                             voxel_grid_.workspace_region.hand_speed_mps);
+          span->SetAttribute("safety.workspace_hand_lead_m",
+                             voxel_grid_.workspace_region.hand_lead_m);
+        }
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1379,9 +1416,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
       span->SetAttribute("safety.grasp_exemption_active", grasp_live);
       // #349: the manipulation workspace, re-evaluated per candidate like the
-      // grasp region. Its hand speed is set per checked row below; it is known
-      // only for a JOINT_POSITION chunk with a fresh measured state (row 0 is
-      // measured against it). Every other mode keeps it +inf, i.e. no exemption.
+      // grasp region. Its hand speed and lead are set per checked row below;
+      // they are known only for a JOINT_POSITION chunk with a fresh measured
+      // state (the lead's reference, and row 0's fallback). Every other mode
+      // keeps them +inf, i.e. no exemption.
       const bool workspace_on = workspace_contact_enabled_ && workspace_live();
       voxel_grid_.workspace_region = workspace_on ? workspace_region_ : WorkspaceContactRegion{};
       const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
@@ -1412,14 +1450,18 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
       };
       // `workspace_prev`: the hand links' poses at the previous row of the same
-      // construction (the measured state for row 0); nullptr = speed unknown.
+      // construction (for row 0, the previously accepted command where fresh,
+      // else the measured state); nullptr = speed and lead unknown.
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0,
                                     std::vector<Transform>* workspace_prev = nullptr) -> bool {
         fk_config(q);
         if (voxel_grid_.workspace_region.valid) {
+          const bool known = workspace_prev != nullptr;
           voxel_grid_.workspace_region.hand_speed_mps =
-              workspace_prev != nullptr ? workspace_hand_speed(*workspace_prev)
-                                        : std::numeric_limits<double>::infinity();
+              known ? workspace_hand_speed(*workspace_prev)
+                    : std::numeric_limits<double>::infinity();
+          voxel_grid_.workspace_region.hand_lead_m =
+              known ? workspace_hand_lead() : std::numeric_limits<double>::infinity();
         }
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
@@ -1456,12 +1498,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           if (hit.workspace_pairs > 0) {
             // #349 disclosure, never silent: count, tally, WARN <= 1 Hz per link.
             const double speed = voxel_grid_.workspace_region.hand_speed_mps;
+            const double lead = voxel_grid_.workspace_region.hand_lead_m;
             workspace_chunk_pairs += static_cast<std::uint64_t>(hit.workspace_pairs);
             workspace_chunk_min = std::min(workspace_chunk_min, hit.workspace_min_distance);
             workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
             workspace_min_distance_total_ =
                 std::min(workspace_min_distance_total_, hit.workspace_min_distance);
             workspace_speed_max_seen_ = std::max(workspace_speed_max_seen_, speed);
+            workspace_lead_max_seen_ = std::max(workspace_lead_max_seen_, lead);
             const auto l = static_cast<std::size_t>(hit.workspace_link);
             const auto wall = std::chrono::steady_clock::now();
             if (l < workspace_last_warn_.size() &&
@@ -1469,16 +1513,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_last_warn_[l] = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_contact link=%s cell=%d depth_mm=%.1f "
-                          "speed_mps=%.3f max_mps=%g pairs=%d step=%d target=%s",
+                          "speed_mps=%.3f max_mps=%g lead_m=%.4f max_lead_m=%g pairs=%d "
+                          "step=%d target=%s",
                           link_name(hit.workspace_link).c_str(), hit.workspace_cell,
                           std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
-                          workspace_max_speed_mps_, hit.workspace_pairs, step,
-                          workspace_target_.c_str());
+                          workspace_max_speed_mps_, lead, workspace_max_lead_m_,
+                          hit.workspace_pairs, step, workspace_target_.c_str());
             }
             span->SetAttribute("safety.workspace_contact_pairs",
                                static_cast<int64_t>(workspace_chunk_pairs));
             span->SetAttribute("safety.workspace_contact_max_depth_m",
                                std::max(0.0, -workspace_chunk_min));
+            span->SetAttribute("safety.workspace_hand_speed_mps", speed);
+            span->SetAttribute("safety.workspace_hand_lead_m", lead);
           }
           if (hit.hit) {
             report("world", link_name(hit.link_a),
@@ -1564,21 +1611,36 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       };
 
       if (is_position) {
-        // #349 hand speed: row s is reached from row s-1 (row 0 from the measured
-        // state) in one control period. Seed the previous-row hand poses with the
-        // measured state — and, for the tick-partner check, the measured state
-        // with the partner's committed targets, which stay put across rows.
+        // #349 hand speed and lead. Row s is reached from row s-1 in one
+        // control period. Row 0's previous row is, per joint the row commands,
+        // that joint's previously ACCEPTED command while it is fresh, else its
+        // measured value (a position-controlled arm trails its command by
+        // several periods, so measured-to-row reads tracking lag as speed;
+        // the fallback can only read the hand faster, never slower). Joints the
+        // row does not command keep the value the check places them at (the
+        // measured state; for the tick-partner check, the partner's committed
+        // target), so they add no phantom motion. The lead is always taken
+        // against the MEASURED configuration.
         std::vector<Transform>* ws_plain = nullptr;
         std::vector<Transform>* ws_partner = nullptr;
         if (workspace_speed_known) {
+          const std::int64_t now_ns = this->now().nanoseconds();
+          const bool full_row = msg->joint_names.empty();
           fk_config(q_meas_.data());
+          workspace_snapshot(workspace_meas_pose_);
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            const bool commanded = full_row || slot_commanded_[d] != 0;
+            q_workspace_[d] =
+                commanded && workspace_command_fresh(d, now_ns) ? workspace_cmd_q_[d] : q_meas_[d];
+          }
+          fk_config(q_workspace_.data());
           workspace_snapshot(workspace_prev_plain_);
           ws_plain = &workspace_prev_plain_;
           if (tick_partner) {
             for (std::size_t d = 0; d < robot_ndof; ++d) {
-              q_workspace_[d] = slot_commanded_[d] == 0 && tick_target_set_[d] != 0
-                                    ? tick_target_[d]
-                                    : q_meas_[d];
+              if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+                q_workspace_[d] = tick_target_[d];
+              }
             }
             fk_config(q_workspace_.data());
             workspace_snapshot(workspace_prev_partner_);
@@ -1611,6 +1673,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             }
             if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_partner)) {
               return;
+            }
+          }
+        }
+        // #349: accepted — remember each commanded joint's final row as the
+        // previous row of the next chunk's row 0, due once the chunk has
+        // played out ((horizon-1) periods from now).
+        if (workspace_contact_enabled_ && view.horizon > 0) {
+          const double* last =
+              view.flat_data + static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+          const std::int64_t due_ns =
+              this->now().nanoseconds() +
+              static_cast<std::int64_t>(static_cast<double>(view.horizon - 1) *
+                                        workspace_control_period_s_ * 1e9);
+          const bool full_row = msg->joint_names.empty();
+          for (std::size_t d = 0; d < robot_ndof && d < workspace_cmd_q_.size(); ++d) {
+            if (full_row || slot_commanded_[d] != 0) {
+              workspace_cmd_q_[d] = last[d];
+              workspace_cmd_due_ns_[d] = due_ns;
+              workspace_cmd_set_[d] = 1;
             }
           }
         }
@@ -1888,6 +1969,7 @@ void SafetyKernelLifecycleNode::on_external_estop(const std_msgs::msg::Empty::Sh
     fault_latch_ = true;
     last_estop_at_ = std::chrono::steady_clock::now();
     last_drop_reason_ = "external_estop";
+    clear_workspace_commands();
     // ADR-0096 — /openral/estop is a bare std_msgs/Empty, so the publisher
     // (deadman watchdog, hardware pendant, dashboard button, the passthrough
     // node) is unknowable from the wire. DROP_EXTERNAL_ESTOP names the topic
@@ -1922,6 +2004,7 @@ void SafetyKernelLifecycleNode::on_estop_reset(
   }
   fault_latch_ = false;
   last_drop_reason_.clear();
+  clear_workspace_commands();
   // ADR-0096 clear transition — the durable value must follow recovery, or a
   // late-joining consumer would read a cleared kernel as still latched.
   set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
@@ -3436,17 +3519,20 @@ void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
                 workspace_target_.c_str());
     RCLCPP_INFO(this->get_logger(),
                 "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
-                "max_speed_mps=%.3f max_mps=%g",
+                "max_speed_mps=%.3f max_mps=%g max_lead_m=%.3f lead_bound_m=%g",
                 workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
                 workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3
                                            : 0.0,
-                workspace_speed_max_seen_, workspace_max_speed_mps_);
+                workspace_speed_max_seen_, workspace_max_speed_mps_, workspace_lead_max_seen_,
+                workspace_max_lead_m_);
+    clear_workspace_commands();  // the declaration changed: start the chain afresh
   }
   workspace_region_ = WorkspaceContactRegion{};
   voxel_grid_.workspace_region = WorkspaceContactRegion{};
   workspace_pairs_total_ = 0;
   workspace_min_distance_total_ = std::numeric_limits<double>::infinity();
   workspace_speed_max_seen_ = 0.0;
+  workspace_lead_max_seen_ = 0.0;
 }
 
 void SafetyKernelLifecycleNode::ingest_workspace_contact(
@@ -3522,7 +3608,7 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
   const GraspRegionStatus status =
       is_unit_quaternion(region.pose.orientation)
           ? ingest_workspace_region(pose, half, workspace_links_, workspace_max_speed_mps_,
-                                    candidate)
+                                    workspace_max_lead_m_, candidate)
           : GraspRegionStatus::kBadPose;
   if (status != GraspRegionStatus::kOk) {
     reject(grasp_region_status_reason(status), declaration.target_id);
@@ -3540,11 +3626,12 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
   workspace_target_hash_ = target_hash;
   workspace_refusal_reason_.clear();
   if (announce) {
+    clear_workspace_commands();  // a new declaration: start the chain afresh
     RCLCPP_INFO(this->get_logger(),
                 "safety.workspace_region_armed target=%s links=%zu half_m=%g,%g,%g "
-                "max_speed_mps=%g rskill=%s trace=%s evidence=%s",
+                "max_speed_mps=%g max_lead_m=%g rskill=%s trace=%s evidence=%s",
                 declaration.target_id.c_str(), workspace_links_.count(), half.x, half.y, half.z,
-                workspace_max_speed_mps_, declaration.rskill_id.c_str(),
+                workspace_max_speed_mps_, workspace_max_lead_m_, declaration.rskill_id.c_str(),
                 declaration.trace_id.c_str(), region.evidence_ref.c_str());
   }
 }
@@ -3587,6 +3674,34 @@ double SafetyKernelLifecycleNode::workspace_hand_speed(std::vector<Transform>& p
   }
   const double speed = moved / workspace_control_period_s_;
   return std::isfinite(speed) ? speed : std::numeric_limits<double>::infinity();
+}
+
+double SafetyKernelLifecycleNode::workspace_hand_lead() const noexcept {
+  double lead = 0.0;
+  for (const int l : workspace_link_index_) {
+    const auto i = static_cast<std::size_t>(l);
+    lead = std::max(lead, link_displacement_bound(workspace_meas_pose_[i],
+                                                  collision_scratch_.link_world[i],
+                                                  workspace_link_reach_[i]));
+  }
+  return std::isfinite(lead) ? lead : std::numeric_limits<double>::infinity();
+}
+
+void SafetyKernelLifecycleNode::clear_workspace_commands() noexcept {
+  std::fill(workspace_cmd_set_.begin(), workspace_cmd_set_.end(), std::uint8_t{0});
+  workspace_cmd_drops_seen_ = chunks_dropped_;
+}
+
+bool SafetyKernelLifecycleNode::workspace_command_fresh(std::size_t d,
+                                                        std::int64_t now_ns) const noexcept {
+  if (d >= workspace_cmd_set_.size() || workspace_cmd_set_[d] == 0) {
+    return false;
+  }
+  const double window_ns = kWorkspaceCommandFreshPeriods * workspace_control_period_s_ * 1e9;
+  const std::int64_t since_due = now_ns - workspace_cmd_due_ns_[d];
+  // Not yet due: the robot is still on an earlier row of that chunk, which the
+  // kernel cannot name — fall back to measured.
+  return since_due >= 0 && static_cast<double>(since_due) <= window_ns;
 }
 
 }  // namespace openral_safety_kernel

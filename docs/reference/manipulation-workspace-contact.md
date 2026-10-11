@@ -80,14 +80,22 @@ Contact classes, per (robot link, world cell, task state):
   kernel (the declared fixture walls are occupied where declared, within one voxel, on a fresh
   grid) and retracts it when the map disagrees — the same "declared, then measured" rule as the
   grasp and place targets.
-- **Slow** = the hand's commanded Cartesian speed (FK of the checked row vs the measured state,
-  over the control period) at most `v_contact`. Calibration (§2): sim evaluation **0.35 m/s**,
-  just above the fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s);
-  candidate for real hardware **0.25 m/s**, ISO 10218-1's reduced speed — a Safety-WG decision.
-  Set explicitly by the scene; there is no default. Faster motion inside the workspace is checked
-  as today. On a PD position-controlled arm the commanded-minus-measured gap is proportional to
-  the force the joint drives apply, so a hand blocked by a wall while the policy keeps pushing
-  grows the gap and trips the bound: it is also a crude push-force limit.
+- **Slow** = two bounds, both required:
+  - **Commanded speed** (impact energy): the hand's Cartesian speed between consecutive
+    **commanded** rows (row 0 from the previously accepted command, see §6), over the control
+    period, at most `v_contact`. Calibration (§2): sim evaluation **0.35 m/s**, just above the
+    fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s); candidate for
+    real hardware **0.25 m/s**, ISO 10218-1's reduced speed — a Safety-WG decision.
+  - **Lead** (push force): the hand's displacement from its **measured** pose to the checked row,
+    at most `workspace_contact_max_lead_m`. On a joint-PD position-controlled arm the
+    commanded-minus-measured gap is proportional to the force the joint drives apply, so this
+    bounds how hard the hand may push into what it touches. The speed bound alone would let a
+    hand whose stationary target is buried deep in a carton keep pushing. Calibration: sim
+    evaluation **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac stops measured
+    plus margin; the real-hardware value is a Safety-WG decision (capped at 0.10 m).
+
+  Both are set explicitly by the scene; there is no default. Faster or further-leading motion
+  inside the workspace is checked as today.
 - **Self-collision, the arm links, any hand contact outside the workspace, and any contact after
   the declaration ends are unchanged.** This is what keeps catastrophic collisions — arm into
   shelf/table/person, fast hand strikes, hand outside the task volume — stopped.
@@ -155,43 +163,70 @@ declared geometry becomes enforced.
 | schema | `GraspDeclaration.workspace_box` / `.workspace_region` (`openral_core`), `GraspDeclaration.msg` (`workspace_box_valid`, `workspace_box`, `workspace_region_valid`, `workspace_region`) | Backward-compatible addition, no `schema_version` bump. A scene may declare `workspace_box` (like `search_box`); `workspace_region` is producer-only: `_reject_scene_supplied_place_region` refuses it from a scene and the rSkill runner strips it from every goal. Caps `MAX_WORKSPACE_HALF_EXTENT_M` 0.50 m / `MAX_WORKSPACE_VOLUME_M3` 0.25 m³ (WG placeholders, mirrored by the kernel); `geometry` must be empty. |
 | producer | `GraspTargetLeg._confirm_workspace` / `published_workspace` (`openral_hal/_grasp_target_leg.py`) | Every leg tick: the live declaration's `workspace_box` is **confirmed** on a fresh grid (the region's freshness rules, `_fresh_grid`) when occupied cells centred in it cover ≥ `WORKSPACE_MIN_COVER` (10 %) of its footprint (`region_covers_occupied`), and published as `workspace_region` — the same box, never grown, stamped with the grid's `source_stamp` — on the attachment envelope the kernel already ingests (`fill`). Retracted at once when the map no longer holds it or is in another frame; on a stale/missing grid the last confirmation ages out `freeze_s` after its stamp. Independent of the target region. Each state change is logged once. |
 | hand links | `RobotDescription.hand_links()` | `grasp_contact_links()` (leaders + mimic followers) plus the link each gripper hangs off. OpenArm: `openarm_{left,right}_finger_pair`, `_finger_follower`, `_link7`. |
-| runtime | `DeployRuntime.workspace_contact_enabled` / `workspace_contact_max_speed_mps` | Enabled requires `grasp_allowance_enabled` and a speed bound in (0, 1] m/s (no default). `openral deploy sim` forwards both; **`openral deploy run` and `deploy_e2e` on a non-sim HAL refuse it** (`ROSConfigError`, sim-only until Safety-WG review). The launch passes the kernel `workspace_contact_links` = `hand_links()` and `workspace_contact_control_period_s` = 1 / `action_spec.control_freq_hz`. |
-| kernel | `check_voxel_collision`, `workspace_contact_exempts`, `ingest_workspace_region`, `link_displacement_bound`, `link_geometry_reach`; `SafetyKernelLifecycleNode::ingest_workspace_contact` / `workspace_live` / `workspace_hand_speed` | See the rule below. Params validated at configure (refuse otherwise); WARN when on. |
+| runtime | `DeployRuntime.workspace_contact_enabled` / `workspace_contact_max_speed_mps` / `workspace_contact_max_lead_m` | Enabled requires `grasp_allowance_enabled`, a speed bound in (0, 1] m/s and a lead bound in (0, 0.10] m (no defaults). `openral deploy sim` forwards all three; **`openral deploy run` and `deploy_e2e` on a non-sim HAL refuse it** (`ROSConfigError`, sim-only until Safety-WG review). The launch passes the kernel `workspace_contact_links` = `hand_links()` and `workspace_contact_control_period_s` = 1 / `action_spec.control_freq_hz`. |
+| kernel | `check_voxel_collision`, `workspace_contact_exempts`, `ingest_workspace_region`, `link_displacement_bound`, `link_geometry_reach`; `SafetyKernelLifecycleNode::ingest_workspace_contact` / `workspace_live` / `workspace_hand_speed` / `workspace_hand_lead` / `workspace_command_fresh` | See the rule below. Params validated at configure (refuse otherwise); WARN when on. |
 
 **The trip rule as coded.** For a (link, occupied cell) pair at a checked row, after the ADR-0115
 exemption (which keeps precedence), the pair does not trip iff the link is in
 `workspace_contact_links`, the cell centre lies inside the live `workspace_region` (exact
-point-in-OBB), and the **hand speed** of that row is ≤ `workspace_contact_max_speed_mps`:
+point-in-OBB), the **hand speed** of that row is ≤ `workspace_contact_max_speed_mps` **and** the
+**hand lead** of that row is ≤ `workspace_contact_max_lead_m`:
 
-  hand_speed(row s) = max over hand links l of [ |Δp_l| + θ_l · reach_l ] / control_period,
+  D_l(A, B) = |Δp_l| + θ_l · reach_l   (link_displacement_bound)
+  hand_speed(row s) = max over hand links l of D_l(row s−1, row s) / control_period
+  hand_lead(row s)  = max over hand links l of D_l(measured, row s)
 
-with Δ, θ the translation and rotation of link l's frame between row s−1 and row s (row −1 = the
-**measured** joint state) and reach_l the radius of its collision geometry about its origin — an
-upper bound on how far any point of the hand moved. One max over all hand links (both hands of a
-bimanual robot), so a fast other hand revokes the exemption for both: conservative. A tick-partner
-row is measured against the same construction one row earlier (the partner's committed target is
-constant across rows).
+with Δ, θ the translation and rotation of link l's frame between the two configurations and
+reach_l the radius of its collision geometry about its origin — an upper bound on how far any
+point of the hand moved.
+
+**Row −1** (row 0's previous row), per joint the row commands: that joint's **previously accepted
+command** — the last row of the last JOINT_POSITION chunk the kernel *accepted* that commanded it,
+from any earlier tick or slot — while it is **fresh**, else the joint's **measured** value. Fresh
+means: held, not cleared since, its last row due (acceptance + (horizon − 1) control periods) at or
+before now, and due at most `kWorkspaceCommandFreshPeriods` = **2** control periods ago (node
+clock). Held commands are **cleared** on any refused chunk (every drop path: an
+`unavailable`, an advisory or a latching refusal — detected once per candidate from the drop
+counter), an external E-stop latch, an E-stop reset, configure, activate, cleanup, and whenever the
+live workspace declaration is armed or dropped (a new or ended declaration starts the chain
+afresh). Joints the row does not command keep the value the check places them at (the measured
+state; for the tick-partner check, the partner's committed target), so they add no phantom motion.
+Why: the runner sends `horizon = 1` slot rows, so with the measured state as row −1 every row 0
+compared the command with an arm that trails it by several control periods — the measured Isaac
+stops read 0.99–1.20 m/s while PhysX had the hands at ≤ 0.66 m/s; the fallback can only read the
+hand faster. Rows s ≥ 1 chain from row s − 1 as before. The tick-partner check uses the same rule
+(partner joints at their committed targets in both configurations, the moving joints' row −1 as
+above).
+
+One max over all hand links (both hands of a bimanual robot), so a fast or far-leading other hand
+revokes the exemption for both: conservative.
 
 **Fail-closed (today's stop):** feature off; no live declaration (retracted, `timeout_s` lapsed,
 future stamp, a **retired** identity — `handover_exit`, `released`, …); no `workspace_region`; a
 workspace in another frame, with geometry, a non-unit quaternion, over the caps, or confirmed longer
 ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline;
-a stale or incomplete measured state; any control mode but JOINT_POSITION; a speed above the bound
-or non-finite. Arm links, cells outside the box, self-collision and the attached checks unchanged.
+a stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above
+its bound or non-finite. Arm links, cells outside the box, self-collision and the attached checks unchanged.
 
 **Disclosure.** Tolerated pairs within the margin are counted per check
 (`CollisionHit::workspace_pairs`); `safety.workspace_contact link= cell= depth_mm= speed_mps=
-max_mps= pairs= step= target=` WARN ≤ 1 Hz per link; `safety.workspace_region_armed` / `_dropped` /
-`_rejected`; `safety.workspace_contact_summary` (pairs, max depth, max speed) when the workspace
-drops; span attributes `safety.workspace_contact_active` / `_pairs` / `_max_depth_m`; and the
-`safety.collision` stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v>`.
+max_mps= lead_m= max_lead_m= pairs= step= target=` WARN ≤ 1 Hz per link;
+`safety.workspace_region_armed` (both bounds) / `_dropped` / `_rejected`;
+`safety.workspace_contact_summary` (pairs, max depth, max speed and max lead tolerated, both
+bounds) when the workspace drops; span attributes `safety.workspace_contact_active` / `_pairs` /
+`_max_depth_m` / `safety.workspace_hand_speed_mps` / `safety.workspace_hand_lead_m`; and the
+`safety.collision` stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v>
+hand_lead_m=<d>` (`hand_speed_mps` is the commanded speed). The configure WARN states both bounds
+and the freshness window.
 
 **Deviations from the plan above, and why.**
-- *Speed between consecutive rows, not checked-row-vs-measured over one period for every row.* For
-  row 0 the two are the same (measured state → row 0); for row s > 0 the measured-relative form
-  divides an s-period displacement by one period, so any slow chunk longer than a few rows would
-  read as fast and the rule would never hold past row 0. Every step of the commanded path, starting
-  from where the hand really is, is bounded instead.
+- *Speed between consecutive commanded rows, not checked-row-vs-measured over one period.* The
+  measured-relative form divides tracking lag (several control periods on a position-controlled
+  arm) by one period: in Isaac every stop inside the workspace read 0.99–1.20 m/s against the 0.35
+  bound while PhysX had the hands at ≤ 0.66 m/s, even carrying a carton (force-bearing contact
+  onsets ≤ 0.16 m/s), so the bound never held while the policy moved. Row 0 therefore starts from
+  the previously accepted command; where the hand really is enters through the separate lead
+  bound instead.
 - *A dedicated period param* (`workspace_contact_control_period_s`): the kernel's only other dt
   (`collision_seed_dt_s`) is the velocity look-ahead step and the launch deliberately keeps it 0.
 - *Confirmation is a cover test* (≥ 10 % of the footprint occupied), not the "declared fixture
@@ -210,8 +245,9 @@ the place producer), velocity / Cartesian control modes, the force/current conta
   contact statistics show only hand links ever touch the world.
 - **Decision.** Add a second, declaration-scoped relaxation of the arm-vs-world voxel check: hand
   links (manifest-derived) vs cells centred in a scene-declared, producer-confirmed workspace box,
-  only while the hand's commanded speed (bounded per row against the measured state) is at most a
-  calibrated bound. Default off, sim-only until this ADR is accepted, ADR-0115 keeps precedence,
+  only while the hand's commanded speed (between consecutive commanded rows, row 0 from the
+  previously accepted command) and its lead over the measured pose (the push bound) are each at
+  most a calibrated bound. Default off, sim-only until this ADR is accepted, ADR-0115 keeps precedence,
   every tolerated contact disclosed.
 - **Layer impact.** Schema (Layer 0/2 boundary IDL: `GraspDeclaration`), HAL producer (Layer 0),
   safety kernel (Layer 5). No new layer dependency: the workspace rides the existing grasp
@@ -230,15 +266,18 @@ the place producer), velocity / Cartesian control modes, the force/current conta
 2. A wrong `workspace_box` in a scene (wrong pose or size) that the map still confirms (it holds
    ≥ 10 % occupied cells) relaxes contact in the wrong volume.
 3. The hand-speed bound is a commanded-motion bound: a controller that overshoots the commanded
-   step, or a measured state that lags, is outside it (a lagging measured state reads as faster,
-   which is conservative; an overshoot is not).
+   step is outside it. Tracking lag is bounded by the lead bound, not the speed bound; the lead
+   bound limits push force only as far as the arm is joint-PD controlled (a torque/impedance
+   controller with other gains, or a gravity-loaded joint, changes the force per metre of lead).
 4. Unknown space inside the workspace reads as free, as everywhere today (explicit assumption).
 5. Both hands share one max-speed test and one mask: the idle hand entering the declared box while
    slow is exempt too.
 
-**Calibration points:** `workspace_contact_max_speed_mps` (`v_contact`, plan step 5: measure the
-hand speed at the contact steps of the `sim run` episodes); `WORKSPACE_MIN_COVER` (10 %); the
-workspace caps (0.50 m half-extent, 0.25 m³).
+**Calibration points:** `workspace_contact_max_speed_mps` (`v_contact`; sim **0.35 m/s** from the
+`sim run` contact steps); `workspace_contact_max_lead_m` (sim **0.05 m** from the 3.3–4 cm
+free-motion lag of the Isaac stops plus margin; cap 0.10 m); the freshness window
+`kWorkspaceCommandFreshPeriods` (2 periods); `WORKSPACE_MIN_COVER` (10 %); the workspace caps
+(0.50 m half-extent, 0.25 m³). The real-hardware values of both bounds are a Safety-WG decision.
 
 **Validation owed:** the 8 restock prompts in Isaac deploy sim with ground truth (completion rate
 vs `sim run`, zero arm-link stops missed, a deliberate arm/shelf collision still stopped); the

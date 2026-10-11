@@ -10727,19 +10727,35 @@ class DeployRuntime(BaseModel):
     while a live ``GraspDeclaration`` carries a producer-confirmed ``workspace_region``,
     world-voxel cells centred in that box do not trip the robot's **hand** links (the
     launch derives them from the manifest, ``RobotDescription.hand_links()``) as long as the
-    hand's commanded speed is at most ``workspace_contact_max_speed_mps``. Arm links,
-    contact outside the workspace and a fast hand stop as before. Requires
-    ``grasp_allowance_enabled`` (the workspace rides the grasp declaration). Default off,
+    hand's commanded speed is at most ``workspace_contact_max_speed_mps`` **and** its lead
+    over the measured pose is at most ``workspace_contact_max_lead_m``. Arm links,
+    contact outside the workspace and a fast or far-leading hand stop as before. Requires
+    ``grasp_allowance_enabled`` (the workspace rides the grasp declaration) and both
+    bounds. Default off,
     and off is the graph exactly as without it. **Sim-only until Safety-WG review:**
     ``openral deploy run`` and ``deploy_e2e`` on a non-sim HAL refuse it on.
     Backward-compatible addition."""
     workspace_contact_max_speed_mps: float | None = Field(default=None, gt=0.0, le=1.0)
-    """The hand speed bound (m/s) of the workspace contact rule: the largest displacement
-    of any point of a hand link's collision geometry between consecutive commanded rows,
-    over one control period (``action_spec.control_freq_hz``). Required when
-    ``workspace_contact_enabled`` — there is no default the kernel would silently use.
-    **Calibration point** (from the sim-run contact data, issue #349 plan step 5); capped
-    at 1 m/s, beyond which the rule is not a contact-energy bound at all."""
+    """The hand speed bound (m/s) of the workspace contact rule (impact energy): the
+    largest displacement of any point of a hand link's collision geometry between
+    consecutive **commanded** rows, over one control period
+    (``action_spec.control_freq_hz``). Row 0's previous row is the previously accepted
+    command while it is fresh (two control periods), else the measured state — a
+    position-controlled arm trails its command, so measured-to-command is tracking lag,
+    not motion. Required when ``workspace_contact_enabled`` — there is no default the
+    kernel would silently use. **Calibration point** (0.35 m/s in the Isaac deploy sim,
+    issue #349); capped at 1 m/s, beyond which the rule is not a contact-energy bound at
+    all."""
+    workspace_contact_max_lead_m: float | None = Field(default=None, gt=0.0, le=0.10)
+    """The hand lead (push) bound (m) of the workspace contact rule: the largest
+    displacement of any point of a hand link's collision geometry between the MEASURED
+    configuration and each checked row. On a joint-PD arm commanded-minus-measured is what
+    the drives push with, so this bounds how hard a hand may press into what it touches —
+    the speed bound alone would let a hand whose stationary target is buried deep keep
+    pushing. Required when ``workspace_contact_enabled``. **Calibration point** (0.05 m in
+    the Isaac deploy sim, from the 3.3-4 cm free-motion lag the stops measured plus
+    margin; the real-hardware value is a Safety-WG decision); capped at 0.10 m, mirrored
+    by the kernel's ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.
@@ -10765,6 +10781,12 @@ class DeployRuntime(BaseModel):
             raise ValueError(
                 "workspace_contact_enabled requires workspace_contact_max_speed_mps (> 0): "
                 "the hand speed bound is a calibration point, never a silent default."
+            )
+        if self.workspace_contact_max_lead_m is None:
+            raise ValueError(
+                "workspace_contact_enabled requires workspace_contact_max_lead_m (> 0, "
+                "<= 0.10 m): the hand lead (push) bound is a calibration point, never a "
+                "silent default."
             )
         return self
 

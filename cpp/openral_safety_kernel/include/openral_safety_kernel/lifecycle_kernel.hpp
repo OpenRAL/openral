@@ -236,6 +236,18 @@ private:
   // this row's): max over the workspace links of `link_displacement_bound` /
   // `workspace_control_period_s_`.
   double workspace_hand_speed(std::vector<Transform>& prev) noexcept;
+  // Hand lead (m) of the configuration FK'd into `collision_scratch_` over the
+  // measured configuration (`workspace_meas_pose_`): max over the workspace
+  // links of `link_displacement_bound`, NOT divided by the period. On a
+  // joint-PD arm commanded-minus-measured is what the drives push with.
+  double workspace_hand_lead() const noexcept;
+  // Forget every previously accepted command (row 0 falls back to measured).
+  void clear_workspace_commands() noexcept;
+  // Is joint `d`'s previously accepted command still row 0's previous row at
+  // `now_ns`? Recorded, not cleared since, its last row due (acceptance +
+  // (horizon-1) periods) at or before now, and at most
+  // `kWorkspaceCommandFreshPeriods` periods ago.
+  bool workspace_command_fresh(std::size_t d, std::int64_t now_ns) const noexcept;
   // Copy the workspace links' current FK poses into `out`.
   void workspace_snapshot(std::vector<Transform>& out) const noexcept;
 
@@ -418,6 +430,7 @@ private:
   std::vector<int> workspace_link_index_;
   std::vector<double> workspace_link_reach_;
   double workspace_max_speed_mps_{0.0};
+  double workspace_max_lead_m_{0.0};  ///< `workspace_contact_max_lead_m` (push bound)
   double workspace_control_period_s_{0.0};
   WorkspaceContactRegion workspace_region_{};
   std::int64_t workspace_region_stamp_ns_{0};
@@ -430,13 +443,24 @@ private:
   std::uint64_t workspace_pairs_total_{0};
   double workspace_min_distance_total_{std::numeric_limits<double>::infinity()};
   double workspace_speed_max_seen_{0.0};
+  double workspace_lead_max_seen_{0.0};
   /// Per-link last WARN time (≤ 1 Hz per link), sized to the model's links.
   std::vector<std::chrono::steady_clock::time_point> workspace_last_warn_;
   /// Hand-link poses at the previous checked row (plain / tick-partner rows),
   /// sized to the model's links at configure; never allocated on the hot path.
   std::vector<Transform> workspace_prev_plain_;
   std::vector<Transform> workspace_prev_partner_;
-  std::vector<double> q_workspace_;  ///< measured + partner-target seed (n_dof)
+  std::vector<double> q_workspace_;  ///< row 0's previous configuration (n_dof)
+  /// Hand-link poses at the measured configuration (the lead's reference).
+  std::vector<Transform> workspace_meas_pose_;
+  /// The last ACCEPTED JOINT_POSITION command per joint (its chunk's last row),
+  /// when its last row is due (node clock, ns), and whether one is held. Sized
+  /// n_dof at configure. `workspace_cmd_drops_seen_` is `chunks_dropped_` as of
+  /// the last candidate: any refusal since forgets every command.
+  std::vector<double> workspace_cmd_q_;
+  std::vector<std::int64_t> workspace_cmd_due_ns_;
+  std::vector<std::uint8_t> workspace_cmd_set_;
+  std::uint64_t workspace_cmd_drops_seen_{0};
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages

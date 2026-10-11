@@ -411,6 +411,19 @@ inline constexpr double kMaxWorkspaceRegionHalfExtentM = 0.50;
 /// placeholder**, mirroring `GraspDeclaration.MAX_WORKSPACE_VOLUME_M3`.
 inline constexpr double kMaxWorkspaceRegionVolumeM3 = 0.25;
 
+/// Ceiling on `workspace_contact_max_lead_m` (m), the manipulation workspace's
+/// push bound (#349). **A Safety-WG placeholder**, mirroring the `le=0.10` bound
+/// on `openral_core.DeployRuntime.workspace_contact_max_lead_m`: a command more
+/// than 10 cm past where the hand really is is not "touching", it is shoving.
+inline constexpr double kMaxWorkspaceContactLeadM = 0.10;
+
+/// How many control periods a previously accepted JOINT_POSITION command stays
+/// the "previous row" of the next chunk's row 0 for the workspace hand-speed
+/// bound (#349). Past it (or after any refusal, latch, reset, declaration
+/// change, configure/activate) row 0 is measured against the measured state
+/// again. 2 = the next tick plus one tick of jitter.
+inline constexpr double kWorkspaceCommandFreshPeriods = 2.0;
+
 /// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
 /// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
 /// lifecycle refuses a declaration past it (or non-positive / non-finite)
@@ -457,9 +470,13 @@ struct GraspTargetRegion {
 /// `link_mask` (the manifest-derived HAND links: gripper leaders, mimic
 /// followers and the link that carries them) **iff** `hand_speed_mps <=
 /// max_speed_mps` — the hand's commanded speed bound for the configuration
-/// being checked, set by the lifecycle per checked row. A non-finite speed (the
-/// lifecycle's "unknown": no measured state, no control period, a mode whose
-/// commanded speed it does not reconstruct) never satisfies it. Arm links,
+/// being checked, set by the lifecycle per checked row — **and** `hand_lead_m
+/// <= max_lead_m`, the hand's lead over its measured pose (how far the checked
+/// row's hand is from where the hand really is; on a joint-PD arm the drives'
+/// force grows with it, so this bounds how hard the hand may push). A
+/// non-finite speed or lead (the lifecycle's "unknown": no measured state, no
+/// control period, a mode whose commanded speed it does not reconstruct) never
+/// satisfies it. Arm links,
 /// cells outside the box, self-collision and the attached checks are
 /// untouched; the ADR-0115 grasp-target exemption keeps precedence.
 ///
@@ -473,6 +490,10 @@ struct WorkspaceContactRegion {
   /// Hand speed bound (m/s) of the configuration being checked; +inf = unknown.
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double max_speed_mps{0.0};  ///< `workspace_contact_max_speed_mps`
+  /// Hand lead (m) of the configuration being checked over the measured
+  /// configuration; +inf = unknown.
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  double max_lead_m{0.0};  ///< `workspace_contact_max_lead_m`
 };
 
 /// Capacity of the kernel's retired grasp-identity set (`RetiredGraspSet`).
@@ -1170,7 +1191,8 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// pending; default off — grid.workspace_region is invalid unless the
 /// lifecycle armed it): a pair the grasp region did not exempt, whose link is a
 /// hand link of the live workspace and whose cell centre lies in the workspace
-/// box, does not trip while the hand is slow (`workspace_contact_exempts`).
+/// box, does not trip while the hand is slow and its lead small
+/// (`workspace_contact_exempts`).
 /// Same accounting as the grasp exemption (decided before the narrow phase, no
 /// stage-2 budget, its stage-1 depth reaches sweep_min_distance, never the
 /// reported evidence), so the subset argument above holds for the union of the
@@ -1437,8 +1459,9 @@ const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
 /// Does the live manipulation workspace (#349) exempt robot link `link_index`
 /// from occupied cell `center` (base frame)? The whole predicate, failing
 /// closed: false with no valid workspace, a link outside the hand mask (or out
-/// of range), a hand speed that is not finite or above `max_speed_mps` (a
-/// non-finite or non-positive bound included), a degenerate or non-finite box,
+/// of range), a hand speed that is not finite or above `max_speed_mps`, a hand
+/// lead that is not finite or above `max_lead_m` (a non-finite or non-positive
+/// bound included, either one), a degenerate or non-finite box,
 /// or the cell centre outside the box (exact point-in-OBB). The ADR-0115
 /// grasp-target exemption is decided first by `check_voxel_collision`; this is
 /// only asked of pairs it did not exempt. Allocation-free.
@@ -1447,12 +1470,13 @@ bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3
 /// Validate a producer-confirmed manipulation workspace and lower it into
 /// `out` (#349). Same geometry checks as `ingest_grasp_region`, against the
 /// workspace caps `kMaxWorkspaceRegionHalfExtentM` / `kMaxWorkspaceRegionVolumeM3`.
-/// `out.hand_speed_mps` is reset to +inf (unknown) and `out.max_speed_mps` set
-/// to `max_speed_mps`. Returns kOk iff `out.valid` was set; every other value
-/// leaves `out` inert. The frame match is the lifecycle's job. Not on the hot path.
+/// `out.hand_speed_mps` / `out.hand_lead_m` are reset to +inf (unknown) and
+/// `out.max_speed_mps` / `out.max_lead_m` set to the bounds. Returns kOk iff
+/// `out.valid` was set; every other value leaves `out` inert. The frame match is
+/// the lifecycle's job. Not on the hot path.
 GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& half_extents,
                                           const std::bitset<kMaxGraspMaskLinks>& link_mask,
-                                          double max_speed_mps,
+                                          double max_speed_mps, double max_lead_m,
                                           WorkspaceContactRegion& out) noexcept;
 
 /// Radius (m) about link `link`'s frame origin that bounds every point of its
