@@ -1537,6 +1537,10 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._robot: Any = None
         self._robot_prim = ""
+        # Robot rigid bodies (contact-reported) and their last two world positions.
+        self._robot_body_paths: list[str] = []
+        self._body_positions: dict[str, NDArray[np.float64]] = {}
+        self._prev_body_positions: dict[str, NDArray[np.float64]] = {}
         # (prim path, 4x4 pose in the root frame at import) of the root rigid body.
         self._root_body: tuple[str, NDArray[np.float64]] = ("", np.eye(4))
         # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
@@ -2354,6 +2358,9 @@ class IsaacManifestScene(IsaacSceneBase):
         self._rest_s.clear()
         self._last_pos.clear()
         self._last_quat.clear()
+        # A reset teleports the robot: no finite-difference link speed across it.
+        self._body_positions = {}
+        self._prev_body_positions = {}
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
@@ -2714,12 +2721,50 @@ class IsaacManifestScene(IsaacSceneBase):
         from isaacsim.core.utils.stage import get_current_stage
         from pxr import PhysxSchema, Usd, UsdPhysics
 
-        n = 0
+        self._robot_body_paths = []
         for prim in Usd.PrimRange(get_current_stage().GetPrimAtPath(self._robot_prim)):
             if prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr().Set(0.0)
-                n += 1
-        print(f"[isaac_manifest_scene] contact reports on {n} robot rigid bodies", flush=True)
+                self._robot_body_paths.append(str(prim.GetPath()))
+        print(
+            f"[isaac_manifest_scene] contact reports on {len(self._robot_body_paths)} robot "
+            "rigid bodies",
+            flush=True,
+        )
+
+    def _sample_body_positions(self) -> None:
+        """Record every robot rigid body's world position for this step (finite-difference speed).
+
+        Read through PhysX (``get_rigidbody_transformation``), which serves articulation
+        links too; the previous step's sample is kept so ``_body_speed`` is the link's
+        mean speed over the last control period.
+        """
+        from omni.physx import get_physx_interface
+
+        physx = get_physx_interface()
+        self._prev_body_positions = self._body_positions
+        self._body_positions = {
+            path: np.asarray(physx.get_rigidbody_transformation(path)["position"], dtype=float)
+            for path in self._robot_body_paths
+        }
+
+    def _body_speed(self, collider: str) -> float | None:
+        """Mean world speed (m/s) over the last control period of the robot body owning ``collider``.
+
+        The body is the deepest captured robot rigid-body path that prefixes the
+        collider path. ``None`` when no robot body owns it, on the first step after a
+        reset (no previous sample), or without a control period.
+        """
+        owner = max(
+            (b for b in self._robot_body_paths if collider == b or collider.startswith(b + "/")),
+            key=len,
+            default=None,
+        )
+        tick = self.sim_dt_per_tick_s
+        if owner is None or not tick or owner not in self._prev_body_positions:
+            return None
+        delta = self._body_positions[owner] - self._prev_body_positions[owner]
+        return float(np.linalg.norm(delta) / tick)
 
     def _contact_points(self) -> list[dict[str, Any]]:
         """Every PhysX contact point of the last physics step, as plain dicts.
@@ -2812,7 +2857,9 @@ class IsaacManifestScene(IsaacSceneBase):
         checking a grasp or a placement; ``object_orientations_wxyz``: their
         orientations (``pose_noise`` draws a new yaw each reset); ``robot_contacts``:
         this step's robot-vs-world PhysX contacts (``{link, other_prim,
-        min_separation_m, impulse_ns}`` per pair, last physics step only), which
+        min_separation_m, impulse_ns, link_speed_mps}`` per pair, last physics step
+        only; the speed is the robot link body's mean world speed over the last control
+        period, ``None`` on the first step after a reset), which
         ``SimRunner`` folds into ``EpisodeResult.contact_stats``.
         """
         info: dict[str, Any] = {
@@ -2829,6 +2876,7 @@ class IsaacManifestScene(IsaacSceneBase):
             }
         if self._placement_success is not None:
             info["placement_grade"] = self._placement_grade
+        self._sample_body_positions()
         pairs, _ = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
         info["robot_contacts"] = [
             {
@@ -2836,6 +2884,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 "other_prim": p["other_prim"],
                 "min_separation_m": p["min_separation_m"],
                 "impulse_ns": p["impulse_ns"],
+                "link_speed_mps": self._body_speed(p["robot_collider"]),
             }
             for p in pairs
         ]

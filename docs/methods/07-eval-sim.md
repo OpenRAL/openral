@@ -31,12 +31,12 @@ _Sim rollout protocol — the typed contract every scene adapter must satisfy._
 - `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L101)
 - `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L170)
 - `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L132)
-- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. (L405)
-  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L461)
+- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. (L414)
+  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L470)
 - `ROBOT_CONTACTS_INFO_KEY = "robot_contacts"` — Step `info` key a backend fills with that step's robot-vs-world contacts (`{link, other_prim, min_separation_m, impulse_ns}`); Isaac fills it from the PhysX contact report. (L330)
-- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L338)
+- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L339)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L461)
+  - `summary() -> str` — Human-readable single line. (L470)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._

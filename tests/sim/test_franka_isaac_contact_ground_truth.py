@@ -128,7 +128,16 @@ def test_step_info_carries_the_robot_contacts_and_the_runner_folds_them(env: Any
     for step in range(1, 4):
         result = env.step(np.full(env.action_dim, np.nan, dtype=np.float32))  # hold
         contacts = result.info[ROBOT_CONTACTS_INFO_KEY]
-        assert set(contacts[0]) == {"link", "other_prim", "min_separation_m", "impulse_ns"}
+        assert set(contacts[0]) == {
+            "link",
+            "other_prim",
+            "min_separation_m",
+            "impulse_ns",
+            "link_speed_mps",
+        }
+        speed = contacts[0]["link_speed_mps"]
+        if step > 1:  # the first step may follow a reset: no previous sample, no speed
+            assert speed is not None and 0.0 <= speed < 0.5, contacts[0]  # held arm: ~still
         fold_robot_contacts(stats, contacts, step)
     box = [r for r in stats.values() if r["other_prim"].startswith("/World/objects/contact_box")]
     assert box, f"no robot/box pair folded from {list(stats)}"

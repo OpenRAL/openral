@@ -331,7 +331,8 @@ ROBOT_CONTACTS_INFO_KEY = "robot_contacts"
 """Step ``info`` key a backend fills with this step's robot-vs-world contacts.
 
 Each entry: ``{"link", "other_prim", "min_separation_m", "impulse_ns"}`` (separation
-negative = penetration; impulse in N*s). Isaac fills it from the PhysX contact report.
+negative = penetration; impulse in N*s), optionally ``"link_speed_mps"`` (the robot
+link's world speed, ``None`` if unknown). Isaac fills it from the PhysX contact report.
 """
 
 
@@ -344,7 +345,10 @@ def fold_robot_contacts(
 
     One record per ``(link, other_prim)``: ``steps`` in contact, ``first_step`` /
     ``last_step``, the deepest ``max_penetration_m`` (``max(0, -separation)``),
-    the closest ``min_separation_m`` and the largest per-step ``max_impulse_ns``.
+    the closest ``min_separation_m``, the largest per-step ``max_impulse_ns`` and, when
+    the backend reports it, the link's fastest contact onset (``onset_speed_mps``: its
+    speed on the first step of each run of consecutive contact steps) and its peak
+    speed while in contact (``max_speed_mps``).
 
     Example:
         >>> stats = {}
@@ -394,6 +398,11 @@ def fold_robot_contacts(
                 "max_impulse_ns": 0.0,
             },
         )
+        speed = c.get("link_speed_mps")
+        if speed is not None:
+            if rec["steps"] == 0 or rec["last_step"] != step - 1:
+                rec["onset_speed_mps"] = max(rec.get("onset_speed_mps") or 0.0, float(speed))
+            rec["max_speed_mps"] = max(rec.get("max_speed_mps") or 0.0, float(speed))
         rec["steps"] += 1
         rec["last_step"] = step
         rec["min_separation_m"] = min(rec["min_separation_m"], sep)
