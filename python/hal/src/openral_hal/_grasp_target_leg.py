@@ -37,10 +37,10 @@ classes, each logged once per transition with its typed reason:
   comparable clusters (``AMBIGUOUS``), a fit over the caps or with no height
   above the support, a re-fit the map does not cover (``map_disagrees``) or
   that moved or resized past one voxel *and* reaches outside the held region
-  grown by one voxel — and down to the re-fit's support, which the target cannot move
-  into (``target_moved``) — or has no contact link near it
+  grown by one voxel (``target_moved``) or has no contact link near it
   (``unoccluded_refit``), a
-  frame or calibration mismatch: the region is **retracted at once**.
+  frame or calibration mismatch: the region is **retracted at once** — but a held
+  region is frozen and a re-fit's verdict is only logged (**Frozen once held**, below).
 * *Lost view* — no seed cells, the seed off-image, no mask, a mask captured
   more than ``mask_depth_max_skew_s`` from the depth frame (``mask_depth_skew``),
   a missed deadline,
@@ -54,9 +54,7 @@ classes, each logged once per transition with its typed reason:
   ``unoccluded_refit``, a contradiction (a person's hand, the target knocked
   over). "Near" is measured over the target: the jaw's hand point (its TCP, a
   finger length above the fingertips) over the held footprint, up to the approach
-  distance above its top; on the instance path, while the map still confirms the
-  held region (``map_confirms``), anywhere within that approach distance of it
-  (Revision 3, Isaac s_mix07), where the map then holds it. A fit refused as
+  distance above its top. A fit refused as
   ``not_on_support`` with the hand there and
   what is visible of the target inside the held region grown by one voxel (what is left
   of an occluded target no longer reaches the support) is the lost view
@@ -77,6 +75,22 @@ classes, each logged once per transition with its typed reason:
   ``source_stamp`` (the world data the map cover was checked against), so a
   stalled octomap — whose bridge keeps republishing a fresh ``header.stamp`` —
   ages the region out instead of vouching for it.
+
+**Frozen once held** (``docs/reference/object-primitives-design.md`` §3.7, Revision 4;
+Isaac s_mix07, t_mix04, t_mix02: each time the approaching hand occluded the target, a
+re-fit retracted the region through another gate and the kernel stopped the finger at the
+target with no exemption live). Before the first acceptance every gate above decides what
+is accepted. Once a region is accepted it is held for the life of its declaration: camera
+re-fits (and their refusals) never shrink, move, grow or retract it — they still run, and
+what they would have done is logged once per change of outcome (``grasp target re-fit
+ignored, region frozen (map-confirmed) — …``). **Only the map retracts it**
+(``GraspTargetLeg._map_hold``, every tick a fresh grid arrives): ``map_confirms`` on the
+held box and its measured support — the map no longer holding it (``map_disagrees``: taken
+away or moved off it) or a second body inside it (``map_split``) retracts, unless for the
+split a declared hand is over the box (its points can leak into the map: a lost view, the
+freeze TTL runs); a confirming grid re-stamps the same box with its ``source_stamp``, so a
+stalled or stale map still ages it out after the freeze. The declaration ending, retracted
+or expiring, the approach-armed hand leaving, or the handover end it as before.
 
 **What the kernel gets is cell-closed** (``GraspTargetLeg.fill``). The kernel exempts
 a voxel only when the cell's centre lies in the region; a fit tight to the measured
@@ -212,11 +226,10 @@ one body — never completed or grown from the map, so two masks separate a pack
 merges), then tracked (``PrimitiveTracker``; stale after ``freeze_s``, dropped when the map
 clears its cells). On the arming tick the region is the tracked instance nearest the armed
 hand's TCPs (a tie refused) or the lone one in a named box, map-confirmed and gated like any
-re-fit (``_gate_refit`` without completion) — no segmenter call on that path. Re-fits keep
-arriving while the camera sees the target; while the declared hand is over the held region
-the map holds it (``_map_hold``: re-stamped on each grid that confirms it, never moved or
-grown; retracted when the map no longer holds it). Nothing in ``fill``, the handover, the
-payload or the kernel contract changes.
+first fit (``_gate_refit`` without completion) — no segmenter call on that path. Once held,
+the region is frozen (above): re-fits of its instance are only logged, the map holds it
+(``_map_hold``). Nothing in ``fill``, the handover, the payload or the kernel contract
+changes.
 
 Threading: every entry point here (tick, reply, deadline, declaration, teardown) and every
 bridge hook runs under the vision bridge's one re-entrant lock (``VisionAttachmentBridge``
@@ -279,6 +292,7 @@ from openral_hal._grasp_target import (
     track_region,
 )
 from openral_hal._object_primitives import (
+    ObjectPrimitive,
     PrimitiveFit,
     PrimitiveTracker,
     instance_prompt,
@@ -1188,21 +1202,6 @@ def _hand_near(
     return bool(_in_region(np.asarray(hands, dtype=np.float64), grown).any())
 
 
-def _grown_down_to(region: PlaceRegion, z: float) -> PlaceRegion:
-    """``region`` (gravity-aligned) with its bottom lowered to ``z``; as is if already lower."""
-    x, y, cz = region.pose.xyz
-    hx, hy, hz = region.half_extents
-    drop = (cz - hz) - z
-    if drop <= 0.0:
-        return region
-    return region.model_copy(
-        update={
-            "pose": region.pose.model_copy(update={"xyz": (x, y, cz - drop / 2.0)}),
-            "half_extents": (hx, hy, hz + drop / 2.0),
-        }
-    )
-
-
 def _hand_over_target(
     hands: Sequence[tuple[float, float, float]],
     held: PlaceRegion,
@@ -1365,7 +1364,6 @@ def _gate_refit(
     occluder_margin_m: float = 0.05,
     hand_rise_m: float = 0.0,
     complete: bool = True,
-    map_held: bool = False,
 ) -> tuple[PlaceRegion, int]:
     """Map cover + whole-target completion + tracking gate on a fresh fit, or the refusal.
 
@@ -1396,16 +1394,11 @@ def _gate_refit(
     (``hands``, base-frame positions) is within one voxel + ``occluder_margin_m`` of the
     held region; otherwise nothing of the robot's explains the shrink (a person's hand,
     the target knocked over) and it is retracted. One reaching outside it is
-    ``target_moved`` — except downward: the held region is grown down to ``support_z``
-    first, since the target stands on its support and cannot move into it (a re-fit
-    reaching lower re-measured where the target meets the support, Isaac s_mix07).
+    ``target_moved``.
 
-    ``map_held`` (the caller confirmed the held region on ``grid``: ``map_confirms``
-    clean, instance path only) widens "near" to the hand **approaching** the held region:
-    a declared contact link within one voxel + ``occluder_margin_m`` + ``hand_rise_m``
-    (the approach distance) of it on any face — the camera's view is lost before the TCP
-    is over the target, and the map, which the self-filtered hand never clears, is the
-    adjudicator (design §3.7, Revision 3).
+    Against a held region (``previous``) the leg only **logs** this gate's outcome: a
+    held region is frozen for the declaration's life and only the map retracts it
+    (``GraspTargetLeg._map_hold``, design §3.7 Revision 4).
 
     Returns:
         ``(accepted, added)`` — the region to hold and the cells the map added to it
@@ -1455,19 +1448,13 @@ def _gate_refit(
         f"{tuple(round(v, 3) for v in previous.pose.xyz)} half_extents "
         f"{tuple(round(v, 3) for v in previous.half_extents)}"
     )
-    if not region_within(candidate, _grown_down_to(previous, support_z), tol_m=grid.resolution):
+    if not region_within(candidate, previous, tol_m=grid.resolution):
         raise _contradicted("target_moved", f"{moved}: reaches outside the held region")
     reach = grid.resolution + occluder_margin_m
     if _hand_over_target(hands, previous, reach_m=reach, hand_rise_m=hand_rise_m):
         # The robot's own hand occluding part of the target: the held region
         # stays under its freeze TTL and is not replaced by the partial fit.
         raise _lost("occluded_refit", f"{moved}, inside the held region, hand within {reach:.3f} m")
-    if map_held and _hand_near(hands, previous, reach_m=reach + hand_rise_m):
-        raise _lost(
-            "occluded_refit",
-            f"{moved}, inside the held region, hand approaching within "
-            f"{reach + hand_rise_m:.3f} m, the map holds the held region",
-        )
     raise _contradicted(
         "unoccluded_refit",
         f"{moved}: inside the held region but no declared contact link within {reach:.3f} m "
@@ -1643,6 +1630,9 @@ class GraspTargetLeg:
         # The last accepted region and the support top it was fitted on
         # (``measured_support``).
         self._support: tuple[PlaceRegion, float] | None = None
+        # The outcome kind of the last re-fit the frozen region ignored ("" while nothing
+        # is held): logged once per change (``_refit_ignored``).
+        self._ignored_kind = ""
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1877,6 +1867,8 @@ class GraspTargetLeg:
         """
         now_ns = self._now_ns()
         begun = self._begin_tick(now_ns)
+        if self.tracker.region is None:
+            self._ignored_kind = ""
         if self._instances is not None:
             if begun is not None:
                 self._tick_instances(now_ns, *begun)
@@ -1884,8 +1876,9 @@ class GraspTargetLeg:
             return
         if begun is None:
             return
-        target, generation, grid, _ = begun
+        target, generation, grid, source_ns = begun
         assert target.search_box is not None  # checked by ``_begin_tick``
+        self._hold_frozen(now_ns, target, generation, grid, source_ns)
         try:
             try:
                 seed_point, support_z = self._seed(
@@ -1896,9 +1889,35 @@ class GraspTargetLeg:
             except ROSConfigError as exc:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
-            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            self._refuse_refit(refusal, now_ns=now_ns, generation=generation)
             return
         self._commit_request(now_ns, target, generation, grid, seed_point, support_z)
+
+    @_locked
+    def _hold_frozen(
+        self,
+        now_ns: int,
+        target: GraspDeclaration,
+        generation: int,
+        grid: VoxelLattice,
+        source_ns: int,
+    ) -> None:
+        """Camera path: the held region through ``_map_hold`` on this tick's grid, if any."""
+        previous = self.tracker.region
+        if previous is None:
+            return
+        try:
+            try:
+                held = self._map_hold(grid, previous, source_ns, self._hands(target, grid.frame_id))
+            except ROSConfigError as exc:
+                raise _contradicted("rejected_inputs", str(exc)) from exc
+        except _Refusal as refusal:
+            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            return
+        if held is not None:
+            self.tracker.accept(held[0], generation=generation)
+            if self.tracker.region is held[0]:
+                self._support = held
 
     @_locked
     def _tick_instances(
@@ -1911,35 +1930,22 @@ class GraspTargetLeg:
     ) -> None:
         """The armed region from the pre-measured instances — no segmenter call on this path.
 
-        The candidate is the tracked instance nearest the armed hand's TCP points inside
-        the search column, refused on a tie, or for a named search box the lone one in it
-        (``nearest_primitive``). A candidate fitted after the held region is confirmed by
-        the map (``map_confirms``) and gated against the held region (``_gate_refit``
-        without completion: tracking, the own-hand occlusion hold, ``target_moved``), then
-        accepted; a re-fit the gate calls ``occluded_refit`` is overruled by the map
-        (``_gate_instance``), never replacing the held box. Otherwise, while a declared
-        contact link's hand is over the held region
-        (it occludes the head camera), **the map holds it**: confirmed on this grid, the
-        same box is re-accepted stamped with the grid's ``source_stamp`` — never moved,
-        never grown. With neither, nothing new is accepted and the held region runs out its
-        freeze TTL from its own stamp. On every tick, first, a held region the map no
-        longer holds is retracted (``map_disagrees``: the object was taken away), whatever
-        the hand does. Under the bridge lock: a few boxes against the grid.
+        With nothing held, the candidate is the tracked instance nearest the armed hand's
+        TCP points inside the search column, refused on a tie, or for a named search box
+        the lone one in it (``nearest_primitive``); it must lie in a named box
+        (``outside_named_search_box``), be confirmed by the map (``map_confirms``) and pass
+        ``_gate_refit`` without completion, then it is accepted. Once a region is held it is
+        **frozen** (design §3.7, Revision 4): only the map retracts it (``_map_hold``, every
+        tick); a newer re-fit of the instance still runs every gate above, but only to log
+        what they would have said (``_refit_ignored``). Under the bridge lock: a few boxes
+        against the grid.
         """
         assert self._instances is not None and target.search_box is not None
-        res, min_cover = grid.resolution, self._config.grasp_target_min_cover
+        res = grid.resolution
         hands, previous = self._hands(target, grid.frame_id), self.tracker.region
         approaching = target.target_id.startswith(APPROACH_TARGET_PREFIX)
         try:
             try:
-                if previous is not None:
-                    # Whatever else happens this tick, a held box the map no longer holds
-                    # (the object taken away) is retracted, hand or no hand.
-                    count, covered = region_covers_occupied(grid, previous, min_fraction=min_cover)
-                    if not covered:
-                        raise _contradicted(
-                            "map_disagrees", f"held region: only {count} occupied cells inside it"
-                        )
                 column = search_column(target.search_box, below_m=self._search_below_m)
                 inside = [
                     p
@@ -1951,37 +1957,17 @@ class GraspTargetLeg:
                     [p.region for p in inside], hands if approaching else (), ambiguity_m=res
                 )
                 chosen = None if index is None else inside[index]
-                occluded = previous is not None and _hand_over_target(
-                    hands,
-                    previous,
-                    reach_m=res + self._occluder_margin_m,
-                    hand_rise_m=self._approach_m or 0.0,
-                )
-                if chosen is not None and (
-                    previous is None or chosen.region.stamp_ns > previous.stamp_ns
-                ):
-                    _guard_named_instance(chosen.region, self.tracker.declaration, grid)
-                    support_z = chosen.support_z
-                    kind, detail = map_confirms(
-                        grid,
-                        chosen.region,
-                        support_z=support_z,
-                        min_cover=min_cover,
-                        pad_m=fit_pad_m(grid.resolution),
-                    )
-                    if kind:
-                        detail = f"instance {chosen.primitive_id}: {detail}"
-                        raise (
-                            _lost("occluded_refit", f"{kind}: {detail}, hand over the target")
-                            if kind == "map_split" and occluded
-                            else _contradicted(kind, detail)
-                        )
-                    region, support_z = self._gate_instance(
-                        grid, chosen.region, previous, support_z, column, hands, source_ns
-                    )
-                elif occluded:
-                    assert previous is not None
-                    held = self._map_hold(grid, previous, source_ns)
+                if previous is not None:
+                    if chosen is None:
+                        self._refit_ignored("no_instance", why)
+                    elif chosen.region.stamp_ns > previous.stamp_ns:
+                        try:
+                            self._gate_instance(grid, chosen, previous, column, hands)
+                        except _Refusal as refit:
+                            self._refit_ignored(refit.kind, str(refit))
+                        else:
+                            self._refit_ignored("tracked", "re-fit within the tracking gate")
+                    held = self._map_hold(grid, previous, source_ns, hands)
                     if held is None:
                         return
                     region, support_z = held
@@ -1990,7 +1976,7 @@ class GraspTargetLeg:
                         raise _contradicted("ambiguous", why)
                     raise _lost("no_instance", why)
                 else:
-                    return  # the held region's own instance, not re-fitted yet: its TTL runs
+                    region, support_z = self._gate_instance(grid, chosen, None, column, hands)
             except ROSConfigError as exc:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
@@ -2003,66 +1989,68 @@ class GraspTargetLeg:
     def _gate_instance(
         self,
         grid: VoxelLattice,
-        fit: PlaceRegion,
+        chosen: ObjectPrimitive,
         previous: PlaceRegion | None,
-        support_z: float,
         column: PlaceRegion,
         hands: Sequence[tuple[float, float, float]],
-        source_ns: int,
     ) -> tuple[PlaceRegion, float]:
-        """A map-confirmed instance re-fit through ``_gate_refit``, or the map's hold.
+        """An instance through the acceptance gates: ``(region, support_z)``, or the refusal.
 
-        ``map_held`` is whether the map confirms the held region on ``grid``. A re-fit
-        the gate calls ``occluded_refit`` (the hand over the held region, or approaching
-        it while the map confirms it) never replaces it: the map holds it (``_map_hold``,
-        the same box re-stamped), logged with the overruled re-fit (Revision 3).
+        A named box must hold it (``_guard_named_instance``), the map must confirm it
+        (``map_confirms``), and ``_gate_refit`` (no completion) must pass it — against
+        ``previous`` only for the frozen region's diagnostics (``_tick_instances``).
         """
-        held_support = None if previous is None else self.measured_support(previous)
-        map_held = (
-            previous is not None
-            and held_support is not None
-            and not map_confirms(
-                grid,
-                previous,
-                support_z=held_support,
-                min_cover=self._config.grasp_target_min_cover,
-                pad_m=fit_pad_m(grid.resolution),
-            )[0]
+        _guard_named_instance(chosen.region, self.tracker.declaration, grid)
+        support_z = chosen.support_z
+        min_cover = self._config.grasp_target_min_cover
+        kind, detail = map_confirms(
+            grid,
+            chosen.region,
+            support_z=support_z,
+            min_cover=min_cover,
+            pad_m=fit_pad_m(grid.resolution),
         )
-        try:
-            region, _ = _gate_refit(
-                grid,
-                fit,
-                previous,
-                support_z=support_z,
-                min_cover=self._config.grasp_target_min_cover,
-                column=column,
-                hands=hands,
-                occluder_margin_m=self._occluder_margin_m,
-                hand_rise_m=self._approach_m or 0.0,
-                complete=False,
-                map_held=map_held,
-            )
-        except _Refusal as refit:
-            if refit.kind != "occluded_refit" or previous is None:
-                raise
-            held = self._map_hold(grid, previous, source_ns)
-            if held is None:
-                raise
-            self._node.get_logger().info(
-                f"grasp target re-fit overruled, the map holds the region — {refit}"
-            )
-            return held
+        if kind:
+            raise _contradicted(kind, f"instance {chosen.primitive_id}: {detail}")
+        region, _ = _gate_refit(
+            grid,
+            chosen.region,
+            previous,
+            support_z=support_z,
+            min_cover=min_cover,
+            column=column,
+            hands=hands,
+            occluder_margin_m=self._occluder_margin_m,
+            hand_rise_m=self._approach_m or 0.0,
+            complete=False,
+        )
         return region, support_z
 
-    def _map_hold(
-        self, grid: VoxelLattice, held: PlaceRegion, source_ns: int
-    ) -> tuple[PlaceRegion, float] | None:
-        """The held region re-stamped on a grid that confirms it, while the hand occludes it.
+    def _refit_ignored(self, kind: str, detail: str) -> None:
+        """Log a re-fit the frozen region ignored, once per change of outcome (§1.4)."""
+        if kind != self._ignored_kind:
+            self._ignored_kind = kind
+            self._node.get_logger().info(
+                f"grasp target re-fit ignored, region frozen (map-confirmed) — {detail}"
+            )
 
-        ``None`` when the grid is no newer than the region; a refusal when the map no
-        longer holds it (``map_disagrees``, a contradiction) or holds a second body in it
-        (the hand's own points leaked into the map beside the target: a lost view).
+    def _map_hold(
+        self,
+        grid: VoxelLattice,
+        held: PlaceRegion,
+        source_ns: int,
+        hands: Sequence[tuple[float, float, float]],
+    ) -> tuple[PlaceRegion, float] | None:
+        """The frozen region on a fresh grid: re-stamped while the map confirms it, or a refusal.
+
+        The only thing that retracts a held region before its declaration ends (design
+        §3.7, Revision 4): ``map_confirms`` on the held box and its measured support, every
+        tick. The map no longer holding it (``map_disagrees``: taken away, or moved off it)
+        retracts; a second body in it (``map_split``) retracts too, unless a declared hand
+        is over the box (``_hand_over_target``) — the hand's own points can leak into the
+        map beside the target — where it is a lost view and the freeze TTL runs. Confirmed,
+        the same box is re-stamped with the grid's ``source_stamp`` (``None`` when that is
+        no newer than the region): never moved, never grown.
         """
         support_z = self.measured_support(held)
         if support_z is None:  # every accepted region records its support
@@ -2074,10 +2062,15 @@ class GraspTargetLeg:
             min_cover=self._config.grasp_target_min_cover,
             pad_m=fit_pad_m(grid.resolution),
         )
-        if kind == "map_disagrees":
-            raise _contradicted(kind, f"held region, hand over it: {detail}")
+        if kind == "map_split" and _hand_over_target(
+            hands,
+            held,
+            reach_m=grid.resolution + self._occluder_margin_m,
+            hand_rise_m=self._approach_m or 0.0,
+        ):
+            raise _lost(kind, f"held region: {detail}, hand over it")
         if kind:
-            raise _lost("occluded_refit", f"{kind}: {detail}, hand over the target")
+            raise _contradicted(kind, f"held region: {detail}")
         if source_ns <= held.stamp_ns:
             return None
         return held.model_copy(update={"stamp_ns": source_ns}), support_z
@@ -2275,7 +2268,15 @@ class GraspTargetLeg:
             except ROSConfigError as exc:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
-            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            self._refuse_refit(refusal, now_ns=now_ns, generation=generation)
+
+    @_locked
+    def _refuse_refit(self, refusal: _Refusal, *, now_ns: int, generation: int) -> None:
+        """A camera re-fit's refusal: ``_refuse`` it, or only log it while a region is frozen."""
+        if self.tracker.region is not None and generation == self.tracker.generation:
+            self._refit_ignored(refusal.kind, str(refusal))
+            return
+        self._refuse(refusal, now_ns=now_ns, generation=generation)
 
     @_locked
     def _refuse(self, refusal: _Refusal, *, now_ns: int, generation: int) -> None:
@@ -2677,10 +2678,10 @@ class GraspTargetLeg:
             return  # every request is a pre-measurement: no region rides on it
         if self._stale(generation):
             return
-        self.tracker.refuse(
-            "deadline",
-            f"SegmentInView did not answer within {self._config.deadline_s:.3f} s",
-            retract=False,
+        self._refuse_refit(
+            _lost(
+                "deadline", f"SegmentInView did not answer within {self._config.deadline_s:.3f} s"
+            ),
             now_ns=self._now_ns(),
             generation=generation,
         )
@@ -2721,9 +2722,12 @@ class GraspTargetLeg:
             except ROSConfigError as exc:  # an input shape the geometry refuses
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
-            self._refuse(refusal, now_ns=now_ns, generation=snapshot[6])
+            self._refuse_refit(refusal, now_ns=now_ns, generation=snapshot[6])
             return
         with self._lock:
+            if self.tracker.region is not None and snapshot[6] == self.tracker.generation:
+                self._refit_ignored("tracked", "re-fit within the tracking gate")
+                return
             # An ATTACH (proprio thread) may have handed over or re-armed while
             # ``_measure`` ran: ``accept`` drops the region when the generation moved.
             self.tracker.accept(region, generation=snapshot[6], map_cells=added)
