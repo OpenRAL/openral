@@ -278,13 +278,16 @@ def _octomap_resolution(hal_mode: str) -> float:
 
     **Real hardware ships 20 mm on that same sim evidence, and nothing else.**
     No real map has been measured at any resolution. Sim rasterises a kitchen's
-    own solid geometry; a real map comes from a depth camera and is dilated by
-    the octree->grid bridge, and `docs/reference/world-map-fidelity.md` is
-    explicit that the live map stops MORE often than the rasterised one, never
-    less. The quantisation term is also not the only thing between the payload
-    and reality on hardware -- depth noise, extrinsics and the octree dilation
-    sit beside it, and 50 -> 20 mm removes 25.98 mm of guaranteed margin while
-    leaving those untouched. Recorded as a deliberate reduction in
+    own solid geometry; a real map comes from a depth camera and its octree
+    holds whatever the sensor saw (decoration, noise, the robot's own
+    unfiltered parts), and `docs/reference/world-map-fidelity.md` is explicit
+    that the live map stops MORE often than the rasterised one, never less.
+    (The octree->grid cube-overlap dilation that page also measured is gone
+    since 2026-08-25: the grid is published on the octree's own lattice.) The
+    quantisation term is also not the only thing between the payload and
+    reality on hardware -- depth noise and extrinsics sit beside it, and
+    50 -> 20 mm removes 25.98 mm of guaranteed margin while leaving those
+    untouched. Recorded as a deliberate reduction in
     conservatism, gated on the safety-WG, in its own hazard-log entry. It
     should be re-measured on a real map before it is relied on.
 
