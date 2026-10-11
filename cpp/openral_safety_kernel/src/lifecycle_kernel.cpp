@@ -1696,6 +1696,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             workspace_snapshot(workspace_prev_plain_);
             std::copy(q_meas_.begin(), q_meas_.end(), q_workspace_.begin());
             for (const int d : collision_fk_dofs_) {
+              // The jaws' own velocity is not the hand's: a jaw squeezing an object
+              // jitters at its contact (#349 p4_mix00, 0.11 -> 0.38 m/s in a second
+              // with the arm slow); its closing force is the gripper's effort limit.
+              if (std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(), d) !=
+                  workspace_jaw_cols_.end()) {
+                continue;
+              }
               const auto i = static_cast<std::size_t>(d);
               q_workspace_[i] += dq_meas_[i] * workspace_control_period_s_;
             }

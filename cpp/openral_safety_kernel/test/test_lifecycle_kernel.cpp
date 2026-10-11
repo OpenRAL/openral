@@ -6035,6 +6035,21 @@ TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
       << logs.joined();
 }
 
+TEST_F(LifecycleKernelTest, AJawJointsMeasuredVelocityIsNotHandSpeed) {
+  // The same 0.5 rad/s, but j0 is a jaw joint: a jaw jittering at its squeeze
+  // contact (#349 p4_mix00) is not the hand moving — 0 m/s, it passes.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_jaw",
+               with_param(lag_params(), "workspace_contact_jaw_joints",
+                          rclcpp::ParameterValue(std::vector<std::string>{"j0"})));
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
 TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
   // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
   // rad into the cell — a 0.03 m lead over a 0.02 bound.

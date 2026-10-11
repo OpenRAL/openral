@@ -1059,7 +1059,8 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
    On a joint-PD arm commanded-minus-measured is proportional to what the drives push with; without
    it a hand whose stationary target is buried deep would keep pushing at zero commanded speed. The
    jaw joints (`workspace_contact_jaw_joints`, the manifest's `role: gripper` joints; empty = none
-   excluded) are held at measured because a closing jaw's remaining stroke is not an arm push: a
+   excluded) are held at measured because a closing jaw's remaining stroke is not an arm push (the
+   measured hand speed likewise leaves out their velocity; the commanded fallback keeps it): a
    grasp squeeze is bounded by the gripper's own effort limit (#349 p_mix02, an 80 mm "lead" that
    was the jaw still closing on a held box).
 

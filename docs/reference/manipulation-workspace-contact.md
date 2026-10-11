@@ -190,6 +190,9 @@ manifest's `role: gripper` joints) at their measured value: it bounds the arm's 
 closing on a held object has the rest of its stroke as commanded-minus-measured, which is a grasp
 squeeze bounded by the gripper's effort limit, not by the arm (p_mix02: 72–80 mm follower "lead"
 while the leader read 32 mm, stopped at 80.2 mm against the 80 mm bound, fingers on the target).
+The measured hand speed likewise leaves out the jaw joints' velocity (p4_mix00: a jaw squeezed past
+its closed limit jittered the fingertip speed 0.11 → 0.38 m/s within a second while the arm was
+slow); the commanded fallback keeps it, reading faster, never slower.
 Hazard-log assumption owed: the gripper's effort limit bounds the squeeze on real hardware.
 
 **Measured velocity.** `/joint_states` `velocity[i]`, stored per dof with the message's arrival
