@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import itertools
 import math
 import os
 import re
@@ -2318,6 +2319,56 @@ def check_tight_geometry_fits_box(
             raise ValueError(msg)
 
 
+class StrokeBin(BaseModel):
+    """Tight geometry that holds a link's geometry over one sub-range of a gripper stroke.
+
+    A link whose geometry depends on a gripper joint the kernel does not model
+    as its own link (the OpenArm's equality-coupled second finger, folded into
+    ``finger_pair``) carries one ``tight_geometry`` swept over the WHOLE
+    stroke. A ``StrokeBin`` is the same refinement swept over
+    ``[q_lo, q_hi]`` of that joint only, so the kernel's world-voxel check can
+    test the geometry at the opening the gripper actually has instead of the
+    union of every opening (``docs/reference/finger-stroke-geometry.md``).
+
+    Containment is per bin: ``tight_geometry`` holds the link's geometry for
+    EVERY joint value in ``[q_lo, q_hi]``, and must fit inside the box it
+    refines exactly as ``LinkCollisionGeometry.tight_geometry`` does.
+
+    Attributes:
+        q_lo: Lower end of the joint sub-range, in the joint's units.
+        q_hi: Upper end, strictly above ``q_lo``.
+        tight_geometry: The 26-DOP + hull holding the geometry over the range,
+            in the box's own frame.
+
+    Example:
+        >>> b = StrokeBin(
+        ...     q_lo=0.0,
+        ...     q_hi=0.1,
+        ...     tight_geometry=TightCollisionGeometry(
+        ...         dop_lo_m=(-0.05,) * 13, dop_hi_m=(0.05,) * 13
+        ...     ),
+        ... )
+        >>> b.q_hi
+        0.1
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    q_lo: float
+    q_hi: float
+    tight_geometry: TightCollisionGeometry
+
+    @model_validator(mode="after")
+    def _check_range(self) -> Self:
+        if not (math.isfinite(self.q_lo) and math.isfinite(self.q_hi)):
+            msg = f"stroke bin range [{self.q_lo}, {self.q_hi}] is not finite"
+            raise ValueError(msg)
+        if not self.q_lo < self.q_hi:
+            msg = f"stroke bin range [{self.q_lo}, {self.q_hi}] is empty or inverted"
+            raise ValueError(msg)
+        return self
+
+
 class LinkCollisionGeometry(BaseModel):
     """One convex collision volume rigidly attached to a robot link.
 
@@ -2340,6 +2391,16 @@ class LinkCollisionGeometry(BaseModel):
             box vs box. ``shape`` remains the broad-phase bound, the
             containment proof, and the geometry every other check uses. Only
             valid on a ``BoxShape``, and only when it fits inside it.
+        stroke_joint: The ``role: gripper`` joint ``stroke_bins`` are indexed
+            by. Set exactly when ``stroke_bins`` is non-empty.
+        stroke_bins: Optional per-sub-range refinements of ``tight_geometry``
+            (``StrokeBin``): sorted, contiguous (each bin's ``q_hi`` is the
+            next one's ``q_lo``), covering the joint's ``position_limits``.
+            The kernel's world-voxel check uses the bins covering the joint's
+            interval for the step it checks; ``tight_geometry`` (swept over
+            the whole stroke) stays what an unknown joint value, self-collision
+            and every consumer that ignores this field get. Requires
+            ``tight_geometry``.
 
     Example:
         >>> g = LinkCollisionGeometry(
@@ -2363,6 +2424,8 @@ class LinkCollisionGeometry(BaseModel):
         0.0,
     )
     tight_geometry: TightCollisionGeometry | None = None
+    stroke_joint: str | None = None
+    stroke_bins: tuple[StrokeBin, ...] = ()
 
     @model_validator(mode="after")
     def _tight_geometry_fits_inside_the_box(self) -> Self:
@@ -2371,6 +2434,34 @@ class LinkCollisionGeometry(BaseModel):
             check_tight_geometry_fits_box(
                 self.shape, self.tight_geometry, f"link {self.link_name!r}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _stroke_bins_are_contiguous_and_inside_the_box(self) -> Self:
+        """Bins are sorted, gap-free, each inside the box, and refine a declared hull."""
+        owner = f"link {self.link_name!r}"
+        if bool(self.stroke_bins) != (self.stroke_joint is not None):
+            msg = f"{owner}: stroke_joint and stroke_bins must be declared together"
+            raise ValueError(msg)
+        if not self.stroke_bins:
+            return self
+        if self.tight_geometry is None:
+            msg = (
+                f"{owner}: stroke_bins refine tight_geometry, which the link does not "
+                "declare; the whole-stroke refinement is what an unknown joint value falls "
+                "back to"
+            )
+            raise ValueError(msg)
+        for i, b in enumerate(self.stroke_bins):
+            check_tight_geometry_fits_box(self.shape, b.tight_geometry, f"{owner} stroke bin {i}")
+        for i, (a, b) in enumerate(itertools.pairwise(self.stroke_bins)):
+            if a.q_hi != b.q_lo:
+                msg = (
+                    f"{owner}: stroke bins {i} and {i + 1} are not contiguous "
+                    f"(q_hi={a.q_hi} != q_lo={b.q_lo}); a gap is a joint value no bin "
+                    "covers and an overlap is an ambiguous one"
+                )
+                raise ValueError(msg)
         return self
 
 
@@ -2822,6 +2913,42 @@ class RobotDescription(BaseModel):
                     "must have exactly one source"
                 )
             defined_by[att.child_link] = f"fixed_attachments[{att.name!r}]"
+        return self
+
+    @model_validator(mode="after")
+    def _validate_stroke_bins_against_joints(self) -> RobotDescription:
+        """A link's ``stroke_bins`` name a ``role: gripper`` joint and cover its whole range.
+
+        The kernel falls back to the whole-stroke ``tight_geometry`` for a joint
+        value no bin covers, so a short cover is not unsound; it is a producer
+        bug that would silently forfeit the bins at the uncovered openings, and
+        is refused here instead.
+        """
+        joints = {j.name: j for j in self.joints}
+        for g in self.collision_geometry:
+            if g.stroke_joint is None:
+                continue
+            owner = f"collision_geometry[{g.link_name!r}]"
+            joint = joints.get(g.stroke_joint)
+            if joint is None:
+                raise ValueError(f"{owner}: stroke_joint {g.stroke_joint!r} is not in joints")
+            if joint.role != "gripper":
+                raise ValueError(
+                    f"{owner}: stroke_joint {g.stroke_joint!r} has role {joint.role!r}; "
+                    "stroke bins index a gripper's opening only"
+                )
+            if joint.position_limits is None:
+                raise ValueError(
+                    f"{owner}: stroke_joint {g.stroke_joint!r} declares no position_limits, "
+                    "so the bins cannot be shown to cover its range"
+                )
+            lo, hi = joint.position_limits
+            if g.stroke_bins[0].q_lo > lo or g.stroke_bins[-1].q_hi < hi:
+                raise ValueError(
+                    f"{owner}: stroke bins cover [{g.stroke_bins[0].q_lo}, "
+                    f"{g.stroke_bins[-1].q_hi}], not {g.stroke_joint!r}'s whole range "
+                    f"[{lo}, {hi}]"
+                )
         return self
 
     @model_validator(mode="after")

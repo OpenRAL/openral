@@ -25,6 +25,8 @@ one hides a real self-collision (issue #155).
 
 from __future__ import annotations
 
+import functools
+import itertools
 import math
 import warnings
 import xml.etree.ElementTree as ET
@@ -41,12 +43,14 @@ from openral_core import (
     SphereShape,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import StrokeBin
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import numpy as np
     from numpy.typing import NDArray
+    from openral_core import JointSpec
 
     _Arr = NDArray[np.float64]
 
@@ -1158,6 +1162,16 @@ _MJCF_N_SAMPLES = 2000
 # hinge's range leave at most range/16 between a sample and the true extreme,
 # which the fit's own radius absorbs for fingers of this size.
 _MJCF_STROKE_SAMPLES = 9
+# A stroke-swept link lowered with ``tight_links`` (the OpenArm's ``finger_pair``)
+# is split instead: the leader's own body as one rigid box + hull, and the
+# follower as a box + whole-stroke hull carrying ``_STROKE_BINS`` per-sub-range
+# hulls (``StrokeBin``), each fitted to ``_STROKE_BIN_SAMPLES`` evenly spaced
+# positions of its sub-range (both edges included). On the OpenArm's 0.785 rad
+# hinge that is 0.025 rad between samples: a point 0.15 m off the axis bulges
+# 0.01 mm past the chord between them, against the 1 mm swept-link tolerance
+# (docs/reference/finger-stroke-geometry.md).
+_STROKE_BINS = 8
+_STROKE_BIN_SAMPLES = 5
 
 
 _GeomsByLink = Mapping[str, Sequence[LinkCollisionGeometry]]
@@ -1985,6 +1999,47 @@ def mjcf_coupled_joints(model: object) -> dict[int, list[tuple[int, float, float
     return coupled
 
 
+def _follower_meshes_at(
+    model: object,
+    data: object,
+    body: int,
+    leader: int,
+    followers: list[tuple[int, float, float]],
+    q: float,
+) -> list[Any]:
+    """Meshes of ``leader``'s equality followers at leader position ``q``, in ``body``'s frame.
+
+    Each follower is set to ``c0 + c1·q``. Leaves ``data`` posed there — the
+    caller restores it.
+    """
+    import mujoco
+    import numpy as np
+    import trimesh
+
+    m: Any = model
+    d: Any = data
+    mujoco.mj_resetData(m, d)
+    d.qpos[int(m.jnt_qposadr[leader])] = q
+    for follower, c0, c1 in followers:
+        d.qpos[int(m.jnt_qposadr[follower])] = c0 + c1 * q
+    mujoco.mj_kinematics(m, d)
+    rot_b = d.xmat[body].reshape(3, 3)
+    parts: list[Any] = []
+    for follower, _c0, _c1 in followers:
+        fbody = int(m.jnt_bodyid[follower])
+        fmesh = _body_mesh(m, d, fbody)
+        if fmesh is None:
+            continue
+        # follower body frame -> leader's child body frame
+        world = (d.xmat[fbody].reshape(3, 3) @ np.asarray(fmesh.vertices).T).T + d.xpos[fbody]
+        parts.append(
+            trimesh.Trimesh(
+                vertices=(world - d.xpos[body]) @ rot_b, faces=fmesh.faces, process=False
+            )
+        )
+    return parts
+
+
 def _stroke_swept_meshes(
     model: object,
     data: object,
@@ -1999,37 +2054,111 @@ def _stroke_swept_meshes(
     follower set to ``c0 + c1·q``; every mesh expressed in ``body``'s frame.
     Leaves ``data`` posed at the last sample — the caller restores it.
     """
-    import mujoco
     import numpy as np
-    import trimesh
 
     m: Any = model
-    d: Any = data
     lo, hi = (float(v) for v in m.jnt_range[leader])
     parts: list[Any] = []
     for s in np.linspace(lo, hi, max(stroke_samples, 2)):
-        mujoco.mj_resetData(m, d)
-        d.qpos[int(m.jnt_qposadr[leader])] = s
-        for follower, c0, c1 in followers:
-            d.qpos[int(m.jnt_qposadr[follower])] = c0 + c1 * s
-        mujoco.mj_kinematics(m, d)
-        inner = _body_mesh(m, d, body)
+        followed = _follower_meshes_at(m, data, body, leader, followers, float(s))
+        inner = _body_mesh(m, data, body)
         if inner is not None:
             parts.append(inner)
-        rot_b = d.xmat[body].reshape(3, 3)
-        for follower, _c0, _c1 in followers:
-            fbody = int(m.jnt_bodyid[follower])
-            fmesh = _body_mesh(m, d, fbody)
-            if fmesh is None:
-                continue
-            # follower body frame -> leader's child body frame
-            world = (d.xmat[fbody].reshape(3, 3) @ np.asarray(fmesh.vertices).T).T + d.xpos[fbody]
-            parts.append(
-                trimesh.Trimesh(
-                    vertices=(world - d.xpos[body]) @ rot_b, faces=fmesh.faces, process=False
-                )
-            )
+        parts.extend(followed)
     return parts
+
+
+def _fit_stroke_binned(
+    link_name: str,
+    stroke_joint: JointSpec,
+    leader_mesh: Any | None,
+    follower_mesh_at: Callable[[float], list[Any]],
+    *,
+    bins: int = _STROKE_BINS,
+    samples_per_bin: int = _STROKE_BIN_SAMPLES,
+) -> list[LinkCollisionGeometry]:
+    """A stroke-swept link as a rigid leader box + a follower box carrying ``StrokeBin`` s.
+
+    One hull of both fingers is convex, so it fills the space BETWEEN them at
+    every opening — sweeping or binning it cannot open the jaw. Split per
+    finger instead: the leader's body is rigid in the link frame (one box +
+    exact hull, ``fit_link_with_tight_geometry``); the follower moves with the
+    stroke, so its box and whole-stroke ``tight_geometry`` hold it at every
+    sampled opening and each of ``bins`` contiguous sub-ranges of
+    ``stroke_joint``'s ``position_limits`` gets its own hull, fitted to
+    ``samples_per_bin`` positions of that sub-range (edges included, so the
+    whole-stroke samples are exactly the union of the bins'). Every bin hull
+    lies inside the follower box (``mesh_bin ⊆ hull_bin ⊆ DOP_bin ⊆ DOP_full ⊆
+    box``), which keeps the kernel's broad-phase window valid for any bin.
+
+    Args:
+        link_name: The manifest link (``finger_pair``).
+        stroke_joint: The manifest ``role: gripper`` joint driving the stroke.
+        leader_mesh: The leader body's geometry in the link frame, or ``None``.
+        follower_mesh_at: Follower meshes in the link frame at a joint value.
+        bins: Number of stroke bins.
+        samples_per_bin: Positions sampled per bin, both edges included.
+
+    Returns:
+        ``[leader entry, follower entry]`` (the leader's only if it has geometry).
+
+    Raises:
+        ROSConfigError: ``stroke_joint`` has no ``position_limits``, or the
+            follower has no geometry.
+    """
+    import numpy as np
+    import trimesh
+
+    from openral_safety.tight_geometry import tight_geometry_for_box
+
+    if stroke_joint.position_limits is None:
+        raise ROSConfigError(
+            f"{link_name}: stroke joint {stroke_joint.name!r} has no position_limits to bin"
+        )
+    lo, hi = (float(v) for v in stroke_joint.position_limits)
+    edges = [float(v) for v in np.linspace(lo, hi, bins + 1)]
+    per_bin = [
+        [m for q in np.linspace(a, b, max(samples_per_bin, 2)) for m in follower_mesh_at(float(q))]
+        for a, b in itertools.pairwise(edges)
+    ]
+    if not any(per_bin):
+        raise ROSConfigError(f"{link_name}: the stroke follower has no geometry to bin")
+    out = [] if leader_mesh is None else [fit_link_with_tight_geometry(link_name, leader_mesh)]
+    whole = fit_link_with_tight_geometry(
+        link_name, trimesh.util.concatenate([m for ms in per_bin for m in ms])
+    )
+    to_box = np.linalg.inv(_xyzrpy_matrix(whole.origin_xyz_rpy))
+    half = whole.shape.half_extents_m  # type: ignore[union-attr]  # reason: fit_link_with_tight_geometry returns a box
+    stroke_bins = []
+    for (a, b), meshes in zip(itertools.pairwise(edges), per_bin, strict=True):
+        in_box = trimesh.util.concatenate(meshes)
+        in_box.apply_transform(to_box)
+        stroke_bins.append(
+            StrokeBin(q_lo=a, q_hi=b, tight_geometry=tight_geometry_for_box(in_box, half))
+        )
+    out.append(
+        whole.model_copy(
+            update={"stroke_joint": stroke_joint.name, "stroke_bins": tuple(stroke_bins)}
+        )
+    )
+    return out
+
+
+def _check_stroke_range(joint: JointSpec, model: object, leader: int) -> None:
+    """Refuse to bin a stroke whose manifest limits are not the MJCF joint's range.
+
+    The bins are written in the manifest joint's units and fitted by posing the
+    MJCF joint at the same numbers; a disagreement would put every bin at the
+    wrong opening.
+    """
+    m: Any = model
+    lo, hi = (float(v) for v in m.jnt_range[leader])
+    limits = joint.position_limits
+    if limits is None or abs(limits[0] - lo) > 1e-9 or abs(limits[1] - hi) > 1e-9:
+        raise ROSConfigError(
+            f"{joint.name}: position_limits {limits} disagree with the MJCF joint range "
+            f"[{lo}, {hi}]; stroke bins need the two to be the same joint coordinate"
+        )
 
 
 def fit_collision_geometry_from_mjcf(
@@ -2057,7 +2186,11 @@ def fit_collision_geometry_from_mjcf(
     link: sampled at ``stroke_samples`` evenly spaced leader positions across
     the joint's range, with the follower set by the equality's polynomial, and
     expressed in the leader's child body frame. The primitive therefore encloses
-    both fingers at every opening the gripper can reach.
+    both fingers at every opening the gripper can reach. Such a link in
+    ``tight_links`` is split per finger instead (``_fit_stroke_binned``): the
+    leader as one rigid box + hull, the follower as a box + whole-stroke hull
+    carrying ``stroke_bins`` the kernel's world-voxel check selects from by the
+    gripper's opening.
 
     A STATIC link — a ``fixed_attachments`` child the MJCF has no body for (the
     OpenArm torso) — is fitted to its URDF geometry instead
@@ -2119,6 +2252,23 @@ def fit_collision_geometry_from_mjcf(
             leader = int(
                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, leader_joint.sim_joint_name)
             )
+            if tight.get(link, 0) >= 1:
+                # Refined: per-finger, with stroke bins (``_fit_stroke_binned``).
+                # Any piece count means this split; the manifest's two entries
+                # make the sticky count 2, which must not become two slabs.
+                _check_stroke_range(leader_joint, model, leader)
+                geometry.extend(
+                    _fit_stroke_binned(
+                        link,
+                        leader_joint,
+                        mesh,
+                        functools.partial(
+                            _follower_meshes_at, model, data, body, leader, followers[leader]
+                        ),
+                    )
+                )
+                at_rest()
+                continue
             parts = [] if mesh is None else [mesh]
             parts += _stroke_swept_meshes(
                 model, data, body, leader, followers[leader], stroke_samples

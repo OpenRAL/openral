@@ -3467,7 +3467,7 @@
         },
         "LinkCollisionGeometry": {
           "additionalProperties": false,
-          "description": "One convex collision volume rigidly attached to a robot link.\n\nThe lowered, kernel-facing form of a link's collision geometry. Authored\nby hand, or emitted by the offline lowering tool from a robot's MJCF or\nURDF + SRDF source; the kernel loads these into pre-sized buffers at\n``on_configure`` and never parses the source geometry on the hot path.\n``link_name`` is a ``JointSpec`` link (``joints`` stays normative for\nthe kinematic chain \u2014 this adds geometry only).\n\nAttributes:\n    link_name: The ``JointSpec.child_link`` (or\n        ``JointSpec.parent_link``) this volume is attached to.\n    shape: The convex primitive (capsule, sphere, or box).\n    origin_xyz_rpy: Pose of the primitive in the link frame \u2014\n        ``(x, y, z, roll, pitch, yaw)`` in metres and radians.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in two narrow phases: arm-link vs world\n        voxel, and \u2014 when both links of a pair declare it \u2014 self-collision\n        box vs box. ``shape`` remains the broad-phase bound, the\n        containment proof, and the geometry every other check uses. Only\n        valid on a ``BoxShape``, and only when it fits inside it.\n\nExample:\n    >>> g = LinkCollisionGeometry(\n    ...     link_name=\"link_1\",\n    ...     shape=CapsuleShape(radius_m=0.04, length_m=0.3),\n    ... )\n    >>> g.origin_xyz_rpy\n    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
+          "description": "One convex collision volume rigidly attached to a robot link.\n\nThe lowered, kernel-facing form of a link's collision geometry. Authored\nby hand, or emitted by the offline lowering tool from a robot's MJCF or\nURDF + SRDF source; the kernel loads these into pre-sized buffers at\n``on_configure`` and never parses the source geometry on the hot path.\n``link_name`` is a ``JointSpec`` link (``joints`` stays normative for\nthe kinematic chain \u2014 this adds geometry only).\n\nAttributes:\n    link_name: The ``JointSpec.child_link`` (or\n        ``JointSpec.parent_link``) this volume is attached to.\n    shape: The convex primitive (capsule, sphere, or box).\n    origin_xyz_rpy: Pose of the primitive in the link frame \u2014\n        ``(x, y, z, roll, pitch, yaw)`` in metres and radians.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in two narrow phases: arm-link vs world\n        voxel, and \u2014 when both links of a pair declare it \u2014 self-collision\n        box vs box. ``shape`` remains the broad-phase bound, the\n        containment proof, and the geometry every other check uses. Only\n        valid on a ``BoxShape``, and only when it fits inside it.\n    stroke_joint: The ``role: gripper`` joint ``stroke_bins`` are indexed\n        by. Set exactly when ``stroke_bins`` is non-empty.\n    stroke_bins: Optional per-sub-range refinements of ``tight_geometry``\n        (``StrokeBin``): sorted, contiguous (each bin's ``q_hi`` is the\n        next one's ``q_lo``), covering the joint's ``position_limits``.\n        The kernel's world-voxel check uses the bins covering the joint's\n        interval for the step it checks; ``tight_geometry`` (swept over\n        the whole stroke) stays what an unknown joint value, self-collision\n        and every consumer that ignores this field get. Requires\n        ``tight_geometry``.\n\nExample:\n    >>> g = LinkCollisionGeometry(\n    ...     link_name=\"link_1\",\n    ...     shape=CapsuleShape(radius_m=0.04, length_m=0.3),\n    ... )\n    >>> g.origin_xyz_rpy\n    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
           "properties": {
             "link_name": {
               "title": "Link Name",
@@ -3539,6 +3539,26 @@
                 }
               ],
               "default": null
+            },
+            "stroke_joint": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Stroke Joint"
+            },
+            "stroke_bins": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/StrokeBin"
+              },
+              "title": "Stroke Bins",
+              "type": "array"
             }
           },
           "required": [
@@ -4662,6 +4682,30 @@
           ],
           "title": "StateRepresentation",
           "type": "string"
+        },
+        "StrokeBin": {
+          "additionalProperties": false,
+          "description": "Tight geometry that holds a link's geometry over one sub-range of a gripper stroke.\n\nA link whose geometry depends on a gripper joint the kernel does not model\nas its own link (the OpenArm's equality-coupled second finger, folded into\n``finger_pair``) carries one ``tight_geometry`` swept over the WHOLE\nstroke. A ``StrokeBin`` is the same refinement swept over\n``[q_lo, q_hi]`` of that joint only, so the kernel's world-voxel check can\ntest the geometry at the opening the gripper actually has instead of the\nunion of every opening (``docs/reference/finger-stroke-geometry.md``).\n\nContainment is per bin: ``tight_geometry`` holds the link's geometry for\nEVERY joint value in ``[q_lo, q_hi]``, and must fit inside the box it\nrefines exactly as ``LinkCollisionGeometry.tight_geometry`` does.\n\nAttributes:\n    q_lo: Lower end of the joint sub-range, in the joint's units.\n    q_hi: Upper end, strictly above ``q_lo``.\n    tight_geometry: The 26-DOP + hull holding the geometry over the range,\n        in the box's own frame.\n\nExample:\n    >>> b = StrokeBin(\n    ...     q_lo=0.0,\n    ...     q_hi=0.1,\n    ...     tight_geometry=TightCollisionGeometry(\n    ...         dop_lo_m=(-0.05,) * 13, dop_hi_m=(0.05,) * 13\n    ...     ),\n    ... )\n    >>> b.q_hi\n    0.1",
+          "properties": {
+            "q_lo": {
+              "title": "Q Lo",
+              "type": "number"
+            },
+            "q_hi": {
+              "title": "Q Hi",
+              "type": "number"
+            },
+            "tight_geometry": {
+              "$ref": "#/$defs/TightCollisionGeometry"
+            }
+          },
+          "required": [
+            "q_lo",
+            "q_hi",
+            "tight_geometry"
+          ],
+          "title": "StrokeBin",
+          "type": "object"
         },
         "TightCollisionGeometry": {
           "additionalProperties": false,

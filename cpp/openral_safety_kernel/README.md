@@ -820,7 +820,8 @@ the unattested legacy case.
 
 **Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
 world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
-(`openarm_<side>_finger_pair`, one hull swept over the stroke) contains the grasp
+(`openarm_<side>_finger_pair`; one hull swept over the stroke when this was written, the
+leader finger + the follower's stroke bins since #349) contains the grasp
 target during a grasp, so `check_voxel_collision` stops on the target's own
 cells before any attachment can exist. The spec is
 [`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
@@ -1221,6 +1222,25 @@ Everything else keeps the primitive path unchanged: capsule-lowered robots, and 
 Entry 012's lockstep is **not engaged** — `check_attached_self_collision` still
 reads the same link boxes it always did. Carried payloads got their own staged
 path in #266, below.
+
+## Gripper stroke bins (issue #349)
+
+A link whose geometry depends on a gripper joint the kernel does not model as a
+link — the OpenArm's equality-coupled second finger, folded into `finger_pair` —
+may carry `stroke_bins`: per sub-range of the gripper joint, a hull holding the
+geometry over that range only (`StrokeBin`, `collision_stroke_bin_*`). Before
+every check, after FK, `select_stroke_bins` narrows each such box to the bins
+covering `[min(q_measured, q_checked), max(...)]` of its joint; the voxel check
+runs the staged narrow phase once per selected bin and takes the minimum, so a
+cell between OPEN fingers no longer trips while a cell the fingers occupy at any
+opening of the step still does. The box keeps its whole-stroke hull — exactly
+the pre-#349 behaviour — with no fresh measured state, a non-finite value, an
+interval outside the bins' cover, or no selection (FK resets it). Configure
+refuses unsorted, gapped, ungrouped or unprovable bins, and bins on a joint no
+link follows. Self-collision keeps the whole-stroke hull. Each stopping
+configuration's log line and span say whether it ran on bins
+(`stroke_bins_narrowed`). Design, soundness, measurements and the owed ADR /
+hazard row: [`finger-stroke-geometry.md`](../../docs/reference/finger-stroke-geometry.md).
 
 ## The same stages for a carried payload (issue #266)
 

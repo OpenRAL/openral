@@ -40,7 +40,7 @@ from openral_core import RobotDescription  # noqa: E402
 from openral_core.assets import AssetRefError, resolve_asset  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 
-from tests.unit._collision_kernel_verdict import tight_escape_m  # noqa: E402
+from tests.unit._collision_kernel_verdict import tight_escape_per_point_m  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 # Every manifest with collision geometry and an MJCF twin.
@@ -316,6 +316,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     for g in robot.collision_geometry:
         if g.tight_geometry is not None:
             refined.setdefault(g.link_name, []).append(g)
+    joint_column = {j.name: i for i, j in enumerate(robot.joints)}
     rng = np.random.default_rng(SEED)
     worst: dict[str, float] = {}
     escape: dict[str, float] = {}
@@ -347,10 +348,28 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
                 c = rot @ placed[:3, 3] + trans
                 outside = np.minimum(outside, _signed_distance((pts - c) @ prim_rot, prim))
             worst[ln] = max(worst.get(ln, -np.inf), float(outside.max()))
-            for g in refined.get(ln, []):  # a refined box: its DOP and hull hold the mesh too
-                placed = kw[link] @ _tf(np.asarray(g.origin_xyz_rpy, dtype=float))
-                local = (pts - (rot @ placed[:3, 3] + trans)) @ (rot @ placed[:3, :3])
-                escape[ln] = max(escape.get(ln, -np.inf), tight_escape_m(g, local))
+            # A refined link's DOPs and hulls hold the mesh too, as a union (a
+            # point need sit inside one piece): first on each piece's whole
+            # tight_geometry, then as the kernel's world check sees the link at
+            # this q, a stroke-binned piece's bins covering its joint value.
+            if ln in refined:
+                whole = np.full(len(pts), np.inf)
+                binned = np.full(len(pts), np.inf)
+                for g in refined[ln]:
+                    placed = kw[link] @ _tf(np.asarray(g.origin_xyz_rpy, dtype=float))
+                    local = (pts - (rot @ placed[:3, 3] + trans)) @ (rot @ placed[:3, :3])
+                    piece = tight_escape_per_point_m(g, local)
+                    whole = np.minimum(whole, piece)
+                    if not g.stroke_bins:
+                        binned = np.minimum(binned, piece)
+                        continue
+                    qj = q[joint_column[str(g.stroke_joint)]]
+                    covering = [b for b in g.stroke_bins if b.q_lo <= qj <= b.q_hi]
+                    assert covering, f"{ln}: no stroke bin covers {g.stroke_joint}={qj}"
+                    for b in covering:
+                        as_bin = g.model_copy(update={"tight_geometry": b.tight_geometry})
+                        binned = np.minimum(binned, tight_escape_per_point_m(as_bin, local))
+                escape[ln] = max(escape.get(ln, -np.inf), float(whole.max()), float(binned.max()))
     # A link that folds in an equality follower (the OpenArm's second finger) is
     # fitted to STROKE_SAMPLES of the stroke, so a pose between two samples may
     # poke out by up to SWEPT_TOLERANCE_M; every other link keeps its headroom.

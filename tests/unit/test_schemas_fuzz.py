@@ -11,6 +11,7 @@ Run with:
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import get_args
 
@@ -101,8 +102,10 @@ from openral_core.schemas import (
     SpatialNodeKind,
     SpatialRelationKind,
     SphereShape,
+    StrokeBin,
     TaskSpec,
     TickResult,
+    TightCollisionGeometry,
     VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
@@ -428,6 +431,39 @@ _link_collision_geometry_st = st.builds(
     origin_xyz_rpy=st.tuples(*([_safe_float] * 6)),
 )
 
+# A box with stroke bins: each bin a symmetric 26-DOP of reach r inside the box
+# (reach along a corner axis is r·sqrt(3) <= half when r <= half/sqrt(3)), the
+# bins contiguous over a sorted set of edges.
+_bin_reach = st.floats(min_value=0.001, max_value=0.05)
+
+
+@st.composite
+def _stroke_binned_geometry(draw: st.DrawFn) -> LinkCollisionGeometry:
+    def dop(r: float) -> TightCollisionGeometry:
+        return TightCollisionGeometry(dop_lo_m=(-r,) * 13, dop_hi_m=(r,) * 13)
+
+    edges = sorted(
+        draw(
+            st.lists(
+                st.floats(min_value=-3.0, max_value=3.0, allow_nan=False),
+                min_size=2,
+                max_size=6,
+                unique=True,
+            )
+        )
+    )
+    return LinkCollisionGeometry(
+        link_name=draw(_name),
+        shape=BoxShape(half_extents_m=(0.1, 0.1, 0.1)),
+        tight_geometry=dop(0.05),
+        stroke_joint=draw(_name),
+        stroke_bins=tuple(
+            StrokeBin(q_lo=a, q_hi=b, tight_geometry=dop(draw(_bin_reach)))
+            for a, b in itertools.pairwise(edges)
+        ),
+    )
+
+
 _occupancy_grid_ref_st = st.builds(
     OccupancyGridRef,
     frame_id=_name,
@@ -720,6 +756,15 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_stroke_binned_geometry())
+def test_fuzz_stroke_binned_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
+    """A stroke-binned LinkCollisionGeometry round-trips and validates against its schema."""
+    _round_trip_and_validate(LinkCollisionGeometry, instance)
+    for b in instance.stroke_bins:
+        _round_trip_and_validate(StrokeBin, b)
 
 
 @_FUZZ_SETTINGS

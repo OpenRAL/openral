@@ -6224,3 +6224,246 @@ TEST(RetiredGraspSet, OverflowEvictsOnlyTheOldestAndSaysSo) {
   EXPECT_EQ(retired.size(), 0U);
   EXPECT_FALSE(retired.contains(5, 7));
 }
+
+// ── Stroke bins (docs/reference/finger-stroke-geometry.md) ───────────────────
+//
+// One fixed link carries one box (x in [-0.15, 0.15]) standing for a gripper
+// finger that sweeps across it as joint column 0 goes from 0 to 1. Its
+// whole-stroke hull is the whole box; bin 0 (q in [0, 0.5], the closed half
+// of the stroke) is the whole box too, bin 1 (q in [0.5, 1], open) only the
+// slab x in [0.10, 0.15] where the finger sits when open. A cell centred at
+// x = -0.1 is "between the fingers": inside the whole-stroke hull, 0.15 m from
+// the open bin. A cell centred at x = +0.1 touches the finger in every bin.
+
+namespace {
+
+osk::LinkHull aabb_hull(const osk::Vec3& lo, const osk::Vec3& hi, std::vector<osk::Vec3>& verts) {
+  osk::LinkHull hull;
+  hull.vertex_first = static_cast<int>(verts.size());
+  hull.vertex_count = 8;
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    hull.dop_lo[i] = std::numeric_limits<double>::infinity();
+    hull.dop_hi[i] = -std::numeric_limits<double>::infinity();
+  }
+  for (int c = 0; c < 8; ++c) {
+    const osk::Vec3 v{(c & 1) != 0 ? hi.x : lo.x, (c & 2) != 0 ? hi.y : lo.y,
+                      (c & 4) != 0 ? hi.z : lo.z};
+    verts.push_back(v);
+    for (int i = 0; i < osk::kDopAxes; ++i) {
+      const double s =
+          osk::kDopAxis[i][0] * v.x + osk::kDopAxis[i][1] * v.y + osk::kDopAxis[i][2] * v.z;
+      hull.dop_lo[i] = std::min(hull.dop_lo[i], s);
+      hull.dop_hi[i] = std::max(hull.dop_hi[i], s);
+    }
+  }
+  return hull;
+}
+
+// with_bins = false: the same box and whole-stroke hull, no bins at all.
+osk::CollisionModel stroke_model(bool with_bins) {
+  osk::CollisionModel m;
+  m.n_links = 1;
+  m.parent = {-1};
+  m.joint_kind = {osk::JointKind::kFixed};
+  m.dof_index = {-1};
+  m.origin = {identity()};
+  m.axis = {{0, 0, 1}};
+  m.box_link = {0};
+  m.boxes = {osk::Obb{{0.15, 0.04, 0.04}, identity()}};
+  std::vector<osk::Vec3> verts;
+  const osk::Vec3 lo{-0.15, -0.04, -0.04};
+  const osk::Vec3 hi{0.15, 0.04, 0.04};
+  m.hulls = {aabb_hull(lo, hi, verts)};
+  m.box_hull = {0};
+  if (with_bins) {
+    m.hulls.push_back(aabb_hull(lo, hi, verts));                             // bin 0: closed
+    m.hulls.push_back(aabb_hull(osk::Vec3{0.10, -0.04, -0.04}, hi, verts));  // bin 1: open
+    m.stroke_bins = {osk::StrokeBin{0, 0, 0.0, 0.5, 1}, osk::StrokeBin{0, 0, 0.5, 1.0, 2}};
+  }
+  m.hull_vertices = verts;
+  return m;
+}
+
+osk::CollisionScratch stroke_scratch(const osk::CollisionModel& m) {
+  osk::CollisionScratch s;
+  s.link_world.resize(m.n_links);
+  s.box_bins.assign(m.boxes.size(), {-1, -1});
+  return s;
+}
+
+constexpr double kStrokeMargin = 0.01;
+
+// FK + selection + world check at gripper value `q` against reference
+// `q_ref` (nullptr = no measured state).
+osk::CollisionHit stroke_check(const osk::CollisionModel& m, osk::CollisionScratch& s,
+                               const osk::VoxelGrid& g, double q, const double* q_ref) {
+  const double qpos[1] = {q};
+  osk::forward_kinematics(m, qpos, 1, s);
+  osk::select_stroke_bins(m, qpos, q_ref, 1, s);
+  return osk::check_voxel_collision(m, s, g, kStrokeMargin);
+}
+
+}  // namespace
+
+TEST(StrokeBins, ACellBetweenTheOpenFingersTripsOnlyOnTheClosedBinOrAnUnknownGripper) {
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // centre x = -0.1
+  const auto g = make_grid(occ);
+  const double open = 0.8;
+  const double closed = 0.2;
+  EXPECT_FALSE(stroke_check(m, s, g, open, &open).hit) << "the open bin keeps the gap free";
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{1, 1}));
+  EXPECT_TRUE(stroke_check(m, s, g, closed, &closed).hit) << "closed: the cell is the finger";
+  EXPECT_TRUE(stroke_check(m, s, g, open, nullptr).hit)
+      << "no measured state: the whole-stroke hull, exactly as without bins";
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
+}
+
+TEST(StrokeBins, ACellOnTheFingerSurfaceTripsInEveryBin) {
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;  // centre x = +0.1
+  const auto g = make_grid(occ);
+  for (const double q : {0.0, 0.2, 0.5, 0.8, 1.0}) {
+    EXPECT_TRUE(stroke_check(m, s, g, q, &q).hit) << "q=" << q;
+  }
+  EXPECT_TRUE(stroke_check(m, s, g, 0.8, nullptr).hit);
+}
+
+TEST(StrokeBins, TheMeasuredToCommandedIntervalSelectsEveryBinItCrosses) {
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(1, 2, 2))] = 1;  // between the fingers
+  const auto g = make_grid(occ);
+  // Opening from 0.2 (measured) to 0.8 (commanded) passes through the closed
+  // half: the jaw is solid there for part of the step, so the step stops.
+  const double measured = 0.2;
+  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &measured).hit);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
+  // Closing the other way round is the same interval.
+  const double measured_open = 0.8;
+  EXPECT_TRUE(stroke_check(m, s, g, 0.2, &measured_open).hit);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
+  // A bin edge belongs to both bins.
+  const double edge = 0.5;
+  stroke_check(m, s, g, 0.5, &edge);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{0, 1}));
+  // Out of the bins' cover, or NaN: the whole-stroke hull.
+  const double past = 1.2;
+  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &past).hit);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(stroke_check(m, s, g, 0.8, &nan).hit);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
+}
+
+TEST(StrokeBins, ForwardKinematicsResetsASelectionSoItNeverOutlivesItsConfiguration) {
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  const double open = 0.8;
+  const double qpos[1] = {open};
+  osk::forward_kinematics(m, qpos, 1, s);
+  osk::select_stroke_bins(m, qpos, &open, 1, s);
+  ASSERT_EQ(s.box_bins[0], (std::pair<int, int>{1, 1}));
+  osk::forward_kinematics(m, qpos, 1, s);
+  EXPECT_EQ(s.box_bins[0], (std::pair<int, int>{-1, -1}));
+}
+
+TEST(StrokeBins, WithoutBinsTheCheckIsIdenticalToToday) {
+  const auto plain = stroke_model(false);
+  const auto binned = stroke_model(true);
+  auto ps = stroke_scratch(plain);
+  osk::CollisionScratch unsized;  // a caller that never sized box_bins
+  unsized.link_world.resize(binned.n_links);
+  auto bs = stroke_scratch(binned);
+  for (int cell = 0; cell < 125; ++cell) {
+    std::vector<std::uint8_t> occ(125, 0);
+    occ[static_cast<std::size_t>(cell)] = 1;
+    const auto g = make_grid(occ);
+    const double q = 0.8;
+    const auto a = stroke_check(plain, ps, g, q, &q);
+    const auto b = stroke_check(binned, bs, g, q, nullptr);
+    const auto c = stroke_check(binned, unsized, g, q, &q);
+    for (const auto& other : {b, c}) {
+      EXPECT_EQ(a.hit, other.hit) << "cell " << cell;
+      EXPECT_EQ(a.link_b, other.link_b) << "cell " << cell;
+      EXPECT_EQ(a.min_distance, other.min_distance) << "cell " << cell;
+      EXPECT_EQ(a.sweep_min_distance, other.sweep_min_distance) << "cell " << cell;
+    }
+  }
+}
+
+TEST(StrokeBins, NarrowingNeverAddsAStop) {
+  // Every cell, every interval: a bin selection may only clear what the
+  // whole-stroke hull stops, never stop what it clears (each bin hull lies
+  // inside the box, and the distance is a minimum over hulls that each hold
+  // the finger over their range).
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  for (int cell = 0; cell < 125; ++cell) {
+    std::vector<std::uint8_t> occ(125, 0);
+    occ[static_cast<std::size_t>(cell)] = 1;
+    const auto g = make_grid(occ);
+    const auto whole = stroke_check(m, s, g, 0.5, nullptr);
+    for (const double ref : {0.0, 0.3, 0.6, 1.0}) {
+      for (const double q : {0.1, 0.5, 0.9}) {
+        const auto narrowed = stroke_check(m, s, g, q, &ref);
+        EXPECT_TRUE(!narrowed.hit || whole.hit) << "cell " << cell << " q=" << q;
+      }
+    }
+  }
+}
+
+TEST(StrokeBins, ValidationRefusesBinsItCannotProve) {
+  std::size_t offending = 0;
+  EXPECT_EQ(osk::validate_tight_geometry(stroke_model(true), offending),
+            osk::TightGeometryStatus::kOk);
+  auto gapped = stroke_model(true);
+  gapped.stroke_bins[1].q_lo = 0.6;
+  EXPECT_EQ(osk::validate_tight_geometry(gapped, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto inverted = stroke_model(true);
+  inverted.stroke_bins[0].q_hi = 0.0;
+  EXPECT_EQ(osk::validate_tight_geometry(inverted, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto two_dofs = stroke_model(true);
+  two_dofs.stroke_bins[1].dof = 1;
+  EXPECT_EQ(osk::validate_tight_geometry(two_dofs, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto no_whole_hull = stroke_model(true);
+  no_whole_hull.box_hull = {-1};
+  EXPECT_EQ(osk::validate_tight_geometry(no_whole_hull, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto no_box_hull_at_all = stroke_model(true);
+  no_box_hull_at_all.box_hull.clear();
+  EXPECT_EQ(osk::validate_tight_geometry(no_box_hull_at_all, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto bad_hull = stroke_model(true);
+  bad_hull.stroke_bins[1].hull = 7;
+  EXPECT_EQ(osk::validate_tight_geometry(bad_hull, offending),
+            osk::TightGeometryStatus::kBadStrokeBins);
+  auto escapes = stroke_model(true);
+  escapes.hulls[2].dop_hi[0] = 0.2;  // past the box's 0.15
+  EXPECT_EQ(osk::validate_tight_geometry(escapes, offending),
+            osk::TightGeometryStatus::kEscapesBox);
+}
+
+TEST(NoAlloc, StrokeBinSelectionAndTheBinnedVoxelCheckAreAllocationFree) {
+  const auto m = stroke_model(true);
+  auto s = stroke_scratch(m);
+  std::vector<std::uint8_t> occ(125, 1);
+  const auto g = make_grid(occ);
+  const double ref = 0.2;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  for (int i = 0; i < 1000; ++i) {
+    const auto hit = stroke_check(m, s, g, 0.8, &ref);
+    (void)hit;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}

@@ -5384,3 +5384,205 @@ TEST_F(LifecycleKernelTest, ADetachWhileTheArmedRegionIsMomentarilyStaleStillRet
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
 }
+
+// ── Gripper stroke bins, end to end (docs/reference/finger-stroke-geometry.md)
+//
+// One gripper link (revolute about x, joint `g`) carries a box x in [-0.15,
+// 0.15] whose whole-stroke hull is the box and whose two stroke bins are the
+// box (g in [0, 0.5], closed) and the slab x in [0.10, 0.15] (g in [0.5, 1],
+// open). One occupied cell sits at x = -0.1: "between the fingers". The
+// kernel must clear it only when BOTH the measured and the commanded opening
+// lie in the open bin, and stop on the whole-stroke hull without a measured
+// state.
+
+namespace {
+
+void append_aabb_hull(double x0, double x1, double h, std::vector<double>& dop_lo,
+                      std::vector<double>& dop_hi, std::vector<std::int64_t>& first,
+                      std::vector<std::int64_t>& count, std::vector<double>& verts) {
+  first.push_back(static_cast<std::int64_t>(verts.size() / 3));
+  count.push_back(8);
+  double lo[osk::kDopAxes];
+  double hi[osk::kDopAxes];
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    lo[i] = std::numeric_limits<double>::infinity();
+    hi[i] = -std::numeric_limits<double>::infinity();
+  }
+  for (int c = 0; c < 8; ++c) {
+    const double v[3] = {(c & 1) != 0 ? x1 : x0, (c & 2) != 0 ? h : -h, (c & 4) != 0 ? h : -h};
+    verts.insert(verts.end(), {v[0], v[1], v[2]});
+    for (int i = 0; i < osk::kDopAxes; ++i) {
+      const double s =
+          osk::kDopAxis[i][0] * v[0] + osk::kDopAxis[i][1] * v[1] + osk::kDopAxis[i][2] * v[2];
+      lo[i] = std::min(lo[i], s);
+      hi[i] = std::max(hi[i], s);
+    }
+  }
+  dop_lo.insert(dop_lo.end(), lo, lo + osk::kDopAxes);
+  dop_hi.insert(dop_hi.end(), hi, hi + osk::kDopAxes);
+}
+
+std::vector<rclcpp::Parameter> stroke_bin_kernel_params() {
+  std::vector<double> dop_lo;
+  std::vector<double> dop_hi;
+  std::vector<std::int64_t> first;
+  std::vector<std::int64_t> count;
+  std::vector<double> verts;
+  append_aabb_hull(-0.15, 0.15, 0.04, dop_lo, dop_hi, first, count, verts);  // whole stroke
+  append_aabb_hull(-0.15, 0.15, 0.04, dop_lo, dop_hi, first, count, verts);  // bin 0, closed
+  append_aabb_hull(0.10, 0.15, 0.04, dop_lo, dop_hi, first, count, verts);   // bin 1, open
+  return {
+      {"n_dof", std::int64_t{1}},
+      {"joint_position_min", std::vector<double>{-0.1}},
+      {"joint_position_max", std::vector<double>{1.1}},
+      {"joint_velocity_max", std::vector<double>{50.0}},
+      {"joint_torque_max", std::vector<double>{5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{4096}},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{0, 1}},  // fixed root, revolute
+      {"collision_dof_index", std::vector<std::int64_t>{-1, 0}},
+      {"collision_origin_xyzrpy", std::vector<double>(12, 0.0)},
+      {"collision_axis", std::vector<double>{0, 0, 1, 1, 0, 0}},
+      {"collision_box_link", std::vector<std::int64_t>{1}},
+      {"collision_box_half_extents", std::vector<double>{0.15, 0.04, 0.04}},
+      {"collision_box_origin_xyzrpy", std::vector<double>(6, 0.0)},
+      {"collision_box_hull", std::vector<std::int64_t>{0}},
+      {"collision_hull_dop_lo", dop_lo},
+      {"collision_hull_dop_hi", dop_hi},
+      {"collision_hull_vertex_first", first},
+      {"collision_hull_vertex_count", count},
+      {"collision_hull_vertices", verts},
+      {"collision_stroke_bin_box", std::vector<std::int64_t>{0, 0}},
+      {"collision_stroke_bin_dof", std::vector<std::int64_t>{0, 0}},
+      {"collision_stroke_bin_q_lo", std::vector<double>{0.0, 0.5}},
+      {"collision_stroke_bin_q_hi", std::vector<double>{0.5, 1.0}},
+      {"collision_stroke_bin_hull", std::vector<std::int64_t>{1, 2}},
+      {"collision_link_names", std::vector<std::string>{"hand", "finger_pair"}},
+      {"collision_joint_names", std::vector<std::string>{"g"}},
+      {"collision_state_deadline_ms", 2000.0},
+  };
+}
+
+struct StrokeRun {
+  bool latched{false};
+  int passed{0};
+};
+
+// One fresh kernel; `measured` < 0 publishes no /joint_states at all.
+StrokeRun run_stroke_bin_chunk(const std::string& name, double measured, double commanded) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(stroke_bin_kernel_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  EXPECT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper(name + "_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  StrokeRun out;
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&out](const openral_msgs::msg::ActionChunk::SharedPtr) { ++out.passed; });
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.resolution = 0.1;
+  vox.size_x = 1;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = -0.15;  // the cell centred at x = -0.1: between the fingers
+  vox.origin.y = -0.05;
+  vox.origin.z = -0.05;
+  vox.occupancy.assign(1, 1);
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"g"};
+  js.position = {measured};
+
+  openral_msgs::msg::ActionChunk pos;
+  pos.control_mode = 0;  // JOINT_POSITION: the row is the configuration
+  pos.horizon = 1;
+  pos.n_dof = 1;
+  pos.flat = {commanded};
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!node->fault_latched() && out.passed < 3 && std::chrono::steady_clock::now() < deadline) {
+    if (measured >= 0.0) {
+      js_pub->publish(js);
+    }
+    vox.source_stamp = helper.now();
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(pos);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  out.latched = node->fault_latched();
+  // Drain this node's spans before it goes away (`on_cleanup` runs
+  // `shutdown_tracing()`): a dropped node's BatchSpanProcessor otherwise races
+  // the process teardown against a collector that is not there.
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+  return out;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, StrokeBinsClearTheGapOnlyWhenTheWholeStepStaysOpen) {
+  const auto open = run_stroke_bin_chunk("kernel_stroke_open", 0.8, 0.8);
+  EXPECT_FALSE(open.latched) << "measured and commanded both open: the open bin clears the cell";
+  EXPECT_GT(open.passed, 0);
+  const auto opening = run_stroke_bin_chunk("kernel_stroke_opening", 0.2, 0.8);
+  EXPECT_TRUE(opening.latched)
+      << "opening from 0.2 to 0.8 passes through the closed bin, where the cell is the finger";
+  const auto unknown = run_stroke_bin_chunk("kernel_stroke_unknown", -1.0, 0.8);
+  EXPECT_TRUE(unknown.latched) << "no measured state: the whole-stroke hull, as before bins";
+}
+
+TEST_F(LifecycleKernelTest, AStrokeBinOnAJointNoLinkFollowsFailsConfigure) {
+  auto params = stroke_bin_kernel_params();
+  for (auto& p : params) {
+    if (p.get_name() == "collision_stroke_bin_dof") {
+      p = rclcpp::Parameter("collision_stroke_bin_dof", std::vector<std::int64_t>{1, 1});
+    }
+  }
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_stroke_bad_dof", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
+}
+
+TEST_F(LifecycleKernelTest, MisShapedStrokeBinArraysFailConfigure) {
+  auto params = stroke_bin_kernel_params();
+  for (auto& p : params) {
+    if (p.get_name() == "collision_stroke_bin_q_hi") {
+      p = rclcpp::Parameter("collision_stroke_bin_q_hi", std::vector<double>{0.5});
+    }
+  }
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_stroke_bad_shape", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
+}

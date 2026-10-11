@@ -326,6 +326,17 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::int64_t>>("collision_hull_vertex_count",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<double>>("collision_hull_vertices", std::vector<double>{});
+  // Stroke bins (`LinkCollisionGeometry.stroke_bins`): one row per bin, grouped
+  // by box. Each names a box, the joint column it is indexed by, its [q_lo,
+  // q_hi] and its hull in the `collision_hull_*` arrays. Empty = none.
+  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_box",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_dof",
+                                                     std::vector<std::int64_t>{});
+  this->declare_parameter<std::vector<double>>("collision_stroke_bin_q_lo", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("collision_stroke_bin_q_hi", std::vector<double>{});
+  this->declare_parameter<std::vector<std::int64_t>>("collision_stroke_bin_hull",
+                                                     std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
@@ -591,6 +602,15 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                   "the rest keep box_box_distance",
                   staged, collision_model_.box_hull.size(), exact, kMaxTightHullVertices);
     }
+  }
+
+  if (!collision_model_.stroke_bins.empty()) {
+    RCLCPP_INFO(this->get_logger(),
+                "world-voxel stroke bins: %zu bins narrow the gripper geometry to the "
+                "interval [measured, checked] of its joint; whole-stroke hull when the "
+                "measured state is stale or the interval leaves the bins' cover; "
+                "self-collision keeps the whole-stroke hull",
+                collision_model_.stroke_bins.size());
   }
 
   // Set up the measured joint-state seed used to reconstruct
@@ -1109,6 +1129,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // (depends on the kernel's own DLS Jacobian, lambda, dt) — the
       // drawer-opening stop that opened this issue was adjudicated against
       // the *measured* joints, where the two named links sit 53 mm apart.
+      // Disclosure for the evidence: whether the configuration being checked
+      // ran any gripper on stroke bins rather than its whole-stroke hull
+      // (`select_stroke_bins`). Set by check_config, read by report.
+      bool stroke_narrowed = false;
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         ++chunks_dropped_;
@@ -1159,14 +1183,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s",
+                     "grasp_target=%s stroke_bins_narrowed=%d",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
                      static_cast<int>(hit.depth_is_box_bound),
                      static_cast<int>(voxel_grid_.grasp_region.valid),
-                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "");
+                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
+                     static_cast<int>(stroke_narrowed));
+        span->SetAttribute("safety.stroke_bins_narrowed", stroke_narrowed);
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1275,8 +1301,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           collision_min_slack_m = slack;
         }
       };
+      // Gripper stroke bins span [measured, checked] per gripper, so they need a
+      // trustworthy measured state; without one every gripper keeps its
+      // whole-stroke hull (select_stroke_bins with a null reference).
+      const double* const stroke_ref =
+          !collision_model_.stroke_bins.empty() && measured_state_fresh() ? q_meas_.data()
+                                                                          : nullptr;
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0) -> bool {
         fk_config(q);
+        select_stroke_bins(collision_model_, q_fk_.data(), stroke_ref, robot_ndof,
+                           collision_scratch_);
+        stroke_narrowed =
+            std::any_of(collision_scratch_.box_bins.begin(), collision_scratch_.box_bins.end(),
+                        [](const std::pair<int, int>& r) { return r.first >= 0; });
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,
                                                 self_collision_margin_m_ + extra_margin);
@@ -1931,6 +1968,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_model_ = CollisionModel{};
   collision_link_names_.clear();
   collision_scratch_.link_world.clear();
+  collision_scratch_.box_bins.clear();
   collision_required_dof_ = 0;
   self_collision_enabled_ = this->get_parameter("self_collision_enabled").as_bool();
 
@@ -2118,6 +2156,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   const auto hull_verts = this->get_parameter("collision_hull_vertices").as_double_array();
   const auto pairs = this->get_parameter("collision_allowed_pairs").as_integer_array();
   const auto names = this->get_parameter("collision_link_names").as_string_array();
+  const auto bin_box = this->get_parameter("collision_stroke_bin_box").as_integer_array();
+  const auto bin_dof = this->get_parameter("collision_stroke_bin_dof").as_integer_array();
+  const auto bin_lo = this->get_parameter("collision_stroke_bin_q_lo").as_double_array();
+  const auto bin_hi = this->get_parameter("collision_stroke_bin_q_hi").as_double_array();
+  const auto bin_hull = this->get_parameter("collision_stroke_bin_hull").as_integer_array();
 
   // Per-link arrays are sized to n_links; capsule/box arrays are sized to the
   // (independent) primitive count — a link may carry zero, one, or several.
@@ -2145,6 +2188,12 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     }
   } else if (n_hulls != 0 || !hull_lo.empty() || !hull_hi.empty() || !hull_verts.empty()) {
     error = "collision_hull_* supplied without collision_box_hull";
+    return false;
+  }
+  const std::size_t n_bins = bin_box.size();
+  if (bin_dof.size() != n_bins || bin_lo.size() != n_bins || bin_hi.size() != n_bins ||
+      bin_hull.size() != n_bins) {
+    error = "collision_stroke_bin_* array shapes disagree";
     return false;
   }
 
@@ -2221,6 +2270,16 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       }
       m.box_hull[b] = static_cast<int>(h);
     }
+    m.stroke_bins.resize(n_bins);
+    for (std::size_t k = 0; k < n_bins; ++k) {
+      // Range-checked by validate_tight_geometry below; a value past int's
+      // range lands as -1, which it refuses too.
+      const auto narrow = [](std::int64_t v) {
+        return v < 0 || v > std::numeric_limits<int>::max() ? -1 : static_cast<int>(v);
+      };
+      m.stroke_bins[k] = StrokeBin{narrow(bin_box[k]), narrow(bin_dof[k]), bin_lo[k], bin_hi[k],
+                                   narrow(bin_hull[k])};
+    }
     // The containment proof, enforced at load and never assumed: every declared
     // representation must sit inside the OBB whose broad-phase window it will be
     // checked in. Fail-closed -- a model that cannot prove it does not configure.
@@ -2237,9 +2296,25 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     m.allowed_pairs.emplace_back(static_cast<int>(pairs[k]), static_cast<int>(pairs[k + 1]));
   }
 
+  if (box_hull.empty() && n_bins != 0) {
+    error = "collision_stroke_bin_* supplied without collision_box_hull";
+    return false;
+  }
+  // A bin's joint must be one FK reads: measured_state_fresh() vouches only for
+  // those dofs, and the [measured, checked] interval is built from it.
+  for (const StrokeBin& bin : m.stroke_bins) {
+    if (std::find(m.dof_index.begin(), m.dof_index.end(), bin.dof) == m.dof_index.end()) {
+      error = "collision_stroke_bin_dof names a joint no collision link is driven by";
+      return false;
+    }
+  }
+
   collision_model_ = std::move(m);
   collision_link_names_.assign(names.begin(), names.end());
   collision_scratch_.link_world.resize(n_links);
+  // Sized only when there is something to narrow: an empty box_bins is the
+  // "every box on its whole hull" state, exactly as before stroke bins.
+  collision_scratch_.box_bins.assign(n_bins == 0 ? 0 : n_boxes, {-1, -1});
   return true;
 }
 

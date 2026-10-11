@@ -44,6 +44,7 @@ from openral_core import (
     SphereShape,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import TightCollisionGeometry
 
 __all__ = [
     "EnvelopeIntersection",
@@ -794,7 +795,11 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
     these drive the kernel's staged arm-link-vs-world-voxel narrow phase; box
     arrays are still emitted unchanged since the box remains the broad-phase
-    bound. A manifest declaring none lowers exactly as before.
+    bound. A manifest declaring none lowers exactly as before. A box carrying
+    ``stroke_bins`` also lowers each bin's hull into the same arrays and one
+    ``collision_stroke_bin_*`` row per bin (box, joint column, ``q_lo``,
+    ``q_hi``, hull index), which the kernel's world-voxel check selects from by
+    the gripper's interval (``docs/reference/finger-stroke-geometry.md``).
 
     Args:
         robot: The robot manifest. No collision geometry → returns
@@ -866,6 +871,26 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     hull_vertex_first: list[int] = []
     hull_vertex_count: list[int] = []
     hull_vertices: list[float] = []
+    # Stroke bins (``LinkCollisionGeometry.stroke_bins``), one entry per bin,
+    # grouped by box in ascending box order and sorted within a box. Each bin's
+    # hull is appended to the same CSR hull arrays; the box's own ``box_hull``
+    # entry stays the whole-stroke hull the kernel falls back to.
+    stroke_box: list[int] = []
+    stroke_dof: list[int] = []
+    stroke_q_lo: list[float] = []
+    stroke_q_hi: list[float] = []
+    stroke_hull: list[int] = []
+    joint_column = {j.name: i for i, j in enumerate(robot.joints)}
+
+    def add_hull(tight: TightCollisionGeometry) -> int:
+        hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
+        hull_dop_hi.extend(float(v) for v in tight.dop_hi_m)
+        hull_vertex_first.append(len(hull_vertices) // 3)
+        hull_vertex_count.append(len(tight.hull_vertices_m))
+        for vertex in tight.hull_vertices_m:
+            hull_vertices.extend(float(c) for c in vertex)
+        return len(hull_vertex_count) - 1
+
     for name in ordered:
         for geom in primitives_of.get(name, []):
             shape = geom.shape
@@ -877,13 +902,13 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
                 if tight is None:
                     box_hull.append(-1)
                 else:
-                    box_hull.append(len(hull_vertex_count))
-                    hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
-                    hull_dop_hi.extend(float(v) for v in tight.dop_hi_m)
-                    hull_vertex_first.append(len(hull_vertices) // 3)
-                    hull_vertex_count.append(len(tight.hull_vertices_m))
-                    for vertex in tight.hull_vertices_m:
-                        hull_vertices.extend(float(c) for c in vertex)
+                    box_hull.append(add_hull(tight))
+                for stroke_bin in geom.stroke_bins:
+                    stroke_box.append(len(box_link) - 1)
+                    stroke_dof.append(joint_column[str(geom.stroke_joint)])
+                    stroke_q_lo.append(float(stroke_bin.q_lo))
+                    stroke_q_hi.append(float(stroke_bin.q_hi))
+                    stroke_hull.append(add_hull(stroke_bin.tight_geometry))
             elif isinstance(shape, CapsuleShape | SphereShape):
                 # A sphere is a zero-length capsule; both share `radius_m`.
                 half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
@@ -953,6 +978,12 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         params["collision_hull_vertex_count"] = hull_vertex_count
         if hull_vertices:
             params["collision_hull_vertices"] = hull_vertices
+    if stroke_box:
+        params["collision_stroke_bin_box"] = stroke_box
+        params["collision_stroke_bin_dof"] = stroke_dof
+        params["collision_stroke_bin_q_lo"] = stroke_q_lo
+        params["collision_stroke_bin_q_hi"] = stroke_q_hi
+        params["collision_stroke_bin_hull"] = stroke_hull
     if allowed_pairs:
         params["collision_allowed_pairs"] = allowed_pairs
     return params
