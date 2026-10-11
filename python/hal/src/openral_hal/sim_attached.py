@@ -864,26 +864,30 @@ class SimAttachedHAL:
 
         Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
         descendant body is masked too, so multipart payloads cannot leak into
-        depth/OctoMap through child geoms.
+        depth/OctoMap through child geoms. A backend without MuJoCo handles (Isaac)
+        records the set and masks nothing: the octomap bridge clears the payload by
+        its pose, as on real hardware.
 
         Args:
             objects: Complete current attachment set.
 
         Raises:
-            ROSConfigError: On duplicate ids, non-MuJoCo backends, malformed
-                evidence refs, or unknown body names. The previous snapshot is
-                preserved on failure.
+            ROSConfigError: On duplicate ids, malformed MuJoCo evidence refs, or
+                unknown body names. The previous snapshot is preserved on failure.
         """
         by_id = {obj.object_id: obj for obj in objects}
         if len(by_id) != len(objects):
             raise ROSConfigError("Attached collision object ids must be unique.")
         handles = self._mujoco_handles()
         if handles is None:
-            if objects:
-                raise ROSConfigError(
-                    "SimAttachedHAL attachment body masking requires MuJoCo handles."
-                )
-            self._attached_objects = {}
+            # No MuJoCo model to mask payload bodies in (Isaac and other sidecar
+            # backends): the attachment is recorded and nothing is masked, so the
+            # payload stays in the simulated depth exactly as it stays in a real
+            # camera's, and the octomap bridge clears its cells from every grid by its
+            # pose (``clear_attached_payload_cells``) — the real-hardware path. If that
+            # clearing failed, the payload's cells would stay occupied and the kernel
+            # would stop on them: never looser than masking.
+            self._attached_objects = by_id
             self._attached_body_ids = frozenset()
             return
 
