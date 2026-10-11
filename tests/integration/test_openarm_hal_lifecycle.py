@@ -336,7 +336,11 @@ def test_estop_latch_blocks_subsequent_safe_action(
             executor.spin_once(timeout_sec=0.02)
 
         estop_pub.publish(Empty())
-        _spin_for(executor, 0.2)
+        # Wait on the latch, not a fixed spin: the camera/depth timers share this
+        # single-threaded executor, and a CPU-rendered tick (no GPU) outlasts 0.2 s.
+        latch_deadline = time.monotonic() + 2.0
+        while not node._estopped and time.monotonic() < latch_deadline:
+            executor.spin_once(timeout_sec=0.02)
         assert node._estopped is True, "estop latch did not engage"
 
         baseline = list(observed["joint_states"][-1].position)
