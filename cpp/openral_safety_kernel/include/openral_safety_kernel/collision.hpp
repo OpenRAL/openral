@@ -1487,6 +1487,13 @@ GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& hal
 /// `link_displacement_bound` to bound how far any point of the link moves.
 double link_geometry_reach(const CollisionModel& model, int link) noexcept;
 
+/// Radius (m) about the attach link's frame origin that bounds every point of
+/// payload `object` (per primitive: |its origin in the link frame| + its bounding
+/// radius — box |half_extents|, capsule half_length + radius, sphere radius). The
+/// manipulation-workspace speed and lead bounds (#349) use it for a payload's
+/// attach link, so a carried box's far corners count, not just the hand's.
+double attached_object_reach(const AttachedModel& attached, const AttachedObject& object) noexcept;
+
 /// Upper bound (m) on how far ANY point within `reach` of a link's frame origin
 /// moves between link poses `from` and `to`: |Δt| + θ·reach, θ the rotation
 /// angle of `from.r`ᵀ·`to.r` (a point p moves |Δt + (R₁−R₀)p| ≤ |Δt| +

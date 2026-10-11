@@ -1479,6 +1479,49 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           collision_min_slack_m = slack;
         }
       };
+      // #349 disclosure of tolerated workspace pairs, never silent: count, tally,
+      // WARN <= 1 Hz per link. `who` prefixes the link: "" for a hand link,
+      // "payload@" for a payload carried by it.
+      const auto disclose_workspace = [&](const CollisionHit& hit, int step, const char* who) {
+        if (hit.workspace_pairs <= 0) {
+          return;
+        }
+        const double speed = voxel_grid_.workspace_region.hand_speed_mps;
+        const double lead = voxel_grid_.workspace_region.hand_lead_m;
+        workspace_chunk_pairs += static_cast<std::uint64_t>(hit.workspace_pairs);
+        workspace_chunk_min = std::min(workspace_chunk_min, hit.workspace_min_distance);
+        workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
+        workspace_min_distance_total_ =
+            std::min(workspace_min_distance_total_, hit.workspace_min_distance);
+        if (speed > workspace_speed_max_seen_) {
+          workspace_speed_max_seen_ = speed;
+          workspace_speed_max_measured_ = workspace_speed_measured_;
+        }
+        workspace_lead_max_seen_ = std::max(workspace_lead_max_seen_, lead);
+        const auto l = static_cast<std::size_t>(hit.workspace_link);
+        const auto wall = std::chrono::steady_clock::now();
+        if (l < workspace_last_warn_.size() &&
+            wall - workspace_last_warn_[l] >= std::chrono::seconds(1)) {
+          workspace_last_warn_[l] = wall;
+          RCLCPP_WARN(this->get_logger(),
+                      "safety.workspace_contact link=%s%s cell=%d depth_mm=%.1f "
+                      "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f max_lead_m=%g "
+                      "pairs=%d step=%d target=%s",
+                      who, link_name(hit.workspace_link).c_str(), hit.workspace_cell,
+                      std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
+                      workspace_speed_measured_ ? "measured" : "commanded",
+                      workspace_max_speed_mps_, lead, workspace_max_lead_m_, hit.workspace_pairs,
+                      step, workspace_target_.c_str());
+        }
+        span->SetAttribute("safety.workspace_contact_pairs",
+                           static_cast<int64_t>(workspace_chunk_pairs));
+        span->SetAttribute("safety.workspace_contact_max_depth_m",
+                           std::max(0.0, -workspace_chunk_min));
+        span->SetAttribute("safety.workspace_hand_speed_mps", speed);
+        span->SetAttribute("safety.workspace_hand_speed_source",
+                           workspace_speed_measured_ ? "measured" : "commanded");
+        span->SetAttribute("safety.workspace_hand_lead_m", lead);
+      };
       // `workspace_prev`: the hand links' poses at the previous row of the same
       // construction (for row 0, the previously accepted command where fresh,
       // else the measured state); nullptr = speed and lead unknown.
@@ -1536,44 +1579,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
-          if (hit.workspace_pairs > 0) {
-            // #349 disclosure, never silent: count, tally, WARN <= 1 Hz per link.
-            const double speed = voxel_grid_.workspace_region.hand_speed_mps;
-            const double lead = voxel_grid_.workspace_region.hand_lead_m;
-            workspace_chunk_pairs += static_cast<std::uint64_t>(hit.workspace_pairs);
-            workspace_chunk_min = std::min(workspace_chunk_min, hit.workspace_min_distance);
-            workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
-            workspace_min_distance_total_ =
-                std::min(workspace_min_distance_total_, hit.workspace_min_distance);
-            if (speed > workspace_speed_max_seen_) {
-              workspace_speed_max_seen_ = speed;
-              workspace_speed_max_measured_ = workspace_speed_measured_;
-            }
-            workspace_lead_max_seen_ = std::max(workspace_lead_max_seen_, lead);
-            const auto l = static_cast<std::size_t>(hit.workspace_link);
-            const auto wall = std::chrono::steady_clock::now();
-            if (l < workspace_last_warn_.size() &&
-                wall - workspace_last_warn_[l] >= std::chrono::seconds(1)) {
-              workspace_last_warn_[l] = wall;
-              RCLCPP_WARN(this->get_logger(),
-                          "safety.workspace_contact link=%s cell=%d depth_mm=%.1f "
-                          "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f max_lead_m=%g "
-                          "pairs=%d step=%d target=%s",
-                          link_name(hit.workspace_link).c_str(), hit.workspace_cell,
-                          std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
-                          workspace_speed_measured_ ? "measured" : "commanded",
-                          workspace_max_speed_mps_, lead, workspace_max_lead_m_,
-                          hit.workspace_pairs, step, workspace_target_.c_str());
-            }
-            span->SetAttribute("safety.workspace_contact_pairs",
-                               static_cast<int64_t>(workspace_chunk_pairs));
-            span->SetAttribute("safety.workspace_contact_max_depth_m",
-                               std::max(0.0, -workspace_chunk_min));
-            span->SetAttribute("safety.workspace_hand_speed_mps", speed);
-            span->SetAttribute("safety.workspace_hand_speed_source",
-                               workspace_speed_measured_ ? "measured" : "commanded");
-            span->SetAttribute("safety.workspace_hand_lead_m", lead);
-          }
+          disclose_workspace(hit, step, "");
           if (hit.hit) {
             report("world", link_name(hit.link_a),
                    std::string("voxel_") + std::to_string(hit.link_b), step, hit);
@@ -1599,6 +1605,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                             collision_scratch_, voxel_grid_,
                                                             amargin, collision_scale_proximity_m_);
             note_slack(hit, amargin);
+            disclose_workspace(hit, step, "payload@");
             if (hit.hit) {
               // ADR-0098: when declared target geometry adjudicated the pair,
               // hit.min_distance is the distance to that BODY, not the cell
@@ -3766,11 +3773,24 @@ double SafetyKernelLifecycleNode::workspace_hand_speed(std::vector<Transform>& p
   for (const int l : workspace_link_index_) {
     const auto i = static_cast<std::size_t>(l);
     const Transform& now = collision_scratch_.link_world[i];
-    moved = std::max(moved, link_displacement_bound(prev[i], now, workspace_link_reach_[i]));
+    moved = std::max(moved, link_displacement_bound(prev[i], now, workspace_reach(i)));
     prev[i] = now;
   }
   const double speed = moved / workspace_control_period_s_;
   return std::isfinite(speed) ? speed : std::numeric_limits<double>::infinity();
+}
+
+double SafetyKernelLifecycleNode::workspace_reach(std::size_t link) const noexcept {
+  double reach = workspace_link_reach_[link];
+  if (attached_collision_enabled_) {
+    for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
+      const AttachedObject& obj = attached_model_.objects[i];
+      if (obj.attach_link == static_cast<int>(link)) {
+        reach = std::max(reach, attached_object_reach(attached_model_, obj));
+      }
+    }
+  }
+  return reach;
 }
 
 double SafetyKernelLifecycleNode::workspace_hand_lead() const noexcept {

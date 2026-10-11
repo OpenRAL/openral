@@ -6638,3 +6638,50 @@ TEST(WorkspaceContact, TheDisplacementBoundCoversEveryPointOfTheLink) {
   EXPECT_NEAR(osk::link_geometry_reach(m, kGraspCapFinger), cap, 1e-12);
   EXPECT_EQ(osk::link_geometry_reach(m, 0), 0.0) << "no geometry, nothing to move";
 }
+
+// A payload carried by a hand link is part of that hand (#349 place phase): the
+// same workspace predicate on its attach link. Fixture as in AttachedVoxelCollision.
+TEST(WorkspaceContact, ASlowHandsPayloadInsideTheWorkspaceDoesNotTrip) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  const auto today = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(today.hit);
+
+  const auto ws = [](std::initializer_list<int> links, const osk::Transform& at, double speed) {
+    osk::WorkspaceContactRegion r;
+    EXPECT_EQ(osk::ingest_workspace_region(at, osk::Vec3{0.2, 0.2, 0.2}, grasp_mask(links),
+                                           kWsMaxSpeed, kWsMaxLead, r),
+              osk::GraspRegionStatus::kOk);
+    r.hand_speed_mps = speed;
+    r.hand_lead_m = 0.0;
+    return r;
+  };
+  grid.workspace_region = ws({1}, identity(), 0.5 * kWsMaxSpeed);
+  const auto slow = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_GE(slow.workspace_pairs, 1) << "never silent";
+  EXPECT_EQ(slow.workspace_link, 1) << "disclosed on the attach link";
+
+  grid.workspace_region = ws({1}, identity(), 2.0 * kWsMaxSpeed);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit) << "fast hand";
+  grid.workspace_region = ws({2}, identity(), 0.0);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "carried by a link that is not a hand link";
+  grid.workspace_region = ws({1}, translate(1.0, 0.0, 0.0), 0.0);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "cell outside the workspace";
+}
+
+TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
+  osk::AttachedModel att;
+  append_object(att, 1, translate(0.05, 0.0, 0.0),
+                {sphere_prim(0.1), box_prim(0.03, 0.04, 0.0, translate(0.0, 0.2, 0.0))});
+  // Sphere: 0.05 + 0.1; box: |(0.05, 0.2, 0)| + 0.05.
+  EXPECT_NEAR(osk::attached_object_reach(att, att.objects[0]), std::hypot(0.05, 0.2) + 0.05, 1e-12);
+}

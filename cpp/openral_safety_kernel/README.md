@@ -1064,7 +1064,12 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
    was the jaw still closing on a held box).
 
 `link_displacement_bound` = |Δorigin| + θ·reach bounds the displacement of every point of the
-link's collision geometry (`link_geometry_reach`), rotation included.
+link's collision geometry (`link_geometry_reach`), rotation included; for a hand link carrying a
+payload the SPEED bound's reach is the larger of that and the payload's (`attached_object_reach`); the
+lead keeps the hand's own reach (push is set by the joint error). A carried
+payload's cells inside the workspace are exempt by the same predicate on its attach link (after the
+support-witness and attach-residue exemptions; WARN `link=payload@<link>`); its self-collision
+check against the robot is unchanged.
 
 **Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
 `timeout_s`, future stamp, retired identity — e.g. `handover_exit` or `released`); no

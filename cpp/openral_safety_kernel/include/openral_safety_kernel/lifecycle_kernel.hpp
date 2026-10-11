@@ -241,6 +241,12 @@ private:
   // links of `link_displacement_bound`, NOT divided by the period. On a
   // joint-PD arm commanded-minus-measured is what the drives push with.
   double workspace_hand_lead() const noexcept;
+  /// Hand link `link`'s reach for the SPEED bound: its geometry reach, or a payload
+  /// it carries (`attached_object_reach`) when that reaches further — a carried
+  /// box's corners strike at their own speed. The lead (push) keeps the hand's own
+  /// reach: the drives' push is set by the joint error, which a longer lever only
+  /// magnifies on paper (#349 p3_mix02: 95.6 mm with the payload's reach).
+  double workspace_reach(std::size_t link) const noexcept;
   // Forget every previously accepted command (row 0 falls back to measured).
   void clear_workspace_commands() noexcept;
   // Is joint `d`'s previously accepted command still row 0's previous row at

@@ -256,8 +256,24 @@ and the freshness window.
   walls occupied within one voxel" test sketched in §3 — simpler, and still "declared, then
   measured"; the wall test remains an option for the WG.
 
-**Not implemented (phase 2+):** the place phase (`PlaceDeclaration.workspace_box`, the shelf slot,
-the place producer), velocity / Cartesian control modes, the force/current contact layer.
+**Phase 2 (carried payload, sim):** a payload attached to a hand link is part of that hand. In
+`check_attached_voxel_collision`, after the support-witness and attach-residue exemptions, a payload
+cell is exempt by the same predicate on the payload's attach link (`workspace_contact_exempts`),
+disclosed as `safety.workspace_contact link=payload@<attach link>`. The SPEED bound uses the
+payload's reach for its attach link (`attached_object_reach`: the farthest primitive point from the
+link origin), so a carried box's far corners count, not just the hand's. The lead keeps the hand's
+own reach: it stands for the drives' push, set by the joint error, which a longer lever only
+magnifies on paper (p3_mix02 read 95.6 mm with the payload's reach and stopped on it).
+Why: p2_mix02 carried
+the box to the shelf and stopped on the middle deck (payload vs a deck cell, −36 mm of a crude
+box), while the place leg refused a region (62/323 footprint cells occupied — a box sliding onto a
+shelf edge never has its whole footprint supported). The scene's `workspace_box` covers the source
+tote and the prompt's target slot (one box — the hull of both; neighbouring slots inside the hull
+are in it too, two boxes are the follow-up). Arm links still always stop; a payload against the
+robot itself (`check_attached_self_collision`) is unchanged.
+
+**Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
+Cartesian control modes, the force/current contact layer.
 
 ## 7. ADR draft — "Declaration-scoped manipulation-workspace contact for hand links"
 

@@ -1335,6 +1335,24 @@ double link_geometry_reach(const CollisionModel& model, int link) noexcept {
   return reach;
 }
 
+double attached_object_reach(const AttachedModel& attached, const AttachedObject& object) noexcept {
+  double reach = 0.0;
+  for (int p = 0; p < object.prim_count; ++p) {
+    const auto k = static_cast<std::size_t>(object.prim_first + p);
+    if (k >= attached.primitives.size()) {
+      return std::numeric_limits<double>::infinity();  // a malformed model reads unbounded
+    }
+    const AttachedPrimitive& prim = attached.primitives[k];
+    const Vec3 o = compose(object.pose_in_link, prim.pose_in_object).t;
+    const Vec3& h = prim.half_extents;
+    const double bound = prim.kind == AttachedShapeKind::kBox
+                             ? std::sqrt(h.x * h.x + h.y * h.y + h.z * h.z)
+                             : prim.half_length + prim.radius;
+    reach = std::max(reach, std::sqrt(o.x * o.x + o.y * o.y + o.z * o.z) + bound);
+  }
+  return std::isfinite(reach) ? reach : std::numeric_limits<double>::infinity();
+}
+
 double link_displacement_bound(const Transform& from, const Transform& to, double reach) noexcept {
   const double dx = to.t.x - from.t.x;
   const double dy = to.t.y - from.t.y;
@@ -2066,6 +2084,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // inside the payload when the baseline was snapshotted, so it
                 // is the payload's own uncleared occupancy, not an obstacle.
                 tripped = false;
+              } else if (workspace_contact_exempts(grid, obj.attach_link, center)) {
+                // Manipulation workspace (#349, draft): a payload carried by a
+                // hand link is part of that hand — inside the confirmed
+                // workspace, while the hand (its speed and lead bounded with
+                // the payload's reach, `attached_object_reach`) is slow, it may
+                // touch. Same predicate as the hand links', on its attach link.
+                tripped = false;
+                note_workspace_pair(result, d, obj.attach_link, static_cast<int>(idx));
               }
             }
             // Advisory band (#176). A payload ARRIVED in its own declared
