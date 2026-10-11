@@ -1245,6 +1245,39 @@ def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it(
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
 
 
+def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> None:
+    """#349 p6_mix00 / p5_mix02: the stall settles late, so the ATTACH fired with the jaw
+    5-8 cm above the pre-grasp region ("jaw not at the region") and the grasp fell back
+    to a crude box. The object has been rigid in the jaw since the close: the region's
+    pose in the attach link at the last closing tick the jaw was at it is the payload's.
+    No snapshot (never at the region during the close) still segments."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_jaw_lifted_before_attach") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        live.place("right", _I41_JAW)
+        reference = bridge._region_payload(right, stamp_ns=now_ns)
+        assert reference is not None
+        right.region_spent = None
+
+        right.close_baseline = (0, 0)  # a close is in progress, nothing attached
+        bridge._note_close_region(right)
+        assert right.close_region is not None
+        lifted = (_I41_JAW[0], _I41_JAW[1], _I41_JAW[2] + 0.08)
+        live.place("right", lifted)
+        assert not bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)[0]
+        taken = bridge._region_payload(right, stamp_ns=now_ns)
+        assert taken is not None
+        assert np.allclose(taken[0].pose_in_link.xyz, reference[0].pose_in_link.xyz, atol=1e-6)
+
+        right.region_spent = None
+        right.close_baseline = None
+        bridge._note_close_region(right)  # outside a close: forgotten
+        assert right.close_region is None
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);

@@ -247,6 +247,12 @@ class _GripperLeg:
             (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
         regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
             kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
+        close_region: ``((target_id, region stamp_ns), t_link_from_region)`` at the last
+            tick of the current close the jaw was at the live grasp-target region
+            (``_note_close_region``); ``None`` outside a close or if it never was. The
+            ATTACH can fire after the lift began (the stall settles late), with the jaw
+            already off the pre-grasp region; the object has been rigid in the jaw since
+            the close, so its pose in the attach link is the one recorded here.
     """
 
     joint_name: str
@@ -268,6 +274,7 @@ class _GripperLeg:
     close_reported: bool = False
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
     regrasp_hold: AttachedCollisionObject | None = None
+    close_region: tuple[tuple[str, int], Any] | None = None
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -1579,6 +1586,7 @@ class VisionAttachmentBridge:
             event = leg.trigger.update(state)
             if self._node is not None:
                 self._log_close(leg, event)
+                self._note_close_region(leg)
             if (
                 leg.trigger.last_command is None
                 and not leg.announced_uncommanded
@@ -1630,6 +1638,37 @@ class VisionAttachmentBridge:
         self._retire_lifted_supports()
         if self._place_target is not None:
             self._place_target.on_joint_state()
+
+    def _note_close_region(self, leg: _GripperLeg) -> None:
+        """Record where the live grasp-target region sits in the attach link, while closing.
+
+        Only during a close (``close_baseline`` set) with nothing attached, and only on a
+        tick the jaw is at the region (``jaw_at``, the ATTACH check's own test): the
+        latest such tick wins. Outside a close it is cleared. Read by ``_region_payload``
+        when the jaw has left the region by the ATTACH (#349: lifted 5-8 cm first).
+        """
+        if (
+            leg.close_baseline is None
+            or leg.trigger.attached
+            or self._grasp_target is None
+            or self._node is None
+        ):
+            leg.close_region = None
+            return
+        declaration = self._grasp_target.tracker.envelope(
+            now_ns=int(self._node.get_clock().now().nanoseconds)
+        )
+        region = declaration.region if declaration is not None else None
+        if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
+            return
+        at, _ = self.jaw_at(
+            leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
+        )
+        if not at:
+            return
+        t_link_from_region = self._lookup(self.tf_frame(leg.producer.attach_link), region.frame_id)
+        if t_link_from_region is not None:
+            leg.close_region = ((declaration.target_id, int(region.stamp_ns)), t_link_from_region)
 
     def _log_close(self, leg: _GripperLeg, event: GraspEvent | None) -> None:
         """Log the trigger's counters once per close: as it starts, and at ATTACH or give-up.
@@ -2145,6 +2184,14 @@ class VisionAttachmentBridge:
         at, measure = self.jaw_at(
             leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
         )
+        if not at and leg.close_region is not None and leg.close_region[0] == key:
+            # Lifted before the stall settled: pose it where the jaw closed on it.
+            at, t_link_from_region = True, leg.close_region[1]
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: jaw left the region before the ATTACH "
+                f"({measure}); it was at the region during the close — the payload is posed "
+                "in the attach link where the jaw closed on it"
+            )
         why = ""
         if t_link_from_region is None:
             why = f"no tf2 {link} <- {region.frame_id}"
