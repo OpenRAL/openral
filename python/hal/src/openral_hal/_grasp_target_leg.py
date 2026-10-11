@@ -260,7 +260,6 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import (
     AttachmentEvidenceKind,
-    BoxShape,
     GraspDeclaration,
     PlaceRegion,
     Pose6D,
@@ -2530,15 +2529,20 @@ class GraspTargetLeg:
             update={"half_extents": tuple(h + voxel for h in region.half_extents)}
         )
         if payload.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE:
-            # A rejected mask's jaw-span cube is a guess posed IN FRONT of the tool point
-            # (its back face on it); its centre is evidence of nothing. The tool point it
-            # stands for is: the back-face centre, tested as the cube's centre was before.
-            c = np.asarray(payload.pose_in_link.xyz, dtype=np.float64)
-            shape = payload.primitives[0].shape
-            span = float(shape.half_extents_m[0]) if isinstance(shape, BoxShape) else 0.0
-            norm = float(np.linalg.norm(c))
-            tcp = c * (1.0 - span / norm) if norm > span else c
-            points = (t_region_from_link @ np.append(tcp, 1.0))[None, :3]
+            # A rejected mask's jaw-span cube is a guess, posed off the tool point toward
+            # the jaws (``palm_plane_m``); its centre is evidence of nothing. The jaw's
+            # tool point is what the test stands for.
+            leg = next((g for g in bridge._legs if g.jaw_link == jaw_link), None)
+            tcp = (
+                bridge._tcp_in(leg, bridge.tf_frame(payload.attach_link))
+                if leg is not None
+                else None
+            )
+            if tcp is None:
+                return False
+            points = (t_region_from_link @ np.append(np.asarray(tcp, dtype=np.float64), 1.0))[
+                None, :3
+            ]
         else:
             points = np.asarray(
                 [t[:3, 3] for t in primitive_poses(payload, t_region_from_link)], dtype=np.float64

@@ -158,6 +158,7 @@ from openral_hal._place_target_leg import _WITNESS_PERIOD_S, PlaceTargetLeg, pla
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
+    palm_plane_m,
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -1762,10 +1763,13 @@ class VisionAttachmentBridge:
         if tcp is None:
             return None
         point = np.asarray(tcp, dtype=np.float64)
-        reach = float(np.linalg.norm(point))
-        if reach <= 0.0:
+        norm = float(np.linalg.norm(point))
+        if norm <= 0.0:
             return None
-        u = point / reach
+        u = point / norm
+        # The palm plane (the jaw joint's origin), not the tool point: an SO-101's tool
+        # point is the jaw centre, with half the held object behind it.
+        reach = palm_plane_m(point, leg.producer.palm_in_link)
         pose = t_link_from_region @ homogeneous_from_quat_xyz(
             region.pose.xyz, region.pose.quat_xyzw
         )
@@ -2220,8 +2224,14 @@ class VisionAttachmentBridge:
             reason = f"ROSConfigError: {exc}"
             self._node.get_logger().error(f"vision attachment producer rejected inputs: {exc}")
             attachment, report = _fit([], [])
-        if attachment is not None:
-            attachment = clip_payload_behind_tool_point(attachment, tcp_in_link)
+        if attachment is not None and tcp_in_link is not None:
+            palm = palm_plane_m(tcp_in_link, leg.producer.palm_in_link)
+            tcp = np.asarray(tcp_in_link, dtype=np.float64)
+            clip = tcp / float(np.linalg.norm(tcp)) * palm if palm > 0.0 else None
+            attachment = clip_payload_behind_tool_point(
+                attachment,
+                None if clip is None else (float(clip[0]), float(clip[1]), float(clip[2])),
+            )
         if reason:
             self._node.get_logger().warning(
                 f"vision attachment {leg.joint_name} fell back to GRIPPER_CLOSURE: {reason}"

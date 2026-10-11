@@ -458,9 +458,9 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
     assert attachment.primitives[0].shape.half_extents_m == (0.05, 0.05, 0.05)
-    # In front of the tool point, its back face on it: never behind the jaws in the wrist.
-    tcp = np.asarray(_TCP_IN_LINK)
-    assert np.allclose(attachment.pose_in_link.xyz, tcp + tcp / np.linalg.norm(tcp) * 0.05)
+    # The SO-101's tool point is the jaw centre and its jaw hinges at the link origin
+    # (palm plane 0): the cube stays centred on the tool point.
+    assert attachment.pose_in_link.xyz == _TCP_IN_LINK
     assert attachment.confidence < 0.5
     assert "vision_gate_rejected" in (attachment.evidence_ref or "")
 
@@ -558,6 +558,28 @@ def test_a_non_gripper_joint_is_rejected_by_the_producer() -> None:
     """Naming an arm joint is a typed error."""
     with pytest.raises(ROSConfigError, match="not a gripper-role joint"):
         VisionAttachmentEvidenceProducer(_robot(), gripper_joint="wrist_roll")
+
+
+def test_the_openarm_fallback_box_starts_at_the_palm_plane() -> None:
+    """An OpenArm's tool point is its finger hinge, the palm plane: the jaw-span cube's
+    back face sits on it, never inside the carrying wrist (#349 p2_mix00)."""
+    openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
+    tcp = np.asarray(left.palm_in_link)
+    held, report = left.on_grasp(
+        masks=[],
+        depth_m=np.zeros((4, 4)),
+        intrinsics=_wrist_intrinsics(4, 4),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=tuple(tcp),
+        object_id="payload",
+        stamp_ns=1,
+        mask_scores_advisory=[],
+    )
+    assert not report.accepted
+    u = tcp / np.linalg.norm(tcp)
+    centre = np.asarray(held.pose_in_link.xyz)
+    assert float(centre @ u) == pytest.approx(np.linalg.norm(tcp) + 0.05)
 
 
 def test_the_extent_caps_compare_extents_sorted_by_extent() -> None:
