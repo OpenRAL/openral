@@ -1644,16 +1644,15 @@ class VisionAttachmentBridge:
 
         Only during a close (``close_baseline`` set) with nothing attached, and only on a
         tick the jaw is at the region (``jaw_at``, the ATTACH check's own test): the
-        latest such tick wins. Outside a close it is cleared. Read by ``_region_payload``
+        latest such tick wins. Outside a close it is cleared; once attached it is kept
+        (the ATTACH tick itself reads it, p7_mix02). Read by ``_region_payload``
         when the jaw has left the region by the ATTACH (#349: lifted 5-8 cm first).
         """
-        if (
-            leg.close_baseline is None
-            or leg.trigger.attached
-            or self._grasp_target is None
-            or self._node is None
-        ):
+        if leg.close_baseline is None:
             leg.close_region = None
+            return
+        # Attached: stop recording but KEEP the record — this tick's ATTACH reads it.
+        if leg.trigger.attached or self._grasp_target is None or self._node is None:
             return
         declaration = self._grasp_target.tracker.envelope(
             now_ns=int(self._node.get_clock().now().nanoseconds)

@@ -1264,6 +1264,9 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
         right.close_baseline = (0, 0)  # a close is in progress, nothing attached
         bridge._note_close_region(right)
         assert right.close_region is not None
+        right.trigger._loaded = True  # the ATTACH tick: kept, not cleared (p7_mix02)
+        bridge._note_close_region(right)
+        assert right.close_region is not None
         lifted = (_I41_JAW[0], _I41_JAW[1], _I41_JAW[2] + 0.08)
         live.place("right", lifted)
         assert not bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)[0]
