@@ -304,6 +304,8 @@ def _serve(
                 reply = {"frame": scene.render()}
             elif endpoint == "contacts":
                 reply = scene.contact_ground_truth()
+            elif endpoint == "static_colliders":
+                reply = scene.static_collider_boxes()
             elif endpoint == "set_task":
                 reply = scene.set_task(str(data.get("instruction", "")))
             elif endpoint == "close":

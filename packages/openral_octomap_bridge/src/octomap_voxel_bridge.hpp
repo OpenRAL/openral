@@ -48,6 +48,7 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -113,6 +114,22 @@ public:
     // Attached-payload clearing. On by default: `AttachedCollisionObject`
     // requires the object to be absent from world occupancy while attached, and
     // with no attachment producer on the graph this costs one empty check.
+    // Declared static geometry (docs/reference/manipulation-workspace-contact.md
+    // §3.1): base-frame surface points of the scene's fixtures, marked occupied in
+    // every published grid whatever the camera has seen. Only adds occupancy.
+    // Empty = off. A file that does not load is fatal: a deploy that declared its
+    // walls must not run without them.
+    static_points_file_ = this->declare_parameter<std::string>("static_points_file", "");
+    if (!static_points_file_.empty()) {
+      std::string error;
+      if (!load_points_file(static_points_file_, static_points_, error)) {
+        throw std::runtime_error("static_points_file: " + error);
+      }
+      RCLCPP_WARN(this->get_logger(),
+                  "declared static geometry: %zu base-frame surface points from %s are marked "
+                  "occupied in every published grid",
+                  static_points_.size(), static_points_file_.c_str());
+    }
     attached_clear_enabled_ = this->declare_parameter<bool>("attached_clear_enabled", true);
     // Extra reach beyond the cell-cube circumradius. 0 clears exactly the cells
     // the payload's own volume can explain; anything more removes cells it
@@ -280,6 +297,13 @@ private:
                             "resolution: publishing nothing",
                             coverage_radius_m_, octree_->getResolution());
       return;
+    }
+    if (!static_points_.empty()) {
+      // Before the payload clearing, so a declared surface under a carried
+      // payload is partitioned against its support exactly like a seen one.
+      const std::size_t added = mark_base_points(grid, static_points_);
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "declared static geometry added %zu cells the camera map lacked", added);
     }
     clear_attached_payload(grid, base_to_octomap);
     const rclcpp::Time produced = this->now();
@@ -453,6 +477,8 @@ private:
   double resolution_{0.05};
   double coverage_center_[3]{0.0, 0.0, 0.5};
   double coverage_radius_m_{0.0};
+  std::string static_points_file_;
+  std::vector<tf2::Vector3> static_points_;
   bool attached_clear_enabled_{true};
   double attached_clear_padding_m_{0.0};
   double attach_sweep_padding_m_{0.05};

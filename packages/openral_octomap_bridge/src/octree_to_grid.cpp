@@ -21,10 +21,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include <octomap/OcTreeKey.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Transform.h>
 #include <tf2/LinearMath/Vector3.h>
 
 namespace openral_octomap_bridge {
@@ -132,7 +136,8 @@ void mark_leaf(const Lattice& lattice, const octomap::point3d& leaf_center, doub
   const std::size_t sy = lattice.size[1];
   for (long iz = lo[2]; iz <= hi[2]; ++iz) {
     for (long iy = lo[1]; iy <= hi[1]; ++iy) {
-      const std::size_t row = sx * (static_cast<std::size_t>(iy) + sy * static_cast<std::size_t>(iz));
+      const std::size_t row =
+          sx * (static_cast<std::size_t>(iy) + sy * static_cast<std::size_t>(iz));
       for (long ix = lo[0]; ix <= hi[0]; ++ix) {
         occupancy[row + static_cast<std::size_t>(ix)] = 1;
       }
@@ -223,6 +228,70 @@ openral_msgs::msg::OccupancyVoxels rasterize_octree_to_grid(const octomap::OcTre
     }
   }
   return msg;
+}
+
+std::size_t mark_base_points(openral_msgs::msg::OccupancyVoxels& grid,
+                             const std::vector<tf2::Vector3>& base_points) {
+  const double res = grid.resolution;
+  const std::size_t nx = grid.size_x;
+  const std::size_t ny = grid.size_y;
+  const std::size_t nz = grid.size_z;
+  if (!(res > 0.0) || grid.occupancy.size() != nx * ny * nz) {
+    return 0;
+  }
+  const tf2::Quaternion q(grid.orientation.x, grid.orientation.y, grid.orientation.z,
+                          grid.orientation.w);
+  // base point -> grid frame: R^T (p - origin), R = the grid axes in base_frame.
+  const tf2::Transform base_from_grid(q.normalized(),
+                                      tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
+  const tf2::Transform grid_from_base = base_from_grid.inverse();
+  std::size_t marked = 0;
+  for (const tf2::Vector3& p : base_points) {
+    const tf2::Vector3 g = grid_from_base * p;
+    const double fx = std::floor(g.x() / res);
+    const double fy = std::floor(g.y() / res);
+    const double fz = std::floor(g.z() / res);
+    if (fx < 0.0 || fy < 0.0 || fz < 0.0 || fx >= static_cast<double>(nx) ||
+        fy >= static_cast<double>(ny) || fz >= static_cast<double>(nz)) {
+      continue;
+    }
+    const std::size_t idx = static_cast<std::size_t>(fx) +
+                            nx * (static_cast<std::size_t>(fy) + ny * static_cast<std::size_t>(fz));
+    if (grid.occupancy[idx] == 0) {
+      grid.occupancy[idx] = 1;
+      ++marked;
+    }
+  }
+  return marked;
+}
+
+bool load_points_file(const std::string& path, std::vector<tf2::Vector3>& out, std::string& error) {
+  out.clear();
+  std::ifstream in(path);
+  if (!in) {
+    error = "cannot open " + path;
+    return false;
+  }
+  std::string line;
+  std::size_t lineno = 0;
+  while (std::getline(in, line)) {
+    ++lineno;
+    const auto first = line.find_first_not_of(" \t\r");
+    if (first == std::string::npos || line[first] == '#') {
+      continue;
+    }
+    std::istringstream fields(line);
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    if (!(fields >> x >> y >> z) || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      error = path + ":" + std::to_string(lineno) + ": expected three finite numbers";
+      out.clear();
+      return false;
+    }
+    out.emplace_back(x, y, z);
+  }
+  return true;
 }
 
 }  // namespace openral_octomap_bridge

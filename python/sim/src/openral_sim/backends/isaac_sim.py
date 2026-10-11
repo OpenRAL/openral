@@ -444,6 +444,16 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         return self._client.call("contacts")
 
+    def static_collider_boxes(self) -> dict[str, Any]:
+        """Every static collider of the stage as an oriented box in the manifest ``base_frame``.
+
+        The sidecar ``static_colliders`` endpoint (``IsaacManifestScene.static_collider_boxes``):
+        ``{"frame": "base_frame", "boxes": [{"path", "collision_enabled", "center_m",
+        "rotation" (3x3 rows), "half_extents_m"}]}`` — each a superset of its collider.
+        ``tools/isaac_static_geometry.py`` turns them into a scene's declared static geometry.
+        """
+        return self._client.call("static_colliders")
+
     def set_task(self, instruction: str) -> dict[str, Any]:
         """Make ``instruction`` the prompt the scene grades (``openral deploy sim``).
 

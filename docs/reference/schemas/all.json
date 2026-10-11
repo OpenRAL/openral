@@ -13121,6 +13121,18 @@
               ],
               "default": null,
               "title": "Workspace Contact Max Speed Mps"
+            },
+            "static_geometry_file": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Static Geometry File"
             }
           },
           "title": "DeployRuntime",
@@ -15333,6 +15345,18 @@
               ],
               "default": null,
               "title": "Workspace Contact Max Speed Mps"
+            },
+            "static_geometry_file": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Static Geometry File"
             }
           },
           "title": "DeployRuntime",
@@ -17684,6 +17708,18 @@
               ],
               "default": null,
               "title": "Workspace Contact Max Speed Mps"
+            },
+            "static_geometry_file": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Static Geometry File"
             }
           },
           "title": "DeployRuntime",

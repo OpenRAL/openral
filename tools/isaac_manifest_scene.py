@@ -521,6 +521,40 @@ def sample_object_poses(
     return out
 
 
+def oriented_box(
+    frame_from_local: NDArray[np.float64],
+    local_min: Sequence[float],
+    local_max: Sequence[float],
+) -> dict[str, list[float] | list[list[float]]]:
+    """The oriented box a local axis-aligned range spans, expressed in another frame.
+
+    ``frame_from_local`` is a 4x4 column-vector transform that may carry scale (a USD
+    bound's matrix composed into the target frame); the box keeps the local axes,
+    with the scale folded into its half-extents and removed from its rotation.
+
+    Returns:
+        ``{"center_m": [x, y, z], "rotation": 3x3 rows, "half_extents_m": [hx, hy, hz]}``.
+
+    Example:
+        >>> m = np.diag([2.0, 1.0, 1.0, 1.0])  # scale x by 2
+        >>> m[:3, 3] = (1.0, 0.0, 0.5)
+        >>> box = oriented_box(m, (-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+        >>> box["center_m"], box["half_extents_m"]
+        ([1.0, 0.0, 0.5], [1.0, 0.5, 0.5])
+    """
+    lo = np.asarray(local_min, dtype=np.float64)
+    hi = np.asarray(local_max, dtype=np.float64)
+    linear = frame_from_local[:3, :3]
+    scale = np.linalg.norm(linear, axis=0)
+    scale[scale == 0.0] = 1.0
+    center = linear @ ((lo + hi) / 2.0) + frame_from_local[:3, 3]
+    return {
+        "center_m": [round(float(v), 6) for v in center],
+        "rotation": [[round(float(v), 9) for v in row] for row in linear / scale],
+        "half_extents_m": [round(float(v), 6) for v in (hi - lo) / 2.0 * scale],
+    }
+
+
 def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     """4x4 rigid transform from a position and a ``(w, x, y, z)`` quaternion (normalised).
 
@@ -2765,6 +2799,96 @@ class IsaacManifestScene(IsaacSceneBase):
             return None
         delta = self._body_positions[owner] - self._prev_body_positions[owner]
         return float(np.linalg.norm(delta) / tick)
+
+    def static_collider_boxes(self) -> dict[str, Any]:
+        """Every static collider of the stage in the manifest ``base_frame``: a box or a mesh.
+
+        Static = carries ``UsdPhysics.CollisionAPI``, is not under the robot, and has no
+        enabled, non-kinematic rigid body on itself or an ancestor (a dynamic object
+        moves; it is the camera's to see). A triangle-mesh collider (approximation ``none``)
+        is exported as its triangles (``kind: mesh``, its surface is its collision geometry);
+        any other collider as its USD bound (``kind: box``, ``BBoxCache``, every purpose — a
+        superset of the collision geometry, the fail-closed direction). Both are expressed in
+        ``base_frame`` through PhysX's measured robot pose (``_world_from_base``).
+        The sidecar ``static_colliders`` endpoint; ``tools/isaac_static_geometry.py`` writes
+        them into a deploy scene's declared static geometry.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = get_current_stage()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), ["default", "render", "proxy", "guide"], useExtentsHint=False
+        )
+        base_from_world = np.linalg.inv(self._world_from_base())
+        root = self._robot_prim.rstrip("/")
+
+        def moves(prim: Any) -> bool:
+            while prim and prim.IsValid() and str(prim.GetPath()) != "/":
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    api = UsdPhysics.RigidBodyAPI(prim)
+                    enabled = api.GetRigidBodyEnabledAttr().Get()
+                    kinematic = api.GetKinematicEnabledAttr().Get()
+                    if enabled is not False and not kinematic:
+                        return True
+                prim = prim.GetParent()
+            return False
+
+        boxes = []
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path == root or path.startswith(root + "/"):
+                continue
+            if not prim.HasAPI(UsdPhysics.CollisionAPI) or moves(prim):
+                continue
+            enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
+            approx = (
+                UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+                if prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+                else None
+            )
+            entry: dict[str, Any] = {
+                "path": path,
+                "type": str(prim.GetTypeName()),
+                "approximation": None if approx is None else str(approx),
+                "collision_enabled": enabled is not False,
+            }
+            if prim.IsA(UsdGeom.Mesh) and str(approx or "none") == "none":
+                # A triangle-mesh collider: its surface IS the collision geometry (a bound
+                # would fill a shelf's open slots). Fan-triangulated, in base_frame.
+                mesh = UsdGeom.Mesh(prim)
+                points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
+                counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
+                indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
+                if len(points) == 0:
+                    continue
+                world_from_local = np.asarray(
+                    UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
+                    dtype=np.float64,
+                ).T  # USD rows
+                m = base_from_world @ world_from_local
+                verts = points @ m[:3, :3].T + m[:3, 3]
+                tris: list[list[int]] = []
+                at = 0
+                for n in counts:
+                    face = indices[at : at + n]
+                    tris.extend([face[0], face[i], face[i + 1]] for i in range(1, n - 1))
+                    at += n
+                entry["kind"] = "mesh"
+                entry["vertices_m"] = [[round(float(v), 6) for v in row] for row in verts]
+                entry["triangles"] = tris
+            else:
+                bound = cache.ComputeWorldBound(prim)
+                rng = bound.GetRange()
+                if rng.IsEmpty():
+                    continue
+                world_from_local = np.asarray(bound.GetMatrix(), dtype=np.float64).T  # USD rows
+                entry["kind"] = "box"
+                entry.update(
+                    oriented_box(base_from_world @ world_from_local, rng.GetMin(), rng.GetMax())
+                )
+            boxes.append(entry)
+        return {"frame": "base_frame", "boxes": boxes}
 
     def _contact_points(self) -> list[dict[str, Any]]:
         """Every PhysX contact point of the last physics step, as plain dicts.

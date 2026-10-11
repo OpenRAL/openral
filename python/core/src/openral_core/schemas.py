@@ -10410,6 +10410,82 @@ class VisionAttachmentRuntime(BaseModel):
         return self
 
 
+class StaticBox(BaseModel):
+    """One declared static fixture as an oriented box in the robot's ``base_frame``.
+
+    Example:
+        >>> StaticBox(
+        ...     source="/World/Cell/LeftWall",
+        ...     xyz=(0.3, 0.55, 0.08),
+        ...     half_extents=(0.675, 0.018, 0.82),
+        ... ).kind
+        'box'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: How far ``quat_xyzw``'s norm may sit from 1 (an exported rotation, rounded).
+    UNIT_QUAT_TOL: ClassVar[float] = 0.1
+
+    kind: Literal["box"] = "box"
+    source: str = ""
+    xyz: tuple[float, float, float]
+    quat_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+    half_extents: tuple[float, float, float]
+
+    @model_validator(mode="after")
+    def _validate_box(self) -> Self:
+        if not all(math.isfinite(v) for v in (*self.xyz, *self.quat_xyzw, *self.half_extents)):
+            raise ValueError("StaticBox values must be finite.")
+        if any(h < 0.0 for h in self.half_extents):
+            raise ValueError(f"StaticBox half_extents must be >= 0, got {self.half_extents}.")
+        if abs(math.sqrt(sum(q * q for q in self.quat_xyzw)) - 1.0) > self.UNIT_QUAT_TOL:
+            raise ValueError(f"StaticBox quat_xyzw must be a unit quaternion: {self.quat_xyzw}.")
+        return self
+
+
+class StaticMesh(BaseModel):
+    """One declared static fixture as a triangle mesh in the robot's ``base_frame``.
+
+    ``file`` is an ``.npz`` with ``vertices`` (N, 3) metres and ``triangles`` (M, 3)
+    indices, relative to the ``StaticGeometry`` YAML that lists it.
+
+    Example:
+        >>> StaticMesh(source="/World/OMAR/Rack", file="Rack.npz").kind
+        'mesh'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["mesh"] = "mesh"
+    source: str = ""
+    file: str = Field(min_length=1)
+    triangles: int | None = Field(default=None, ge=0)
+
+
+class StaticGeometry(BaseModel):
+    """A cell's declared static geometry (``DeployRuntime.static_geometry_file``).
+
+    Example:
+        >>> g = StaticGeometry.model_validate(
+        ...     {
+        ...         "static_geometry": [
+        ...             {"kind": "box", "xyz": [0.9, 0.0, 0.1], "half_extents": [0.02, 0.55, 0.8]},
+        ...             {"kind": "mesh", "file": "Rack.npz"},
+        ...         ]
+        ...     }
+        ... )
+        >>> [e.kind for e in g.static_geometry]
+        ['box', 'mesh']
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    static_geometry: list[Annotated[StaticBox | StaticMesh, Field(discriminator="kind")]] = Field(
+        default_factory=list
+    )
+
+
 class DeployRuntime(BaseModel):
     """Committed deploy-posture toggles for a workcell scene.
 
@@ -10664,6 +10740,17 @@ class DeployRuntime(BaseModel):
     ``workspace_contact_enabled`` — there is no default the kernel would silently use.
     **Calibration point** (from the sim-run contact data, issue #349 plan step 5); capped
     at 1 m/s, beyond which the rule is not a contact-energy bound at all."""
+    static_geometry_file: str | None = None
+    """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
+    repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.
+    The launch samples its surfaces and the octomap bridge marks every cell they pass
+    through occupied in every published grid, whatever the camera has seen — so a fixture
+    out of the head camera's view still stops an arm (``docs/reference/
+    manipulation-workspace-contact.md`` §3.1). Only ADDS occupancy, the fail-closed
+    direction, so it needs no measurement and is allowed on real hardware; the launch
+    refuses it with the octomap leg off rather than drop declared walls. For an Isaac
+    scene, ``tools/isaac_static_geometry.py`` exports it from the stage's static
+    colliders. Backward-compatible addition."""
 
     @model_validator(mode="after")
     def _check_workspace_contact(self) -> Self:

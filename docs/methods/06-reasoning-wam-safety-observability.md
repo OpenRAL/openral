@@ -444,6 +444,14 @@ _An ACM entry removes a self-collision check, so every rule here fails toward fe
 - `fit_collision_geometry_from_mjcf(robot, *, manifest_dir=None, stroke_samples=9, tight_links=()) -> list[LinkCollisionGeometry]` (L2089) — `fit_link_primitives` per manifest link over every geom of its MJCF body — collision **and** visual, meshes and primitives — in the body frame. An equality-coupled follower body (OpenArm's second finger) is folded into its leader's child link, swept over `stroke_samples` leader positions, so the primitives hold the gripper at every opening. A static link (a `fixed_attachments` child with no MJCF body) is fitted from the URDF via `_static_link_meshes` with the same fitter and `tight_links` rule. Pinned by `tests/unit/test_collision_geometry_enclosure.py`. A follower the manifest declares in `mimic_joints` is not folded in: it is its own rigid link, fitted in its own body frame (#349).
 - `LoweringSource` — `Literal["srdf", "sampling", "mjcf"]`; the source `select_lowering` resolves to (matches `LoweredCollisionModel.acm_source`).
 
+### `packages/openral_safety/openral_safety/static_geometry.py`
+
+Declared static geometry → base-frame surface points for the octomap bridge (#349, `docs/reference/manipulation-workspace-contact.md` §3.1).
+
+- `load_static_geometry(path) -> tuple[StaticGeometry, Path]` (L34) — Load + validate a `StaticGeometry` YAML; returns it and its directory; `ROSConfigError` on a missing / non-YAML / invalid file.
+- `surface_points(geometry, base_dir, spacing_m) -> NDArray` (L76) — Every declared surface (box faces, mesh triangles) sampled at most `spacing_m` apart, `(N, 3)` base frame; each surface point lies within `spacing_m` of a sample. `ROSConfigError` on spacing ≤ 0 or a missing/malformed mesh.
+- `write_points_file(points, path) -> None` (L129) — The octomap bridge's `static_points_file` format: one `x y z` per line, `#` header.
+
 ### `packages/openral_safety/openral_safety/tight_geometry.py`
 
 _Derive a box's `tight_geometry` (26-DOP + exact hull) from the geometry it bounds; containment is definitional (`mesh ⊆ hull ⊆ DOP ⊆ box`). Moved here from `tools/generate_tight_geometry.py` so the collision lowering can refine links; the tool re-exports the moved names._

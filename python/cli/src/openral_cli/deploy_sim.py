@@ -1631,6 +1631,24 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"workspace_contact_max_speed_mps:={rt.workspace_contact_max_speed_mps}",
             ]
         )
+    # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
+    # else repo-relative, resolved absolute; a declared file that is missing is a config error
+    # (never run without walls the scene declared).
+    if rt is not None and rt.static_geometry_file:
+        static_geometry = Path(rt.static_geometry_file)
+        if not static_geometry.is_absolute():
+            beside_scene = config.parent / static_geometry if config is not None else None
+            static_geometry = (
+                beside_scene
+                if beside_scene is not None and beside_scene.exists()
+                else repo_root / static_geometry
+            )
+        if not static_geometry.exists():
+            raise ROSConfigError(
+                f"runtime.static_geometry_file={rt.static_geometry_file!r} not found (looked "
+                "beside the scene and under the repo root)."
+            )
+        argv_template.append(f"static_geometry_file:={static_geometry.resolve()}")
     # Vision attachment leg: forwarded only when enabled, so a scene without it composes
     # exactly as before. The launch couples it to the kernel's attached check.
     if vision_leg is not None and vision_leg.enabled:

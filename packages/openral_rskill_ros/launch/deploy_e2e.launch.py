@@ -312,6 +312,35 @@ def _octomap_resolution(hal_mode: str) -> float:
     return 0.015 if hal_mode == "sim" else 0.02
 
 
+def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
+    """Sample the declared static geometry for the octomap bridge; returns the points file.
+
+    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
+    file next to nothing else of this launch (``/tmp``, named by the source and the pid).
+    Raises ``ROSConfigError`` on a geometry that does not load or a mesh that is malformed.
+    """
+    import tempfile
+
+    from openral_safety.static_geometry import (
+        load_static_geometry,
+        surface_points,
+        write_points_file,
+    )
+
+    geometry, base_dir = load_static_geometry(static_geometry_file)
+    points = surface_points(geometry, base_dir, resolution_m / 4.0)
+    out = pathlib.Path(tempfile.gettempdir()) / (
+        f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{os.getpid()}.txt"
+    )
+    write_points_file(points, out)
+    print(
+        f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
+        f"{len(points)} surface points at {resolution_m / 4.0 * 1000:.2f} mm -> {out}",
+        flush=True,
+    )
+    return str(out)
+
+
 def _robot_unit(scene_unit: str | None) -> str | None:
     """The robot unit in force: ``$OPENRAL_ROBOT_UNIT``, else the scene's ``robot_unit``.
 
@@ -1610,6 +1639,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         context
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
+    static_geometry_file = LaunchConfiguration("static_geometry_file").perform(context)
+    if static_geometry_file and not enable_octomap:
+        # Declared walls must never be dropped silently: with the octomap leg off there
+        # is no world grid to mark them in, and the kernel would run without them.
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"static_geometry_file={static_geometry_file!r} needs enable_octomap: the declared "
+            "static geometry is marked in the octomap bridge's world grid, and with the leg "
+            "off it would be dropped silently."
+        )
     rig = _rig_from_launch_args(
         {name: LaunchConfiguration(name).perform(context) for name in _RIG_LAUNCH_ARGS}
     )
@@ -3198,6 +3238,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
+                    # Declared static geometry (manipulation-workspace-contact.md §3.1):
+                    # surface points the bridge marks occupied in every grid. Omitted
+                    # (off) when the scene declares none.
+                    **(
+                        {
+                            "static_points_file": _static_points_file(
+                                static_geometry_file, _octomap_resolution(hal_mode)
+                            )
+                        }
+                        if static_geometry_file
+                        else {}
+                    ),
                     # A held payload is cleared by looking its (manifest) attach link up
                     # on TF; a cell that names that body differently needs the rename.
                     # Omitted when there is none (an empty list has no ROS param type).
@@ -4030,6 +4082,17 @@ def generate_launch_description() -> LaunchDescription:
                 "only). Lets perception use the world map without the dense-scene "
                 "false-positive E-stop. Default True preserves the bundled behaviour. "
                 "Never weakens the kernel below the --no-enable-octomap baseline."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "static_geometry_file",
+            default_value="",
+            description=(
+                "Declared static geometry (StaticGeometry YAML, absolute path): walls, shelf "
+                "frame, table, tote shell in base_frame. Sampled a quarter cell apart and "
+                "marked occupied in every published world grid by the octomap bridge, so a "
+                "fixture the camera has not seen still stops an arm. Needs enable_octomap. "
+                "Empty (default) = off."
             ),
         ),
         DeclareLaunchArgument(
