@@ -592,9 +592,12 @@ class VisionAttachmentEvidenceProducer:
         centroid = points_link.mean(axis=0)
         centroid_distance = float(np.linalg.norm(centroid - tcp))
 
+        # Sorted by EXTENT, as the caps are ordered: least variance is not least extent
+        # for a near-cubic cloud (#349 p3_mix04: (0.105, 0.091, 0.106) put the 0.105 axis
+        # against the 0.10 jaw cap while the 0.091 axis was the one between the jaws).
         if any(
             float(extent) > cap
-            for extent, cap in zip(extents, cfg.max_payload_extents_m, strict=True)
+            for extent, cap in zip(sorted(extents), cfg.max_payload_extents_m, strict=True)
         ):
             rejections.append("payload_extent")
         if volume > cfg.max_payload_volume_m3:

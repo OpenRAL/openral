@@ -558,3 +558,32 @@ def test_a_non_gripper_joint_is_rejected_by_the_producer() -> None:
     """Naming an arm joint is a typed error."""
     with pytest.raises(ROSConfigError, match="not a gripper-role joint"):
         VisionAttachmentEvidenceProducer(_robot(), gripper_joint="wrist_roll")
+
+
+def test_the_extent_caps_compare_extents_sorted_by_extent() -> None:
+    """The jaw cap bounds the SHORTEST extent, not the least-variance axis (#349 p3_mix04).
+
+    A ~8 x 8 cm patch at 12 cm with a few pixels 10.5 cm deeper: the depth axis has the
+    least variance but the longest extent. Read in variance order, its 10.5 cm met the
+    10 cm jaw cap and a carton the jaws held was rejected.
+    """
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    k = _wrist_intrinsics(320, 240)
+    side_px = round(0.075 * k.fx / 0.12)
+    mask = np.zeros((240, 320), dtype=bool)
+    r0, c0 = 120 - side_px // 2, 160 - side_px // 2
+    mask[r0 : r0 + side_px, c0 : c0 + side_px] = True
+    depth = _plane_depth(mask.shape, distance_m=0.12).copy()
+    depth[120, 160:164] = 0.12 + 0.105
+    _, report = producer.on_grasp(
+        masks=[mask],
+        depth_m=depth,
+        intrinsics=k,
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=11,
+        mask_scores_advisory=[0.9],
+    )
+    assert max(report.extents_m) > producer.config.max_payload_extents_m[0]
+    assert "payload_extent" not in report.rejections, report
