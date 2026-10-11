@@ -429,6 +429,19 @@ class _IsaacSimSidecar(SidecarSimRollout):
             self._ping()
         return self._sim_dt_per_tick_s
 
+    def contact_ground_truth(self) -> dict[str, Any]:
+        """PhysX robot-vs-world contacts of the last physics step, from the sidecar.
+
+        The sidecar ``contacts`` endpoint (``IsaacManifestScene.contact_ground_truth``):
+        ``robot_world_contacts`` (one record per robot-collider/other-collider pair:
+        ``link``, ``other_prim``, ``min_separation_m`` (negative = penetration),
+        ``contact_points``, ``impulse_ns``, both colliders' offsets), ``sim_time_ns``,
+        ``self_contact_points``, ``nearest_robot_world_pairs`` (``None``, with
+        ``nearest_unavailable_reason``) and ``contacts_caveat``. Diagnostics only:
+        ``SimSensorBridge`` reads it on each kernel stop.
+        """
+        return self._client.call("contacts")
+
     def _ping(self) -> None:
         """One ping caches ``action_dim`` and the time base together."""
         reply = self._client.call("ping")

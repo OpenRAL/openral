@@ -99,6 +99,11 @@ steps per action from the same rate at connect (issue #358).
 Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
 with the time each image shows, not the publish time (issue #361).
+Isaac safety-kernel stops carry ground truth too: each `sim.estop_ground_truth_snapshot`
+line (`backend: "isaacsim"`) lists the PhysX robot-vs-world contact pairs of the
+stop's physics step (link, other prim, `min_separation_m` (negative = penetration),
+contact count, impulse). PhysX has no shape-to-shape distance, so unlike MuJoCo there
+are no near-miss probes beyond the contact-offset band (`contacts_caveat`).
 
 ## SimScene catalogue (`scenes/sim/`)
 

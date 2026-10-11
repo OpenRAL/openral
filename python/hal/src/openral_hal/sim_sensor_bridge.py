@@ -12,8 +12,8 @@ It also owns the E-stop ground-truth record: one
 ``sim.estop_ground_truth_snapshot`` line per kernel stop — MuJoCo contacts,
 near-miss distances, joint state, base TF, and the candidate chunk the
 kernel was checking — so a stop can be adjudicated real-vs-false after the
-fact. Diagnostics only: nothing on that path gates, delays, or alters
-actuation.
+fact (on Isaac: PhysX contacts, ``isaac_estop_ground_truth_record``).
+Diagnostics only: nothing on that path gates, delays, or alters actuation.
 """
 
 from __future__ import annotations
@@ -124,6 +124,7 @@ __all__ = [
     "grid_current_at",
     "grid_with_origin",
     "initial_configuration_stop_record",
+    "isaac_estop_ground_truth_record",
     "kernel_checked_body_ids",
     "occupied_cell_keys",
     "preattach_verdict",
@@ -2379,14 +2380,7 @@ def estop_ground_truth_snapshot(
             else None,
         },
         "evidence_voxel_backing": voxel_backing,
-        "robot_joint_state": None
-        if joint_state is None
-        else {
-            "name": list(joint_state.name),
-            "position": [round(float(value), 6) for value in joint_state.position],
-            "velocity": [round(float(value), 6) for value in joint_state.velocity],
-            "stamp_ns": int(joint_state.stamp_ns),
-        },
+        "robot_joint_state": _joint_state_record(joint_state),
         "base_frame_tf": None,
     }
     if base_frame_body is not None:
@@ -2400,6 +2394,74 @@ def estop_ground_truth_snapshot(
                 "world_quat_wxyz": [round(float(v), 6) for v in data.xquat[body_id]],
             }
     return snapshot
+
+
+def _joint_state_record(joint_state: Any) -> dict[str, object] | None:
+    """A HAL ``JointState`` as the JSON ``robot_joint_state`` block, or ``None``."""
+    if joint_state is None:
+        return None
+    return {
+        "name": list(joint_state.name),
+        "position": [round(float(value), 6) for value in joint_state.position],
+        "velocity": [round(float(value), 6) for value in joint_state.velocity],
+        "stamp_ns": int(joint_state.stamp_ns),
+    }
+
+
+def isaac_estop_ground_truth_record(
+    contacts: Mapping[str, Any],
+    *,
+    joint_state: Any = None,
+    evidence_voxel: Mapping[str, object] | None = None,
+    attached_object_ids: Sequence[str] = (),
+) -> dict[str, object]:
+    """The Isaac counterpart of ``estop_ground_truth_snapshot``, from a sidecar reply.
+
+    ``contacts`` is ``_IsaacSimSidecar.contact_ground_truth()`` (the sidecar's
+    PhysX contact report for the last physics step). The keys follow the MuJoCo
+    record where they mean the same thing -- ``sim_time_s``,
+    ``robot_world_contacts`` (here one record per collider pair with
+    ``min_separation_m``, negative = penetration), ``nearest_robot_world_pairs``,
+    ``contacts_caveat``, ``robot_joint_state`` -- and stay out where Isaac has no
+    honest equivalent: no payload sections (a carried object is a non-robot
+    collider, so its contacts with the robot are in ``robot_world_contacts``;
+    the kernel's attached ids are listed as ``attached_object_ids``), no
+    ``adjudication_budget`` and no voxel backing (both need MuJoCo geometry).
+    ``nearest_robot_world_pairs`` is ``None`` and says why
+    (``nearest_unavailable_reason``): PhysX offers no shape-to-shape distance,
+    so a pair beyond the contactOffset band is invisible, and an empty contact
+    list is not "nothing was close".
+
+    Example:
+        >>> reply = {
+        ...     "sim_time_ns": 4_850_000_000,
+        ...     "robot_world_contacts": [],
+        ...     "nearest_robot_world_pairs": None,
+        ...     "contacts_caveat": "...",
+        ... }
+        >>> rec = isaac_estop_ground_truth_record(reply)
+        >>> rec["backend"], rec["sim_time_s"], rec["stop_class"], rec["robot_world_contacts"]
+        ('isaacsim', 4.85, 'robot_world', [])
+    """
+    sim_time_ns = contacts.get("sim_time_ns")
+    pairs = contacts.get("robot_world_contacts") or []
+    return {
+        "backend": "isaacsim",
+        "stop_class": "attached_payload" if attached_object_ids else "robot_world",
+        "attached_object_ids": sorted(attached_object_ids),
+        "sim_time_s": None if sim_time_ns is None else round(int(sim_time_ns) / 1e9, 6),
+        "contacts_caveat": contacts.get("contacts_caveat"),
+        "robot_world_contacts": list(pairs),
+        "max_penetration_m": max(
+            (max(0.0, -float(p["min_separation_m"])) for p in pairs), default=0.0
+        ),
+        "self_contact_points": contacts.get("self_contact_points"),
+        "nearest_robot_world_pairs": contacts.get("nearest_robot_world_pairs"),
+        "nearest_unavailable_reason": contacts.get("nearest_unavailable_reason"),
+        "robot_prim": contacts.get("robot_prim"),
+        "robot_joint_state": _joint_state_record(joint_state),
+        "evidence_voxel": None if evidence_voxel is None else dict(evidence_voxel),
+    }
 
 
 def candidate_chunk_digest(
@@ -4525,8 +4587,8 @@ class SimSensorBridge:
     def _setup_estop_ground_truth(self) -> None:
         """Subscribe the topics one adjudicable stop record needs.
 
-        Gate: live MuJoCo handles (there is no ground truth without a
-        simulator). Deliberately NOT gated on attachment support — the
+        Gate: live MuJoCo handles or an Isaac contacts source (there is no
+        ground truth without a simulator). Deliberately NOT gated on attachment support — the
         pre-grasp arm↔world stop is the class this closes.
 
         * ``/openral/estop`` — fires the snapshot at the stop instant.
@@ -4540,9 +4602,14 @@ class SimSensorBridge:
           report what backs the cell (subscribed here only when the attachment
           bridge has not already claimed it).
 
+        An Isaac-backed HAL (no MuJoCo handles, but an env exposing
+        ``contact_ground_truth``) arms the same subscriptions; its stops log
+        PhysX contacts instead (``isaac_estop_ground_truth_record``).
+
         Diagnostics only: nothing here gates, delays, or alters actuation.
         """
-        if getattr(self._hal, "mujoco_handles", lambda: None)() is None:
+        has_mujoco = getattr(self._hal, "mujoco_handles", lambda: None)() is not None
+        if not has_mujoco and self._contact_ground_truth_source() is None:
             return
         from openral_msgs.msg import ActionChunk, FailureTrigger
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -4601,10 +4668,20 @@ class SimSensorBridge:
                 ),
             )
         self._node.get_logger().info(
-            "SimSensorBridge: e-stop ground truth armed (MuJoCo contacts + near-miss "
-            f"distances + last {_CANDIDATE_CHUNK_HISTORY} candidate chunks + "
-            "world-voxel backing)."
+            "SimSensorBridge: e-stop ground truth armed ("
+            + (
+                "MuJoCo contacts + near-miss distances"
+                if has_mujoco
+                else "Isaac PhysX contacts, no near-miss distances"
+            )
+            + f" + last {_CANDIDATE_CHUNK_HISTORY} candidate chunks + world-voxel "
+            + ("backing)." if has_mujoco else "cell).")
         )
+
+    def _contact_ground_truth_source(self) -> Any:
+        """The wrapped env's ``contact_ground_truth`` (Isaac sidecar), or ``None``."""
+        getter = getattr(getattr(self._hal, "env", None), "contact_ground_truth", None)
+        return getter if callable(getter) else None
 
     def _teardown_estop_ground_truth(self) -> None:
         """Destroy the stop-record subscriptions and drop their caches."""
@@ -4736,6 +4813,7 @@ class SimSensorBridge:
         """
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is None:
+            self._on_estop_isaac_ground_truth()
             return
         model, data = handles
         # Cameras/depth may never have run (they own the lazy resolve).
@@ -4790,6 +4868,58 @@ class SimSensorBridge:
                         description=self._description,
                         attached_objects=getattr(self._hal, "read_attached_objects", list)(),
                     ),
+                    "candidate_action_chunks": list(self._candidate_chunks),
+                    "collision_evidence": evidence if fresh else None,
+                },
+                sort_keys=True,
+            )
+        )
+        self._log_initial_configuration_stop(snapshot)
+
+    def _on_estop_isaac_ground_truth(self) -> None:
+        """The Isaac half of ``_on_estop_ground_truth``: PhysX contacts at the stop.
+
+        Same line name, ``stop_seq`` join and late-evidence handling as the MuJoCo
+        record, built by ``isaac_estop_ground_truth_record`` from the sidecar's
+        ``contacts`` endpoint. Runs on the executor thread that also steps the env,
+        so the sidecar REQ socket is never used concurrently. A sidecar fault is
+        logged inside the record, never raised: diagnostics must not take the
+        stop handling down with them.
+        """
+        source = self._contact_ground_truth_source()
+        if source is None:
+            return
+        from openral_core.exceptions import ROSError
+
+        now_ns = int(self._node.get_clock().now().nanoseconds)
+        evidence = self._last_collision_evidence
+        age_ns = now_ns - self._last_collision_evidence_ns
+        fresh = evidence is not None and 0 <= age_ns <= _ESTOP_EVIDENCE_WINDOW_NS
+        try:
+            contacts: Mapping[str, Any] = source()
+            error = None
+        except ROSError as exc:  # reason: a stop record must survive a sidecar fault
+            contacts, error = {}, f"{type(exc).__name__}: {exc}"
+        snapshot = isaac_estop_ground_truth_record(
+            contacts,
+            joint_state=self._read_joint_state(),
+            evidence_voxel=self._evidence_voxel() if fresh else None,
+            attached_object_ids=[
+                obj.object_id for obj in getattr(self._hal, "read_attached_objects", list)()
+            ],
+        )
+        if error is not None:
+            snapshot["contacts_error"] = error
+        self._estop_seq += 1
+        self._estop_stamp_ns = now_ns
+        self._estop_awaiting_evidence = not fresh
+        self._node.get_logger().error(
+            "sim.estop_ground_truth_snapshot "
+            + json.dumps(
+                {
+                    "stop_seq": self._estop_seq,
+                    "stamp_ns": now_ns,
+                    **snapshot,
                     "candidate_action_chunks": list(self._candidate_chunks),
                     "collision_evidence": evidence if fresh else None,
                 },

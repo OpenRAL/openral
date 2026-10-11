@@ -1334,6 +1334,109 @@ def resolve_beam_range(
     return float(range_max_m)
 
 
+#: What a PhysX contact list does and does not say; sent with every ``contacts`` reply.
+CONTACTS_CAVEAT = (
+    "PhysX contact report for the LAST physics step only (contact buffers live one step). "
+    "A pair is reported once its shapes come within the sum of their contactOffsets, so a "
+    "listed pair with min_separation_m > 0 is a near miss inside that band, not a touch; "
+    "separation is measured to the restOffset-inflated shapes. An empty list means no robot "
+    "collider was within contactOffset of a non-robot collider -- NOT that nothing is close: "
+    "PhysX's Python API offers no shape-to-shape distance query, so there is no "
+    "nearest-pair probe beyond the contactOffset band. Colliders PhysX filters (collision "
+    "groups, filtered pairs) or that carry no CollisionAPI are never reported, nor is a "
+    "fixed-base root link against static geometry (observed: a Panda's panda_link0 on the "
+    "ground plane reports nothing). Offsets of null are unauthored: PhysX derives them "
+    "from the geometry."
+)
+
+
+def aggregate_robot_contacts(
+    points: Iterable[Mapping[str, Any]], robot_prim: str
+) -> tuple[list[dict[str, Any]], int]:
+    """Fold per-point PhysX contacts into one record per (robot collider, other collider).
+
+    Each point is ``{"actor0", "actor1", "collider0", "collider1", "separation",
+    "impulse": (x, y, z), "position": (x, y, z)}`` (paths as strings, metres, N*s).
+    A point whose two colliders are both under ``robot_prim`` (self-contact) or
+    neither is (world-world) is not a robot-vs-world contact and is dropped; self
+    contacts are counted. Records are oriented robot side first and sorted by
+    ``min_separation_m`` (negative = penetration), deepest first.
+
+    Returns:
+        ``(pairs, self_contact_points)``.
+
+    Example:
+        >>> pts = [
+        ...     {
+        ...         "actor0": "/World/box",
+        ...         "actor1": "/panda/link3",
+        ...         "collider0": "/World/box",
+        ...         "collider1": "/panda/link3/collisions",
+        ...         "separation": -0.004,
+        ...         "impulse": (0.0, 0.0, 0.3),
+        ...         "position": (0.1, 0.0, 0.5),
+        ...     },
+        ...     {
+        ...         "actor0": "/panda/link3",
+        ...         "actor1": "/World/box",
+        ...         "collider0": "/panda/link3/collisions",
+        ...         "collider1": "/World/box",
+        ...         "separation": 0.001,
+        ...         "impulse": (0.0, 0.4, 0.0),
+        ...         "position": (0.1, 0.1, 0.5),
+        ...     },
+        ... ]
+        >>> pairs, n_self = aggregate_robot_contacts(pts, "/panda")
+        >>> [
+        ...     (p["link"], p["other_prim"], p["min_separation_m"], p["contact_points"])
+        ...     for p in pairs
+        ... ]
+        [('link3', '/World/box', -0.004, 2)]
+        >>> round(pairs[0]["impulse_ns"], 3), n_self
+        (0.7, 0)
+    """
+    root = robot_prim.rstrip("/")
+
+    def on_robot(path: str) -> bool:
+        return path == root or path.startswith(root + "/")
+
+    pairs: dict[tuple[str, str], dict[str, Any]] = {}
+    self_points = 0
+    for p in points:
+        c0, c1 = str(p["collider0"]), str(p["collider1"])
+        r0, r1 = on_robot(c0), on_robot(c1)
+        if r0 and r1:
+            self_points += 1
+            continue
+        if not (r0 or r1):
+            continue
+        robot_actor, robot_col, other_actor, other_col = (
+            (str(p["actor0"]), c0, str(p["actor1"]), c1)
+            if r0
+            else (str(p["actor1"]), c1, str(p["actor0"]), c0)
+        )
+        sep = float(p["separation"])
+        rec = pairs.setdefault(
+            (robot_col, other_col),
+            {
+                "link": robot_actor.rsplit("/", 1)[-1],
+                "robot_collider": robot_col,
+                "other_prim": other_col,
+                "other_body": other_actor,
+                "min_separation_m": sep,
+                "contact_points": 0,
+                "impulse_ns": 0.0,
+                "deepest_point_xyz": [float(v) for v in p["position"]],
+            },
+        )
+        rec["contact_points"] += 1
+        rec["impulse_ns"] += float(np.linalg.norm(np.asarray(p["impulse"], dtype=np.float64)))
+        if sep < rec["min_separation_m"]:
+            rec["min_separation_m"] = sep
+            rec["deepest_point_xyz"] = [float(v) for v in p["position"]]
+    return sorted(pairs.values(), key=lambda r: r["min_separation_m"]), self_points
+
+
 class IsaacManifestScene(IsaacSceneBase):
     """A URDF-imported, manifest-driven Isaac Sim scene."""
 
@@ -1704,6 +1807,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # clouds are published in base_frame, which need not be the URDF root
         # (OpenArm's openarm_base sits 0.698 m above it).
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
+        self._enable_contact_reports()
         self._world.reset()
         # Opening/importing a stage can restore renderer defaults. Apply the
         # requested settings after those operations and before the first image.
@@ -2569,6 +2673,91 @@ class IsaacManifestScene(IsaacSceneBase):
             self._grade_scores,
             str(self._grades[0]["name"]),
         )
+
+    def _enable_contact_reports(self) -> None:
+        """Report every contact of every robot rigid body (threshold 0), for ``contacts``.
+
+        Applied before physics initializes; diagnostics only, the contacts themselves
+        are unchanged.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import PhysxSchema, Usd, UsdPhysics
+
+        n = 0
+        for prim in Usd.PrimRange(get_current_stage().GetPrimAtPath(self._robot_prim)):
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr().Set(0.0)
+                n += 1
+        print(f"[isaac_manifest_scene] contact reports on {n} robot rigid bodies", flush=True)
+
+    def contact_ground_truth(self) -> dict[str, Any]:
+        """PhysX robot-vs-world contacts of the last physics step (the sidecar ``contacts``).
+
+        One record per (robot collider, other collider) pair from
+        ``aggregate_robot_contacts``, each with both colliders' authored
+        contact/rest offsets (``None`` = unauthored, PhysX-derived), plus the
+        ``CONTACTS_CAVEAT`` that says what an empty list means. There is no nearest
+        distance beyond the contactOffset band (``nearest_robot_world_pairs`` is
+        ``None`` with the reason): PhysX's Python API has no shape-to-shape distance.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from omni.physx import get_physx_simulation_interface
+        from pxr import PhysicsSchemaTools, PhysxSchema
+
+        headers, data = get_physx_simulation_interface().get_contact_report()[:2]
+
+        def path(i: int) -> str:
+            return str(PhysicsSchemaTools.intToSdfPath(i))
+
+        def f3(v: Any) -> tuple[float, float, float]:
+            return (float(v.x), float(v.y), float(v.z))
+
+        points = []
+        for h in headers:
+            ends = (path(h.actor0), path(h.actor1), path(h.collider0), path(h.collider1))
+            for d in data[h.contact_data_offset : h.contact_data_offset + h.num_contact_data]:
+                points.append(
+                    {
+                        "actor0": ends[0],
+                        "actor1": ends[1],
+                        "collider0": ends[2],
+                        "collider1": ends[3],
+                        "separation": float(d.separation),
+                        "impulse": f3(d.impulse),
+                        "position": f3(d.position),
+                    }
+                )
+        pairs, self_points = aggregate_robot_contacts(points, self._robot_prim)
+        stage = get_current_stage()
+
+        def offsets(collider: str) -> dict[str, float | None]:
+            api = PhysxSchema.PhysxCollisionAPI(stage.GetPrimAtPath(collider))
+
+            def read(attr: Any) -> float | None:
+                v = attr.Get() if attr else None
+                return float(v) if v is not None and math.isfinite(float(v)) else None
+
+            return {
+                "contact_offset_m": read(api.GetContactOffsetAttr()),
+                "rest_offset_m": read(api.GetRestOffsetAttr()),
+            }
+
+        for rec in pairs:
+            rec["robot_collider_offsets"] = offsets(rec["robot_collider"])
+            rec["other_collider_offsets"] = offsets(rec["other_prim"])
+        return {
+            "sim_time_ns": self.sim_time_ns(),
+            "robot_prim": self._robot_prim,
+            "robot_world_contacts": pairs,
+            "self_contact_points": self_points,
+            "nearest_robot_world_pairs": None,
+            "nearest_unavailable_reason": (
+                "PhysX (omni.physx Python) exposes no shape-to-shape distance query -- only "
+                "point-to-prim closest points and sweeps; pairs inside the contactOffset band "
+                "appear in robot_world_contacts with min_separation_m > 0"
+            ),
+            "contacts_caveat": CONTACTS_CAVEAT,
+        }
 
     def _extra_info(self) -> dict[str, Any]:
         """Simulator ground truth in the step ``info`` — never a policy observation.

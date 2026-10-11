@@ -277,7 +277,7 @@ all joined by `stop_seq`, all `error`-level, all emitted through the node logger
 
 | Line | Fires | Carries |
 |---|---|---|
-| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s |
+| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live — or, on Isaac, when the env serves `contact_ground_truth` | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s. On Isaac: `isaac_estop_ground_truth_record(...)` instead (`backend: "isaacsim"`, PhysX `robot_world_contacts` with `min_separation_m`, `max_penetration_m`, no near-miss probes — see its `contacts_caveat`) |
 | `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
 | `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 
