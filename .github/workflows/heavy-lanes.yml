@@ -183,6 +183,10 @@ jobs:
                   --include-provisioned --groups "$group" --junit-xml "$lane_xml" 2>&1 | tee "$log"
                 rc=${PIPESTATUS[0]}
                 python3 scripts/repair_hf_libero_install.py || true
+                # Exit 5 (everything skipped at collection) is judged by the
+                # report, as in the isolated branch: a declared gap passes, and
+                # an empty report fails as "collected no tests".
+                if [ "$rc" -eq 5 ]; then rc=0; fi
                 report_lane "$group" "$rc" --junit-xml "$lane_xml" || rc=1
               else
                 # Partition selected targets: files flagged for per-process
