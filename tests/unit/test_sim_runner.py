@@ -90,6 +90,23 @@ def test_sim_runner_run_emits_n_episode_results() -> None:
         assert ep.steps == 2
 
 
+def test_an_unset_success_key_reads_the_sidecar_default() -> None:
+    """``TaskSpec.success_key`` unset: the runner reads ``DEFAULT_SUCCESS_KEY``, the key the
+    sidecar backends start with — not "never success" (#349: a placed Isaac box graded
+    ``complete`` with ``success`` False in every summary)."""
+    env_cfg = _mock_env(n_episodes=1, success_step=2, max_steps=5)
+    env_cfg = env_cfg.model_copy(
+        update={"task": env_cfg.task.model_copy(update={"success_key": None})}
+    )
+    runner = SimRunner(env_cfg)
+    runner.activate()
+    try:
+        runner.run(max_ticks=100)
+    finally:
+        runner.deactivate()
+    assert [ep.success for ep in runner.episode_results] == [True]
+
+
 # ── Tick-flavour semantics ──────────────────────────────────────────────────
 
 

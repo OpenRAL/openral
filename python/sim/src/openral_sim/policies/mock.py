@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
 from openral_sim.registry import POLICIES, SCENES
-from openral_sim.rollout import StepResult
+from openral_sim.rollout import DEFAULT_SUCCESS_KEY, StepResult
 
 if TYPE_CHECKING:
     from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
@@ -55,9 +55,8 @@ class _MockSim:
         self._step += 1
         terminated = self._step >= self.success_step
         success = terminated  # mock success: terminate after N steps
-        mock_info: dict[str, object] = {}
-        if self.task.success_key is not None:
-            mock_info[self.task.success_key] = success
+        # Like the sidecar backends: an unset task key reports under DEFAULT_SUCCESS_KEY.
+        mock_info: dict[str, object] = {self.task.success_key or DEFAULT_SUCCESS_KEY: success}
         return StepResult(
             observation=self._observe(),
             reward=1.0 if success else 0.0,

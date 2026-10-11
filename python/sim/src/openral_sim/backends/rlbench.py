@@ -46,7 +46,7 @@ from openral_core.exceptions import ROSConfigError
 
 from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.registry import SCENES
-from openral_sim.rollout import StepResult
+from openral_sim.rollout import DEFAULT_SUCCESS_KEY, StepResult
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
@@ -349,7 +349,7 @@ def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
         "--max-steps",
         str(env_cfg.task.max_steps if env_cfg.task.max_steps is not None else 25),
         "--success-key",
-        env_cfg.task.success_key or "is_success",
+        env_cfg.task.success_key or DEFAULT_SUCCESS_KEY,
         "--max-tries",
         str(max_tries),
         "--host",

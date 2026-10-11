@@ -88,6 +88,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
 from openral_sim.registry import SCENES
+from openral_sim.rollout import DEFAULT_SUCCESS_KEY
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
@@ -2326,7 +2327,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         # cap so the continuously-driven deploy env never truncates mid-run.
         str(env_cfg.task.max_steps if env_cfg.task.max_steps is not None else _DEFAULT_MAX_STEPS),
         "--success-key",
-        env_cfg.task.success_key or "is_success",
+        env_cfg.task.success_key or DEFAULT_SUCCESS_KEY,
         "--host",
         host,
         "--port",

@@ -327,6 +327,15 @@ class SimRollout(Protocol):
         """Release any underlying engine resources."""
 
 
+DEFAULT_SUCCESS_KEY = "is_success"
+"""Step ``info`` key read for success when ``TaskSpec.success_key`` is unset.
+
+The sidecar backends (Isaac Sim, RoboTwin, RLBench) start their sidecar with this key
+when the task names none; the runner reads the same key, so an unset key no longer
+silently reports every episode as failed (a placed Isaac box graded ``complete`` while
+``success`` stayed False).
+"""
+
 ROBOT_CONTACTS_INFO_KEY = "robot_contacts"
 """Step ``info`` key a backend fills with this step's robot-vs-world contacts.
 

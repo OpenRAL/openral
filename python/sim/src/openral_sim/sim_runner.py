@@ -34,6 +34,7 @@ from opentelemetry import trace
 
 from openral_sim.factory import make_env, make_policy, make_robot
 from openral_sim.rollout import (
+    DEFAULT_SUCCESS_KEY,
     ROBOT_CONTACTS_INFO_KEY,
     EpisodeResult,
     env_action_dim,
@@ -758,7 +759,7 @@ class SimRunner(InferenceRunnerBase):
             step_span.set_attribute("reward", step_result.reward)
             step_span.set_attribute("cum_reward", self._buf.total_reward)
 
-            success_key = self._env_cfg.task.success_key
+            success_key = self._env_cfg.task.success_key or DEFAULT_SUCCESS_KEY
             if (
                 success_key in step_result.info
                 and bool(step_result.info[success_key])
