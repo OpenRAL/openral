@@ -502,7 +502,12 @@ class VisionAttachmentEvidenceProducer:
                 f"Vision attachment evidence needs one gripper parent link, got {attach_links}."
             )
         self._attach_link = next(iter(attach_links))
-        self._touch_links = [joint.child_link for joint in gripper_joints]
+        # The jaws plus their mimic followers (#349): the follower finger squeezes the
+        # payload as hard as the leader, so the payload never collides with it.
+        jaws = {joint.name for joint in gripper_joints}
+        self._touch_links = [joint.child_link for joint in gripper_joints] + [
+            m.child_link for m in description.mimic_joints if m.mimics in jaws
+        ]
         self._attached: bool = False
 
     @property

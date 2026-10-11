@@ -1625,7 +1625,12 @@ class SimAttachmentEvidenceTracker:
             raise ROSConfigError(f"Cannot resolve sim body for attach link {attach_link!r}.")
         self._attach_link = attach_link
         self._attach_body_id = _sim_joint_body_id(model, attach_joint)
-        self._touch_links = [joint.child_link for joint in gripper_joints]
+        # The jaws plus their mimic followers (#349): the follower finger squeezes the
+        # payload as hard as the leader, so the payload never collides with it.
+        jaws = {joint.name for joint in gripper_joints}
+        self._touch_links = [joint.child_link for joint in gripper_joints] + [
+            m.child_link for m in description.mimic_joints if m.mimics in jaws
+        ]
 
         self._gripper_body_groups = _resolve_gripper_body_groups(model, gripper_joints)
 

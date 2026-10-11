@@ -532,11 +532,15 @@ def test_volume_backstop_fires_on_a_thick_over_large_payload() -> None:
 
 
 def test_a_per_joint_producer_serves_one_openarm_hand() -> None:
-    """On a bimanual robot each hand gets its own attach link and touch link."""
+    """On a bimanual robot each hand gets its own attach link and touch links.
+
+    The touch links are the jaw and its mimic follower: a held payload sits between both
+    fingers, so checking it against the follower stops every grasp (#349 p_mix07).
+    """
     openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
     left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
     assert left.attach_link == "openarm_left_link7"
-    assert list(left.touch_links) == ["openarm_left_finger_pair"]
+    assert list(left.touch_links) == ["openarm_left_finger_pair", "openarm_left_finger_follower"]
     right = VisionAttachmentEvidenceProducer(openarm, gripper_joint="right_gripper")
     assert right.attach_link == "openarm_right_link7"
 
