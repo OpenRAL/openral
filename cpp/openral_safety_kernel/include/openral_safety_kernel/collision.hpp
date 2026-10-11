@@ -469,9 +469,10 @@ struct GraspTargetRegion {
 /// trip the arm-vs-world voxel check for a robot link whose bit is set in
 /// `link_mask` (the manifest-derived HAND links: gripper leaders, mimic
 /// followers and the link that carries them) **iff** `hand_speed_mps <=
-/// max_speed_mps` — the hand's commanded speed bound for the configuration
-/// being checked, set by the lifecycle per checked row — **and** `hand_lead_m
-/// <= max_lead_m`, the hand's lead over its measured pose (how far the checked
+/// max_speed_mps` — the hand's speed, set by the lifecycle per candidate: the
+/// MEASURED hand speed (joint-state velocity, row-independent), or, without a
+/// fresh measured velocity, the commanded speed bound per checked row —
+/// **and** `hand_lead_m <= max_lead_m`, the hand's lead over its measured pose (how far the checked
 /// row's hand is from where the hand really is; on a joint-PD arm the drives'
 /// force grows with it, so this bounds how hard the hand may push). A
 /// non-finite speed or lead (the lifecycle's "unknown": no measured state, no

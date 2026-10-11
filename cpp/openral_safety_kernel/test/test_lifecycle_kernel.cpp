@@ -4007,6 +4007,7 @@ public:
     js.name = js_names;
     js.position = {q};
     js.position.insert(js.position.end(), js_tail.begin(), js_tail.end());
+    js.velocity = js_velocity;
     js_pub_->publish(js);
     exec_.spin_some(std::chrono::milliseconds(5));
     if (state_fn) {
@@ -4099,6 +4100,10 @@ public:
   /// adds its second joint here).
   std::vector<std::string> js_names{"j0"};
   std::vector<double> js_tail{};
+  /// The measured joint velocities every beat, aligned with `js_names` (empty =
+  /// the message carries no velocity field, as every rig published before #349's
+  /// measured hand speed).
+  std::vector<double> js_velocity{};
   /// When set, the world state published every beat (stream stamp in, message
   /// out) in place of the `GraspBeat` one — the place-region tests drive the
   /// same rig with the declared-carry fixture.
@@ -5972,6 +5977,97 @@ TEST_F(LifecycleKernelTest, TheTickPartnerCheckSeedsFromThePreviousCommandToo) {
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.4, 0.0, {"j0"}, tick)));
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("hand_speed_mps=0.048"), 1U) << logs.joined();
+}
+
+// #349 follow-up (Isaac deploy sim, 4/4 runs): the chunk executor jumps
+// 0.5-1 rad at chunk boundaries, so the COMMANDED speed read 0.91-1.10 m/s
+// while PhysX measured the hand at <= 0.66 m/s. The speed bound now uses the
+// MEASURED hand speed (FK of q_meas + dq_meas * period vs q_meas); the lead
+// bound catches a commanded jump into the obstacle; with no fresh measured
+// velocity the commanded speed is the fallback (it reads faster).
+
+TEST_F(LifecycleKernelTest, ACommandedJumpWithASlowMeasuredHandAndASmallLeadIsExempt) {
+  // Accepted at 0.5, then a jump to the cell at 0: commanded 0.06 m/s (trips
+  // in ACommandedStepAboveTheSpeedBoundTrips). Measured at 0.1 rad/s the hand
+  // moves 0.1 * 0.06 = 0.006 m/s; the lead is 0.03 <= 0.05.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_slow", lag_params());
+  rig.js_velocity = {-0.1};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
+  EXPECT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("speed_mps=0.006 speed_source=measured"), 1U) << logs.joined();
+  b.active = false;
+  rig.warm(&b, kLagMeasuredQ, 100);
+  EXPECT_EQ(logs.count("max_speed_mps=0.006 max_speed_source=measured"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
+  // 0.5 rad/s measured: 0.03 m/s > 0.02, whatever the command does (it holds).
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_fast", lag_params());
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.send_once(&b, 0.0, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0.03 hand_lead_m=0 hand_speed_source=measured"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
+  // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
+  // rad into the cell — a 0.03 m lead over a 0.02 bound.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_lead", lag_params(0.02));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0 hand_lead_m=0.03 hand_speed_source=measured"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, JointStatesWithoutAVelocityFallBackToTheCommandedSpeed) {
+  // Velocities published, then a message without them: the measured velocity
+  // is forgotten and the commanded jump (0.06 m/s) trips.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_none", lag_params());
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ)));
+  rig.js_velocity = {};
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleMeasuredVelocityFallsBackToTheCommandedSpeed) {
+  // j0's velocity last landed > collision_state_deadline (300 ms) ago; the
+  // stream stays alive on another joint name, so positions read fresh while
+  // j0's velocity does not — the commanded jump (0.06 m/s) trips.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_stale", with_param(lag_params(), "collision_state_deadline_ms",
+                                                  rclcpp::ParameterValue(300.0)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ)));
+  rig.js_names = {"j_unrelated"};
+  rig.warm(&b, kLagMeasuredQ, 400);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_source=commanded"), 1U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {

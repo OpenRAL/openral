@@ -262,6 +262,10 @@ private:
   // seed-requiring modes: an incomplete/stale seed must reject, never check a
   // wrong (zero-filled) configuration.
   bool measured_state_fresh() const noexcept;
+  // True iff every FK-relevant dof has a finite measured velocity from a
+  // /joint_states message at most `collision_state_deadline_s_` old at
+  // `now_ns`. A message naming a joint without a velocity entry forgets it.
+  bool measured_velocity_fresh(std::int64_t now_ns) const noexcept;
 
   // Subscriptions / publishers / service / timer.
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
@@ -461,6 +465,12 @@ private:
   std::vector<std::int64_t> workspace_cmd_due_ns_;
   std::vector<std::uint8_t> workspace_cmd_set_;
   std::uint64_t workspace_cmd_drops_seen_{0};
+  /// The candidate's hand speed source: true = measured (FK of q_meas_ +
+  /// dq_meas_ * period vs q_meas_, row-independent, in
+  /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.
+  bool workspace_speed_measured_{false};
+  double workspace_measured_speed_mps_{std::numeric_limits<double>::infinity()};
+  bool workspace_speed_max_measured_{false};  ///< source of `workspace_speed_max_seen_`
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
@@ -470,8 +480,13 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   std::vector<std::string> collision_joint_names_;  ///< action-dof-order joint names
   std::unordered_map<std::string, int> joint_name_to_dof_;
-  std::vector<double> q_meas_;            ///< latest measured config, dof order
-  std::vector<bool> q_meas_seen_;         ///< per-dof: a measurement has landed
+  std::vector<double> q_meas_;     ///< latest measured config, dof order
+  std::vector<bool> q_meas_seen_;  ///< per-dof: a measurement has landed
+  /// Latest measured joint velocity per dof (dof order), whether the last
+  /// message naming that joint carried a finite one, and when it landed (ns).
+  std::vector<double> dq_meas_;
+  std::vector<std::uint8_t> dq_meas_seen_;
+  std::vector<std::int64_t> dq_meas_stamp_ns_;
   std::vector<int> collision_fk_dofs_;    ///< dof indices FK actually consumes
   std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
   std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)

@@ -442,10 +442,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // launch-derived hand links — gripper leaders, mimic followers and the link
   // carrying them) inside the live grasp declaration's producer-confirmed
   // `workspace_region` does not trip the world-voxel check while the hand's
-  // commanded speed is at most `workspace_contact_max_speed_mps` AND its lead
-  // over the measured pose is at most `workspace_contact_max_lead_m`. The speed
-  // is measured over `workspace_contact_control_period_s` (the chunk row
-  // spacing), row 0 from the previously accepted command while fresh.
+  // speed is at most `workspace_contact_max_speed_mps` AND its lead over the
+  // measured pose is at most `workspace_contact_max_lead_m`. The speed is the
+  // MEASURED hand speed (/joint_states velocity over one
+  // `workspace_contact_control_period_s`); without a fresh measured velocity,
+  // the commanded speed (row spacing, row 0 from the previously accepted
+  // command while fresh) is the fallback.
   // No default the kernel would silently use: enabled with a speed, lead or
   // period that is not finite and > 0 (lead also <= kMaxWorkspaceContactLeadM)
   // refuses configure, as does enabled without `grasp_allowance_enabled`.
@@ -662,8 +664,9 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     RCLCPP_WARN(this->get_logger(),
                 "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
                 "hand links [%s] inside a live grasp declaration's map-confirmed workspace do "
-                "not trip the world-voxel check while BOTH the hand's commanded speed is <= %g "
-                "m/s (over %g s rows; row 0 from the previously accepted command while it is "
+                "not trip the world-voxel check while BOTH the hand's speed is <= %g m/s "
+                "(measured from /joint_states velocity over one %g s period; without a fresh "
+                "velocity, commanded: row 0 from the previously accepted command while it is "
                 "fresh, %g periods, else from the measured state) AND its lead over the "
                 "measured pose is <= %g m (the push bound); arm links, contact outside the "
                 "workspace and a fast or far-leading hand stop as before",
@@ -724,6 +727,9 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   const std::size_t ndof = envelope_.n_dof;
   q_meas_.assign(ndof, 0.0);
   q_meas_seen_.assign(ndof, false);
+  dq_meas_.assign(ndof, 0.0);
+  dq_meas_seen_.assign(ndof, 0);
+  dq_meas_stamp_ns_.assign(ndof, 0);
   q_check_.assign(ndof, 0.0);
   q_fk_.assign(ndof, 0.0);
   slot_commanded_.assign(ndof, 0);
@@ -1313,7 +1319,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
                      "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g "
-                     "hand_lead_m=%g",
+                     "hand_lead_m=%g hand_speed_source=%s",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
@@ -1323,10 +1329,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
                      static_cast<int>(voxel_grid_.workspace_region.valid),
                      voxel_grid_.workspace_region.hand_speed_mps,
-                     voxel_grid_.workspace_region.hand_lead_m);
+                     voxel_grid_.workspace_region.hand_lead_m,
+                     workspace_speed_measured_ ? "measured" : "commanded");
         if (voxel_grid_.workspace_region.valid) {
           span->SetAttribute("safety.workspace_hand_speed_mps",
                              voxel_grid_.workspace_region.hand_speed_mps);
+          span->SetAttribute("safety.workspace_hand_speed_source",
+                             workspace_speed_measured_ ? "measured" : "commanded");
           span->SetAttribute("safety.workspace_hand_lead_m",
                              voxel_grid_.workspace_region.hand_lead_m);
         }
@@ -1423,6 +1432,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const bool workspace_on = workspace_contact_enabled_ && workspace_live();
       voxel_grid_.workspace_region = workspace_on ? workspace_region_ : WorkspaceContactRegion{};
       const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
+      workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
       span->SetAttribute("safety.workspace_contact_active", workspace_on);
       std::uint64_t workspace_chunk_pairs = 0;
       double workspace_chunk_min = std::numeric_limits<double>::infinity();
@@ -1458,8 +1468,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (voxel_grid_.workspace_region.valid) {
           const bool known = workspace_prev != nullptr;
           voxel_grid_.workspace_region.hand_speed_mps =
-              known ? workspace_hand_speed(*workspace_prev)
-                    : std::numeric_limits<double>::infinity();
+              !known                      ? std::numeric_limits<double>::infinity()
+              : workspace_speed_measured_ ? workspace_measured_speed_mps_
+                                          : workspace_hand_speed(*workspace_prev);
           voxel_grid_.workspace_region.hand_lead_m =
               known ? workspace_hand_lead() : std::numeric_limits<double>::infinity();
         }
@@ -1504,7 +1515,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
             workspace_min_distance_total_ =
                 std::min(workspace_min_distance_total_, hit.workspace_min_distance);
-            workspace_speed_max_seen_ = std::max(workspace_speed_max_seen_, speed);
+            if (speed > workspace_speed_max_seen_) {
+              workspace_speed_max_seen_ = speed;
+              workspace_speed_max_measured_ = workspace_speed_measured_;
+            }
             workspace_lead_max_seen_ = std::max(workspace_lead_max_seen_, lead);
             const auto l = static_cast<std::size_t>(hit.workspace_link);
             const auto wall = std::chrono::steady_clock::now();
@@ -1513,10 +1527,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_last_warn_[l] = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_contact link=%s cell=%d depth_mm=%.1f "
-                          "speed_mps=%.3f max_mps=%g lead_m=%.4f max_lead_m=%g pairs=%d "
-                          "step=%d target=%s",
+                          "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f max_lead_m=%g "
+                          "pairs=%d step=%d target=%s",
                           link_name(hit.workspace_link).c_str(), hit.workspace_cell,
                           std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
+                          workspace_speed_measured_ ? "measured" : "commanded",
                           workspace_max_speed_mps_, lead, workspace_max_lead_m_,
                           hit.workspace_pairs, step, workspace_target_.c_str());
             }
@@ -1525,6 +1540,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             span->SetAttribute("safety.workspace_contact_max_depth_m",
                                std::max(0.0, -workspace_chunk_min));
             span->SetAttribute("safety.workspace_hand_speed_mps", speed);
+            span->SetAttribute("safety.workspace_hand_speed_source",
+                               workspace_speed_measured_ ? "measured" : "commanded");
             span->SetAttribute("safety.workspace_hand_lead_m", lead);
           }
           if (hit.hit) {
@@ -1611,7 +1628,17 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       };
 
       if (is_position) {
-        // #349 hand speed and lead. Row s is reached from row s-1 in one
+        // #349 hand speed and lead. The speed bound is about impact energy,
+        // which is set by how fast the hand ACTUALLY moves: the measured hand
+        // speed, FK(q_meas + dq_meas * period) against FK(q_meas) over one
+        // period, the same for every row. A commanded jump into an obstacle
+        // (the chunk executor's 0.5-1 rad chunk-boundary steps, which the arm
+        // smooths) is the LEAD bound's job — such a jump makes a lead far over
+        // `workspace_contact_max_lead_m`. Without a fresh measured velocity for
+        // every FK dof the commanded speed below is the fallback; it reads the
+        // hand faster, never slower.
+        //
+        // Commanded fallback: row s is reached from row s-1 in one
         // control period. Row 0's previous row is, per joint the row commands,
         // that joint's previously ACCEPTED command while it is fresh, else its
         // measured value (a position-controlled arm trails its command by
@@ -1628,23 +1655,38 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const bool full_row = msg->joint_names.empty();
           fk_config(q_meas_.data());
           workspace_snapshot(workspace_meas_pose_);
-          for (std::size_t d = 0; d < robot_ndof; ++d) {
-            const bool commanded = full_row || slot_commanded_[d] != 0;
-            q_workspace_[d] =
-                commanded && workspace_command_fresh(d, now_ns) ? workspace_cmd_q_[d] : q_meas_[d];
-          }
-          fk_config(q_workspace_.data());
-          workspace_snapshot(workspace_prev_plain_);
-          ws_plain = &workspace_prev_plain_;
-          if (tick_partner) {
-            for (std::size_t d = 0; d < robot_ndof; ++d) {
-              if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
-                q_workspace_[d] = tick_target_[d];
-              }
+          if (measured_velocity_fresh(now_ns)) {
+            workspace_snapshot(workspace_prev_plain_);
+            std::copy(q_meas_.begin(), q_meas_.end(), q_workspace_.begin());
+            for (const int d : collision_fk_dofs_) {
+              const auto i = static_cast<std::size_t>(d);
+              q_workspace_[i] += dq_meas_[i] * workspace_control_period_s_;
             }
             fk_config(q_workspace_.data());
-            workspace_snapshot(workspace_prev_partner_);
-            ws_partner = &workspace_prev_partner_;
+            workspace_measured_speed_mps_ = workspace_hand_speed(workspace_prev_plain_);
+            workspace_speed_measured_ = true;
+            ws_plain = &workspace_prev_plain_;  // marks "known"; not read when measured
+            ws_partner = &workspace_prev_plain_;
+          } else {
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              const bool commanded = full_row || slot_commanded_[d] != 0;
+              q_workspace_[d] = commanded && workspace_command_fresh(d, now_ns)
+                                    ? workspace_cmd_q_[d]
+                                    : q_meas_[d];
+            }
+            fk_config(q_workspace_.data());
+            workspace_snapshot(workspace_prev_plain_);
+            ws_plain = &workspace_prev_plain_;
+            if (tick_partner) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+                  q_workspace_[d] = tick_target_[d];
+                }
+              }
+              fk_config(q_workspace_.data());
+              workspace_snapshot(workspace_prev_partner_);
+              ws_partner = &workspace_prev_partner_;
+            }
           }
         }
         for (std::uint16_t s = 0; s < view.horizon; ++s) {
@@ -1932,6 +1974,10 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   if (msg == nullptr) {
     return;
   }
+  // #349: the measured velocity rides the same message. A joint named without
+  // a finite velocity entry forgets its last one, so the workspace speed bound
+  // falls back to the commanded speed rather than trusting an old reading.
+  const std::int64_t now_ns = this->now().nanoseconds();
   const std::size_t n = std::min(msg->name.size(), msg->position.size());
   for (std::size_t i = 0; i < n; ++i) {
     const auto it = joint_name_to_dof_.find(msg->name[i]);
@@ -1942,10 +1988,29 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
     if (d < q_meas_.size()) {
       q_meas_[d] = msg->position[i];
       q_meas_seen_[d] = true;
+      const bool has_v = i < msg->velocity.size() && std::isfinite(msg->velocity[i]);
+      dq_meas_[d] = has_v ? msg->velocity[i] : 0.0;
+      dq_meas_seen_[d] = has_v ? 1 : 0;
+      dq_meas_stamp_ns_[d] = now_ns;
     }
   }
   q_meas_received_ = true;
   q_meas_stamp_ = this->now();
+}
+
+bool SafetyKernelLifecycleNode::measured_velocity_fresh(std::int64_t now_ns) const noexcept {
+  const double deadline_ns = collision_state_deadline_s_ * 1e9;
+  for (const int d : collision_fk_dofs_) {
+    const auto i = static_cast<std::size_t>(d);
+    if (i >= dq_meas_seen_.size() || dq_meas_seen_[i] == 0) {
+      return false;
+    }
+    const std::int64_t age_ns = now_ns - dq_meas_stamp_ns_[i];
+    if (age_ns < 0 || static_cast<double>(age_ns) > deadline_ns) {
+      return false;
+    }
+  }
+  return !collision_fk_dofs_.empty();
 }
 
 bool SafetyKernelLifecycleNode::measured_state_fresh() const noexcept {
@@ -3519,12 +3584,13 @@ void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
                 workspace_target_.c_str());
     RCLCPP_INFO(this->get_logger(),
                 "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
-                "max_speed_mps=%.3f max_mps=%g max_lead_m=%.3f lead_bound_m=%g",
+                "max_speed_mps=%.3f max_speed_source=%s max_mps=%g max_lead_m=%.3f "
+                "lead_bound_m=%g",
                 workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
                 workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3
                                            : 0.0,
-                workspace_speed_max_seen_, workspace_max_speed_mps_, workspace_lead_max_seen_,
-                workspace_max_lead_m_);
+                workspace_speed_max_seen_, workspace_speed_max_measured_ ? "measured" : "commanded",
+                workspace_max_speed_mps_, workspace_lead_max_seen_, workspace_max_lead_m_);
     clear_workspace_commands();  // the declaration changed: start the chain afresh
   }
   workspace_region_ = WorkspaceContactRegion{};
@@ -3532,6 +3598,7 @@ void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
   workspace_pairs_total_ = 0;
   workspace_min_distance_total_ = std::numeric_limits<double>::infinity();
   workspace_speed_max_seen_ = 0.0;
+  workspace_speed_max_measured_ = false;
   workspace_lead_max_seen_ = 0.0;
 }
 

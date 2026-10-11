@@ -1031,10 +1031,18 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
 2. the cell centre lies inside the live **workspace** — `GraspDeclaration.workspace_region`, the
    scene-declared `workspace_box` the HAL's grasp-target leg confirmed against a fresh voxel grid
    (occupied cells covering ≥ 10 % of its footprint), re-stamped with that grid's `source_stamp`;
-3. the **hand is slow** — `hand_speed_mps ≤ workspace_contact_max_speed_mps` (impact energy),
-   where for row *s* of a JOINT_POSITION chunk `hand_speed = max over hand links of
-   link_displacement_bound(pose at row s−1, pose at row s, reach) /
-   workspace_contact_control_period_s`. Row −1 is, per joint the row commands, that joint's
+3. the **hand is slow** — `hand_speed_mps ≤ workspace_contact_max_speed_mps` (impact energy).
+   The speed is the **measured** hand speed, once per candidate: `max over hand links of
+   link_displacement_bound(pose at q_meas, pose at q_meas + dq_meas · period, reach) / period`
+   (`period` = `workspace_contact_control_period_s`), `dq_meas` the `/joint_states` velocity. Impact
+   energy is set by how fast the hand actually moves; the commanded trajectory has 0.5–1 rad
+   chunk-boundary jumps (the runner's non-RTC prefetch) that the arm smooths, and a commanded jump
+   into an obstacle is the lead bound's job (item 4). A message naming a joint without a finite
+   velocity forgets that joint's velocity; the measured speed is used iff every FK-relevant dof has
+   one at most `collision_state_deadline_ms` old (`measured_velocity_fresh`). **Otherwise the
+   commanded speed** (it reads faster): for row *s* of a JOINT_POSITION chunk `max over hand links
+   of link_displacement_bound(pose at row s−1, pose at row s, reach) / period`. Row −1 is, per
+   joint the row commands, that joint's
    **previously accepted command** (the last row of the last accepted chunk commanding it, from any
    earlier tick or slot) while it is **fresh** — due at most `kWorkspaceCommandFreshPeriods` = 2
    control periods ago, never not-yet-due — else its **measured** value. Measured-to-row reads a
@@ -1076,16 +1084,18 @@ review pending` with the links, both bounds and the freshness window. Sim calibr
 
 **Disclosure — never silent.** Every tolerated pair within the margin is counted
 (`CollisionHit::workspace_pairs`, the deepest one's link/cell/distance). The node WARNs
-`safety.workspace_contact link=<l> cell=<idx> depth_mm=<d> speed_mps=<v> max_mps=<m> lead_m=<d>
+`safety.workspace_contact link=<l> cell=<idx> depth_mm=<d> speed_mps=<v>
+speed_source=<measured|commanded> max_mps=<m> lead_m=<d>
 max_lead_m=<m> pairs=<n> step=<s> target=<id>` at most once per second per link; logs
 `safety.workspace_region_armed` / `_dropped reason=` / `_rejected reason=` (a standing refusal once
 per change) and, when the workspace drops, `safety.workspace_contact_summary target= pairs=
-max_depth_mm= max_speed_mps= max_mps= max_lead_m= lead_bound_m=`; sets span attributes
-`safety.workspace_contact_active` (the workspace was live for the candidate),
+max_depth_mm= max_speed_mps= max_speed_source= max_mps= max_lead_m= lead_bound_m=`; sets span
+attributes `safety.workspace_contact_active` (the workspace was live for the candidate),
 `safety.workspace_contact_pairs`, `safety.workspace_contact_max_depth_m`,
-`safety.workspace_hand_speed_mps`, `safety.workspace_hand_lead_m`; and the `safety.collision` stop
-line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>` for the reported
-row (`hand_speed_mps` is the commanded speed).
+`safety.workspace_hand_speed_mps`, `safety.workspace_hand_speed_source`,
+`safety.workspace_hand_lead_m`; and the `safety.collision` stop line carries
+`workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
+hand_speed_source=<measured|commanded>` for the reported row.
 
 Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle tests
 (`test_lifecycle_kernel.cpp`), the allocation-free check (`test_no_alloc.cpp`), and

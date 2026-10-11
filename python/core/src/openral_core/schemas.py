@@ -10727,7 +10727,7 @@ class DeployRuntime(BaseModel):
     while a live ``GraspDeclaration`` carries a producer-confirmed ``workspace_region``,
     world-voxel cells centred in that box do not trip the robot's **hand** links (the
     launch derives them from the manifest, ``RobotDescription.hand_links()``) as long as the
-    hand's commanded speed is at most ``workspace_contact_max_speed_mps`` **and** its lead
+    hand's speed is at most ``workspace_contact_max_speed_mps`` **and** its lead
     over the measured pose is at most ``workspace_contact_max_lead_m``. Arm links,
     contact outside the workspace and a fast or far-leading hand stop as before. Requires
     ``grasp_allowance_enabled`` (the workspace rides the grasp declaration) and both
@@ -10737,13 +10737,14 @@ class DeployRuntime(BaseModel):
     Backward-compatible addition."""
     workspace_contact_max_speed_mps: float | None = Field(default=None, gt=0.0, le=1.0)
     """The hand speed bound (m/s) of the workspace contact rule (impact energy): the
-    largest displacement of any point of a hand link's collision geometry between
-    consecutive **commanded** rows, over one control period
-    (``action_spec.control_freq_hz``). Row 0's previous row is the previously accepted
-    command while it is fresh (two control periods), else the measured state — a
-    position-controlled arm trails its command, so measured-to-command is tracking lag,
-    not motion. Required when ``workspace_contact_enabled`` — there is no default the
-    kernel would silently use. **Calibration point** (0.35 m/s in the Isaac deploy sim,
+    largest displacement of any point of a hand link's collision geometry over one control
+    period (``action_spec.control_freq_hz``) at the **measured** joint velocity
+    (``/joint_states``) — impact energy is set by how fast the hand actually moves, and a
+    commanded jump into an obstacle is the lead bound's job. Without a fresh measured
+    velocity the kernel falls back to the speed between consecutive **commanded** rows
+    (row 0 from the previously accepted command while fresh, else the measured state),
+    which reads the hand faster. Required when ``workspace_contact_enabled`` — there is no
+    default the kernel would silently use. **Calibration point** (0.35 m/s in the Isaac deploy sim,
     issue #349); capped at 1 m/s, beyond which the rule is not a contact-energy bound at
     all."""
     workspace_contact_max_lead_m: float | None = Field(default=None, gt=0.0, le=0.10)
