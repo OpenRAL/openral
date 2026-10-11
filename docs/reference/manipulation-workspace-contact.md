@@ -181,11 +181,16 @@ point-in-OBB), the **hand speed** of that row is ≤ `workspace_contact_max_spee
                       / control_period                      (measured; the same for every row)
   hand_speed(row s) = max over hand links l of D_l(row s−1, row s) / control_period
                                                             (commanded fallback)
-  hand_lead(row s)  = max over hand links l of D_l(measured, row s)
+  hand_lead(row s)  = max over hand links l of D_l(measured, row s with the jaws at measured)
 
 with Δ, θ the translation and rotation of link l's frame between the two configurations and
 reach_l the radius of its collision geometry about its origin — an upper bound on how far any
-point of the hand moved.
+point of the hand moved. The lead holds the jaw joints (`workspace_contact_jaw_joints`, the
+manifest's `role: gripper` joints) at their measured value: it bounds the arm's push. A jaw still
+closing on a held object has the rest of its stroke as commanded-minus-measured, which is a grasp
+squeeze bounded by the gripper's effort limit, not by the arm (p_mix02: 72–80 mm follower "lead"
+while the leader read 32 mm, stopped at 80.2 mm against the 80 mm bound, fingers on the target).
+Hazard-log assumption owed: the gripper's effort limit bounds the squeeze on real hardware.
 
 **Measured velocity.** `/joint_states` `velocity[i]`, stored per dof with the message's arrival
 time. A message naming a joint without a finite velocity entry (no `velocity` field, a shorter

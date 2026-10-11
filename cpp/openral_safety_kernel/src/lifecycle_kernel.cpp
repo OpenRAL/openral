@@ -456,6 +456,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
                                                     std::vector<std::string>{});
   this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
   this->declare_parameter<double>("workspace_contact_max_lead_m", 0.0);
+  // The gripper (jaw) joints, from the manifest's `role: gripper` joints: the lead
+  // is taken with them at their measured value, so it bounds the ARM's push and
+  // not a closing jaw's remaining stroke (a grasp squeeze is bounded by the
+  // gripper's own effort limit). Empty = every joint counts (the stricter reading).
+  this->declare_parameter<std::vector<std::string>>("workspace_contact_jaw_joints",
+                                                    std::vector<std::string>{});
   this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
@@ -657,6 +663,20 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     workspace_meas_pose_.assign(n_links, Transform{});
     workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
     q_workspace_.assign(envelope_.n_dof, 0.0);
+    q_lead_.assign(envelope_.n_dof, 0.0);
+    workspace_jaw_cols_.clear();
+    // Resolved against the parameter: `collision_joint_names_` is read further down.
+    const auto joint_names = this->get_parameter("collision_joint_names").as_string_array();
+    const auto jaw_joints = this->get_parameter("workspace_contact_jaw_joints").as_string_array();
+    for (const auto& name : jaw_joints) {
+      const auto it = std::find(joint_names.begin(), joint_names.end(), name);
+      const auto d = static_cast<std::size_t>(it - joint_names.begin());
+      if (it == joint_names.end() || d >= envelope_.n_dof) {
+        return refuse("workspace_contact_jaw_joints names '" + name +
+                      "', which is not a joint of this model");
+      }
+      workspace_jaw_cols_.push_back(static_cast<int>(d));
+    }
     workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
     workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
     workspace_cmd_set_.assign(envelope_.n_dof, 0);
@@ -1464,15 +1484,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // else the measured state); nullptr = speed and lead unknown.
       const auto check_config = [&](const double* q, int step, double extra_margin = 0.0,
                                     std::vector<Transform>* workspace_prev = nullptr) -> bool {
-        fk_config(q);
         if (voxel_grid_.workspace_region.valid) {
           const bool known = workspace_prev != nullptr;
+          // The lead at `q` with the jaws held at measured: the arm's push only.
+          if (known) {
+            std::copy(q, q + q_lead_.size(), q_lead_.begin());
+            for (const int d : workspace_jaw_cols_) {
+              q_lead_[static_cast<std::size_t>(d)] = q_meas_[static_cast<std::size_t>(d)];
+            }
+            fk_config(q_lead_.data());
+          }
+          voxel_grid_.workspace_region.hand_lead_m =
+              known ? workspace_hand_lead() : std::numeric_limits<double>::infinity();
+          fk_config(q);
           voxel_grid_.workspace_region.hand_speed_mps =
               !known                      ? std::numeric_limits<double>::infinity()
               : workspace_speed_measured_ ? workspace_measured_speed_mps_
                                           : workspace_hand_speed(*workspace_prev);
-          voxel_grid_.workspace_region.hand_lead_m =
-              known ? workspace_hand_lead() : std::numeric_limits<double>::infinity();
+        } else {
+          fk_config(q);
         }
         if (self_collision_enabled_) {
           const auto hit = check_self_collision(collision_model_, collision_scratch_,

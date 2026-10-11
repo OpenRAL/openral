@@ -455,6 +455,12 @@ private:
   std::vector<Transform> workspace_prev_plain_;
   std::vector<Transform> workspace_prev_partner_;
   std::vector<double> q_workspace_;  ///< row 0's previous configuration (n_dof)
+  /// The jaw columns (`workspace_contact_jaw_joints`) and the row they are reset
+  /// to measured in, for the lead:
+  /// the lead bounds the ARM's push, a closing jaw's squeeze is the gripper's own
+  /// effort limit (#349 p_mix02: a closure stroke read as an 80 mm lead).
+  std::vector<int> workspace_jaw_cols_;
+  std::vector<double> q_lead_;
   /// Hand-link poses at the measured configuration (the lead's reference).
   std::vector<Transform> workspace_meas_pose_;
   /// The last ACCEPTED JOINT_POSITION command per joint (its chunk's last row),

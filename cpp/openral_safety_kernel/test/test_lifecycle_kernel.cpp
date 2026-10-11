@@ -5889,6 +5889,22 @@ TEST_F(LifecycleKernelTest, ALeadAboveTheBoundTripsWithAStationaryCommand) {
   EXPECT_EQ(logs.count("hand_lead_m=0.021"), 1U) << logs.joined();
 }
 
+TEST_F(LifecycleKernelTest, AJawJointsStrokeIsNotLead) {
+  // The same push as above, but j0 is declared a jaw joint: the lead is taken
+  // with it at its measured value, so a jaw still closing on its stroke (the
+  // OpenArm grasp squeeze, #349 p_mix02) reads no lead and passes.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_jaw_lead",
+               with_param(lag_params(0.02), "workspace_contact_jaw_joints",
+                          rclcpp::ParameterValue(std::vector<std::string>{"j0"})));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(walk_in(rig, b, 0.2)) << logs.joined();
+  EXPECT_TRUE(rig.send_once(&b, 0.55, grasp_chunk(0.2))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
 TEST_F(LifecycleKernelTest, WithoutAPreviousCommandRowZeroFallsBackToTheMeasuredState) {
   // First row after activation: no previous command, the lag reads as speed.
   {
@@ -6097,6 +6113,14 @@ TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {
   GraspRig unknown("kernel_ws_cfg_unknown",
                    workspace_params(true, kWsMaxMps, kWsPeriodS, {"link0", "openarm_hand"}));
   EXPECT_FALSE(unknown.configure());
+  const auto jaws = [](std::vector<std::string> names) {
+    return with_param(workspace_params(), "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::move(names)));
+  };
+  GraspRig jaw_ok("kernel_ws_cfg_jaw_ok", jaws({"j0"}));
+  EXPECT_TRUE(jaw_ok.configure());
+  GraspRig jaw_bad("kernel_ws_cfg_jaw_bad", jaws({"left_gripper"}));
+  EXPECT_FALSE(jaw_bad.configure()) << "a jaw joint the model does not have";
   GraspRig off("kernel_ws_cfg_off", workspace_params(false, 0.0, 0.0, {}));
   EXPECT_TRUE(off.configure()) << "off, nothing is read";
 }

@@ -1055,9 +1055,13 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
    the same rule);
 4. the **hand does not lead far** — `hand_lead_m ≤ workspace_contact_max_lead_m` (push force),
    where `hand_lead = max over hand links of link_displacement_bound(pose at the MEASURED state,
-   pose at row s, reach)`, not divided by the period. On a joint-PD arm commanded-minus-measured is
-   proportional to what the drives push with; without it a hand whose stationary target is buried
-   deep would keep pushing at zero commanded speed.
+   pose at row s with the jaw joints at their measured value, reach)`, not divided by the period.
+   On a joint-PD arm commanded-minus-measured is proportional to what the drives push with; without
+   it a hand whose stationary target is buried deep would keep pushing at zero commanded speed. The
+   jaw joints (`workspace_contact_jaw_joints`, the manifest's `role: gripper` joints; empty = none
+   excluded) are held at measured because a closing jaw's remaining stroke is not an arm push: a
+   grasp squeeze is bounded by the gripper's own effort limit (#349 p_mix02, an 80 mm "lead" that
+   was the jaw still closing on a held box).
 
 `link_displacement_bound` = |Δorigin| + θ·reach bounds the displacement of every point of the
 link's collision geometry (`link_geometry_reach`), rotation included.
