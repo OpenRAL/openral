@@ -2133,6 +2133,13 @@ def provision_robocasa(backend_id: str) -> None:
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps(backend_id)
+    # Assets BEFORE the in-process import: `import robocasa` builds the object
+    # registry (`OBJ_CATEGORIES`) by globbing models/assets/objects once, so
+    # importing first froze it empty on a fresh host and the first env build
+    # failed with "No valid categories found for sampling". The downloaders run
+    # as subprocesses, and ensure_backend_deps has already checked (in a
+    # subprocess) that robocasa imports.
+    ensure_robocasa_assets()
 
     try:
         import robocasa  # reason: registers robocasa env classes (provisioned above)
@@ -2146,10 +2153,6 @@ def provision_robocasa(backend_id: str) -> None:
     import robosuite  # reason: probe -- ensure_backend_deps above guarantees this resolves
 
     _ = (robocasa, robosuite)  # silence unused-import; the imports are the probe
-    # Must follow the import probe: the kitchen downloader is driven as
-    # `runpy.run_module("robocasa.scripts.download_kitchen_assets")`, which
-    # needs an importable robocasa to resolve at all.
-    ensure_robocasa_assets()
 
 
 # rSkill `state_contract.layout` (StateLayout) -> the RoboCasa obs layout that
