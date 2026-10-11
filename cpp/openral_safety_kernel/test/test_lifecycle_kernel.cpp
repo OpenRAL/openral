@@ -6067,18 +6067,33 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeHoldsTheMeasuredPoseWhenSpeedIsTheOnl
   EXPECT_GE(logs.count("safety.workspace_brake hand_speed_mps=0.030"), 1U) << logs.joined();
 }
 
-TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeverAnswersALeadOverTheBound) {
-  // Same fast hand and contact, but a 0.005 m lead bound: the 0.1 rad command
-  // leads 0.006 m. Not a speed-only stop, so it latches as before.
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
+  // A still hand, a 0.005 m lead bound, the 0.1 rad command leads 0.006 m: the
+  // push is the only reason, and a hold commands no push.
   LogCapture logs;
   GraspRig rig("kernel_ws_brake_lead",
                with_param(lag_params(0.005), "workspace_contact_brake_enabled",
                           rclcpp::ParameterValue(true)));
-  rig.js_velocity = {-0.5};
+  rig.js_velocity = {0.0};
   rig.start();
   GraspBeat b = workspace_beat(rig.now_ns());
   rig.warm(&b, 0.0, 300);
-  EXPECT_FALSE(rig.send_once(&b, 0.0, grasp_chunk(0.1)));
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0);
+}
+
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeedsAFreshMeasuredVelocity) {
+  // No measured velocity: the speed is the commanded fallback, nothing measured
+  // says the arm can be held where it is — the stop latches as before.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_nov", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                 rclcpp::ParameterValue(true)));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.workspace_brake"), 0U);
 }

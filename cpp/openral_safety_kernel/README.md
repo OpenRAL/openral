@@ -1073,8 +1073,8 @@ support-witness and attach-residue exemptions; WARN `link=payload@<link>`); its 
 check against the robot is unchanged.
 
 **Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
-JOINT_POSITION chunk's only reason to stop is the measured hand speed (it passes with that speed
-read as within bound, the measured pose included), the kernel publishes a hold — every commanded
+JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
+both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
 non-jaw joint at its measured value — instead of an E-stop, no latch. WARN `safety.workspace_brake`.
 
 **Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired

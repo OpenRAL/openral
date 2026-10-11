@@ -482,12 +482,14 @@ private:
   /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.
   bool workspace_speed_measured_{false};
   /// #349 workspace brake (`workspace_contact_brake_enabled`, needs the workspace
-  /// rule): a JOINT_POSITION chunk whose ONLY reason to stop is the workspace's
-  /// measured hand speed is replaced by a hold at the measured pose (jaws keep
-  /// their command) instead of an E-stop. `ws_dry_run_` runs the checks without
-  /// reporting; `ws_speed_override_` reads the workspace hand speed as 0.
+  /// rule): a JOINT_POSITION chunk whose ONLY reasons to stop are the workspace's
+  /// measured hand speed and/or lead is replaced by a hold at the measured pose
+  /// (jaws keep their command) instead of an E-stop. `ws_dry_run_` runs the
+  /// checks without reporting; `ws_quiet_` also skips the workspace disclosure;
+  /// `ws_speed_override_` reads the workspace hand speed and lead as 0.
   bool workspace_brake_enabled_{false};
   bool ws_dry_run_{false};
+  bool ws_quiet_{false};
   bool ws_speed_override_{false};
   std::uint64_t workspace_brakes_{0};
   std::chrono::steady_clock::time_point workspace_brake_last_warn_{};

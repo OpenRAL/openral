@@ -285,15 +285,17 @@ against the OTHER hand's links gets the same rule on its attach link (`check_att
 `link=payload-self@<attach link>`; p8_mix04); against its own arm's links it still stops.
 
 **Brake instead of stop (sim):** `workspace_contact_brake_enabled` (the launch sets it with the
-rule). A JOINT_POSITION chunk that trips as-is but passes with the measured hand speed read as
-within bound — the lead, every exemption and every other check unchanged, and the measured pose
-itself passing — has the speed as its ONLY reason to stop. The kernel then publishes the chunk
+rule; it needs a fresh measured velocity). A JOINT_POSITION chunk that trips as-is but passes with
+the measured hand speed AND lead read as within bound — every exemption and every other check
+unchanged, and the measured pose itself passing — has speed and/or push as its ONLY reasons to stop. The kernel then publishes the chunk
 with every commanded non-jaw joint set to its measured value: a hold, i.e. a controlled stop with
 power kept and no latch (the jaws keep their command so the payload is not dropped); the next chunk
 is judged afresh. WARN `safety.workspace_brake` ≤ 1 Hz with a running count. Why: across 9 place
 batches the most common remaining stop was contact at 0.35–0.41 m/s while 809 tolerated contact
-samples had p99 0.26 m/s — the fast tail, which slowing down answers and a higher bound would not
-(follow-up 3, PACS-style braking). Any other reason (lead, arm link, outside the box) stops as before.
+samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while tolerated contact had p99 63 mm
+— both the tail, which a hold answers (no motion, no push) and higher bounds would not (follow-up 3,
+PACS-style braking). The checks run first as a dry run, so the no-trip case costs what it did. Any
+other reason (arm link, outside the box, no measured velocity) stops as before.
 
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
 Cartesian control modes, the force/current contact layer.

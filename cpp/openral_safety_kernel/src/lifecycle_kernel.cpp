@@ -1497,7 +1497,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // WARN <= 1 Hz per link. `who` prefixes the link: "" for a hand link,
       // "payload@" for a payload carried by it.
       const auto disclose_workspace = [&](const CollisionHit& hit, int step, const char* who) {
-        if (hit.workspace_pairs <= 0 || ws_dry_run_) {
+        if (hit.workspace_pairs <= 0 || ws_quiet_) {
           return;
         }
         const double speed = voxel_grid_.workspace_region.hand_speed_mps;
@@ -1551,8 +1551,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             }
             fk_config(q_lead_.data());
           }
-          voxel_grid_.workspace_region.hand_lead_m =
-              known ? workspace_hand_lead() : std::numeric_limits<double>::infinity();
+          voxel_grid_.workspace_region.hand_lead_m = !known
+                                                         ? std::numeric_limits<double>::infinity()
+                                                     : ws_speed_override_ ? 0.0
+                                                                          : workspace_hand_lead();
           fk_config(q);
           voxel_grid_.workspace_region.hand_speed_mps =
               !known                      ? std::numeric_limits<double>::infinity()
@@ -1786,29 +1788,34 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
           return false;
         };
-        // #349 workspace brake (sim-only draft). The hand is measured faster than
-        // the workspace bound: if the chunk trips as-is but passes with that speed
-        // read as within bound — every other check, the lead and every pair's
-        // exemption unchanged — the speed is the ONLY reason to stop, and a hold
-        // at the measured pose (a controlled stop, power kept, no latch) answers
-        // it: no further motion is commanded, the arm decelerates, and the next
-        // chunk is judged afresh. Jaw joints keep their command (a hold must not
-        // drop the payload). Any other reason stops exactly as before.
+        // #349 workspace brake (sim-only draft). With a live workspace and a fresh
+        // measured state the rows are first checked as a dry run (nothing reported,
+        // disclosure kept): no trip is today's accept, at today's cost. On a trip
+        // they are checked again with the workspace hand speed AND lead read as
+        // within bound — every other check, every pair's exemption and the measured
+        // pose itself unchanged. Passing then means the speed and/or the push were
+        // the ONLY reasons to stop, and a hold at the measured pose answers both:
+        // no further motion and no push (lead 0) is commanded, power is kept, no
+        // latch, and the next chunk is judged afresh. Jaw joints keep their command
+        // (a hold must not drop the payload). Any other reason stops as before.
+        bool rows_checked = false;
         if (workspace_brake_enabled_ && voxel_grid_.workspace_region.valid &&
-            workspace_speed_measured_ &&
-            !(workspace_measured_speed_mps_ <= workspace_max_speed_mps_)) {
+            workspace_speed_measured_) {
           ws_dry_run_ = true;
           const bool as_is = check_rows();
           bool slowed = true;
           if (as_is) {
+            ws_quiet_ = true;
             ws_speed_override_ = true;
             slowed = check_rows();
-            // The hold IS the measured pose: it must pass the reactive check too.
+            // The hold IS the measured pose: it must pass too.
             std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
             slowed = slowed || check_config(q_check_.data(), -1, 0.0, ws_plain);
             ws_speed_override_ = false;
+            ws_quiet_ = false;
           }
           ws_dry_run_ = false;
+          rows_checked = !as_is;
           if (as_is && !slowed) {
             scaled_chunk_ = *msg;
             const bool full_row = msg->joint_names.empty();
@@ -1830,10 +1837,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
               workspace_brake_last_warn_ = wall;
               RCLCPP_WARN(this->get_logger(),
-                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g brakes=%llu "
-                          "target=%s rskill_id=%s (held at the measured pose, no latch)",
+                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
+                          "brakes=%llu target=%s rskill_id=%s (held at the measured pose, no "
+                          "latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
-                          static_cast<unsigned long long>(workspace_brakes_),
+                          workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
                           workspace_target_.c_str(), msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
@@ -1843,7 +1851,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             return;
           }
         }
-        if (check_rows()) {
+        if (!rows_checked && check_rows()) {
           return;
         }
         // #349: accepted — remember each commanded joint's final row as the
