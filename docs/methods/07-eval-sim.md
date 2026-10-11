@@ -120,18 +120,18 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 - `sim_app: typer.Typer` — Public `openral sim` Typer group. Mounted into the top-level `openral` Typer tree by `openral_cli.main`. Hosts the `run` leaf (`--config / --rskill / --robot / --task / …`) and the `list` leaf (registry printer).
 - `sim_run_app: typer.Typer` — The leaf Typer (`invoke_without_command=True`) exposing every rollout CLI flag; users invoke it as `openral sim run`.
 - `_sim_run_callback(...)` — Typer callback carrying every rollout CLI flag; builds a `SimpleNamespace` and dispatches to `_run`. The optional `--dashboard` / `--dashboard-port` flags wrap `_run` in `attached_dashboard(...)`. Same flag is mirrored on `openral deploy run` and `openral benchmark run`.
-- `_discover_sim_configs() -> list[Path]` — Recursive read-only walk of `scenes/**/*.yaml` (benchmark / sim / deploy) under the repo root, sorted by relative path. Safe to call without any sim dependencies. (L486)
-- `sim_list() -> None` — `@sim_app.command("list")` callback that prints every sim config under `scenes/**/*.yaml`, each a paste-able `--config` path for `openral sim run`. No rollout, no OTel span, no GPU. (L510)
-- `_resolve_save_video(raw) -> Path | None` — Map the `--save-video` Typer string to the legacy `Path | None` semantics (empty string ⇒ `example_videos/`). (L302)
-- `_load_or_build_env(args) -> SimEnvironment` — `--config` and `--rskill` are both required. Per-axis flags overlay the loaded config rather than conflicting with it, and the scene-fixed-robot guard raises `ROSConfigError` when `--robot` disagrees with the scene's fixed robot. `--dry-run` still runs the embodiment/sensor compatibility check. (L318)
-- `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L528)
-- `main(argv=None) -> int` — Thin wrapper invoking `sim_run_app` with `standalone_mode=False` so tests get a return code without `sys.exit`. (L454)
-- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L710)
-- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L833)
-- `_control_rate_hz(robot) -> float` (L815) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
-- `_robot_control_rate_hz(robot_id) -> float` (L826) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
-- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L848)
-- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`. (L894)
+- `_discover_sim_configs() -> list[Path]` — Recursive read-only walk of `scenes/**/*.yaml` (benchmark / sim / deploy) under the repo root, sorted by relative path. Safe to call without any sim dependencies. (L497)
+- `sim_list() -> None` — `@sim_app.command("list")` callback that prints every sim config under `scenes/**/*.yaml`, each a paste-able `--config` path for `openral sim run`. No rollout, no OTel span, no GPU. (L521)
+- `_resolve_save_video(raw) -> Path | None` — Map the `--save-video` Typer string to the legacy `Path | None` semantics (empty string ⇒ `example_videos/`). (L313)
+- `_load_or_build_env(args) -> SimEnvironment` — `--config` and `--rskill` are both required. Per-axis flags overlay the loaded config rather than conflicting with it, and the scene-fixed-robot guard raises `ROSConfigError` when `--robot` disagrees with the scene's fixed robot. `--dry-run` still runs the embodiment/sensor compatibility check. (L329)
+- `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L539)
+- `main(argv=None) -> int` — Thin wrapper invoking `sim_run_app` with `standalone_mode=False` so tests get a return code without `sys.exit`. (L465)
+- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L721)
+- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L844)
+- `_control_rate_hz(robot) -> float` (L826) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
+- `_robot_control_rate_hz(robot_id) -> float` (L837) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
+- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L859)
+- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`; `--video-grid` adds the tiled clip. (L905)
 
 ### `python/sim/src/openral_sim/_video.py`
 _Shared two-band rollout-debug MP4 helper (was `examples/_video.py`)._
@@ -156,10 +156,12 @@ _Shared two-band rollout-debug MP4 helper (was `examples/_video.py`)._
 ### `python/sim/src/openral_sim/_website_video.py`
 _Clean single-view world MP4 helper for website hero clips (overlays rendered by the page, not burned into pixels)._
 
-- `save_world_mp4(result: EpisodeResult, path: Path, *, fps: int = 20, size: int = 1024, min_duration_s: float = 2.0) -> Path` — Write only `result.frames` (the world/viewer render), center-cropped to a square and resized to `size × size`, libx264/yuv420p, holding the final frame when needed so short successes remain watchable. Raises `ValueError` on empty frames, non-`.mp4` suffix, non-positive `size`, or negative `min_duration_s`. (L43)
-- `write_world_videos(episodes, out_dir, *, scene, rskill, section, size=1024, fps=20) -> list[dict]` — Write one clean world MP4 per episode named `<scene>_<rskill>[_ep<i>]_<success|fail>.mp4` + merge a `videos.json` manifest. Shared by `openral sim run --video-style world` and `openral benchmark scene --save-video`. (L117)
-- `append_video_manifest(manifest, records) -> None` — Merge video records into `videos.json`, replacing same-`file` entries; no-op on empty. (L189)
-- `_square(frame, size) -> NDArray[np.uint8]` — Center-crop one HWC frame to a square and resize to `(size, size)` RGB. (L225)
+- `save_world_mp4(result: EpisodeResult, path: Path, *, fps: int = 20, size: int = 1024, min_duration_s: float = 2.0) -> Path` — Write only `result.frames` (the world/viewer render), center-cropped to a square and resized to `size × size`, libx264/yuv420p, holding the final frame when needed so short successes remain watchable. Raises `ValueError` on empty frames, non-`.mp4` suffix, non-positive `size`, or negative `min_duration_s`. (L45)
+- `write_world_grid(episodes, path, *, tile_height=448, fps=20) -> Path` (L119) — Every episode's world render tiled in one MP4 (`ceil(sqrt(n))` columns; tiles keep their aspect, hold their last frame to the longest episode, carry an `ep<i>` label and a green / amber / red outline by outcome).
+- `write_world_videos(episodes, out_dir, *, scene, rskill, section, size=1024, fps=20, grid=False) -> list[dict]` — Write one clean world MP4 per episode named `<scene>_<rskill>[_ep<i>]_<success|fail>.mp4` + merge a `videos.json` manifest (`grid`: also `<scene>_<rskill>_grid.mp4` via `write_world_grid`, outside the manifest). Shared by `openral sim run --video-style world` and `openral benchmark scene --save-video`. (L196)
+- `append_video_manifest(manifest, records) -> None` — Merge video records into `videos.json`, replacing same-`file` entries; no-op on empty. (L274)
+- `_rgb(frame) -> NDArray[np.uint8]` — One frame as HWC RGB (grayscale / single-channel replicated).
+- `_square(frame, size) -> NDArray[np.uint8]` — Center-crop one HWC frame to a square and resize to `(size, size)` RGB. (L319)
 - `const _RGB_CHANNELS = 3` (L38)
 - `const _GRAYSCALE_NDIM = 2` (L39)
 - `const _DEFAULT_SIZE = 1024` (L40)

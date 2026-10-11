@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 _RGB_CHANNELS = 3
 _GRAYSCALE_NDIM = 2
 _DEFAULT_SIZE = 1024
+#: Tile height of the ``--video-grid`` composite; 4 x 4 tiles of 448 px fit a 1792 px frame.
+_GRID_TILE_HEIGHT = 448
 
 
 def save_world_mp4(
@@ -114,6 +116,83 @@ def save_world_mp4(
     return path
 
 
+def write_world_grid(
+    episodes: list[EpisodeResult],
+    path: Path,
+    *,
+    tile_height: int = _GRID_TILE_HEIGHT,
+    fps: int = 20,
+) -> Path:
+    """Write every episode's world render as one tiled MP4 (``ceil(sqrt(n))`` columns).
+
+    Each tile keeps its frame's aspect at ``tile_height`` px (no crop, so nothing at
+    the frame's edges is lost), carries an ``ep<i>`` label and its outcome, and holds
+    its last frame until the longest episode ends. The outline is green for a
+    successful episode, amber for a reward above zero, red otherwise -- the grade a
+    graded scene (``placement_success``) scored, read from ``EpisodeResult``.
+
+    Args:
+        episodes: The rollout results; episodes without ``frames`` are skipped.
+        path: Output ``.mp4``.
+        tile_height: Height of one tile in pixels; the width follows the frame's aspect.
+        fps: Playback frame rate.
+
+    Raises:
+        ValueError: No episode carries frames, or ``path`` is not an ``.mp4``.
+
+    Example:
+        >>> write_world_grid(results, Path("run_grid.mp4"), tile_height=360)  # doctest: +SKIP
+    """
+    from PIL import Image, ImageDraw
+
+    clips = [(i, r) for i, r in enumerate(episodes) if r.frames]
+    if not clips:
+        raise ValueError("write_world_grid needs at least one episode with world frames")
+    if path.suffix.lower() != ".mp4":
+        raise ValueError(f"write_world_grid only writes MP4; got path={path!s}")
+    h0, w0 = clips[0][1].frames[0].shape[:2]
+    tile_w = round(w0 * tile_height / h0 / 2) * 2
+    cols = int(np.ceil(np.sqrt(len(clips))))
+    rows = int(np.ceil(len(clips) / cols))
+    longest = max(len(r.frames) for _, r in clips)
+    border = max(2, tile_height // 60)
+
+    def tile(frame: NDArray[np.uint8], i: int, r: EpisodeResult) -> NDArray[np.uint8]:
+        img = Image.fromarray(_rgb(frame)).resize((tile_w, tile_height), Image.Resampling.BILINEAR)
+        draw = ImageDraw.Draw(img)
+        colour = (
+            (40, 200, 60) if r.success else (235, 170, 20) if r.total_reward > 0 else (220, 40, 40)
+        )
+        draw.rectangle([0, 0, tile_w - 1, tile_height - 1], outline=colour, width=border)
+        text = f"ep{i}  " + ("success" if r.success else f"reward {r.total_reward:.2f}")
+        draw.text((border + 4, border + 2), text, fill=(255, 255, 255))
+        return np.asarray(img, dtype=np.uint8)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import imageio.v2 as iio
+
+    writer = iio.get_writer(
+        str(path),
+        format="ffmpeg",  # type: ignore[arg-type]  # reason: imageio v2 stubs type format as Format enum but accept plugin strings at runtime
+        fps=fps,
+        codec="libx264",
+        quality=8,
+        macro_block_size=1,
+        pixelformat="yuv420p",
+    )
+    try:
+        for t in range(longest):
+            canvas = np.zeros((rows * tile_height, cols * tile_w, _RGB_CHANNELS), dtype=np.uint8)
+            for k, (i, r) in enumerate(clips):
+                frame = r.frames[min(t, len(r.frames) - 1)]
+                y, x = (k // cols) * tile_height, (k % cols) * tile_w
+                canvas[y : y + tile_height, x : x + tile_w] = tile(frame, i, r)
+            writer.append_data(canvas)
+    finally:
+        writer.close()
+    return path
+
+
 def write_world_videos(
     episodes: list[EpisodeResult],
     out_dir: Path,
@@ -123,6 +202,7 @@ def write_world_videos(
     section: str,
     size: int = _DEFAULT_SIZE,
     fps: int = 20,
+    grid: bool = False,
 ) -> list[dict[str, Any]]:
     """Write one clean world MP4 per episode + update ``out_dir/videos.json``.
 
@@ -141,6 +221,8 @@ def write_world_videos(
         section: Website section the clip belongs to (``benchmark`` / ``sim`` / ``deploy``).
         size: Square output edge in pixels, passed to ``save_world_mp4``.
         fps: Playback frame rate.
+        grid: Also write ``<scene>_<rskill>_grid.mp4``, every episode tiled in one
+            clip (``write_world_grid``); not a website clip, so not in the manifest.
 
     Returns:
         The manifest records appended this call (one per written video).
@@ -183,6 +265,9 @@ def write_world_videos(
             }
         )
     append_video_manifest(out_dir / "videos.json", records)
+    if grid and any(r.frames for r in episodes):
+        out = write_world_grid(episodes, out_dir / f"{scene_slug}_{rskill_slug}_grid.mp4", fps=fps)
+        print(f"  wrote {out}")
     return records
 
 
@@ -222,15 +307,20 @@ def _slug(s: str) -> str:
     return s.replace("/", "_").replace("\\", "_")
 
 
+def _rgb(frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """``frame`` as HWC RGB (a grayscale or single-channel frame is replicated)."""
+    if frame.ndim == _GRAYSCALE_NDIM:
+        return np.stack([frame] * _RGB_CHANNELS, axis=-1)
+    if frame.shape[2] != _RGB_CHANNELS:
+        return np.repeat(frame[:, :, :1], _RGB_CHANNELS, axis=2)
+    return frame
+
+
 def _square(frame: NDArray[np.uint8], size: int) -> NDArray[np.uint8]:
     """Center-crop ``frame`` to a square, then resize to (size, size) RGB."""
     from PIL import Image
 
-    if frame.ndim == _GRAYSCALE_NDIM:
-        frame = np.stack([frame] * _RGB_CHANNELS, axis=-1)
-    elif frame.shape[2] != _RGB_CHANNELS:
-        frame = np.repeat(frame[:, :, :1], _RGB_CHANNELS, axis=2)
-
+    frame = _rgb(frame)
     h, w = frame.shape[0], frame.shape[1]
     edge = min(h, w)
     top = (h - edge) // 2
