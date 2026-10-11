@@ -1218,32 +1218,6 @@ def test_a_release_clearance_above_its_cap_is_refused() -> None:
     )
 
 
-def _jaw_box_gap(live: Any, gripper: Any, region: Any) -> float:
-    """The pre-fix ``jaw_at`` measure: the jaw link's bounding box vs the region (SAT gap)."""
-    from openral_core.geometry import homogeneous_from_quat_xyz
-    from openral_hal.vision_attachment_bridge import (
-        _joint_motion,
-        _link_boxes,
-        _xyz_rpy_matrix,
-        box_gap_lower_bound_m,
-    )
-
-    bridge = live.bridge
-    joint = next(j for j in live.robot.joints if j.name == gripper.joint_name)
-    t_region_link = bridge._lookup(region.frame_id, bridge.tf_frame(gripper.producer.attach_link))
-    t_jaw = (
-        t_region_link
-        @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
-        @ _joint_motion(joint, bridge._positions[gripper.joint_name])
-    )
-    t_r = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
-    target = (t_r[:3, 3], t_r[:3, :3], np.asarray(region.half_extents))
-    return min(
-        box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
-        for t_prim, half in _link_boxes(live.robot, gripper.jaw_link)
-    )
-
-
 def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it() -> None:
     """Review finding: ``jaw_at`` took ANY overlap of the jaw link's bounding box with the
     region as "at it", and the OpenArm's finger_pair box (half 0.029 x 0.071 x 0.081 m)
@@ -1263,7 +1237,9 @@ def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it(
         assert at and "closing midpoint" in measure, measure
 
         live.place("right", (_I41_JAW[0], _I41_JAW[1] + 0.17, _I41_JAW[2]))
-        assert _jaw_box_gap(live, right, region) < 0.0, "the old overlap test accepted it"
+        # (Since #349 the finger_pair box is the leader finger alone, no longer the whole
+        # opening, so the old overlap no longer reaches this neighbour either; the
+        # midpoint test still has to say "not at it".)
         at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
         assert not at, measure
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
