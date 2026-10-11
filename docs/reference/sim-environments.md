@@ -107,6 +107,35 @@ with the time each image shows, not the publish time (issue #361).
 supplied at the CLI via `--rskill <name>` — scene YAMLs no longer pin a VLA.
 Consumed by `openral sim run`.
 
+Isaac SimScenes can grade placement prompts: `backend_options.placement_success`
+(`IsaacPlacementSuccess`) maps a prompt, the scene's `task.instruction` verbatim,
+to the scene objects it asks to place and named world-frame `regions` (target and
+neighbours, e.g. shelf slots). Once an object rests for `settle_s` (neither
+moving nor turning), it is graded by the scene's `grades` rubric
+(`IsaacPlacementGrade`: name, score, `target` / `adjacent` region, whether it
+must be upright; first match wins, else `fail` 0). The default rubric is
+`complete` (in its target, upright: 1.0), `partial` (in its target, fallen: 0.5)
+and `semi` (in a neighbouring region: 0.25); a scene declares its own levels to
+grade differently. The episode takes its worst object's grade. Reaching the first
+grade terminates the episode with `success`; otherwise the episode's
+`total_reward` is its final grade's score, and every step's
+`info["placement_grade"]` reports the grade so far. Without the block an Isaac
+scene has no task reward.
+
+```yaml
+task:
+  instruction: "put the cracker box on the shelf"
+scene:
+  backend_options:
+    placement_success:
+      regions:
+        shelf_1: {min_xyz: [-0.70, 4.75, 0.20], max_xyz: [-0.40, 4.95, 0.50]}
+        shelf_2: {min_xyz: [-0.70, 4.95, 0.20], max_xyz: [-0.40, 5.25, 0.50]}
+      tasks:
+        "put the cracker box on the shelf":
+          - {object: cracker_box, target: shelf_1, adjacent: [shelf_2]}
+```
+
 | Config | Fixed / declared robot | `scene.id` | `task.id` | Notes |
 |---|---|---|---|---|
 | [`libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/libero_spatial.yaml) | `franka_panda` *(scene-fixed)* | `libero_spatial` | `libero_spatial/0` | LIBERO-Spatial smoke; ad-hoc sibling of `scenes/benchmark/libero_spatial.yaml` |

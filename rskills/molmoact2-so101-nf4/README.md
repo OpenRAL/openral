@@ -175,9 +175,10 @@ vla:
 > chunk — right at the edge of an 8 GiB card (which exposes only ~7.6 GiB
 > usable). The decisive enabler is the **CUDA expandable-segments allocator**:
 > without it the first forward's ~1.5 GiB embedding `cat` cannot be placed
-> contiguously and OOMs. The molmoact2 adapter turns this on automatically
-> (`expandable_segments:True`, via `default_expandable_segments`) before its
-> first CUDA allocation; export it yourself if other GPU work in the process
+> contiguously and OOMs. The molmoact2 adapter defaults the allocator to
+> `expandable_segments:True` (via `default_expandable_segments`) before its
+> first CUDA allocation — on non-Jetson hosts, and only when the allocator
+> variable is unset; export it yourself if other GPU work in the process
 > allocates before the policy loads — as `PYTORCH_ALLOC_CONF` on torch ≥2.9,
 > `PYTORCH_CUDA_ALLOC_CONF` on older torch (the var was renamed in 2.9 and the
 > old name now logs a deprecation warning).

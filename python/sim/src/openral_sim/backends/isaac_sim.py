@@ -703,15 +703,23 @@ class IsaacObjectPoseNoise(BaseModel):
     y_max]]``, e.g. a tote's floor); after ``max_tries`` rejections the object keeps
     its declared pose and the sidecar logs it.
 
+    ``yaw_offsets_deg`` adds a discrete yaw choice on top: each draw picks one offset
+    uniformly, then adds the yaw noise, so ``(0, 90)`` with a 3 deg sigma gives a box
+    either square or quarter-turned, never in between (a box set down in either of
+    two orientations).
+
     Example:
         >>> IsaacObjectPoseNoise(xy_sigma_m=(0.01, 0.008), yaw_sigma_deg=5.0).clip_sigma
         2.0
+        >>> IsaacObjectPoseNoise(yaw_sigma_deg=3.0, yaw_offsets_deg=(0.0, 90.0)).yaw_offsets_deg
+        (0.0, 90.0)
     """
 
     model_config = ConfigDict(extra="forbid")
 
     xy_sigma_m: tuple[float, float] = (0.0, 0.0)
     yaw_sigma_deg: float = Field(default=0.0, ge=0.0, le=180.0)
+    yaw_offsets_deg: tuple[float, ...] = Field(default=(0.0,), min_length=1)
     clip_sigma: float = Field(default=2.0, gt=0.0, le=5.0)
     keep_inside_xy: tuple[tuple[float, float], tuple[float, float]] | None = None
     max_tries: int = Field(default=100, ge=1, le=10000)
@@ -726,6 +734,13 @@ class IsaacObjectPoseNoise(BaseModel):
                 f"pose_noise.keep_inside_xy must be [[x_min, y_min], [x_max, y_max]]: {box}"
             )
         return self
+
+    @field_validator("yaw_offsets_deg")
+    @classmethod
+    def _offsets_finite(cls, v: tuple[float, ...]) -> tuple[float, ...]:
+        if not all(math.isfinite(o) for o in v):
+            raise ValueError(f"yaw_offsets_deg must be finite degrees: {v}")
+        return v
 
 
 class IsaacSceneObject(BaseModel):
@@ -849,6 +864,162 @@ class IsaacCameraImagePost(BaseModel):
         return self.auto_exposure_target is not None or self.white_balance_rgb != (1.0, 1.0, 1.0)
 
 
+class IsaacPlacementRegion(BaseModel):
+    """A world-frame box a placed object's centre must rest inside (``placement_success``).
+
+    Example:
+        >>> IsaacPlacementRegion(min_xyz=(0.1, 0.2, 0.4), max_xyz=(0.5, 0.35, 0.55)).max_xyz
+        (0.5, 0.35, 0.55)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_xyz: tuple[float, float, float]
+    max_xyz: tuple[float, float, float]
+
+    @model_validator(mode="after")
+    def _ordered(self) -> IsaacPlacementRegion:
+        if not all(lo < hi for lo, hi in zip(self.min_xyz, self.max_xyz, strict=True)):
+            raise ValueError(
+                f"placement region needs min < max on every axis: {self.min_xyz} / {self.max_xyz}"
+            )
+        return self
+
+
+class IsaacPlacement(BaseModel):
+    """One object a prompt asks to place: the scene object, its target region, its neighbours.
+
+    ``target`` and ``adjacent`` name ``IsaacPlacementSuccess.regions``; ``adjacent`` are
+    the regions that count as "the one next to it" (e.g. the neighbouring shelf slots).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    object: str
+    target: str
+    adjacent: list[str] = Field(default_factory=list)
+
+
+class IsaacPlacementGrade(BaseModel):
+    """One level of a placement rubric (``IsaacPlacementSuccess.grades``).
+
+    A resting object earns this grade when its centre is inside the placement's
+    ``region`` (``target``, or any ``adjacent`` box) and, if ``requires_upright``, its
+    declared up axis is within ``upright_tol_deg`` of world up. Levels are tried in
+    the rubric's order; the first match wins.
+
+    Example:
+        >>> IsaacPlacementGrade(name="semi", score=0.25, region="adjacent").requires_upright
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    score: float = Field(ge=0.0, le=1.0)
+    region: Literal["target", "adjacent"]
+    requires_upright: bool = False
+
+
+#: The default rubric: full credit upright in the target, half fallen in the target, a
+#: quarter anywhere in a neighbouring region. ``fail`` (0.0) is implicit.
+DEFAULT_PLACEMENT_GRADES: tuple[IsaacPlacementGrade, ...] = (
+    IsaacPlacementGrade(name="complete", score=1.0, region="target", requires_upright=True),
+    IsaacPlacementGrade(name="partial", score=0.5, region="target"),
+    IsaacPlacementGrade(name="semi", score=0.25, region="adjacent"),
+)
+
+
+class IsaacPlacementSuccess(BaseModel):
+    """Graded task success for placement prompts (``IsaacSimOptions.placement_success``).
+
+    ``tasks`` maps a prompt -- the scene's ``task.instruction``, verbatim -- to the
+    objects it asks to place. Each object is graded once it rests: moving slower than
+    ``rest_speed_m_s`` and turning slower than ``rest_turn_deg_s`` for ``settle_s`` of
+    sim time (a moving object is ``fail``). The rubric is the scene's ``grades``
+    (``IsaacPlacementGrade``, best first, first match wins; ``fail`` scores 0 when none
+    matches); the default is ``DEFAULT_PLACEMENT_GRADES``: ``complete`` 1.0 (in the
+    target, upright -- its declared up axis within ``upright_tol_deg`` of world up),
+    ``partial`` 0.5 (in the target, fallen), ``semi`` 0.25 (in an adjacent region).
+
+    The episode's grade is its worst placement's. The first grade (score 1.0) is the
+    success grade: the scene terminates the episode with ``info[success_key]`` true and
+    reward 1.0 once every placement reaches it; otherwise the last step's reward is the
+    grade's score, so the episode's ``total_reward`` carries the partial credit. Every
+    step's ``info["placement_grade"]`` is the current grade.
+
+    Example:
+        >>> box = IsaacPlacementRegion
+        >>> ps = IsaacPlacementSuccess(
+        ...     regions={
+        ...         "bin_1": box(min_xyz=(0, 0.0, 0.4), max_xyz=(0.5, 0.2, 0.55)),
+        ...         "bin_2": box(min_xyz=(0, 0.2, 0.4), max_xyz=(0.5, 0.4, 0.55)),
+        ...     },
+        ...     tasks={
+        ...         "put the box in bin 2": [
+        ...             IsaacPlacement(object="box", target="bin_2", adjacent=["bin_1"])
+        ...         ]
+        ...     },
+        ... )
+        >>> ps.settle_s, ps.upright_tol_deg
+        (1.0, 20.0)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    regions: dict[str, IsaacPlacementRegion]
+    tasks: dict[str, list[IsaacPlacement]] = Field(min_length=1)
+    grades: list[IsaacPlacementGrade] = Field(
+        default_factory=lambda: list(DEFAULT_PLACEMENT_GRADES), min_length=1
+    )
+    upright_tol_deg: float = Field(default=20.0, gt=0.0, lt=90.0)
+    settle_s: float = Field(default=1.0, ge=0.0)
+    rest_speed_m_s: float = Field(default=0.02, gt=0.0)
+    rest_turn_deg_s: float = Field(default=10.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _rubric_is_well_formed(self) -> IsaacPlacementSuccess:
+        """Grade names unique and not ``fail``; the first grade, and only it, scores 1.0."""
+        names = [g.name for g in self.grades]
+        if len(set(names)) != len(names) or "fail" in names:
+            raise ValueError(
+                f"placement_success.grades needs unique names other than 'fail': {names}"
+            )
+        if self.grades[0].score != 1.0:
+            raise ValueError(
+                f"placement_success.grades[0] ({self.grades[0].name!r}) is the success grade "
+                f"and must score 1.0, not {self.grades[0].score}"
+            )
+        # Only the success grade may score 1.0: a later full-credit level would tie it in
+        # worst_grade and end the episode as a success short of the success grade.
+        full = [g.name for g in self.grades[1:] if g.score >= 1.0]
+        if full:
+            raise ValueError(
+                f"placement_success.grades {full} score 1.0; only the success grade "
+                f"({self.grades[0].name!r}) may"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _regions_known(self) -> IsaacPlacementSuccess:
+        for prompt, placements in self.tasks.items():
+            if not placements:
+                raise ValueError(f"placement_success.tasks[{prompt!r}] places no object")
+            objects = [p.object for p in placements]
+            if len(set(objects)) != len(objects):
+                raise ValueError(
+                    f"placement_success.tasks[{prompt!r}] places an object twice: {objects}"
+                )
+            for p in placements:
+                unknown = sorted({p.target, *p.adjacent} - set(self.regions))
+                if unknown:
+                    raise ValueError(
+                        f"placement_success.tasks[{prompt!r}]: {p.object!r} names unknown "
+                        f"regions {unknown}; regions: {sorted(self.regions)}"
+                    )
+        return self
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -912,6 +1083,9 @@ class IsaacSimOptions(BaseModel):
     # radians past its partner's mirrored position, so the pair stops together on the
     # object instead of one finger pinning it against the other. None = independent drives.
     gripper_finger_coupling_rad: float | None = Field(default=None, gt=0.0, le=1.0)
+    # Graded task success for placement prompts (IsaacPlacementSuccess): the scene's
+    # instruction must have an entry. None = a bring-up scene with no task reward.
+    placement_success: IsaacPlacementSuccess | None = None
 
     @field_validator("joint_drive_gains")
     @classmethod
@@ -967,6 +1141,27 @@ class IsaacSimOptions(BaseModel):
             raise ValueError(
                 f"objects: duplicate names {dupes} / reserved names {reserved} "
                 "(the scene registers 'robot' and 'obstacle_<i>' itself)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _placements_name_scene_objects(self) -> IsaacSimOptions:
+        """Every ``placement_success`` object must be a dynamic object of this scene."""
+        if self.placement_success is None:
+            return self
+        dynamic = {o.name: o.dynamic for o in self.objects}
+        placed = {p.object for ps in self.placement_success.tasks.values() for p in ps}
+        unknown = sorted(placed - set(dynamic))
+        if unknown:
+            raise ValueError(
+                f"placement_success places {unknown}, which are not scene objects: "
+                f"{sorted(dynamic)}"
+            )
+        static = sorted(name for name in placed if not dynamic[name])
+        if static:
+            raise ValueError(
+                f"placement_success places {static}, which are static (dynamic: false): a "
+                "fixed object resting in its target would grade itself"
             )
         return self
 
@@ -1724,6 +1919,52 @@ def _render_desc(
     return desc.model_copy(update={"sensors": sensors}), scale
 
 
+def _placement_success_spec(
+    placement_success: IsaacPlacementSuccess | None, instruction: str
+) -> dict[str, Any] | None:
+    """The sidecar's grading spec for this scene's prompt, regions resolved to boxes.
+
+    Raises ``ROSConfigError`` when ``placement_success`` has no entry for the scene's
+    ``task.instruction`` -- a scene that would never grade its own prompt is a config error.
+
+    Example:
+        >>> box = IsaacPlacementRegion(min_xyz=(0, 0, 0), max_xyz=(1, 1, 1))
+        >>> ps = IsaacPlacementSuccess(
+        ...     regions={"a": box}, tasks={"put it in a": [IsaacPlacement(object="o", target="a")]}
+        ... )
+        >>> _placement_success_spec(ps, "put it in a")["placements"][0]["target"]
+        {'min': [0.0, 0.0, 0.0], 'max': [1.0, 1.0, 1.0]}
+        >>> [g["name"] for g in _placement_success_spec(ps, "put it in a")["grades"]]
+        ['complete', 'partial', 'semi']
+        >>> _placement_success_spec(None, "anything") is None
+        True
+    """
+    if placement_success is None:
+        return None
+    placements = placement_success.tasks.get(instruction)
+    if placements is None:
+        raise ROSConfigError(
+            f"placement_success has no entry for the scene's instruction {instruction!r}; "
+            f"it grades: {sorted(placement_success.tasks)}"
+        )
+
+    def box(name: str) -> dict[str, list[float]]:
+        r = placement_success.regions[name]
+        return {"min": [float(v) for v in r.min_xyz], "max": [float(v) for v in r.max_xyz]}
+
+    return {
+        "placements": [
+            {"object": p.object, "target": box(p.target), "adjacent": [box(a) for a in p.adjacent]}
+            for p in placements
+        ],
+        "grades": [g.model_dump() for g in placement_success.grades],
+        "upright_tol_deg": placement_success.upright_tol_deg,
+        "settle_s": placement_success.settle_s,
+        "rest_speed_m_s": placement_success.rest_speed_m_s,
+        "rest_turn_deg_s": placement_success.rest_turn_deg_s,
+    }
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
@@ -1739,6 +1980,7 @@ def _write_robot_spec(
     joint_drive_gains: dict[str, tuple[float, float]] | None = None,
     gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
     gripper_finger_coupling_rad: float | None = None,
+    placement_success: dict[str, Any] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1798,6 +2040,8 @@ def _write_robot_spec(
         exposure_ev=exposure_ev,
         image_blur_sigma_px=image_blur_sigma_px,
         camera_image_post=_camera_image_post_spec(desc, camera_image_post or {}),
+        # The prompt's graded placements (`_placement_success_spec`), or None.
+        placement_success=placement_success,
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
@@ -1923,6 +2167,7 @@ def _placement(
             "joint_drive_gains",
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
+            "placement_success",
         },
         exclude_defaults=True,
     )
@@ -2036,6 +2281,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.joint_drive_gains,
         opts.gripper_joint_curve,
         opts.gripper_finger_coupling_rad,
+        placement_success=_placement_success_spec(opts.placement_success, env_cfg.task.instruction),
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

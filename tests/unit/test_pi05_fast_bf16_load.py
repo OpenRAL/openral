@@ -9,6 +9,7 @@ meta); CLAUDE.md §1.11. The full-size parity against ``from_pretrained``
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ safetensors_torch = pytest.importorskip("safetensors.torch")
 
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError  # noqa: E402
 from openral_sim._quantization import (  # noqa: E402
+    _stream_safetensors_file,
+    read_safetensors_header,
     rebuild_non_persistent_buffers,
     resolve_weights_files,
     stream_state_into_policy,
@@ -336,3 +339,70 @@ def test_a_checkpoint_may_name_a_tied_weight_by_either_alias(tmp_path: Path) -> 
     _stream(target, snapshot)
     assert torch.equal(target.embed.weight.float(), values.to(torch.bfloat16).float())
     assert target.head.weight.data_ptr() == target.embed.weight.data_ptr()
+
+
+# ── The direct safetensors reader against the library's own reader ───────────────────
+
+_REPO = Path(__file__).resolve().parents[2]
+_REAL_SAFETENSORS = sorted(_REPO.glob("rskills/*/policy_preprocessor_*.safetensors"))
+
+
+@pytest.mark.parametrize("path", _REAL_SAFETENSORS, ids=lambda p: p.parent.name)
+def test_direct_reader_matches_safe_open_bit_for_bit(path: Path) -> None:
+    """Every tensor of a real in-tree checkpoint lands identical to ``safe_open``'s."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+        expected = {k: f.get_tensor(k) for k in f.keys()}  # noqa: SIM118
+    assert expected, path
+    targets = {k: torch.empty_like(v) for k, v in expected.items()}
+    loaded: set[str] = set()
+    unexpected: list[str] = []
+    dropped = _stream_safetensors_file(
+        str(path), torch, targets, None, loaded, unexpected, pin_memory=False
+    )
+    assert (dropped, unexpected, loaded) == (0, [], set(expected))
+    for k, v in expected.items():
+        assert targets[k].dtype == v.dtype
+        assert torch.equal(targets[k], v), k
+
+
+def test_direct_reader_refuses_a_header_that_points_outside_the_file(tmp_path: Path) -> None:
+    import json
+    import struct
+
+    snapshot = _write_state(tmp_path, _Tiny())
+    path = snapshot / "model.safetensors"
+    raw = path.read_bytes()
+    (n,) = struct.unpack("<Q", raw[:8])
+    header = json.loads(raw[8 : 8 + n])
+    header["proj.weight"]["data_offsets"][1] = len(raw) * 4  # past the end
+    forged = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(forged)) + forged + raw[8 + n :])
+    with pytest.raises(ROSConfigError, match="outside the file"):
+        read_safetensors_header(str(path))
+
+
+def _framed(header: bytes) -> bytes:
+    """A safetensors file: the header's little-endian length, the header, some data."""
+    return struct.pack("<Q", len(header)) + header + b"\x00" * 16
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (b"\x01\x02", "too short"),
+        (_framed(b"\xff\xfe\x00\x01"), "not valid JSON"),
+        (_framed(b"[]"), "not a JSON object"),
+        (_framed(b'{"w":{"dtype":"F32","data_offsets":7}}'), "malformed"),
+        (_framed(b'{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4,8]}}'), "malformed"),
+    ],
+    ids=["short", "binary", "list", "offsets-int", "offsets-triple"],
+)
+def test_direct_reader_refuses_every_malformed_header(
+    tmp_path: Path, payload: bytes, match: str
+) -> None:
+    path = tmp_path / "bad.safetensors"
+    path.write_bytes(payload)
+    with pytest.raises(ROSConfigError, match=match):
+        read_safetensors_header(str(path))

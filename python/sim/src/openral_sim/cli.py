@@ -161,6 +161,16 @@ def _sim_run_callback(
             "are rendered by the page, not burned into pixels."
         ),
     ),
+    video_grid: bool = typer.Option(
+        False,
+        "--video-grid",
+        help=(
+            "With --video-style world: also write <scene>_<rskill>_grid.mp4 tiling "
+            "every episode in one clip (ceil(sqrt(n)) columns, 448 px tiles that keep "
+            "the frame's aspect), each tile labelled with its episode and outcome and "
+            "outlined green (success) / amber (reward > 0) / red."
+        ),
+    ),
     video_size: int = typer.Option(
         1024,
         "--video-size",
@@ -261,6 +271,7 @@ def _sim_run_callback(
         save_video=_resolve_save_video(save_video),
         video_style=video_style,
         video_size=video_size,
+        video_grid=video_grid,
         dataset_out=dataset_out,
         dataset_repo_id=dataset_repo_id,
         dataset_license=dataset_license,
@@ -914,6 +925,7 @@ def _write_website_videos(
         section=Path(args.config).parent.name if args.config is not None else "sim",
         size=int(getattr(args, "video_size", 1024)),
         fps=round(_robot_control_rate_hz(env_cfg.robot_id)),
+        grid=bool(getattr(args, "video_grid", False)),
     )
 
 

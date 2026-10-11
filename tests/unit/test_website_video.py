@@ -15,6 +15,7 @@ import pytest
 from openral_sim._website_video import (
     append_video_manifest,
     save_world_mp4,
+    write_world_grid,
     write_world_videos,
 )
 from openral_sim.rollout import EpisodeResult
@@ -79,6 +80,71 @@ def test_write_world_videos_names_and_manifests(tmp_path: Path) -> None:
     assert len(manifest) == len(records) == 2
     assert {r["section"] for r in manifest} == {"benchmark"}
     assert [r["success"] for r in manifest] == [True, False]
+
+
+def test_write_world_grid_tiles_every_episode_keeping_aspect(tmp_path: Path) -> None:
+    import imageio.v2 as iio
+
+    episodes = [
+        _result_with_frames(6, 90, 160, success=True),
+        _result_with_frames(3, 90, 160, success=False),
+        _result_with_frames(4, 90, 160, success=False),
+    ]
+    episodes[2].total_reward = 0.25
+    out = write_world_grid(episodes, tmp_path / "grid.mp4", tile_height=90, fps=10)
+    reader = iio.get_reader(out, format="ffmpeg")
+    try:
+        n_frames, first = reader.count_frames(), reader.get_data(0)
+    finally:
+        reader.close()
+    # 3 clips -> 2 columns x 2 rows of 160 x 90 tiles; the shortest clips hold their
+    # last frame until the longest (6 frames) ends.
+    assert n_frames == 6
+    assert first.shape == (180, 320, 3)
+    assert write_world_grid(
+        [_result_with_frames(2, 64, 64, success=True)], tmp_path / "one.mp4"
+    ).exists()
+    with pytest.raises(ValueError, match="at least one episode"):
+        write_world_grid([EpisodeResult(success=False)], tmp_path / "none.mp4")
+
+
+def test_write_world_grid_rounds_an_odd_tile_height_to_even(tmp_path: Path) -> None:
+    """yuv420p cannot encode odd sides; a single 91 px tile would otherwise fail in ffmpeg."""
+    import imageio.v2 as iio
+
+    out = write_world_grid(
+        [_result_with_frames(2, 64, 96, success=True)], tmp_path / "odd.mp4", tile_height=91
+    )
+    reader = iio.get_reader(out, format="ffmpeg")
+    try:
+        assert reader.get_data(0).shape[0] == 90
+    finally:
+        reader.close()
+    with pytest.raises(ValueError, match="at least 2"):
+        write_world_grid(
+            [_result_with_frames(2, 64, 96, success=True)], tmp_path / "x.mp4", tile_height=1
+        )
+
+
+def test_write_world_videos_can_add_the_grid(tmp_path: Path) -> None:
+    write_world_videos(
+        [
+            _result_with_frames(3, 64, 96, success=True),
+            _result_with_frames(2, 64, 96, success=False),
+        ],
+        tmp_path,
+        scene="pusht",
+        rskill="diffusion-pusht",
+        section="sim",
+        size=64,
+        grid=True,
+    )
+    assert (tmp_path / "pusht_diffusion-pusht_grid.mp4").exists()
+    manifest = json.loads((tmp_path / "videos.json").read_text())
+    assert {r["file"] for r in manifest} == {
+        "pusht_diffusion-pusht_ep0_success.mp4",
+        "pusht_diffusion-pusht_ep1_fail.mp4",
+    }
 
 
 def test_write_world_videos_single_episode_omits_ep_index(tmp_path: Path) -> None:
