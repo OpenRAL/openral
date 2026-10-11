@@ -280,7 +280,9 @@ links whose link origins both lie inside the box does not trip while the hands a
 and lead predicate), counted and disclosed as `link=self@<a> cell=<b index>`. Why: across the place
 batches at least 6 stops were the two OpenArm hands touching inside the tote/shelf workspace, real
 on the MuJoCo meshes (0.07–1.9 mm overlap) at 0.10–0.20 m/s — Isaac runs with self-collision off,
-so PhysX cannot see them. Arm links, and hands outside the box, stop as before.
+so PhysX cannot see them. Arm links, and hands outside the box, stop as before. A carried payload
+against the OTHER hand's links gets the same rule on its attach link (`check_attached_self_collision`,
+`link=payload-self@<attach link>`; p8_mix04); against its own arm's links it still stops.
 
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
 Cartesian control modes, the force/current contact layer.

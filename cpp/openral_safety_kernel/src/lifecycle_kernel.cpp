@@ -1624,9 +1624,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               return true;
             }
           }
-          const auto hit = check_attached_self_collision(collision_model_, attached_model_,
-                                                         collision_scratch_, amargin);
+          const auto hit = check_attached_self_collision(
+              collision_model_, attached_model_, collision_scratch_, amargin,
+              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr);
           note_slack(hit, amargin);
+          disclose_workspace(hit, step, "payload-self@");
           if (hit.hit) {
             report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
             return true;

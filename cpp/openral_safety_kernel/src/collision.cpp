@@ -2621,12 +2621,21 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 
 CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
-                                           const CollisionScratch& scratch,
-                                           double margin) noexcept {
+                                           const CollisionScratch& scratch, double margin,
+                                           const WorkspaceContactRegion* workspace) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
   const std::size_t n_boxes = model.boxes.size();
+  // #349: a carried payload is part of its hand — against another hand link, the
+  // two-slow-hands-inside-the-workspace rule on its attach link.
+  const auto fold = [&](double d, int object, int attach_link, int link) {
+    const bool exempt = d <= margin && workspace_self_exempt(workspace, scratch, attach_link, link);
+    if (exempt) {
+      note_workspace_pair(result, d, attach_link, link);
+    }
+    fold_pair(result, sweep_min, d, d <= margin && !exempt, object, link);
+  };
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
@@ -2643,7 +2652,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
             compose(scratch.link_world[static_cast<std::size_t>(lc)], model.capsules[c].origin);
         const double d = attached_primitive_capsule_distance(
             prim, prim_xf, cap_j, model.capsules[c].radius, model.capsules[c].half_length);
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lc);
+        fold(d, static_cast<int>(i), obj.attach_link, lc);
       }
       for (std::size_t b = 0; b < n_boxes; ++b) {
         const int lb = model.box_link[b];
@@ -2659,7 +2668,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
           d = box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf, prim.radius,
                                    prim.half_length);
         }
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lb);
+        fold(d, static_cast<int>(i), obj.attach_link, lb);
       }
     }
   }

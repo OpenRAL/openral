@@ -1573,8 +1573,14 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 /// it). On a hit, `link_a` is the attached-object index and `link_b` is the
 /// robot link index of the deepest pair within the margin, and `min_distance`
 /// is that pair's distance (`CollisionHit`). Allocation-free.
-CollisionHit check_attached_self_collision(const CollisionModel& model,
-                                           const AttachedModel& attached,
-                                           const CollisionScratch& scratch, double margin) noexcept;
+///
+/// `workspace` (#349, draft): a payload is part of the hand carrying it — against
+/// another HAND link it is tolerated by `check_self_collision`'s two-slow-hands rule
+/// applied to its attach link (both origins inside the box, both hands slow),
+/// counted in `workspace_pairs`. Arm links stop as before; `nullptr` = today's check.
+CollisionHit
+check_attached_self_collision(const CollisionModel& model, const AttachedModel& attached,
+                              const CollisionScratch& scratch, double margin,
+                              const WorkspaceContactRegion* workspace = nullptr) noexcept;
 
 }  // namespace openral_safety_kernel

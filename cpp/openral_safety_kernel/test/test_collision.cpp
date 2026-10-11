@@ -6711,6 +6711,34 @@ TEST(WorkspaceContact, TwoSlowHandsMeetingInsideTheWorkspaceDoNotTrip) {
   EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "link 3 outside the box";
 }
 
+TEST(WorkspaceContact, ASlowHandsPayloadMeetingTheOtherHandDoesNotTrip) {
+  // #349 p8_mix04: the right hand's payload against the left hand's finger.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.12, 0.0, 0.0)};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  const auto today = osk::check_attached_self_collision(m, att, s, 0.0);
+  ASSERT_TRUE(today.hit) << "sphere 0.1 vs capsule 0.05 at 0.12";
+
+  osk::WorkspaceContactRegion ws;
+  ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({1, 3}),
+                                         kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.hand_lead_m = 0.0;
+  const auto slow = osk::check_attached_self_collision(m, att, s, 0.0, &ws);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_EQ(slow.workspace_pairs, 1);
+  ws.link_mask = grasp_mask({1});
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit)
+      << "link 3 is an arm link: stops";
+  ws.link_mask = grasp_mask({1, 3});
+  ws.hand_speed_mps = 2.0 * kWsMaxSpeed;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "fast";
+}
+
 TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
   osk::AttachedModel att;
   append_object(att, 1, translate(0.05, 0.0, 0.0),
