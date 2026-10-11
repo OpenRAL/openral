@@ -5232,6 +5232,14 @@ class SimSensorBridge:
                 stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
                 cloud = pointcloud2_from_points_xyz(pts, frame_id=base_frame_id, stamp=stamp)
                 pub.publish(cloud)
+                if self._attachment_depth_frames_remaining > 0:
+                    # A backend cloud from after the attachment has gone out. On a
+                    # backend without body masking (Isaac) it still shows the payload;
+                    # the octomap bridge clears that by the attachment's pose, as on
+                    # real hardware (#349) — the barrier only needs a fresh cloud.
+                    self._record_attachment_depth_frame(
+                        stamp_ns=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+                    )
         read_frames = getattr(self._hal, "read_depth_frames", None)
         frames = read_frames() if callable(read_frames) else {}
         if not frames:
