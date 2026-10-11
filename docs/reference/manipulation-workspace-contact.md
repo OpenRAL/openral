@@ -94,16 +94,27 @@ Contact classes, per (robot link, world cell, task state):
 
 ### 3.1 Static geometry: what the camera has not seen is not free
 
-**Evidence (deliberate-collision probes, 2026-10-11):** single-joint sweeps from the restock
-start pose, published on `/openral/candidate_action` with no goal active, kernel and Isaac live.
-Three sweeps hit joint-envelope limits and were stopped (`safety.envelope_violation`); two sweeps
-toward the shelf/tote were stopped by the world check before any PhysX contact. But two sweeps
-that swung an arm **outward, out of the head camera's view** — `right_joint1` to +1.5 rad and
-`left_joint2` to −1.5 rad — drove the arm into the cell's side wall / shelf frame and were
-**not stopped**: the joint ended 0.9 rad and 0.65 rad short of its command, blocked by the wall,
-with no kernel verdict. Unobserved space is free end to end (octomap → bridge → kernel), so a
-fixed wall the camera has not seen does not exist for the kernel. That is a missed
-catastrophic-class collision, independent of the workspace rule.
+**Evidence (deliberate-collision probes, 2026-10-11).** Joint sweeps from the restock start
+pose, published on `/openral/candidate_action` with no goal active, kernel and Isaac live. The
+probe E-stops the graph itself when the kernel has not, so the sim HAL logs PhysX ground truth
+at the end pose either way. Single-joint sweeps either hit joint-envelope limits
+(`safety.envelope_violation`) or were stopped by the world check before contact. **Correction:**
+two of them (`right_joint1` → +1.5, `left_joint2` → −1.5) were first read as "blocked by the side
+wall, unchecked" because the joint ended far short of its command; with the arm's TF link poses
+recorded, both arms were ≥ 18 cm from the walls — the joint was still converging (drive lag
+against gravity), not blocked. Commit `66e7e766`'s message repeats that misreading.
+
+The real case is a two-joint move that abducts the left arm and extends the elbow
+(`left_joint2` → −1.5 then `left_joint4` → 0), carrying the hand out of the head camera's view
+toward the cell's left wall (y = +0.55 m):
+
+| | kernel | PhysX at the end pose |
+|---|---|---|
+| no static geometry | **no stop** | left `ee_base_link` and **`link6`** pressed against `Cell/LeftWall`: 0 mm separation, impulse 1.33 and 0.14 N·s |
+| with static geometry | stopped at 2.7 s, before any contact | none — the finger reached the declared shelf-rack post first |
+
+Unobserved space is free end to end (octomap → bridge → kernel); for the restock stage the
+declared fixtures add about **59 400 cells the camera map lacks**.
 
 **Rule:** a scene declares its static fixtures (walls, shelf frame, table, tote shell) as
 geometry in the robot's base frame, and the world grid the kernel checks is the union of the
