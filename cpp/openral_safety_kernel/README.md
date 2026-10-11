@@ -1078,7 +1078,8 @@ both read as within bound, the measured pose included; needs a fresh measured ve
 non-jaw joint at its measured value — instead of an E-stop, no latch. WARN `safety.workspace_brake`.
 
 **Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
-`timeout_s`, future stamp, retired identity — e.g. `handover_exit` or `released`); no
+`timeout_s`, future stamp — a RETIRED identity (`handover_exit`, `released`) ends only the grasp
+region, not the workspace: carry, place and a regrasp happen in the same workspace); no
 `workspace_region`; a workspace in another frame, with geometry, a non-unit quaternion, over the caps
 (`kMaxWorkspaceRegionHalfExtentM` 0.50 m, `kMaxWorkspaceRegionVolumeM3` 0.25 m³ — WG placeholders)
 or confirmed longer ago than `grasp_region_max_age_s` (also between messages); a world-state stream

@@ -6052,6 +6052,30 @@ TEST_F(LifecycleKernelTest, AJawJointsMeasuredVelocityIsNotHandSpeed) {
 
 // #349 workspace brake: the measured hand speed (0.03 m/s) is the ONLY reason to
 // stop, so the chunk is held at the measured pose instead — no latch.
+// #349 p12_mix04: the grasp region retires on handover_exit, the workspace does
+// not — the carry happens in the same declared, confirmed workspace.
+TEST_F(LifecycleKernelTest, TheWorkspaceOutlivesTheGraspRegionsHandoverExit) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_handover", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.workspace = true;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.payload_x = 0.10;  // the payload leaves the region: the region retires
+  rig.warm(&b, 0.0, 100);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the slow hand in the workspace still may touch\n"
+                                  << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=retired"), 0U);
+}
+
 TEST_F(LifecycleKernelTest, AWorkspaceBrakeHoldsTheMeasuredPoseWhenSpeedIsTheOnlyReason) {
   LogCapture logs;
   GraspRig rig("kernel_ws_brake", with_param(lag_params(), "workspace_contact_brake_enabled",

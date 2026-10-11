@@ -3782,13 +3782,12 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
     drop_workspace("expired");
     return;
   }
-  // A retired identity (handover exit, release, a fault) ends its workspace
-  // with it: contact after the declaration ends is checked as today.
+  // A retired identity (handover exit, a release) ends its GRASP REGION, which
+  // belonged to that pick — not the workspace: carry, place and a regrasp happen
+  // in the same declared, map-confirmed workspace (#349 p12_mix04 / p12_mix07
+  // stopped right after a handover_exit / detach dropped it). The workspace ends
+  // with the declaration itself: retraction, expiry, a stale confirmation.
   const std::size_t target_hash = std::hash<std::string>{}(declaration.target_id);
-  if (grasp_retired_.contains(target_hash, declaration.stamp_ns)) {
-    drop_workspace("retired");
-    return;
-  }
   const auto& region = declaration.workspace_region;
   if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
     reject("frame_mismatch", declaration.target_id);
@@ -3849,10 +3848,8 @@ bool SafetyKernelLifecycleNode::workspace_live() const noexcept {
       elapsed_ns > static_cast<std::int64_t>(workspace_declaration_timeout_s_ * 1e9)) {
     return false;
   }
-  // Retired on the candidate path (e.g. `handover_exit`) since the last message.
-  if (grasp_retired_.contains(workspace_target_hash_, workspace_declaration_stamp_ns_)) {
-    return false;
-  }
+  // A retirement (e.g. `handover_exit`) ends the grasp region, not the workspace
+  // (see `ingest_workspace_contact`).
   const double age_s = (this->now() - attached_stamp_).seconds();
   if (!(attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
         age_s <= attached_collision_deadline_s_)) {

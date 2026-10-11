@@ -223,7 +223,8 @@ One max over all hand links (both hands of a bimanual robot), so a fast or far-l
 revokes the exemption for both: conservative.
 
 **Fail-closed (today's stop):** feature off; no live declaration (retracted, `timeout_s` lapsed,
-future stamp, a **retired** identity — `handover_exit`, `released`, …); no `workspace_region`; a
+future stamp; a **retired** identity — `handover_exit`, `released` — ends the grasp region only,
+not the workspace, since p12: carry, place and regrasp share it); no `workspace_region`; a
 workspace in another frame, with geometry, a non-unit quaternion, over the caps, or confirmed longer
 ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline;
 a stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above
