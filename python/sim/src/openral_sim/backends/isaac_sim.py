@@ -82,7 +82,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole, scale_intrinsics_to
+from openral_core import IntrinsicsPinhole, TaskSpec, scale_intrinsics_to
 from openral_core.exceptions import ROSConfigError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -101,6 +101,8 @@ _AUTO_SPAWN_ENV = "OPENRAL_ISAAC_AUTO_SPAWN"
 _SIDECAR_PYTHON_ENV = "OPENRAL_ISAAC_SIDECAR_PYTHON"
 _SIDECAR_SCRIPT_ENV = "OPENRAL_ISAAC_SIDECAR_SCRIPT"
 _AUTO_PROVISION_ENV = "OPENRAL_ISAAC_AUTO_PROVISION"
+# The task `openral deploy sim` synthesises for a DeployScene (openral_hal.sim_bringup).
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 
 # Default sidecar venv location + the (pinned) Isaac install. Isaac Sim / Isaac
 # Lab are ~50 GB, RTX-only, license-gated, and pulled from NVIDIA's own index —
@@ -441,6 +443,19 @@ class _IsaacSimSidecar(SidecarSimRollout):
         ``SimSensorBridge`` reads it on each kernel stop.
         """
         return self._client.call("contacts")
+
+    def set_task(self, instruction: str) -> dict[str, Any]:
+        """Make ``instruction`` the prompt the scene grades (``openral deploy sim``).
+
+        Activates ``placement_success.tasks[instruction]`` and restarts its grading;
+        a prompt without an entry (or ``""``) leaves no rubric active. Only a deploy
+        sim sidecar switches -- a ``sim run`` one keeps the rubric it resolved at build.
+        The reply: ``graded`` (a rubric is active), ``grade_scores`` (its grade -> score,
+        with ``fail``; empty when ungraded) and ``prompts`` (every prompt the scene
+        grades; empty outside deploy sim). Observability only: the sidecar never ends
+        a deploy episode on the grade.
+        """
+        return self._client.call("set_task", {"instruction": instruction})
 
     def _ping(self) -> None:
         """One ping caches ``action_dim`` and the time base together."""
@@ -1960,6 +1975,51 @@ def _placement_success_spec(
             f"placement_success has no entry for the scene's instruction {instruction!r}; "
             f"it grades: {sorted(placement_success.tasks)}"
         )
+    return _resolve_placement_rubric(placement_success, placements)
+
+
+def _placement_success_robot_spec(
+    placement_success: IsaacPlacementSuccess | None, task: TaskSpec
+) -> dict[str, Any]:
+    """The robot spec's grading fields: the active rubric and, under deploy sim, every rubric.
+
+    ``openral sim run`` resolves the scene's own ``task.instruction`` at build
+    (``_placement_success_spec``, a ``ROSConfigError`` when it has no entry). ``openral
+    deploy sim`` builds a task-less ``<scene>/_hal_deploy_noop`` env (empty instruction):
+    no rubric is active at boot, ``placement_success_by_prompt`` carries one per prompt,
+    and the sidecar's ``set_task`` activates the dispatched goal's prompt.
+
+    Example:
+        >>> box = IsaacPlacementRegion(min_xyz=(0, 0, 0), max_xyz=(1, 1, 1))
+        >>> ps = IsaacPlacementSuccess(
+        ...     regions={"a": box}, tasks={"put it in a": [IsaacPlacement(object="o", target="a")]}
+        ... )
+        >>> deploy = TaskSpec(id="isaac_sim/_hal_deploy_noop", scene_id="isaac_sim")
+        >>> spec = _placement_success_robot_spec(ps, deploy)
+        >>> spec["placement_success"], sorted(spec["placement_success_by_prompt"])
+        (None, ['put it in a'])
+        >>> run = TaskSpec(id="isaac_sim/a", scene_id="isaac_sim", instruction="put it in a")
+        >>> _placement_success_robot_spec(ps, run)["placement_success_by_prompt"] is None
+        True
+    """
+    if placement_success is not None and task.id.endswith(_DEPLOY_NOOP_SUFFIX):
+        return {
+            "placement_success": None,
+            "placement_success_by_prompt": {
+                prompt: _resolve_placement_rubric(placement_success, placements)
+                for prompt, placements in sorted(placement_success.tasks.items())
+            },
+        }
+    return {
+        "placement_success": _placement_success_spec(placement_success, task.instruction),
+        "placement_success_by_prompt": None,
+    }
+
+
+def _resolve_placement_rubric(
+    placement_success: IsaacPlacementSuccess, placements: list[IsaacPlacement]
+) -> dict[str, Any]:
+    """One prompt's placements with regions resolved to boxes, plus the shared rubric."""
 
     def box(name: str) -> dict[str, list[float]]:
         r = placement_success.regions[name]
@@ -2053,8 +2113,9 @@ def _write_robot_spec(
         exposure_ev=exposure_ev,
         image_blur_sigma_px=image_blur_sigma_px,
         camera_image_post=_camera_image_post_spec(desc, camera_image_post or {}),
-        # The prompt's graded placements (`_placement_success_spec`), or None.
-        placement_success=placement_success,
+        # The graded placements (`_placement_success_robot_spec`): the active rubric
+        # and, under deploy sim, one per prompt for the sidecar's `set_task`.
+        **(placement_success or {"placement_success": None}),
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
@@ -2294,7 +2355,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.joint_drive_gains,
         opts.gripper_joint_curve,
         opts.gripper_finger_coupling_rad,
-        placement_success=_placement_success_spec(opts.placement_success, env_cfg.task.instruction),
+        placement_success=_placement_success_robot_spec(opts.placement_success, env_cfg.task),
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

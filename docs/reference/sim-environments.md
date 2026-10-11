@@ -127,6 +127,18 @@ grade terminates the episode with `success`; otherwise the episode's
 `info["placement_grade"]` reports the grade so far. Without the block an Isaac
 scene has no task reward.
 
+Under `openral deploy sim` the scene is task-less (`<scene>/_hal_deploy_noop`, empty
+instruction), so no rubric is active at boot and every prompt's rubric ships to the
+sidecar. The HAL follows `/openral/reward/active_task`, where the rSkill runner
+publishes each `ExecuteRskill` goal's prompt on accept and `""` at its end: the
+goal's prompt, verbatim, selects `tasks[prompt]` (sidecar `set_task`); a prompt with
+no entry is not graded (one `sim.placement_grade_unavailable` line). Each grade
+change logs `sim.placement_grade` and the goal's end `sim.placement_grade_final`
+(closing and best grade); the rubric keeps grading the settle after the goal ends,
+until the next prompt replaces it. A deploy run never terminates on the grade -- it
+is only reported (see [telemetry](telemetry.md)). `openral sim run` still resolves
+the scene's own `task.instruction` at build and refuses one without an entry.
+
 ```yaml
 task:
   instruction: "put the cracker box on the shelf"

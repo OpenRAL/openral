@@ -25,6 +25,7 @@ from openral_sim.backends.isaac_sim import (
     IsaacPlacementRegion,
     IsaacPlacementSuccess,
     IsaacSimOptions,
+    _placement_success_robot_spec,
     _placement_success_spec,
 )
 from pydantic import ValidationError
@@ -147,6 +148,58 @@ def test_spec_refuses_a_prompt_it_does_not_grade() -> None:
     opts = IsaacSimOptions.model_validate(_warehouse_options(_shelf_success()))
     with pytest.raises(ROSConfigError, match="put the cracker box on the shelf"):
         _placement_success_spec(opts.placement_success, "put the sugar box on the shelf")
+
+
+def _deploy_task() -> Any:
+    """The task `openral deploy sim` builds the warehouse with: `_hal_deploy_noop`, no prompt."""
+    from openral_hal.sim_bringup import _load_scene_for_hal
+
+    task = _load_scene_for_hal(str(_WAREHOUSE)).task
+    assert task.id.endswith("/_hal_deploy_noop") and task.instruction == ""
+    return task
+
+
+def test_deploy_sim_boots_with_no_active_rubric_and_one_per_prompt() -> None:
+    """Regression: deploy sim's empty instruction raised ``placement_success has no entry
+    for the scene's instruction ''`` and the HAL never connected. Now no rubric is active
+    at boot and every prompt's rubric ships for the sidecar's ``set_task``."""
+    sugar = "put the sugar box on the shelf"
+    tasks = {
+        _PROMPT: [{"object": "cracker_box", "target": "shelf_1", "adjacent": ["shelf_2"]}],
+        sugar: [{"object": "sugar_box", "target": "shelf_2"}],
+    }
+    opts = IsaacSimOptions.model_validate(_warehouse_options(_shelf_success(tasks=tasks)))
+    spec = _placement_success_robot_spec(opts.placement_success, _deploy_task())
+    assert spec["placement_success"] is None
+    by_prompt = spec["placement_success_by_prompt"]
+    assert list(by_prompt) == sorted(tasks)  # sorted: the spec bytes (its hash) are stable
+    # A dispatched prompt activates exactly the rubric `sim run` would resolve for it.
+    for prompt in tasks:
+        assert by_prompt[prompt] == _placement_success_spec(opts.placement_success, prompt)
+    # A prompt without an entry has none: that goal is not graded.
+    assert by_prompt.get("wave hello") is None
+
+
+def test_sim_run_still_resolves_and_refuses_the_scene_prompt_at_build() -> None:
+    from openral_core import TaskSpec
+
+    opts = IsaacSimOptions.model_validate(_warehouse_options(_shelf_success()))
+    run = TaskSpec(id="isaac_sim/shelf", scene_id="isaac_sim", instruction=_PROMPT)
+    spec = _placement_success_robot_spec(opts.placement_success, run)
+    assert spec == {
+        "placement_success": _placement_success_spec(opts.placement_success, _PROMPT),
+        "placement_success_by_prompt": None,
+    }
+    other = run.model_copy(update={"instruction": "put the sugar box on the shelf"})
+    with pytest.raises(ROSConfigError, match="has no entry"):
+        _placement_success_robot_spec(opts.placement_success, other)
+
+
+def test_a_deploy_scene_without_placement_success_grades_nothing() -> None:
+    assert _placement_success_robot_spec(None, _deploy_task()) == {
+        "placement_success": None,
+        "placement_success_by_prompt": None,
+    }
 
 
 @pytest.fixture(scope="module")

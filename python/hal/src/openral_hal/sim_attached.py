@@ -50,7 +50,7 @@ from openral_core import (
     RobotDescription,
     check_time_base,
 )
-from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
 from openral_hal._slot_group import (
@@ -76,6 +76,11 @@ _TASK_SUCCESS_LOGGER = "openral.sim.task_success"
 _EVENT_TASK_SUCCESS = "sim.task_success"
 _EVENT_TASK_SUCCESS_FINAL = "sim.task_success_final"
 _EVENT_TASK_SUCCESS_PROBE_FAILED = "sim.task_success_probe_failed"
+# Graded placement of the dispatched goal's prompt (``set_active_task``): each
+# grade change, the goal's closing grade, and "this prompt is not graded".
+_EVENT_PLACEMENT_GRADE = "sim.placement_grade"
+_EVENT_PLACEMENT_GRADE_FINAL = "sim.placement_grade_final"
+_EVENT_PLACEMENT_GRADE_UNAVAILABLE = "sim.placement_grade_unavailable"
 # The time base a deploy-sim session runs on (one line per connect): what one
 # env.step advances the sim clock by, against the manifest's control rate.
 # Dotted under ``openral.`` for the same OTel-bridge reason as the task-success
@@ -608,6 +613,16 @@ class SimAttachedHAL:
         # Count of ``env.step`` calls since ``connect`` — the step ordinal
         # reported alongside each task-success transition.
         self._step_count: int = 0
+        # Graded placement (``set_active_task``; logging only): the dispatched goal's
+        # prompt ("" between goals), the prompt being graded and its grade -> score
+        # (None = ungraded), the grade the last step reported, the best one the goal
+        # reached, and a latch for a backend whose ``set_task`` raised.
+        self._active_task: str = ""
+        self._placement_prompt: str = ""
+        self._placement_scores: dict[str, float] | None = None
+        self._placement_grade: str = "fail"
+        self._placement_best: str = "fail"
+        self._set_task_failed: bool = False
 
     # ── HAL Protocol surface ────────────────────────────────────────────
 
@@ -766,6 +781,8 @@ class SimAttachedHAL:
         """
         if self._connected:
             self._emit_task_success_final()
+            if self._active_task:
+                self._emit_placement_grade_final()
         self._connected = False
 
     def read_state(self) -> JointState:
@@ -1280,6 +1297,9 @@ class SimAttachedHAL:
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
             self._keep_depth_frames(self._last_obs)
+        info = getattr(step_result, "info", None)
+        if self._placement_scores is not None and isinstance(info, dict):
+            self._observe_placement_grade(info.get("placement_grade"))
 
     def _keep_depth_frames(self, obs: dict[str, Any] | None) -> None:
         """Keep the newest ``"depth_frames"`` an observation carried (see ``read_depth_frames``)."""
@@ -1401,6 +1421,97 @@ class SimAttachedHAL:
             ever_succeeded=first_ns is not None,
             first_success_sim_time_ns=None if first_ns is None or first_ns < 0 else first_ns,
             transitions=self._task_success_transitions,
+            sim_time_ns=self.sim_time_ns(),
+            steps=self._step_count,
+        )
+
+    # ── Graded placement of the dispatched goal (observability only) ─────
+
+    def set_active_task(self, prompt: str) -> None:
+        """Grade the dispatched goal's ``prompt``; ``""`` ends the goal.
+
+        ``deploy sim``'s HAL node calls this from ``/openral/reward/active_task``
+        (the rSkill runner publishes the goal's ``ExecuteRskill`` prompt on accept
+        and ``""`` when it ends). Forwards to the backend's ``set_task`` (the Isaac
+        scene's ``placement_success``), which activates that prompt's rubric; a
+        prompt the scene does not grade logs ``sim.placement_grade_unavailable``
+        once and grades nothing. Each grade change then logs ``sim.placement_grade``
+        and the goal's end ``sim.placement_grade_final``. The rubric keeps grading
+        after the goal ends (an object released at the end still has to settle),
+        until the next goal's prompt replaces it. Logging only: never termination,
+        reset or the action path. No-op for a backend without ``set_task``.
+
+        Args:
+            prompt: The executing instruction, verbatim; ``""`` when none is.
+        """
+        if prompt == self._active_task:
+            return
+        set_task = getattr(self._env, "set_task", None)
+        if self._active_task:
+            self._emit_placement_grade_final()
+        self._active_task = prompt
+        if not prompt or not callable(set_task) or self._set_task_failed:
+            return
+        self._placement_prompt = prompt
+        self._placement_grade = self._placement_best = "fail"
+        try:
+            reply = set_task(prompt)
+        except ROSError as exc:  # reason: an observability call must never break actuation
+            self._set_task_failed = True
+            self._placement_scores = None
+            self._emit_task_success(
+                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
+                level="warning",
+                prompt=prompt,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return
+        scores = reply.get("grade_scores") or {}
+        self._placement_scores = (
+            {str(k): float(v) for k, v in scores.items()} if reply.get("graded") else None
+        )
+        if self._placement_scores is None and reply.get("prompts"):
+            self._emit_task_success(
+                _EVENT_PLACEMENT_GRADE_UNAVAILABLE,
+                prompt=prompt,
+                graded_prompts=list(reply["prompts"]),
+            )
+
+    def _observe_placement_grade(self, grade: object) -> None:
+        """Log ``sim.placement_grade`` when the graded prompt's grade changes."""
+        scores = self._placement_scores
+        if scores is None or not isinstance(grade, str) or grade == self._placement_grade:
+            return
+        previous = self._placement_grade
+        self._placement_grade = grade
+        if scores.get(grade, 0.0) > scores.get(self._placement_best, 0.0):
+            self._placement_best = grade
+        sim_time_ns = self.sim_time_ns()
+        self._emit_task_success(
+            _EVENT_PLACEMENT_GRADE,
+            prompt=self._placement_prompt,
+            grade=grade,
+            score=scores.get(grade, 0.0),
+            previous=previous,
+            goal_active=self._active_task == self._placement_prompt,
+            sim_time_ns=sim_time_ns,
+            sim_time_s=None if sim_time_ns is None else round(sim_time_ns / 1e9, 3),
+            step=self._step_count,
+        )
+
+    def _emit_placement_grade_final(self) -> None:
+        """Log the ending goal's ``sim.placement_grade_final`` (no-op when it is ungraded)."""
+        scores = self._placement_scores
+        if scores is None or self._placement_prompt != self._active_task:
+            return
+        self._emit_task_success(
+            _EVENT_PLACEMENT_GRADE_FINAL,
+            prompt=self._placement_prompt,
+            grade=self._placement_grade,
+            score=scores.get(self._placement_grade, 0.0),
+            best_grade=self._placement_best,
+            best_score=scores.get(self._placement_best, 0.0),
             sim_time_ns=self.sim_time_ns(),
             steps=self._step_count,
         )

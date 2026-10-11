@@ -1511,23 +1511,17 @@ class IsaacManifestScene(IsaacSceneBase):
         self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
         self._object_nominal: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
         self._object_prims: dict[str, Any] = {}
-        # Graded placement success, resolved host-side for this scene's prompt
-        # (openral_sim.backends.isaac_sim._placement_success_spec); None = no task reward.
-        self._placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
-        self._placement_grade = "fail"
+        # Graded placement success, resolved host-side
+        # (openral_sim.backends.isaac_sim._placement_success_robot_spec): `sim run` gets
+        # its prompt's rubric (None = no task reward); deploy sim gets none active and
+        # one per prompt, which `set_task` switches between and never terminates on.
+        self._placement_by_prompt: dict[str, dict[str, Any]] | None = robot_spec.get(
+            "placement_success_by_prompt"
+        )
         self._rest_s: dict[str, float] = {}
         self._last_pos: dict[str, NDArray[np.float64]] = {}
         self._last_quat: dict[str, NDArray[np.float64]] = {}
-        self._grades: list[dict[str, Any]] = list((self._placement_success or {}).get("grades", []))
-        self._grade_scores = grade_scores(self._grades)
-        declared = {str(o["name"]): o for o in self._objects}
-        self._up_axis = {
-            str(p["object"]): object_up_axis(
-                float(declared[str(p["object"])].get("roll", 0.0)),
-                float(declared[str(p["object"])].get("pitch", 0.0)),
-            )
-            for p in (self._placement_success or {}).get("placements", [])
-        }
+        self._activate_placement_success(robot_spec.get("placement_success"))
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -2617,6 +2611,40 @@ class IsaacManifestScene(IsaacSceneBase):
         joints = self._joint_positions()
         return joints if joints is not None else np.zeros(0, dtype=np.float32)
 
+    def _activate_placement_success(self, spec: dict[str, Any] | None) -> None:
+        """Make ``spec`` (one prompt's grading spec, or None) the rubric, from a fresh grade."""
+        self._placement_success: dict[str, Any] | None = spec
+        self._placement_grade = "fail"
+        self._rest_s.clear()
+        self._last_pos.clear()
+        self._last_quat.clear()
+        self._grades: list[dict[str, Any]] = list((spec or {}).get("grades", []))
+        self._grade_scores = grade_scores(self._grades)
+        declared = {str(o["name"]): o for o in self._objects}
+        self._up_axis = {
+            str(p["object"]): object_up_axis(
+                float(declared[str(p["object"])].get("roll", 0.0)),
+                float(declared[str(p["object"])].get("pitch", 0.0)),
+            )
+            for p in (spec or {}).get("placements", [])
+        }
+
+    def set_task(self, instruction: str) -> dict[str, Any]:
+        """Grade ``instruction``'s placements from now on (deploy sim's dispatched goal).
+
+        Under deploy sim (``placement_success_by_prompt`` in the robot spec) activates
+        the prompt's rubric, or none for a prompt it does not grade; a ``sim run``
+        scene keeps the rubric it resolved at build. Reply: ``graded``,
+        ``grade_scores`` (``{}`` when ungraded) and ``prompts`` (the graded prompts).
+        """
+        if self._placement_by_prompt is not None:
+            self._activate_placement_success(self._placement_by_prompt.get(instruction))
+        return {
+            "graded": self._placement_success is not None,
+            "grade_scores": self._grade_scores if self._placement_success is not None else {},
+            "prompts": sorted(self._placement_by_prompt or {}),
+        }
+
     def _grade_placements(self) -> str:
         """Advance each placed object's rest timer and grade the episode (worst placement)."""
         ps = self._placement_success
@@ -2661,18 +2689,21 @@ class IsaacManifestScene(IsaacSceneBase):
     def _reward_terminated(self) -> tuple[float, bool]:
         """Graded placement success (``placement_success``), else no task reward.
 
-        Terminates with reward 1.0 once every placement reaches the rubric's first grade;
-        otherwise the episode's last step scores its grade, every other step 0.
+        Terminates with reward 1.0 once every placement reaches the rubric's first grade
+        (never under deploy sim); otherwise the episode's last step scores its grade,
+        every other step 0.
         """
         if self._placement_success is None:
             return 0.0, False  # bring-up scene: no task reward / termination
         self._placement_grade = self._grade_placements()
-        return placement_reward(
+        reward, terminated = placement_reward(
             self._placement_grade,
             self._step_idx >= self.max_steps,
             self._grade_scores,
             str(self._grades[0]["name"]),
         )
+        # Deploy sim has no episodes to end: the grade is only reported (info).
+        return reward, terminated and self._placement_by_prompt is None
 
     def _enable_contact_reports(self) -> None:
         """Report every contact of every robot rigid body (threshold 0), for ``contacts``.

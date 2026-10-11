@@ -224,6 +224,7 @@ Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
 | `dashboard/app.py` write-control audit trail | warning | per operator write | Audit-by-design; keep at WARNING. |
 | `rskill/_diagnostics.py:132,142,166` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
 | `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
+| `hal/sim_attached.py` `sim.placement_grade` / `sim.placement_grade_final` / `sim.placement_grade_unavailable` | info (unavailable: warning when `set_task` raised) | per grade change / 1 per graded goal / 1 per ungraded goal | Deploy-sim placement grade of the dispatched goal — see below. |
 | `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | The deploy-sim time base: `sim_dt_per_tick_s` (sim seconds one `env.step` advances), `control_freq_hz`, `backend`, `robot` — emitted for a backend that declares its tick (the Isaac sidecar, RoboCasa, LIBERO) after `connect` has verified it equals one control period, and by the bare MuJoCo twin (`MujocoArmHAL`, plus `physics_dt_s` / `physics_steps`) once it has derived one control period per action. A trace replayed later knows which clock its velocities were measured on (issues #355, #358). Companions: `hal.time_base.pinned` / `hal.time_base.unresolved` (warning, logger `openral_hal._mujoco_arm`) mark a twin that is **not** timing-faithful (a pinned `settle_steps`, or a manifest without a rate); `hal.time_base.timestep_shrunk` / `robosuite.time_base.timestep_shrunk` (info) record a physics time step shrunk to divide the period. |
 
 ### The deploy-sim task-success signal
@@ -245,6 +246,19 @@ Both edges are logged because RoboCasa success is **not latched**: an object
 can be knocked back out of its receptacle, and a rising-edge-only record would
 claim a success no longer held. A backend with no success predicate emits
 nothing at all — "unknown" is never reported as failure.
+
+An Isaac scene with `placement_success` is also graded per goal (see
+[sim environments](sim-environments.md)): the HAL follows `/openral/reward/active_task`
+and the sidecar grades the dispatched prompt's placements. Same logger, same stdout
+mirror:
+
+| Line | Fires | Carries |
+|---|---|---|
+| `sim.placement_grade` | every change of the graded prompt's grade (also while the object settles after the goal) | `prompt`, `grade`, `score`, `previous`, `goal_active`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
+| `sim.placement_grade_final` | once per graded goal, at its end (`""` or the next prompt) or at `disconnect` | `prompt`, `grade`, `score`, `best_grade`, `best_score`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.placement_grade_unavailable` | once per goal whose prompt the scene does not grade (`graded_prompts`), or once at WARNING if the backend's `set_task` raised (`error`, `error_type`; grading then latches off) | `prompt` |
+
+The grade never ends a deploy episode; it is a report.
 
 The terminal line reaches **both** teardown paths. `rclpy` answers SIGINT by
 shutting the context down and raising out of `spin` without requesting the
