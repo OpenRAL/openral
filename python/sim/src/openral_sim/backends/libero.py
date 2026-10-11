@@ -20,6 +20,7 @@ cross-field validation passes.
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -228,7 +229,9 @@ class _LiberoSim:
     def reset(self, seed: int | None = None) -> Observation:
         # ponytail: covers explicit resets only; lerobot's inline reset-on-terminated
         # inside step() still reads whatever dt is current (continuous mode suppresses it).
-        pin_robosuite_time_base(self._rate_hz)
+        # No robosuite installed means no robosuite env (and no time base) to pin.
+        if importlib.util.find_spec("robosuite") is not None:
+            pin_robosuite_time_base(self._rate_hz)
         obs, _info = self._env.reset(seed=seed)
         # The reset materialised the lazily-built env (and may have re-created
         # it); in continuous mode ignore_done must land on the live instance.

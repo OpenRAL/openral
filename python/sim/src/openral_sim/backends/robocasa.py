@@ -25,6 +25,7 @@ first use via ``openral_sim._assets.ensure_robocasa_assets``.
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import os
 from dataclasses import dataclass
@@ -725,7 +726,7 @@ class _RoboCasaSim:
         # env was built: re-pin ours first (issue #358). The GR1 gym path has no
         # robosuite control_timestep at this level and was never pinned.
         control_timestep = getattr(self._env, "control_timestep", None)
-        if control_timestep:
+        if control_timestep and importlib.util.find_spec("robosuite") is not None:
             pin_robosuite_time_base(1.0 / float(control_timestep))
         if seed is not None and hasattr(self._env, "rng"):
             # robocasa's own gym_wrapper.reset uses this exact pattern;
