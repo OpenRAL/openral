@@ -44,6 +44,22 @@ So exempting the target alone can never let the task complete, and a depth toler
 (commanded poses run 20–40 mm into soft cartons that physics blocks). What the data does show is a
 clean partition: **contact is needed only by the hand, only inside the volumes the task works in.**
 
+**Contact speeds** (`EpisodeResult.contact_stats.onset_speed_mps` / `max_speed_mps`, link body
+speed over the control period; 16 sim-run episodes, 4 placed completely in the second batch):
+only cartons and tote walls/rims exchange force with the hand — every shelf and board "contact"
+carries zero impulse (the fingers skim inside PhysX's contact-offset band). For the pairs that
+exchanged force:
+
+| hand-class contact | fastest onset | peak while in contact |
+|---|---|---|
+| finger vs carton | 0.135 m/s | 0.66 m/s (carrying the target — grasp/attach path) |
+| finger vs tote | 0.135 m/s | 0.32 m/s |
+| hand vs carton | 0.160 m/s | 0.51 m/s (holding) |
+| hand vs tote | 0.090 m/s | 0.22 m/s |
+
+The only non-hand body ever in contact was `openarm_body_link0` (the fixed base), once, at zero
+speed and zero impulse, touched by the carried carton.
+
 ## 3. Rule
 
 Contact classes, per (robot link, world cell, task state):
@@ -63,8 +79,13 @@ Contact classes, per (robot link, world cell, task state):
   grid) and retracts it when the map disagrees — the same "declared, then measured" rule as the
   grasp and place targets.
 - **Slow** = the hand's commanded Cartesian speed (FK of the checked row vs the measured state,
-  over the control period) at most `v_contact` (initial value from the sim-run contact data;
-  calibration point). Faster motion inside the workspace is checked as today.
+  over the control period) at most `v_contact`. Calibration (§2): sim evaluation **0.35 m/s**,
+  just above the fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s);
+  candidate for real hardware **0.25 m/s**, ISO 10218-1's reduced speed — a Safety-WG decision.
+  Set explicitly by the scene; there is no default. Faster motion inside the workspace is checked
+  as today. On a PD position-controlled arm the commanded-minus-measured gap is proportional to
+  the force the joint drives apply, so a hand blocked by a wall while the policy keeps pushing
+  grows the gap and trips the bound: it is also a crude push-force limit.
 - **Self-collision, the arm links, any hand contact outside the workspace, and any contact after
   the declaration ends are unchanged.** This is what keeps catastrophic collisions — arm into
   shelf/table/person, fast hand strikes, hand outside the task volume — stopped.
