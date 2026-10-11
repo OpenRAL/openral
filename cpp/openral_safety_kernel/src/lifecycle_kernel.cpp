@@ -1302,7 +1302,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, const CollisionHit& hit) {
         if (ws_dry_run_) {
-          return;  // #349 brake dry run: the trip is the answer, nothing is reported
+          // #349 brake dry run: the trip is the answer, nothing is reported. The
+          // relaxed pass records which pair refused the brake (stop path only).
+          if (ws_speed_override_) {
+            ws_refused_pair_ = std::string(kind) + " " + a + " " + b;
+          }
+          return;
         }
         ++chunks_dropped_;
         // Advisory band (#176): a declared payload's own receptacle contact is
@@ -1805,6 +1810,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const bool as_is = check_rows();
           bool slowed = true;
           if (as_is) {
+            ws_refused_pair_.clear();
             ws_quiet_ = true;
             ws_speed_override_ = true;
             slowed = check_rows();
@@ -1816,6 +1822,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           }
           ws_dry_run_ = false;
           rows_checked = !as_is;
+          if (as_is && slowed) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                                 "(trips with speed and lead relaxed: stops as before)",
+                                 workspace_measured_speed_mps_, ws_refused_pair_.c_str());
+          }
           if (as_is && !slowed) {
             scaled_chunk_ = *msg;
             const bool full_row = msg->joint_names.empty();
