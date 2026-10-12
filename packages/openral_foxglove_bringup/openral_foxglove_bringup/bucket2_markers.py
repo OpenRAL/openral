@@ -5,7 +5,12 @@
   (``PointCloud2``): one point per occupied voxel, at the voxel centre.
 - ``/openral/attachment_state`` (``AttachmentState``) → ``/openral/viz/attachments``
   (``visualization_msgs/MarkerArray``): every attached object's collision
-  primitives on its attach link, plus the grasp / place declaration regions.
+  primitives on its attach link (and the measured inner box a payload's stage-2
+  refinement carries), plus the grasp / place declaration regions and the grasp
+  declaration's search box and manipulation workspace.
+- Parameter ``static_geometry_file`` (``DeployRuntime.static_geometry_file``) →
+  ``/openral/viz/static_geometry`` (latched ``MarkerArray``): the declared fixtures
+  the kernel always treats as occupied, drawn as their boxes and triangle meshes.
 
 Conversion math lives in pure functions (``occupied_voxel_centers``,
 ``attachment_markers``) so unit tests exercise it without a ROS context
@@ -24,15 +29,19 @@ import structlog
 
 __all__ = [
     "ATTACHMENT_MARKERS_TOPIC",
+    "STATIC_GEOMETRY_MARKERS_TOPIC",
     "Bucket2MarkersNode",
     "attachment_markers",
     "main",
     "occupied_voxel_centers",
     "parse_attach_link_tf_frames",
+    "static_geometry_markers",
 ]
 
 #: Where the attachment / declaration-region markers are published.
 ATTACHMENT_MARKERS_TOPIC = "/openral/viz/attachments"
+#: Where the declared static geometry is published (latched, once).
+STATIC_GEOMETRY_MARKERS_TOPIC = "/openral/viz/static_geometry"
 
 log = structlog.get_logger(__name__)
 
@@ -153,6 +162,14 @@ OTHER_EVIDENCE_RGBA = (0.8, 0.3, 1.0, 0.45)
 GRASP_REGION_RGBA = (0.1, 0.9, 0.2, 0.2)
 PLACE_REGION_RGBA = (0.2, 0.4, 1.0, 0.2)
 INACTIVE_REGION_RGBA = (0.6, 0.6, 0.6, 0.12)
+#: The grasp declaration's search box (where the target is looked for): faint white.
+SEARCH_BOX_RGBA = (0.9, 0.9, 0.9, 0.08)
+#: The manipulation workspace (#349): amber once map-confirmed, grey while only declared.
+WORKSPACE_RGBA = (1.0, 0.75, 0.1, 0.1)
+#: A payload's measured inner box (stage-2 refinement): the shape payload-vs-robot uses.
+MEASURED_RGBA = (1.0, 1.0, 1.0, 0.6)
+#: Declared static geometry: always-occupied fixtures.
+STATIC_RGBA = (0.85, 0.3, 0.3, 0.25)
 
 #: ``evidence_ref`` suffix of a released payload frozen on the base frame
 #: (``openral_hal.vision_attachment_bridge.freeze_released_attachment``).
@@ -182,6 +199,12 @@ def attachment_markers(state: Any, attach_link_tf_frames: Mapping[str, str] | No
       declaration and its ``region`` are both valid) as a translucent box plus
       wireframe edges in the region's own frame, green / blue while active and
       grey once retracted, labelled with the target id.
+    - A box primitive's measured inner box (its stage-2 refinement, the first three
+      ``tight_dop_lo``/``tight_dop_hi`` axes) as a white ``CUBE`` in ns
+      ``attached_measured``: the shape the kernel checks payload-vs-robot with.
+    - The grasp declaration's ``search_box`` (faint white) and manipulation
+      workspace: ``workspace_region`` in amber once map-confirmed, else the declared
+      ``workspace_box`` in grey.
 
     Args:
         state: An ``openral_msgs/AttachmentState``.
@@ -211,7 +234,30 @@ def attachment_markers(state: Any, attach_link_tf_frames: Mapping[str, str] | No
         if valid and decl.region_valid:
             frame = frames.get(decl.region.frame_id, decl.region.frame_id)
             rgba = active_rgba if decl.active else INACTIVE_REGION_RGBA
-            adds += _region_markers(name, decl, frame, rgba)
+            text = f"{name}: {decl.target_id}" + ("" if decl.active else " (inactive)")
+            adds += _region_markers(f"{name}_region", decl.region, frame, rgba, text)
+    if state.grasp_declaration_valid:
+        g = state.grasp_declaration
+        boxes = [("search_box", g.search_box_valid, g.search_box, SEARCH_BOX_RGBA, "search box")]
+        if g.workspace_region_valid:
+            boxes.append(
+                ("workspace", True, g.workspace_region, WORKSPACE_RGBA, "workspace (confirmed)")
+            )
+        else:
+            boxes.append(
+                (
+                    "workspace",
+                    g.workspace_box_valid,
+                    g.workspace_box,
+                    INACTIVE_REGION_RGBA,
+                    "workspace (declared, unconfirmed)",
+                )
+            )
+        for ns, valid, region, rgba, text in boxes:
+            if valid:
+                adds += _region_markers(
+                    ns, region, frames.get(region.frame_id, region.frame_id), rgba, text
+                )
     for i, m in enumerate(adds, start=1):
         m.id = i
         m.header.stamp = stamp
@@ -278,6 +324,23 @@ def _object_markers(obj: Any, frame: str) -> list[Any]:
         if prim.shape_type == _SHAPE_BOX:
             box = [2 * d for d in dims]
             out.append(_marker("attached", frame, Marker.CUBE, _pose_of(t), box, rgba))
+            lo, hi = list(prim.tight_dop_lo)[:3], list(prim.tight_dop_hi)[:3]
+            if len(lo) == 3 and len(hi) == 3:
+                # The refinement's first three 26-DOP axes are the box's own x/y/z: the
+                # measured inner box, the shape payload-vs-robot is checked with.
+                inner = t.copy()
+                inner[:3, 3] = t[:3, :3] @ ((np.asarray(lo) + np.asarray(hi)) / 2.0) + t[:3, 3]
+                size = [b - a for a, b in zip(lo, hi, strict=True)]
+                out.append(
+                    _marker(
+                        "attached_measured",
+                        frame,
+                        Marker.CUBE,
+                        _pose_of(inner),
+                        size,
+                        MEASURED_RGBA,
+                    )
+                )
             continue
         d = 2 * dims[0]
         seg = dims[1] if prim.shape_type == _SHAPE_CAPSULE else 0.0
@@ -308,14 +371,14 @@ def _object_markers(obj: Any, frame: str) -> list[Any]:
     return out
 
 
-def _region_markers(name: str, decl: Any, frame: str, rgba: Sequence[float]) -> list[Any]:
-    """A declaration's region: translucent box, wireframe edges and a target label."""
+def _region_markers(
+    ns: str, region: Any, frame: str, rgba: Sequence[float], text: str
+) -> list[Any]:
+    """A ``PlaceRegion``: translucent box, wireframe edges and a label above it."""
     from geometry_msgs.msg import Point, Pose
     from visualization_msgs.msg import Marker
 
-    region = decl.region
     he = (region.half_extents.x, region.half_extents.y, region.half_extents.z)
-    ns = f"{name}_region"
     box = _marker(ns, frame, Marker.CUBE, region.pose, [2 * h for h in he], rgba)
     edges = _marker(ns, frame, Marker.LINE_LIST, region.pose, (0.003, 0, 0), (*rgba[:3], 1.0))
     signs = (-1, 1)
@@ -326,11 +389,68 @@ def _region_markers(name: str, decl: Any, frame: str, rgba: Sequence[float]) -> 
                 edges.points += [Point(x=a[0], y=a[1], z=a[2]), Point(x=b[0], y=b[1], z=b[2])]
     p = region.pose.position
     top = Pose(position=Point(x=p.x, y=p.y, z=p.z + he[2] + 0.03))
-    text = f"{name}: {decl.target_id}" + ("" if decl.active else " (inactive)")
     label = _marker(
         f"{ns}_label", frame, Marker.TEXT_VIEW_FACING, top, (0, 0, 0.03), _LABEL_RGBA, text
     )
     return [box, edges, label]
+
+
+def static_geometry_markers(path: str, frame: str) -> Any:
+    """The declared static geometry (``StaticGeometry`` YAML) as a ``MarkerArray``.
+
+    Every box is a translucent ``CUBE`` at its pose; every mesh a ``TRIANGLE_LIST`` from
+    its ``.npz`` (``vertices``, ``triangles``). Both are in ``frame`` — the manifest
+    ``base_frame`` the file is declared in — and labelled with their ``source``.
+
+    Raises:
+        openral_core.ROSConfigError: the file is missing or does not validate, or a
+            mesh file is missing or malformed.
+    """
+    from pathlib import Path
+
+    import yaml
+    from geometry_msgs.msg import Point
+    from openral_core import ROSConfigError, StaticBox, StaticGeometry
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from visualization_msgs.msg import Marker, MarkerArray
+
+    p = Path(path)
+    try:
+        geometry = StaticGeometry.model_validate(yaml.safe_load(p.read_text()))
+    except (OSError, yaml.YAMLError, ValueError) as exc:
+        raise ROSConfigError(f"static geometry {p}: {exc}") from exc
+    out: list[Any] = [Marker(action=Marker.DELETEALL)]
+    for entry in geometry.static_geometry:
+        if isinstance(entry, StaticBox):
+            t = homogeneous_from_quat_xyz(entry.xyz, entry.quat_xyzw)
+            size = [2 * h for h in entry.half_extents]
+            out.append(
+                _marker("static_geometry", frame, Marker.CUBE, _pose_of(t), size, STATIC_RGBA)
+            )
+            continue
+        mesh = p.parent / entry.file
+        try:
+            with np.load(mesh) as data:
+                verts = np.asarray(data["vertices"], dtype=np.float64)
+                tris = np.asarray(data["triangles"], dtype=np.int64)
+        except (OSError, KeyError, ValueError) as exc:
+            raise ROSConfigError(f"static mesh {mesh}: {exc}") from exc
+        m = _marker(
+            "static_geometry",
+            frame,
+            Marker.TRIANGLE_LIST,
+            _pose_of(np.eye(4)),
+            (1, 1, 1),
+            STATIC_RGBA,
+        )
+        m.points = [
+            Point(x=float(x), y=float(y), z=float(z)) for x, y, z in verts[tris.reshape(-1)]
+        ]
+        out.append(m)
+    for i, m in enumerate(out[1:], start=1):
+        m.id = i
+        m.frame_locked = False
+    return MarkerArray(markers=out)
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +523,21 @@ class Bucket2MarkersNode:
         self._sub_attachments = self._node.create_subscription(
             AttachmentState, "/openral/attachment_state", self._on_attachment_state, latched
         )
+        # Declared static geometry (`static_geometry_file`, in `base_frame`): published
+        # once, latched. A file the deploy launch already validated; a bad one is logged.
+        static_file = str(self._node.declare_parameter("static_geometry_file", "").value or "")
+        base_frame = str(self._node.declare_parameter("base_frame", "").value or "")
+        self._pub_static = None
+        if static_file and base_frame:
+            from openral_core import ROSConfigError
+
+            self._pub_static = self._node.create_publisher(
+                MarkerArray, STATIC_GEOMETRY_MARKERS_TOPIC, latched
+            )
+            try:
+                self._pub_static.publish(static_geometry_markers(static_file, base_frame))
+            except ROSConfigError:
+                log.exception("bucket2: static_geometry_file unreadable — not drawn")
 
         log.info("bucket2_markers node ready", attach_link_tf_frames=self._tf_frames)
 

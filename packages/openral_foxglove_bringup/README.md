@@ -140,7 +140,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, held payload + grasp/place regions |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, held payload + grasp/place regions, search box, workspace, declared static geometry |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -149,7 +149,7 @@ stack beside it; everything else is tabbed, one click away.
 |---|---|---|
 | Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
 | Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
-| World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
+| World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
 
 **Telemetry tabs**
@@ -263,7 +263,8 @@ draws it natively — no TypeScript extension:
 | In (`openral_msgs`) | Out (standard) | Topic |
 |---|---|---|
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
-| `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + grasp/place regions) | `/openral/viz/attachments` |
+| `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
+| `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
 
 The attachment markers draw each held payload's collision primitives on its
 attach link's TF frame (`pose_in_link ∘ pose_in_object`, frame-locked so they

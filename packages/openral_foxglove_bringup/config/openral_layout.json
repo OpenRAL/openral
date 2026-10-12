@@ -42,6 +42,9 @@
     "/openral/viz/attachments": {
      "visible": true
     },
+    "/openral/viz/static_geometry": {
+     "visible": true
+    },
     "/odom": {
      "visible": true
     },
@@ -143,6 +146,9 @@
      "pointSize": 0.04
     },
     "/openral/viz/attachments": {
+     "visible": true
+    },
+    "/openral/viz/static_geometry": {
      "visible": true
     }
    },

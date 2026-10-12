@@ -77,6 +77,7 @@ _EXPECTED_ALLOWED: set[str] = {
     # Bucket-2 converter outputs
     "/openral/world_voxels_cloud",
     "/openral/viz/attachments",
+    "/openral/viz/static_geometry",
     # Telemetry mirrored from the OTel dashboard's cards
     "/openral/world_state_fast",
     "/openral/policy_state",

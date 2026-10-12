@@ -3724,6 +3724,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                             if attach_link_tf_frames
                             else {}
                         ),
+                        # Declared static geometry, drawn on /openral/viz/static_geometry
+                        # in the manifest base frame it is declared in (#349).
+                        **(
+                            {
+                                "static_geometry_file": static_geometry_file,
+                                "base_frame": description.base_frame,
+                            }
+                            if static_geometry_file
+                            else {}
+                        ),
                     }
                 ],
                 additional_env=otel_env,

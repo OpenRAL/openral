@@ -424,6 +424,111 @@ class TestAttachmentMarkers:
             attachment_markers(_state([obj]))
 
 
+class TestWorkspaceAndMeasuredMarkers:
+    def test_search_box_and_workspace_boxes(self) -> None:
+        """#349: the grasp declaration's search box and workspace are drawn — grey while
+        only declared, amber once the producer has confirmed the workspace region."""
+        state = _state()
+        state.grasp_declaration_valid = True  # type: ignore[attr-defined]
+        g = state.grasp_declaration  # type: ignore[attr-defined]
+        g.target_id, g.active = "cell:carton_led2308c2_b", True
+        g.search_box_valid, g.search_box = True, _region((0.16, -0.09, -0.49), (0.1, 0.08, 0.06))
+        g.workspace_box_valid = True
+        g.workspace_box = _region((0.39, -0.12, -0.44), (0.35, 0.33, 0.22))
+
+        array = attachment_markers(state, _TF_FRAMES)
+        (search,) = [m for m in _adds(array, "search_box") if m.type == m.CUBE]
+        assert (search.scale.x, search.scale.y, search.scale.z) == pytest.approx((0.2, 0.16, 0.12))
+        assert _adds(array, "search_box_label")[0].text == "search box"
+        (ws,) = [m for m in _adds(array, "workspace") if m.type == m.CUBE]
+        assert (ws.color.r, ws.color.g, ws.color.b) == pytest.approx((0.6, 0.6, 0.6))
+        assert _adds(array, "workspace_label")[0].text == "workspace (declared, unconfirmed)"
+
+        g.workspace_region_valid, g.workspace_region = True, g.workspace_box
+        array = attachment_markers(state, _TF_FRAMES)
+        (ws,) = [m for m in _adds(array, "workspace") if m.type == m.CUBE]
+        assert (ws.color.r, ws.color.g, ws.color.b) == pytest.approx((1.0, 0.75, 0.1))
+        assert _adds(array, "workspace_label")[0].text == "workspace (confirmed)"
+
+    def test_a_refined_box_draws_its_measured_inner_box(self) -> None:
+        """A box with a stage-2 refinement: the first three DOP axes are the measured box
+        the kernel checks payload-vs-robot with, drawn inside the padded one."""
+        om, _, vm = _msgs()
+        prim = _primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.05, 0.04, 0.06], (0.0, 0, 0))  # type: ignore[attr-defined]
+        prim.tight_dop_lo = [-0.03, -0.02, -0.06] + [-1.0] * 10
+        prim.tight_dop_hi = [0.05, 0.02, 0.02] + [1.0] * 10
+        obj = _object(
+            object_id="cell:carton_led2308c2_b",
+            attach_link=_BASE,
+            pose_in_link=_pose((0.5, 0.0, 0.2)),
+            primitives=[prim],
+            evidence_kind="grasp_target_region",
+        )
+        (inner,) = _adds(attachment_markers(_state([obj])), "attached_measured")
+        assert inner.type == vm.Marker.CUBE  # type: ignore[attr-defined]
+        assert (inner.scale.x, inner.scale.y, inner.scale.z) == pytest.approx((0.08, 0.04, 0.08))
+        p = inner.pose.position
+        assert (p.x, p.y, p.z) == pytest.approx((0.51, 0.0, 0.18))
+        # An unrefined box draws no inner box.
+        prim.tight_dop_lo, prim.tight_dop_hi = [], []
+        assert _adds(attachment_markers(_state([obj])), "attached_measured") == []
+
+
+class TestStaticGeometryMarkers:
+    def _cell(self, tmp_path: Path) -> Path:
+        """A wall box and a one-triangle shelf mesh, written as the export tool writes them."""
+        import numpy as np
+        import yaml
+
+        np.savez_compressed(
+            tmp_path / "shelf.npz",
+            vertices=np.array([[0.4, -0.2, 0.0], [0.4, 0.2, 0.0], [0.6, 0.0, 0.0]], np.float32),
+            triangles=np.array([[0, 1, 2]], np.int32),
+        )
+        path = tmp_path / "static.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "static_geometry": [
+                        {
+                            "kind": "box",
+                            "source": "/World/Cell/RightWall",
+                            "xyz": [0.3, -0.55, 0.0],
+                            "half_extents": [0.2, 0.018, 0.3],
+                        },
+                        {"kind": "mesh", "source": "/World/OMAR/Rack", "file": "shelf.npz"},
+                    ]
+                }
+            )
+        )
+        return path
+
+    def test_boxes_and_meshes_in_the_base_frame(self, tmp_path: Path) -> None:
+        _, _, vm = _msgs()
+        mk = vm.Marker  # type: ignore[attr-defined]
+        array = _b2.static_geometry_markers(str(self._cell(tmp_path)), _BASE)  # type: ignore[attr-defined]
+        assert array.markers[0].action == mk.DELETEALL
+        wall, shelf = array.markers[1:]
+        assert wall.type == mk.CUBE and wall.header.frame_id == _BASE
+        assert (wall.scale.x, wall.scale.y, wall.scale.z) == pytest.approx((0.4, 0.036, 0.6))
+        assert wall.pose.position.y == pytest.approx(-0.55)
+        assert shelf.type == mk.TRIANGLE_LIST and shelf.header.frame_id == _BASE
+        assert [(round(q.x, 3), round(q.y, 3)) for q in shelf.points] == [
+            (0.4, -0.2),
+            (0.4, 0.2),
+            (0.6, 0.0),
+        ]
+        assert [m.id for m in array.markers[1:]] == [1, 2]
+
+    def test_a_missing_mesh_is_refused(self, tmp_path: Path) -> None:
+        from openral_core import ROSConfigError
+
+        path = self._cell(tmp_path)
+        (tmp_path / "shelf.npz").unlink()
+        with pytest.raises(ROSConfigError, match=r"shelf\.npz"):
+            _b2.static_geometry_markers(str(path), _BASE)  # type: ignore[attr-defined]
+
+
 class TestParseAttachLinkTfFrames:
     def test_the_scene_strings_and_the_ros_default(self) -> None:
         assert parse_attach_link_tf_frames(
