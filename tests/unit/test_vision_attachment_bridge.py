@@ -1373,6 +1373,32 @@ def test_a_segmented_payload_is_clipped_at_the_tool_point() -> None:
     assert sphere == held.primitives[1]
 
 
+def test_an_oblique_payload_box_is_clipped_without_losing_its_front() -> None:
+    """#349 r17: segmented OBBs fitted to points in front of the palm can still poke a
+    corner behind it when tilted. The box becomes the approach-aligned box enclosing it,
+    cut at the plane: nothing behind, the front face where it was."""
+    import itertools
+    import math
+
+    from openral_hal.vision_attachment_bridge import _clip_behind_tool_point
+
+    th = math.radians(45.0)
+    pose = np.eye(4)
+    pose[:3, :3] = [[1, 0, 0], [0, math.cos(th), -math.sin(th)], [0, math.sin(th), math.cos(th)]]
+    pose[2, 3] = -0.10
+    half = np.array([0.03, 0.03, 0.05])
+    clipped_pose, clipped_half = _clip_behind_tool_point(pose, half, np.array([0.0, 0.0, -0.07]))
+
+    def along_u(p: Any, h: Any) -> list[float]:
+        return [
+            -float((p[:3, 3] + p[:3, :3] @ (np.array(s) * h))[2])
+            for s in itertools.product([-1, 1], repeat=3)
+        ]
+
+    assert min(along_u(clipped_pose, clipped_half)) == pytest.approx(0.07)
+    assert max(along_u(clipped_pose, clipped_half)) == pytest.approx(max(along_u(pose, half)))
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);

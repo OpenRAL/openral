@@ -571,16 +571,19 @@ def freeze_released_attachment(
 def _clip_behind_tool_point(
     pose: NDArray[np.float64], half: NDArray[np.float64], tcp: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Shorten a box (``pose`` in the link, ``half``) so nothing lies behind the tool point.
+    """A box (``pose`` in the link, ``half``) with nothing behind the plane at ``tcp``.
 
-    Only along a box axis within 30 degrees of the approach ``u = tcp / |tcp|`` (an OBB
-    clipped by an oblique plane is no OBB); the front face stays, the half extent never
-    drops below 2.5 mm. Unchanged when no axis is aligned or nothing is behind.
+    The plane is perpendicular to the approach ``u = tcp / |tcp|`` at ``|tcp|``. A box
+    with an axis within 30 degrees of ``u`` is cut along that axis at the plane through
+    ``tcp`` perpendicular to it (its frame kept); a more oblique box is first replaced
+    by the box aligned with ``u`` that encloses it (wider), then cut along ``u``. The
+    front is kept whole either way (the cut axis's half extent never drops below 2.5 mm);
+    unchanged when nothing lies behind the plane.
 
     Example:
         >>> import numpy as np
         >>> pose = np.eye(4)
-        ... pose[2, 3] = -0.10  # a box below the link origin
+        >>> pose[2, 3] = -0.10  # a box below the link origin
         >>> p, h = _clip_behind_tool_point(
         ...     pose, np.array([0.05, 0.05, 0.05]), np.array([0.0, 0.0, -0.07])
         ... )
@@ -592,20 +595,41 @@ def _clip_behind_tool_point(
         return pose, half
     u = tcp / reach
     rot = pose[:3, :3]
-    proj = rot.T @ u  # each box axis . u
+    centre = pose[:3, 3]
+    back = float(centre @ u) - float(np.abs(rot.T @ u) @ half)
+    if back >= reach:
+        return pose, half
+    proj = rot.T @ u
     i = int(np.argmax(np.abs(proj)))
-    if abs(proj[i]) < math.cos(math.radians(30.0)):
-        return pose, half
-    back = float(pose[:3, 3] @ u) - float(np.abs(proj) @ half)
-    excess = reach - back
-    if excess <= 0.0:
-        return pose, half
-    cut = min(excess / abs(proj[i]), 2.0 * (half[i] - 0.0025))
-    if cut <= 0.0:
-        return pose, half
-    out_pose, out_half = pose.copy(), half.copy()
-    out_half[i] -= cut / 2.0
-    out_pose[:3, 3] += rot[:, i] * math.copysign(cut / 2.0, proj[i])
+    if abs(proj[i]) >= math.cos(math.radians(30.0)):
+        # A box axis within 30 degrees of the approach (a hand-aligned box: the OpenArm
+        # tool point sits ~15 degrees off link7's axis): cut along it, at the plane
+        # through the palm point perpendicular to that axis — nothing in front of that
+        # plane is lost, and the box keeps its frame.
+        axis = rot[:, i] * math.copysign(1.0, proj[i])
+        excess = float(tcp @ axis) - (float(centre @ axis) - half[i])
+        if excess <= 0.0:
+            return pose, half
+        cut = min(excess, 2.0 * (half[i] - 0.0025))
+        out_pose, out_half = pose.copy(), half.copy()
+        out_half[i] -= cut / 2.0
+        out_pose[:3, 3] += axis * (cut / 2.0)
+        return out_pose, out_half
+    # A frame with u as an axis: u, then the box axis least aligned with u made
+    # orthogonal to it, then their cross product (right-handed).
+    j = int(np.argmin(np.abs(rot.T @ u)))
+    e2 = rot[:, j] - float(rot[:, j] @ u) * u
+    e2 = e2 / float(np.linalg.norm(e2))
+    frame = np.column_stack([u, e2, np.cross(u, e2)])
+    enclosing = np.abs(frame.T @ rot) @ half  # half extents of the enclosing box
+    front = float(centre @ u) + enclosing[0]
+    new_back = min(reach, front - 0.005)
+    out_half = enclosing.copy()
+    out_half[0] = (front - new_back) / 2.0
+    out_centre = centre + u * ((front + new_back) / 2.0 - float(centre @ u))
+    out_pose = np.eye(4)
+    out_pose[:3, :3] = frame
+    out_pose[:3, 3] = out_centre
     return out_pose, out_half
 
 
