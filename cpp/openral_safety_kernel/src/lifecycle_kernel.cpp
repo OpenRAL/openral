@@ -1861,16 +1861,62 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             ++workspace_command_holds_;
           }
           if (as_is && !slowed) {
-            scaled_chunk_ = *msg;
             const bool full_row = msg->joint_names.empty();
+            const auto is_jaw = [&](std::size_t d) {
+              return std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
+                               static_cast<int>(d)) != workspace_jaw_cols_.end();
+            };
+            // Creep, not freeze, when speed/lead are the only reasons (#349 r24/r25: a
+            // held policy re-issues the same command and stalls, 200-1700 holds a run):
+            // the commanded rows scaled toward the measured pose so the last row leads
+            // by one control period at the speed bound (at most half the lead bound) —
+            // the arm keeps moving toward the policy's target at the bounded speed. The scaled rows
+            // must pass the relaxed check themselves; otherwise (and for a refused command) the
+            // measured pose is held.
+            double creep = 0.0;
+            if (!rows_refused && view.horizon > 0) {
+              const double* last =
+                  view.flat_data + static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                const bool commanded = full_row || slot_commanded_[d] != 0;
+                q_check_[d] = commanded && !is_jaw(d) ? last[d] : q_meas_[d];
+              }
+              fk_config(q_check_.data());
+              const double lead = workspace_hand_lead();
+              if (std::isfinite(lead) && lead > 0.0) {
+                // One control period of travel at the speed bound, at most half the lead
+                // bound: the arm moves toward the target no faster than the rule allows.
+                const double step =
+                    std::min(0.5 * workspace_max_lead_m_,
+                             workspace_max_speed_mps_ * workspace_control_period_s_);
+                creep = std::min(1.0, step / lead);
+              }
+              ws_dry_run_ = true;
+              ws_quiet_ = true;
+              ws_speed_override_ = true;
+              for (std::uint16_t s = 0; s < view.horizon && creep > 0.0; ++s) {
+                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  const bool commanded = full_row || slot_commanded_[d] != 0;
+                  q_check_[d] = !commanded  ? q_meas_[d]
+                                : is_jaw(d) ? row[d]
+                                            : q_meas_[d] + creep * (row[d] - q_meas_[d]);
+                }
+                if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
+                  creep = 0.0;  // the scaled motion itself is not clear: hold
+                }
+              }
+              ws_speed_override_ = false;
+              ws_quiet_ = false;
+              ws_dry_run_ = false;
+            }
+            scaled_chunk_ = *msg;
             for (std::uint16_t s = 0; s < view.horizon; ++s) {
               for (std::size_t d = 0; d < robot_ndof; ++d) {
                 const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
-                const bool jaw = std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
-                                           static_cast<int>(d)) != workspace_jaw_cols_.end();
-                if ((full_row || slot_commanded_[d] != 0) && !jaw &&
+                if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
                     k < scaled_chunk_.flat.size()) {
-                  scaled_chunk_.flat[k] = q_meas_[d];
+                  scaled_chunk_.flat[k] = q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
                 }
               }
             }
@@ -1882,13 +1928,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_brake_last_warn_ = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
-                          "brakes=%llu reason=%s refused=%s target=%s rskill_id=%s (held at the "
-                          "measured pose, no latch)",
+                          "brakes=%llu reason=%s refused=%s creep=%.3f target=%s rskill_id=%s "
+                          "(0 = held at the measured pose; no latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
                           workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
                           rows_refused ? "command_refused" : "speed_lead",
-                          rows_refused ? ws_refused_pair_.c_str() : "", workspace_target_.c_str(),
-                          msg->rskill_id.c_str());
+                          rows_refused ? ws_refused_pair_.c_str() : "", creep,
+                          workspace_target_.c_str(), msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
             span->SetAttribute("safety.workspace_brake", true);

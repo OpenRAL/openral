@@ -298,6 +298,13 @@ samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while tolerated 
 PACS-style braking). The checks run first as a dry run, so the no-trip case costs what it did. Any
 other reason (arm link, outside the box, no measured velocity) stops as before.
 
+**Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
+the measured pose so the last row leads by one control period at the speed bound (at most half the
+lead bound) — the arm keeps moving toward the policy's target at the bounded speed; the scaled rows
+must pass the relaxed check, else the measured pose is held. Why: r24/r25 runs logged 200–1700
+holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
+the 70 s declaration timeout). WARN `creep=<factor>` (0 = held).
+
 **Hold a refused command (sim):** `workspace_contact_hold_max_consecutive` (launch: 2 s of chunks at
 the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose passes,
 the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's halt on

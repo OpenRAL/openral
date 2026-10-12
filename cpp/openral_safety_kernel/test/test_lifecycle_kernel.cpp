@@ -6077,7 +6077,11 @@ TEST_F(LifecycleKernelTest, TheWorkspaceOutlivesTheGraspRegionsHandoverExit) {
   EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=retired"), 0U);
 }
 
-TEST_F(LifecycleKernelTest, AWorkspaceBrakeHoldsTheMeasuredPoseWhenSpeedIsTheOnlyReason) {
+// #349 workspace brake: the measured hand speed (0.03 m/s) is the ONLY reason to
+// stop. No latch: the command creeps toward its target at the speed bound — here it
+// leads only 0.006 m, under one period at the bound (0.02 x 0.5 = 0.01 m), so it goes
+// out whole.
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeCreepsWhenSpeedIsTheOnlyReason) {
   LogCapture logs;
   GraspRig rig("kernel_ws_brake", with_param(lag_params(), "workspace_contact_brake_enabled",
                                              rclcpp::ParameterValue(true)));
@@ -6088,13 +6092,14 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeHoldsTheMeasuredPoseWhenSpeedIsTheOnl
   ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
   EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 1U);
-  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0) << "held at the measured pose, not the commanded 0.1";
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.1) << "within one period at the bound: unscaled";
   EXPECT_GE(logs.count("safety.workspace_brake hand_speed_mps=0.030"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("creep=1.000"), 1U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
   // A still hand, a 0.005 m lead bound, the 0.1 rad command leads 0.006 m: the
-  // push is the only reason, and a hold commands no push.
+  // push is the only reason: the command creeps at half the lead bound.
   LogCapture logs;
   GraspRig rig("kernel_ws_brake_lead",
                with_param(lag_params(0.005), "workspace_contact_brake_enabled",
@@ -6106,7 +6111,8 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
   ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
   EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 1U);
-  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0);
+  // Scaled so the lead is half the 0.005 m bound: 0.1 x 0.0025 / 0.006.
+  EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
 }
 
 // #349 r20: a command the relaxed check still refuses (here: into a cell outside
