@@ -2206,7 +2206,7 @@ class VisionAttachmentBridge:
         scores: Sequence[float],
         reason: str,
         t_link_from_cam: NDArray[np.float64] | None = None,
-        tcp_in_link: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        tcp_in_link: tuple[float, float, float] | None = None,
     ) -> None:
         """Gate, publish, log, and release the barrier — on every path.
 
@@ -2216,6 +2216,10 @@ class VisionAttachmentBridge:
         lock; the result is committed under it only while ``generation`` is still the
         leg's — a grasp event meanwhile superseded it, and owns the barrier now.
         """
+        # No context (a typed precondition failure) still has the leg's own tool point:
+        # the fallback box is posed off it, never on the link origin inside the wrist.
+        if tcp_in_link is None:
+            tcp_in_link = leg.tcp_in_link
         depth_entry = self._depth
         depth = depth_entry[0] if depth_entry is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)

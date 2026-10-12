@@ -1399,6 +1399,31 @@ def test_an_oblique_payload_box_is_clipped_without_losing_its_front() -> None:
     assert max(along_u(clipped_pose, clipped_half)) == pytest.approx(max(along_u(pose, half)))
 
 
+def test_a_grasp_without_context_still_poses_its_fallback_off_the_tool_point() -> None:
+    """A typed precondition failure (no tf2, no depth) finished without a tool point and
+    the jaw-span box landed on the attach link's origin, inside the wrist. It is now posed
+    off the leg's own tool point, in front of the palm."""
+    from tests.unit.test_grasp_target_leg import _live_leg
+
+    with _live_leg("test_no_context_fallback") as live:
+        bridge = live.bridge
+        right = live.gripper("openarm_right_finger_pair")
+        right.pending = True
+        bridge._finish(
+            right,
+            generation=right.generation,
+            stamp_ns=1,
+            masks=[],
+            scores=[],
+            reason="ROSPerceptionStale: test",
+        )
+        held = right.attachment
+        assert held is not None
+        tcp = np.asarray(right.tcp_in_link)
+        u = tcp / np.linalg.norm(tcp)
+        assert float(np.asarray(held.pose_in_link.xyz) @ u) > float(np.linalg.norm(tcp))
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);
