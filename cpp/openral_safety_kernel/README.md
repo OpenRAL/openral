@@ -1080,7 +1080,7 @@ shipped box at ingest): the measured object against the robot's exact geometry.
 **Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
 JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
 both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
-non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound, at most half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check). WARN `safety.workspace_brake ... creep=`.
+non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound while the measured hand is over its speed bound, else half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check; WARN `lead_m= row=` names that row). WARN `safety.workspace_brake ... creep=`.
 With `workspace_contact_hold_max_consecutive` > 0, a command the relaxed check still refuses while the
 measured pose passes is held too (never executed), up to that many chunks in a row; then the latched
 stop.

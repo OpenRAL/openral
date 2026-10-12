@@ -1884,13 +1884,18 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // must pass the relaxed check themselves; otherwise (and for a refused command) the
             // measured pose is held.
             double creep = 0.0;
+            ws_creep_lead_m_ = 0.0;
+            ws_creep_row_ = -1;
             if (!rows_refused && view.horizon > 0) {
-              // One control period of travel at the speed bound, at most half the lead
-              // bound, plus row s's allowance (s periods at the bound): the arm moves
-              // toward the target no faster than the rule allows. The tightest row sets
-              // the scale.
-              const double step = std::min(0.5 * workspace_max_lead_m_,
-                                           workspace_max_speed_mps_ * workspace_control_period_s_);
+              // Row 0 may lead one control period of travel at the speed bound while the
+              // measured hand is over its speed bound (the arm slows to the rule), else
+              // half the lead bound (r32: scaling a 0.12 m lead to one period, 0.017 m,
+              // stalled the policy as a hold did); row s adds its allowance (s periods at
+              // the bound). The tightest row sets the scale.
+              const double per_period = workspace_max_speed_mps_ * workspace_control_period_s_;
+              const double base = workspace_measured_speed_mps_ > workspace_max_speed_mps_
+                                      ? std::min(0.5 * workspace_max_lead_m_, per_period)
+                                      : 0.5 * workspace_max_lead_m_;
               creep = 1.0;
               for (std::uint16_t s = 0; s < view.horizon; ++s) {
                 const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
@@ -1900,10 +1905,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                 }
                 fk_config(q_check_.data());
                 const double lead = workspace_hand_lead();
-                const double allow = step + workspace_max_speed_mps_ * workspace_control_period_s_ *
-                                                static_cast<double>(s);
-                if (std::isfinite(lead) && lead > allow) {
-                  creep = std::min(creep, allow / lead);
+                const double allow = base + per_period * static_cast<double>(s);
+                if (std::isfinite(lead) && lead > allow && allow / lead < creep) {
+                  creep = allow / lead;
+                  ws_creep_lead_m_ = lead;
+                  ws_creep_row_ = static_cast<int>(s);
                 }
               }
               ws_dry_run_ = true;
@@ -1943,13 +1949,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_brake_last_warn_ = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
-                          "brakes=%llu reason=%s refused=%s creep=%.3f target=%s rskill_id=%s "
-                          "(0 = held at the measured pose; no latch)",
+                          "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
+                          "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
                           workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
                           rows_refused ? "command_refused" : "speed_lead",
-                          rows_refused ? ws_refused_pair_.c_str() : "", creep,
-                          workspace_target_.c_str(), msg->rskill_id.c_str());
+                          rows_refused ? ws_refused_pair_.c_str() : "", creep, ws_creep_lead_m_,
+                          ws_creep_row_, workspace_target_.c_str(), msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
             span->SetAttribute("safety.workspace_brake", true);

@@ -308,8 +308,9 @@ PACS-style braking). The checks run first as a dry run, so the no-trip case cost
 other reason (arm link, outside the box, no measured velocity) stops as before.
 
 **Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
-the measured pose so the tightest row leads by one control period at the speed bound (at most half
-the lead bound) plus its row allowance — the arm keeps moving toward the policy's target at the
+the measured pose so the tightest row leads by one control period at the speed bound while the
+measured hand is over its speed bound, else by half the lead bound (r32: scaling a 0.12 m lead to
+one period, 0.017 m, stalled the policy as a hold did), plus its row allowance — the arm keeps moving toward the policy's target at the
 bounded speed; the scaled rows
 must pass the relaxed check, else the measured pose is held. Why: r24/r25 runs logged 200–1700
 holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
