@@ -298,6 +298,14 @@ samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while tolerated 
 PACS-style braking). The checks run first as a dry run, so the no-trip case costs what it did. Any
 other reason (arm link, outside the box, no measured velocity) stops as before.
 
+**Hold a refused command (sim):** `workspace_contact_hold_max_consecutive` (launch: 2 s of chunks at
+the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose passes,
+the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's halt on
+an imminent collision), up to that many consecutive chunks; then today's latched stop. r20: the policy
+commanded the carried box from the shelf back toward the tote floor (lead 0.2–0.28 m) — refusing
+those rows was right, latching on them was not needed while the arm stood clear. WARN
+`safety.workspace_brake ... reason=command_refused refused=<pair>`.
+
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
 Cartesian control modes, the force/current contact layer.
 

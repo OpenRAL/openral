@@ -492,6 +492,11 @@ private:
   bool ws_quiet_{false};
   bool ws_speed_override_{false};
   std::uint64_t workspace_brakes_{0};
+  /// Holds answering a COMMAND the relaxed check still refuses (the measured pose
+  /// passing): consecutive count and its cap (`workspace_contact_hold_max_consecutive`,
+  /// 0 = such commands stop as before). Reset by any chunk that passes as-is.
+  std::uint64_t workspace_command_holds_{0};
+  std::uint64_t workspace_hold_max_consecutive_{0};
   /// The pair the brake's second (speed/lead-relaxed) pass tripped on — why a
   /// brake was refused; written only on that stop path.
   std::string ws_refused_pair_;

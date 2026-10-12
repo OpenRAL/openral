@@ -3842,6 +3842,7 @@ struct GraspBeat {
   /// a box centred on the target cell, `workspace_half` on every side.
   bool workspace{false};
   double workspace_half{0.05};
+  double workspace_x{0.05};            ///< the workspace box centre along x
   std::int64_t workspace_stamp_ns{0};  ///< its confirmation stamp; 0 = declaration_stamp_ns
   std::string workspace_frame{"base_link"};
 };
@@ -3891,7 +3892,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.region_valid = b.region;
   d.workspace_region_valid = b.workspace;
   d.workspace_region.frame_id = b.workspace_frame;
-  d.workspace_region.pose.position.x = 0.05;
+  d.workspace_region.pose.position.x = b.workspace_x;
   d.workspace_region.pose.orientation.w = 1.0;
   d.workspace_region.half_extents.x = b.workspace_half;
   d.workspace_region.half_extents.y = b.workspace_half;
@@ -6106,6 +6107,39 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
   EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 1U);
   EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0);
+}
+
+// #349 r20: a command the relaxed check still refuses (here: into a cell outside
+// the workspace box) while the measured pose is clear is held — never executed — up
+// to `workspace_contact_hold_max_consecutive` chunks in a row, then latches.
+TEST_F(LifecycleKernelTest, ARefusedCommandWithAClearMeasuredPoseHoldsUpToTheCap) {
+  LogCapture logs;
+  auto params =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{2}));
+  GraspRig rig("kernel_ws_hold_cap", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: no exemption for it
+  rig.warm(&b, kLagMeasuredQ, 300);
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << i << logs.joined();
+    EXPECT_FALSE(rig.node->fault_latched());
+    ASSERT_EQ(rig.last_flat.size(), 1U);
+    EXPECT_DOUBLE_EQ(rig.last_flat[0], kLagMeasuredQ) << "held, the command never executed";
+  }
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "past the cap: today's latched stop";
+  EXPECT_GE(logs.count("reason=command_refused"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AHoldCapNeedsTheBrake) {
+  GraspRig rig("kernel_ws_hold_nobrake",
+               with_param(lag_params(), "workspace_contact_hold_max_consecutive",
+                          rclcpp::ParameterValue(std::int64_t{3})));
+  EXPECT_FALSE(rig.configure());
 }
 
 TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeedsAFreshMeasuredVelocity) {

@@ -205,6 +205,7 @@ def test_the_launch_derives_the_kernel_params_from_the_manifest(launch_module: A
         "workspace_contact_max_lead_m": 0.04,
         "workspace_contact_jaw_joints": ["left_gripper", "right_gripper"],
         "workspace_contact_brake_enabled": True,
+        "workspace_contact_hold_max_consecutive": round(2.0 * robot.control_rate_hz),
         "workspace_contact_control_period_s": pytest.approx(1.0 / robot.control_rate_hz),
     }
 

@@ -465,6 +465,11 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // #349 workspace brake: with the workspace rule on, a position chunk whose only
   // reason to stop is the measured hand speed holds the measured pose instead.
   this->declare_parameter<bool>("workspace_contact_brake_enabled", false);
+  // ... and, up to this many consecutive chunks, a command the relaxed check still
+  // refuses while the measured pose passes is held too (MoveIt Servo's halt: the
+  // command is never executed, the arm stays where it is clear); past it, today's
+  // latched stop. 0 = off.
+  this->declare_parameter<std::int64_t>("workspace_contact_hold_max_consecutive", 0);
   this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
@@ -607,6 +612,19 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   workspace_contact_enabled_ = this->get_parameter("workspace_contact_enabled").as_bool();
   workspace_brake_enabled_ = this->get_parameter("workspace_contact_brake_enabled").as_bool();
   workspace_brakes_ = 0;
+  workspace_command_holds_ = 0;
+  {
+    const std::int64_t cap = this->get_parameter("workspace_contact_hold_max_consecutive").as_int();
+    if (cap < 0 || (cap > 0 && !workspace_brake_enabled_)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "workspace_contact_hold_max_consecutive refused: must be >= 0 and needs "
+                   "workspace_contact_brake_enabled, got %lld",
+                   static_cast<long long>(cap));
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    workspace_hold_max_consecutive_ = static_cast<std::uint64_t>(cap);
+  }
   if (workspace_brake_enabled_ && !workspace_contact_enabled_) {
     RCLCPP_ERROR(this->get_logger(),
                  "workspace_contact_brake_enabled refused: it requires workspace_contact_enabled");
@@ -1808,25 +1826,39 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             workspace_speed_measured_) {
           ws_dry_run_ = true;
           const bool as_is = check_rows();
-          bool slowed = true;
+          bool rows_refused = false;
+          bool hold_trips = true;
           if (as_is) {
             ws_refused_pair_.clear();
             ws_quiet_ = true;
             ws_speed_override_ = true;
-            slowed = check_rows();
-            // The hold IS the measured pose: it must pass too.
+            rows_refused = check_rows();
+            // The hold IS the measured pose: it must pass.
             std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
-            slowed = slowed || check_config(q_check_.data(), -1, 0.0, ws_plain);
+            hold_trips = check_config(q_check_.data(), -1, 0.0, ws_plain);
             ws_speed_override_ = false;
             ws_quiet_ = false;
+          } else {
+            workspace_command_holds_ = 0;
           }
           ws_dry_run_ = false;
           rows_checked = !as_is;
+          // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
+          // check still refuses: a hold up to the consecutive cap, then a stop.
+          const bool command_hold =
+              rows_refused && workspace_command_holds_ < workspace_hold_max_consecutive_;
+          const bool slowed = hold_trips || (rows_refused && !command_hold);
           if (as_is && slowed) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                                  "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
-                                 "(trips with speed and lead relaxed: stops as before)",
-                                 workspace_measured_speed_mps_, ws_refused_pair_.c_str());
+                                 "hold_clear=%d command_holds=%llu/%llu (stops as before)",
+                                 workspace_measured_speed_mps_, ws_refused_pair_.c_str(),
+                                 static_cast<int>(!hold_trips),
+                                 static_cast<unsigned long long>(workspace_command_holds_),
+                                 static_cast<unsigned long long>(workspace_hold_max_consecutive_));
+          }
+          if (as_is && !slowed && rows_refused) {
+            ++workspace_command_holds_;
           }
           if (as_is && !slowed) {
             scaled_chunk_ = *msg;
@@ -1850,11 +1882,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               workspace_brake_last_warn_ = wall;
               RCLCPP_WARN(this->get_logger(),
                           "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
-                          "brakes=%llu target=%s rskill_id=%s (held at the measured pose, no "
-                          "latch)",
+                          "brakes=%llu reason=%s refused=%s target=%s rskill_id=%s (held at the "
+                          "measured pose, no latch)",
                           workspace_measured_speed_mps_, workspace_max_speed_mps_,
                           workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
-                          workspace_target_.c_str(), msg->rskill_id.c_str());
+                          rows_refused ? "command_refused" : "speed_lead",
+                          rows_refused ? ws_refused_pair_.c_str() : "", workspace_target_.c_str(),
+                          msg->rskill_id.c_str());
             }
             span->SetAttribute("safety.severity", "info");
             span->SetAttribute("safety.workspace_brake", true);
