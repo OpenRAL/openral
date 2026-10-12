@@ -2947,27 +2947,40 @@ class RobotDescription(BaseModel):
         )
 
     def hand_links(self) -> tuple[str, ...]:
-        """The robot's hand links: ``grasp_contact_links()`` plus the link each gripper hangs off.
+        """The robot's hand links: the jaws, the link carrying them, and the wrist behind it.
 
         Every ``role: gripper`` jaw and mimic follower (``grasp_contact_links``), then —
         once per hand — the mount the hand's leader jaws hang off (a chained finger
-        climbed to its arm, as in ``gripper_hands``): the link that carries the gripper.
-        The launch passes this as the safety kernel's ``workspace_contact_links``
-        (issue #349): the only links the manipulation-workspace contact rule ever
-        relaxes. Derived from the manifest, never configured by name.
+        climbed to its arm, as in ``gripper_hands``): the link that carries the gripper;
+        then the link that carrier hangs off, the wrist (never a root link: a gripper
+        mounted on the robot's base adds nothing). The launch passes this as the safety
+        kernel's ``workspace_contact_links`` (issue #349): the only links the
+        manipulation-workspace contact rule ever relaxes. The wrist is in because a hand
+        working at a tote's rim brings it within one voxel of the rim (8/8 deploy-sim
+        stops, r23: PhysX 10 mm clear, the 15 mm map cells read -4 mm); the forearm and
+        everything behind it never are. Derived from the manifest, never configured by
+        name.
 
         Example:
             >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
             >>> d.hand_links()[-2:]
-            ('openarm_left_link7', 'openarm_right_link7')
+            ('openarm_left_link6', 'openarm_right_link6')
         """
         grippers = [j for j in self.joints if j.role == "gripper"]
         parent_of = {j.child_link: j.parent_link for j in grippers}
+        joint_parent = {j.child_link: j.parent_link for j in self.joints}
         links = list(self.grasp_contact_links())
+        carriers: list[str] = []
         for j in grippers:
             carrier = _gripper_mount(parent_of, j.parent_link)
             if carrier not in links:
                 links.append(carrier)
+                carriers.append(carrier)
+        for carrier in carriers:
+            wrist = joint_parent.get(carrier)
+            # A root link (no joint of its own) is the robot's base, never a wrist.
+            if wrist is not None and wrist in joint_parent and wrist not in links:
+                links.append(wrist)
         return tuple(links)
 
     @model_validator(mode="after")

@@ -145,7 +145,7 @@ def test_deploy_runtime_workspace_contact_needs_the_grasp_allowance_a_speed_and_
 # ── manifest ──────────────────────────────────────────────────────────────────
 
 
-def test_the_openarm_hand_links_are_both_jaws_and_the_link_carrying_them() -> None:
+def test_the_openarm_hand_links_are_both_jaws_the_carrier_and_the_wrist() -> None:
     robot = RobotDescription.from_yaml(str(_ROBOT))
     assert robot.hand_links() == (
         "openarm_left_finger_pair",
@@ -154,8 +154,11 @@ def test_the_openarm_hand_links_are_both_jaws_and_the_link_carrying_them() -> No
         "openarm_right_finger_follower",
         "openarm_left_link7",
         "openarm_right_link7",
+        "openarm_left_link6",
+        "openarm_right_link6",
     )
-    # Every one is a collision link the kernel resolves, never an arm link below link7.
+    # Every one is a collision link the kernel resolves, never the forearm (link5) or
+    # anything behind it.
     pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
     from openral_safety.envelope_loader import collision_params_from_description
 
