@@ -124,6 +124,7 @@ executor's one thread, so the lock is uncontended and behaviour is unchanged.
 
 from __future__ import annotations
 
+import itertools
 import math
 import threading
 import time
@@ -171,6 +172,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         PlaceRegion,
         RobotDescription,
     )
+    from openral_core.schemas import TightCollisionGeometry
 
     from openral_hal._grasp_target import VoxelLattice
 
@@ -691,6 +693,36 @@ def clip_payload_behind_tool_point(
     return obj.model_copy(update={"primitives": out})
 
 
+def _inner_box_refinement(
+    pose: NDArray[np.float64],
+    half: NDArray[np.float64],
+    inner_pose: NDArray[np.float64],
+    inner_half: NDArray[np.float64],
+) -> TightCollisionGeometry:
+    """The inner box as a stage-2 refinement of the box (``pose``, ``half``), box-local.
+
+    Its 8 corners, clamped into the outer box so the kernel's containment proof holds,
+    are the hull; the 26-DOP is their extent along ``DOP_AXES``.
+    """
+    from openral_core.schemas import DOP_AXES, TightCollisionGeometry
+
+    to_box = np.linalg.inv(pose) @ inner_pose
+    corners = np.array(
+        [
+            to_box[:3, :3] @ (np.array(s, dtype=np.float64) * inner_half) + to_box[:3, 3]
+            for s in itertools.product((-1.0, 1.0), repeat=3)
+        ]
+    )
+    corners = np.clip(corners, -half, half)
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    proj = corners @ axes.T
+    return TightCollisionGeometry(
+        dop_lo_m=tuple(float(v) for v in proj.min(axis=0)),
+        dop_hi_m=tuple(float(v) for v in proj.max(axis=0)),
+        hull_vertices_m=tuple((float(c[0]), float(c[1]), float(c[2])) for c in corners),
+    )
+
+
 def region_attachment(
     declaration: GraspDeclaration,
     *,
@@ -701,6 +733,7 @@ def region_attachment(
     support_z: float | None = None,
     extrinsic_error_m: float = MAX_PLANAR_ERR_M,
     tcp_in_link: tuple[float, float, float] | None = None,
+    inner_region: PlaceRegion | None = None,
 ) -> AttachedCollisionObject:
     """The grasp-target leg's latched pre-grasp region as the held payload (design §2.2).
 
@@ -747,6 +780,12 @@ def region_attachment(
             back face when that is further back (``_padding_clip_point``): only padding goes.
             The margin bloat on the top otherwise reached the carrying wrist
             (#349 p8/p9/p11_mix02: payload vs ``openarm_left_link6``, -2.5 to -4.3 mm).
+        inner_region: The measured (unpadded) region the padded one grew from, in the
+            same frame, or ``None``. Given, it rides as the payload box's stage-2
+            refinement (``tight_geometry``: clipped like the box, clamped inside it):
+            the kernel checks the payload against the robot's own links as this
+            measured box, keeping the padding for the map (#349: a padded carton 1 cm
+            from the torso read -15 to -40 mm against it).
 
     Returns:
         The attachment, evidence ``GRASP_TARGET_REGION``.
@@ -773,6 +812,17 @@ def region_attachment(
     half = np.asarray(region.half_extents, dtype=np.float64)
     if tcp_in_link is not None:
         pose, half = _clip_behind_tool_point(pose, half, np.asarray(tcp_in_link, dtype=np.float64))
+    tight = None
+    if inner_region is not None:
+        inner_pose = t_link_from_region @ homogeneous_from_quat_xyz(
+            inner_region.pose.xyz, inner_region.pose.quat_xyzw
+        )
+        inner_half = np.asarray(inner_region.half_extents, dtype=np.float64)
+        if tcp_in_link is not None:
+            inner_pose, inner_half = _clip_behind_tool_point(
+                inner_pose, inner_half, np.asarray(tcp_in_link, dtype=np.float64)
+            )
+        tight = _inner_box_refinement(pose, half, inner_pose, inner_half)
     w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
     held = _Attached(
         object_id=object_id,
@@ -781,6 +831,7 @@ def region_attachment(
         primitives=[
             AttachedCollisionPrimitive(
                 shape=BoxShape(half_extents_m=(float(half[0]), float(half[1]), float(half[2]))),
+                tight_geometry=tight,
                 pose_in_object=Pose6D(
                     xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=object_id
                 ),
@@ -2440,6 +2491,7 @@ class VisionAttachmentBridge:
             support_z=self._grasp_target.measured_support(region),
             extrinsic_error_m=extrinsic,
             tcp_in_link=self._padding_clip_point(leg, link, region, t_link_from_region),
+            inner_region=region,
         )
         leg.support_anchor = None
         if held.support_contact is not None:

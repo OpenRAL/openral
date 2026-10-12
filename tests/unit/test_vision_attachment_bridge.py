@@ -1432,6 +1432,52 @@ def test_a_grasp_without_context_still_poses_its_fallback_off_the_tool_point() -
         assert float(np.asarray(held.pose_in_link.xyz) @ u) > float(np.linalg.norm(tcp))
 
 
+def test_the_region_payload_carries_the_measured_box_as_its_refinement() -> None:
+    """#349: the padded payload box ships the measured (unpadded) region as its stage-2
+    refinement — the kernel checks the payload against the robot's own links as that
+    box, the padding is for the map only. The refinement's first three DOP slabs are
+    the measured box in the payload box's frame, inside it."""
+    from openral_core import BoxShape, GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import region_attachment
+
+    def box(half: tuple[float, float, float]) -> PlaceRegion:
+        return PlaceRegion(
+            frame_id="openarm_left_link7",
+            pose=Pose6D(xyz=(0.0, 0.0, -0.15), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="l"),
+            half_extents=half,
+            evidence_ref="test",
+            stamp_ns=1,
+        )
+
+    padded, measured = box((0.08, 0.06, 0.05)), box((0.06, 0.04, 0.035))
+    declaration = GraspDeclaration(
+        target_id="cell:box",
+        contact_links=["openarm_left_finger_pair"],
+        rskill_id="r",
+        trace_id="t",
+        timeout_s=10.0,
+        stamp_ns=1,
+        active=True,
+        region=padded,
+    )
+    held = region_attachment(
+        declaration,
+        attach_link="openarm_left_link7",
+        touch_links=["openarm_left_finger_pair"],
+        t_link_from_region=np.eye(4),
+        stamp_ns=2,
+        inner_region=measured,
+    )
+    (prim,) = held.primitives
+    assert isinstance(prim.shape, BoxShape)
+    assert prim.shape.half_extents_m == pytest.approx((0.08, 0.06, 0.05))
+    tight = prim.tight_geometry
+    assert tight is not None
+    assert tight.dop_lo_m[:3] == pytest.approx((-0.06, -0.04, -0.035))
+    assert tight.dop_hi_m[:3] == pytest.approx((0.06, 0.04, 0.035))
+    assert len(tight.hull_vertices_m) == 8
+
+
 def _held_region_payload(live: Any) -> tuple[Any, int]:
     """The left hand holding the measured region payload with its support witness (the
     ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);

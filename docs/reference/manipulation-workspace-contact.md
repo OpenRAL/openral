@@ -305,6 +305,13 @@ must pass the relaxed check, else the measured pose is held. Why: r24/r25 runs l
 holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
 the 70 s declaration timeout). WARN `creep=<factor>` (0 = held).
 
+**Payload vs the robot: the measured box (sim + real):** a box payload with a stage-2 refinement
+is checked against the robot's own links as the refinement's box (its 26-DOP's first three slabs);
+the region payload ships the measured (unpadded) region as that refinement (`region_attachment(
+inner_region=...)`). The padding is for the map's quantisation, not for exact robot geometry:
+r24–r29 cartons 1 cm from the torso read −15 to −40 mm against it with the padded box; the
+like-for-like baseline (world-voxel check off, payload checks with it) placed 5/8 vs 3/24.
+
 **Hold a refused command (sim):** `workspace_contact_hold_max_consecutive` (launch: 2 s of chunks at
 the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose passes,
 the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's halt on
