@@ -1376,7 +1376,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
                      "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g "
-                     "hand_lead_m=%g hand_speed_source=%s",
+                     "hand_lead_m=%g hand_speed_source=%s workspace_denied=%d",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
@@ -1387,7 +1387,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      static_cast<int>(voxel_grid_.workspace_region.valid),
                      voxel_grid_.workspace_region.hand_speed_mps,
                      voxel_grid_.workspace_region.hand_lead_m,
-                     workspace_speed_measured_ ? "measured" : "commanded");
+                     workspace_speed_measured_ ? "measured" : "commanded", hit.workspace_denied);
         if (voxel_grid_.workspace_region.valid) {
           span->SetAttribute("safety.workspace_hand_speed_mps",
                              voxel_grid_.workspace_region.hand_speed_mps);

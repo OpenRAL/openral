@@ -1054,7 +1054,8 @@ namespace {
 // advisory one at any depth; within one severity, deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
                bool allowance_active = false, bool advisory = false,
-               bool place_target_adjudicated = false, bool depth_is_box_bound = false) noexcept {
+               bool place_target_adjudicated = false, bool depth_is_box_bound = false,
+               int workspace_denied = 0) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -1072,6 +1073,7 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
     hit.advisory = advisory;
     hit.place_target_adjudicated = place_target_adjudicated;
     hit.depth_is_box_bound = depth_is_box_bound;
+    hit.workspace_denied = workspace_denied;
   }
 }
 
@@ -1349,6 +1351,34 @@ bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3
          point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center);
 }
 
+namespace {
+
+// Why a live workspace does not tolerate `link` against a cell centred at `center`
+// (base frame): see `CollisionHit::workspace_denied`. 0 when it would (or no live
+// workspace).
+int workspace_denial(const VoxelGrid& grid, int link, const Vec3& center) noexcept {
+  const WorkspaceContactRegion& ws = grid.workspace_region;
+  if (!ws.valid) {
+    return 0;
+  }
+  if (link < 0 || static_cast<std::size_t>(link) >= kMaxGraspMaskLinks ||
+      !ws.link_mask[static_cast<std::size_t>(link)]) {
+    return 1;
+  }
+  if (!std::isfinite(ws.hand_speed_mps) || ws.hand_speed_mps > ws.max_speed_mps) {
+    return 2;
+  }
+  if (!std::isfinite(ws.hand_lead_m) || ws.hand_lead_m > ws.max_lead_m) {
+    return 3;
+  }
+  if (!point_in_obb(ws.pose, ws.half_extents, center)) {
+    return 4;
+  }
+  return 0;
+}
+
+}  // namespace
+
 double link_geometry_reach(const CollisionModel& model, int link) noexcept {
   double reach = 0.0;
   const auto norm = [](const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
@@ -1470,8 +1500,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (ws_exempt && d <= margin) {
             note_workspace_pair(result, d, li, static_cast<int>(idx));
           }
-          fold_pair(result, sweep_min, d, !exempt && !ws_exempt && d <= margin, li,
-                    static_cast<int>(idx));
+          const bool tripped = !exempt && !ws_exempt && d <= margin;
+          fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx), false, false, false,
+                    false, tripped ? workspace_denial(grid, li, base_center) : 0);
         }
       }
     }
@@ -1570,7 +1601,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (ws_exempt && d <= margin) {
             note_workspace_pair(result, d, lb, static_cast<int>(idx));
           }
-          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx), false,
+                    false, false, false,
+                    !exempt && d <= margin ? workspace_denial(grid, lb, base_center) : 0);
         }
       }
     }
@@ -2146,7 +2179,8 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 cell_margin - place_advisory_depth(grid.resolution) - kGateTieEpsilonM;
             const bool advisory = tripped && allowance > 0.0 && d > advisory_floor;
             fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx),
-                      allowance > 0.0, advisory, adjudicated);
+                      allowance > 0.0, advisory, adjudicated, false,
+                      tripped ? workspace_denial(grid, obj.attach_link, center) : 0);
           }
         }
       }

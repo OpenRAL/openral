@@ -6500,6 +6500,7 @@ TEST(WorkspaceContact, AFastOrUnknownHandSpeedTripsExactlyAsToday) {
     const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
     expect_same_hit(hit, today);
     EXPECT_EQ(hit.workspace_pairs, 0) << v;
+    EXPECT_EQ(hit.workspace_denied, 2) << "disclosed: the hand is over its speed bound";
   }
   // A non-positive or non-finite bound exempts nothing either.
   for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
@@ -6528,6 +6529,7 @@ TEST(WorkspaceContact, ALeadAboveTheBoundTripsEvenWhenTheHandIsStill) {
     const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
     expect_same_hit(hit, today);
     EXPECT_EQ(hit.workspace_pairs, 0) << lead;
+    EXPECT_EQ(hit.workspace_denied, 3) << "disclosed: the hand is over its lead bound";
   }
   for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity(),
                              std::numeric_limits<double>::quiet_NaN()}) {
@@ -6552,6 +6554,8 @@ TEST(WorkspaceContact, AnArmLinkInsideTheWorkspaceStillTrips) {
   const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
   expect_same_hit(with, before);
   EXPECT_EQ(with.workspace_pairs, 0);
+  EXPECT_EQ(with.workspace_denied, 1) << "disclosed: not a hand link";
+  EXPECT_EQ(before.workspace_denied, 0) << "no live workspace: not applicable";
 }
 
 TEST(WorkspaceContact, AHandLinkOutsideTheWorkspaceStillTrips) {
@@ -6571,6 +6575,7 @@ TEST(WorkspaceContact, AHandLinkOutsideTheWorkspaceStillTrips) {
   ASSERT_TRUE(with.hit);
   EXPECT_EQ(with.link_b, grasp_index(2, 0, 0));
   EXPECT_EQ(with.min_distance, alone.min_distance);
+  EXPECT_EQ(with.workspace_denied, 4) << "disclosed: the cell lies outside the box";
 }
 
 TEST(WorkspaceContact, TheGraspTargetExemptionKeepsPrecedence) {

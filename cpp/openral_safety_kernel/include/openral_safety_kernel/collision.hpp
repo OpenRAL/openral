@@ -673,6 +673,11 @@ struct CollisionHit {
   int workspace_link{-1};
   int workspace_cell{-1};
   double workspace_min_distance{std::numeric_limits<double>::infinity()};
+  /// Why the reported pair was NOT tolerated by a live workspace (disclosure, #349):
+  /// 0 not applicable / exempt, 1 the link is not a hand link, 2 the hand is over its
+  /// speed bound (or its speed is unknown), 3 over its lead bound (or unknown), 4 the
+  /// cell centre lies outside the workspace box.
+  int workspace_denied{0};
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
