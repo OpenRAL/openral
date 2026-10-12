@@ -5215,8 +5215,10 @@ class SimSensorBridge:
         now = self._node.get_clock().now()
         # Each cloud / RGB-D frame stamped with the time its render shows (issue #361).
         frame_times, sim_now_ns = self._frame_times()
+        read_frames = getattr(self._hal, "read_depth_frames", None)
+        frames = read_frames() if callable(read_frames) else {}
         if clouds:
-            from openral_hal.depth_cloud import pointcloud2_from_points_xyz
+            from openral_hal.depth_cloud import colours_from_frame, pointcloud2_from_points_xyz
 
             base_frame_id = getattr(self._description, "base_frame", "base_link")
             for name, pub in self._depth_pubs.items():
@@ -5230,7 +5232,17 @@ class SimSensorBridge:
                     continue
                 self._depth_clouds_published[name] = pts
                 stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
-                cloud = pointcloud2_from_points_xyz(pts, frame_id=base_frame_id, stamp=stamp)
+                # Coloured from the same camera's newest registered RGB (for viewers;
+                # octomap and the kernel read x/y/z only).
+                frame = frames.get(name)
+                rgb = (
+                    colours_from_frame(pts, frame["rgb"], frame["k"], frame["optical_in_base"])
+                    if frame is not None and frame["rgb"].shape[:2] == frame["depth"].shape[:2]
+                    else None
+                )
+                cloud = pointcloud2_from_points_xyz(
+                    pts, frame_id=base_frame_id, stamp=stamp, rgb=rgb
+                )
                 pub.publish(cloud)
                 if self._attachment_depth_frames_remaining > 0:
                     # A backend cloud from after the attachment has gone out. On a
@@ -5240,8 +5252,6 @@ class SimSensorBridge:
                     self._record_attachment_depth_frame(
                         stamp_ns=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
                     )
-        read_frames = getattr(self._hal, "read_depth_frames", None)
-        frames = read_frames() if callable(read_frames) else {}
         if not frames:
             return
         specs = {s.name: s for s in self._description.sensors if s.name in self._depth_pubs}
