@@ -1263,6 +1263,9 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
 
         right.close_baseline = (0, 0)  # a close is in progress, nothing attached
         bridge._note_close_region(right)
+        assert right.close_region is None, "a jaw still closing records nothing"
+        for _ in range(3):  # the jaw stalled on the object, at the region
+            bridge._note_close_region(right)
         assert right.close_region is not None
         right.trigger._loaded = True  # the ATTACH tick: kept, not cleared (p7_mix02)
         bridge._note_close_region(right)
@@ -1274,6 +1277,11 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
         assert taken is not None
         assert np.allclose(taken[0].pose_in_link.xyz, reference[0].pose_in_link.xyz, atol=1e-6)
 
+        # Stalled on something away from the region (a neighbour, #349 r21_mix07): cleared.
+        right.trigger._loaded = False
+        for _ in range(3):
+            bridge._note_close_region(right)
+        assert right.close_region is None
         right.region_spent = None
         right.close_baseline = None
         bridge._note_close_region(right)  # outside a close: forgotten

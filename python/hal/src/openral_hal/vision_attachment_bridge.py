@@ -277,6 +277,8 @@ class _GripperLeg:
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
     regrasp_hold: AttachedCollisionObject | None = None
     close_region: tuple[tuple[str, int], Any] | None = None
+    close_jaw_q: float | None = None
+    close_still_ticks: int = 0
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -299,6 +301,10 @@ _HEARTBEAT_PERIOD_S = 0.2
 
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
 #: region is a gated, map-verified head-view measurement of the same object.
+_STALL_RAD = 0.002
+_STALL_TICKS = 3
+"""Jaw travel per tick below which a closing jaw counts as stalled on an object."""
+
 _REGION_CONFIDENCE = 0.7
 
 
@@ -1811,16 +1817,33 @@ class VisionAttachmentBridge:
         """Record where the live grasp-target region sits in the attach link, while closing.
 
         Only during a close (``close_baseline`` set) with nothing attached, and only on a
-        tick the jaw is at the region (``jaw_at``, the ATTACH check's own test): the
-        latest such tick wins. Outside a close it is cleared; once attached it is kept
-        (the ATTACH tick itself reads it, p7_mix02). Read by ``_region_payload``
-        when the jaw has left the region by the ATTACH (#349: lifted 5-8 cm first).
+        tick the jaw has STALLED (its position moved less than ``_STALL_RAD`` per tick for
+        ``_STALL_TICKS`` ticks: the fingers are on an object): stalled at the region
+        (``jaw_at``, the ATTACH check's own test) records it, stalled anywhere else
+        clears it — a jaw that passed over the declared object and closed on its
+        neighbour must not take the declared region (#349 r21_mix07: the payload was
+        the declared region while the fingers held a neighbour, offset toward the
+        torso). Outside a close it is cleared; once attached it is kept (the ATTACH
+        tick itself reads it, p7_mix02). Read by ``_region_payload`` when the jaw has
+        left the region by the ATTACH (#349: lifted 5-8 cm first).
         """
         if leg.close_baseline is None:
             leg.close_region = None
+            leg.close_jaw_q = None
+            leg.close_still_ticks = 0
             return
         # Attached: stop recording but KEEP the record — this tick's ATTACH reads it.
         if leg.trigger.attached or self._grasp_target is None or self._node is None:
+            return
+        q = self._positions.get(leg.joint_name)
+        previous, leg.close_jaw_q = leg.close_jaw_q, q
+        if q is None or previous is None or abs(q - previous) >= _STALL_RAD:
+            leg.close_still_ticks = 0
+            return  # still closing (or no reading): the jaw is not on anything yet
+        # Isaac republishes identical joint states between physics steps: one still
+        # tick is not a stall, _STALL_TICKS in a row is.
+        leg.close_still_ticks += 1
+        if leg.close_still_ticks < _STALL_TICKS:
             return
         declaration = self._grasp_target.tracker.envelope(
             now_ns=int(self._node.get_clock().now().nanoseconds)
@@ -1832,6 +1855,7 @@ class VisionAttachmentBridge:
             leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
         )
         if not at:
+            leg.close_region = None  # stalled on something else
             return
         t_link_from_region = self._lookup(self.tf_frame(leg.producer.attach_link), region.frame_id)
         if t_link_from_region is not None:
