@@ -442,6 +442,9 @@ private:
   double workspace_max_speed_mps_{0.0};
   double workspace_max_lead_m_{0.0};  ///< `workspace_contact_max_lead_m` (push bound)
   double workspace_control_period_s_{0.0};
+  // Lead allowance of the row last checked: `step` periods at the speed bound (0 for
+  // row 0 and the measured state). Disclosure only.
+  double ws_lead_allow_m_{0.0};
   WorkspaceContactRegion workspace_region_{};
   std::int64_t workspace_region_stamp_ns_{0};
   std::int64_t workspace_declaration_stamp_ns_{0};

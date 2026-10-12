@@ -181,7 +181,8 @@ point-in-OBB), the **hand speed** of that row is ≤ `workspace_contact_max_spee
                       / control_period                      (measured; the same for every row)
   hand_speed(row s) = max over hand links l of D_l(row s−1, row s) / control_period
                                                             (commanded fallback)
-  hand_lead(row s)  = max over hand links l of D_l(measured, row s with the jaws at measured)
+  hand_lead(row s)  = max(0, max over hand links l of D_l(measured, row s with the jaws at measured)
+                           − s · max_speed · control_period)         (row allowance)
 
 with Δ, θ the translation and rotation of link l's frame between the two configurations and
 reach_l the radius of its collision geometry about its origin — an upper bound on how far any
@@ -193,6 +194,14 @@ while the leader read 32 mm, stopped at 80.2 mm against the 80 mm bound, fingers
 The measured hand speed likewise leaves out the jaw joints' velocity (p4_mix00: a jaw squeezed past
 its closed limit jittered the fingertip speed 0.11 → 0.38 m/s within a second while the arm was
 slow); the commanded fallback keeps it, reading faster, never slower.
+Row s runs s control periods from now, so a free hand may legitimately be s periods of travel at
+the speed bound away from where it is measured; only the lead past that allowance is a push. Row 0
+and the measured state get none: a blocked hand is re-judged against the fresh measured pose at
+every chunk, so the executed push never exceeds the lead bound plus one period. Why: r30/r31 mix07
+braked 50–77 times per run with `creep` 0.03–0.17 on a plain carry to the shelf — a 50-row chunk
+at 30 Hz is 1.7 s of motion, its last row led 0.48 m at 0.29 m/s, and the whole chunk was
+compressed into one period's travel; the policy stalled and 0/4 placed where the kernel-free
+baseline placed 2/4 at 26 s. The WARN carries the allowance (`lead_allow_m=`).
 Hazard-log assumption owed: the gripper's effort limit bounds the squeeze on real hardware.
 
 **Measured velocity.** `/joint_states` `velocity[i]`, stored per dof with the message's arrival
@@ -233,7 +242,7 @@ fallback, which reads the hand faster. Arm links, cells outside the box, self-co
 
 **Disclosure.** Tolerated pairs within the margin are counted per check
 (`CollisionHit::workspace_pairs`); `safety.workspace_contact link= cell= depth_mm= speed_mps=
-speed_source= max_mps= lead_m= max_lead_m= pairs= step= target=` WARN ≤ 1 Hz per link;
+speed_source= max_mps= lead_m= lead_allow_m= max_lead_m= pairs= step= target=` WARN ≤ 1 Hz per link;
 `safety.workspace_region_armed` (both bounds) / `_dropped` / `_rejected`;
 `safety.workspace_contact_summary` (pairs, max depth, max speed tolerated and its
 `max_speed_source`, max lead, both bounds) when the workspace drops; span attributes
@@ -299,8 +308,9 @@ PACS-style braking). The checks run first as a dry run, so the no-trip case cost
 other reason (arm link, outside the box, no measured velocity) stops as before.
 
 **Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
-the measured pose so the last row leads by one control period at the speed bound (at most half the
-lead bound) — the arm keeps moving toward the policy's target at the bounded speed; the scaled rows
+the measured pose so the tightest row leads by one control period at the speed bound (at most half
+the lead bound) plus its row allowance — the arm keeps moving toward the policy's target at the
+bounded speed; the scaled rows
 must pass the relaxed check, else the measured pose is held. Why: r24/r25 runs logged 200–1700
 holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
 the 70 s declaration timeout). WARN `creep=<factor>` (0 = held).

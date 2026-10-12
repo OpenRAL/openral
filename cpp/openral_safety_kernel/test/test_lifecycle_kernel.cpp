@@ -6115,6 +6115,37 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
   EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
 }
 
+// #349 r31: row s of a chunk runs s periods from now, so over the measured pose it
+// may lead s periods at the speed bound on top of the lead bound. Lag rig: 0.02 m/s
+// x 0.5 s = 0.01 m per row, 0.06 m/rad, bound 0.005 m. Rows 0.05/0.1/0.2 rad lead
+// 0.003/0.006/0.012 m against 0.005/0.015/0.025: the chunk goes out whole. Row 0
+// gets no allowance: the same 0.1 rad push at row 0 still brakes, and the tightest
+// row sets the creep.
+TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lead_rows",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.05);
+  chunk.horizon = 3;
+  chunk.flat = {0.05, 0.1, 0.2};
+  ASSERT_TRUE(rig.send_once(&b, 0.0, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[2], 0.2) << "unscaled";
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U) << logs.joined();
+  chunk.flat = {0.1, 0.1, 0.2};
+  ASSERT_TRUE(rig.send_once(&b, 0.0, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+}
+
 // #349 r20: a command the relaxed check still refuses (here: into a cell outside
 // the workspace box) while the measured pose is clear is held — never executed — up
 // to `workspace_contact_hold_max_consecutive` chunks in a row, then latches.

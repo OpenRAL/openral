@@ -1542,13 +1542,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           workspace_last_warn_[l] = wall;
           RCLCPP_WARN(this->get_logger(),
                       "safety.workspace_contact link=%s%s cell=%d depth_mm=%.1f "
-                      "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f max_lead_m=%g "
-                      "pairs=%d step=%d target=%s",
+                      "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f "
+                      "lead_allow_m=%.4f max_lead_m=%g pairs=%d step=%d target=%s",
                       who, link_name(hit.workspace_link).c_str(), hit.workspace_cell,
                       std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
                       workspace_speed_measured_ ? "measured" : "commanded",
-                      workspace_max_speed_mps_, lead, workspace_max_lead_m_, hit.workspace_pairs,
-                      step, workspace_target_.c_str());
+                      workspace_max_speed_mps_, lead, ws_lead_allow_m_, workspace_max_lead_m_,
+                      hit.workspace_pairs, step, workspace_target_.c_str());
         }
         span->SetAttribute("safety.workspace_contact_pairs",
                            static_cast<int64_t>(workspace_chunk_pairs));
@@ -1574,10 +1574,20 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             }
             fk_config(q_lead_.data());
           }
-          voxel_grid_.workspace_region.hand_lead_m = !known
-                                                         ? std::numeric_limits<double>::infinity()
-                                                     : ws_speed_override_ ? 0.0
-                                                                          : workspace_hand_lead();
+          // Row `step` is executed `step` periods from now: by then a free hand may
+          // have travelled `step` periods at the speed bound, so only the lead past
+          // that allowance is a push (#349 r31: a chunk's last row 1.7 s out led
+          // 0.48 m on a plain carry and braked every chunk). Row 0 (and the measured
+          // state, step -1) gets no allowance: a blocked hand is re-judged against
+          // the fresh measured pose at every chunk, so the executed push never
+          // exceeds the lead bound plus one period.
+          ws_lead_allow_m_ = step > 0 ? workspace_max_speed_mps_ * workspace_control_period_s_ *
+                                            static_cast<double>(step)
+                                      : 0.0;
+          voxel_grid_.workspace_region.hand_lead_m =
+              !known               ? std::numeric_limits<double>::infinity()
+              : ws_speed_override_ ? 0.0
+                                   : std::max(0.0, workspace_hand_lead() - ws_lead_allow_m_);
           fk_config(q);
           voxel_grid_.workspace_region.hand_speed_mps =
               !known                      ? std::numeric_limits<double>::infinity()
@@ -1875,21 +1885,26 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // measured pose is held.
             double creep = 0.0;
             if (!rows_refused && view.horizon > 0) {
-              const double* last =
-                  view.flat_data + static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
-              for (std::size_t d = 0; d < robot_ndof; ++d) {
-                const bool commanded = full_row || slot_commanded_[d] != 0;
-                q_check_[d] = commanded && !is_jaw(d) ? last[d] : q_meas_[d];
-              }
-              fk_config(q_check_.data());
-              const double lead = workspace_hand_lead();
-              if (std::isfinite(lead) && lead > 0.0) {
-                // One control period of travel at the speed bound, at most half the lead
-                // bound: the arm moves toward the target no faster than the rule allows.
-                const double step =
-                    std::min(0.5 * workspace_max_lead_m_,
-                             workspace_max_speed_mps_ * workspace_control_period_s_);
-                creep = std::min(1.0, step / lead);
+              // One control period of travel at the speed bound, at most half the lead
+              // bound, plus row s's allowance (s periods at the bound): the arm moves
+              // toward the target no faster than the rule allows. The tightest row sets
+              // the scale.
+              const double step = std::min(0.5 * workspace_max_lead_m_,
+                                           workspace_max_speed_mps_ * workspace_control_period_s_);
+              creep = 1.0;
+              for (std::uint16_t s = 0; s < view.horizon; ++s) {
+                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  const bool commanded = full_row || slot_commanded_[d] != 0;
+                  q_check_[d] = commanded && !is_jaw(d) ? row[d] : q_meas_[d];
+                }
+                fk_config(q_check_.data());
+                const double lead = workspace_hand_lead();
+                const double allow = step + workspace_max_speed_mps_ * workspace_control_period_s_ *
+                                                static_cast<double>(s);
+                if (std::isfinite(lead) && lead > allow) {
+                  creep = std::min(creep, allow / lead);
+                }
               }
               ws_dry_run_ = true;
               ws_quiet_ = true;

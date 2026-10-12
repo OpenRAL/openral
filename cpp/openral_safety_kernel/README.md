@@ -1055,7 +1055,10 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
    the same rule);
 4. the **hand does not lead far** — `hand_lead_m ≤ workspace_contact_max_lead_m` (push force),
    where `hand_lead = max over hand links of link_displacement_bound(pose at the MEASURED state,
-   pose at row s with the jaw joints at their measured value, reach)`, not divided by the period.
+   pose at row s with the jaw joints at their measured value, reach) − s · max_speed ·
+   control_period` (floored at 0), not divided by the period: row s runs s periods from now, so a
+   free hand may be that much travel at the bound away from the measured pose; row 0 and the
+   measured state get no allowance, and a blocked hand is re-judged at every chunk.
    On a joint-PD arm commanded-minus-measured is proportional to what the drives push with; without
    it a hand whose stationary target is buried deep would keep pushing at zero commanded speed. The
    jaw joints (`workspace_contact_jaw_joints`, the manifest's `role: gripper` joints; empty = none
@@ -1077,7 +1080,7 @@ shipped box at ingest): the measured object against the robot's exact geometry.
 **Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
 JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
 both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
-non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the last row leads one control period at the speed bound, at most half the lead bound, when the scaled rows pass the relaxed check). WARN `safety.workspace_brake ... creep=`.
+non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound, at most half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check). WARN `safety.workspace_brake ... creep=`.
 With `workspace_contact_hold_max_consecutive` > 0, a command the relaxed check still refuses while the
 measured pose passes is held too (never executed), up to that many chunks in a row; then the latched
 stop.
