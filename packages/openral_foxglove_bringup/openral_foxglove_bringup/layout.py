@@ -136,7 +136,11 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the hero view: the robot inside its environment."""
     return {
         "followTf": follow_frame,
-        "scene": {"transforms": {"showLabel": False}},
+        # ROS Collada meshes are drawn as their vertices say, like RViz, Gazebo and Isaac
+        # do: Blender exports (OpenArm v2's) bake the Z-up conversion into the node
+        # matrices yet declare Y_UP, and honouring it turns every link 90 deg in its own
+        # frame — the arms then look broken (upper arm detached, segments "missing").
+        "scene": {"transforms": {"showLabel": False}, "ignoreColladaUpAxis": True},
         "cameraState": {
             "perspective": True,
             "distance": 5,
@@ -205,7 +209,7 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the Bucket-2 converter outputs, close in on the robot."""
     return {
         "followTf": follow_frame,
-        "scene": {},
+        "scene": {"ignoreColladaUpAxis": True},  # see _scene_panel
         "cameraState": {
             "perspective": True,
             "distance": 4,

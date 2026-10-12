@@ -152,6 +152,8 @@ stack beside it; everything else is tabbed, one click away.
 | World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
 
+Both panels that draw the URDF set **Ignore COLLADA `<up_axis>`** (`scene.ignoreColladaUpAxis`): Collada vertices are read as authored, the way RViz, Gazebo and Isaac Sim read them. OpenArm v2's meshes are Blender exports that bake the Z-up conversion into their node matrices but still declare `Y_UP`; honouring the declaration turns every link 90° in its own frame, so the arms look broken (upper arm detached from the elbow, segments apparently missing). A layout imported before this setting existed needs the toggle (Panel → Scene) or a re-import.
+
 **Telemetry tabs**
 
 | Tab | Topic | Mirrors (dashboard card) |

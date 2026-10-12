@@ -5,7 +5,8 @@
    "scene": {
     "transforms": {
      "showLabel": false
-    }
+    },
+    "ignoreColladaUpAxis": true
    },
    "cameraState": {
     "perspective": true,
@@ -122,7 +123,9 @@
   },
   "3D!bucket2": {
    "followTf": "base_link",
-   "scene": {},
+   "scene": {
+    "ignoreColladaUpAxis": true
+   },
    "cameraState": {
     "perspective": true,
     "distance": 4,
