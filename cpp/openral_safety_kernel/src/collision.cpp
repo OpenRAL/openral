@@ -2640,8 +2640,26 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
     for (int p = 0; p < obj.prim_count; ++p) {
-      const AttachedPrimitive& prim =
+      const AttachedPrimitive& prim0 =
           attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+      // #349: against the robot's own exact geometry, a box payload with a
+      // stage-2 refinement is checked as the box its 26-DOP's first three slabs
+      // span — the producer's MEASURED object (the refinement is proved inside
+      // the shipped box at ingest); the shipped box's padding is for the map's
+      // quantisation, not for the robot's own links (r24-r29: a padded carton
+      // 1 cm from the torso read -15 to -40 mm against it).
+      AttachedPrimitive inner = prim0;
+      if (prim0.kind == AttachedShapeKind::kBox && prim0.hull_index >= 0 &&
+          static_cast<std::size_t>(prim0.hull_index) < attached.hulls.size()) {
+        const LinkHull& hull = attached.hulls[static_cast<std::size_t>(prim0.hull_index)];
+        const Vec3 lo{hull.dop_lo[0], hull.dop_lo[1], hull.dop_lo[2]};
+        const Vec3 hi{hull.dop_hi[0], hull.dop_hi[1], hull.dop_hi[2]};
+        Transform shift;
+        shift.t = Vec3{0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y), 0.5 * (lo.z + hi.z)};
+        inner.pose_in_object = compose(prim0.pose_in_object, shift);
+        inner.half_extents = Vec3{0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)};
+      }
+      const AttachedPrimitive& prim = inner;
       const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
       for (std::size_t c = 0; c < n_caps; ++c) {
         const int lc = model.capsule_link[c];

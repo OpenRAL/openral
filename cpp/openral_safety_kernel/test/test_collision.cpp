@@ -6739,6 +6739,31 @@ TEST(WorkspaceContact, ASlowHandsPayloadMeetingTheOtherHandDoesNotTrip) {
   EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "fast";
 }
 
+// #349: against the robot's own links a box payload with a stage-2 refinement is
+// the refinement's box (the producer's measured object), not the padded one.
+TEST(AttachedSelfCollision, ARefinedBoxPayloadIsCheckedAgainstTheRobotAsItsInnerBox) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.02, 0.0, translate(0.15, 0.0, 0.0));  // arm (non-touch), 0.13..0.17
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  // Padded box half 0.14 (reaches x 0.14: overlaps the capsule); measured box
+  // half 0.11 (reaches 0.11: 20 mm clear of the capsule's surface at 0.13).
+  osk::AttachedModel padded;
+  append_object(padded, 1, identity(), {box_prim(0.14, 0.05, 0.05)});
+  ASSERT_TRUE(osk::check_attached_self_collision(m, padded, s, 0.0).hit);
+
+  std::vector<osk::Vec3> verts;
+  osk::AttachedModel refined;
+  refined.hulls = {axis_aligned_box_hull(osk::Vec3{0.11, 0.05, 0.05}, verts)};
+  refined.hull_vertices = verts;
+  osk::AttachedPrimitive prim = box_prim(0.14, 0.05, 0.05);
+  prim.hull_index = 0;
+  append_object(refined, 1, identity(), {prim});
+  const auto hit = osk::check_attached_self_collision(m, refined, s, 0.0);
+  EXPECT_FALSE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, 0.02, 1e-6);
+}
+
 TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
   osk::AttachedModel att;
   append_object(att, 1, translate(0.05, 0.0, 0.0),

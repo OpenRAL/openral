@@ -1070,7 +1070,9 @@ payload the SPEED bound's reach is the larger of that and the payload's (`attach
 lead keeps the hand's own reach (push is set by the joint error). A carried
 payload's cells inside the workspace are exempt by the same predicate on its attach link (after the
 support-witness and attach-residue exemptions; WARN `link=payload@<link>`); its self-collision
-check against the robot is unchanged.
+check against the robot is unchanged. `check_attached_self_collision` checks a box payload that
+carries a stage-2 refinement as the refinement's box (its DOP's first three slabs, proved inside the
+shipped box at ingest): the measured object against the robot's exact geometry.
 
 **Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
 JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
