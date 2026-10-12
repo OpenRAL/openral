@@ -2985,7 +2985,15 @@ void SafetyKernelLifecycleNode::on_world_state(
   const auto clock_type = this->get_clock()->get_clock_type();
   const bool stamp_valid = msg->attachment_stamp_ns > 0;
   const rclcpp::Time producer_stamp(stamp_valid ? msg->attachment_stamp_ns : 0, clock_type);
-  const auto fail_closed = [this, producer_stamp]() {
+  const auto fail_closed = [this, producer_stamp](const char* reason) {
+    // Never silent (CLAUDE.md §1.4): a producer stuck on a message the kernel
+    // refuses looks, from outside, like a kernel that lost its payload model.
+    const auto wall = std::chrono::steady_clock::now();
+    if (wall - attached_fail_closed_last_warn_ >= std::chrono::seconds(1)) {
+      attached_fail_closed_last_warn_ = wall;
+      RCLCPP_WARN(this->get_logger(), "safety.attachment_fail_closed reason=%s objects=%zu", reason,
+                  attached_model_.n_objects);
+    }
     attached_model_.n_objects = 0;
     attached_overflow_ = true;
     attached_received_ = true;
@@ -3005,11 +3013,11 @@ void SafetyKernelLifecycleNode::on_world_state(
 
   const auto& wire = msg->attached_objects;
   if (!stamp_valid) {
-    fail_closed();
+    fail_closed("no_attachment_stamp");
     return;
   }
   if (wire.size() > attached_max_objects_) {
-    fail_closed();
+    fail_closed("too_many_objects");
     return;
   }
   // Total-primitive cap across every attached object (early fail-closed before
@@ -3019,7 +3027,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     total_primitives += obj.primitives.size();
   }
   if (total_primitives > attached_max_primitives_) {
-    fail_closed();
+    fail_closed("too_many_primitives");
     return;
   }
 
@@ -3046,7 +3054,7 @@ void SafetyKernelLifecycleNode::on_world_state(
         RCLCPP_WARN(this->get_logger(),
                     "safety.support_witness_rejected object=%s patch_m=%g penetration_m=%g",
                     obj.object_id.c_str(), witness.patch_radius_m, witness.max_penetration_m);
-        fail_closed();
+        fail_closed("support_witness_out_of_bounds");
         return;
       }
       in.support_point = Vec3{witness.contact_point_in_object.x, witness.contact_point_in_object.y,
@@ -3100,7 +3108,7 @@ void SafetyKernelLifecycleNode::on_world_state(
       // Unknown shape tag or too few dimensions → fail closed (an unrecognised
       // payload is not safe to ignore).
       if (!decode_attached_primitive(prim, pin)) {
-        fail_closed();
+        fail_closed("undecodable_primitive");
         return;
       }
       // Moved, not copied: `AttachedPrimitiveInput` now owns a vertex vector,

@@ -248,7 +248,7 @@ speed_source= max_mps= lead_m= lead_allow_m= max_lead_m= pairs= step= target=` W
 `max_speed_source`, max lead, both bounds) when the workspace drops; span attributes
 `safety.workspace_contact_active` / `_pairs` / `_max_depth_m` / `safety.workspace_hand_speed_mps` /
 `safety.workspace_hand_speed_source` / `safety.workspace_hand_lead_m`; and the `safety.collision`
-stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
+stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d> workspace_denied=<0..4>` (why the live workspace did not tolerate the reported pair: 1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box; `CollisionHit::workspace_denied`)
 hand_speed_source=<measured|commanded>`. The configure WARN states both bounds
 and the freshness window.
 

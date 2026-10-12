@@ -445,6 +445,7 @@ private:
   // Lead allowance of the row last checked: `step` periods at the speed bound (0 for
   // row 0 and the measured state). Disclosure only.
   double ws_lead_allow_m_{0.0};
+  std::chrono::steady_clock::time_point attached_fail_closed_last_warn_{};
   // The row that set the last creep scale and its lead (disclosure only).
   double ws_creep_lead_m_{0.0};
   int ws_creep_row_{-1};
