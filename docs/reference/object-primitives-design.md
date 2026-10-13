@@ -47,8 +47,9 @@ region is accepted and map-confirmed while a declaration is live, it is frozen f
 that declaration.** Camera re-fits never shrink, move, grow or retract it. **Only the voxel map
 retracts it** — on every tick with a fresh grid, `map_confirms` of the held box on its measured
 support: `map_disagrees` (the grid no longer holds it: the object removed or moved off it) or
-`map_split` (a second body inside it, unless a declared hand is over the box, whose own points
-can leak into the map: then a lost view and the freeze TTL runs) — or the declaration ends, is
+`map_split` (a second body inside it, unless that body lies wholly in a declared hand's own
+space, whose own points can leak into the map: then a lost view and the freeze TTL runs; a
+foreign body such as a person's hand retracts even with the robot's hand over the box) — or the declaration ends, is
 retracted or expires, or the grid goes stale beyond `freeze_s` (a confirming grid re-stamps the
 box with its `source_stamp`; with no confirming grid it ages out `freeze_s` after the last one).
 Before the first acceptance nothing changes: every gate decides what is accepted. After it,
@@ -139,8 +140,9 @@ box holds `min_cells` occupied cells above its lowest layer, or a named search b
    `_gate_refit(complete=False)`; then it is accepted. On the arming tick the pre-measured
    instance is the region before the next chunk.
 2. **Held — frozen (Revision 4).** Every tick, `_map_hold` runs `map_confirms` on the held box and
-   its measured support: `map_disagrees` retracts; `map_split` retracts unless a declared
-   contact link's TCP is over the box (`_hand_over_target`), where it is a lost view (the freeze
+   its measured support: `map_disagrees` retracts; `map_split` retracts unless every second body
+   lies in a declared contact link's own space (`_hand_boxes`: its TCP grown by voxel + occluder
+   margin, reaching the approach distance below; `map_confirms(own=…)`), where it is a lost view (the freeze
    TTL runs from the box's stamp, nothing re-stamps it); confirmed, the same box is re-accepted
    stamped with the grid's `source_stamp` — never moved, never grown. A newer re-fit of the
    instance still runs every gate of step 1 against the held box (`_gate_instance`, tracking,
@@ -162,7 +164,7 @@ check runs on every tick with no request in flight: the gap is at most `deadline
 |---|---|
 | instance (camera fit) | dropped `freeze_s` after its fit, or when the map stops covering it |
 | region from an instance | its stamp is `min(depth frame, grid source_stamp)` of the fit; the freeze TTL and the kernel's `grasp_region_max_age_s` run from it, as for any camera fit |
-| held (frozen) region (Revision 4) | re-stamped to each confirming grid's `source_stamp`, hand or no hand; dies `freeze_s` after the last one; at once when a grid no longer covers it (`map_disagrees`) or holds a second body in it with no declared hand over it (`map_split`); a stalled octomap ages it out (`grid_source_stale`, the kernel's bound) |
+| held (frozen) region (Revision 4) | re-stamped to each confirming grid's `source_stamp`, hand or no hand; dies `freeze_s` after the last one; at once when a grid no longer covers it (`map_disagrees`) or holds a second body in it with outside every declared hand's own space (`map_split`); a stalled octomap ages it out (`grid_source_stale`, the kernel's bound) |
 | any region | retracted with the declaration (end, retraction, expiry), at `approach_ended`, as today; camera re-fits never retract it once held |
 
 The frozen region is the one place a region lives longer than its last camera fit: on map
@@ -205,8 +207,8 @@ caps the declaration's; every threshold a calibration point with a stated defaul
 | target on a same-footprint body | the whole-stack mask is refused `STACKED`; the target's own mask, refused `not_on_support`, is re-fitted on its own lowest point | the body it stands on never enters the region (HZ-0115-37 closed, HZ-0115-42) |
 | support unseen (a bin floor out of the camera's view; a neighbour's top or a bin rim above the target's bottom) | the region stands on the target's own lowest kept point, logged `support unseen` | the box never reaches into space nothing measured; a finger below it meets the kernel's voxels |
 | two instances tie for the hand / two in a named box | `ambiguous`, retracted | neither exempt until the hand commits |
-| hand points leak into the map | with a declared hand over the frozen box its `map_split` is a lost view; the box is never replaced | freeze TTL bounds it |
-| second body slides into the frozen box | `map_split`, retracted at once (hand not over the box) | only the target is ever exempt; the map shows the second body within its freshness deadline |
+| hand points leak into the map | a `map_split` whose second body lies in a declared hand's own space is a lost view; the box is never replaced | freeze TTL bounds it |
+| second body slides into the frozen box | `map_split`, retracted at once (the body is outside every hand's own space, even with a hand over the box) | only the target is ever exempt; the map shows the second body within its freshness deadline |
 | object removed | held region retracted (`map_disagrees`), instance dropped | the region dies with the map evidence |
 | object moved off the frozen box | `map_disagrees` once the box no longer holds `min_cover` of its footprint's cells | the region dies with the map evidence |
 | object nudged within the frozen box (e.g. two voxels inside its padding) | kept: the box still holds one body, the target | the exemption still covers only the target's cells; a part pushed out of the box is not exempt, so the kernel stops the finger there (stricter, never looser) |
@@ -219,8 +221,8 @@ caps the declaration's; every threshold a calibration point with a stated defaul
 mask originated it, every acceptance gate passed it, and the map confirmed it held one body. While
 frozen, the map re-checks exactly that on every fresh grid: a removed or moved-away object is
 caught within the map's freshness deadline (≤ `grid_max_age_s` + one octomap integration), the
-same bound as before Revision 4; a second body inside the box retracts it (`map_split`) unless a
-declared hand is over the box; `source_stamp` + `freeze_s` bound a stalled map; the kernel
+same bound as before Revision 4; a second body inside the box retracts it (`map_split`) unless it
+lies in a declared hand's own space; `source_stamp` + `freeze_s` bound a stalled map; the kernel
 contract (no region, no exemption; `grasp_region_max_age_s`; the caps) is unchanged and the box
 never grows, so nothing outside the confirmed box is ever exempt.
 

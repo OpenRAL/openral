@@ -3798,6 +3798,9 @@ _PARKED = (0.15, -0.60, 0.40)
 #: approach distance (0.20 m) of it, not over it — where s_mix07's re-fit landed.
 _APPROACHING = (0.150, -0.091 - 0.044 - 0.10, -0.39)
 _OVER = (0.150, -0.08, -0.40)
+#: Still over the ``wide`` box, but 7.75 cm along -y of the second body: the body is not
+#: in the hand's own space (reach 1.5 cm voxel + 5 cm margin) — a person's hand, say.
+_OVER_FAR = (0.150, -0.13, -0.40)
 
 
 @pytest.mark.parametrize(
@@ -3815,6 +3818,7 @@ _OVER = (0.150, -0.08, -0.40)
         ("nudged_inside", "s_mix07", _APPROACHING, None, None),
         ("second_body", "wide", _PARKED, "retracted:map_split", None),
         ("second_body_hand_over", "wide", _OVER, "frozen:map_split", None),
+        ("foreign_body_hand_over", "wide", _OVER_FAR, "retracted:map_split", None),
     ],
 )
 def test_a_map_confirmed_grasp_target_is_frozen_and_only_the_map_retracts_it(
@@ -3832,8 +3836,9 @@ def test_a_map_confirmed_grasp_target_is_frozen_and_only_the_map_retracts_it(
     declaration's life: a re-fit is only logged (``re-fit ignored``, once per outcome);
     the map re-stamps the same box on every grid that confirms it and is the only thing
     that retracts it — the carton taken away or moved off the box (``map_disagrees``), a
-    second body inside it with no declared hand over it (``map_split``; with the hand over
-    it, its points may have leaked into the map: a lost view, the freeze TTL runs). A
+    second body inside it (``map_split``) unless that body lies in a declared hand's own
+    space (its points may have leaked into the map: a lost view, the freeze TTL runs) —
+    review C: a foreign body retracts even with the hand over the box. A
     two-voxel nudge that leaves the carton wholly inside the box is no retraction: the box
     still holds one body, the target.
     """

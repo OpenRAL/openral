@@ -86,10 +86,11 @@ what they would have done is logged once per change of outcome (``grasp target r
 ignored, region frozen (map-confirmed) — …``). **Only the map retracts it**
 (``GraspTargetLeg._map_hold``, every tick a fresh grid arrives): ``map_confirms`` on the
 held box and its measured support — the map no longer holding it (``map_disagrees``: taken
-away or moved off it) or a second body inside it (``map_split``) retracts, unless for the
-split a declared hand is over the box (its points can leak into the map: a lost view, the
-freeze TTL runs); a confirming grid re-stamps the same box with its ``source_stamp``, so a
-stalled or stale map still ages it out after the freeze. The declaration ending, retracted
+away or moved off it) or a second body inside it (``map_split``) retracts, unless that
+body lies wholly in a declared hand's own space (its points can leak into the map: a lost
+view, the freeze TTL runs) — a foreign body, a person's hand, always retracts; a
+confirming grid re-stamps the same box with its ``source_stamp``, so a stalled or stale
+map still ages it out after the freeze. The declaration ending, retracted
 or expiring, the approach-armed hand leaving, or the handover end it as before.
 
 **What the kernel gets is cell-closed** (``GraspTargetLeg.fill``). The kernel exempts
@@ -1239,6 +1240,31 @@ def _hand_over_target(
     return _hand_near(hands, column, reach_m=reach_m)
 
 
+def _hand_boxes(
+    hands: Sequence[tuple[float, float, float]],
+    frame_id: str,
+    *,
+    reach_m: float,
+    hand_rise_m: float,
+) -> list[PlaceRegion]:
+    """Each hand's own space: its jaw point grown by ``reach_m``, reaching ``hand_rise_m`` below.
+
+    The fingers hang a finger length under the hinge; the approach distance that armed the
+    target bounds it, as in ``_hand_over_target``.
+    """
+    half_z = hand_rise_m / 2.0 + reach_m
+    return [
+        PlaceRegion(
+            frame_id=frame_id,
+            pose=Pose6D(
+                xyz=(x, y, z + reach_m - half_z), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=frame_id
+            ),
+            half_extents=(reach_m, reach_m, half_z),
+        )
+        for x, y, z in hands
+    ]
+
+
 def _refused_fit(
     kind: str,
     detail: str,
@@ -2166,9 +2192,10 @@ class GraspTargetLeg:
         The only thing that retracts a held region before its declaration ends (design
         §3.7, Revision 4): ``map_confirms`` on the held box and its measured support, every
         tick. The map no longer holding it (``map_disagrees``: taken away, or moved off it)
-        retracts; a second body in it (``map_split``) retracts too, unless a declared hand
-        is over the box (``_hand_over_target``) — the hand's own points can leak into the
-        map beside the target — where it is a lost view and the freeze TTL runs. Confirmed,
+        retracts; a second body in it (``map_split``) retracts too — a person's hand in
+        the tote is one — unless every such body lies inside a declared hand's own space
+        (``_hand_boxes``: the hand's own points can leak into the map beside the target),
+        where it is a lost view and the freeze TTL runs. Confirmed,
         the same box is re-stamped with the grid's ``source_stamp`` (``None`` when that is
         no newer than the region): never moved, never grown.
         """
@@ -2182,13 +2209,23 @@ class GraspTargetLeg:
             min_cover=self._config.grasp_target_min_cover,
             pad_m=fit_pad_m(grid.resolution),
         )
-        if kind == "map_split" and _hand_over_target(
-            hands,
-            held,
-            reach_m=grid.resolution + self._occluder_margin_m,
-            hand_rise_m=self._approach_m or 0.0,
+        if (
+            kind == "map_split"
+            and not map_confirms(
+                grid,
+                held,
+                support_z=support_z,
+                min_cover=self._config.grasp_target_min_cover,
+                pad_m=fit_pad_m(grid.resolution),
+                own=_hand_boxes(
+                    hands,
+                    grid.frame_id,
+                    reach_m=grid.resolution + self._occluder_margin_m,
+                    hand_rise_m=self._approach_m or 0.0,
+                ),
+            )[0]
         ):
-            raise _lost(kind, f"held region: {detail}, hand over it")
+            raise _lost(kind, f"held region: {detail}, the second body is the hand's own")
         if kind:
             raise _contradicted(kind, f"held region: {detail}")
         if source_ns <= held.stamp_ns:
