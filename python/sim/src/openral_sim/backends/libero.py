@@ -20,6 +20,7 @@ cross-field validation passes.
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -147,6 +148,10 @@ class _LiberoSim:
     # re-creates the MjData and orphans the passive viewer). openral sim run keeps
     # the default False (episodic benchmarking resets per episode).
     _continuous: bool = False
+    # The robosuite control rate this env is built with (issue #358): re-pinned
+    # before every reset, since robosuite re-reads its process-global physics dt
+    # at each world rebuild and another scene in the process may have pinned its own.
+    _rate_hz: float = 20.0
 
     def _robosuite_env(self) -> Any:
         """The robosuite task env that actually computes ``done``, or None.
@@ -222,6 +227,11 @@ class _LiberoSim:
         rs.ignore_done = True
 
     def reset(self, seed: int | None = None) -> Observation:
+        # ponytail: covers explicit resets only; lerobot's inline reset-on-terminated
+        # inside step() still reads whatever dt is current (continuous mode suppresses it).
+        # No robosuite installed means no robosuite env (and no time base) to pin.
+        if importlib.util.find_spec("robosuite") is not None:
+            pin_robosuite_time_base(self._rate_hz)
         obs, _info = self._env.reset(seed=seed)
         # The reset materialised the lazily-built env (and may have re-created
         # it); in continuous mode ignore_done must land on the live instance.
@@ -564,11 +574,17 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
             control_freq_hz=control_freq_hz,
             sim_dt_per_tick_s=round(sim_dt_per_tick_from_robosuite_env(inner) or 0.0, 6),
         )
+    else:
+        # The lazily built env keeps robosuite's native 20 Hz, but reads the
+        # process-global physics dt at build time: restore the native one, in case
+        # a deploy env earlier in this process shrank it for its own rate.
+        pin_robosuite_time_base(20.0)
     return _LiberoSim(
         scene=env_cfg.scene,
         task=env_cfg.task,
         _env=env,
         _last_pixels={},
+        _rate_hz=20.0 if control_freq_hz is None else control_freq_hz,
     )
 
 

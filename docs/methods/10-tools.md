@@ -760,7 +760,7 @@ _Verifies selected optional test environments locally: syncs the matching depend
 - `RLBENCH_REPO: str` (L65) — RLBench upstream repo URL.
 - `THREEDDA_REPO: str` (L66) — 3D-Diffuser-Actor upstream repo URL.
 - `THREEDDA_INSTRUCTIONS: Path` (L67) — Expected path to the PerAct instructions pickle 3D-Diffuser-Actor needs.
-- `main(argv=None) -> int` — CLI entry; drives group sync, provisioning, and `_strict_pytest` per lane. (L468)
+- `main(argv=None) -> int` — CLI entry; drives group sync, provisioning, and `_strict_pytest` per lane. `--junit-xml PATH` (one group) writes pytest's junit report and drops the script's own no-skips rule, leaving the accounting to `tools/lane_report.py` — how the heavy-lanes workflow runs `simpler-env` / `robocasa-gr1`. (L478)
 
 ### `tools/wait_for_action_and_signal_palette.py`
 _Polls for a ROS 2 action server to appear, then publishes on `/openral/skill_registry_changed` so the reasoner re-seeds its rSkill palette. Needed because a wrapped-ROS rSkill can drop from the palette if its action isn't advertised yet at launch (e.g. Nav2 takes 15-30 s). Exits 0 once published, 1 on timeout._

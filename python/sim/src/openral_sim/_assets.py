@@ -24,6 +24,7 @@ users can authorise the download out-of-band.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -77,6 +78,25 @@ def _display_robocasa_license_banner(target: Path) -> None:
     )
 
 
+def _robocasa_dir() -> Path:
+    """The installed ``robocasa`` package directory, found WITHOUT importing it.
+
+    ``import robocasa`` imports every environment, which builds the object
+    registry (``OBJ_CATEGORIES``) by globbing ``models/assets/objects`` once at
+    import time. Importing it here — before the download below — froze that
+    registry empty for the whole process, so the first run on a fresh host
+    failed with "No valid categories found for sampling" even though the assets
+    were on disk by the time the env was built.
+
+    Raises:
+        ImportError: robocasa is not installed.
+    """
+    spec = importlib.util.find_spec("robocasa")
+    if spec is None or not spec.submodule_search_locations:
+        raise ImportError("robocasa is not installed")
+    return Path(next(iter(spec.submodule_search_locations)))
+
+
 def _detect_robocasa_variant() -> str:
     """Return ``"kitchen"`` or ``"gr1_tabletop"`` based on the installed robocasa.
 
@@ -95,10 +115,9 @@ def _detect_robocasa_variant() -> str:
     subsequent subprocess call will surface a typed ImportError.
     """
     try:
-        import robocasa  # type: ignore[import-not-found,import-untyped,unused-ignore]
+        scripts = _robocasa_dir() / "scripts"
     except ImportError:
         return "kitchen"
-    scripts = Path(robocasa.__file__).parent / "scripts"
     if (scripts / "download_tabletop_assets.py").is_file():
         return "gr1_tabletop"
     return "kitchen"
@@ -148,10 +167,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     # short-circuit with a sentinel touch so subsequent runs are silent.
     if variant == "gr1_tabletop":
         try:
-            import robocasa  # type: ignore[import-not-found,import-untyped,unused-ignore]
-
-            assert robocasa.__file__ is not None
-            robocasa_dir = Path(robocasa.__file__).parent
+            robocasa_dir = _robocasa_dir()
             objects_dir = robocasa_dir / "models" / "assets" / "objects"
             required_registries = ("objaverse", "sketchfab", "lightwheel")
             if objects_dir.is_dir() and all(
@@ -226,10 +242,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     # ``ValueError: probabilities contain NaN`` at first ``env.reset()``.
     # Require every non-source download target to be non-empty.
     try:
-        import robocasa  # type: ignore[import-not-found,import-untyped,unused-ignore]
-
-        assert robocasa.__file__ is not None
-        robocasa_dir = Path(robocasa.__file__).parent
+        robocasa_dir = _robocasa_dir()
         kitchen_arena = robocasa_dir / "models" / "assets" / "arenas" / "empty_kitchen_arena.xml"
         box_links_assets = (
             robocasa_dir / "models" / "assets" / "box_links" / "box_links_assets.json"

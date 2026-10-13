@@ -560,6 +560,11 @@ class MujocoArmHAL(HALBase):
             width = s.intrinsics.width if s.intrinsics is not None else 640
             renderer = self._renderers.get((height, width))
             if renderer is None:
+                # The MJCF's offscreen framebuffer (default 640x480) must fit the
+                # sensor raster, e.g. the OpenArm ZED's 672x376 — grow it first.
+                vis = self._model.vis.global_
+                vis.offwidth = max(int(vis.offwidth), width)
+                vis.offheight = max(int(vis.offheight), height)
                 try:
                     renderer = mj.Renderer(self._model, height=height, width=width)
                 except Exception as exc:  # reason: GL/MJCF render setup is non-fatal

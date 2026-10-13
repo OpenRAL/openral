@@ -180,12 +180,18 @@ def _lifecycle(
     deadline = time.monotonic() + timeout_s
     last = ""
     while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["ros2", "lifecycle", "set", costmap_node, transition],
-            check=False,
-            capture_output=True,
-            timeout=60,
-        )
+        # `--no-daemon` and a per-call cap inside the deadline: on a loaded host the shared
+        # ros2 daemon can hang one CLI call past the whole budget; a hung call is retried.
+        try:
+            result = subprocess.run(
+                ["ros2", "lifecycle", "set", "--no-daemon", costmap_node, transition],
+                check=False,
+                capture_output=True,
+                timeout=max(5.0, min(20.0, deadline - time.monotonic())),
+            )
+        except subprocess.TimeoutExpired as exc:
+            last = f"`ros2 lifecycle set` hung past {exc.timeout:.0f} s"
+            continue
         if result.returncode == 0:
             return
         last = (result.stdout + result.stderr).decode(errors="replace").strip()

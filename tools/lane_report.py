@@ -145,10 +145,10 @@ def build_record(  # noqa: PLR0911  # reason: one explicit early return per lane
 ) -> LaneRecord:
     """Apply the lane policy to one lane's raw counts (see module docstring).
 
-    ``from_exit_code`` marks a lane with no junit evidence — ``simpler-env`` and
-    ``robocasa-gr1`` run their pytest inside ``verify_test_envs.py``, so the
-    exit code is all there is. Such a lane is judged solely on that code, and
-    the ledger says so rather than implying per-test accounting it never had.
+    ``from_exit_code`` marks a lane with no junit evidence, judged solely on its
+    exit code — the ledger says so rather than implying per-test accounting it
+    never had. (``simpler-env`` / ``robocasa-gr1`` used to be such lanes; they now
+    pass ``verify_test_envs.py --junit-xml`` and are accounted like the rest.)
     """
     gaps = config.capability_gaps
 

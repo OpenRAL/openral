@@ -181,7 +181,12 @@ def test_cameras_publish_rgb_frames() -> None:
     assert frames, "no frame published on /openral/cameras/top/image"
     img = frames[0]
     assert img.encoding == "rgb8", img.encoding
-    assert img.width == 640 and img.height == 480, (img.width, img.height)
+    # The frame is rendered at the manifest's declared raster (672x376, the ZED-M view).
+    from openral_core import RobotDescription
+
+    (top,) = [s for s in RobotDescription.from_yaml(str(_OPENARM_YAML)).sensors if s.name == "top"]
+    assert top.intrinsics is not None
+    assert (img.width, img.height) == (top.intrinsics.width, top.intrinsics.height)
 
 
 def test_safe_action_drives_hal_send_action() -> None:
@@ -331,7 +336,11 @@ def test_estop_latch_blocks_subsequent_safe_action(
             executor.spin_once(timeout_sec=0.02)
 
         estop_pub.publish(Empty())
-        _spin_for(executor, 0.2)
+        # Wait on the latch, not a fixed spin: the camera/depth timers share this
+        # single-threaded executor, and a CPU-rendered tick (no GPU) outlasts 0.2 s.
+        latch_deadline = time.monotonic() + 2.0
+        while not node._estopped and time.monotonic() < latch_deadline:
+            executor.spin_once(timeout_sec=0.02)
         assert node._estopped is True, "estop latch did not engage"
 
         baseline = list(observed["joint_states"][-1].position)

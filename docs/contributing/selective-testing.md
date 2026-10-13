@@ -240,10 +240,11 @@ can no longer report the same thing.
 > output rather than assumed. A module-level `importorskip` emits
 > `message="collection skipped"` and puts the real reason in the element
 > **text**; reading only `message` would misclassify every such skip as
-> undeclared. And `simpler-env` / `robocasa-gr1` run their pytest *inside*
-> `verify_test_envs.py`, so they have no junit report at all and are recorded
-> explicitly as exit-code-only rather than being credited with per-test
-> accounting they never had.
+> undeclared. `simpler-env` / `robocasa-gr1` run their pytest *inside*
+> `verify_test_envs.py`; the workflow passes it `--junit-xml`, so they are
+> accounted from that report like every other lane (a hosted runner's missing
+> Vulkan is the declared `vulkan` gap, not a failure). `--from-exit-code`
+> remains for a lane with no junit evidence at all.
 
 ### Usage
 

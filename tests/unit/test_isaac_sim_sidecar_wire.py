@@ -504,7 +504,7 @@ class TestImageTime:
                 hal.env.close()
 
     def test_bridge_stamps_each_frame_with_the_time_it_shows(self) -> None:
-        rclpy = pytest.importorskip("rclpy", reason="ROS 2 (rclpy) not sourced")
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
         from openral_core import CameraTopicKind, camera_topic
         from openral_hal.sim_sensor_bridge import SimSensorBridge
         from rclpy.qos import qos_profile_sensor_data
