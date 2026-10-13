@@ -6745,7 +6745,8 @@ TEST(WorkspaceContact, ASlowHandsPayloadMeetingTheOtherHandDoesNotTrip) {
 }
 
 // #349: against the robot's own links a box payload with a stage-2 refinement is
-// the refinement's box (the producer's measured object), not the padded one.
+// the refinement's box (the producer's measured object), not the padded one — only
+// under a live workspace (the sim-only rule); without one, today's padded check.
 TEST(AttachedSelfCollision, ARefinedBoxPayloadIsCheckedAgainstTheRobotAsItsInnerBox) {
   osk::CollisionModel m = hand_model();
   add_capsule(m, 3, 0.02, 0.0, translate(0.15, 0.0, 0.0));  // arm (non-touch), 0.13..0.17
@@ -6764,7 +6765,13 @@ TEST(AttachedSelfCollision, ARefinedBoxPayloadIsCheckedAgainstTheRobotAsItsInner
   osk::AttachedPrimitive prim = box_prim(0.14, 0.05, 0.05);
   prim.hull_index = 0;
   append_object(refined, 1, identity(), {prim});
-  const auto hit = osk::check_attached_self_collision(m, refined, s, 0.0);
+  EXPECT_TRUE(osk::check_attached_self_collision(m, refined, s, 0.0).hit)
+      << "no workspace: the shipped, padded box, as before the rule";
+  osk::WorkspaceContactRegion invalid;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, refined, s, 0.0, &invalid).hit)
+      << "an invalid workspace is no workspace";
+  const osk::WorkspaceContactRegion ws = workspace(0.3, {1}, 0.0);
+  const auto hit = osk::check_attached_self_collision(m, refined, s, 0.0, &ws);
   EXPECT_FALSE(hit.hit);
   EXPECT_NEAR(hit.min_distance, 0.02, 1e-6);
 }

@@ -2681,9 +2681,12 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       // span — the producer's MEASURED object (the refinement is proved inside
       // the shipped box at ingest); the shipped box's padding is for the map's
       // quantisation, not for the robot's own links (r24-r29: a padded carton
-      // 1 cm from the torso read -15 to -40 mm against it).
+      // 1 cm from the torso read -15 to -40 mm against it). Only under a live
+      // workspace (the sim-only #349 rule): without one this is today's check on
+      // the shipped, padded box (#349 review).
       AttachedPrimitive inner = prim0;
-      if (prim0.kind == AttachedShapeKind::kBox && prim0.hull_index >= 0 &&
+      if (workspace != nullptr && workspace->valid && prim0.kind == AttachedShapeKind::kBox &&
+          prim0.hull_index >= 0 &&
           static_cast<std::size_t>(prim0.hull_index) < attached.hulls.size()) {
         const LinkHull& hull = attached.hulls[static_cast<std::size_t>(prim0.hull_index)];
         const Vec3 lo{hull.dop_lo[0], hull.dop_lo[1], hull.dop_lo[2]};

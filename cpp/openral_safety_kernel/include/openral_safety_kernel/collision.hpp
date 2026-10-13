@@ -1582,7 +1582,9 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 /// `workspace` (#349, draft): a payload is part of the hand carrying it — against
 /// another HAND link it is tolerated by `check_self_collision`'s two-slow-hands rule
 /// applied to its attach link (both origins inside the box, both hands slow),
-/// counted in `workspace_pairs`. Arm links stop as before; `nullptr` = today's check.
+/// counted in `workspace_pairs`. Arm links stop as before. Under a live workspace a
+/// box payload carrying a stage-2 refinement is checked as its measured (unpadded)
+/// box; `nullptr` or an invalid workspace = today's check on the shipped box.
 CollisionHit
 check_attached_self_collision(const CollisionModel& model, const AttachedModel& attached,
                               const CollisionScratch& scratch, double margin,

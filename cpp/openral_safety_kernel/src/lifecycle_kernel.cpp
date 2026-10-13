@@ -452,6 +452,10 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // period that is not finite and > 0 (lead also <= kMaxWorkspaceContactLeadM)
   // refuses configure, as does enabled without `grasp_allowance_enabled`.
   this->declare_parameter<bool>("workspace_contact_enabled", false);
+  // The HAL mode the graph runs (`sim` | `real`). The workspace rule is sim-only until
+  // Safety-WG review, and the kernel enforces that itself rather than trusting every
+  // launch to (#349 review). Defaults to real: an unset mode never arms a sim-only rule.
+  this->declare_parameter<std::string>("hal_mode", "real");
   this->declare_parameter<std::vector<std::string>>("workspace_contact_links",
                                                     std::vector<std::string>{});
   this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
@@ -612,7 +616,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   workspace_contact_enabled_ = this->get_parameter("workspace_contact_enabled").as_bool();
   workspace_brake_enabled_ = this->get_parameter("workspace_contact_brake_enabled").as_bool();
   workspace_brakes_ = 0;
-  workspace_command_holds_ = 0;
+  workspace_command_holds_.clear();
   {
     const std::int64_t cap = this->get_parameter("workspace_contact_hold_max_consecutive").as_int();
     if (cap < 0 || (cap > 0 && !workspace_brake_enabled_)) {
@@ -635,6 +639,14 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   workspace_link_index_.clear();
   workspace_region_ = WorkspaceContactRegion{};
   voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  if (workspace_contact_enabled_ && this->get_parameter("hal_mode").as_string() != "sim") {
+    RCLCPP_ERROR(this->get_logger(),
+                 "workspace_contact_enabled refused: sim-only until Safety-WG review "
+                 "(docs/reference/manipulation-workspace-contact.md), hal_mode=%s",
+                 this->get_parameter("hal_mode").as_string().c_str());
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
   if (workspace_contact_enabled_) {
     const auto refuse = [this](const std::string& why) {
       RCLCPP_ERROR(this->get_logger(), "workspace_contact_enabled refused: %s", why.c_str());
@@ -709,6 +721,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
     workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
     workspace_cmd_set_.assign(envelope_.n_dof, 0);
+    workspace_command_holds_.assign(envelope_.n_dof, 0);
     clear_workspace_commands();
     RCLCPP_WARN(this->get_logger(),
                 "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
@@ -1834,6 +1847,18 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         bool rows_checked = false;
         if (workspace_brake_enabled_ && voxel_grid_.workspace_region.valid &&
             workspace_speed_measured_) {
+          // Holds are counted per commanded joint (#349 review): with slot dispatch the
+          // other arm's chunk passing must not reset this arm's run of holds.
+          const bool full_cmd = msg->joint_names.empty();
+          const auto commanded_dof = [&](std::size_t d) {
+            return d < workspace_command_holds_.size() && (full_cmd || slot_commanded_[d] != 0);
+          };
+          std::uint64_t holds = 0;
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            if (commanded_dof(d)) {
+              holds = std::max(holds, workspace_command_holds_[d]);
+            }
+          }
           ws_dry_run_ = true;
           const bool as_is = check_rows();
           bool rows_refused = false;
@@ -1849,14 +1874,17 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             ws_speed_override_ = false;
             ws_quiet_ = false;
           } else {
-            workspace_command_holds_ = 0;
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              if (commanded_dof(d)) {
+                workspace_command_holds_[d] = 0;
+              }
+            }
           }
           ws_dry_run_ = false;
           rows_checked = !as_is;
           // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
           // check still refuses: a hold up to the consecutive cap, then a stop.
-          const bool command_hold =
-              rows_refused && workspace_command_holds_ < workspace_hold_max_consecutive_;
+          const bool command_hold = rows_refused && holds < workspace_hold_max_consecutive_;
           const bool slowed = hold_trips || (rows_refused && !command_hold);
           if (as_is && slowed) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
@@ -1864,11 +1892,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                  "hold_clear=%d command_holds=%llu/%llu (stops as before)",
                                  workspace_measured_speed_mps_, ws_refused_pair_.c_str(),
                                  static_cast<int>(!hold_trips),
-                                 static_cast<unsigned long long>(workspace_command_holds_),
+                                 static_cast<unsigned long long>(holds),
                                  static_cast<unsigned long long>(workspace_hold_max_consecutive_));
-          }
-          if (as_is && !slowed && rows_refused) {
-            ++workspace_command_holds_;
           }
           if (as_is && !slowed) {
             const bool full_row = msg->joint_names.empty();
@@ -1923,7 +1948,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                 : is_jaw(d) ? row[d]
                                             : q_meas_[d] + creep * (row[d] - q_meas_[d]);
                 }
-                if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
+                // The lead is Cartesian and not linear in the joint deltas (#349 review):
+                // the scaled row's own lead must be within its allowance too.
+                std::copy(q_check_.begin(), q_check_.end(), q_lead_.begin());
+                for (const int jd : workspace_jaw_cols_) {
+                  q_lead_[static_cast<std::size_t>(jd)] = q_meas_[static_cast<std::size_t>(jd)];
+                }
+                fk_config(q_lead_.data());
+                const double scaled_lead = workspace_hand_lead();
+                if (!(scaled_lead <= base + per_period * static_cast<double>(s) + 1e-9) ||
+                    check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
                   creep = 0.0;  // the scaled motion itself is not clear: hold
                 }
               }
@@ -1931,37 +1965,87 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               ws_quiet_ = false;
               ws_dry_run_ = false;
             }
-            scaled_chunk_ = *msg;
-            for (std::uint16_t s = 0; s < view.horizon; ++s) {
-              for (std::size_t d = 0; d < robot_ndof; ++d) {
-                const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
-                if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
-                    k < scaled_chunk_.flat.size()) {
-                  scaled_chunk_.flat[k] = q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
+            // A hold publishes the arm at measured but the jaws at their command (a hold
+            // must not drop the payload): every row of exactly that must pass (#349
+            // review: only the all-measured pose was checked, so a refused jaw motion was
+            // executed under the hold).
+            bool hold_clear = true;
+            if (creep == 0.0 && !workspace_jaw_cols_.empty()) {
+              ws_dry_run_ = true;
+              ws_quiet_ = true;
+              ws_speed_override_ = true;
+              for (std::uint16_t s = 0; s < view.horizon && hold_clear; ++s) {
+                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  const bool commanded = full_row || slot_commanded_[d] != 0;
+                  q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
+                }
+                hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
+              }
+              ws_speed_override_ = false;
+              ws_quiet_ = false;
+              ws_dry_run_ = false;
+            }
+            if (hold_clear) {
+              if (rows_refused) {
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  if (commanded_dof(d)) {
+                    ++workspace_command_holds_[d];
+                  }
                 }
               }
+              scaled_chunk_ = *msg;
+              for (std::uint16_t s = 0; s < view.horizon; ++s) {
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
+                  if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
+                      k < scaled_chunk_.flat.size()) {
+                    scaled_chunk_.flat[k] =
+                        q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
+                  }
+                }
+              }
+              safe_pub_->publish(scaled_chunk_);
+              ++workspace_brakes_;
+              // A brake is an accept of the scaled chunk: the status says so, and the
+              // tick's later slots are checked against what this slot now commits
+              // (#349 review: they were checked against its measured pose).
+              set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
+                                "workspace brake", msg->rskill_id, msg->trace_id);
+              if (slot_row && msg->tick_index != 0 && view.horizon > 0) {
+                const std::size_t last = static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  if (slot_commanded_[d] != 0 && last + d < scaled_chunk_.flat.size()) {
+                    tick_target_[d] = scaled_chunk_.flat[last + d];
+                    tick_target_set_[d] = 1;
+                  }
+                }
+              }
+              clear_workspace_commands();
+              const auto wall = std::chrono::steady_clock::now();
+              if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
+                workspace_brake_last_warn_ = wall;
+                RCLCPP_WARN(this->get_logger(),
+                            "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
+                            "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
+                            "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
+                            workspace_measured_speed_mps_, workspace_max_speed_mps_,
+                            workspace_max_lead_m_,
+                            static_cast<unsigned long long>(workspace_brakes_),
+                            rows_refused ? "command_refused" : "speed_lead",
+                            rows_refused ? ws_refused_pair_.c_str() : "", creep, ws_creep_lead_m_,
+                            ws_creep_row_, workspace_target_.c_str(), msg->rskill_id.c_str());
+              }
+              span->SetAttribute("safety.severity", "info");
+              span->SetAttribute("safety.workspace_brake", true);
+              span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
+              span->End();
+              return;
             }
-            safe_pub_->publish(scaled_chunk_);
-            ++workspace_brakes_;
-            clear_workspace_commands();
-            const auto wall = std::chrono::steady_clock::now();
-            if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
-              workspace_brake_last_warn_ = wall;
-              RCLCPP_WARN(this->get_logger(),
-                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
-                          "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
-                          "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
-                          workspace_measured_speed_mps_, workspace_max_speed_mps_,
-                          workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
-                          rows_refused ? "command_refused" : "speed_lead",
-                          rows_refused ? ws_refused_pair_.c_str() : "", creep, ws_creep_lead_m_,
-                          ws_creep_row_, workspace_target_.c_str(), msg->rskill_id.c_str());
-            }
-            span->SetAttribute("safety.severity", "info");
-            span->SetAttribute("safety.workspace_brake", true);
-            span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
-            span->End();
-            return;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                                 "jaw_hold_clear=0 (stops as before)",
+                                 workspace_measured_speed_mps_, ws_refused_pair_.c_str());
           }
         }
         if (!rows_checked && check_rows()) {

@@ -501,8 +501,10 @@ private:
   std::uint64_t workspace_brakes_{0};
   /// Holds answering a COMMAND the relaxed check still refuses (the measured pose
   /// passing): consecutive count and its cap (`workspace_contact_hold_max_consecutive`,
-  /// 0 = such commands stop as before). Reset by any chunk that passes as-is.
-  std::uint64_t workspace_command_holds_{0};
+  /// 0 = such commands stop as before). Counted per commanded joint (length n_dof,
+  /// sized at configure): a chunk passing as-is resets only the joints it commands,
+  /// so another arm's slot passing never resets this arm's run (#349 review).
+  std::vector<std::uint64_t> workspace_command_holds_;
   std::uint64_t workspace_hold_max_consecutive_{0};
   /// The pair the brake's second (speed/lead-relaxed) pass tripped on — why a
   /// brake was refused; written only on that stop path.

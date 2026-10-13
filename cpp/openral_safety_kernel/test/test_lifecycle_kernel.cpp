@@ -5639,6 +5639,7 @@ std::vector<rclcpp::Parameter> workspace_params(bool enabled = true, double max_
                                                 std::vector<std::string> links = {"link0"},
                                                 double max_lead_m = kWsMaxLeadM) {
   auto params = grasp_params();
+  params.emplace_back("hal_mode", std::string("sim"));  // the rule is sim-only
   params.emplace_back("workspace_contact_enabled", enabled);
   params.emplace_back("workspace_contact_links", links);
   params.emplace_back("workspace_contact_max_speed_mps", max_mps);
@@ -6285,4 +6286,67 @@ TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {
   EXPECT_FALSE(brake_alone.configure()) << "the brake needs the workspace rule";
   GraspRig off("kernel_ws_cfg_off", workspace_params(false, 0.0, 0.0, {}));
   EXPECT_TRUE(off.configure()) << "off, nothing is read";
+  // Sim-only until Safety-WG review, enforced by the kernel itself (#349 review):
+  // a real or unknown HAL mode never arms the rule, whatever launched the kernel.
+  for (const char* mode : {"real", "", "Sim"}) {
+    GraspRig real("kernel_ws_cfg_real", with_param(workspace_params(), "hal_mode",
+                                                   rclcpp::ParameterValue(std::string(mode))));
+    EXPECT_FALSE(real.configure()) << "hal_mode '" << mode << "'";
+  }
+  GraspRig real_off("kernel_ws_cfg_real_off",
+                    with_param(workspace_params(false, 0.0, 0.0, {}), "hal_mode",
+                               rclcpp::ParameterValue(std::string("real"))));
+  EXPECT_TRUE(real_off.configure()) << "the rule off: real configures as before";
+}
+
+// #349 review: a hold publishes the arm at measured but the jaws at their command,
+// so a refused command whose jaw motion is itself the collision must stop, not hold.
+// Hold-cap rig with j0 as the jaw: the command walks j0 into a cell outside the box.
+TEST_F(LifecycleKernelTest, AHoldWhoseJawCommandCollidesStops) {
+  LogCapture logs;
+  auto params =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{5}));
+  params = with_param(params, "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::vector<std::string>{"j0"}));
+  GraspRig rig("kernel_ws_hold_jaw", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: no exemption for it
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_TRUE(rig.node->fault_latched()) << "the jaw command is the collision: today's stop";
+  EXPECT_GE(logs.count("jaw_hold_clear=0"), 1U) << logs.joined();
+}
+
+// #349 review: holds are counted per commanded joint. Two arms slot-dispatched per
+// tick: j1's slot passes every tick, j0's command is refused every tick (into a cell
+// outside the box) — j1 passing must not reset j0's run, so j0 latches at the cap.
+TEST_F(LifecycleKernelTest, TheOtherArmPassingDoesNotResetAHoldRun) {
+  LogCapture logs;
+  auto params = with_param(lag_params_two_arm(), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{2}));
+  GraspRig rig("kernel_ws_hold_two_arm", params);
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {0.0};
+  rig.js_velocity = {0.0, 0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  std::uint32_t tick = 1;
+  for (; tick <= 2; ++tick) {
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)))
+        << "tick " << tick << logs.joined();
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)))
+        << "held, tick " << tick << logs.joined();
+    EXPECT_FALSE(rig.node->fault_latched());
+  }
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)));
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "past j0's cap despite j1 passing every tick";
 }

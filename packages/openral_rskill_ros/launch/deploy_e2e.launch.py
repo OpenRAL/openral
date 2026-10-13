@@ -1909,6 +1909,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
+    # The kernel refuses sim-only rules (workspace contact, #349) on anything but sim.
+    kernel_params["hal_mode"] = hal_mode
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
     # in the action's dof index space — same order as the per-joint envelope arrays +
     # collision_dof_index. `collision_seed_dt_s` is the velocity-integration look-ahead step;
