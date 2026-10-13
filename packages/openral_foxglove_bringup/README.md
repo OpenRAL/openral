@@ -140,7 +140,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_cloud/self_filtered`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/openral/viz/collisions`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, the depth cloud with the robot cut out (in colour when it carries `rgb`; the raw camera cloud would draw a second, lagging arm), held payload + grasp/place regions, search box, workspace, declared static geometry |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_cloud/self_filtered_rgb`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/openral/viz/collisions`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, the depth cloud with the robot cut out (in colour when it carries `rgb`; the raw camera cloud would draw a second, lagging arm), held payload + grasp/place regions, search box, workspace, declared static geometry |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**

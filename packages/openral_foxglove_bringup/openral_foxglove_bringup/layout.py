@@ -170,7 +170,7 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
             },
             # The world as the depth camera sees it, the robot cut out (a raw cloud
             # would draw a second, lagging arm), in its own colours where it has them.
-            "/openral/world_cloud/self_filtered": {
+            "/openral/world_cloud/self_filtered_rgb": {
                 "visible": True,
                 "colorField": "rgb",
                 "colorMode": "rgb",

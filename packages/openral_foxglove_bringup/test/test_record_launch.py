@@ -78,7 +78,7 @@ _EXPECTED_ALLOWED: set[str] = {
     "/openral/world_voxels_cloud",
     "/openral/viz/attachments",
     "/openral/viz/static_geometry",
-    "/openral/world_cloud/self_filtered",
+    "/openral/world_cloud/self_filtered_rgb",
     "/openral/viz/collisions",
     # Telemetry mirrored from the OTel dashboard's cards
     "/openral/world_state_fast",

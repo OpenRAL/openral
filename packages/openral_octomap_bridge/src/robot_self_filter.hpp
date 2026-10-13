@@ -23,6 +23,11 @@
 // snapshot, an attach link neither in the model nor in TF, geometry
 // `place_attached_object` refuses — leaves its points IN the cloud: the map
 // keeps occupancy it may not need, which can only stop the robot early.
+//
+// `cloud_out` carries x/y/z only, whatever the input carries: octomap reads
+// nothing else. An input with more fields (a coloured sim cloud's `rgb`) also
+// goes out whole, robot removed, on `cloud_out_rgb` for viewers — only while
+// that topic has a subscriber, so a headless run never copies it.
 
 #pragma once
 
@@ -157,6 +162,8 @@ public:
     // Reliable out: compatible with a reliable or a best-effort octomap input.
     cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_out",
                                                                        rclcpp::QoS(2).reliable());
+    viewer_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_out_rgb",
+                                                                        rclcpp::QoS(2).reliable());
     cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         "cloud_in", rclcpp::SensorDataQoS().keep_last(2),
         [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { on_cloud(msg); });
@@ -245,6 +252,17 @@ private:
     return best;
   }
 
+  static std::vector<sensor_msgs::msg::PointField> xyz_fields() {
+    std::vector<sensor_msgs::msg::PointField> fields(3);
+    for (std::uint32_t i = 0; i < 3; ++i) {
+      fields[i].name = std::string(1, static_cast<char>('x' + i));
+      fields[i].offset = 4 * i;
+      fields[i].datatype = sensor_msgs::msg::PointField::FLOAT32;
+      fields[i].count = 1;
+    }
+    return fields;
+  }
+
   static bool float_field(const sensor_msgs::msg::PointCloud2& cloud, const char* name,
                           std::size_t& offset) {
     for (const auto& f : cloud.fields) {
@@ -319,6 +337,15 @@ private:
     out->width = static_cast<std::uint32_t>(stats.kept);
     out->row_step = out->point_step * out->width;
     out->is_dense = true;
+    if (msg->fields.size() > 3 || msg->point_step != 12) {
+      if (viewer_pub_->get_subscription_count() > 0) {
+        viewer_pub_->publish(*out);  // the whole records, colour and all
+      }
+      out->data = xyz_records(out->data, out->point_step, xo, yo, zo);
+      out->fields = xyz_fields();
+      out->point_step = 12;
+      out->row_step = out->point_step * out->width;
+    }
     cloud_pub_->publish(std::move(out));
 
     ++totals_.published;
@@ -427,6 +454,7 @@ private:
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr viewer_pub_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
 };
 

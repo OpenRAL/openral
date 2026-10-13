@@ -5232,8 +5232,9 @@ class SimSensorBridge:
                     continue
                 self._depth_clouds_published[name] = pts
                 stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
-                # Coloured from the same camera's newest registered RGB (for viewers;
-                # octomap and the kernel read x/y/z only).
+                # Coloured from the same camera's newest registered RGB, for viewers: the
+                # robot self filter strips it from octomap's input and publishes it,
+                # robot removed, on /openral/world_cloud/self_filtered_rgb.
                 frame = frames.get(name)
                 rgb = (
                     colours_from_frame(pts, frame["rgb"], frame["k"], frame["optical_in_base"])

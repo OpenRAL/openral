@@ -57,10 +57,11 @@ DEPTH_TOPICS: list[str] = [
     _CAMERAS + r"/.*/depth/image",  # sensor_msgs/Image — per-camera depth
     _CAMERAS + r"/.*/depth/camera_info",  # sensor_msgs/CameraInfo
     _CAMERAS + r"/.*/points",  # sensor_msgs/PointCloud2 — back-projected RGBD
-    # The depth cloud with the robot cut out (octomap's input; keeps any rgb field). A
+    # The depth cloud with the robot cut out, every input field kept (a sim cloud's
+    # rgb; octomap's own input, /openral/world_cloud/self_filtered, is x/y/z only). A
     # sim render shows the robot in its own depth, so the raw cloud draws a second,
     # lagging arm beside the URDF model; this one shows only the world.
-    r"/openral/world_cloud/self_filtered",  # sensor_msgs/PointCloud2
+    r"/openral/world_cloud/self_filtered_rgb",  # sensor_msgs/PointCloud2
     r"/openral/depth/image",  # sensor_msgs/Image — DA3 metric-depth sidecar
     r"/openral/depth/camera_info",  # sensor_msgs/CameraInfo
     r"/openral/nvblox/depth_filtered/image",  # sensor_msgs/Image

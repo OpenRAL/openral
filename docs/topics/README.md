@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (49)
+## Topics (50)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -67,6 +67,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/scan` | `sensor_msgs/LaserScan` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_scan) | packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `input_topic`] |
 | `cloud_in` | `sensor_msgs/PointCloud2` | — | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | `cloud_out` | `sensor_msgs/PointCloud2` | packages/openral_octomap_bridge/src/robot_self_filter.hpp | — |
+| `cloud_out_rgb` | `sensor_msgs/PointCloud2` | packages/openral_octomap_bridge/src/robot_self_filter.hpp | — |
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
 | `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
@@ -160,7 +161,7 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
 
-## Launch remappings (13)
+## Launch remappings (14)
 
 | From | To | Launch file |
 |---|---|---|
@@ -168,6 +169,7 @@ caller's argument). Shown as their source expression.
 | `camera_0/depth/image` | ‹filtered_depth_image_topic› | packages/openral_slam_bringup/launch/nvblox.launch.py |
 | `cloud_in` | ‹octomap_cloud_topic› | packages/openral_rskill_ros/launch/deploy_e2e.launch.py |
 | `cloud_in` | ‹octomap_input_topic› | packages/openral_rskill_ros/launch/deploy_e2e.launch.py |
+| `cloud_out_rgb` | ‹_SELF_FILTERED_RGB_CLOUD_TOPIC› | packages/openral_rskill_ros/launch/deploy_e2e.launch.py |
 | `cloud_out` | ‹_SELF_FILTERED_CLOUD_TOPIC› | packages/openral_rskill_ros/launch/deploy_e2e.launch.py |
 | `in` | ‹topic› | packages/openral_foxglove_bringup/launch/foxglove.launch.py |
 | `out/compressed` | ‹topic + '/compressed'› | packages/openral_foxglove_bringup/launch/foxglove.launch.py |

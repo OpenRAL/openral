@@ -40,7 +40,7 @@
      "colorMap": "turbo",
      "pointSize": 0.04
     },
-    "/openral/world_cloud/self_filtered": {
+    "/openral/world_cloud/self_filtered_rgb": {
      "visible": true,
      "colorField": "rgb",
      "colorMode": "rgb",

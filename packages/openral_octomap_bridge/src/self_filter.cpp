@@ -611,4 +611,19 @@ SelfFilterStats filter_xyz_points(const std::uint8_t* data, std::size_t n_points
   return stats;
 }
 
+std::vector<std::uint8_t> xyz_records(const std::vector<std::uint8_t>& data, std::size_t point_step,
+                                      std::size_t x_offset, std::size_t y_offset,
+                                      std::size_t z_offset) {
+  const std::size_t n = point_step == 0 ? 0 : data.size() / point_step;
+  std::vector<std::uint8_t> out(n * 12);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::uint8_t* rec = data.data() + i * point_step;
+    std::uint8_t* xyz = out.data() + i * 12;
+    std::memcpy(xyz, rec + x_offset, sizeof(float));
+    std::memcpy(xyz + 4, rec + y_offset, sizeof(float));
+    std::memcpy(xyz + 8, rec + z_offset, sizeof(float));
+  }
+  return out;
+}
+
 }  // namespace openral_octomap_bridge

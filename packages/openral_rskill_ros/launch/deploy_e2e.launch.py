@@ -433,6 +433,10 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
 # Where the filtered cloud is published for octomap_server. Not a camera topic
 # (ADR-0108): it is not one camera's cloud, it is the world map's input.
 _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
+# The same robot-free cloud with every input field kept (a sim cloud's ``rgb``), for
+# viewers only: the self filter publishes it while subscribed and strips octomap's
+# input to x/y/z, so the map never carries colour.
+_SELF_FILTERED_RGB_CLOUD_TOPIC = "/openral/world_cloud/self_filtered_rgb"
 
 
 def _self_filter_params(
@@ -3187,6 +3191,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     remappings=[
                         ("cloud_in", octomap_cloud_topic),
                         ("cloud_out", _SELF_FILTERED_CLOUD_TOPIC),
+                        ("cloud_out_rgb", _SELF_FILTERED_RGB_CLOUD_TOPIC),
                     ],
                     additional_env=otel_env,
                     output="screen",

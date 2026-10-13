@@ -254,6 +254,13 @@ private:
   double padding_m_{0.0};
 };
 
+/// The x/y/z of each `point_step`-byte record of `data` as packed 12-byte FLOAT32
+/// records (offsets 0, 4, 8): a coloured cloud's points for a consumer that reads
+/// x/y/z only (octomap), so it never carries or pays for the other fields.
+std::vector<std::uint8_t> xyz_records(const std::vector<std::uint8_t>& data, std::size_t point_step,
+                                      std::size_t x_offset, std::size_t y_offset,
+                                      std::size_t z_offset);
+
 /// Counts from one `filter_xyz_points` call.
 struct SelfFilterStats {
   std::size_t points_in{0};   ///< points in the input buffer
