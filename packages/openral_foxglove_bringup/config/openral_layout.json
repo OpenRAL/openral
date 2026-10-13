@@ -40,6 +40,12 @@
      "colorMap": "turbo",
      "pointSize": 0.04
     },
+    "/openral/world_cloud/self_filtered": {
+     "visible": true,
+     "colorField": "rgb",
+     "colorMode": "rgb",
+     "pointSize": 3
+    },
     "/openral/viz/attachments": {
      "visible": true
     },
