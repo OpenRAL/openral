@@ -1022,6 +1022,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -1911,6 +1912,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           const auto commanded_dof = [&](std::size_t d) {
             return d < workspace_command_holds_.size() && (full_cmd || slot_commanded_[d] != 0);
           };
+          const bool full_row = full_cmd;
+          const auto is_jaw = [&](std::size_t d) {
+            return std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
+                             static_cast<int>(d)) != workspace_jaw_cols_.end();
+          };
           std::uint64_t holds = 0;
           for (std::size_t d = 0; d < robot_ndof; ++d) {
             if (commanded_dof(d)) {
@@ -1920,67 +1926,55 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           ws_dry_run_ = true;
           ws_first_trip_.set = false;
           const bool as_is = check_rows();
-          bool rows_refused = false;
-          bool hold_trips = true;
-          if (as_is) {
-            ws_refused_trip_.set = false;
-            ws_quiet_ = true;
-            ws_speed_override_ = true;
-            rows_refused = check_rows();
-            // The hold IS the measured pose: it must pass.
-            std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
-            hold_trips = check_config(q_check_.data(), -1, 0.0, ws_plain);
-            ws_speed_override_ = false;
-            ws_quiet_ = false;
-          } else {
+          ws_dry_run_ = false;
+          rows_checked = !as_is;
+          if (!as_is) {
             for (std::size_t d = 0; d < robot_ndof; ++d) {
               if (commanded_dof(d)) {
                 workspace_command_holds_[d] = 0;
               }
             }
           }
-          ws_dry_run_ = false;
-          rows_checked = !as_is;
-          // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
-          // check still refuses: a hold up to the consecutive cap, then a stop.
-          const bool command_hold = rows_refused && holds < workspace_hold_max_consecutive_;
-          const bool slowed = hold_trips || (rows_refused && !command_hold);
-          if (as_is && slowed) {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                                 "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
-                                 "hold_clear=%d command_holds=%llu/%llu (stops as before)",
-                                 workspace_measured_speed_mps_, trip_str(ws_refused_trip_).c_str(),
-                                 static_cast<int>(!hold_trips),
-                                 static_cast<unsigned long long>(holds),
-                                 static_cast<unsigned long long>(workspace_hold_max_consecutive_));
-          }
-          if (as_is && !slowed) {
-            const bool full_row = msg->joint_names.empty();
-            const auto is_jaw = [&](std::size_t d) {
-              return std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
-                               static_cast<int>(d)) != workspace_jaw_cols_.end();
-            };
-            // Creep, not freeze, when speed/lead are the only reasons (#349 r24/r25: a
-            // held policy re-issues the same command and stalls, 200-1700 holds a run):
-            // the commanded rows scaled toward the measured pose so the last row leads
-            // by one control period at the speed bound (at most half the lead bound) —
-            // the arm keeps moving toward the policy's target at the bounded speed. The scaled rows
-            // must pass the relaxed check themselves; otherwise (and for a refused command) the
-            // measured pose is held.
-            double creep = 0.0;
+          // The brake decision for a refused chunk: dry, quiet passes only — no report,
+          // no log, no message, no allocation (#349 review F; `workspace_brake_probe`
+          // brackets it for the allocation test). Its outcome is acted on below.
+          bool rows_refused = false;
+          bool hold_trips = true;
+          bool slowed = true;
+          bool hold_clear = false;
+          double creep = 0.0;
+          if (as_is) {
+            if (const auto probe = workspace_brake_probe.load(std::memory_order_relaxed)) {
+              probe(true);
+            }
+            ws_dry_run_ = true;
+            ws_quiet_ = true;
+            ws_speed_override_ = true;
+            ws_refused_trip_.set = false;
+            rows_refused = check_rows();
+            // The hold IS the measured pose: it must pass.
+            std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
+            hold_trips = check_config(q_check_.data(), -1, 0.0, ws_plain);
+            // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
+            // check still refuses: a hold up to the consecutive cap, then a stop.
+            const bool command_hold = rows_refused && holds < workspace_hold_max_consecutive_;
+            slowed = hold_trips || (rows_refused && !command_hold);
             ws_creep_lead_m_ = 0.0;
             ws_creep_row_ = -1;
-            if (!rows_refused && view.horizon > 0) {
-              // Row 0 may lead one control period of travel at the speed bound while the
-              // measured hand is over its speed bound (the arm slows to the rule), else
-              // half the lead bound (r32: scaling a 0.12 m lead to one period, 0.017 m,
-              // stalled the policy as a hold did); row s adds its allowance (s periods at
-              // the bound). The tightest row sets the scale.
+            if (!slowed && !rows_refused && view.horizon > 0) {
+              // Creep, not freeze, when speed/lead are the only reasons (#349 r24/r25: a
+              // held policy re-issues the same command and stalls, 200-1700 holds a run):
+              // the commanded rows scaled toward the measured pose so the tightest row
+              // leads by one control period at the speed bound while the measured hand is
+              // over its speed bound, else by half the lead bound (r32: scaling a 0.12 m
+              // lead to one period, 0.017 m, stalled the policy as a hold did); row s adds
+              // its allowance (s periods at the bound; none while the hand touches, #349
+              // review A). The scaled rows must pass the relaxed check themselves;
+              // otherwise (and for a refused command) the measured pose is held.
               const double per_period = workspace_max_speed_mps_ * workspace_control_period_s_;
               const double base = workspace_measured_speed_mps_ > workspace_max_speed_mps_
                                       ? std::min(0.5 * workspace_max_lead_m_, per_period)
                                       : 0.5 * workspace_max_lead_m_;
-              // A touching hand gets no per-row allowance (#349 review A).
               const double per_row = ws_hand_contact_ ? 0.0 : per_period;
               creep = 1.0;
               for (std::uint16_t s = 0; s < view.horizon; ++s) {
@@ -1998,9 +1992,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                   ws_creep_row_ = static_cast<int>(s);
                 }
               }
-              ws_dry_run_ = true;
-              ws_quiet_ = true;
-              ws_speed_override_ = true;
               for (std::uint16_t s = 0; s < view.horizon && creep > 0.0; ++s) {
                 const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
                 for (std::size_t d = 0; d < robot_ndof; ++d) {
@@ -2022,94 +2013,103 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                   creep = 0.0;  // the scaled motion itself is not clear: hold
                 }
               }
-              ws_speed_override_ = false;
-              ws_quiet_ = false;
-              ws_dry_run_ = false;
             }
-            // A hold publishes the arm at measured but the jaws at their command (a hold
-            // must not drop the payload): every row of exactly that must pass (#349
-            // review: only the all-measured pose was checked, so a refused jaw motion was
-            // executed under the hold).
-            bool hold_clear = true;
-            if (creep == 0.0 && !workspace_jaw_cols_.empty()) {
-              ws_refused_trip_.set = false;
-              ws_dry_run_ = true;
-              ws_quiet_ = true;
-              ws_speed_override_ = true;
-              for (std::uint16_t s = 0; s < view.horizon && hold_clear; ++s) {
-                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
-                for (std::size_t d = 0; d < robot_ndof; ++d) {
-                  const bool commanded = full_row || slot_commanded_[d] != 0;
-                  q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
+            if (!slowed) {
+              // A hold publishes the arm at measured but the jaws at their command (a hold
+              // must not drop the payload): every row of exactly that must pass (#349
+              // review: only the all-measured pose was checked, so a refused jaw motion
+              // was executed under the hold).
+              hold_clear = true;
+              if (creep == 0.0 && !workspace_jaw_cols_.empty()) {
+                ws_refused_trip_.set = false;
+                for (std::uint16_t s = 0; s < view.horizon && hold_clear; ++s) {
+                  const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                  for (std::size_t d = 0; d < robot_ndof; ++d) {
+                    const bool commanded = full_row || slot_commanded_[d] != 0;
+                    q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
+                  }
+                  hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
                 }
-                hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
               }
-              ws_speed_override_ = false;
-              ws_quiet_ = false;
-              ws_dry_run_ = false;
             }
-            if (hold_clear) {
-              if (rows_refused) {
-                for (std::size_t d = 0; d < robot_ndof; ++d) {
-                  if (commanded_dof(d)) {
-                    ++workspace_command_holds_[d];
-                  }
-                }
-              }
-              scaled_chunk_ = *msg;
-              for (std::uint16_t s = 0; s < view.horizon; ++s) {
-                for (std::size_t d = 0; d < robot_ndof; ++d) {
-                  const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
-                  if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
-                      k < scaled_chunk_.flat.size()) {
-                    scaled_chunk_.flat[k] =
-                        q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
-                  }
-                }
-              }
-              safe_pub_->publish(scaled_chunk_);
-              ++workspace_brakes_;
-              // A brake is an accept of the scaled chunk: the status says so, and the
-              // tick's later slots are checked against what this slot now commits
-              // (#349 review: they were checked against its measured pose).
-              set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
-                                "workspace brake", msg->rskill_id, msg->trace_id);
-              if (slot_row && msg->tick_index != 0 && view.horizon > 0) {
-                const std::size_t last = static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
-                for (std::size_t d = 0; d < robot_ndof; ++d) {
-                  if (slot_commanded_[d] != 0 && last + d < scaled_chunk_.flat.size()) {
-                    tick_target_[d] = scaled_chunk_.flat[last + d];
-                    tick_target_set_[d] = 1;
-                  }
-                }
-              }
-              clear_workspace_commands();
-              const auto wall = std::chrono::steady_clock::now();
-              if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
-                workspace_brake_last_warn_ = wall;
-                RCLCPP_WARN(
-                    this->get_logger(),
-                    "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
-                    "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
-                    "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
-                    workspace_measured_speed_mps_, workspace_max_speed_mps_, workspace_max_lead_m_,
-                    static_cast<unsigned long long>(workspace_brakes_),
-                    rows_refused ? "command_refused" : "speed_lead",
-                    rows_refused ? trip_str(ws_refused_trip_).c_str() : "", creep, ws_creep_lead_m_,
-                    ws_creep_row_, workspace_target_.c_str(), msg->rskill_id.c_str());
-              }
-              span->SetAttribute("safety.severity", "info");
-              span->SetAttribute("safety.workspace_brake", true);
-              span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
-              span->End();
-              return;
+            ws_speed_override_ = false;
+            ws_quiet_ = false;
+            ws_dry_run_ = false;
+            if (const auto probe = workspace_brake_probe.load(std::memory_order_relaxed)) {
+              probe(false);
             }
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                                 "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
-                                 "jaw_hold_clear=0 (stops as before)",
-                                 workspace_measured_speed_mps_, trip_str(ws_refused_trip_).c_str());
+          }
+          if (as_is && !slowed && hold_clear) {
+            if (rows_refused) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (commanded_dof(d)) {
+                  ++workspace_command_holds_[d];
+                }
+              }
+            }
+            scaled_chunk_ = *msg;
+            for (std::uint16_t s = 0; s < view.horizon; ++s) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
+                if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
+                    k < scaled_chunk_.flat.size()) {
+                  scaled_chunk_.flat[k] = q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
+                }
+              }
+            }
+            safe_pub_->publish(scaled_chunk_);
+            ++workspace_brakes_;
+            // A brake is an accept of the scaled chunk: the status says so, and the
+            // tick's later slots are checked against what this slot now commits
+            // (#349 review: they were checked against its measured pose).
+            set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE, "workspace brake",
+                              msg->rskill_id, msg->trace_id);
+            if (slot_row && msg->tick_index != 0 && view.horizon > 0) {
+              const std::size_t last = static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (slot_commanded_[d] != 0 && last + d < scaled_chunk_.flat.size()) {
+                  tick_target_[d] = scaled_chunk_.flat[last + d];
+                  tick_target_set_[d] = 1;
+                }
+              }
+            }
+            clear_workspace_commands();
+            const auto wall = std::chrono::steady_clock::now();
+            if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
+              workspace_brake_last_warn_ = wall;
+              RCLCPP_WARN(this->get_logger(),
+                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
+                          "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
+                          "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
+                          workspace_measured_speed_mps_, workspace_max_speed_mps_,
+                          workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
+                          rows_refused ? "command_refused" : "speed_lead",
+                          rows_refused ? trip_str(ws_refused_trip_).c_str() : "", creep,
+                          ws_creep_lead_m_, ws_creep_row_, workspace_target_.c_str(),
+                          msg->rskill_id.c_str());
+            }
+            span->SetAttribute("safety.severity", "info");
+            span->SetAttribute("safety.workspace_brake", true);
+            span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
+            span->End();
+            return;
           }
           if (as_is) {
+            if (slowed) {
+              RCLCPP_WARN_THROTTLE(
+                  this->get_logger(), *this->get_clock(), 1000,
+                  "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                  "hold_clear=%d command_holds=%llu/%llu (stops as before)",
+                  workspace_measured_speed_mps_, trip_str(ws_refused_trip_).c_str(),
+                  static_cast<int>(!hold_trips), static_cast<unsigned long long>(holds),
+                  static_cast<unsigned long long>(workspace_hold_max_consecutive_));
+            } else {
+              RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                   "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                                   "jaw_hold_clear=0 (stops as before)",
+                                   workspace_measured_speed_mps_,
+                                   trip_str(ws_refused_trip_).c_str());
+            }
             // Stops as before, on the dry run's own first trip: reported as recorded,
             // at the configuration and hand readings it was measured at, not re-checked
             // (#349 review F: no re-run, no second disclosure).
@@ -2801,6 +2801,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -3742,6 +3743,12 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.rskill_id.c_str(),
                 declaration.trace_id.c_str(), region.evidence_ref.c_str());
   };
+  // The grasp claim itself was wrong (not a release): its workspace goes with it.
+  const auto note_wrong_claim = [&]() {
+    grasp_wrong_claim_ = true;
+    grasp_wrong_claim_hash_ = std::hash<std::string>{}(declaration.target_id);
+    grasp_wrong_claim_stamp_ns_ = declaration.stamp_ns;
+  };
   if (declaration.target_id.empty()) {
     reject("no_target");
     return;
@@ -3871,6 +3878,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 declaration.target_id.c_str(), declaration.object_id.c_str(),
                 attached_on_gripper->c_str(), declaration.rskill_id.c_str(),
                 declaration.trace_id.c_str());
+    note_wrong_claim();
     retire_grasp_declaration("handover_object_mismatch");
     return;
   }
@@ -3893,6 +3901,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                   declaration.target_id.c_str(), grasp_latched_object_.c_str(), held.c_str(),
                   grasp_latched_region_.link_mask.count(), grasp_region_.link_mask.count(),
                   declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+      note_wrong_claim();
       retire_grasp_declaration("latch_mismatch");
       return;
     }
@@ -4055,6 +4064,15 @@ void SafetyKernelLifecycleNode::ingest_workspace_contact(
     // The kernel refused this declaration's grasp part (e.g. a link off the
     // allowlist): the same producer's workspace is not trusted either (#349 review E).
     reject("grasp_refused", declaration.target_id);
+    return;
+  }
+  if (grasp_wrong_claim_ &&
+      grasp_wrong_claim_hash_ == std::hash<std::string>{}(declaration.target_id) &&
+      grasp_wrong_claim_stamp_ns_ == declaration.stamp_ns) {
+    // Retired because its grasp claim was wrong (the gripper holds another object, or
+    // the latched pick changed): the workspace it armed goes too, for good. A correct
+    // handover's retirement keeps it (p12_mix04, above).
+    reject("grasp_claim_wrong", declaration.target_id);
     return;
   }
   if (declaration.target_id.empty()) {

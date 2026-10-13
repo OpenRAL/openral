@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -41,6 +42,46 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
+
+// #349 review F: the workspace brake's decision must not allocate. Allocations are
+// counted on the calling thread only, and only while the kernel's
+// `workspace_brake_probe` has armed the count around that decision (DDS threads
+// allocate concurrently and are not the kernel's). Routed to malloc/free.
+namespace {
+thread_local bool t_count_allocs = false;
+std::atomic<std::uint64_t> g_brake_allocs{0};
+std::atomic<std::uint64_t> g_brake_decisions{0};
+void* counted_alloc(std::size_t size) {
+  if (t_count_allocs) {
+    g_brake_allocs.fetch_add(1, std::memory_order_relaxed);
+  }
+  void* p = std::malloc(size == 0 ? 1 : size);
+  if (p == nullptr) {
+    throw std::bad_alloc{};
+  }
+  return p;
+}
+void brake_probe(bool arm) {
+  t_count_allocs = arm;
+  if (arm) {
+    g_brake_decisions.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+}  // namespace
+
+void* operator new(std::size_t size) { return counted_alloc(size); }
+void* operator new[](std::size_t size) { return counted_alloc(size); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace osk = openral_safety_kernel;
 
@@ -5762,6 +5803,35 @@ TEST_F(LifecycleKernelTest, ARefusedGraspPartArmsNoWorkspace) {
   EXPECT_EQ(logs.count("safety.workspace_region_armed"), 0U);
 }
 
+// #349 review E: a grasp identity retired because its claim was wrong (the declaring
+// gripper attached another object) disarms the workspace it armed, and its heartbeat
+// does not re-arm it. A correct handover keeps it (TheWorkspaceOutlivesThe...).
+TEST_F(LifecycleKernelTest, AWrongGraspClaimDisarmsItsWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_wrong_claim", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.workspace = true;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  ASSERT_EQ(logs.count("safety.workspace_region_armed"), 1U) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  b.object_label = "cell:not_the_cube";
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_object_mismatch"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=grasp_claim_wrong"), 1U)
+      << logs.joined();
+  b.carrying = false;
+  b.revision = 2;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "no workspace for the wrong claim's heartbeat";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.workspace_region_armed"), 1U) << logs.joined();
+}
+
 TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
   LogCapture logs;
   GraspRig rig("kernel_ws_fast", workspace_params());
@@ -6245,6 +6315,45 @@ TEST_F(LifecycleKernelTest, ARefusedBrakeReportsTheDryRunsFirstTripOnce) {
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.collision kind=world a=link0 b=voxel_0 step=0"), 1U)
       << logs.joined();
+}
+
+// #349 review F: the brake's whole decision on a refused chunk — the relaxed pass, the
+// hold check, the creep scan and its scaled-row checks, the jaw hold — allocates
+// nothing; the kernel's probe brackets it, before any report, log or publish. Three
+// outcomes: a creep (speed only), a held refused command, a stop past the hold cap.
+TEST_F(LifecycleKernelTest, TheWorkspaceBrakeDecisionDoesNotAllocate) {
+  LogCapture logs;
+  auto params = with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{1}));
+  GraspRig rig("kernel_ws_brake_noalloc", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  g_brake_allocs.store(0);
+  g_brake_decisions.store(0);
+  osk::SafetyKernelLifecycleNode::workspace_brake_probe.store(&brake_probe);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.4);
+  chunk.horizon = 3;
+  chunk.flat = {0.4, 0.4, 0.3};  // row 0 leads 0.006 > 0.005: speed/lead only, a creep
+  const bool crept = rig.send_once(&b, kLagMeasuredQ, chunk);
+  b.workspace_x = 0.5;  // the cell now outside the box: the relaxed check refuses
+  const bool held = rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0));
+  const std::vector<double> held_flat = rig.last_flat;
+  const bool stopped = !rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0));
+  osk::SafetyKernelLifecycleNode::workspace_brake_probe.store(nullptr);
+  t_count_allocs = false;
+  EXPECT_TRUE(crept) << logs.joined();
+  EXPECT_TRUE(held) << logs.joined();
+  EXPECT_TRUE(stopped) << logs.joined();
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  EXPECT_EQ(held_flat, std::vector<double>{kLagMeasuredQ}) << "held, never executed";
+  EXPECT_TRUE(rig.node->fault_latched()) << "past the hold cap";
+  EXPECT_EQ(g_brake_decisions.load(), 3U) << "every refused chunk ran the decision";
+  EXPECT_EQ(g_brake_allocs.load(), 0U)
+      << "the workspace brake decision allocated; CLAUDE.md §2 forbids this.";
 }
 
 TEST_F(LifecycleKernelTest, AHoldCapNeedsTheBrake) {

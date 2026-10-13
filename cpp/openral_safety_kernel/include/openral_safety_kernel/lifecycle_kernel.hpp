@@ -11,6 +11,7 @@
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <memory>
@@ -64,6 +65,12 @@ inline constexpr double kMaxRegionMeasurementAgeS = 2.0 * kMaxWorldVoxelDeadline
 
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
+  /// Test seam (#349 review F): when set, called with `true` as the workspace brake
+  /// starts deciding on a refused chunk and `false` when it has decided — before any
+  /// report, log or publish — so a test can count the decision's allocations (zero).
+  /// Unset in production: one relaxed atomic load per refused chunk.
+  static inline std::atomic<void (*)(bool)> workspace_brake_probe{nullptr};
+
   explicit SafetyKernelLifecycleNode(const std::string& node_name = "openral_safety_kernel",
                                      const rclcpp::NodeOptions& options = rclcpp::NodeOptions{});
 
@@ -222,7 +229,9 @@ private:
   // `workspace_contact_enabled`, after `ingest_grasp_declaration`. Every refusal
   // yields NO workspace, and so does a declaration whose grasp part that ingest
   // refused (a producer error such as a non-allowlisted link: the same message's
-  // workspace is not trusted either). A RETIRED grasp identity does not end the
+  // workspace is not trusted either), and so does one retired because its grasp
+  // claim was wrong (`handover_object_mismatch`, `latch_mismatch`). A grasp identity
+  // retired by a normal handover exit or release does not end the
   // workspace: carry and place happen after the handover (#349 p12_mix04), so it
   // lives to the declaration's own end — retraction, `timeout_s`, a stale
   // confirmation.
@@ -470,6 +479,13 @@ private:
   /// The last grasp declaration ingested was refused (a producer error, not a stale
   /// measurement): its workspace is refused with it (#349 review E).
   bool grasp_declaration_refused_{false};
+  /// The last declaration (target hash, stamp) retired because its grasp claim was
+  /// wrong — `handover_object_mismatch`, `latch_mismatch` — not a normal release or
+  /// handover exit: its workspace is disarmed and does not re-arm on its heartbeat
+  /// (#349 review E). A new declaration arms afresh.
+  bool grasp_wrong_claim_{false};
+  std::size_t grasp_wrong_claim_hash_{0};
+  std::int64_t grasp_wrong_claim_stamp_ns_{0};
   /// Disclosure tallies for the armed declaration (summary on drop).
   std::uint64_t workspace_pairs_total_{0};
   double workspace_min_distance_total_{std::numeric_limits<double>::infinity()};

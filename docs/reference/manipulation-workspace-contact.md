@@ -240,7 +240,9 @@ revokes the exemption for both: conservative.
 future stamp; a **retired** identity — `handover_exit`, `released` — ends the grasp region only,
 not the workspace, since p12: carry, place and regrasp share it); a declaration whose grasp part
 the kernel **refused** as a producer error (e.g. a contact link off the allowlist; not a stale
-region measurement) — `safety.workspace_region_rejected reason=grasp_refused` (#349 review E); no `workspace_region`; a
+region measurement) — `safety.workspace_region_rejected reason=grasp_refused` (#349 review E); a
+declaration retired because its grasp claim was wrong (`handover_object_mismatch`,
+`latch_mismatch`) — `reason=grasp_claim_wrong`, and its heartbeat does not re-arm it; no `workspace_region`; a
 workspace in another frame, with geometry, a non-unit quaternion, over the caps, or confirmed longer
 ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline;
 a stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above
@@ -317,7 +319,10 @@ PACS-style braking). The checks run first as a dry run, so the no-trip case cost
 other reason (arm link, outside the box, no measured velocity) stops as before — on the dry run's
 own first trip, recorded as (kind, geometry indices, step, hit, configuration, hand readings)
 without building strings and reported as recorded, not re-checked (#349 review F: no third pass,
-no second disclosure; text is formatted only for the report and the rate-limited WARNs).
+no second disclosure; text is formatted only for the report and the rate-limited WARNs). The
+decision on a refused chunk (relaxed pass, hold check, creep scan, jaw hold) runs before any
+report, log or publish and allocates nothing (`TheWorkspaceBrakeDecisionDoesNotAllocate`, counted
+through the `workspace_brake_probe` test seam).
 
 **Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
 the measured pose so the tightest row leads by one control period at the speed bound while the
