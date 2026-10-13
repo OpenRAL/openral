@@ -1250,7 +1250,9 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
     5-8 cm above the pre-grasp region ("jaw not at the region") and the grasp fell back
     to a crude box. The object has been rigid in the jaw since the close: the region's
     pose in the attach link at the last closing tick the jaw was at it is the payload's.
-    No snapshot (never at the region during the close) still segments."""
+    No snapshot (never at the region during the close) still segments. Review D: once
+    taken, the record is kept through the lift (jaw off the region, region re-stamped)
+    until the close ends."""
     from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
 
     with _live_leg("test_jaw_lifted_before_attach") as live:
@@ -1267,24 +1269,32 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
         for _ in range(3):  # the jaw stalled on the object, at the region
             bridge._note_close_region(right)
         assert right.close_region is not None
-        right.trigger._loaded = True  # the ATTACH tick: kept, not cleared (p7_mix02)
-        bridge._note_close_region(right)
-        assert right.close_region is not None
         lifted = (_I41_JAW[0], _I41_JAW[1], _I41_JAW[2] + 0.08)
         live.place("right", lifted)
         assert not bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)[0]
+        # The lift, still stalled and not yet attached: the jaw is off the region now,
+        # and the map re-stamps the frozen region. The record is kept (review D).
+        live.leg.tracker.accept(_i41_region(now_ns + 1))
+        for _ in range(3):
+            bridge._note_close_region(right)
+        assert right.close_region is not None
+        right.trigger._loaded = True  # the ATTACH tick: kept, not cleared (p7_mix02)
+        bridge._note_close_region(right)
+        assert right.close_region is not None
         taken = bridge._region_payload(right, stamp_ns=now_ns)
         assert taken is not None
         assert np.allclose(taken[0].pose_in_link.xyz, reference[0].pose_in_link.xyz, atol=1e-6)
 
-        # Stalled on something away from the region (a neighbour, #349 r21_mix07): cleared.
         right.trigger._loaded = False
-        for _ in range(3):
-            bridge._note_close_region(right)
-        assert right.close_region is None
         right.region_spent = None
         right.close_baseline = None
-        bridge._note_close_region(right)  # outside a close: forgotten
+        bridge._note_close_region(right)  # the jaw opened: forgotten
+        assert right.close_region is None
+        # A close stalled away from the region from the start (a neighbour, #349
+        # r21_mix07) records nothing and does not take the region.
+        right.close_baseline = (0, 0)
+        for _ in range(4):
+            bridge._note_close_region(right)
         assert right.close_region is None
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
 

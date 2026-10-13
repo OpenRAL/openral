@@ -251,8 +251,8 @@ class _GripperLeg:
             (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
         regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
             kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
-        close_region: ``((target_id, region stamp_ns), t_link_from_region)`` at the last
-            tick of the current close the jaw was at the live grasp-target region
+        close_region: ``(_box_key(target_id, region), t_link_from_region)`` at the first
+            stalled tick of the current close the jaw was at the live grasp-target region
             (``_note_close_region``); ``None`` outside a close or if it never was. The
             ATTACH can fire after the lift began (the stall settles late), with the jaw
             already off the pre-grasp region; the object has been rigid in the jaw since
@@ -278,7 +278,7 @@ class _GripperLeg:
     close_reported: bool = False
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
     regrasp_hold: AttachedCollisionObject | None = None
-    close_region: tuple[tuple[str, int], Any] | None = None
+    close_region: tuple[tuple[Any, ...], Any] | None = None
     close_jaw_q: float | None = None
     close_still_ticks: int = 0
 
@@ -308,6 +308,19 @@ _STALL_TICKS = 3
 """Jaw travel per tick below which a closing jaw counts as stalled on an object."""
 
 _REGION_CONFIDENCE = 0.7
+
+
+def _box_key(target_id: str, region: Any) -> tuple[Any, ...]:
+    """A region's identity across re-stamps: its target and box.
+
+    A frozen region's re-stamp keeps both, so a record outlives the stamp it was taken at.
+    """
+    return (
+        target_id,
+        tuple(region.pose.xyz),
+        tuple(region.pose.quat_xyzw),
+        tuple(region.half_extents),
+    )
 
 
 class _JawEvidence:
@@ -1874,17 +1887,26 @@ class VisionAttachmentBridge:
         clears it — a jaw that passed over the declared object and closed on its
         neighbour must not take the declared region (#349 r21_mix07: the payload was
         the declared region while the fingers held a neighbour, offset toward the
-        torso). Outside a close it is cleared; once attached it is kept (the ATTACH
-        tick itself reads it, p7_mix02). Read by ``_region_payload`` when the jaw has
-        left the region by the ATTACH (#349: lifted 5-8 cm first).
+        torso). Once taken it is kept until the close ends (the jaw opens, or the ATTACH
+        tick that reads it, p7_mix02): the lift it bridges moves the stalled jaw off the
+        region, which must not clear it. It is keyed on the region's box, not its stamp —
+        the map re-stamps a frozen region every grid without moving it. Read by
+        ``_region_payload`` when the jaw has left the region by the ATTACH (#349: lifted
+        5-8 cm first).
         """
         if leg.close_baseline is None:
             leg.close_region = None
             leg.close_jaw_q = None
             leg.close_still_ticks = 0
             return
-        # Attached: stop recording but KEEP the record — this tick's ATTACH reads it.
-        if leg.trigger.attached or self._grasp_target is None or self._node is None:
+        # Attached, or already taken: stop recording but KEEP the record — the lift it
+        # bridges moves the jaw off the region, and this tick's ATTACH reads it.
+        if (
+            leg.trigger.attached
+            or leg.close_region is not None
+            or self._grasp_target is None
+            or self._node is None
+        ):
             return
         q = self._positions.get(leg.joint_name)
         previous, leg.close_jaw_q = leg.close_jaw_q, q
@@ -1910,7 +1932,7 @@ class VisionAttachmentBridge:
             return
         t_link_from_region = self._lookup(self.tf_frame(leg.producer.attach_link), region.frame_id)
         if t_link_from_region is not None:
-            leg.close_region = ((declaration.target_id, int(region.stamp_ns)), t_link_from_region)
+            leg.close_region = (_box_key(declaration.target_id, region), t_link_from_region)
 
     def _log_close(self, leg: _GripperLeg, event: GraspEvent | None) -> None:
         """Log the trigger's counters once per close: as it starts, and at ATTACH or give-up.
@@ -2438,7 +2460,11 @@ class VisionAttachmentBridge:
         at, measure = self.jaw_at(
             leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
         )
-        if not at and leg.close_region is not None and leg.close_region[0] == key:
+        if (
+            not at
+            and leg.close_region is not None
+            and leg.close_region[0] == _box_key(declaration.target_id, region)
+        ):
             # Lifted before the stall settled: pose it where the jaw closed on it.
             at, t_link_from_region = True, leg.close_region[1]
             self._node.get_logger().info(
