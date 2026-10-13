@@ -5744,6 +5744,24 @@ TEST_F(LifecycleKernelTest, ASlowHandInsideTheConfirmedWorkspaceDoesNotTripAndIs
   EXPECT_TRUE(rig.node->fault_latched()) << "no live declaration: today's stop";
 }
 
+// #349 review E: a declaration whose grasp part the kernel refused (here a contact link
+// off the allowlist) arms no workspace: its producer is not trusted with either.
+TEST_F(LifecycleKernelTest, ARefusedGraspPartArmsNoWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_grasp_refused", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.region = true;
+  b.contact_links = {"not_a_link"};
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "no workspace: today's stop";
+  EXPECT_GE(logs.count("safety.grasp_region_rejected reason=link_not_allowed"), 1U);
+  EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=grasp_refused"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed"), 0U);
+}
+
 TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
   LogCapture logs;
   GraspRig rig("kernel_ws_fast", workspace_params());
@@ -6004,23 +6022,38 @@ TEST_F(LifecycleKernelTest, TheTickPartnerCheckSeedsFromThePreviousCommandToo) {
 // bound catches a commanded jump into the obstacle; with no fresh measured
 // velocity the commanded speed is the fallback (it reads faster).
 
-TEST_F(LifecycleKernelTest, ACommandedJumpWithASlowMeasuredHandAndASmallLeadIsExempt) {
-  // Accepted at 0.5, then a jump to the cell at 0: commanded 0.06 m/s (trips
-  // in ACommandedStepAboveTheSpeedBoundTrips). Measured at 0.1 rad/s the hand
-  // moves 0.1 * 0.06 = 0.006 m/s; the lead is 0.03 <= 0.05.
+// #349 review B: the larger of the measured and the commanded speed governs, so a fast
+// command from rest no longer reads slow; under the brake it creeps instead of stopping.
+TEST_F(LifecycleKernelTest, ACommandedJumpIsReadAtItsCommandedSpeedEvenWithASlowMeasuredHand) {
+  // Accepted at 0.5, then a jump to the cell at 0: commanded 0.06 m/s. Measured at
+  // 0.1 rad/s the hand moves 0.1 * 0.06 = 0.006 m/s; the lead is 0.03 <= 0.05.
+  {
+    LogCapture logs;
+    GraspRig rig("kernel_ws_meas_slow", lag_params());
+    rig.js_velocity = {-0.1};
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
+        << logs.joined();
+  }
   LogCapture logs;
-  GraspRig rig("kernel_ws_meas_slow", lag_params());
+  GraspRig rig(
+      "kernel_ws_meas_slow_brake",
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true)));
   rig.js_velocity = {-0.1};
   rig.start();
   GraspBeat b = workspace_beat(rig.now_ns());
   rig.warm(&b, kLagMeasuredQ, 300);
   ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
-  EXPECT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
-  EXPECT_FALSE(rig.node->fault_latched());
-  EXPECT_GE(logs.count("speed_mps=0.006 speed_source=measured"), 1U) << logs.joined();
-  b.active = false;
-  rig.warm(&b, kLagMeasuredQ, 100);
-  EXPECT_EQ(logs.count("max_speed_mps=0.006 max_speed_source=measured"), 1U) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched()) << "speed only: a creep, no latch";
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_GT(rig.last_flat[0], 0.0) << "scaled toward the measured pose";
 }
 
 TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
@@ -6116,12 +6149,12 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
   EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
 }
 
-// #349 r31: row s of a chunk runs s periods from now, so over the measured pose it
-// may lead s periods at the speed bound on top of the lead bound. Lag rig: 0.02 m/s
-// x 0.5 s = 0.01 m per row, 0.06 m/rad, bound 0.005 m. Rows 0.05/0.1/0.2 rad lead
-// 0.003/0.006/0.012 m against 0.005/0.015/0.025: the chunk goes out whole. Row 0
-// gets no allowance: the same 0.1 rad push at row 0 still brakes, and the tightest
-// row sets the creep.
+// #349 r31: row s of a chunk runs s periods from now, so over the measured pose a
+// FREE hand may lead s periods at the speed bound on top of the lead bound. Lag rig:
+// 0.02 m/s x 0.5 s = 0.01 m per row, 0.06 m/rad, bound 0.005 m. Measured at 0.5 rad
+// (1.5 mm clear of the cell), rows 0.45/0.4/0.3 rad lead 0.003/0.006/0.012 m against
+// 0.005/0.015/0.025: the chunk goes out whole. Row 0 gets no allowance: the same
+// 0.1 rad push at row 0 still brakes, and the tightest row sets the creep.
 TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
   LogCapture logs;
   GraspRig rig("kernel_ws_lead_rows",
@@ -6130,21 +6163,45 @@ TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
   rig.js_velocity = {0.0};
   rig.start();
   GraspBeat b = workspace_beat(rig.now_ns());
-  rig.warm(&b, 0.0, 300);
-  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.05);
+  rig.warm(&b, kLagMeasuredQ, 300);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.45);
   chunk.horizon = 3;
-  chunk.flat = {0.05, 0.1, 0.2};
-  ASSERT_TRUE(rig.send_once(&b, 0.0, chunk)) << logs.joined();
+  chunk.flat = {0.45, 0.4, 0.3};
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
   EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 3U);
-  EXPECT_DOUBLE_EQ(rig.last_flat[2], 0.2) << "unscaled";
+  EXPECT_DOUBLE_EQ(rig.last_flat[2], 0.3) << "unscaled";
   EXPECT_EQ(logs.count("safety.workspace_brake"), 0U) << logs.joined();
-  chunk.flat = {0.1, 0.1, 0.2};
+  chunk.flat = {0.4, 0.4, 0.3};
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_NEAR(rig.last_flat[0], kLagMeasuredQ - 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+}
+
+// #349 review A: a hand already touching is not carried along by its command, so no
+// row gets the allowance: one open-loop chunk could otherwise push a blocked hand
+// max_lead + s*v*T. Measured in the cell at 0 rad, row 1 at 0.1 rad leads 0.006 m:
+// within 0.005 + one period's 0.01 m, over the bare 0.005 m — it now creeps at half
+// the lead bound on every row.
+TEST_F(LifecycleKernelTest, AHandAlreadyTouchingGetsNoLaterRowAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lead_touching",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.0);
+  chunk.horizon = 3;
+  chunk.flat = {0.0, 0.1, 0.1};
   ASSERT_TRUE(rig.send_once(&b, 0.0, chunk)) << logs.joined();
   EXPECT_FALSE(rig.node->fault_latched());
   EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
   ASSERT_EQ(rig.last_flat.size(), 3U);
-  EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+  EXPECT_NEAR(rig.last_flat[1], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
 }
 
 // #349 r20: a command the relaxed check still refuses (here: into a cell outside
@@ -6173,6 +6230,23 @@ TEST_F(LifecycleKernelTest, ARefusedCommandWithAClearMeasuredPoseHoldsUpToTheCap
   EXPECT_GE(logs.count("reason=command_refused"), 1U) << logs.joined();
 }
 
+// #349 review F: the brake's dry run records its trips without building strings; a
+// stop it does not answer reports the dry run's first trip once, not a re-check.
+TEST_F(LifecycleKernelTest, ARefusedBrakeReportsTheDryRunsFirstTripOnce) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_replay", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                    rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: the relaxed check refuses too
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.collision kind=world a=link0 b=voxel_0 step=0"), 1U)
+      << logs.joined();
+}
+
 TEST_F(LifecycleKernelTest, AHoldCapNeedsTheBrake) {
   GraspRig rig("kernel_ws_hold_nobrake",
                with_param(lag_params(), "workspace_contact_hold_max_consecutive",
@@ -6196,7 +6270,8 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeedsAFreshMeasuredVelocity) {
 
 TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
   // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
-  // rad into the cell — a 0.03 m lead over a 0.02 bound.
+  // rad into the cell — a 0.03 m lead over a 0.02 bound, and (#349 review B) its
+  // commanded 0.06 m/s governs over the still hand's 0.
   LogCapture logs;
   GraspRig rig("kernel_ws_meas_lead", lag_params(0.02));
   rig.js_velocity = {0.0};
@@ -6205,7 +6280,7 @@ TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStil
   rig.warm(&b, kLagMeasuredQ, 300);
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
-  EXPECT_EQ(logs.count("hand_speed_mps=0 hand_lead_m=0.03 hand_speed_source=measured"), 1U)
+  EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
       << logs.joined();
 }
 

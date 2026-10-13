@@ -219,16 +219,21 @@ private:
   // Manipulation-workspace contact (issue #349, draft; Safety-WG review
   // pending). Resolve the producer-confirmed `workspace_region` riding the
   // grasp declaration into `workspace_region_`. Only called with
-  // `workspace_contact_enabled`, after `ingest_grasp_declaration` (so a retired
-  // identity carries no workspace either). Every refusal yields NO workspace.
+  // `workspace_contact_enabled`, after `ingest_grasp_declaration`. Every refusal
+  // yields NO workspace, and so does a declaration whose grasp part that ingest
+  // refused (a producer error such as a non-allowlisted link: the same message's
+  // workspace is not trusted either). A RETIRED grasp identity does not end the
+  // workspace: carry and place happen after the handover (#349 p12_mix04), so it
+  // lives to the declaration's own end — retraction, `timeout_s`, a stale
+  // confirmation.
   void ingest_workspace_contact(const openral_msgs::msg::WorldStateStamped& msg);
   // Drop the ingested workspace (no-op when none): logs
   // `safety.workspace_region_dropped reason=<reason>` and the declaration's
   // `safety.workspace_contact_summary` once, then resets the tallies.
   void drop_workspace(const char* reason);
   // Is the ingested workspace in force at `now`? Dead on: no workspace, the
-  // declaration's `timeout_s` lapsed or stamped in the future, its identity
-  // retired, the world-state stream older than `attached_collision_deadline`,
+  // declaration's `timeout_s` lapsed or stamped in the future (a retired grasp
+  // identity does not end it), the world-state stream older than `attached_collision_deadline`,
   // or the confirmation older than `grasp_region_max_age_s`.
   bool workspace_live() const noexcept;
   // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
@@ -443,8 +448,14 @@ private:
   double workspace_max_lead_m_{0.0};  ///< `workspace_contact_max_lead_m` (push bound)
   double workspace_control_period_s_{0.0};
   // Lead allowance of the row last checked: `step` periods at the speed bound (0 for
-  // row 0 and the measured state). Disclosure only.
+  // row 0, the measured state, and every row while `ws_hand_contact_`). Disclosure only.
   double ws_lead_allow_m_{0.0};
+  // The measured hand (or its payload) already touches something: a blocked hand does
+  // not travel with the command, so no row gets the per-row allowance (#349 review A).
+  bool ws_hand_contact_{false};
+  // The checked row's hand speed came from the measured velocity (true) or from the
+  // commanded row-to-row motion (false): the larger of the two governs (#349 review B).
+  bool ws_speed_measured_row_{false};
   std::chrono::steady_clock::time_point attached_fail_closed_last_warn_{};
   // The row that set the last creep scale and its lead (disclosure only).
   double ws_creep_lead_m_{0.0};
@@ -456,6 +467,9 @@ private:
   std::string workspace_target_;
   std::size_t workspace_target_hash_{0};
   std::string workspace_refusal_reason_;  ///< last announced refusal (logged on change)
+  /// The last grasp declaration ingested was refused (a producer error, not a stale
+  /// measurement): its workspace is refused with it (#349 review E).
+  bool grasp_declaration_refused_{false};
   /// Disclosure tallies for the armed declaration (summary on drop).
   std::uint64_t workspace_pairs_total_{0};
   double workspace_min_distance_total_{std::numeric_limits<double>::infinity()};
@@ -506,9 +520,31 @@ private:
   /// so another arm's slot passing never resets this arm's run (#349 review).
   std::vector<std::uint64_t> workspace_command_holds_;
   std::uint64_t workspace_hold_max_consecutive_{0};
-  /// The pair the brake's second (speed/lead-relaxed) pass tripped on — why a
-  /// brake was refused; written only on that stop path.
-  std::string ws_refused_pair_;
+  /// A named geometry of a trip, formatted only when reported or logged: `tag` 'l'
+  /// robot link, 'a' attached payload, 'v' voxel cell, 'p' place-target primitive,
+  /// 'f' place force gate.
+  struct WsName {
+    char tag{'l'};
+    int idx{-1};
+  };
+  /// A trip recorded during a brake dry run without allocating (#349 review F).
+  struct WsTrip {
+    bool set{false};
+    const char* kind{""};
+    WsName a{};
+    WsName b{};
+    int step{0};
+    CollisionHit hit{};
+    double hand_speed_mps{0.0};
+    double hand_lead_m{0.0};
+    bool speed_measured{false};
+  };
+  /// The as-is dry run's first trip (and `q_fk_` at it, sized n_dof at configure):
+  /// the verdict reported when the brake does not answer it — never re-checked.
+  WsTrip ws_first_trip_{};
+  std::vector<double> ws_trip_q_;
+  /// The first trip of the speed/lead-relaxed pass: why a brake was refused.
+  WsTrip ws_refused_trip_{};
   std::chrono::steady_clock::time_point workspace_brake_last_warn_{};
   double workspace_measured_speed_mps_{std::numeric_limits<double>::infinity()};
   bool workspace_speed_max_measured_{false};  ///< source of `workspace_speed_max_seen_`
