@@ -316,9 +316,13 @@ def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
     """Sample the declared static geometry for the octomap bridge; returns the points file.
 
     Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
-    file next to nothing else of this launch (``/tmp``, named by the source and the pid).
-    Raises ``ROSConfigError`` on a geometry that does not load or a mesh that is malformed.
+    ``/tmp`` file named by the source and a digest of the points: the same geometry reuses one
+    file instead of leaving one per launch (each is hundreds of MB, and nothing can delete it
+    at exit while the bridge may still be reading it). Written to a temporary name and moved
+    into place, so a concurrent launch never reads a partial file. Raises ``ROSConfigError``
+    on a geometry that does not load or a mesh that is malformed.
     """
+    import hashlib
     import tempfile
 
     from openral_safety.static_geometry import (
@@ -329,10 +333,14 @@ def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
 
     geometry, base_dir = load_static_geometry(static_geometry_file)
     points = surface_points(geometry, base_dir, resolution_m / 4.0)
+    digest = hashlib.sha256(points.tobytes()).hexdigest()[:16]
     out = pathlib.Path(tempfile.gettempdir()) / (
-        f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{os.getpid()}.txt"
+        f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{digest}.txt"
     )
-    write_points_file(points, out)
+    if not out.exists():
+        partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
+        write_points_file(points, partial)
+        partial.replace(out)
     print(
         f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
         f"{len(points)} surface points at {resolution_m / 4.0 * 1000:.2f} mm -> {out}",

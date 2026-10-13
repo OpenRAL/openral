@@ -190,3 +190,19 @@ def test_the_launch_samples_a_quarter_cell_apart_for_the_bridge(
         assert pts.shape == surface_points(loaded, base, 0.015 / 4.0).shape
     finally:
         out.unlink(missing_ok=True)
+
+
+def test_the_same_geometry_reuses_one_points_file(launch_module: Any, tmp_path: Path) -> None:
+    """One file per distinct geometry, not one per launch (they leaked ~350 MB a run)."""
+    geometry = _cell_geometry(tmp_path)
+    first = Path(launch_module._static_points_file(str(geometry), 0.015))
+    try:
+        stamp = first.stat().st_mtime_ns
+        again = Path(launch_module._static_points_file(str(geometry), 0.015))
+        assert again == first and first.stat().st_mtime_ns == stamp, "reused, not rewritten"
+        other = Path(launch_module._static_points_file(str(geometry), 0.02))
+        assert other != first, "a different sampling is a different file"
+        other.unlink()
+        assert not list(first.parent.glob(f"{first.name}.*.partial"))
+    finally:
+        first.unlink(missing_ok=True)
