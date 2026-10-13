@@ -81,6 +81,8 @@ BUCKET2_TOPICS: list[str] = [
     r"/openral/viz/attachments",
     # visualization_msgs/MarkerArray — declared static geometry (always-occupied fixtures)
     r"/openral/viz/static_geometry",
+    # visualization_msgs/MarkerArray — where each kernel stop happened (red)
+    r"/openral/viz/collisions",
 ]
 
 #: **Telemetry** — the mission/state plane the OTel dashboard also renders,

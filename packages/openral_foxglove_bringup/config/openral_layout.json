@@ -52,6 +52,9 @@
     "/openral/viz/static_geometry": {
      "visible": true
     },
+    "/openral/viz/collisions": {
+     "visible": true
+    },
     "/odom": {
      "visible": true
     },
@@ -158,6 +161,9 @@
      "visible": true
     },
     "/openral/viz/static_geometry": {
+     "visible": true
+    },
+    "/openral/viz/collisions": {
      "visible": true
     }
    },

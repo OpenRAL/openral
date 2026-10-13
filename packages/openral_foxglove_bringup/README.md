@@ -140,7 +140,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_cloud/self_filtered`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, the depth cloud with the robot cut out (in colour when it carries `rgb`; the raw camera cloud would draw a second, lagging arm), held payload + grasp/place regions, search box, workspace, declared static geometry |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_cloud/self_filtered`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/openral/viz/collisions`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, the depth cloud with the robot cut out (in colour when it carries `rgb`; the raw camera cloud would draw a second, lagging arm), held payload + grasp/place regions, search box, workspace, declared static geometry |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -267,6 +267,7 @@ draws it natively — no TypeScript extension:
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
 | `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
 | `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
+| `/openral/failure/safety` (`FailureTrigger`, collision) | `visualization_msgs/MarkerArray` (a red sphere + label where each kernel stop happened, latched) | `/openral/viz/collisions` |
 
 The voxel cloud leaves out the cells inside a declared box fixture (`hide_static_voxels`, default on): walls, floor and fixtures are drawn once, by their markers, and the voxels show what the camera adds. Viewer only — the kernel's grid is unchanged.
 

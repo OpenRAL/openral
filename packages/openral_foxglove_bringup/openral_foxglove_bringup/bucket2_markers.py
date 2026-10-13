@@ -11,6 +11,11 @@
 - Parameter ``static_geometry_file`` (``DeployRuntime.static_geometry_file``) →
   ``/openral/viz/static_geometry`` (latched ``MarkerArray``): the declared fixtures
   the kernel always treats as occupied, drawn as their boxes and triangle meshes.
+- ``/openral/failure/safety`` (kernel ``FailureTrigger``, kind collision) →
+  ``/openral/viz/collisions`` (latched ``MarkerArray``): a red sphere where each kernel
+  stop happened — the colliding voxel's centre (the voxel index mapped back through the
+  grid the kernel checked, matched by the origin it discloses), or the first link's
+  own frame for a link-vs-link stop — labelled with the link.
   With ``hide_static_voxels`` (default on) the voxel cloud leaves out the cells inside
   a declared box fixture (grown by one cell): walls, floor and fixtures are drawn once,
   by their markers, and the voxels show what the camera adds. Viewer only — the
@@ -155,6 +160,55 @@ def static_boxes(path: str) -> list[tuple[NDArray[np.float64], NDArray[np.float6
         for e in geometry.static_geometry
         if isinstance(e, StaticBox)
     ]
+
+
+#: Where kernel stops are drawn (latched ``MarkerArray``).
+COLLISION_MARKERS_TOPIC = "/openral/viz/collisions"
+#: A kernel stop: solid red.
+COLLISION_RGBA = (1.0, 0.0, 0.0, 0.95)
+
+
+def voxel_center(
+    index: int,
+    origin: tuple[float, float, float],
+    resolution: float,
+    size: tuple[int, int, int],
+    orientation_xyzw: tuple[float, float, float, float],
+) -> tuple[float, float, float]:
+    """The centre of grid cell ``index`` (row-major, x fastest), as ``occupied_voxel_centers``.
+
+    >>> voxel_center(5, (0.0, 0.0, 0.0), 0.1, (2, 3, 4), (0.0, 0.0, 0.0, 1.0))
+    (0.15, 0.25, 0.05)
+    """
+    occupancy = np.zeros(size[0] * size[1] * size[2], dtype=np.uint8)
+    occupancy[index] = 1
+    (center,) = occupied_voxel_centers(origin, resolution, size, occupancy, orientation_xyzw)
+    return tuple(round(c, 9) for c in center)  # type: ignore[return-value]
+
+
+def collision_markers(stops: Sequence[tuple[str, tuple[float, float, float], str]]) -> Any:
+    """Every kernel stop so far as red spheres + labels: ``(frame, xyz, label)`` each."""
+    from visualization_msgs.msg import Marker, MarkerArray
+
+    array = MarkerArray()
+    for i, (frame, xyz, label) in enumerate(stops):
+        t = np.eye(4)
+        t[:3, 3] = xyz
+        sphere = _marker("collision", frame, Marker.SPHERE, _pose_of(t), [0.05] * 3, COLLISION_RGBA)
+        sphere.id = 2 * i
+        t[2, 3] += 0.06
+        text = _marker(
+            "collision_label",
+            frame,
+            Marker.TEXT_VIEW_FACING,
+            _pose_of(t),
+            [0, 0, 0.04],
+            COLLISION_RGBA,
+        )
+        text.id = 2 * i + 1
+        text.text = label
+        array.markers += [sphere, text]
+    return array
 
 
 def parse_attach_link_tf_frames(entries: Sequence[str]) -> dict[str, str]:
@@ -593,6 +647,34 @@ class Bucket2MarkersNode:
             except (OSError, ValueError):
                 log.exception("bucket2: static boxes unreadable — every voxel drawn")
 
+        # Kernel stops, drawn where they happened. The voxel a stop names is an index into
+        # the grid the kernel checked: kept here by origin (the last few) to map it back.
+        import collections
+
+        from openral_msgs.msg import FailureTrigger
+
+        self._grids: collections.deque[
+            tuple[
+                str,
+                tuple[float, float, float],
+                float,
+                tuple[int, int, int],
+                tuple[float, float, float, float],
+            ]
+        ] = collections.deque(maxlen=16)
+        self._stops: list[tuple[str, tuple[float, float, float], str]] = []
+        self._pub_collisions = self._node.create_publisher(
+            MarkerArray, COLLISION_MARKERS_TOPIC, latched
+        )
+        failure_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=50,
+        )
+        self._sub_failure = self._node.create_subscription(
+            FailureTrigger, "/openral/failure/safety", self._on_failure, failure_qos
+        )
+
         log.info("bucket2_markers node ready", attach_link_tf_frames=self._tf_frames)
 
     # ------------------------------------------------------------------
@@ -616,6 +698,7 @@ class Bucket2MarkersNode:
             float(msg.orientation.w),  # type: ignore[union-attr]
         )
 
+        self._grids.append((str(msg.header.frame_id), origin, resolution, size, orientation))  # type: ignore[union-attr]
         try:
             centers = occupied_voxel_centers(origin, resolution, size, occupancy, orientation)
         except ValueError:
@@ -646,6 +729,41 @@ class Bucket2MarkersNode:
 
         self._pub_cloud.publish(cloud)
         log.debug("bucket2: published world_voxels_cloud", points=len(points))
+
+    def _on_failure(self, msg: object) -> None:
+        """A kernel collision stop → a red marker where it happened (latched, accumulated)."""
+        import json
+
+        from openral_msgs.msg import FailureTrigger
+
+        if msg.kind != FailureTrigger.KIND_COLLISION:  # type: ignore[attr-defined]
+            return
+        try:
+            ev = json.loads(msg.evidence_json)  # type: ignore[attr-defined]
+            link_a, other = str(ev["link_a"]), str(ev["link_b_or_object"])
+        except (ValueError, KeyError, TypeError):
+            log.exception("bucket2: collision evidence unreadable — not drawn")
+            return
+        label = f"STOP {link_a}"
+        if other.startswith("voxel_"):
+            want = ev.get("world_grid_origin_m")
+            grid = next(
+                (
+                    g
+                    for g in reversed(self._grids)
+                    if want is None or np.allclose(g[1], want, atol=1e-6)
+                ),
+                None,
+            )
+            if grid is None:
+                log.warning("bucket2: no grid matching the stop's origin — not drawn", origin=want)
+                return
+            frame, origin, res, size, orientation = grid
+            xyz = voxel_center(int(other[len("voxel_") :]), origin, res, size, orientation)
+        else:
+            frame, xyz, label = link_a, (0.0, 0.0, 0.0), f"STOP {link_a} vs {other}"
+        self._stops.append((frame, xyz, label))
+        self._pub_collisions.publish(collision_markers(self._stops))
 
     def _on_attachment_state(self, msg: object) -> None:
         """Convert AttachmentState → MarkerArray (DELETEALL + re-add) and publish."""

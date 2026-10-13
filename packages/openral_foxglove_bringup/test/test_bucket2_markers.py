@@ -571,3 +571,21 @@ def test_voxels_inside_a_declared_box_fixture_are_not_drawn(tmp_path: Path) -> N
     centers = np.array([[0.3, -0.55, 0], [0.3, -0.585, 0.1], [0.3, -0.40, 0], [0.6, -0.55, 0]])
     keep = _b2.outside_boxes(centers, boxes, 0.015)  # type: ignore[attr-defined]
     assert keep.tolist() == [False, False, True, True]
+
+
+def test_a_stop_voxel_index_maps_back_to_its_cell_centre() -> None:
+    """The kernel names a voxel by index; the marker goes to that cell's centre."""
+    centre = _b2.voxel_center(  # type: ignore[attr-defined]
+        1 + 4 * (2 + 3 * 1), (1.0, 2.0, 3.0), 0.02, (4, 3, 2), (0.0, 0.0, 0.0, 1.0)
+    )
+    assert centre == pytest.approx((1.03, 2.05, 3.03))
+
+
+def test_stops_are_red_spheres_with_labels() -> None:
+    pytest.importorskip("visualization_msgs")
+    array = _b2.collision_markers(  # type: ignore[attr-defined]
+        [("openarm_base", (0.1, 0.2, 0.3), "STOP openarm_left_link7")]
+    )
+    sphere, label = array.markers
+    assert sphere.pose.position.x == pytest.approx(0.1) and sphere.color.r == 1.0
+    assert sphere.color.g == 0.0 and label.text == "STOP openarm_left_link7"
