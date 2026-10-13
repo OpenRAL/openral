@@ -231,10 +231,11 @@ class _GripperLeg:
         deadline_timer: The one-shot deadline timer for that future, if any.
         generation: Bumped by every grasp event; a reply or deadline carrying an
             older one is stale and dropped.
-        region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
-            already took as its payload; an ATTACH offered that same region again
-            segments instead, while a later pick's region (its own
-            ``approach:<link>:<n>`` identity, measured afresh) may be taken.
+        region_spent: ``_box_key`` of the measured region this leg already took as its
+            payload, plus the tracker's ``region_generation``; an ATTACH offered that
+            same region again (re-stamped by the map or not) segments instead, while a
+            re-measured region or a later pick's (its own ``approach:<link>:<n>``
+            identity) may be taken.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -269,7 +270,7 @@ class _GripperLeg:
     inflight: Any = None
     deadline_timer: Any = None
     generation: int = 0
-    region_spent: tuple[str, int] | None = None
+    region_spent: tuple[Any, ...] | None = None
     pending: bool = False
     jaw_link: str = ""
     release: ReleaseWindow | None = None
@@ -2427,7 +2428,7 @@ class VisionAttachmentBridge:
         ``grasp_target_occluder_margin_m`` of it).
         The region is a pre-grasp measurement, so a leg takes each measured
         region once (``region_spent``, keyed by ``target_id`` — one per pick — and the
-        region's own ``stamp_ns``): a later ATTACH offered the same region — the object
+        region's box, ``_box_key``): a later ATTACH offered the same region — the object
         set down and picked up again before any re-measurement — is segmented, while a
         region measured for the goal's next pick (a fresh identity) is a new payload.
         Returns the payload
@@ -2445,9 +2446,13 @@ class VisionAttachmentBridge:
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
             return None
-        # The region's own measurement stamp: one arming may re-measure its region
-        # before the grasp, and each measurement is one payload.
-        key = (declaration.target_id, int(region.stamp_ns))
+        # The region's box and accepting generation, not its stamp: the map re-stamps a
+        # frozen region every grid (the same measurement), while a re-measurement or a
+        # new declaration is a new payload even when the quantised box comes out equal.
+        key = (
+            *_box_key(declaration.target_id, region),
+            self._grasp_target.tracker.region_generation,
+        )
         if leg.region_spent == key:
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: grasp-target region for "

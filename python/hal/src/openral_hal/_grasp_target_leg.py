@@ -464,6 +464,7 @@ class GraspTargetTracker:
         # Bumped whenever what a measurement in flight was asked for stops being what is
         # measured (new/cleared declaration, arming, retraction, handover).
         self._generation = 0
+        self._region_generation = 0
 
     @property
     def declaration(self) -> GraspDeclaration | None:
@@ -490,6 +491,14 @@ class GraspTargetTracker:
     def handed_over(self) -> tuple[str, ...] | None:
         """The links of the hand whose ATTACH ended re-measurement, or ``None``."""
         return self._handed_over
+
+    @property
+    def region_generation(self) -> int:
+        """The generation the held region was accepted under.
+
+        A map re-stamp of the same measurement keeps it; a new declaration or pick bumps it.
+        """
+        return self._region_generation
 
     @property
     def generation(self) -> int:
@@ -996,6 +1005,7 @@ class GraspTargetTracker:
             self._retract("declaration_bounds", str(exc).splitlines()[0], now_ns=region.stamp_ns)
             return
         self._region = region
+        self._region_generation = self._generation
         qx, qy, qz, qw = region.pose.quat_xyzw
         yaw_deg = math.degrees(
             math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))

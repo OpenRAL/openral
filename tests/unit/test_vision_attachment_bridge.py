@@ -1299,6 +1299,23 @@ def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> No
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
 
 
+def test_a_taken_region_re_stamped_by_the_map_is_still_spent() -> None:
+    """Review follow-up: ``region_spent`` was keyed on the region's stamp, which the map
+    re-stamps on every grid, so the same frozen region offered again after a re-stamp
+    read as a fresh measurement and became a second payload. Keyed on the box and the
+    generation it was accepted under, a re-stamp stays spent (a new declaration's equal box
+    is a new payload: test_a_region_payload_hands_over_only_the_region_it_was_built_from)."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_region_spent_restamp") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        live.place("right", _I41_JAW)
+        assert bridge._region_payload(right, stamp_ns=now_ns) is not None
+        live.leg.tracker.accept(_i41_region(now_ns + 1))  # the map's re-stamp
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
 def test_the_region_payload_is_clipped_at_the_tool_point() -> None:
     """#349 p8/p9/p11_mix02: the margin's top bloat put the region box into the carrying
     wrist (payload vs openarm_left_link6). Given the tool point, nothing of the payload
