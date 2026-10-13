@@ -1739,7 +1739,7 @@ if _ROS2_AVAILABLE:
         into (issue #191).
         """
 
-        def __init__(self, node_name: str) -> None:
+        def __init__(self, node_name: str) -> None:  # noqa: PLR0915  # reason: one declare_parameter per HAL param
             """Declare the manifest-driven params (``robot_yaml`` + ``hal_mode`` + sensor knobs)."""
             super().__init__(node_name)
             self.declare_parameter("robot_yaml", "")
@@ -1791,6 +1791,11 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("depth_publish_rate_hz", 10.0)
             self.declare_parameter("depth_max_range_m", 5.0)
             self.declare_parameter("depth_pixel_stride", 4)
+            # Explicit opt-in, comma-separated depth sensor names: DA3's monocular
+            # estimate from the camera's colour replaces its ray-cast; refused unless
+            # estimated_depth_feeds_safety acknowledges it reaches the kernel.
+            self.declare_parameter("estimated_depth_cameras", "")
+            self.declare_parameter("estimated_depth_feeds_safety", False)
             # Mobile-base params (issue #191 Phase 3): consumed by MobileBaseBridge
             # only when the manifest declares `base_joints` (panda_mobile today).
             # Harmless for fixed-base arms — declared so deploy_sim's
@@ -2366,6 +2371,14 @@ if _ROS2_AVAILABLE:
                 depth_pixel_stride=self.get_parameter("depth_pixel_stride")
                 .get_parameter_value()
                 .integer_value,
+                estimated_depth_cameras=tuple(
+                    n.strip()
+                    for n in str(self.get_parameter("estimated_depth_cameras").value).split(",")
+                    if n.strip()
+                ),
+                estimated_depth_feeds_safety=bool(
+                    self.get_parameter("estimated_depth_feeds_safety").value
+                ),
                 # Refresh the proprio snapshot after each idle step,
                 # so odom/joint_state stay fresh while the scene idles.
                 on_step=self._capture_proprio,

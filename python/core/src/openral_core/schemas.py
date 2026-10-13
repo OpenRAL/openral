@@ -10783,9 +10783,9 @@ class DeployRuntime(BaseModel):
     out of the head camera's view still stops an arm (``docs/reference/
     manipulation-workspace-contact.md`` §3.1). Only ADDS occupancy, the fail-closed
     direction, so it needs no measurement and is allowed on real hardware; the launch
-    refuses it with the octomap leg off rather than drop declared walls. For an Isaac
-    scene, ``tools/isaac_static_geometry.py`` exports it from the stage's static
-    colliders. Backward-compatible addition."""
+    refuses it with the octomap leg off rather than drop declared walls. For a sim
+    scene, ``tools/derive_scene_inputs.py`` exports it from the static colliders (an
+    Isaac stage or a MuJoCo model). Backward-compatible addition."""
 
     @model_validator(mode="after")
     def _check_workspace_contact(self) -> Self:

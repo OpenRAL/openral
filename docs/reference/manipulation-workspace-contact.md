@@ -135,10 +135,55 @@ camera's occupancy and that declared geometry, always — regardless of what the
 or cleared. A scene may only **add** occupancy (the fail-closed direction), so declared static
 geometry needs no measurement before it counts, unlike an exemption. The workspace rule then
 applies to it like any other cell: hand links may graze the declared tote/shelf inside a live,
-confirmed workspace, slowly; arm links stop on it everywhere. For Isaac scenes the fixtures come
-from the stage's static colliders; for a real cell, from its measured cell description. The
+confirmed workspace, slowly; arm links stop on it everywhere. For sim scenes the fixtures come
+from the backend's static colliders (§3.2); for a real cell, from its measured cell description. The
 safety envelope's `no_go_zones` are declared today but enforced nowhere — this layer is where
 declared geometry becomes enforced.
+
+### 3.2 Scene inputs are derived, not hand-written
+
+The rule needs three per-scene inputs: the declared static geometry (§3.1), the grasp
+declaration's `search_box`, and its `workspace_box`. None has to be written by hand:
+`tools/derive_scene_inputs.py` boots the scene's sim (any backend) and writes them into a derived
+scene. A value the scene already declares wins unless `--replace`, which prints both.
+
+- **Static geometry** — the backend's static colliders in `base_frame`: Isaac, the USD collision
+  prims of non-robot, non-dynamic fixtures (`static_colliders`); MuJoCo, every world-welded
+  collision geom except the robot's own bodies (`openral_sim.backends.mujoco_geometry`). Each is
+  a superset of its collider. Fixed-base robots only: on a mobile base, base-frame fixtures are
+  true only at the reset pose, so none are declared.
+- **`search_box`** — the reasoner's own grounding (`ground_grasp_target`), fed the sim's object
+  boxes as detections instead of perception's: the target's bound padded on every side.
+- **`workspace_box`** — `openral_reasoner.grounding.ground_workspace`: the hull of the source
+  fixture (the static collider group the target rests on: a tote's floor, walls and rims) and the
+  instruction's destination (Isaac: the prompt's `placement_success` region and the regions it
+  grades as adjacent; RoboCasa: the task's destination fixture), padded, plus headroom on top for
+  a hand riding above its payload. An axis wider than the workspace cap is cut to the cap around
+  the target, never widened past it; a box still over the volume cap is not declared.
+
+Restock `mix_02` (Isaac, 2026-10-13), hand-written → derived, base-frame x / y / z ranges (m):
+`search_box` [0.167, 0.356] / [−0.012, 0.200] / [−0.613, −0.373] → [0.178, 0.350] / [0.016, 0.154]
+/ [−0.628, −0.458] (the producer's region, (0.262, 0.078) ± (0.063, 0.042), lies inside);
+`workspace_box` [0.039, 0.735] / [−0.221, 0.278] / [−0.660, −0.214] → [0.027, 0.735] /
+[−0.229, 0.302] / [−0.612, −0.204]; static geometry 43 → 45 colliders, the 33 shared ones
+identical; the rest is shelf stock — 10 of the hand file's boxes are not in the current `mix_02`
+stage, which has 12 it lacks (the hand file predates the scene's last edit). One
+deploy each: hand-written complete, 0 kernel stops, 2 brakes; derived complete, 0 stops, 0
+brakes (the r37 baseline: 4/4 complete, 0 stops, 0–4 brakes). RoboCasa `robocasa_pnp`: the
+target lies 2.3 m behind the base on the island, so the island-to-cabinet hull exceeds the
+volume cap and no `workspace_box` is derived; `front_depth` publishes depth only, because the
+panda_mobile intrinsics (fx = width, 53°) disagree with the MJCF camera's 60° `fovy`.
+
+Ground truth is a sim-only source (`scene_ground_truth`); the functions take plain boxes, so a
+real cell supplies the same boxes from its scene graph.
+
+**One perception contract.** Every backend publishes depth through one registered RGB-D frame
+(`openral_sim.depth_frames.depth_frame`: depth, colour from the same render, K, optical pose in
+`base_frame`, `source`): Isaac renders it; the MuJoCo bridge builds it from its ray-cast and the
+same MJCF camera's colour; Depth Anything V3 can estimate it from colour for a MuJoCo camera,
+only on an explicit `estimated_depth_cameras` opt-in that must also set
+`estimated_depth_feeds_safety` (the estimate reaches octomap, the kernel and the attachment leg,
+and the launch then self-filters that cloud, since DA3 sees the arm).
 
 ## 4. Why this is sound enough to propose
 
