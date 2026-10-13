@@ -5237,7 +5237,9 @@ class SimSensorBridge:
                 frame = frames.get(name)
                 rgb = (
                     colours_from_frame(pts, frame["rgb"], frame["k"], frame["optical_in_base"])
-                    if frame is not None and frame["rgb"].shape[:2] == frame["depth"].shape[:2]
+                    if frame is not None
+                    and frame["rgb"].ndim == 3  # noqa: PLR2004  # reason: (H, W, C) colour only
+                    and frame["rgb"].shape[:2] == frame["depth"].shape[:2]
                     else None
                 )
                 cloud = pointcloud2_from_points_xyz(

@@ -433,6 +433,8 @@ def static_geometry_markers(path: str, frame: str) -> Any:
             with np.load(mesh) as data:
                 verts = np.asarray(data["vertices"], dtype=np.float64)
                 tris = np.asarray(data["triangles"], dtype=np.int64)
+            if tris.size and (tris.min() < 0 or tris.max() >= len(verts)):
+                raise ValueError(f"triangle index outside 0..{len(verts) - 1}")
         except (OSError, KeyError, ValueError) as exc:
             raise ROSConfigError(f"static mesh {mesh}: {exc}") from exc
         m = _marker(

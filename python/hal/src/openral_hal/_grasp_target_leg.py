@@ -2079,8 +2079,12 @@ class GraspTargetLeg:
                     elif chosen.region.stamp_ns > previous.stamp_ns:
                         try:
                             self._gate_instance(grid, chosen, previous, column, hands)
-                        except _Refusal as refit:
-                            self._refit_ignored(refit.kind, str(refit))
+                        except (_Refusal, ROSConfigError) as refit:
+                            # A re-fit the gate cannot even take (ROSConfigError, e.g. a
+                            # tilted fit) is a diagnostic too: only the map retracts a held
+                            # region (#349 review: it reached the outer handler).
+                            kind = refit.kind if isinstance(refit, _Refusal) else "rejected_inputs"
+                            self._refit_ignored(kind, str(refit))
                         else:
                             self._refit_ignored("tracked", "re-fit within the tracking gate")
                     held = self._map_hold(grid, previous, source_ns, hands)
