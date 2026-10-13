@@ -268,6 +268,8 @@ draws it natively — no TypeScript extension:
 | `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
 | `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
 
+The voxel cloud leaves out the cells inside a declared box fixture (`hide_static_voxels`, default on): walls, floor and fixtures are drawn once, by their markers, and the voxels show what the camera adds. Viewer only — the kernel's grid is unchanged.
+
 The attachment markers draw each held payload's collision primitives on its
 attach link's TF frame (`pose_in_link ∘ pose_in_object`, frame-locked so they
 ride the hand), translucent and coloured by `evidence_kind` — **orange**

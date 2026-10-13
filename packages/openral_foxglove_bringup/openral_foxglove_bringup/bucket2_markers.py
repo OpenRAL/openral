@@ -11,6 +11,10 @@
 - Parameter ``static_geometry_file`` (``DeployRuntime.static_geometry_file``) →
   ``/openral/viz/static_geometry`` (latched ``MarkerArray``): the declared fixtures
   the kernel always treats as occupied, drawn as their boxes and triangle meshes.
+  With ``hide_static_voxels`` (default on) the voxel cloud leaves out the cells inside
+  a declared box fixture (grown by one cell): walls, floor and fixtures are drawn once,
+  by their markers, and the voxels show what the camera adds. Viewer only — the
+  kernel's grid is unchanged.
 
 Conversion math lives in pure functions (``occupied_voxel_centers``,
 ``attachment_markers``) so unit tests exercise it without a ROS context
@@ -22,10 +26,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import structlog
+from numpy.typing import NDArray
 
 __all__ = [
     "ATTACHMENT_MARKERS_TOPIC",
@@ -112,6 +118,45 @@ def occupied_voxel_centers(
     return [tuple(c) for c in centers.tolist()]
 
 
+def outside_boxes(
+    centers: NDArray[np.float64],
+    boxes: Sequence[tuple[NDArray[np.float64], NDArray[np.float64]]],
+    pad_m: float,
+) -> NDArray[np.bool_]:
+    """Mask of ``centers`` ``(N, 3)`` outside every box ``(base_from_box 4x4, half_extents)``.
+
+    A box is grown by ``pad_m`` on each side (a voxel centre within one cell of a face
+    is that face's cell).
+
+    >>> box = (np.eye(4), np.array([0.5, 0.5, 0.5]))
+    >>> outside_boxes(np.array([[0.0, 0, 0], [0.55, 0, 0], [0.7, 0, 0]]), [box], 0.1).tolist()
+    [False, False, True]
+    """
+    keep = np.ones(len(centers), dtype=bool)
+    for base_from_box, half in boxes:
+        inv = np.linalg.inv(base_from_box)
+        local = centers @ inv[:3, :3].T + inv[:3, 3]
+        keep &= ~np.all(np.abs(local) <= half + pad_m, axis=1)
+    return keep
+
+
+def static_boxes(path: str) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]]:
+    """The declared box fixtures of a ``StaticGeometry`` YAML as ``(base_from_box, half)``."""
+    import yaml
+    from openral_core import StaticBox, StaticGeometry
+    from openral_core.geometry import homogeneous_from_quat_xyz
+
+    geometry = StaticGeometry.model_validate(yaml.safe_load(Path(path).read_text()))
+    return [
+        (
+            np.asarray(homogeneous_from_quat_xyz(e.xyz, e.quat_xyzw), dtype=np.float64),
+            np.asarray(e.half_extents, dtype=np.float64),
+        )
+        for e in geometry.static_geometry
+        if isinstance(e, StaticBox)
+    ]
+
+
 def parse_attach_link_tf_frames(entries: Sequence[str]) -> dict[str, str]:
     """Parse ``"link=frame"`` entries into a manifest-link → TF-frame map.
 
@@ -169,7 +214,7 @@ WORKSPACE_RGBA = (1.0, 0.75, 0.1, 0.1)
 #: A payload's measured inner box (stage-2 refinement): the shape payload-vs-robot uses.
 MEASURED_RGBA = (1.0, 1.0, 1.0, 0.6)
 #: Declared static geometry: always-occupied fixtures.
-STATIC_RGBA = (0.85, 0.3, 0.3, 0.25)
+STATIC_RGBA = (0.62, 0.55, 0.55, 0.10)
 
 #: ``evidence_ref`` suffix of a released payload frozen on the base frame
 #: (``openral_hal.vision_attachment_bridge.freeze_released_attachment``).
@@ -540,6 +585,13 @@ class Bucket2MarkersNode:
                 self._pub_static.publish(static_geometry_markers(static_file, base_frame))
             except ROSConfigError:
                 log.exception("bucket2: static_geometry_file unreadable — not drawn")
+        # Voxels inside a declared box fixture are drawn once, by the fixture's marker.
+        self._hidden_boxes: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+        if static_file and bool(self._node.declare_parameter("hide_static_voxels", True).value):
+            try:
+                self._hidden_boxes = static_boxes(static_file)
+            except (OSError, ValueError):
+                log.exception("bucket2: static boxes unreadable — every voxel drawn")
 
         log.info("bucket2_markers node ready", attach_link_tf_frames=self._tf_frames)
 
@@ -570,10 +622,14 @@ class Bucket2MarkersNode:
             log.exception("bucket2: malformed OccupancyVoxels message — skipping")
             return
 
+        points = np.asarray(centers, dtype=np.float64).reshape(-1, 3)
+        if self._hidden_boxes and len(points):
+            points = points[outside_boxes(points, self._hidden_boxes, resolution)]
+
         cloud = PointCloud2()
         cloud.header = msg.header  # type: ignore[union-attr]
         cloud.height = 1
-        cloud.width = len(centers)
+        cloud.width = len(points)
         cloud.is_dense = True
         cloud.is_bigendian = False
 
@@ -586,10 +642,10 @@ class Bucket2MarkersNode:
         cloud.point_step = 12
         cloud.row_step = cloud.point_step * cloud.width
 
-        cloud.data = np.asarray(centers, dtype="<f4").reshape(-1, 3).tobytes()
+        cloud.data = np.asarray(points, dtype="<f4").tobytes()
 
         self._pub_cloud.publish(cloud)
-        log.debug("bucket2: published world_voxels_cloud", points=len(centers))
+        log.debug("bucket2: published world_voxels_cloud", points=len(points))
 
     def _on_attachment_state(self, msg: object) -> None:
         """Convert AttachmentState → MarkerArray (DELETEALL + re-add) and publish."""

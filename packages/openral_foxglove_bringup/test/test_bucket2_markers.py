@@ -549,3 +549,25 @@ def test_module_docstring_examples_run() -> None:
     results = doctest.testmod(_b2, verbose=False)  # type: ignore[arg-type]
     assert results.attempted > 0
     assert results.failed == 0
+
+
+def test_voxels_inside_a_declared_box_fixture_are_not_drawn(tmp_path: Path) -> None:
+    """The viewer leaves out a fixture's own cells (grown by one cell); the rest stay."""
+    import numpy as np
+    import yaml
+
+    path = tmp_path / "static.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "static_geometry": [
+                    {"kind": "box", "xyz": [0.3, -0.55, 0.0], "half_extents": [0.2, 0.02, 0.3]}
+                ]
+            }
+        )
+    )
+    boxes = _b2.static_boxes(str(path))  # type: ignore[attr-defined]
+    # Inside, within one cell of the face, clear in y, clear in x.
+    centers = np.array([[0.3, -0.55, 0], [0.3, -0.585, 0.1], [0.3, -0.40, 0], [0.6, -0.55, 0]])
+    keep = _b2.outside_boxes(centers, boxes, 0.015)  # type: ignore[attr-defined]
+    assert keep.tolist() == [False, False, True, True]
