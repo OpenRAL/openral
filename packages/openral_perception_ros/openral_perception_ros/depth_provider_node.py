@@ -171,6 +171,15 @@ def main(args: Any = None) -> None:
                     throttle_duration_sec=5.0,
                 )
                 return
+            # K is scaled from the CameraInfo's size: one that does not describe this image
+            # (a resizing driver, a runtime resolution change) mis-scales every depth.
+            if (int(msg.width), int(msg.height)) != (int(info.width), int(info.height)):
+                self.get_logger().warning(
+                    f"depth_provider: image {msg.width}x{msg.height} != CameraInfo "
+                    f"{info.width}x{info.height}; frame dropped",
+                    throttle_duration_sec=5.0,
+                )
+                return
             dh, dw = canonical.shape
             fx, fy, cx, cy = scale_intrinsics(
                 (float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5])),

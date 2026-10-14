@@ -9,7 +9,8 @@ transport, ``CameraInfo`` in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinn
 
 * the cloud is the plane at 1.5 m, in the RGB ``CameraInfo``'s optical frame, through the
   camera's own K scaled to DA3's raster (never DA3's estimated K);
-* a sidecar serving a non-metric checkpoint (``DA3-SMALL``) yields no cloud at all.
+* a sidecar serving a non-metric checkpoint (``DA3-SMALL``) yields no cloud at all;
+* a ``CameraInfo`` whose size is not the image's (K would be mis-scaled) yields no cloud.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like its neighbours.
 """
@@ -77,7 +78,11 @@ def _provider(prefix: str, port: int, log: Path, frame: str) -> Iterator[subproc
 
 
 def _run(
-    model: str, tmp_path: Path, wait_s: float, frame: str = ""
+    model: str,
+    tmp_path: Path,
+    wait_s: float,
+    frame: str = "",
+    info_wh: tuple[int, int] = (_W, _H),
 ) -> tuple[dict[str, Any], int, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
     import rclpy
@@ -110,7 +115,7 @@ def _run(
         )
         info = CameraInfo()
         info.header.frame_id = _FRAME
-        info.width, info.height = _W, _H
+        info.width, info.height = info_wh
         info.k = [_F, 0.0, (_W - 1) / 2.0, 0.0, _F, (_H - 1) / 2.0, 0.0, 0.0, 1.0]
         image = Image()
         image.header.frame_id = "test_camera"  # sim stamps the camera name; K's frame wins
@@ -172,3 +177,13 @@ def test_the_launch_resolved_frame_wins_over_the_camera_info_frame(tmp_path: Pat
     assert "cloud" in got, log
     assert got["cloud"].header.frame_id == "zed_camera_link_optical_frame"
     assert got["info"].header.frame_id == "zed_camera_link_optical_frame"
+
+
+def test_a_camera_info_of_another_size_feeds_the_map_nothing(tmp_path: Path) -> None:
+    """K scaled from a 1280x960 CameraInfo onto a 640x480 image would halve every depth."""
+    got, requests, log = _run(
+        "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=8.0, info_wh=(2 * _W, 2 * _H)
+    )
+    assert requests > 0, f"the provider never asked the sidecar; log:\n{log}"
+    assert "cloud" not in got
+    assert "!= CameraInfo" in log
