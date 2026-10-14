@@ -570,21 +570,21 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
 
-- `_DEFAULT_HOME: Path` (L51) — default cache dir.
-- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L52) — `--venv` override env var name.
-- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L53) — `--home` override env var name.
-- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L58) — x86_64 install set.
-- `_NVRTC_OVERRIDE: Path` (L72) — aarch64 nvrtc override file passed at install time.
-- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L75) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
-- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L102) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
-- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L108) — the anchor statement `_defer_pycolmap_import` rewrites.
-- `_PYCOLMAP_LAZY_IMPORT: str` (L109) — the lazy `__getattr__` proxy it rewrites that statement into.
-- `ensure_venv(home, *, override=None) -> Path` (L163) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
-- `_site_packages(py) -> Path` (L128) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
-- `_defer_pycolmap_import(py) -> None` (L136) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L200) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_DEFAULT_HOME: Path` (L53) — default cache dir.
+- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L54) — `--venv` override env var name.
+- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L55) — `--home` override env var name.
+- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L60) — x86_64 install set.
+- `_NVRTC_OVERRIDE: Path` (L74) — aarch64 nvrtc override file passed at install time.
+- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L77) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
+- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L104) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
+- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L110) — the anchor statement `_defer_pycolmap_import` rewrites.
+- `_PYCOLMAP_LAZY_IMPORT: str` (L111) — the lazy `__getattr__` proxy it rewrites that statement into.
+- `ensure_venv(home, *, override=None) -> Path` (L165) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
+- `_site_packages(py) -> Path` (L130) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
+- `_defer_pycolmap_import(py) -> None` (L138) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
+- `main() -> int` (L205) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
 - `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
-- `main() -> int` (_da3_depth_server.py L64) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
+- `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
 _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.11 venv from an inference-only pin set and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._

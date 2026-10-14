@@ -1503,8 +1503,10 @@ def _build_visual_slam_includes(
         depth_frame = mono_depth_frame or f"{mono_camera}_optical_frame"
         actions: list[object] = []
         if depth_sidecar_autostart:
-            # DA3 metric-depth sidecar (ZMQ :5771). The launcher is stdlib-only
-            # (any python3 runs it) and provisions its own venv on first boot —
+            # DA3 metric-depth sidecar (ZMQ :5771). The launcher needs an
+            # interpreter that can import openral_core (its shared sidecar
+            # helpers import it), hence the launch's own sys.executable (the
+            # OpenRAL venv), plus `uv` on PATH; it provisions its own venv on first boot —
             # which can take minutes; the depth provider retries until it
             # answers. If an operator-run sidecar already holds the port, this
             # one fails to bind and exits; ExecuteProcess death does not tear
