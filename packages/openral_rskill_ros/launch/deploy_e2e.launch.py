@@ -731,20 +731,81 @@ def _octomap_input_bounds(ball: _CoverageBall) -> dict[str, float]:
     }
 
 
-def _cloud_shows_the_robot(hal_mode: str, scene_backend: str | None) -> bool:
+def _cloud_shows_the_robot(
+    hal_mode: str, scene_backend: str | None, *, estimated_depth: bool = False
+) -> bool:
     """Whether the octomap input cloud contains the robot's own body, so it needs the self filter.
 
     A real depth camera sees the arm. In sim it depends on who makes the cloud: the MuJoCo
     sensor bridge ray-casts with the robot's bodies transparent, but an Isaac Sim scene
-    renders its depth camera with the robot in view (``read_depth_clouds``). Unfiltered,
-    those returns become occupied voxels on the arm and the kernel's world-voxel check stops
-    every motion as a collision with the robot itself.
+    renders its depth camera with the robot in view (``read_depth_clouds``), and DA3's
+    estimate from an RGB camera (``estimated_depth``: ``DeployRuntime.
+    estimated_depth_camera``) sees the arm in any backend. Unfiltered, those returns become
+    occupied voxels on the arm and the kernel's world-voxel check stops every motion as a
+    collision with the robot itself.
 
     Example:
         >>> _cloud_shows_the_robot("sim", "isaacsim"), _cloud_shows_the_robot("sim", "mujoco")
         (True, False)
+        >>> _cloud_shows_the_robot("sim", "mujoco", estimated_depth=True)
+        True
     """
-    return hal_mode == "real" or scene_backend == "isaacsim"
+    return hal_mode == "real" or scene_backend == "isaacsim" or estimated_depth
+
+
+#: DA3 checkpoint and sidecar port for ``DeployRuntime.estimated_depth_camera``. Metric
+#: (canonical focal-300 depth), Apache-2.0; its own port so mono SLAM's ``DA3-SMALL``
+#: sidecar on 5771 can run beside it.
+_ESTIMATED_DEPTH_MODEL = "depth-anything/DA3METRIC-LARGE"
+_ESTIMATED_DEPTH_PORT = 5772
+
+
+def _build_estimated_depth_nodes(camera: str, *, use_sim_time: bool) -> list:  # type: ignore[type-arg]  # reason: launch actions, deferred import
+    """The DA3METRIC sidecar + depth provider that give ``camera`` a world-collision cloud.
+
+    The provider converts DA3's canonical output to metres through the camera's own
+    ``CameraInfo`` focal and publishes depth, that ``CameraInfo`` and the back-projected
+    cloud on the camera's canonical ``DEPTH_IMAGE`` / ``DEPTH_CAMERA_INFO`` / ``POINTS``
+    topics (``deploy_cloud_topic`` then maps the cloud). The sidecar provisions its venv
+    on first boot (minutes); until it answers the provider publishes nothing, so the
+    kernel's world-voxel deadline stops motion rather than run on an empty map.
+    """
+    from launch.actions import ExecuteProcess
+
+    return [
+        ExecuteProcess(
+            cmd=[
+                sys.executable,
+                str(_REPO_ROOT / "tools" / "da3_depth_sidecar.py"),
+                "--model",
+                _ESTIMATED_DEPTH_MODEL,
+                "--port",
+                str(_ESTIMATED_DEPTH_PORT),
+            ],
+            name="da3_metric_depth_sidecar",
+            output="screen",
+        ),
+        Node(
+            package="openral_perception_ros",
+            executable="depth_provider_node.py",
+            name="openral_estimated_depth_provider",
+            namespace="",
+            parameters=[
+                {
+                    "use_sim_time": use_sim_time,
+                    "image_topic": camera_topic(camera),
+                    "rgb_camera_info_topic": camera_topic(camera, CameraTopicKind.CAMERA_INFO),
+                    "depth_topic": camera_topic(camera, CameraTopicKind.DEPTH_IMAGE),
+                    "camera_info_topic": camera_topic(camera, CameraTopicKind.DEPTH_CAMERA_INFO),
+                    "points_topic": camera_topic(camera, CameraTopicKind.POINTS),
+                    "sidecar_port": _ESTIMATED_DEPTH_PORT,
+                    # A large model's first frames (CUDA warm-up) can exceed 2 s.
+                    "request_timeout_ms": 10000,
+                }
+            ],
+            output="screen",
+        ),
+    ]
 
 
 def _attached_collision_enabled(hal_mode: str, vision_attachment_enabled: bool) -> bool:
@@ -1084,7 +1145,9 @@ def _depth_camera(description: RobotDescription) -> str:
     return next((s.name for s in description.sensors if s.is_depth_camera), "")
 
 
-def _octomap_cloud_topic(pinned: str, description: RobotDescription, hal_mode: str) -> str:
+def _octomap_cloud_topic(
+    pinned: str, description: RobotDescription, hal_mode: str, estimated_camera: str = ""
+) -> str:
     """The cloud ``octomap_server`` maps (``openral_core.deploy_cloud_topic``), never silence.
 
     A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise, in
@@ -1102,7 +1165,9 @@ def _octomap_cloud_topic(pinned: str, description: RobotDescription, hal_mode: s
         >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"), "sim")
         '/openral/cameras/head_zed/points'
     """
-    topic = deploy_cloud_topic(description.sensors, pinned=pinned, hal_mode=hal_mode)
+    topic = deploy_cloud_topic(
+        description.sensors, pinned=pinned, hal_mode=hal_mode, estimated_camera=estimated_camera
+    )
     if not topic:
         from openral_core.exceptions import ROSConfigError
 
@@ -1642,6 +1707,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     slam_visual_impl = LaunchConfiguration("slam_visual_impl").perform(context).strip().lower()
     slam_stereo_cameras = LaunchConfiguration("slam_stereo_cameras").perform(context).strip()
     slam_mono_camera = LaunchConfiguration("slam_mono_camera").perform(context).strip()
+    estimated_depth_camera = LaunchConfiguration("estimated_depth_camera").perform(context).strip()
     slam_depth_sidecar_autostart = LaunchConfiguration("slam_depth_sidecar_autostart").perform(
         context
     ).strip().lower() in ("1", "true")
@@ -2361,7 +2427,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # fit drops the robot's own points as the map does (empty: no filter).
                 "vision_attachment_self_filtered_cloud_topic": _SELF_FILTERED_CLOUD_TOPIC
                 if enable_octomap
-                and _cloud_shows_the_robot(hal_mode, scene_backend)
+                and _cloud_shows_the_robot(
+                    hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
+                )
                 and has_collision_capsules
                 else "",
             }
@@ -2487,7 +2555,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # own topic, not the sim bridge's), else in sim the manifest depth
                 # sensor's; "" (a real deploy with nothing pinned) disables the fallback.
                 "object_depth_points_topic": deploy_cloud_topic(
-                    description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+                    description.sensors,
+                    pinned=octomap_cloud_topic,
+                    hal_mode=hal_mode,
+                    estimated_camera=estimated_depth_camera,
                 ),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
@@ -3148,9 +3219,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # same base frame whether or not the octomap leg itself is spawned.
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
+    if estimated_depth_camera:
+        # DA3 depth from an RGB camera (DeployRuntime.estimated_depth_camera): a cloud for
+        # the world map on a robot with no depth sensor. Refused here too for a direct
+        # ``ros2 launch``: a camera that cannot be placed would feed a misplaced map.
+        from openral_core.depth_extrinsic import estimated_depth_camera_problems
+        from openral_core.exceptions import ROSConfigError
+
+        problems = estimated_depth_camera_problems(
+            merge_deploy_sensors(description.sensors, scene_sensors), estimated_depth_camera
+        )
+        if problems:
+            raise ROSConfigError("estimated_depth_camera: " + "; ".join(problems))
+        extra_nodes.extend(
+            _build_estimated_depth_nodes(estimated_depth_camera, use_sim_time=use_sim_time)
+        )
+
     if enable_octomap:
         assert coverage is not None  # reason: computed whenever enable_octomap
-        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)
+        octomap_cloud_topic = _octomap_cloud_topic(
+            octomap_cloud_topic, description, hal_mode, estimated_depth_camera
+        )
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
         # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
@@ -3168,7 +3257,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # against.
         octomap_input_topic = octomap_cloud_topic
         self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
-        if _cloud_shows_the_robot(hal_mode, scene_backend) and has_collision_capsules:
+        if (
+            _cloud_shows_the_robot(
+                hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
+            )
+            and has_collision_capsules
+        ):
             octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
             self_filter_nodes.append(
                 Node(
@@ -4075,6 +4169,15 @@ def generate_launch_description() -> LaunchDescription:
                 "provider + nvblox so one camera yields pose + occupancy grid + "
                 "voxels. From DeployRuntime.slam_mono_camera; mutually exclusive "
                 "with slam_stereo_cameras. Empty → stereo/multi-camera."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "estimated_depth_camera",
+            default_value="",
+            description=(
+                "RGB camera whose DA3METRIC depth feeds the world-collision map "
+                "(sidecar on ZMQ :5772 + depth provider; its cloud becomes octomap's "
+                "input). From DeployRuntime.estimated_depth_camera. Empty = off."
             ),
         ),
         DeclareLaunchArgument(

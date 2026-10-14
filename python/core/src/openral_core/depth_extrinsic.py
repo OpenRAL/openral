@@ -45,6 +45,8 @@ def depth_extrinsic_problems(
     description: RobotDescription,
     overlays: Sequence[SensorOverlay],
     scene_sensors: Sequence[SensorSpec] = (),
+    *,
+    estimated_camera: str | None = None,
 ) -> list[str]:
     """Every cloud source whose mount a real world-voxel deploy may not trust (empty = go).
 
@@ -55,7 +57,9 @@ def depth_extrinsic_problems(
     from CAD, so a value being present proves nothing, while a unit overlay only exists
     because someone set that cell up and measured it. A scene-mounted cloud source is
     declared per deployment already; it must carry ``parent_frame`` and
-    ``static_transform_xyz_rpy``.
+    ``static_transform_xyz_rpy``. ``estimated_camera`` (``DeployRuntime.
+    estimated_depth_camera``) is an RGB camera that feeds octomap DA3's cloud, so it is a
+    cloud source here too.
 
     Example:
         >>> from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
@@ -71,7 +75,7 @@ def depth_extrinsic_problems(
     declared = {o.name for o in overlays if o.static_transform_xyz_rpy is not None}
     problems = []
     for spec in description.sensors:
-        if not spec.is_cloud_source:
+        if not spec.is_cloud_source and spec.name != estimated_camera:
             continue
         if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
             problems.append(
@@ -85,11 +89,52 @@ def depth_extrinsic_problems(
             )
     robot_names = {s.name for s in description.sensors}
     for spec in scene_sensors:
-        if spec.name in robot_names or not spec.is_cloud_source:
+        if spec.name in robot_names or not (spec.is_cloud_source or spec.name == estimated_camera):
             continue
         if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
             problems.append(
                 f"{spec.name}: a scene {spec.modality} sensor can feed octomap, but the scene "
                 "declares no parent_frame + static_transform_xyz_rpy for it"
             )
+    return problems
+
+
+def estimated_depth_camera_problems(sensors: Sequence[SensorSpec], camera: str) -> list[str]:
+    """Why ``camera`` cannot carry ``DeployRuntime.estimated_depth_camera`` (empty = go).
+
+    The depth provider turns its RGB into DA3 metric depth with the camera's own
+    ``CameraInfo`` focal and back-projects it in the ``CameraInfo`` frame, so the camera
+    must be RGB (a depth sensor publishes its own depth topics), have ``intrinsics`` (the
+    real sensor leg publishes ``CameraInfo`` only then), and be stamped in a REP-103
+    ``*_optical_frame`` that TF places (``world`` or a body-convention link would rotate
+    or strand the cloud). ``sensors`` are the deploy's manifest + scene sensors.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> sensors = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").sensors
+        >>> estimated_depth_camera_problems(sensors, "shoulder_left")
+        []
+        >>> estimated_depth_camera_problems(sensors, "front_depth")
+        ['front_depth: a depth sensor, which publishes its own depth; name an RGB camera']
+        >>> estimated_depth_camera_problems(sensors, "head")
+        ["head: frame_id 'base_link' is not an *_optical_frame, so the cloud cannot be placed"]
+    """
+    spec = next((s for s in sensors if s.name == camera), None)
+    if spec is None:
+        return [f"{camera}: no such sensor on the robot or in the scene"]
+    if spec.modality != "rgb":
+        what = (
+            "a depth sensor, which publishes its own depth"
+            if spec.is_cloud_source
+            else f"a {spec.modality} sensor"
+        )
+        return [f"{camera}: {what}; name an RGB camera"]
+    problems = []
+    if spec.intrinsics is None:
+        problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")
+    if not str(spec.frame_id).endswith("_optical_frame"):
+        problems.append(
+            f"{camera}: frame_id {spec.frame_id!r} is not an *_optical_frame, so the cloud "
+            "cannot be placed"
+        )
     return problems

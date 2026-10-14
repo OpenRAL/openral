@@ -205,6 +205,11 @@ class LaunchInvocation:
     Forwarded as ``slam_depth_sidecar_autostart:=false`` only when
     ``slam_mono_camera`` is set and the scene opts out (operator-run /
     shared sidecar)."""
+    estimated_depth_camera: str | None
+    """The RGB camera whose DA3METRIC depth feeds the world-collision map, from
+    ``DeployRuntime.estimated_depth_camera``. Forwarded as
+    ``estimated_depth_camera:=<name>`` only when set; its cloud is octomap's input
+    (``deploy_cloud_topic``)."""
     enable_nav2: bool
     """Opt-in for the Nav2 navigation stack. Set by
     ``openral deploy sim --enable-nav2``; forwarded into the launch as
@@ -989,6 +994,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     slam_stereo_cameras: tuple[str, str] | None = None
     slam_mono_camera: str | None = None
     slam_depth_sidecar_autostart: bool = True
+    estimated_depth_camera: str | None = None
     # Scene-only for the same reason: which topic carries the depth cloud is a
     # property of the workcell's driver, not of this invocation.
     octomap_cloud_topic: str | None = None
@@ -1054,6 +1060,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if slam_mono_camera is None:
             slam_mono_camera = rt.slam_mono_camera
         slam_depth_sidecar_autostart = rt.slam_depth_sidecar_autostart
+        estimated_depth_camera = rt.estimated_depth_camera
         if octomap_cloud_topic is None:
             octomap_cloud_topic = rt.octomap_cloud_topic
     # Built-in defaults for the tri-state flags nothing pinned.
@@ -1237,8 +1244,29 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # a pinned driver topic, the sim bridge's back-projected depth camera, or, on real
     # hardware, any depth / point-cloud sensor (whose driver topic must then be pinned).
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
+    if estimated_depth_camera:
+        from openral_core.depth_extrinsic import estimated_depth_camera_problems
+
+        problems = estimated_depth_camera_problems(
+            merge_deploy_sensors(
+                description.sensors, deploy_scene.sensors if deploy_scene is not None else []
+            ),
+            estimated_depth_camera,
+        )
+        if problems:
+            raise ROSConfigError(
+                "runtime.estimated_depth_camera cannot feed the world map:\n  "
+                + "\n  ".join(problems)
+            )
+        _console.print(
+            f"[yellow]World-collision depth for {estimated_depth_camera!r} is ESTIMATED "
+            "(DA3METRIC, monocular), not measured: it can misplace or miss surfaces.[/yellow]"
+        )
     cloud_topic = deploy_cloud_topic(
-        description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+        description.sensors,
+        pinned=octomap_cloud_topic,
+        hal_mode=hal_mode,
+        estimated_camera=estimated_depth_camera,
     )
     if enable_octomap is None:
         enable_octomap = bool(cloud_topic) or (
@@ -1278,6 +1306,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             overlays,
             robot_unit,
             deploy_scene.sensors if deploy_scene is not None else (),
+            estimated_camera=estimated_depth_camera,
         )
     rig = rt if rt is not None else DeployRuntime()
     voxel_deadline_s, max_octree_age_s = rig.voxel_freshness_s
@@ -1617,6 +1646,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # carries the sim default and ros2 launch rejects an empty ``name:=``.
     if octomap_cloud_topic:
         argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
+    if estimated_depth_camera:
+        argv_template.append(f"estimated_depth_camera:={estimated_depth_camera}")
     # Grasp-target exemption: forwarded only when enabled, so the off path's argv is
     # unchanged. The launch always passes the kernel the manifest's gripper links.
     if rt is not None and rt.grasp_allowance_enabled:
@@ -1745,6 +1776,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         slam_stereo_cameras=slam_stereo_cameras,
         slam_mono_camera=slam_mono_camera,
         slam_depth_sidecar_autostart=slam_depth_sidecar_autostart,
+        estimated_depth_camera=estimated_depth_camera,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
         octomap_cloud_topic=octomap_cloud_topic,
@@ -2626,6 +2658,8 @@ def _preflight_depth_extrinsics(
     overlays: Sequence[SensorOverlay],
     unit: str | None,
     scene_sensors: Sequence[SensorSpec] = (),
+    *,
+    estimated_camera: str | None = None,
 ) -> None:
     """Refuse a real world-voxel deploy whose depth camera mount nobody has declared.
 
@@ -2647,7 +2681,9 @@ def _preflight_depth_extrinsics(
         depth_extrinsic_problems,
     )
 
-    problems = depth_extrinsic_problems(description, overlays, scene_sensors)
+    problems = depth_extrinsic_problems(
+        description, overlays, scene_sensors, estimated_camera=estimated_camera
+    )
     if problems:
         raise ROSConfigError(
             "the world-voxel check is on for a real deploy, but a depth camera's mount is not "

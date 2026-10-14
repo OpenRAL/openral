@@ -17,9 +17,13 @@ Wire protocol (msgpack dict in, msgpack dict out, ZMQ REQ/REP):
   in : {"op": "shutdown"}                       -> {"ok": True}
   in : {"op": "depth", "image": <png bytes>,
         "process_res": 504}
-       -> {"ok": True, "depth": <float32 bytes, metres>, "h": int, "w": int,
+       -> {"ok": True, "depth": <float32 bytes>, "h": int, "w": int,
            "fx": float, "fy": float, "cx": float, "cy": float,
-           "latency_ms": float}
+           "latency_ms": float, "model": str}
+
+  ``depth`` is the model's raw output: for ``DA3METRIC-*`` canonical depth (metres =
+  focal_px * depth / 300, converted client-side by ``openral_perception_ros.metric_depth``);
+  for the main series (``DA3-SMALL`` ..) DA3's own depth, not documented as metric.
   on error                                      -> {"ok": False, "error": str}
 """
 
@@ -106,6 +110,8 @@ def main() -> int:
                             "cx": float(k[0, 2]),
                             "cy": float(k[1, 2]),
                             "latency_ms": latency,
+                            # Consumers that need metric depth check which model this is.
+                            "model": args.model,
                         },
                         use_bin_type=True,
                     )
