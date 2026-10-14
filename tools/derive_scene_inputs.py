@@ -9,8 +9,9 @@ Boots the scene's sim env exactly as ``openral deploy sim`` does
   collision prims of non-robot, non-dynamic fixtures); MuJoCo: world-welded collision
   geoms (``openral_sim.backends.mujoco_geometry.static_collider_boxes``). Each box is a
   superset of its collider, the fail-closed direction.
-* **grasp declaration boxes** (``grasp_declaration.search_box`` / ``workspace_box``),
-  grounded from the instruction's target object and destination as the sim knows them
+* **grasp declaration boxes** (``grasp_declaration.search_box`` / ``workspace_box``) —
+  in ``base_frame``, or for a mobile base on MuJoCo in its ``odom_frame`` (the sim's
+  world), which the producer re-expresses in the grid frame every tick — grounded from the instruction's target object and destination as the sim knows them
   (the backend's ``scene_ground_truth``) through the reasoner's own grounding
   (``openral_reasoner.grounding.ground_grasp_target`` / ``ground_workspace``) — the
   functions a real cell feeds from perception instead. The workspace's source fixture
@@ -152,8 +153,14 @@ def source_fixture(
     return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]), best[1]
 
 
-def _static_reply(env: Any, description: Any) -> tuple[dict[str, Any], int | None]:
-    """The backend's static colliders and, for MuJoCo, the base body id they are in."""
+def _static_reply(
+    env: Any, description: Any, *, world: bool = False
+) -> tuple[dict[str, Any], int | None]:
+    """The backend's static colliders and, for MuJoCo, the body id they are in.
+
+    ``world``: in the MuJoCo world body's frame (id 0) instead of the base's — the
+    sim's ``odom`` frame, where a mobile base's declarations stay put.
+    """
     from openral_core.exceptions import ROSConfigError
 
     export = getattr(env, "static_collider_boxes", None)
@@ -167,7 +174,7 @@ def _static_reply(env: Any, description: Any) -> tuple[dict[str, Any], int | Non
     from openral_sim.backends.mujoco_geometry import static_collider_boxes
 
     model, data = handles
-    name = resolve_base_frame_body_name(model, description=description)
+    name = None if world else resolve_base_frame_body_name(model, description=description)
     base_id = 0 if name is None else int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
     robot = robot_self_body_ids(model, [j.sim_joint_name for j in description.joints])
     reply = static_collider_boxes(model, data, base_body_id=base_id, exclude_body_ids=robot)
@@ -280,10 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     scene["runtime"] = runtime
     instruction = args.instruction or runtime.get("preload_prompt")
     description = _robot_description(config)
+    mobile = bool(description.base_joints)
     env, seed = build_sim_env_from_yaml(str(config), robot_id_fallback=None)
     try:
         env.reset(seed=seed)
-        static, base_id = _static_reply(env, description)
+        static, base_id = _static_reply(env, description, world=mobile)
         set_task = getattr(env, "set_task", None)
         if instruction and callable(set_task):
             set_task(instruction)
@@ -297,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     if runtime.get("static_geometry_file") and not args.replace:
         print(f"static geometry: declared, kept ({runtime['static_geometry_file']})")
-    elif description.base_joints:
+    elif mobile:
         # ponytail: base-frame fixtures; a map-frame export when a mobile cell needs one.
         print(
             "static geometry: not derived — the robot has a mobile base, and declared "
@@ -311,7 +319,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not truth["placements"]:
         raise ROSConfigError(f"no target object / destination to ground for {instruction!r}")
-    base_frame = description.base_frame
+    # A mobile base's declarations go in the world frame (MuJoCo's world body is the
+    # sim's ``odom``): the producer re-expresses them in the grid frame every tick, so
+    # they stay true after the base moves. Isaac reports base-frame truth only.
+    base_frame = (
+        description.odom_frame if mobile and base_id is not None else description.base_frame
+    )
+    if mobile and base_id is None:
+        print(
+            f"grasp declaration boxes: in {base_frame} — this backend reports base-frame "
+            "truth only, true at the reset pose"
+        )
     placement = truth["placements"][0]
     obj_name = str(placement["object"])
     live = [

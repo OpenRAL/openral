@@ -48,6 +48,7 @@ from openral_hal._grasp_target_leg import (
     _Refusal,
     _refused_fit,
     approach_box,
+    rebase_box,
     search_column,
 )
 from openral_hal.vision_attachment_bridge import (
@@ -119,6 +120,42 @@ def test_the_envelope_keeps_dispatch_fields_verbatim_and_adds_the_region() -> No
     assert after is not None
     assert after.region == _measured(11 * _S)
     assert after.model_copy(update={"region": None}) == dispatched
+
+
+def _odom_from_base(x: float, yaw: float) -> np.ndarray:
+    """``base <- odom`` for a base at ``(x, 0)`` with heading ``yaw`` in odom."""
+    c, s = np.cos(yaw), np.sin(yaw)
+    odom_from_base = np.array([[c, -s, 0, x], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1.0]])
+    return np.linalg.inv(odom_from_base)
+
+
+def test_a_fixed_frame_search_box_stays_put_while_the_base_moves() -> None:
+    """A scene's odom box is re-expressed from the box as declared, never compounded."""
+    world = _box(x=2.0).model_copy(
+        update={
+            "frame_id": "odom",
+            "pose": Pose6D(xyz=(2.0, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
+        }
+    )
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker.on_declaration(_dispatched().model_copy(update={"search_box": world}))
+    generation = tracker.generation
+    tracker.accept(_measured(11 * _S))
+    for base_x, yaw, expected in ((0.0, 0.0, (2.0, 0.0)), (1.5, np.pi / 2, (0.0, -0.5))):
+        t = _odom_from_base(base_x, yaw)
+        tracker.rebase(lambda box, t=t: rebase_box(box, t, "openarm_base"))
+        box = tracker.declaration.search_box  # type: ignore[union-attr]  # reason: declared above
+        assert box is not None and box.frame_id == "openarm_base"
+        assert np.allclose(box.pose.xyz[:2], expected, atol=1e-9)
+    assert tracker.generation == generation  # same declaration: nothing re-arms
+    assert tracker.region == _measured(11 * _S)
+
+
+def test_a_tilted_frame_never_rebases_a_declared_box() -> None:
+    tilt = np.eye(4)
+    tilt[:3, :3] = [[1, 0, 0], [0, np.cos(0.1), -np.sin(0.1)], [0, np.sin(0.1), np.cos(0.1)]]
+    with pytest.raises(ROSConfigError, match="tilted"):
+        rebase_box(_box(), tilt, "base_link")
 
 
 def test_contradicting_evidence_retracts_at_once_and_logs_once() -> None:

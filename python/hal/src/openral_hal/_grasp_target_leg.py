@@ -438,6 +438,9 @@ class GraspTargetTracker:
         # bookkeeping, so contention is negligible next to the 2-5 Hz measurement.
         self._lock = threading.RLock()
         self._declaration: GraspDeclaration | None = None
+        # Dispatch's ``search_box`` / ``workspace_box`` as declared, in their own frame;
+        # ``rebase`` re-expresses them in the grid frame on ``_declaration``.
+        self._declared_boxes: tuple[PlaceRegion | None, PlaceRegion | None] = (None, None)
         # The one-hand declaration armed from the robot's own approach, or ``None``.
         self._approach: GraspDeclaration | None = None
         self._region: PlaceRegion | None = None
@@ -558,6 +561,7 @@ class GraspTargetTracker:
         self._declaration = declaration.model_copy(
             update={"region": None, "workspace_region": None}
         )
+        self._declared_boxes = (declaration.search_box, declaration.workspace_box)
         self._transition(
             f"declared:{declaration.target_id}:{declaration.stamp_ns}",
             f"grasp target declared {declaration.target_id!r} "
@@ -565,9 +569,28 @@ class GraspTargetTracker:
             f"rskill={declaration.rskill_id!r} trace={declaration.trace_id!r}",
         )
 
+    @_locked
+    def rebase(self, resolve: Callable[[PlaceRegion], PlaceRegion]) -> None:
+        """Re-express the declared boxes through ``resolve``, from the boxes as declared.
+
+        A scene may declare ``search_box`` / ``workspace_box`` in a fixed frame (``odom``,
+        ``map``) so they stay put while a mobile base moves; the leg resolves them into
+        the voxel grid's frame every tick. Identity, generation and region are kept.
+        """
+        if self._declaration is None:
+            return
+        search, workspace = self._declared_boxes
+        self._declaration = self._declaration.model_copy(
+            update={
+                "search_box": None if search is None else resolve(search),
+                "workspace_box": None if workspace is None else resolve(workspace),
+            }
+        )
+
     def _clear(self, why: str) -> None:
         self._generation += 1
         self._declaration = None
+        self._declared_boxes = (None, None)
         self._approach = None
         self._region = None
         self._handed_over = None
@@ -1095,6 +1118,57 @@ def lattice_from_msg(msg: Any) -> VoxelLattice:
         size=(int(msg.size_x), int(msg.size_y), int(msg.size_z)),
         occupancy=np.array(msg.occupancy, dtype=np.uint8),
     )
+
+
+#: The most a fixed frame's ``frame <- box frame`` rotation may tilt off vertical for a
+#: declared box to be re-expressed yaw-only (``rebase_box``): a mobile base on a level
+#: floor. Beyond it the box's footprint is not a column in the grid frame.
+_REBASE_MAX_TILT_RAD = math.radians(0.5)
+
+
+def rebase_box(box: PlaceRegion, t_frame_from_box: NDArray[np.float64], frame: str) -> PlaceRegion:
+    """A gravity-aligned declared ``box`` re-expressed in ``frame``, still gravity-aligned.
+
+    A scene may declare ``search_box`` / ``workspace_box`` in a fixed frame (``odom``,
+    ``map``) so it stays put while a mobile base moves; the leg re-expresses it in the
+    voxel grid's frame every tick through ``t_frame_from_box`` (tf2 ``frame <- box``).
+    The centre is transformed and the box's yaw composed with the transform's; the
+    transform's own tilt (at most ``_REBASE_MAX_TILT_RAD``) is dropped, so the result
+    is yaw-only like the box.
+
+    Raises:
+        ROSConfigError: The box or the transform is tilted past the bound.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> box = PlaceRegion(
+        ...     frame_id="odom",
+        ...     half_extents=(0.1, 0.2, 0.3),
+        ...     pose=Pose6D(xyz=(1.0, 0.0, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
+        ... )
+        >>> yaw90 = np.array([[0, -1, 0, 1], [1, 0, 0, 2], [0, 0, 1, 0.5], [0, 0, 0, 1.0]])
+        >>> r = rebase_box(box, yaw90, "base_link")
+        >>> r.frame_id, [round(v, 3) for v in r.pose.xyz], [round(v, 3) for v in r.pose.quat_xyzw]
+        ('base_link', [1.0, 3.0, 0.5], [0.0, 0.0, 0.707, 0.707])
+    """
+    rot = np.asarray(t_frame_from_box, dtype=np.float64)[:3, :3]
+    box_rot = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), box.pose.quat_xyzw)[:3, :3]
+    if abs(box_rot[2, 2] - 1.0) > _GRAVITY_TOL:
+        raise ROSConfigError(f"declared box in {box.frame_id!r} must be gravity-aligned.")
+    tilt = math.acos(min(1.0, max(-1.0, float(rot[2, 2]))))
+    if tilt > _REBASE_MAX_TILT_RAD:
+        raise ROSConfigError(
+            f"{frame} <- {box.frame_id} is tilted {math.degrees(tilt):.2f} deg; a declared "
+            f"box re-expresses only under {math.degrees(_REBASE_MAX_TILT_RAD):.2f} deg."
+        )
+    xyz = rot @ np.asarray(box.pose.xyz, dtype=np.float64) + np.asarray(t_frame_from_box)[:3, 3]
+    composed = rot @ box_rot
+    yaw = math.atan2(float(composed[1, 0]), float(composed[0, 0]))
+    quat = (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+    pose = box.pose.model_copy(
+        update={"xyz": tuple(float(v) for v in xyz), "quat_xyzw": quat, "frame_id": frame}
+    )
+    return box.model_copy(update={"frame_id": frame, "pose": pose})
 
 
 def search_column(search_box: PlaceRegion, *, below_m: float) -> PlaceRegion:
@@ -1687,6 +1761,7 @@ class GraspTargetLeg:
         # logged workspace state, so a transition is logged once (``_set_workspace``).
         self._workspace: PlaceRegion | None = None
         self._workspace_state = ""
+        self._rebase_state = ""
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1913,6 +1988,30 @@ class GraspTargetLeg:
     def _now_ns(self) -> int:
         return int(self._node.get_clock().now().nanoseconds)
 
+    def _in_frame(self, box: PlaceRegion, frame: str) -> PlaceRegion:
+        """A declared box in ``frame`` through tf2 (``rebase_box``), else as declared.
+
+        A box left in its own frame meets the grid-frame checks it always met: the
+        search refuses it (``frame_mismatch``) and the workspace is retracted.
+        """
+        if box.frame_id == frame:
+            return box
+        t = self._bridge._lookup(frame, box.frame_id)
+        if t is None:
+            state, line = "no_tf", f"no tf2 {frame} <- {box.frame_id}; box left unresolved"
+            resolved = box
+        else:
+            try:
+                resolved = rebase_box(box, t, frame)
+                state, line = "resolved", f"declared boxes resolved {box.frame_id} -> {frame}"
+            except ROSConfigError as exc:
+                state, line, resolved = "rejected", f"declared box not resolved: {exc}", box
+        if state != self._rebase_state:
+            self._rebase_state = state
+            log = self._node.get_logger()
+            (log.info if state == "resolved" else log.warning)(f"grasp target: {line}")
+        return resolved
+
     # ── manipulation workspace (#349) ────────────────────────────────────────
 
     def _set_workspace(self, workspace: PlaceRegion | None, state: str, line: str) -> None:
@@ -2017,6 +2116,10 @@ class GraspTargetLeg:
         outside it; the request is committed under the lock (``_commit_request``).
         """
         now_ns = self._now_ns()
+        newest = self._grid
+        if newest is not None:
+            frame = newest[0].frame_id
+            self.tracker.rebase(lambda box: self._in_frame(box, frame))
         self._confirm_workspace(now_ns)
         begun = self._begin_tick(now_ns)
         if self.tracker.region is None:

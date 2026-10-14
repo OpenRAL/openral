@@ -1089,7 +1089,7 @@ class _RoboCasaSim:
         return model, data
 
     def scene_ground_truth(self, *, base_body_id: int) -> dict[str, Any]:
-        """The task's objects and destination as base-frame boxes (sim ground truth).
+        """The task's objects and destination as boxes in ``base_body_id``'s frame (sim truth).
 
         The RoboCasa side of the ground-truth hook ``tools/derive_scene_inputs.py``
         derives a scene's grasp ``search_box`` / ``workspace_box`` from (Isaac:

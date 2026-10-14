@@ -97,13 +97,23 @@ def test_ground_truth_names_the_object_and_the_cabinet(kitchen: Any) -> None:
     assert "cab" in placement["target_name"] or "cabinet" in placement["target_name"].lower()
 
 
-def test_derived_scene_validates_without_hand_written_inputs(tmp_path: Path) -> None:
+def test_derived_scene_validates_without_hand_written_inputs(kitchen: Any, tmp_path: Path) -> None:
     out = tmp_path / "robocasa_pnp_derived.yaml"
     assert _tool().main(["--config", SCENE, "--out", str(out)]) == 0
     derived = yaml.safe_load(out.read_text())
     scene = DeployScene.model_validate(derived)
     assert scene.grasp_declaration is not None
-    assert scene.grasp_declaration.search_box is not None
+    search = scene.grasp_declaration.search_box
+    assert search is not None
+    # panda_mobile drives, so its declarations are in odom (the sim's world body), which
+    # the producer re-expresses in the grid frame every tick: they stay true off the
+    # reset pose. The box holds the object where the world puts it.
+    odom = RobotDescription.from_yaml(str(ROBOT)).odom_frame
+    assert search.frame_id == odom
+    workspace = scene.grasp_declaration.workspace_box
+    assert workspace is None or workspace.frame_id == odom
+    obj = np.asarray(kitchen.scene_ground_truth(base_body_id=0)["objects"]["obj"]["center_m"])
+    assert np.all(np.abs(obj - np.asarray(search.pose.xyz)) <= np.asarray(search.half_extents))
     # panda_mobile drives: base-frame fixtures would be true only at the reset pose, so the
     # tool declares none (the export itself is test_static_fixtures_never_include_the_robot).
     assert not (derived.get("runtime") or {}).get("static_geometry_file")
