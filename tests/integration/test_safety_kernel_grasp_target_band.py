@@ -127,6 +127,9 @@ _ROBOT_YAML = _REPO / "robots" / "openarm" / "robot.yaml"
 _FRAME = "openarm_base"  # the manifest's base_frame: the collision FK root and the grid's frame
 _LEFT_FINGER = "openarm_left_finger_pair"
 _RIGHT_FINGER = "openarm_right_finger_pair"
+# The leader names the hand; its mimic follower (#349) is a contact link too — the
+# kernel widens a declaration to it, and either jaw may be the one nearest a cell.
+_LEFT_JAWS = frozenset({_LEFT_FINGER, "openarm_left_finger_follower"})
 _LEFT_LINK7 = "openarm_left_link7"
 
 # ── The grid (real-cell resolution: `_octomap_resolution("real")` in deploy_e2e) ─────────────
@@ -492,7 +495,7 @@ def test_grasp_exemption_is_off_by_default_end_to_end(
         cell.world(_TARGET | _PLANE, _declaration(_region(_REGION_CENTRE, _REGION_HALF)))
         cell.send("off-declared", expect_accept=False)
         evidence = cell.refused("off-declared")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TARGET}
         assert cell.await_diagnostic(lambda v: v == "off") == "off"
         assert "safety.grasp_region_armed" not in cell.log()
@@ -514,7 +517,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         cell.world(_TARGET | _PLANE, None)
         cell.send("undeclared", expect_accept=False)
         evidence = cell.refused("undeclared")
-        assert evidence["link_a"] == _LEFT_FINGER, "only the finger may reach the target"
+        assert evidence["link_a"] in _LEFT_JAWS, "only the finger may reach the target"
         assert evidence["link_b_or_object"] in target_voxels
         assert cell.stop_lines()[-1][2:] == (0, ""), "no exemption was live"
         reset()
@@ -524,9 +527,9 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         cell.send("declared", expect_accept=True)
         assert "declared" in cell.safe, "a live left-finger declaration must exempt the target"
         assert not cell.estops
-        assert f"safety.grasp_region_armed target={_TARGET_ID} links=1" in cell.log()
+        assert f"safety.grasp_region_armed target={_TARGET_ID} links=2" in cell.log()
         live = cell.await_diagnostic(lambda v: v.startswith("live:"))
-        assert live == f"live:{_TARGET_ID}:links=1", live
+        assert live == f"live:{_TARGET_ID}:links=2", live
 
         # ── Declared, but link7 also reaches region cells: refused on link7 ──────────────
         cell.world(
@@ -549,7 +552,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         )
         cell.send("right-only", expect_accept=False)
         evidence = cell.refused("right-only")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in target_voxels
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID), "armed, but for the other hand"
         reset()
@@ -565,10 +568,10 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         )
         cell.send("expired", expect_accept=False)
         evidence = cell.refused("expired")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2:] == (0, ""), "an expired declaration exempts nothing"
         expired = cell.await_diagnostic(lambda v: v.startswith("expired:"))
-        assert expired == f"expired:{_TARGET_ID}:links=1", expired
+        assert expired == f"expired:{_TARGET_ID}:links=2", expired
         reset()
 
         # ── Declared, region in another frame: rejected, logged ──────────────────────────
@@ -578,7 +581,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         )
         cell.send("frame-mismatch", expect_accept=False)
         evidence = cell.refused("frame-mismatch")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2:] == (0, "")
         assert (
             f"safety.grasp_region_rejected reason=frame_mismatch target={_TARGET_ID}" in cell.log()
@@ -602,7 +605,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         )
         cell.send("support-plane", expect_accept=False)
         evidence = cell.refused("support-plane")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, (
             "the support surface under the target still stops the finger"
         )
@@ -644,7 +647,7 @@ def test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed(
         cell.world(_TARGET | _PLANE, _declaration(tight))
         cell.send("tight-fit", expect_accept=False)
         evidence = cell.refused("tight-fit")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TARGET}, (
             "the tight fit's own target cells must be what stops the finger"
         )
@@ -730,13 +733,13 @@ def test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_t
         cell.world(_TARGET | _PLANE, _approach_declaration())
         cell.send("approach-armed", expect_accept=True)
         assert "approach-armed" in cell.safe, "the approach-armed region must exempt the target"
-        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=1" in cell.log()
+        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=2" in cell.log()
 
         # ── A neighbour beside the target, outside the region: still a stop ──────────────
         cell.world(_TARGET | _PLANE | _NEIGHBOUR, _approach_declaration())
         cell.send("approach-neighbour", expect_accept=False)
         evidence = cell.refused("approach-neighbour")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _NEIGHBOUR}, (
             "the neighbour is not the approached target and stops the exempt finger"
         )
@@ -753,7 +756,7 @@ def test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_t
         )
         cell.send("two-hands", expect_accept=False)
         evidence = cell.refused("two-hands")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2:] == (0, ""), "a two-hand declaration exempts nothing"
         assert (
             f"safety.grasp_region_rejected reason=links_span_hands target={_TARGET_ID}"
@@ -902,7 +905,7 @@ def test_two_approach_armed_picks_in_one_goal_on_the_real_kernel(
         cell.world(_TARGET | _PLANE, second, attached=[right_held])
         cell.send("pick-2", expect_accept=True)
         assert "pick-2" in cell.safe, "the second pick's region was refused"
-        assert f"safety.grasp_region_armed target={second_id} links=1" in cell.log()
+        assert f"safety.grasp_region_armed target={second_id} links=2" in cell.log()
 
         # ── Pick 1's identity again (a restarted producer): refused as retired ──────────
         rearmed = first.model_copy(update={"region": _region(_REGION_CENTRE, _REGION_HALF)})
@@ -910,7 +913,7 @@ def test_two_approach_armed_picks_in_one_goal_on_the_real_kernel(
         cell.world(_TARGET | _PLANE, rearmed, attached=[right_held])
         cell.send("pick-1-rearmed", expect_accept=False)
         evidence = cell.refused("pick-1-rearmed")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
         reset()
 
@@ -1006,7 +1009,7 @@ def test_another_hands_release_retires_a_pre_handover_arming_and_the_producer_re
         cell.world(_TARGET | _PLANE, stale, attached=[])
         cell.send("pre-detach-region", expect_accept=False)
         evidence = cell.refused("pre-detach-region")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2] == 0, "nothing may be exempt before the re-measure"
         reset()
 
@@ -1019,16 +1022,16 @@ def test_another_hands_release_retires_a_pre_handover_arming_and_the_producer_re
         cell.world(_TARGET | _PLANE, second, attached=[])
         cell.send("re-armed", expect_accept=True)
         assert "re-armed" in cell.safe, cell.log()
-        assert f"safety.grasp_region_armed target={second_id} links=1" in cell.log()
+        assert f"safety.grasp_region_armed target={second_id} links=2" in cell.log()
 
         # ── The retired identity, with a fresh region: refused ──────────────────────────
         old = armed.model_copy(update={"region": _region(_REGION_CENTRE, _REGION_HALF)})
         cell.world(_TARGET | _PLANE, old, attached=[])
         cell.send("retired", expect_accept=False)
         evidence = cell.refused("retired")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
-        assert cell.log().count(f"safety.grasp_region_armed target={first_id} links=1") == 1
+        assert cell.log().count(f"safety.grasp_region_armed target={first_id} links=2") == 1
         reset()
 
 
@@ -1056,7 +1059,7 @@ def test_sigint_mid_goal_with_an_armed_region_exits_cleanly(
     ):
         cell.world(_TARGET | _PLANE, _approach_declaration())
         cell.send("armed", expect_accept=True)
-        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=1" in cell.log()
+        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=2" in cell.log()
 
         # The HAL keeps publishing candidates (~500 Hz) up to and through the SIGINT. Three
         # seconds is past the processor's first 512-span batch export (that export starts the
@@ -1104,9 +1107,14 @@ _TALL_HELD_HALF = (0.03, 0.05, 0.04)
 #: Beside the target at y 0.24-0.26 (j = 7), z -0.56..-0.54 (k = 6): outside the held region
 #: (y <= 0.23) but within the 25 mm bloat, and inside the finger hull's reach (y <= ~0.26).
 _WITHIN_MARGIN = frozenset(_index(i, 7, 6) for i in (2, 3))
-#: One column further (y 0.26-0.28, j = 8): past the bloat (y <= 0.265 once cell-closed), a
-#: few millimetres from the finger hull, 54 mm from link7's.
+#: One column further (y 0.26-0.28, j = 8): past the bloat (y <= 0.265 once cell-closed);
+#: a few millimetres from the old swept finger hull, beyond the margin of the rigid jaws.
 _PAST_MARGIN = frozenset(_index(i, 8, 6) for i in (2, 3))
+#: The held region shifted +y (y 0.19-0.25): its 25 mm bloat, cell-closed, starts at
+#: y = 0.16, so the target's j = 2 column (y 0.14-0.16) is occupied but past the bloat.
+_SHIFTED_CENTRE = (0.0, 0.22, -0.60)
+_SHIFTED_HALF = (0.03, 0.03, 0.02)
+_PAST_LATERAL = frozenset(c for c in _TARGET if (c // _SX) % _SY == 2)
 
 
 def _kernel_box(
@@ -1165,7 +1173,10 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
                                                           bloat, the plane 33.5 mm away
     25 mm, a neighbour within the margin                  ACCEPTED: exempt for the finger
                                                           (the HZ-0115-32 residual)
-    25 mm, a cell one column past the bloat               REFUSED, left finger on it
+    25 mm, a cell one column past the bloat               ACCEPTED, and undeclared too: the
+                                                          rigid jaws (#349) never reach it
+    25 mm, region shifted +y: the target's j = 2 column   REFUSED, a jaw on that column: the
+    occupied but laterally past the bloat                 exemption ends at the lateral face
     25 mm, world raised a voxel: the plane 13.5 mm from   REFUSED, left finger on the plane: its
     the finger, its centres 30 mm under the held bottom   centres lie deeper than the margin
     50 mm (the cap), same raised world                    ACCEPTED: the plane's top layer is in
@@ -1188,7 +1199,7 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
         cell.world(_TARGET | _PLANE, _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.0)))
         cell.send("margin-0", expect_accept=False)
         evidence = cell.refused("margin-0")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in bottom_layer, evidence
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
         reset()
@@ -1206,15 +1217,30 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
         cell.send("margin-25-neighbour", expect_accept=True)
         assert "margin-25-neighbour" in cell.safe, cell.log()
 
-        # ── A cell past the bloat: still a stop ───────────────────────────────────────
+        # ── A cell past the bloat: clear of the jaws (#349) ───────────────────────────
+        # The swept finger_pair hull reached it; the rigid leader + follower sit more than
+        # the kernel margin inside the bloat at this pose (every j = 8/9 cell, probed).
+        # Accepted with the declaration AND with none and no target, so the accept is the
+        # geometry, never an exemption reaching past the bloat (the margin-0 row holds that).
         cell.world(
             _TARGET | _PLANE | _PAST_MARGIN,
             _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.025)),
         )
-        cell.send("margin-25-past", expect_accept=False)
-        evidence = cell.refused("margin-25-past")
-        assert evidence["link_a"] == _LEFT_FINGER
-        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PAST_MARGIN}, evidence
+        cell.send("margin-25-past", expect_accept=True)
+        assert "margin-25-past" in cell.safe, cell.log()
+        cell.world(_PLANE | _PAST_MARGIN, None)
+        cell.send("past-undeclared", expect_accept=True)
+        assert "past-undeclared" in cell.safe, cell.log()
+
+        # ── The lateral face, target present: occupied target cells past the bloat ────
+        # No world cell beside the target is within the jaws' reach (probed), so the
+        # declaration moves instead: its bloat ends at y = 0.16, and the target's own
+        # j = 2 column, which the leader jaw touches, lies laterally past it.
+        cell.world(_TARGET | _PLANE, _declaration(bloated(_SHIFTED_CENTRE, _SHIFTED_HALF, 0.025)))
+        cell.send("margin-25-lateral", expect_accept=False)
+        evidence = cell.refused("margin-25-lateral")
+        assert evidence["link_a"] in _LEFT_JAWS
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PAST_LATERAL}, evidence
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
         reset()
 
@@ -1226,7 +1252,7 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
         )
         cell.send("margin-25-support", expect_accept=False)
         evidence = cell.refused("margin-25-support")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, evidence
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
         reset()
@@ -1329,7 +1355,7 @@ def test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support(
         handover("latched-payload", boxes()[1], expect_accept=False)
         assert cell.log().count("at handover") == latches + 1, "the payload box never latched"
         evidence = cell.refused("latched-payload")
-        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_a"] in _LEFT_JAWS
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, evidence
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
         reset()

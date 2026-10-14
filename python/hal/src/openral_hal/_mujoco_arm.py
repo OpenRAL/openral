@@ -447,13 +447,16 @@ class MujocoArmHAL(HALBase):
         if not self._connected:
             return
         log.info("hal.disconnect", robot=self.description.name)
+        self._close_renderers()
+        self._model = None
+        self._data = None
+        self._connected = False
+
+    def _close_renderers(self) -> None:
         for renderer in self._renderers.values():
             with contextlib.suppress(Exception):
                 renderer.close()
         self._renderers.clear()
-        self._model = None
-        self._data = None
-        self._connected = False
 
     def mujoco_handles(self) -> tuple[Any, Any] | None:
         """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.
@@ -869,6 +872,10 @@ class MujocoArmHAL(HALBase):
         self._slot_group.discard()
         if self._data is not None:
             self._data.ctrl[:] = 0.0
+        # Close the GL contexts now: ``disconnect`` is a no-op once
+        # ``_connected`` is False, and a renderer left to the GC is finalized
+        # at interpreter teardown, after its GL library — a segfault on exit.
+        self._close_renderers()
         self._model = None
         self._data = None
         self._connected = False
