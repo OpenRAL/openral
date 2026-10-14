@@ -64,6 +64,30 @@ class TestDepthFrameContract:
             depth_frame(depth, rgb, k, pose)
 
 
+class TestStaticReplyFrame:
+    def test_a_fixed_base_with_no_base_body_is_refused_not_exported_in_world(self) -> None:
+        """Without a body backing base_frame the walls would land offset by the base's pose."""
+        mujoco = pytest.importorskip("mujoco")
+        from types import SimpleNamespace
+
+        from openral_core import RobotDescription
+
+        model = mujoco.MjModel.from_xml_string(
+            "<mujoco><worldbody><body name='mount' pos='1 2 0'/>"
+            "<body name='shelf' pos='1 0 0'><geom type='box' size='.1 .2 .3'/></body>"
+            "</worldbody></mujoco>"
+        )
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        env = SimpleNamespace(mujoco_handles=lambda: (model, data))
+        desc = RobotDescription.from_yaml(str(_REPO / "robots" / "openarm" / "robot.yaml"))
+        with pytest.raises(ROSConfigError, match="no MJCF body backs"):
+            _tool()._static_reply(env, desc)  # type: ignore[attr-defined]
+        # The world frame on request (a mobile base's odom) is still fine.
+        reply, base_id = _tool()._static_reply(env, desc, world=True)  # type: ignore[attr-defined]
+        assert base_id == 0 and len(reply["boxes"]) == 1
+
+
 class TestMujocoStaticColliders:
     def test_the_robot_is_never_a_static_fixture(self) -> None:
         """OpenArm's base is welded to the world, yet it is the robot, not a fixture."""

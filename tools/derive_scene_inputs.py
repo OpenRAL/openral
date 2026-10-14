@@ -256,6 +256,13 @@ def _static_reply(
 
     model, data = handles
     name = None if world else resolve_base_frame_body_name(model, description=description)
+    if name is None and not world:
+        # Never fall back to the world body: the colliders would be written as
+        # base_frame walls offset by the base's world pose (wrong kernel geometry).
+        raise ROSConfigError(
+            f"no MJCF body backs {description.base_frame!r}; static geometry in base_frame "
+            "cannot be derived (resolve_base_frame_body_name found none)"
+        )
     base_id = 0 if name is None else int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
     robot = robot_self_body_ids(model, [j.sim_joint_name for j in description.joints])
     reply = static_collider_boxes(model, data, base_body_id=base_id, exclude_body_ids=robot)
