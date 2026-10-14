@@ -57,7 +57,13 @@ def _infer(torch: Any, model: Any, image: Image.Image, process_res: int) -> tupl
         pred = model.inference([image], process_res=process_res)
     torch.cuda.synchronize()
     depth = np.ascontiguousarray(np.asarray(pred.depth, dtype=np.float32)[0])
-    k = np.asarray(pred.intrinsics, dtype=np.float32)[0]
+    # DA3METRIC predicts no camera (``pred.intrinsics`` is None): its consumers take the
+    # camera's own K (``openral_perception_ros.metric_depth``), so the reply's K is NaN.
+    k = (
+        np.full((3, 3), np.nan, dtype=np.float32)
+        if pred.intrinsics is None
+        else np.asarray(pred.intrinsics, dtype=np.float32)[0]
+    )
     return depth, k, (time.perf_counter() - t0) * 1000.0
 
 

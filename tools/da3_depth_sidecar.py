@@ -175,7 +175,10 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     )
 
     def _install(uv: str, py: Path) -> None:
-        pip = [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128"]
+        # --no-config: launched from the repo root (the deploy launch's cwd), uv would
+        # otherwise apply the root pyproject's [tool.uv] torch overrides to this
+        # isolated venv and fail to resolve against its own torch pin.
+        pip = [uv, "pip", "install", "--no-config", "--python", str(py), "--torch-backend=cu128"]
         if not aarch64:
             run_cmd("da3-sidecar", [*pip, *_REQUIREMENTS])
             return

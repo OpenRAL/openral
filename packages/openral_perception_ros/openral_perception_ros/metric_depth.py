@@ -5,7 +5,12 @@
 README's conversion is ``metric_depth = focal * net_output / 300`` with ``focal`` the
 camera's focal length in pixels (mean of ``fx`` and ``fy``). The network predicts at its
 own processing raster, so the focal used is the camera's ``CameraInfo`` focal scaled to
-that raster — the image the network actually saw. The camera's real K is used, never the
+that raster — the image the network actually saw (upstream applies ``focal * depth / 300``
+inside the forward pass on the processed tensor). Measured on Spark (2026-10-14, MuJoCo +
+Isaac ``head_zed``, ``process_res`` 252..1008, inputs upscaled to 1920x1080): the raster
+reading holds a median DA3/ground-truth ratio of 0.94-1.16, the input-resolution reading
+swings 0.4-4.0. Accuracy at ``process_res`` 504 on Isaac renders: abs-rel 0.13-0.16, the
+robot's own arm at 0.2-0.45 m about 0.1 m too far. The camera's real K is used, never the
 K DA3 estimates, because the cloud is placed through the camera's calibrated mount.
 
 Pure numpy: no ROS, no torch. The provider node (``depth_provider_node``) owns the I/O.
