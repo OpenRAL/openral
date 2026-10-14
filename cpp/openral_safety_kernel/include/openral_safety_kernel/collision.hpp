@@ -16,6 +16,7 @@
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,12 +37,26 @@ struct Transform {
   Vec3 t{};
 };
 
-/// Joint connecting a link to its parent.
+/// Joint connecting a link to its parent. A MIMIC kind (`MimicJoint` in the
+/// manifest, the URDF `<mimic>` relation) has no qpos column of its own: FK
+/// reads the mimicked joint's column `dof_index` and poses the link at
+/// `mimic_multiplier * qpos[dof] + mimic_offset` — the OpenArm's follower
+/// finger, rigid in its own link frame and checked at the gripper's commanded
+/// value like every other link (docs/reference/finger-mimic-geometry.md). A
+/// mimic link adds no Jacobian column (`jacobian_dls_step`) and is never a
+/// DOF of the envelope.
 enum class JointKind : std::uint8_t {
   kFixed = 0,
   kRevolute = 1,
   kPrismatic = 2,
+  kMimicRevolute = 3,
+  kMimicPrismatic = 4,
 };
+
+/// Whether `kind` poses its link from another joint's column.
+constexpr bool is_mimic(JointKind kind) noexcept {
+  return kind == JointKind::kMimicRevolute || kind == JointKind::kMimicPrismatic;
+}
 
 /// A capsule attached to a link, expressed in that link's frame.
 struct Capsule {
@@ -184,10 +199,15 @@ struct CollisionModel {
   std::vector<int> dof_index;         ///< qpos index for revolute/prismatic; -1 if fixed
   std::vector<Transform> origin;      ///< fixed parent-link -> joint transform
   std::vector<Vec3> axis;             ///< joint axis (unit) in the joint frame
-  std::vector<int> capsule_link;      ///< link index each capsule attaches to
-  std::vector<Capsule> capsules;      ///< parallel to capsule_link
-  std::vector<int> box_link;          ///< link index each OBB attaches to
-  std::vector<Obb> boxes;             ///< parallel to box_link (blocky links)
+  /// Parallel to links when the model has a mimic joint, else empty (identity
+  /// for every link): a `kMimic*` link's value is
+  /// `mimic_multiplier[i] * qpos[dof_index[i]] + mimic_offset[i]`.
+  std::vector<double> mimic_multiplier;
+  std::vector<double> mimic_offset;
+  std::vector<int> capsule_link;  ///< link index each capsule attaches to
+  std::vector<Capsule> capsules;  ///< parallel to capsule_link
+  std::vector<int> box_link;      ///< link index each OBB attaches to
+  std::vector<Obb> boxes;         ///< parallel to box_link (blocky links)
   /// Parallel to `boxes`: index into `hulls` for the tight geometry refining
   /// that box in the world-voxel check, or -1 for none. Empty means no box
   /// carries tight geometry — the pre-#166 behaviour, which every
@@ -380,6 +400,30 @@ inline constexpr double kMaxGraspRegionHalfExtentM = 0.20;
 /// own. Past it the region grants nothing.
 inline constexpr double kMaxGraspRegionVolumeM3 = 0.03;
 
+/// Sanity bound on one side of a declared, map-confirmed manipulation
+/// workspace (issue #349, `docs/reference/manipulation-workspace-contact.md`).
+/// **A Safety-WG placeholder**, mirroring
+/// `openral_core.GraspDeclaration.MAX_WORKSPACE_HALF_EXTENT_M`: a workspace is
+/// one tote interior or one shelf slot, not a room. Past it nothing is exempt.
+inline constexpr double kMaxWorkspaceRegionHalfExtentM = 0.50;
+
+/// Sanity bound on a manipulation workspace's volume (m³). **A Safety-WG
+/// placeholder**, mirroring `GraspDeclaration.MAX_WORKSPACE_VOLUME_M3`.
+inline constexpr double kMaxWorkspaceRegionVolumeM3 = 0.25;
+
+/// Ceiling on `workspace_contact_max_lead_m` (m), the manipulation workspace's
+/// push bound (#349). **A Safety-WG placeholder**, mirroring the `le=0.10` bound
+/// on `openral_core.DeployRuntime.workspace_contact_max_lead_m`: a command more
+/// than 10 cm past where the hand really is is not "touching", it is shoving.
+inline constexpr double kMaxWorkspaceContactLeadM = 0.10;
+
+/// How many control periods a previously accepted JOINT_POSITION command stays
+/// the "previous row" of the next chunk's row 0 for the workspace hand-speed
+/// bound (#349). Past it (or after any refusal, latch, reset, declaration
+/// change, configure/activate) row 0 is measured against the measured state
+/// again. 2 = the next tick plus one tick of jitter.
+inline constexpr double kWorkspaceCommandFreshPeriods = 2.0;
+
 /// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
 /// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
 /// lifecycle refuses a declaration past it (or non-positive / non-finite)
@@ -415,6 +459,42 @@ struct GraspTargetRegion {
   /// the measured configuration) stays inside the box, then retires for good.
   bool handover{false};
   std::size_t object_index{0};  ///< attached-object index of that payload, when `handover`
+};
+
+/// Producer-confirmed manipulation workspace of a live grasp declaration
+/// (issue #349, draft — Safety-WG review pending): an oriented box in the
+/// robot base frame (the source tote's interior) the voxel map confirmed.
+///
+/// While valid, an occupied cell whose CENTRE lies inside the box does not
+/// trip the arm-vs-world voxel check for a robot link whose bit is set in
+/// `link_mask` (the manifest-derived HAND links: gripper leaders, mimic
+/// followers and the link that carries them) **iff** `hand_speed_mps <=
+/// max_speed_mps` — the hand's speed, set by the lifecycle per candidate: the
+/// MEASURED hand speed (joint-state velocity, row-independent), or, without a
+/// fresh measured velocity, the commanded speed bound per checked row —
+/// **and** `hand_lead_m <= max_lead_m`, the hand's lead over its measured pose (how far the checked
+/// row's hand is from where the hand really is; on a joint-PD arm the drives'
+/// force grows with it, so this bounds how hard the hand may push). A
+/// non-finite speed or lead (the lifecycle's "unknown": no measured state, no
+/// control period, a mode whose commanded speed it does not reconstruct) never
+/// satisfies it. Arm links,
+/// cells outside the box, self-collision and the attached checks are
+/// untouched; the ADR-0115 grasp-target exemption keeps precedence.
+///
+/// valid == false means no exemption anywhere — the pre-#349 check, bit for
+/// bit.
+struct WorkspaceContactRegion {
+  bool valid{false};                            ///< a live, confirmed workspace is in force
+  std::bitset<kMaxGraspMaskLinks> link_mask{};  ///< bit l: robot link l is a hand link
+  Transform pose{};                             ///< box centre pose, robot base frame
+  Vec3 half_extents{};                          ///< box half-extents (m, all > 0)
+  /// Hand speed bound (m/s) of the configuration being checked; +inf = unknown.
+  double hand_speed_mps{std::numeric_limits<double>::infinity()};
+  double max_speed_mps{0.0};  ///< `workspace_contact_max_speed_mps`
+  /// Hand lead (m) of the configuration being checked over the measured
+  /// configuration; +inf = unknown.
+  double hand_lead_m{std::numeric_limits<double>::infinity()};
+  double max_lead_m{0.0};  ///< `workspace_contact_max_lead_m`
 };
 
 /// Capacity of the kernel's retired grasp-identity set (`RetiredGraspSet`).
@@ -518,6 +598,7 @@ struct VoxelGrid {
   std::uint8_t support_witness_live{0};                ///< bit i: object i's witness is still live
   PlaceApproachRegion place_region{};                  ///< live place declaration's region, if any
   GraspTargetRegion grasp_region{};                    ///< live grasp declaration's region, if any
+  WorkspaceContactRegion workspace_region{};           ///< live confirmed workspace, if any (#349)
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -584,6 +665,19 @@ struct CollisionHit {
   /// decision is unaffected (both numbers <= 0, pair trips either way) —
   /// disclosure only, like place_target_adjudicated, never a gate.
   bool depth_is_box_bound{false};
+  /// Manipulation-workspace disclosure (#349), never a decision: how many
+  /// (hand link, cell) pairs within the margin this check tolerated because
+  /// the live workspace exempted them, and the deepest one (smallest surface
+  /// distance; its link and cell index). 0 / -1 / +inf when none.
+  int workspace_pairs{0};
+  int workspace_link{-1};
+  int workspace_cell{-1};
+  double workspace_min_distance{std::numeric_limits<double>::infinity()};
+  /// Why the reported pair was NOT tolerated by a live workspace (disclosure, #349):
+  /// 0 not applicable / exempt, 1 the link is not a hand link, 2 the hand is over its
+  /// speed bound (or its speed is unknown), 3 over its lead bound (or unknown), 4 the
+  /// cell centre lies outside the workspace box.
+  int workspace_denied{0};
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -998,7 +1092,9 @@ double hull_hull_distance(const TightPose& a, const TightPose& b, double margin,
 /// Forward kinematics for one joint-position row (`qpos`, length `n_dof`):
 /// fills `scratch.link_world[i]` with each link's frame in the base frame.
 /// Allocation-free; `scratch.link_world` must already be sized to
-/// `model.n_links`.
+/// `model.n_links`. A `kMimic*` link reads its mimicked joint's column and
+/// moves by `mimic_multiplier * q + mimic_offset` (identity relation when the
+/// model's mimic arrays are empty).
 void forward_kinematics(const CollisionModel& model, const double* qpos, std::size_t n_dof,
                         CollisionScratch& scratch) noexcept;
 
@@ -1013,8 +1109,17 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 /// stage-2 hull. The OBB result stays the broad phase and the fallback, so a
 /// pair the boxes already clear costs nothing extra and a manifest without
 /// `tight_geometry` is bit-for-bit unchanged.
+///
+/// `workspace` (#349, draft): with a live manipulation workspace, a pair of two
+/// HAND links (both in its link mask) whose link origins both lie inside its box
+/// does not trip while the hands are slow (`workspace_contact_exempts`' speed and
+/// lead predicate on both) — two hands meeting inside the workspace are the same
+/// low-speed contact a hand meeting an object there is. The pair is counted in
+/// `workspace_pairs` and reaches `sweep_min_distance` at its own depth. Arm links
+/// and everything outside the box are unchanged; `nullptr` = today's check.
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin) noexcept;
+                                  double margin,
+                                  const WorkspaceContactRegion* workspace = nullptr) noexcept;
 
 /// Maximum joint count the allocation-free Jacobian step supports (stack scratch
 /// is sized to this). Covers every in-tree robot (humanoids ~30 dof) with
@@ -1096,6 +1201,19 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// exempt pair reads its own depth, and on a stage-2 hull link that is stage
 /// 1's bound, not the refined distance — but where nothing trips without it,
 /// it never raises max(sweep_min_distance - margin, 0): it may only slow.
+///
+/// A SECOND, narrower-in-time exemption (issue #349, draft — Safety-WG review
+/// pending; default off — grid.workspace_region is invalid unless the
+/// lifecycle armed it): a pair the grasp region did not exempt, whose link is a
+/// hand link of the live workspace and whose cell centre lies in the workspace
+/// box, does not trip while the hand is slow and its lead small
+/// (`workspace_contact_exempts`).
+/// Same accounting as the grasp exemption (decided before the narrow phase, no
+/// stage-2 budget, its stage-1 depth reaches sweep_min_distance, never the
+/// reported evidence), so the subset argument above holds for the union of the
+/// two exempt sets. Every tolerated pair within the margin is COUNTED in
+/// `workspace_pairs` with the deepest one's link/cell/distance — disclosure,
+/// never silent.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin,
                                    double band_m = 0.0) noexcept;
@@ -1353,6 +1471,49 @@ bool grasp_links_one_hand(const std::vector<int>& parent,
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.
 const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
 
+/// Does the live manipulation workspace (#349) exempt robot link `link_index`
+/// from occupied cell `center` (base frame)? The whole predicate, failing
+/// closed: false with no valid workspace, a link outside the hand mask (or out
+/// of range), a hand speed that is not finite or above `max_speed_mps`, a hand
+/// lead that is not finite or above `max_lead_m` (a non-finite or non-positive
+/// bound included, either one), a degenerate or non-finite box,
+/// or the cell centre outside the box (exact point-in-OBB). The ADR-0115
+/// grasp-target exemption is decided first by `check_voxel_collision`; this is
+/// only asked of pairs it did not exempt. Allocation-free.
+bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept;
+
+/// Validate a producer-confirmed manipulation workspace and lower it into
+/// `out` (#349). Same geometry checks as `ingest_grasp_region`, against the
+/// workspace caps `kMaxWorkspaceRegionHalfExtentM` / `kMaxWorkspaceRegionVolumeM3`.
+/// `out.hand_speed_mps` / `out.hand_lead_m` are reset to +inf (unknown) and
+/// `out.max_speed_mps` / `out.max_lead_m` set to the bounds. Returns kOk iff
+/// `out.valid` was set; every other value leaves `out` inert. The frame match is
+/// the lifecycle's job. Not on the hot path.
+GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& half_extents,
+                                          const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                          double max_speed_mps, double max_lead_m,
+                                          WorkspaceContactRegion& out) noexcept;
+
+/// Radius (m) about link `link`'s frame origin that bounds every point of its
+/// collision geometry (capsules: |origin| + half_length + radius; boxes:
+/// |origin| + |half_extents|; a box's stage-2 hull lies inside its box). 0 for a
+/// link with no geometry or out of range. Configure-time; used with
+/// `link_displacement_bound` to bound how far any point of the link moves.
+double link_geometry_reach(const CollisionModel& model, int link) noexcept;
+
+/// Radius (m) about the attach link's frame origin that bounds every point of
+/// payload `object` (per primitive: |its origin in the link frame| + its bounding
+/// radius — box |half_extents|, capsule half_length + radius, sphere radius). The
+/// manipulation-workspace speed and lead bounds (#349) use it for a payload's
+/// attach link, so a carried box's far corners count, not just the hand's.
+double attached_object_reach(const AttachedModel& attached, const AttachedObject& object) noexcept;
+
+/// Upper bound (m) on how far ANY point within `reach` of a link's frame origin
+/// moves between link poses `from` and `to`: |Δt| + θ·reach, θ the rotation
+/// angle of `from.r`ᵀ·`to.r` (a point p moves |Δt + (R₁−R₀)p| ≤ |Δt| +
+/// 2·sin(θ/2)·|p| ≤ |Δt| + θ·|p|). +inf for non-finite input. Allocation-free.
+double link_displacement_bound(const Transform& from, const Transform& to, double reach) noexcept;
+
 /// Does object i's attested support contact explain occupied cell `center`?
 ///
 /// Purely geometric and index-free, so it doesn't decorrelate as the base
@@ -1417,8 +1578,16 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 /// it). On a hit, `link_a` is the attached-object index and `link_b` is the
 /// robot link index of the deepest pair within the margin, and `min_distance`
 /// is that pair's distance (`CollisionHit`). Allocation-free.
-CollisionHit check_attached_self_collision(const CollisionModel& model,
-                                           const AttachedModel& attached,
-                                           const CollisionScratch& scratch, double margin) noexcept;
+///
+/// `workspace` (#349, draft): a payload is part of the hand carrying it — against
+/// another HAND link it is tolerated by `check_self_collision`'s two-slow-hands rule
+/// applied to its attach link (both origins inside the box, both hands slow),
+/// counted in `workspace_pairs`. Arm links stop as before. Under a live workspace a
+/// box payload carrying a stage-2 refinement is checked as its measured (unpadded)
+/// box; `nullptr` or an invalid workspace = today's check on the shipped box.
+CollisionHit
+check_attached_self_collision(const CollisionModel& model, const AttachedModel& attached,
+                              const CollisionScratch& scratch, double margin,
+                              const WorkspaceContactRegion* workspace = nullptr) noexcept;
 
 }  // namespace openral_safety_kernel

@@ -820,7 +820,8 @@ the unattested legacy case.
 
 **Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
 world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
-(`openarm_<side>_finger_pair`, one hull swept over the stroke) contains the grasp
+(`openarm_<side>_finger_pair`; one hull swept over the stroke when this was written, the
+leader finger alone since #349, the follower being its own mimic link) contains the grasp
 target during a grasp, so `check_voxel_collision` stops on the target's own
 cells before any attachment can exist. The spec is
 [`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
@@ -837,7 +838,9 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 
 * **Parameters.** `grasp_allowance_enabled` (default `false`) and
   `grasp_contact_links` (the launch-derived allowlist — the manifest's
-  `role: gripper` joints' child links). Enabled with an empty allowlist, or an
+  `role: gripper` joints' child links and their `mimic_joints` followers,
+  `RobotDescription.grasp_contact_links()`; a declaration naming one jaw exempts
+  every allowlisted link on the same joint column, i.e. the other jaw). Enabled with an empty allowlist, or an
   allowlist naming a link the collision model does not have, fails configure.
   Enabling it subscribes to the world state even with attached checking off.
 * **Region measurement age.** `grasp_region_max_age_s` and
@@ -1008,6 +1011,121 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   other hand only, expired, wrong frame and the support plane all refuse; only
   the declared left finger in its region is accepted, and the stop line and
   `/diagnostics` disclose the exemption.
+
+## Manipulation-workspace contact (issue #349, draft) — default off, sim-only
+
+**Draft for Safety-WG review; off unless `workspace_contact_enabled`; `openral deploy run` and a
+non-sim `deploy_e2e` refuse it.** Design and evidence:
+[`docs/reference/manipulation-workspace-contact.md`](../../docs/reference/manipulation-workspace-contact.md).
+A learned pick in a packed tote touches the neighbouring cartons, the staging board and the tote
+walls with the HAND only; the grasp-target exemption above covers the target alone, so every Isaac
+deploy-sim run stopped before the grasp with PhysX reporting no real contact.
+
+**The rule, per (robot link, occupied cell, checked row).** In `check_voxel_collision`, after the
+ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** hold:
+
+1. the link is a **hand link** — `workspace_contact_links`, which the launch derives from the
+   manifest (`RobotDescription.hand_links()`: every gripper leader and mimic follower plus the link
+   carrying them; OpenArm: both `finger_pair`s, both `finger_follower`s, both `link7`), never
+   configured by name;
+2. the cell centre lies inside the live **workspace** — `GraspDeclaration.workspace_region`, the
+   scene-declared `workspace_box` the HAL's grasp-target leg confirmed against a fresh voxel grid
+   (occupied cells covering ≥ 10 % of its footprint), re-stamped with that grid's `source_stamp`;
+3. the **hand is slow** — `hand_speed_mps ≤ workspace_contact_max_speed_mps` (impact energy).
+   The speed is the **measured** hand speed, once per candidate: `max over hand links of
+   link_displacement_bound(pose at q_meas, pose at q_meas + dq_meas · period, reach) / period`
+   (`period` = `workspace_contact_control_period_s`), `dq_meas` the `/joint_states` velocity. Impact
+   energy is set by how fast the hand actually moves; the commanded trajectory has 0.5–1 rad
+   chunk-boundary jumps (the runner's non-RTC prefetch) that the arm smooths, and a commanded jump
+   into an obstacle is the lead bound's job (item 4). A message naming a joint without a finite
+   velocity forgets that joint's velocity; the measured speed is used iff every FK-relevant dof has
+   one at most `collision_state_deadline_ms` old (`measured_velocity_fresh`). **Otherwise the
+   commanded speed** (it reads faster): for row *s* of a JOINT_POSITION chunk `max over hand links
+   of link_displacement_bound(pose at row s−1, pose at row s, reach) / period`. Row −1 is, per
+   joint the row commands, that joint's
+   **previously accepted command** (the last row of the last accepted chunk commanding it, from any
+   earlier tick or slot) while it is **fresh** — due at most `kWorkspaceCommandFreshPeriods` = 2
+   control periods ago, never not-yet-due — else its **measured** value. Measured-to-row reads a
+   position-controlled arm's tracking lag as speed (the Isaac stops read ~1 m/s for a hand PhysX
+   measured at ≤ 0.66 m/s), and the fallback can only read faster. Held commands are cleared on
+   any refused chunk (every drop path, seen once per candidate through the drop counter), an
+   external E-stop latch, an E-stop reset, configure/activate/cleanup, and when the workspace
+   declaration is armed or dropped. Joints the row does not command keep the value the check
+   places them at (measured; the partner's committed target for the tick-partner check, which uses
+   the same rule);
+4. the **hand does not lead far** — `hand_lead_m ≤ workspace_contact_max_lead_m` (push force),
+   where `hand_lead = max over hand links of link_displacement_bound(pose at the MEASURED state,
+   pose at row s with the jaw joints at their measured value, reach) − s · max_speed ·
+   control_period` (floored at 0), not divided by the period: row s runs s periods from now, so a
+   free hand may be that much travel at the bound away from the measured pose; row 0 and the
+   measured state get no allowance, and a blocked hand is re-judged at every chunk.
+   On a joint-PD arm commanded-minus-measured is proportional to what the drives push with; without
+   it a hand whose stationary target is buried deep would keep pushing at zero commanded speed. The
+   jaw joints (`workspace_contact_jaw_joints`, the manifest's `role: gripper` joints; empty = none
+   excluded) are held at measured because a closing jaw's remaining stroke is not an arm push (the
+   measured hand speed likewise leaves out their velocity; the commanded fallback keeps it): a
+   grasp squeeze is bounded by the gripper's own effort limit (#349 p_mix02, an 80 mm "lead" that
+   was the jaw still closing on a held box).
+
+`link_displacement_bound` = |Δorigin| + θ·reach bounds the displacement of every point of the
+link's collision geometry (`link_geometry_reach`), rotation included; for a hand link carrying a
+payload the SPEED bound's reach is the larger of that and the payload's (`attached_object_reach`); the
+lead keeps the hand's own reach (push is set by the joint error). A carried
+payload's cells inside the workspace are exempt by the same predicate on its attach link (after the
+support-witness and attach-residue exemptions; WARN `link=payload@<link>`); its self-collision
+check against the robot is unchanged. `check_attached_self_collision` checks a box payload that
+carries a stage-2 refinement as the refinement's box (its DOP's first three slabs, proved inside the
+shipped box at ingest): the measured object against the robot's exact geometry.
+
+**Workspace brake** (`workspace_contact_brake_enabled`, requires the rule; launch sets it): when a
+JOINT_POSITION chunk's only reasons to stop are the measured hand speed and/or lead (it passes with
+both read as within bound, the measured pose included; needs a fresh measured velocity), the kernel publishes a hold — every commanded
+non-jaw joint at its measured value — instead of an E-stop, no latch; for a speed/lead-only stop the rows instead creep toward the command (scaled so the tightest row leads one control period at the speed bound while the measured hand is over its speed bound, else half the lead bound, plus its row allowance, when the scaled rows pass the relaxed check; WARN `lead_m= row=` names that row). WARN `safety.workspace_brake ... creep=`.
+A world-state message the kernel refuses for its payload model (no attachment stamp, too many objects or primitives, an undecodable primitive, a support witness out of bounds) is disclosed as WARN `safety.attachment_fail_closed reason=` (≤ 1 Hz) — the producer's attach barrier waits for a revision the kernel will never apply, so the runner's tick ack times out 8 s later (r34 mix07_2).
+With `workspace_contact_hold_max_consecutive` > 0, a command the relaxed check still refuses while the
+measured pose passes is held too (never executed), up to that many chunks in a row; then the latched
+stop.
+
+**Fail-closed cases (today's stop):** feature off; no live grasp declaration (retracted, expired
+`timeout_s`, future stamp — a RETIRED identity (`handover_exit`, `released`) ends only the grasp
+region, not the workspace: carry, place and a regrasp happen in the same workspace); no
+`workspace_region`; a workspace in another frame, with geometry, a non-unit quaternion, over the caps
+(`kMaxWorkspaceRegionHalfExtentM` 0.50 m, `kMaxWorkspaceRegionVolumeM3` 0.25 m³ — WG placeholders)
+or confirmed longer ago than `grasp_region_max_age_s` (also between messages); a world-state stream
+older than `attached_collision_deadline_ms`; a stale or incomplete measured state; any control mode
+other than JOINT_POSITION (velocity / Cartesian rows carry no reconstructed hand speed); a hand
+speed or lead above its bound or non-finite. Arm links, cells outside the box, self-collision and the
+attached-payload checks are untouched.
+
+**Parameters.** `workspace_contact_enabled` (default `false`), `workspace_contact_links`,
+`workspace_contact_max_speed_mps`, `workspace_contact_max_lead_m` and
+`workspace_contact_control_period_s` (the chunk row spacing, `1 / action_spec.control_freq_hz`
+from the launch). Configure refuses: enabled without `grasp_allowance_enabled`; a speed or period
+that is not finite and > 0; a lead that is not finite, > 0 and ≤ `kMaxWorkspaceContactLeadM`
+(0.10 m, a WG placeholder) — there is no default the kernel would silently use; an empty link list
+or a name that is not a collision link. It WARNs `safety.workspace_contact enabled ... Safety-WG
+review pending` with the links, both bounds and the freshness window. Sim calibration points:
+0.35 m/s and 0.05 m; the real-hardware values are a Safety-WG decision.
+
+**Disclosure — never silent.** Every tolerated pair within the margin is counted
+(`CollisionHit::workspace_pairs`, the deepest one's link/cell/distance). The node WARNs
+`safety.workspace_contact link=<l> cell=<idx> depth_mm=<d> speed_mps=<v>
+speed_source=<measured|commanded> max_mps=<m> lead_m=<d>
+max_lead_m=<m> pairs=<n> step=<s> target=<id>` at most once per second per link; logs
+`safety.workspace_region_armed` / `_dropped reason=` / `_rejected reason=` (a standing refusal once
+per change) and, when the workspace drops, `safety.workspace_contact_summary target= pairs=
+max_depth_mm= max_speed_mps= max_speed_source= max_mps= max_lead_m= lead_bound_m=`; sets span
+attributes `safety.workspace_contact_active` (the workspace was live for the candidate),
+`safety.workspace_contact_pairs`, `safety.workspace_contact_max_depth_m`,
+`safety.workspace_hand_speed_mps`, `safety.workspace_hand_speed_source`,
+`safety.workspace_hand_lead_m`; and the `safety.collision` stop line carries
+`workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
+hand_speed_source=<measured|commanded>` for the reported row.
+
+Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle tests
+(`test_lifecycle_kernel.cpp`), the allocation-free check (`test_no_alloc.cpp`), and
+`tests/unit/test_workspace_contact.py` (schema, scene rejection, `hand_links`, launch/CLI, the
+producer on a real lattice).
 
 ## The contact-force gate (ADR-0100, survey Path C)
 
@@ -1221,6 +1339,24 @@ Everything else keeps the primitive path unchanged: capsule-lowered robots, and 
 Entry 012's lockstep is **not engaged** — `check_attached_self_collision` still
 reads the same link boxes it always did. Carried payloads got their own staged
 path in #266, below.
+
+## Mimic joints: the follower finger as its own link (issue #349)
+
+A link the URDF poses by `<mimic>` — the OpenArm's second finger, equality-coupled
+to the first — is a `RobotDescription.mimic_joints` row and lowers to
+`collision_joint_kind` 3 (`JointKind::kMimicRevolute`) / 4 (`kMimicPrismatic`) on
+the **mimicked** joint's `collision_dof_index` column, with the relation in the
+per-link `collision_mimic_multiplier` / `collision_mimic_offset` arrays (empty =
+no mimic link). `forward_kinematics` reads the leader's column and moves the link
+by `multiplier * q + offset`: no qpos slot of its own, no Jacobian column
+(`jacobian_dls_step` skips it; configure refuses a mimic on the EE chain), counted
+once in the FK-dof set. So each finger is one rigid box + exact hull checked at the
+gripper's commanded value like every other link, instead of one hull swept over the
+whole stroke: a cell between OPEN fingers no longer trips while a cell a finger
+occupies at the commanded opening still does. Configure refuses a mimic link
+without a dof column, a non-finite or zero multiplier, mis-shaped mimic arrays and
+an unknown kind code. Design, measurements and the owed ADR / hazard row:
+[`finger-mimic-geometry.md`](../../docs/reference/finger-mimic-geometry.md).
 
 ## The same stages for a carried payload (issue #266)
 

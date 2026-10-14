@@ -61,6 +61,7 @@ from openral_sim._sidecar_common import (
     opt_num as _opt_num,
 )
 from openral_sim.registry import SCENES
+from openral_sim.rollout import DEFAULT_SUCCESS_KEY
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
@@ -489,7 +490,7 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
         # back to a large cap so the continuously-driven deploy env never truncates.
         str(env_cfg.task.max_steps if env_cfg.task.max_steps is not None else _DEFAULT_MAX_STEPS),
         "--success-key",
-        env_cfg.task.success_key or "is_success",
+        env_cfg.task.success_key or DEFAULT_SUCCESS_KEY,
         "--fallback-dt-s",
         str(_FALLBACK_SIM_DT_S),
         "--robotwin-root",

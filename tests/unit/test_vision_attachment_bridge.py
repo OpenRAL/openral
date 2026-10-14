@@ -1218,32 +1218,6 @@ def test_a_release_clearance_above_its_cap_is_refused() -> None:
     )
 
 
-def _jaw_box_gap(live: Any, gripper: Any, region: Any) -> float:
-    """The pre-fix ``jaw_at`` measure: the jaw link's bounding box vs the region (SAT gap)."""
-    from openral_core.geometry import homogeneous_from_quat_xyz
-    from openral_hal.vision_attachment_bridge import (
-        _joint_motion,
-        _link_boxes,
-        _xyz_rpy_matrix,
-        box_gap_lower_bound_m,
-    )
-
-    bridge = live.bridge
-    joint = next(j for j in live.robot.joints if j.name == gripper.joint_name)
-    t_region_link = bridge._lookup(region.frame_id, bridge.tf_frame(gripper.producer.attach_link))
-    t_jaw = (
-        t_region_link
-        @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
-        @ _joint_motion(joint, bridge._positions[gripper.joint_name])
-    )
-    t_r = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
-    target = (t_r[:3, 3], t_r[:3, :3], np.asarray(region.half_extents))
-    return min(
-        box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
-        for t_prim, half in _link_boxes(live.robot, gripper.jaw_link)
-    )
-
-
 def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it() -> None:
     """Review finding: ``jaw_at`` took ANY overlap of the jaw link's bounding box with the
     region as "at it", and the OpenArm's finger_pair box (half 0.029 x 0.071 x 0.081 m)
@@ -1263,10 +1237,272 @@ def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it(
         assert at and "closing midpoint" in measure, measure
 
         live.place("right", (_I41_JAW[0], _I41_JAW[1] + 0.17, _I41_JAW[2]))
-        assert _jaw_box_gap(live, right, region) < 0.0, "the old overlap test accepted it"
+        # (Since #349 the finger_pair box is the leader finger alone, no longer the whole
+        # opening, so the old overlap no longer reaches this neighbour either; the
+        # midpoint test still has to say "not at it".)
         at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
         assert not at, measure
         assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+def test_a_jaw_lifted_before_the_attach_takes_the_region_where_it_closed() -> None:
+    """#349 p6_mix00 / p5_mix02: the stall settles late, so the ATTACH fired with the jaw
+    5-8 cm above the pre-grasp region ("jaw not at the region") and the grasp fell back
+    to a crude box. The object has been rigid in the jaw since the close: the region's
+    pose in the attach link at the last closing tick the jaw was at it is the payload's.
+    No snapshot (never at the region during the close) still segments. Review D: once
+    taken, the record is kept through the lift (jaw off the region, region re-stamped)
+    until the close ends."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_jaw_lifted_before_attach") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        live.place("right", _I41_JAW)
+        reference = bridge._region_payload(right, stamp_ns=now_ns)
+        assert reference is not None
+        right.region_spent = None
+
+        right.close_baseline = (0, 0)  # a close is in progress, nothing attached
+        bridge._note_close_region(right)
+        assert right.close_region is None, "a jaw still closing records nothing"
+        for _ in range(3):  # the jaw stalled on the object, at the region
+            bridge._note_close_region(right)
+        assert right.close_region is not None
+        lifted = (_I41_JAW[0], _I41_JAW[1], _I41_JAW[2] + 0.08)
+        live.place("right", lifted)
+        assert not bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)[0]
+        # The lift, still stalled and not yet attached: the jaw is off the region now,
+        # and the map re-stamps the frozen region. The record is kept (review D).
+        live.leg.tracker.accept(_i41_region(now_ns + 1))
+        for _ in range(3):
+            bridge._note_close_region(right)
+        assert right.close_region is not None
+        right.trigger._loaded = True  # the ATTACH tick: kept, not cleared (p7_mix02)
+        bridge._note_close_region(right)
+        assert right.close_region is not None
+        taken = bridge._region_payload(right, stamp_ns=now_ns)
+        assert taken is not None
+        assert np.allclose(taken[0].pose_in_link.xyz, reference[0].pose_in_link.xyz, atol=1e-6)
+
+        right.trigger._loaded = False
+        right.region_spent = None
+        right.close_baseline = None
+        bridge._note_close_region(right)  # the jaw opened: forgotten
+        assert right.close_region is None
+        # A close stalled away from the region from the start (a neighbour, #349
+        # r21_mix07) records nothing and does not take the region.
+        right.close_baseline = (0, 0)
+        for _ in range(4):
+            bridge._note_close_region(right)
+        assert right.close_region is None
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+def test_a_taken_region_re_stamped_by_the_map_is_still_spent() -> None:
+    """Review follow-up: ``region_spent`` was keyed on the region's stamp, which the map
+    re-stamps on every grid, so the same frozen region offered again after a re-stamp
+    read as a fresh measurement and became a second payload. Keyed on the box and the
+    generation it was accepted under, a re-stamp stays spent (a new declaration's equal box
+    is a new payload: test_a_region_payload_hands_over_only_the_region_it_was_built_from)."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_region_spent_restamp") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        live.place("right", _I41_JAW)
+        assert bridge._region_payload(right, stamp_ns=now_ns) is not None
+        live.leg.tracker.accept(_i41_region(now_ns + 1))  # the map's re-stamp
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+def test_the_region_payload_is_clipped_at_the_tool_point() -> None:
+    """#349 p8/p9/p11_mix02: the margin's top bloat put the region box into the carrying
+    wrist (payload vs openarm_left_link6). Given the tool point, nothing of the payload
+    lies behind it along the approach; without it the box is the region's."""
+    from openral_core import BoxShape, GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import primitive_poses, region_attachment
+
+    region = PlaceRegion(
+        frame_id="openarm_left_link7",
+        pose=Pose6D(xyz=(0.0, 0.0, -0.10), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="l"),
+        half_extents=(0.06, 0.04, 0.05),
+        evidence_ref="test",
+        stamp_ns=1,
+    )
+    declaration = GraspDeclaration(
+        target_id="cell:box",
+        contact_links=["openarm_left_finger_pair"],
+        rskill_id="r",
+        trace_id="t",
+        timeout_s=10.0,
+        stamp_ns=1,
+        active=True,
+        region=region,
+    )
+    kwargs: dict[str, Any] = {
+        "attach_link": "openarm_left_link7",
+        "touch_links": ["openarm_left_finger_pair"],
+        "t_link_from_region": np.eye(4),
+        "stamp_ns": 2,
+    }
+    tcp = (0.0, 0.0, -0.07)
+    whole = region_attachment(declaration, **kwargs)
+    clipped = region_attachment(declaration, **kwargs, tcp_in_link=tcp)
+    assert isinstance(whole.primitives[0].shape, BoxShape)
+    assert whole.primitives[0].shape.half_extents_m == (0.06, 0.04, 0.05)
+    shape = clipped.primitives[0].shape
+    assert isinstance(shape, BoxShape)
+    (t,) = primitive_poses(clipped, np.eye(4))
+    top = t[2, 3] + shape.half_extents_m[2]
+    bottom = t[2, 3] - shape.half_extents_m[2]
+    assert top == pytest.approx(-0.07) and bottom == pytest.approx(-0.15)
+
+
+def test_a_segmented_payload_is_clipped_at_the_tool_point() -> None:
+    """#349 d15_mix07: a mask that bled into the hand put a payload box behind the palm,
+    against the carrying wrist. Box primitives are clipped at the tool point (front face
+    kept); other shapes and a missing tool point leave the payload as it is."""
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+        SphereShape,
+    )
+    from openral_hal.vision_attachment_bridge import (
+        clip_payload_behind_tool_point,
+        primitive_poses,
+    )
+
+    def prim(shape: Any, z: float) -> AttachedCollisionPrimitive:
+        return AttachedCollisionPrimitive(
+            shape=shape,
+            pose_in_object=Pose6D(xyz=(0.0, 0.0, z), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="p"),
+        )
+
+    held = AttachedCollisionObject(
+        object_id="p",
+        attach_link="openarm_left_link7",
+        touch_links=["openarm_left_finger_pair"],
+        primitives=[
+            prim(BoxShape(half_extents_m=(0.03, 0.03, 0.05)), -0.10),  # z -0.15..-0.05
+            prim(SphereShape(radius_m=0.02), -0.06),
+        ],
+        pose_in_link=Pose6D(
+            xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_left_link7"
+        ),
+        confidence=0.5,
+        evidence_kind=AttachmentEvidenceKind.VISION_SEGMENTATION,
+        evidence_ref="test",
+        stamp_ns=1,
+    )
+    assert clip_payload_behind_tool_point(held, None) == held
+    clipped = clip_payload_behind_tool_point(held, (0.0, 0.0, -0.07))
+    box, sphere = clipped.primitives
+    assert isinstance(box.shape, BoxShape)
+    (t, _) = primitive_poses(clipped, np.eye(4))
+    assert t[2, 3] + box.shape.half_extents_m[2] == pytest.approx(-0.07)
+    assert t[2, 3] - box.shape.half_extents_m[2] == pytest.approx(-0.15)
+    assert sphere == held.primitives[1]
+
+
+def test_an_oblique_payload_box_is_clipped_without_losing_its_front() -> None:
+    """#349 r17: segmented OBBs fitted to points in front of the palm can still poke a
+    corner behind it when tilted. The box becomes the approach-aligned box enclosing it,
+    cut at the plane: nothing behind, the front face where it was."""
+    import itertools
+    import math
+
+    from openral_hal.vision_attachment_bridge import _clip_behind_tool_point
+
+    th = math.radians(45.0)
+    pose = np.eye(4)
+    pose[:3, :3] = [[1, 0, 0], [0, math.cos(th), -math.sin(th)], [0, math.sin(th), math.cos(th)]]
+    pose[2, 3] = -0.10
+    half = np.array([0.03, 0.03, 0.05])
+    clipped_pose, clipped_half = _clip_behind_tool_point(pose, half, np.array([0.0, 0.0, -0.07]))
+
+    def along_u(p: Any, h: Any) -> list[float]:
+        return [
+            -float((p[:3, 3] + p[:3, :3] @ (np.array(s) * h))[2])
+            for s in itertools.product([-1, 1], repeat=3)
+        ]
+
+    assert min(along_u(clipped_pose, clipped_half)) == pytest.approx(0.07)
+    assert max(along_u(clipped_pose, clipped_half)) == pytest.approx(max(along_u(pose, half)))
+
+
+def test_a_grasp_without_context_still_poses_its_fallback_off_the_tool_point() -> None:
+    """A typed precondition failure (no tf2, no depth) finished without a tool point and
+    the jaw-span box landed on the attach link's origin, inside the wrist. It is now posed
+    off the leg's own tool point, in front of the palm."""
+    from tests.unit.test_grasp_target_leg import _live_leg
+
+    with _live_leg("test_no_context_fallback") as live:
+        bridge = live.bridge
+        right = live.gripper("openarm_right_finger_pair")
+        right.pending = True
+        bridge._finish(
+            right,
+            generation=right.generation,
+            stamp_ns=1,
+            masks=[],
+            scores=[],
+            reason="ROSPerceptionStale: test",
+        )
+        held = right.attachment
+        assert held is not None
+        tcp = np.asarray(right.tcp_in_link)
+        u = tcp / np.linalg.norm(tcp)
+        assert float(np.asarray(held.pose_in_link.xyz) @ u) > float(np.linalg.norm(tcp))
+
+
+def test_the_region_payload_carries_the_measured_box_as_its_refinement() -> None:
+    """#349: the padded payload box ships the measured (unpadded) region as its stage-2
+    refinement — the kernel checks the payload against the robot's own links as that
+    box, the padding is for the map only. The refinement's first three DOP slabs are
+    the measured box in the payload box's frame, inside it."""
+    from openral_core import BoxShape, GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import region_attachment
+
+    def box(half: tuple[float, float, float]) -> PlaceRegion:
+        return PlaceRegion(
+            frame_id="openarm_left_link7",
+            pose=Pose6D(xyz=(0.0, 0.0, -0.15), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="l"),
+            half_extents=half,
+            evidence_ref="test",
+            stamp_ns=1,
+        )
+
+    padded, measured = box((0.08, 0.06, 0.05)), box((0.06, 0.04, 0.035))
+    declaration = GraspDeclaration(
+        target_id="cell:box",
+        contact_links=["openarm_left_finger_pair"],
+        rskill_id="r",
+        trace_id="t",
+        timeout_s=10.0,
+        stamp_ns=1,
+        active=True,
+        region=padded,
+    )
+    held = region_attachment(
+        declaration,
+        attach_link="openarm_left_link7",
+        touch_links=["openarm_left_finger_pair"],
+        t_link_from_region=np.eye(4),
+        stamp_ns=2,
+        inner_region=measured,
+    )
+    (prim,) = held.primitives
+    assert isinstance(prim.shape, BoxShape)
+    assert prim.shape.half_extents_m == pytest.approx((0.08, 0.06, 0.05))
+    tight = prim.tight_geometry
+    assert tight is not None
+    assert tight.dop_lo_m[:3] == pytest.approx((-0.06, -0.04, -0.035))
+    assert tight.dop_hi_m[:3] == pytest.approx((0.06, 0.04, 0.035))
+    assert len(tight.hull_vertices_m) == 8
 
 
 def _held_region_payload(live: Any) -> tuple[Any, int]:

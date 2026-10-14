@@ -36,15 +36,16 @@ _MANIFESTS = sorted(_REPO.glob("robots/*/robot.yaml"))
 KNOWN_GAPS: dict[str, dict[str, str]] = {
     "openarm": {
         # The manifest is MJCF-named: *_base_link is *_link0, the end-effector
-        # base is link7 and the two finger links are the swept finger_pair.
+        # base is link7, the leader finger is finger_pair and the follower
+        # (URDF <mimic>) is the finger_follower mimic link.
         "openarm_left_base_link": "alias: manifest openarm_left_link0 (MJCF naming)",
         "openarm_right_base_link": "alias: manifest openarm_right_link0 (MJCF naming)",
         "openarm_left_ee_base_link": "alias: manifest openarm_left_link7",
         "openarm_right_ee_base_link": "alias: manifest openarm_right_link7",
-        "openarm_left_ee_link1": "alias: swept into openarm_left_finger_pair",
-        "openarm_left_ee_link2": "alias: swept into openarm_left_finger_pair",
-        "openarm_right_ee_link1": "alias: swept into openarm_right_finger_pair",
-        "openarm_right_ee_link2": "alias: swept into openarm_right_finger_pair",
+        "openarm_left_ee_link1": "alias: manifest openarm_left_finger_pair (the leader finger)",
+        "openarm_left_ee_link2": "alias: manifest openarm_left_finger_follower (mimic link)",
+        "openarm_right_ee_link1": "alias: manifest openarm_right_finger_pair (the leader finger)",
+        "openarm_right_ee_link2": "alias: manifest openarm_right_finger_follower (mimic link)",
     },
     "ur5e": {
         "base_link_inertia": "UR base body: not in the kernel model (#356 follow-up)",
@@ -117,6 +118,8 @@ def test_every_urdf_collision_body_is_in_the_kernel_model_or_listed(manifest: Pa
         | {j.child_link for j in robot.joints}
         | {a.parent_link for a in robot.fixed_attachments}
         | {a.child_link for a in robot.fixed_attachments}
+        | {m.parent_link for m in robot.mimic_joints}
+        | {m.child_link for m in robot.mimic_joints}
     )
     outside = _urdf_collision_links(urdf) - tree_links
     listed = KNOWN_GAPS.get(name, {})

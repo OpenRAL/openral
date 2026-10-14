@@ -404,10 +404,35 @@ def clustered_obb_primitives(
     return primitives, centre_in_link, rotation
 
 
+def palm_plane_m(
+    tcp_in_link: tuple[float, float, float] | NDArray[np.float64],
+    palm_in_link: tuple[float, float, float] | NDArray[np.float64],
+) -> float:
+    """How far along the approach the palm plane lies, in the attach link (m).
+
+    The approach is the attach-link-origin -> tool-point direction; the palm is the jaw
+    joint's origin (where the jaws hinge or slide from). A held object is between and
+    beyond the jaws, never behind that plane: OpenArm's tool point IS its finger hinge
+    (6.8 cm), an SO-101's sits at the jaw centre 14 cm past a hinge at 0. 0 when the
+    palm lies at or behind the link origin, or there is no tool point.
+
+    Example:
+        >>> round(palm_plane_m((0.0, 0.0, -0.07), (0.0, -0.018, -0.068)), 3)
+        0.068
+        >>> palm_plane_m((0.14, 0.0, 0.01), (0.0, 0.0, 0.0))
+        0.0
+    """
+    tcp = np.asarray(tcp_in_link, dtype=np.float64)
+    reach = float(np.linalg.norm(tcp))
+    if reach <= 0.0:
+        return 0.0
+    return max(0.0, float(np.asarray(palm_in_link, dtype=np.float64) @ (tcp / reach)))
+
+
 def jaw_span_primitive(*, object_id: str, jaw_span_m: float) -> AttachedCollisionPrimitive:
     """Build the conservative fallback box used when a mask fails the gates.
 
-    A cube of half-extent ``jaw_span_m`` centred on the tool center point: "we
+    A cube of half-extent ``jaw_span_m`` (posed in front of the tool point by the caller): "we
     know *something* is held, we do not know its shape". Deliberately crude —
     the point is that a rejected mask still leaves geometry in front of the
     collision checker rather than an invisible payload.
@@ -502,13 +527,27 @@ class VisionAttachmentEvidenceProducer:
                 f"Vision attachment evidence needs one gripper parent link, got {attach_links}."
             )
         self._attach_link = next(iter(attach_links))
-        self._touch_links = [joint.child_link for joint in gripper_joints]
+        # The jaws plus their mimic followers (#349): the follower finger squeezes the
+        # payload as hard as the leader, so the payload never collides with it.
+        jaws = {joint.name for joint in gripper_joints}
+        # The jaw joint's origin: the palm a held object never lies behind (``palm_plane_m``).
+        self._palm_in_link: tuple[float, float, float] = tuple(  # type: ignore[assignment] # reason: origin_xyz is a 3-tuple
+            float(v) for v in gripper_joints[0].origin_xyz
+        )
+        self._touch_links = [joint.child_link for joint in gripper_joints] + [
+            m.child_link for m in description.mimic_joints if m.mimics in jaws
+        ]
         self._attached: bool = False
 
     @property
     def attach_link(self) -> str:
         """Robot link that owns the attached payload's pose."""
         return self._attach_link
+
+    @property
+    def palm_in_link(self) -> tuple[float, float, float]:
+        """The jaw joint's origin in the attach link (``palm_plane_m``)."""
+        return self._palm_in_link
 
     @property
     def touch_links(self) -> tuple[str, ...]:
@@ -575,6 +614,29 @@ class VisionAttachmentEvidenceProducer:
 
         rotation_link_cam = t_link_from_cam[:3, :3]
         points_link = points_cam @ rotation_link_cam.T + t_link_from_cam[:3, 3]
+        # A held object is between and beyond the jaws, never behind the palm plane (the
+        # jaw joint's origin, ``palm_plane_m``): mask points there are the hand the mask
+        # bled into (#349 p15_mix07, a payload fitted on them met the carrying wrist).
+        # Dropped before any fit or gate.
+        reach = float(np.linalg.norm(tcp))
+        plane = palm_plane_m(tcp, self._palm_in_link)
+        if plane > 0.0:
+            in_front = points_link @ (tcp / reach) >= plane
+            if not bool(in_front.any()):
+                behind = VisionAttachmentReport(
+                    accepted=False,
+                    rejections=(*rejections, "behind_palm"),
+                    depth_valid_fraction=depth_valid_fraction,
+                    point_count=0,
+                    extents_m=(0.0, 0.0, 0.0),
+                    volume_m3=0.0,
+                    centroid_distance_m=float("inf"),
+                    candidate_index=index,
+                    candidate_count=count,
+                    mask_score_advisory=score_advisory,
+                )
+                return behind, np.zeros((0, 3), dtype=np.float64)
+            points_link = points_link[in_front]
 
         basis = (
             _pca_basis(points_link)
@@ -587,9 +649,12 @@ class VisionAttachmentEvidenceProducer:
         centroid = points_link.mean(axis=0)
         centroid_distance = float(np.linalg.norm(centroid - tcp))
 
+        # Sorted by EXTENT, as the caps are ordered: least variance is not least extent
+        # for a near-cubic cloud (#349 p3_mix04: (0.105, 0.091, 0.106) put the 0.105 axis
+        # against the 0.10 jaw cap while the 0.091 axis was the one between the jaws).
         if any(
             float(extent) > cap
-            for extent, cap in zip(extents, cfg.max_payload_extents_m, strict=True)
+            for extent, cap in zip(sorted(extents), cfg.max_payload_extents_m, strict=True)
         ):
             rejections.append("payload_extent")
         if volume > cfg.max_payload_volume_m3:
@@ -784,7 +849,22 @@ class VisionAttachmentEvidenceProducer:
         Pure: ``on_grasp`` builds this before it knows the verdict (the
         rejection path needs it for every candidate outcome), so the attached
         flag is flipped by the caller at its return points, not here.
+
+        The box is centred on the tool point, pushed out along the attach-link-origin
+        → tool-point direction until its back face is on the palm plane
+        (``palm_plane_m``): the held object is between and beyond the jaws, never
+        behind them in the wrist. Centred on an OpenArm's tool point (its finger
+        hinge) half the box sat inside the carrying arm and stopped it on its own
+        link5 (#349 p2_mix00); an SO-101's tool point is the jaw centre, so its box
+        stays centred there.
         """
+        tcp = np.asarray(tcp_in_link, dtype=np.float64)
+        reach = float(np.linalg.norm(tcp))
+        # Centred on the tool point, but pushed out until its back face is on the palm
+        # plane (an OpenArm's tool point IS the palm; an SO-101's is the jaw centre).
+        span = self._config.jaw_span_m
+        along = max(reach, palm_plane_m(tcp, self._palm_in_link) + span)
+        centre = tcp / reach * along if reach > 0.0 else tcp
         return AttachedCollisionObject(
             object_id=object_id,
             attach_link=self._attach_link,
@@ -793,7 +873,7 @@ class VisionAttachmentEvidenceProducer:
                 jaw_span_primitive(object_id=object_id, jaw_span_m=self._config.jaw_span_m)
             ],
             pose_in_link=Pose6D(
-                xyz=tcp_in_link,
+                xyz=(float(centre[0]), float(centre[1]), float(centre[2])),
                 quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                 frame_id=self._attach_link,
             ),

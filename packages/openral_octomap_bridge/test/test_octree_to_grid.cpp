@@ -18,7 +18,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -487,4 +490,80 @@ TEST(OctreeToGrid, RasterizingTheKitchenStaysInsideThePublishBudget) {
       std::chrono::duration<double, std::milli>(elapsed).count() / kIterations;
   EXPECT_LT(per_call_ms, 25.0) << "rasterization took " << per_call_ms
                                << " ms, a quarter of the 10 Hz publish period";
+}
+
+// Declared static geometry (manipulation-workspace-contact.md §3.1): base-frame
+// points are marked in the grid's own lattice, which is offset AND rotated
+// relative to base_frame.
+TEST(DeclaredStaticGeometry, MarksTheCellHoldingEachPointOnARotatedOffsetGrid) {
+  openral_msgs::msg::OccupancyVoxels grid;
+  grid.resolution = 0.1;
+  grid.size_x = 4;
+  grid.size_y = 4;
+  grid.size_z = 4;
+  grid.occupancy.assign(64, 0);
+  // Grid axes = base axes turned +90 deg about z; cell (0,0,0) min corner at (1, 0, 0).
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, M_PI / 2.0);
+  grid.orientation.x = q.x();
+  grid.orientation.y = q.y();
+  grid.orientation.z = q.z();
+  grid.orientation.w = q.w();
+  grid.origin.x = 1.0;
+  grid.origin.y = 0.0;
+  grid.origin.z = 0.0;
+  // Grid +x is base +y: the base point (1.0, 0.25, 0.05) is grid (0.25, 0.0, 0.05) -> cell (2,0,0).
+  // Grid +y is base -x: the base point (0.85, 0.05, 0.35) is grid (0.05, 0.15, 0.35) -> (0,1,3).
+  const std::vector<tf2::Vector3> pts{
+      {1.0, 0.25, 0.05},
+      {0.85, 0.05, 0.35},
+      {1.0, 0.26, 0.06},  // the third repeats cell (2,0,0)
+      {5.0, 5.0, 5.0},    // outside the grid
+  };
+  EXPECT_EQ(bridge::mark_base_points(grid, pts), 2u);
+  EXPECT_EQ(grid.occupancy[2 + 4 * (0 + 4 * 0)], 1);
+  EXPECT_EQ(grid.occupancy[0 + 4 * (1 + 4 * 3)], 1);
+  std::size_t total = 0;
+  for (const auto c : grid.occupancy) {
+    total += c;
+  }
+  EXPECT_EQ(total, 2u);
+  // Marking only adds: a second pass marks nothing new and never clears.
+  EXPECT_EQ(bridge::mark_base_points(grid, pts), 0u);
+}
+
+TEST(DeclaredStaticGeometry, AMalformedGridIsLeftUntouched) {
+  openral_msgs::msg::OccupancyVoxels grid;
+  grid.resolution = 0.1;
+  grid.size_x = 2;
+  grid.size_y = 2;
+  grid.size_z = 2;
+  grid.occupancy.assign(7, 0);  // wrong size
+  grid.orientation.w = 1.0;
+  EXPECT_EQ(bridge::mark_base_points(grid, {{0.05, 0.05, 0.05}}), 0u);
+}
+
+TEST(DeclaredStaticGeometry, LoadsPointsAndRefusesAMalformedLine) {
+  const std::string good = testing::TempDir() + "static_points_good.txt";
+  {
+    std::ofstream f(good);
+    f << "# declared static geometry\n0.1 0.2 0.3\n\n-1 0 2.5\n";
+  }
+  std::vector<tf2::Vector3> pts;
+  std::string error;
+  ASSERT_TRUE(bridge::load_points_file(good, pts, error)) << error;
+  ASSERT_EQ(pts.size(), 2u);
+  EXPECT_DOUBLE_EQ(pts[1].z(), 2.5);
+
+  const std::string bad = testing::TempDir() + "static_points_bad.txt";
+  {
+    std::ofstream f(bad);
+    f << "0.1 0.2 0.3\n0.1 nope 0.3\n";
+  }
+  EXPECT_FALSE(bridge::load_points_file(bad, pts, error));
+  EXPECT_TRUE(pts.empty());
+  EXPECT_NE(error.find(":2:"), std::string::npos) << error;
+  EXPECT_FALSE(bridge::load_points_file(testing::TempDir() + "missing.txt", pts, error));
+  std::remove(good.c_str());
+  std::remove(bad.c_str());
 }

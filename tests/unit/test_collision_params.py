@@ -361,3 +361,18 @@ def test_a_capsule_split_into_a_chain_is_exactly_as_conservative() -> None:
         probe = np.eye(4)
         probe[:3, 3] = rng.uniform(-0.3, 0.3, 3)
         assert gaps(chain, probe) == pytest.approx(gaps(single, probe), abs=1e-12)
+
+
+def test_ee_link_index_openarm_never_picks_a_mimic_chain() -> None:
+    """The OpenArm follower fingers are mimic links one level below the leader: the
+    EE pick must skip them (the kernel refuses a mimic link on the EE chain)."""
+    robot = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    params = collision_params_from_description(robot)
+    ee = ee_link_index_from_collision_params(params)
+    kinds = params["collision_joint_kind"]
+    parent = params["collision_parent"]
+    assert any(k in (3, 4) for k in kinds), "fixture lost its mimic links"
+    i = ee
+    while i is not None and i >= 0:
+        assert kinds[i] not in (3, 4), f"mimic link {i} on the EE chain of {ee}"
+        i = parent[i]

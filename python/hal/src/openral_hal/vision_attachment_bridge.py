@@ -124,6 +124,8 @@ executor's one thread, so the lock is uncontended and behaviour is unchanged.
 
 from __future__ import annotations
 
+import itertools
+import math
 import threading
 import time
 from collections import deque
@@ -137,6 +139,8 @@ from openral_core import (
     AttachmentEvidenceKind,
     CameraTopicKind,
     ControlMode,
+    JointSpec,
+    MimicJoint,
     VisionAttachmentRuntime,
     camera_topic,
 )
@@ -155,6 +159,7 @@ from openral_hal._place_target_leg import _WITNESS_PERIOD_S, PlaceTargetLeg, pla
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
+    palm_plane_m,
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -167,6 +172,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         PlaceRegion,
         RobotDescription,
     )
+    from openral_core.schemas import TightCollisionGeometry
 
     from openral_hal._grasp_target import VoxelLattice
 
@@ -225,10 +231,11 @@ class _GripperLeg:
         deadline_timer: The one-shot deadline timer for that future, if any.
         generation: Bumped by every grasp event; a reply or deadline carrying an
             older one is stale and dropped.
-        region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
-            already took as its payload; an ATTACH offered that same region again
-            segments instead, while a later pick's region (its own
-            ``approach:<link>:<n>`` identity, measured afresh) may be taken.
+        region_spent: ``_box_key`` of the measured region this leg already took as its
+            payload, plus the tracker's ``region_generation``; an ATTACH offered that
+            same region again (re-stamped by the map or not) segments instead, while a
+            re-measured region or a later pick's (its own ``approach:<link>:<n>``
+            identity) may be taken.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -245,6 +252,12 @@ class _GripperLeg:
             (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
         regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
             kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
+        close_region: ``(_box_key(target_id, region), t_link_from_region)`` at the first
+            stalled tick of the current close the jaw was at the live grasp-target region
+            (``_note_close_region``); ``None`` outside a close or if it never was. The
+            ATTACH can fire after the lift began (the stall settles late), with the jaw
+            already off the pre-grasp region; the object has been rigid in the jaw since
+            the close, so its pose in the attach link is the one recorded here.
     """
 
     joint_name: str
@@ -257,7 +270,7 @@ class _GripperLeg:
     inflight: Any = None
     deadline_timer: Any = None
     generation: int = 0
-    region_spent: tuple[str, int] | None = None
+    region_spent: tuple[Any, ...] | None = None
     pending: bool = False
     jaw_link: str = ""
     release: ReleaseWindow | None = None
@@ -266,6 +279,9 @@ class _GripperLeg:
     close_reported: bool = False
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
     regrasp_hold: AttachedCollisionObject | None = None
+    close_region: tuple[tuple[Any, ...], Any] | None = None
+    close_jaw_q: float | None = None
+    close_still_ticks: int = 0
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -288,7 +304,24 @@ _HEARTBEAT_PERIOD_S = 0.2
 
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
 #: region is a gated, map-verified head-view measurement of the same object.
+_STALL_RAD = 0.002
+_STALL_TICKS = 3
+"""Jaw travel per tick below which a closing jaw counts as stalled on an object."""
+
 _REGION_CONFIDENCE = 0.7
+
+
+def _box_key(target_id: str, region: Any) -> tuple[Any, ...]:
+    """A region's identity across re-stamps: its target and box.
+
+    A frozen region's re-stamp keeps both, so a record outlives the stamp it was taken at.
+    """
+    return (
+        target_id,
+        tuple(region.pose.xyz),
+        tuple(region.pose.quat_xyzw),
+        tuple(region.half_extents),
+    )
 
 
 class _JawEvidence:
@@ -557,6 +590,153 @@ def freeze_released_attachment(
     )
 
 
+def _clip_behind_tool_point(
+    pose: NDArray[np.float64], half: NDArray[np.float64], tcp: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """A box (``pose`` in the link, ``half``) with nothing behind the plane at ``tcp``.
+
+    The plane is perpendicular to the approach ``u = tcp / |tcp|`` at ``|tcp|``. A box
+    with an axis within 30 degrees of ``u`` is cut along that axis at the plane through
+    ``tcp`` perpendicular to it (its frame kept); a more oblique box is first replaced
+    by the box aligned with ``u`` that encloses it (wider), then cut along ``u``. The
+    front is kept whole either way (the cut axis's half extent never drops below 2.5 mm);
+    unchanged when nothing lies behind the plane.
+
+    Example:
+        >>> import numpy as np
+        >>> pose = np.eye(4)
+        >>> pose[2, 3] = -0.10  # a box below the link origin
+        >>> p, h = _clip_behind_tool_point(
+        ...     pose, np.array([0.05, 0.05, 0.05]), np.array([0.0, 0.0, -0.07])
+        ... )
+        >>> round(float(p[2, 3]), 3), round(float(h[2]), 3)  # back face at z = -0.07
+        (-0.11, 0.04)
+    """
+    reach = float(np.linalg.norm(tcp))
+    if reach <= 0.0:
+        return pose, half
+    u = tcp / reach
+    rot = pose[:3, :3]
+    centre = pose[:3, 3]
+    back = float(centre @ u) - float(np.abs(rot.T @ u) @ half)
+    if back >= reach:
+        return pose, half
+    proj = rot.T @ u
+    i = int(np.argmax(np.abs(proj)))
+    if abs(proj[i]) >= math.cos(math.radians(30.0)):
+        # A box axis within 30 degrees of the approach (a hand-aligned box: the OpenArm
+        # tool point sits ~15 degrees off link7's axis): cut along it, at the plane
+        # through the palm point perpendicular to that axis — nothing in front of that
+        # plane is lost, and the box keeps its frame.
+        axis = rot[:, i] * math.copysign(1.0, proj[i])
+        excess = float(tcp @ axis) - (float(centre @ axis) - half[i])
+        if excess <= 0.0:
+            return pose, half
+        cut = min(excess, 2.0 * (half[i] - 0.0025))
+        out_pose, out_half = pose.copy(), half.copy()
+        out_half[i] -= cut / 2.0
+        out_pose[:3, 3] += axis * (cut / 2.0)
+        return out_pose, out_half
+    # A frame with u as an axis: u, then the box axis least aligned with u made
+    # orthogonal to it, then their cross product (right-handed).
+    j = int(np.argmin(np.abs(rot.T @ u)))
+    e2 = rot[:, j] - float(rot[:, j] @ u) * u
+    e2 = e2 / float(np.linalg.norm(e2))
+    frame = np.column_stack([u, e2, np.cross(u, e2)])
+    enclosing = np.abs(frame.T @ rot) @ half  # half extents of the enclosing box
+    front = float(centre @ u) + enclosing[0]
+    new_back = min(reach, front - 0.005)
+    out_half = enclosing.copy()
+    out_half[0] = (front - new_back) / 2.0
+    out_centre = centre + u * ((front + new_back) / 2.0 - float(centre @ u))
+    out_pose = np.eye(4)
+    out_pose[:3, :3] = frame
+    out_pose[:3, 3] = out_centre
+    return out_pose, out_half
+
+
+def clip_payload_behind_tool_point(
+    obj: AttachedCollisionObject, tcp_in_link: tuple[float, float, float] | None
+) -> AttachedCollisionObject:
+    """``obj`` with every box primitive clipped so nothing lies behind the tool point.
+
+    A held object is between and beyond the jaws, never behind them in the palm; a
+    segmentation mask that bled into the hand put payload boxes there, against the
+    carrying wrist (#349 d15_mix07: payload vs ``openarm_right_link6``, -22.8 mm). Each
+    box is clipped like ``_clip_behind_tool_point``; other shapes are kept as they are.
+    ``None`` (no tool point) returns ``obj`` unchanged.
+    """
+    if tcp_in_link is None:
+        return obj
+    from openral_core import BoxShape, Pose6D
+    from openral_core.geometry import rotation_to_quat_wxyz
+
+    tcp = np.asarray(tcp_in_link, dtype=np.float64)
+    t_link_obj = homogeneous_from_quat_xyz(obj.pose_in_link.xyz, obj.pose_in_link.quat_xyzw)
+    t_obj_link = np.linalg.inv(t_link_obj)
+    out = []
+    for prim, t_link_prim in zip(obj.primitives, primitive_poses(obj, np.eye(4)), strict=True):
+        if not isinstance(prim.shape, BoxShape):
+            out.append(prim)
+            continue
+        half = np.asarray(prim.shape.half_extents_m, dtype=np.float64)
+        pose, clipped = _clip_behind_tool_point(t_link_prim, half, tcp)
+        if np.array_equal(clipped, half):
+            out.append(prim)
+            continue
+        t_obj_prim = t_obj_link @ pose
+        w, x, y, z = rotation_to_quat_wxyz(t_obj_prim[:3, :3])
+        out.append(
+            prim.model_copy(
+                update={
+                    "shape": BoxShape(
+                        half_extents_m=(float(clipped[0]), float(clipped[1]), float(clipped[2]))
+                    ),
+                    "pose_in_object": Pose6D(
+                        xyz=(
+                            float(t_obj_prim[0, 3]),
+                            float(t_obj_prim[1, 3]),
+                            float(t_obj_prim[2, 3]),
+                        ),
+                        quat_xyzw=(x, y, z, w),
+                        frame_id=prim.pose_in_object.frame_id,
+                    ),
+                }
+            )
+        )
+    return obj.model_copy(update={"primitives": out})
+
+
+def _inner_box_refinement(
+    pose: NDArray[np.float64],
+    half: NDArray[np.float64],
+    inner_pose: NDArray[np.float64],
+    inner_half: NDArray[np.float64],
+) -> TightCollisionGeometry:
+    """The inner box as a stage-2 refinement of the box (``pose``, ``half``), box-local.
+
+    Its 8 corners, clamped into the outer box so the kernel's containment proof holds,
+    are the hull; the 26-DOP is their extent along ``DOP_AXES``.
+    """
+    from openral_core.schemas import DOP_AXES, TightCollisionGeometry
+
+    to_box = np.linalg.inv(pose) @ inner_pose
+    corners = np.array(
+        [
+            to_box[:3, :3] @ (np.array(s, dtype=np.float64) * inner_half) + to_box[:3, 3]
+            for s in itertools.product((-1.0, 1.0), repeat=3)
+        ]
+    )
+    corners = np.clip(corners, -half, half)
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    proj = corners @ axes.T
+    return TightCollisionGeometry(
+        dop_lo_m=tuple(float(v) for v in proj.min(axis=0)),
+        dop_hi_m=tuple(float(v) for v in proj.max(axis=0)),
+        hull_vertices_m=tuple((float(c[0]), float(c[1]), float(c[2])) for c in corners),
+    )
+
+
 def region_attachment(
     declaration: GraspDeclaration,
     *,
@@ -566,6 +746,8 @@ def region_attachment(
     stamp_ns: int,
     support_z: float | None = None,
     extrinsic_error_m: float = MAX_PLANAR_ERR_M,
+    tcp_in_link: tuple[float, float, float] | None = None,
+    inner_region: PlaceRegion | None = None,
 ) -> AttachedCollisionObject:
     """The grasp-target leg's latched pre-grasp region as the held payload (design §2.2).
 
@@ -604,6 +786,20 @@ def region_attachment(
             (z up), or ``None``.
         extrinsic_error_m: The depth extrinsic's accuracy bound (the witness's
             penetration bound, capped at the kernel's 10 mm).
+        tcp_in_link: The tool point in ``attach_link``, or ``None``. Given, a box axis
+            within 30 degrees of the link-origin -> tool-point (approach) direction is
+            shortened so the box's back face sits on the tool point, front face fixed (never
+            below 5 mm): the held object is between and beyond the jaws, never behind them
+            in the palm. The bridge passes the tool point, or the measured (unpadded) region's
+            back face when that is further back (``_padding_clip_point``): only padding goes.
+            The margin bloat on the top otherwise reached the carrying wrist
+            (#349 p8/p9/p11_mix02: payload vs ``openarm_left_link6``, -2.5 to -4.3 mm).
+        inner_region: The measured (unpadded) region the padded one grew from, in the
+            same frame, or ``None``. Given, it rides as the payload box's stage-2
+            refinement (``tight_geometry``: clipped like the box, clamped inside it):
+            the kernel checks the payload against the robot's own links as this
+            measured box, keeping the padding for the map (#349: a padded carton 1 cm
+            from the torso read -15 to -40 mm against it).
 
     Returns:
         The attachment, evidence ``GRASP_TARGET_REGION``.
@@ -627,6 +823,20 @@ def region_attachment(
         raise ROSConfigError(f"grasp target {declaration.target_id!r} carries no region.")
     object_id = declaration.object_id or declaration.target_id
     pose = t_link_from_region @ homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    half = np.asarray(region.half_extents, dtype=np.float64)
+    if tcp_in_link is not None:
+        pose, half = _clip_behind_tool_point(pose, half, np.asarray(tcp_in_link, dtype=np.float64))
+    tight = None
+    if inner_region is not None:
+        inner_pose = t_link_from_region @ homogeneous_from_quat_xyz(
+            inner_region.pose.xyz, inner_region.pose.quat_xyzw
+        )
+        inner_half = np.asarray(inner_region.half_extents, dtype=np.float64)
+        if tcp_in_link is not None:
+            inner_pose, inner_half = _clip_behind_tool_point(
+                inner_pose, inner_half, np.asarray(tcp_in_link, dtype=np.float64)
+            )
+        tight = _inner_box_refinement(pose, half, inner_pose, inner_half)
     w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
     held = _Attached(
         object_id=object_id,
@@ -634,7 +844,8 @@ def region_attachment(
         touch_links=list(touch_links),
         primitives=[
             AttachedCollisionPrimitive(
-                shape=BoxShape(half_extents_m=tuple(float(h) for h in region.half_extents)),
+                shape=BoxShape(half_extents_m=(float(half[0]), float(half[1]), float(half[2]))),
+                tight_geometry=tight,
                 pose_in_object=Pose6D(
                     xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=object_id
                 ),
@@ -700,7 +911,9 @@ class ReleaseWindow:
         hand_boxes: The hand's collision primitives, bounded, in the hand frame.
         jaws: ``(joint, origin, boxes)`` per jaw link the record exempts: the
             jaw joint (hinged on the hand), its origin in the hand frame, and the
-            jaw's bounded primitives in the jaw frame.
+            jaw's bounded primitives in the jaw frame. A ``MimicJoint`` follower
+            of a jaw joint (the OpenArm's second finger, its own collision link
+            since #349) is a jaw too, posed at ``value_at`` of its leader's angle.
     """
 
     record: AttachedCollisionObject
@@ -731,14 +944,27 @@ class ReleaseWindow:
         Returns:
             The open window.
         """
+        jaw_joints = [
+            joint
+            for joint in description.joints
+            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
+        ]
+        # The other jaw of each gripper: a mimic follower of a jaw joint, hinged
+        # on the same hand, is part of what has to clear the payload too.
+        followers = [
+            mimic
+            for mimic in description.mimic_joints
+            if mimic.parent_link == held.attach_link
+            and any(mimic.mimics == joint.name for joint in jaw_joints)
+        ]
+        jaw_edges: list[JointSpec | MimicJoint] = [*jaw_joints, *followers]
         jaws = tuple(
             (
                 joint,
                 _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy),
                 _link_boxes(description, joint.child_link),
             )
-            for joint in description.joints
-            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
+            for joint in jaw_edges
         )
         return cls(
             record=freeze_released_attachment(
@@ -770,9 +996,12 @@ class ReleaseWindow:
             (t_base_from_hand, self.hand_boxes)
         ]
         for joint, origin, jaw_boxes in self.jaws:
-            if joint.name not in positions:
+            # A mimic follower reads its leader's angle: multiplier * q + offset.
+            driving = joint.mimics if isinstance(joint, MimicJoint) else joint.name
+            if driving not in positions:
                 return None
-            motion = _joint_motion(joint, positions[joint.name])
+            q = positions[driving]
+            motion = _joint_motion(joint, joint.value_at(q) if isinstance(joint, MimicJoint) else q)
             placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
         # The frozen record is attached to the base link: its link frame is the base.
         payload: list[_Box] = [
@@ -1559,6 +1788,7 @@ class VisionAttachmentBridge:
             event = leg.trigger.update(state)
             if self._node is not None:
                 self._log_close(leg, event)
+                self._note_close_region(leg)
             if (
                 leg.trigger.last_command is None
                 and not leg.announced_uncommanded
@@ -1610,6 +1840,100 @@ class VisionAttachmentBridge:
         self._retire_lifted_supports()
         if self._place_target is not None:
             self._place_target.on_joint_state()
+
+    def _padding_clip_point(
+        self,
+        leg: _GripperLeg,
+        link: str,
+        region: PlaceRegion,
+        t_link_from_region: NDArray[np.float64],
+    ) -> tuple[float, float, float] | None:
+        """The tool point to clip the region payload at, or ``None`` to keep it whole.
+
+        Only the margin padding may be clipped: the point on the approach at the tool
+        point, or at the measured (unpadded) region's back face when that reaches further
+        back, so ``region_attachment`` removes padding and never measured geometry.
+        """
+        tcp = self._tcp_in(leg, link)
+        if tcp is None:
+            return None
+        point = np.asarray(tcp, dtype=np.float64)
+        norm = float(np.linalg.norm(point))
+        if norm <= 0.0:
+            return None
+        u = point / norm
+        # The palm plane (the jaw joint's origin), not the tool point: an SO-101's tool
+        # point is the jaw centre, with half the held object behind it.
+        reach = palm_plane_m(point, leg.producer.palm_in_link)
+        pose = t_link_from_region @ homogeneous_from_quat_xyz(
+            region.pose.xyz, region.pose.quat_xyzw
+        )
+        half = np.asarray(region.half_extents, dtype=np.float64)
+        # The measured region's back face along the approach: clip there when it reaches
+        # behind the tool point (p13_mix02: a few mm), so only the padding goes.
+        back = float(pose[:3, 3] @ u) - float(np.abs(pose[:3, :3].T @ u) @ half)
+        plane = min(reach, back)
+        if plane <= 0.0:
+            return None
+        clip = u * plane
+        return (float(clip[0]), float(clip[1]), float(clip[2]))
+
+    def _note_close_region(self, leg: _GripperLeg) -> None:
+        """Record where the live grasp-target region sits in the attach link, while closing.
+
+        Only during a close (``close_baseline`` set) with nothing attached, and only on a
+        tick the jaw has STALLED (its position moved less than ``_STALL_RAD`` per tick for
+        ``_STALL_TICKS`` ticks: the fingers are on an object): stalled at the region
+        (``jaw_at``, the ATTACH check's own test) records it, stalled anywhere else
+        clears it — a jaw that passed over the declared object and closed on its
+        neighbour must not take the declared region (#349 r21_mix07: the payload was
+        the declared region while the fingers held a neighbour, offset toward the
+        torso). Once taken it is kept until the close ends (the jaw opens, or the ATTACH
+        tick that reads it, p7_mix02): the lift it bridges moves the stalled jaw off the
+        region, which must not clear it. It is keyed on the region's box, not its stamp —
+        the map re-stamps a frozen region every grid without moving it. Read by
+        ``_region_payload`` when the jaw has left the region by the ATTACH (#349: lifted
+        5-8 cm first).
+        """
+        if leg.close_baseline is None:
+            leg.close_region = None
+            leg.close_jaw_q = None
+            leg.close_still_ticks = 0
+            return
+        # Attached, or already taken: stop recording but KEEP the record — the lift it
+        # bridges moves the jaw off the region, and this tick's ATTACH reads it.
+        if (
+            leg.trigger.attached
+            or leg.close_region is not None
+            or self._grasp_target is None
+            or self._node is None
+        ):
+            return
+        q = self._positions.get(leg.joint_name)
+        previous, leg.close_jaw_q = leg.close_jaw_q, q
+        if q is None or previous is None or abs(q - previous) >= _STALL_RAD:
+            leg.close_still_ticks = 0
+            return  # still closing (or no reading): the jaw is not on anything yet
+        # Isaac republishes identical joint states between physics steps: one still
+        # tick is not a stall, _STALL_TICKS in a row is.
+        leg.close_still_ticks += 1
+        if leg.close_still_ticks < _STALL_TICKS:
+            return
+        declaration = self._grasp_target.tracker.envelope(
+            now_ns=int(self._node.get_clock().now().nanoseconds)
+        )
+        region = declaration.region if declaration is not None else None
+        if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
+            return
+        at, _ = self.jaw_at(
+            leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
+        )
+        if not at:
+            leg.close_region = None  # stalled on something else
+            return
+        t_link_from_region = self._lookup(self.tf_frame(leg.producer.attach_link), region.frame_id)
+        if t_link_from_region is not None:
+            leg.close_region = (_box_key(declaration.target_id, region), t_link_from_region)
 
     def _log_close(self, leg: _GripperLeg, event: GraspEvent | None) -> None:
         """Log the trigger's counters once per close: as it starts, and at ATTACH or give-up.
@@ -1980,7 +2304,7 @@ class VisionAttachmentBridge:
         scores: Sequence[float],
         reason: str,
         t_link_from_cam: NDArray[np.float64] | None = None,
-        tcp_in_link: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        tcp_in_link: tuple[float, float, float] | None = None,
     ) -> None:
         """Gate, publish, log, and release the barrier — on every path.
 
@@ -1990,6 +2314,10 @@ class VisionAttachmentBridge:
         lock; the result is committed under it only while ``generation`` is still the
         leg's — a grasp event meanwhile superseded it, and owns the barrier now.
         """
+        # No context (a typed precondition failure) still has the leg's own tool point:
+        # the fallback box is posed off it, never on the link origin inside the wrist.
+        if tcp_in_link is None:
+            tcp_in_link = leg.tcp_in_link
         depth_entry = self._depth
         depth = depth_entry[0] if depth_entry is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
@@ -2022,6 +2350,14 @@ class VisionAttachmentBridge:
             reason = f"ROSConfigError: {exc}"
             self._node.get_logger().error(f"vision attachment producer rejected inputs: {exc}")
             attachment, report = _fit([], [])
+        if attachment is not None and tcp_in_link is not None:
+            palm = palm_plane_m(tcp_in_link, leg.producer.palm_in_link)
+            tcp = np.asarray(tcp_in_link, dtype=np.float64)
+            clip = tcp / float(np.linalg.norm(tcp)) * palm if palm > 0.0 else None
+            attachment = clip_payload_behind_tool_point(
+                attachment,
+                None if clip is None else (float(clip[0]), float(clip[1]), float(clip[2])),
+            )
         if reason:
             self._node.get_logger().warning(
                 f"vision attachment {leg.joint_name} fell back to GRIPPER_CLOSURE: {reason}"
@@ -2092,7 +2428,7 @@ class VisionAttachmentBridge:
         ``grasp_target_occluder_margin_m`` of it).
         The region is a pre-grasp measurement, so a leg takes each measured
         region once (``region_spent``, keyed by ``target_id`` — one per pick — and the
-        region's own ``stamp_ns``): a later ATTACH offered the same region — the object
+        region's box, ``_box_key``): a later ATTACH offered the same region — the object
         set down and picked up again before any re-measurement — is segmented, while a
         region measured for the goal's next pick (a fresh identity) is a new payload.
         Returns the payload
@@ -2110,9 +2446,13 @@ class VisionAttachmentBridge:
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
             return None
-        # The region's own measurement stamp: one arming may re-measure its region
-        # before the grasp, and each measurement is one payload.
-        key = (declaration.target_id, int(region.stamp_ns))
+        # The region's box and accepting generation, not its stamp: the map re-stamps a
+        # frozen region every grid (the same measurement), while a re-measurement or a
+        # new declaration is a new payload even when the quantised box comes out equal.
+        key = (
+            *_box_key(declaration.target_id, region),
+            self._grasp_target.tracker.region_generation,
+        )
         if leg.region_spent == key:
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: grasp-target region for "
@@ -2125,6 +2465,18 @@ class VisionAttachmentBridge:
         at, measure = self.jaw_at(
             leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
         )
+        if (
+            not at
+            and leg.close_region is not None
+            and leg.close_region[0] == _box_key(declaration.target_id, region)
+        ):
+            # Lifted before the stall settled: pose it where the jaw closed on it.
+            at, t_link_from_region = True, leg.close_region[1]
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: jaw left the region before the ATTACH "
+                f"({measure}); it was at the region during the close — the payload is posed "
+                "in the attach link where the jaw closed on it"
+            )
         why = ""
         if t_link_from_region is None:
             why = f"no tf2 {link} <- {region.frame_id}"
@@ -2169,6 +2521,8 @@ class VisionAttachmentBridge:
             stamp_ns=stamp_ns,
             support_z=self._grasp_target.measured_support(region),
             extrinsic_error_m=extrinsic,
+            tcp_in_link=self._padding_clip_point(leg, link, region, t_link_from_region),
+            inner_region=region,
         )
         leg.support_anchor = None
         if held.support_contact is not None:
@@ -2182,9 +2536,15 @@ class VisionAttachmentBridge:
             # slide retires it past the measurement's own uncertainty alone.
             slide = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
             rise = max(slide, self._config.release_clear_m)
-            # The payload frame's ATTACH pose (the closed box's centre), in the support's
+            # The payload frame's ATTACH pose (below: its origin), in the support's
             # frame: the region's, z up (``plane_witness``).
-            leg.support_anchor = (closed.frame_id, closed.pose.xyz, rise, slide)
+            # The payload origin itself (the tool-point clip may have moved it off the
+            # closed box's centre), back in the region's frame at the ATTACH.
+            origin = np.linalg.inv(t_link_from_region) @ np.append(
+                np.asarray(held.pose_in_link.xyz, dtype=np.float64), 1.0
+            )
+            anchor = (float(origin[0]), float(origin[1]), float(origin[2]))
+            leg.support_anchor = (closed.frame_id, anchor, rise, slide)
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
                 f"support witness ({held.support_contact.evidence_ref}); retired once the "

@@ -224,6 +224,7 @@ Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
 | `dashboard/app.py` write-control audit trail | warning | per operator write | Audit-by-design; keep at WARNING. |
 | `rskill/_diagnostics.py:132,142,166` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
 | `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
+| `hal/sim_attached.py` `sim.placement_grade` / `sim.placement_grade_final` / `sim.placement_grade_unavailable` | info (unavailable: warning when `set_task` raised) | per grade change / 1 per graded goal / 1 per ungraded goal | Deploy-sim placement grade of the dispatched goal — see below. |
 | `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | The deploy-sim time base: `sim_dt_per_tick_s` (sim seconds one `env.step` advances), `control_freq_hz`, `backend`, `robot` — emitted for a backend that declares its tick (the Isaac sidecar, RoboCasa, LIBERO) after `connect` has verified it equals one control period, and by the bare MuJoCo twin (`MujocoArmHAL`, plus `physics_dt_s` / `physics_steps`) once it has derived one control period per action. A trace replayed later knows which clock its velocities were measured on (issues #355, #358). Companions: `hal.time_base.pinned` / `hal.time_base.unresolved` (warning, logger `openral_hal._mujoco_arm`) mark a twin that is **not** timing-faithful (a pinned `settle_steps`, or a manifest without a rate); `hal.time_base.timestep_shrunk` / `robosuite.time_base.timestep_shrunk` (info) record a physics time step shrunk to divide the period. |
 
 ### The deploy-sim task-success signal
@@ -245,6 +246,19 @@ Both edges are logged because RoboCasa success is **not latched**: an object
 can be knocked back out of its receptacle, and a rising-edge-only record would
 claim a success no longer held. A backend with no success predicate emits
 nothing at all — "unknown" is never reported as failure.
+
+An Isaac scene with `placement_success` is also graded per goal (see
+[sim environments](sim-environments.md)): the HAL follows `/openral/reward/active_task`
+and the sidecar grades the dispatched prompt's placements. Same logger, same stdout
+mirror:
+
+| Line | Fires | Carries |
+|---|---|---|
+| `sim.placement_grade` | every change of the graded prompt's grade (also while the object settles after the goal) | `prompt`, `grade`, `score`, `previous`, `goal_active`, `scene_id`, `task_id`, `sim_time_ns`, `sim_time_s`, `step` |
+| `sim.placement_grade_final` | once per graded goal, at its end (`""` or the next prompt) or at `disconnect` | `prompt`, `grade`, `score`, `best_grade`, `best_score`, `scene_id`, `task_id`, `sim_time_ns`, `steps` |
+| `sim.placement_grade_unavailable` | once per goal whose prompt the scene does not grade (`graded_prompts`), or once at WARNING if the backend's `set_task` raised (`error`, `error_type`; grading then latches off) | `prompt` |
+
+The grade never ends a deploy episode; it is a report.
 
 The terminal line reaches **both** teardown paths. `rclpy` answers SIGINT by
 shutting the context down and raising out of `spin` without requesting the
@@ -277,7 +291,7 @@ all joined by `stop_seq`, all `error`-level, all emitted through the node logger
 
 | Line | Fires | Carries |
 |---|---|---|
-| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s |
+| `sim.estop_ground_truth_snapshot` | every `/openral/estop`, when MuJoCo handles are live — or, on Isaac, when the env serves `contact_ground_truth` | `estop_ground_truth_snapshot(...)` (contacts, `nearest_*_pairs` probes + coverage, joint state, base TF) + `stop_seq` + the 3-deep `candidate_action_chunks` ring + the kernel's `CollisionEvidence` when it landed within 0.5 s. On Isaac: `isaac_estop_ground_truth_record(...)` instead (`backend: "isaacsim"`, PhysX `robot_world_contacts` with `min_separation_m`, `max_penetration_m`, no near-miss probes — see its `contacts_caveat`) |
 | `sim.estop_ground_truth_evidence` | only when the evidence lost the publish race | `stop_seq`, `collision_evidence` — the snapshot is never delayed for it, since sim state must be captured at the stop instant |
 | `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 

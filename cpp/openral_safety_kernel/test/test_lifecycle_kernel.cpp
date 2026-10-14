@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -41,6 +42,46 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
+
+// #349 review F: the workspace brake's decision must not allocate. Allocations are
+// counted on the calling thread only, and only while the kernel's
+// `workspace_brake_probe` has armed the count around that decision (DDS threads
+// allocate concurrently and are not the kernel's). Routed to malloc/free.
+namespace {
+thread_local bool t_count_allocs = false;
+std::atomic<std::uint64_t> g_brake_allocs{0};
+std::atomic<std::uint64_t> g_brake_decisions{0};
+void* counted_alloc(std::size_t size) {
+  if (t_count_allocs) {
+    g_brake_allocs.fetch_add(1, std::memory_order_relaxed);
+  }
+  void* p = std::malloc(size == 0 ? 1 : size);
+  if (p == nullptr) {
+    throw std::bad_alloc{};
+  }
+  return p;
+}
+void brake_probe(bool arm) {
+  t_count_allocs = arm;
+  if (arm) {
+    g_brake_decisions.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+}  // namespace
+
+void* operator new(std::size_t size) { return counted_alloc(size); }
+void* operator new[](std::size_t size) { return counted_alloc(size); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace osk = openral_safety_kernel;
 
@@ -3837,6 +3878,14 @@ struct GraspBeat {
   std::string second_attach_link{};
   double region_qx{0.0};  ///< the region's orientation x
   double region_qw{1.0};  ///< the region's orientation w
+  bool region{true};      ///< the producer measured a target region (region_valid)
+  /// #349: the producer-confirmed manipulation workspace (workspace_region_valid),
+  /// a box centred on the target cell, `workspace_half` on every side.
+  bool workspace{false};
+  double workspace_half{0.05};
+  double workspace_x{0.05};            ///< the workspace box centre along x
+  std::int64_t workspace_stamp_ns{0};  ///< its confirmation stamp; 0 = declaration_stamp_ns
+  std::string workspace_frame{"base_link"};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3881,7 +3930,17 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.timeout_s = b.timeout_s;
   d.stamp_ns = b.declaration_stamp_ns;
   d.active = b.active;
-  d.region_valid = true;
+  d.region_valid = b.region;
+  d.workspace_region_valid = b.workspace;
+  d.workspace_region.frame_id = b.workspace_frame;
+  d.workspace_region.pose.position.x = b.workspace_x;
+  d.workspace_region.pose.orientation.w = 1.0;
+  d.workspace_region.half_extents.x = b.workspace_half;
+  d.workspace_region.half_extents.y = b.workspace_half;
+  d.workspace_region.half_extents.z = b.workspace_half;
+  d.workspace_region.evidence_ref = "voxels:tote@grid7";
+  d.workspace_region.stamp_ns =
+      b.workspace_stamp_ns != 0 ? b.workspace_stamp_ns : b.declaration_stamp_ns;
   d.region.frame_id = b.region_frame;
   d.region.pose.position.x = b.region_x;
   d.region.pose.orientation.x = b.region_qx;
@@ -3987,8 +4046,10 @@ public:
     vox.source_stamp = helper_->now();
     voxel_pub_->publish(vox);
     sensor_msgs::msg::JointState js;
-    js.name = {"j0"};
+    js.name = js_names;
     js.position = {q};
+    js.position.insert(js.position.end(), js_tail.begin(), js_tail.end());
+    js.velocity = js_velocity;
     js_pub_->publish(js);
     exec_.spin_some(std::chrono::milliseconds(5));
     if (state_fn) {
@@ -4019,20 +4080,50 @@ public:
                    int ms = 1500) {
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < end && !node->fault_latched()) {
-      beat(b, q);
-      const int passed_before = passed.load();
-      const std::uint64_t dropped_before = node->chunks_dropped();
-      cand_pub_->publish(chunk);
-      const auto verdict_end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
-      while (passed.load() == passed_before && node->chunks_dropped() == dropped_before &&
-             std::chrono::steady_clock::now() < verdict_end) {
-        exec_.spin_some(std::chrono::milliseconds(5));
-      }
-      if (passed.load() > passed_before) {
+      if (send_once(b, q, chunk)) {
         return true;
       }
     }
     return false;
+  }
+  // One beat, then `chunk` exactly once, awaited to its verdict. True on a pass.
+  bool send_once(const GraspBeat* b, double q, const openral_msgs::msg::ActionChunk& chunk) {
+    beat(b, q);
+    const int passed_before = passed.load();
+    const std::uint64_t dropped_before = node->chunks_dropped();
+    cand_pub_->publish(chunk);
+    const auto verdict_end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (passed.load() == passed_before && node->chunks_dropped() == dropped_before &&
+           std::chrono::steady_clock::now() < verdict_end) {
+      exec_.spin_some(std::chrono::milliseconds(5));
+    }
+    return passed.load() > passed_before;
+  }
+  // Latch the kernel through /openral/estop (the external path, no chunk).
+  void estop() {
+    if (!estop_pub_) {
+      estop_pub_ = helper_->create_publisher<std_msgs::msg::Empty>("/openral/estop", 10);
+    }
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (!node->fault_latched() && std::chrono::steady_clock::now() < end) {
+      estop_pub_->publish(std_msgs::msg::Empty{});
+      exec_.spin_some(std::chrono::milliseconds(10));
+    }
+  }
+  // The operator's /openral/estop_reset; true when it cleared the latch.
+  bool reset() {
+    auto client = helper_->create_client<std_srvs::srv::Trigger>("/openral/estop_reset");
+    if (!client->wait_for_service(std::chrono::seconds(2))) {
+      return false;
+    }
+    auto fut = client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (fut.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < end) {
+      exec_.spin_some(std::chrono::milliseconds(10));
+    }
+    return fut.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready &&
+           fut.get()->success;
   }
 
   void spin_for(int ms) {
@@ -4047,6 +4138,14 @@ public:
   std::vector<double> last_flat;  ///< the last chunk republished on /openral/safe_action
   std::string grasp_diag;
   openral_msgs::msg::OccupancyVoxels voxels = grasp_target_voxels();  ///< published every beat
+  /// The measured state every beat: `js_names` = {q} + `js_tail` (a 2-dof rig
+  /// adds its second joint here).
+  std::vector<std::string> js_names{"j0"};
+  std::vector<double> js_tail{};
+  /// The measured joint velocities every beat, aligned with `js_names` (empty =
+  /// the message carries no velocity field, as every rig published before #349's
+  /// measured hand speed).
+  std::vector<double> js_velocity{};
   /// When set, the world state published every beat (stream stamp in, message
   /// out) in place of the `GraspBeat` one — the place-region tests drive the
   /// same rig with the declared-carry fixture.
@@ -4060,6 +4159,7 @@ private:
   rclcpp::Publisher<openral_msgs::msg::WorldStateStamped>::SharedPtr ws_pub_;
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr estop_pub_;
   rclcpp::executors::SingleThreadedExecutor exec_;
   bool configured_ = false;
   bool active_ = false;
@@ -5383,4 +5483,1112 @@ TEST_F(LifecycleKernelTest, ADetachWhileTheArmedRegionIsMomentarilyStaleStillRet
   EXPECT_FALSE(rig.offer(&b, 0.0, 800));
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+}
+
+// ── Mimic follower finger, end to end (docs/reference/finger-mimic-geometry.md)
+//
+// A two-jaw gripper on one joint `j0`: `finger_pair` (link 1) slides along -x
+// from x = -0.015 (prismatic, column 0) and `finger_follower` (link 2) is a
+// `kMimicPrismatic` link on the SAME column and axis with multiplier -1 from
+// x = +0.015, each a 10 x 20 x 80 mm box. Closed (q = 0) the inner faces are
+// 20 mm apart; q = 0.03 opens them to 80 mm. Driven through the GraspRig.
+
+namespace {
+
+std::vector<rclcpp::Parameter> mimic_kernel_params(std::vector<std::string> allowlist) {
+  auto params = grasp_params(true, std::move(allowlist));
+  const auto drop = [&](const char* name) {
+    params.erase(
+        std::remove_if(params.begin(), params.end(),
+                       [name](const rclcpp::Parameter& p) { return p.get_name() == name; }),
+        params.end());
+  };
+  for (const char* name :
+       {"collision_n_links", "collision_parent", "collision_joint_kind", "collision_dof_index",
+        "collision_origin_xyzrpy", "collision_axis", "collision_capsule_link",
+        "collision_capsule_radius", "collision_capsule_half_length",
+        "collision_capsule_origin_xyzrpy", "collision_link_names", "collision_ee_link_index"}) {
+    drop(name);
+  }
+  params.insert(
+      params.end(),
+      {
+          {"collision_n_links", std::int64_t{3}},
+          {"collision_parent", std::vector<std::int64_t>{-1, 0, 0}},
+          // fixed root, prismatic leader, mimic-prismatic follower
+          {"collision_joint_kind", std::vector<std::int64_t>{0, 2, 4}},
+          {"collision_dof_index", std::vector<std::int64_t>{-1, 0, 0}},
+          {"collision_origin_xyzrpy",
+           std::vector<double>{0, 0, 0, 0, 0, 0, -0.015, 0, 0, 0, 0, 0, 0.015, 0, 0, 0, 0, 0}},
+          {"collision_axis", std::vector<double>{0, 0, 1, -1, 0, 0, -1, 0, 0}},
+          {"collision_mimic_multiplier", std::vector<double>{1.0, 1.0, -1.0}},
+          {"collision_mimic_offset", std::vector<double>{0.0, 0.0, 0.0}},
+          {"collision_box_link", std::vector<std::int64_t>{1, 2}},
+          {"collision_box_half_extents", std::vector<double>{0.005, 0.01, 0.04, 0.005, 0.01, 0.04}},
+          {"collision_box_origin_xyzrpy", std::vector<double>(12, 0.0)},
+          {"collision_link_names",
+           std::vector<std::string>{"hand", "finger_pair", "finger_follower"}},
+          {"collision_ee_link_index", std::int64_t{1}},
+      });
+  return params;
+}
+
+// One occupied 20 mm cell centred at (x, 0, 0).
+openral_msgs::msg::OccupancyVoxels mimic_cell(double x) {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.header.frame_id = "base_link";
+  vox.resolution = 0.02;
+  vox.size_x = 1;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = x - 0.01;
+  vox.origin.y = -0.01;
+  vox.origin.z = -0.01;
+  vox.occupancy.assign(1, 1);
+  return vox;
+}
+
+const std::vector<std::string> kBothJaws{"finger_pair", "finger_follower"};
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AMimicFollowerIsCheckedAtTheCommandedOpening) {
+  {
+    GraspRig rig("kernel_mimic_open", mimic_kernel_params(kBothJaws));
+    rig.voxels = mimic_cell(0.0);  // between the jaws
+    rig.start();
+    EXPECT_TRUE(rig.offer(nullptr, 0.03)) << "open: both jaws clear the cell";
+    EXPECT_FALSE(rig.node->fault_latched());
+  }
+  {
+    GraspRig rig("kernel_mimic_closed", mimic_kernel_params(kBothJaws));
+    rig.voxels = mimic_cell(0.0);
+    rig.start();
+    EXPECT_FALSE(rig.offer(nullptr, 0.0)) << "closed: the jaws touch the cell";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+  {
+    // A cell only the follower reaches, at the follower's commanded place.
+    GraspRig rig("kernel_mimic_follower_cell", mimic_kernel_params(kBothJaws));
+    rig.voxels = mimic_cell(0.03);  // x in [0.02, 0.04]: the closed follower spans [0.01, 0.02]
+    rig.start();
+    EXPECT_FALSE(rig.offer(nullptr, 0.0)) << "closed follower touches the cell";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AGraspDeclarationNamingTheLeaderExemptsItsMimicFollower) {
+  // Target cell at x = 0.03, where only the follower is; the declaration names
+  // only `finger_pair` (what the HAL names) with its region over the cell.
+  {
+    GraspRig rig("kernel_mimic_grasp", mimic_kernel_params(kBothJaws));
+    rig.voxels = mimic_cell(0.03);
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.contact_links = {"finger_pair"};
+    b.region_x = 0.03;
+    b.attach_link = "hand";
+    rig.warm(&b, 0.0, 300);
+    EXPECT_TRUE(rig.offer(&b, 0.0))
+        << "the follower is the same joint column's other jaw: exempt with the leader";
+    EXPECT_FALSE(rig.node->fault_latched());
+  }
+  {
+    // Control: the follower off the allowlist stays checked.
+    GraspRig rig("kernel_mimic_grasp_ctrl", mimic_kernel_params({"finger_pair"}));
+    rig.voxels = mimic_cell(0.03);
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.contact_links = {"finger_pair"};
+    b.region_x = 0.03;
+    b.attach_link = "hand";
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << "a non-allowlisted follower is never exempt";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, MisShapedOrUnsoundMimicParamsFailConfigure) {
+  const auto configure = [](const std::string& name, std::vector<rclcpp::Parameter> params) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(std::move(params));
+    auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    return node->on_configure(unconf);
+  };
+  const auto with = [](const char* key, rclcpp::Parameter value) {
+    auto params = mimic_kernel_params(kBothJaws);
+    for (auto& p : params) {
+      if (p.get_name() == key) {
+        p = std::move(value);
+      }
+    }
+    return params;
+  };
+  EXPECT_EQ(configure("kernel_mimic_ok", mimic_kernel_params(kBothJaws)),
+            osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  EXPECT_EQ(configure("kernel_mimic_short",
+                      with("collision_mimic_offset",
+                           rclcpp::Parameter("collision_mimic_offset", std::vector<double>{0.0}))),
+            osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+      << "mimic arrays must be per link";
+  EXPECT_EQ(
+      configure("kernel_mimic_zero", with("collision_mimic_multiplier",
+                                          rclcpp::Parameter("collision_mimic_multiplier",
+                                                            std::vector<double>{1.0, 1.0, 0.0}))),
+      osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+      << "a zero multiplier is a fixed link wearing a moving kind";
+  EXPECT_EQ(configure("kernel_mimic_nodof",
+                      with("collision_dof_index",
+                           rclcpp::Parameter("collision_dof_index",
+                                             std::vector<std::int64_t>{-1, 0, -1}))),
+            osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+      << "a mimic link needs the column it reads";
+  EXPECT_EQ(configure("kernel_mimic_ee",
+                      with("collision_ee_link_index",
+                           rclcpp::Parameter("collision_ee_link_index", std::int64_t{2}))),
+            osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+      << "the EE Jacobian cannot predict through a mimic link";
+  EXPECT_EQ(
+      configure("kernel_mimic_kind", with("collision_joint_kind",
+                                          rclcpp::Parameter("collision_joint_kind",
+                                                            std::vector<std::int64_t>{0, 2, 7}))),
+      osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+      << "an unknown joint code";
+}
+
+// ── Manipulation-workspace contact (issue #349, draft; Safety-WG pending) ────
+//
+// The grasp rig's finger on link0 (a hand link here), no target region: only
+// the producer-confirmed workspace around the occupied cell can let it touch.
+// Row 0 of a JOINT_POSITION chunk is reached from the measured state in one
+// control period; link0's reach is 60 mm (50 mm offset + 10 mm radius), so a
+// 0.3 rad step in one 1/30 s period bounds the hand at 0.54 m/s.
+
+namespace {
+
+constexpr double kWsPeriodS = 1.0 / 30.0;
+constexpr double kWsMaxMps = 0.10;
+
+constexpr double kWsMaxLeadM = 0.05;
+
+std::vector<rclcpp::Parameter> workspace_params(bool enabled = true, double max_mps = kWsMaxMps,
+                                                double period_s = kWsPeriodS,
+                                                std::vector<std::string> links = {"link0"},
+                                                double max_lead_m = kWsMaxLeadM) {
+  auto params = grasp_params();
+  params.emplace_back("hal_mode", std::string("sim"));  // the rule is sim-only
+  params.emplace_back("workspace_contact_enabled", enabled);
+  params.emplace_back("workspace_contact_links", links);
+  params.emplace_back("workspace_contact_max_speed_mps", max_mps);
+  params.emplace_back("workspace_contact_control_period_s", period_s);
+  params.emplace_back("workspace_contact_max_lead_m", max_lead_m);
+  return params;
+}
+
+// The lag rig (the Isaac defect, #349 follow-up). A position-controlled hand
+// trails its command: the measured j0 sits at 0.5 rad (finger 1.5 mm clear of
+// the cell, ~3 cm of hand behind a command at 0) while the policy walks the
+// command into the cell 0.1 rad per row. With a 0.5 s period that is
+// 0.1 * 0.06 / 0.5 = 0.012 m/s commanded, under the 0.02 bound; measured from
+// the lagging state, row 0 reads up to 0.5 * 0.06 / 0.5 = 0.06 m/s. The long
+// period keeps the 2-period freshness window (1 s) far above the rig's beat.
+constexpr double kLagMeasuredQ = 0.5;
+constexpr double kLagPeriodS = 0.5;
+constexpr double kLagMaxMps = 0.02;
+
+std::vector<rclcpp::Parameter> lag_params(double max_lead_m = kWsMaxLeadM) {
+  return with_param(workspace_params(true, kLagMaxMps, kLagPeriodS, {"link0"}, max_lead_m),
+                    "estop_reset_cooldown_s", rclcpp::ParameterValue(0.05));
+}
+
+// The lag rig with a second arm: link1 on j1, a metre away along y, no hand.
+std::vector<rclcpp::Parameter> lag_params_two_arm() {
+  auto p = lag_params();
+  const auto set = [&](const char* name, const rclcpp::ParameterValue& v) {
+    p = with_param(p, name, v);
+  };
+  set("n_dof", rclcpp::ParameterValue(std::int64_t{2}));
+  set("joint_position_min", rclcpp::ParameterValue(std::vector<double>{-3.14, -3.14}));
+  set("joint_position_max", rclcpp::ParameterValue(std::vector<double>{3.14, 3.14}));
+  set("joint_velocity_max", rclcpp::ParameterValue(std::vector<double>{3.15, 3.15}));
+  set("joint_torque_max", rclcpp::ParameterValue(std::vector<double>{5.0, 5.0}));
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{2}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, -1}));
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{1, 1}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1}));
+  set("collision_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0, 0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0}));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1}));
+  set("collision_capsule_radius", rclcpp::ParameterValue(std::vector<double>{0.01, 0.01}));
+  set("collision_capsule_half_length", rclcpp::ParameterValue(std::vector<double>{0.0, 0.0}));
+  set("collision_capsule_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0.05, 0, 0, 0, 0, 0, 0.05, 0, 0, 0, 0, 0}));
+  set("collision_link_names", rclcpp::ParameterValue(std::vector<std::string>{"link0", "link1"}));
+  set("collision_joint_names", rclcpp::ParameterValue(std::vector<std::string>{"j0", "j1"}));
+  return p;
+}
+
+openral_msgs::msg::ActionChunk two_arm_chunk(double q0, double q1, std::vector<std::string> names,
+                                             std::uint32_t tick) {
+  openral_msgs::msg::ActionChunk c = grasp_chunk(q0);
+  c.n_dof = 2;
+  c.flat = {q0, q1};
+  c.joint_names = std::move(names);
+  c.tick_index = tick;
+  c.tick_group_size = 2;
+  c.runner_session_id = 0xABCDu;
+  return c;
+}
+
+// Walk the command 0.5 -> `to` in 0.1 rad rows, the measured state held at
+// kLagMeasuredQ. True iff every row passed.
+bool walk_in(GraspRig& rig, const GraspBeat& b, double to) {
+  for (double q = kLagMeasuredQ; q >= to - 1e-9; q -= 0.1) {
+    if (!rig.send_once(&b, kLagMeasuredQ, grasp_chunk(std::max(q, 0.0)))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+GraspBeat workspace_beat(std::int64_t stamp_ns) {
+  GraspBeat b;
+  b.declaration_stamp_ns = stamp_ns;
+  b.region = false;  // independent of the target region
+  b.workspace = true;
+  return b;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ASlowHandInsideTheConfirmedWorkspaceDoesNotTripAndIsDisclosed) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_slow", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed target=cell:cube"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
+  EXPECT_EQ(logs.count("safety.workspace_contact enabled"), 1U) << "configure WARNs the rule";
+  // The declaration ends: the exemption with it, and its summary is logged.
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=retracted"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube pairs="), 1U);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "no live declaration: today's stop";
+}
+
+// #349 review E: a declaration whose grasp part the kernel refused (here a contact link
+// off the allowlist) arms no workspace: its producer is not trusted with either.
+TEST_F(LifecycleKernelTest, ARefusedGraspPartArmsNoWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_grasp_refused", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.region = true;
+  b.contact_links = {"not_a_link"};
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "no workspace: today's stop";
+  EXPECT_GE(logs.count("safety.grasp_region_rejected reason=link_not_allowed"), 1U);
+  EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=grasp_refused"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_armed"), 0U);
+}
+
+// #349 review E: a grasp identity retired because its claim was wrong (the declaring
+// gripper attached another object) disarms the workspace it armed, and its heartbeat
+// does not re-arm it. A correct handover keeps it (TheWorkspaceOutlivesThe...).
+TEST_F(LifecycleKernelTest, AWrongGraspClaimDisarmsItsWorkspace) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_wrong_claim", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.workspace = true;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  ASSERT_EQ(logs.count("safety.workspace_region_armed"), 1U) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  b.object_label = "cell:not_the_cube";
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_object_mismatch"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=grasp_claim_wrong"), 1U)
+      << logs.joined();
+  b.carrying = false;
+  b.revision = 2;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "no workspace for the wrong claim's heartbeat";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.workspace_region_armed"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AFastHandInsideTheWorkspaceStillTrips) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_fast", workspace_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.3, 300);
+  // Measured at 0.3 rad, commanded to the cell at 0: 0.018 m in one period.
+  EXPECT_FALSE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("workspace_contact_active=1"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, NoConfirmedWorkspaceOrTheRuleOffMeansTodaysStop) {
+  {
+    GraspRig rig("kernel_ws_none", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace = false;
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+  {
+    GraspRig rig("kernel_ws_off", workspace_params(false));
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << "a workspace on the wire exempts nothing while off";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AStaleOrForeignFrameWorkspaceExemptsNothing) {
+  LogCapture logs;
+  {
+    GraspRig rig("kernel_ws_stale", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_stamp_ns = rig.now_ns() - std::int64_t{10'000'000'000};  // > 4 s max age
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=region_stale"), 1U)
+        << "a standing refusal is announced once";
+  }
+  {
+    GraspRig rig("kernel_ws_frame", workspace_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_frame = "map";
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0));
+    EXPECT_EQ(logs.count("safety.workspace_region_rejected reason=frame_mismatch"), 1U);
+  }
+}
+
+TEST_F(LifecycleKernelTest, AConfirmedWorkspaceAgesOutBetweenMessages) {
+  // The producer stops re-confirming: the same box, its stamp frozen, stops
+  // exempting once past grasp_region_max_age_s (0.6 s here), without a message —
+  // the stream itself stays fresh (2 s deadline), so the age alone ends it.
+  GraspRig rig("kernel_ws_age",
+               with_param(with_param(workspace_params(), "grasp_region_max_age_s",
+                                     rclcpp::ParameterValue(0.6)),
+                          "attached_collision_deadline_ms", rclcpp::ParameterValue(2000.0)));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 400));
+  rig.warm(nullptr, 0.0, 700);
+  EXPECT_FALSE(rig.offer(nullptr, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, NoMeasuredStateMeansTheHandSpeedIsUnknownAndItTrips) {
+  // /joint_states never maps (the rig publishes `j0`): row 0's speed cannot be
+  // measured, so the workspace exempts nothing — fail closed.
+  auto params = with_param(workspace_params(), "collision_joint_names",
+                           rclcpp::ParameterValue(std::vector<std::string>{"not_j0"}));
+  GraspRig rig("kernel_ws_no_state", params);
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, TheGraspTargetExemptionIsUnchangedWithTheWorkspaceRuleOn) {
+  // ADR-0115 alone (target region, no workspace) still exempts the finger at
+  // full speed: the workspace rule adds an exemption, it removes none.
+  GraspRig rig("kernel_ws_adr0115", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.3, 300);
+  EXPECT_TRUE(rig.offer_chunk(&b, 0.3, grasp_chunk(0.0)));
+}
+
+TEST_F(LifecycleKernelTest, ALaggingHandWalkedSlowlyIntoTheWorkspaceIsExempt) {
+  // The Isaac regression: row 0 measured against the lagging state reads the
+  // tracking lag as speed (0.024 m/s by the 0.3 row, 0.06 at 0). Against the
+  // previously accepted command it reads the commanded 0.012 m/s.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lag", lag_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(walk_in(rig, b, 0.0)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
+  EXPECT_GE(logs.count("lead_m="), 1U) << "the WARN discloses the lead";
+  // Holding the command at the cell keeps passing: speed 0, lead 0.03 <= 0.05.
+  EXPECT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  b.active = false;
+  rig.warm(&b, kLagMeasuredQ, 100);
+  EXPECT_EQ(logs.count("safety.workspace_contact_summary target=cell:cube pairs="), 1U);
+  EXPECT_GE(logs.count("max_lead_m=0.03"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ACommandedStepAboveTheSpeedBoundTrips) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_cmd_fast", lag_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ)));
+  // From the accepted 0.5 straight to 0: 0.03 m in one period, 0.06 m/s.
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("workspace_contact_active=1 hand_speed_mps=0.06"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("hand_lead_m=0.03"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ALeadAboveTheBoundTripsWithAStationaryCommand) {
+  // Lead bound 0.02 m. Walked in to 0.2 (lead 0.018) it passes; then the hand
+  // is pushed back to 0.55 while the command stays put (speed 0): the lead
+  // grows to 0.35 * 0.06 = 0.021 m and the drives would push harder — stop.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lead", lag_params(0.02));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(walk_in(rig, b, 0.2)) << logs.joined();
+  EXPECT_FALSE(rig.send_once(&b, 0.55, grasp_chunk(0.2)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_lead_m=0.021"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AJawJointsStrokeIsNotLead) {
+  // The same push as above, but j0 is declared a jaw joint: the lead is taken
+  // with it at its measured value, so a jaw still closing on its stroke (the
+  // OpenArm grasp squeeze, #349 p_mix02) reads no lead and passes.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_jaw_lead",
+               with_param(lag_params(0.02), "workspace_contact_jaw_joints",
+                          rclcpp::ParameterValue(std::vector<std::string>{"j0"})));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(walk_in(rig, b, 0.2)) << logs.joined();
+  EXPECT_TRUE(rig.send_once(&b, 0.55, grasp_chunk(0.2))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, WithoutAPreviousCommandRowZeroFallsBackToTheMeasuredState) {
+  // First row after activation: no previous command, the lag reads as speed.
+  {
+    GraspRig rig("kernel_ws_first", lag_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.25)));
+    EXPECT_TRUE(rig.node->fault_latched()) << "0.25 * 0.06 / 0.5 = 0.03 m/s from measured";
+  }
+  // After an E-stop and its reset: the commands before it are forgotten.
+  {
+    GraspRig rig("kernel_ws_after_estop", lag_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    ASSERT_TRUE(walk_in(rig, b, 0.3));
+    rig.estop();
+    ASSERT_TRUE(rig.node->fault_latched());
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));  // past the cooldown
+    ASSERT_TRUE(rig.reset());
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.25)));
+    EXPECT_TRUE(rig.node->fault_latched()) << "from 0.3 it would pass; from measured it trips";
+  }
+  // After a refused chunk (dropped, not latched): forgotten too.
+  {
+    GraspRig rig("kernel_ws_after_refusal", lag_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    ASSERT_TRUE(walk_in(rig, b, 0.3));
+    auto bogus = grasp_chunk(0.3);
+    bogus.joint_names = {"no_such_joint"};
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, bogus));
+    ASSERT_FALSE(rig.node->fault_latched()) << "slot_joints_unmapped drops without a latch";
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.25)));
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+  // Control: the same step straight after the walk passes.
+  {
+    GraspRig rig("kernel_ws_fresh_control", lag_params());
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    ASSERT_TRUE(walk_in(rig, b, 0.3));
+    EXPECT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.25)));
+  }
+}
+
+TEST_F(LifecycleKernelTest, AStalePreviousCommandFallsBackToTheMeasuredState) {
+  // Fresh = accepted within 2 control periods (1 s here). Past that, row 0 is
+  // measured against the lagging state again.
+  GraspRig rig("kernel_ws_stale_cmd", lag_params());
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(walk_in(rig, b, 0.3));
+  rig.warm(&b, kLagMeasuredQ, 1200);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.25)));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, TheTickPartnerCheckSeedsFromThePreviousCommandToo) {
+  // Two arms, slot-dispatched per tick: j1's slot first, then the hand's (j0).
+  // The hand's slot is checked twice — j1 measured, and j1 at its tick
+  // target — and both must read the hand's speed from its previous command.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_partner", lag_params_two_arm());
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  std::uint32_t tick = 1;
+  for (double q = kLagMeasuredQ; q >= -1e-9; q -= 0.1, ++tick) {
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.1, {"j1"}, tick)))
+        << "tick " << tick << logs.joined();
+    ASSERT_TRUE(
+        rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(std::max(q, 0.0), 0.0, {"j0"}, tick)))
+        << "tick " << tick << logs.joined();
+  }
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U);
+  // And a fast commanded step (0 -> 0.4, 0.048 m/s, still in the cell) trips.
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.1, {"j1"}, tick)));
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.4, 0.0, {"j0"}, tick)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0.048"), 1U) << logs.joined();
+}
+
+// #349 follow-up (Isaac deploy sim, 4/4 runs): the chunk executor jumps
+// 0.5-1 rad at chunk boundaries, so the COMMANDED speed read 0.91-1.10 m/s
+// while PhysX measured the hand at <= 0.66 m/s. The speed bound now uses the
+// MEASURED hand speed (FK of q_meas + dq_meas * period vs q_meas); the lead
+// bound catches a commanded jump into the obstacle; with no fresh measured
+// velocity the commanded speed is the fallback (it reads faster).
+
+// #349 review B: within a chunk (rows s >= 1) the larger of the measured and the
+// commanded row-to-row speed governs, so a fast command does not read slow; under the
+// brake the creep scales that step down to the speed bound and the arm still moves.
+TEST_F(LifecycleKernelTest, ACommandedJumpIsReadAtItsCommandedSpeedEvenWithASlowMeasuredHand) {
+  // Row 0 holds at 0.5, row 1 jumps to the cell at 0 in one period: commanded 0.06 m/s.
+  // Measured at 0.1 rad/s the hand moves 0.1 * 0.06 = 0.006 m/s; the lead, 0.03 m less
+  // the free hand's one-period allowance 0.01, is 0.02 <= 0.05.
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(kLagMeasuredQ);
+  chunk.horizon = 2;
+  chunk.flat = {kLagMeasuredQ, 0.0};
+  {
+    LogCapture logs;
+    GraspRig rig("kernel_ws_meas_slow", lag_params());
+    rig.js_velocity = {-0.1};
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    rig.warm(&b, kLagMeasuredQ, 300);
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("b=voxel_0 step=1"), 1U) << logs.joined();
+    EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.02 hand_speed_source=commanded"), 1U)
+        << logs.joined();
+  }
+  LogCapture logs;
+  GraspRig rig(
+      "kernel_ws_meas_slow_brake",
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.1};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched()) << "speed only: a creep, no latch";
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 2U);
+  // The 0.5 rad step scaled to the 0.02 m/s bound: at most 0.5 / 3 of it, and moving.
+  EXPECT_LT(rig.last_flat[1], kLagMeasuredQ) << "a creep moves";
+  EXPECT_GE(rig.last_flat[1], kLagMeasuredQ - 0.5 / 3.0 - 1e-3) << logs.joined();
+}
+
+// #349 r41: row 0's commanded step (from the previously accepted command, or the
+// measured state, to the new chunk's first row) is the chunk-boundary jump the arm
+// smooths. With a fresh measured velocity it is not read as speed — the lead bounds it
+// — so a jump within the lead bound with a slow measured hand goes out whole.
+TEST_F(LifecycleKernelTest, ARowZeroBoundaryJumpWithinTheLeadBoundDoesNotBrake) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_row0_jump", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                 rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.1};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0) << "unscaled: no brake";
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U) << logs.joined();
+  EXPECT_GE(logs.count("speed_mps=0.006 speed_source=measured"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
+  // 0.5 rad/s measured: 0.03 m/s > 0.02, whatever the command does (it holds).
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_fast", lag_params());
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.send_once(&b, 0.0, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0.03 hand_lead_m=0 hand_speed_source=measured"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AJawJointsMeasuredVelocityIsNotHandSpeed) {
+  // The same 0.5 rad/s, but j0 is a jaw joint: a jaw jittering at its squeeze
+  // contact (#349 p4_mix00) is not the hand moving — 0 m/s, it passes.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_jaw",
+               with_param(lag_params(), "workspace_contact_jaw_joints",
+                          rclcpp::ParameterValue(std::vector<std::string>{"j0"})));
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
+// #349 workspace brake: the measured hand speed (0.03 m/s) is the ONLY reason to
+// stop, so the chunk is held at the measured pose instead — no latch.
+// #349 p12_mix04: the grasp region retires on handover_exit, the workspace does
+// not — the carry happens in the same declared, confirmed workspace.
+TEST_F(LifecycleKernelTest, TheWorkspaceOutlivesTheGraspRegionsHandoverExit) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_handover", workspace_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.workspace = true;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.payload_x = 0.10;  // the payload leaves the region: the region retires
+  rig.warm(&b, 0.0, 100);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the slow hand in the workspace still may touch\n"
+                                  << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_region_dropped reason=retired"), 0U);
+}
+
+// #349 workspace brake: the measured hand speed (0.03 m/s) is the ONLY reason to
+// stop. No latch: the command creeps toward its target at the speed bound — here it
+// leads only 0.006 m, under one period at the bound (0.02 x 0.5 = 0.01 m), so it goes
+// out whole.
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeCreepsWhenSpeedIsTheOnlyReason) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                             rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.5};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.1) << "within one period at the bound: unscaled";
+  EXPECT_GE(logs.count("safety.workspace_brake hand_speed_mps=0.030"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("creep=1.000"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeAlsoAnswersAPushOverTheLeadBound) {
+  // A still hand, a 0.005 m lead bound, the 0.1 rad command leads 0.006 m: the
+  // push is the only reason: the command creeps at half the lead bound.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_lead",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  // Scaled so the lead is half the 0.005 m bound: 0.1 x 0.0025 / 0.006.
+  EXPECT_NEAR(rig.last_flat[0], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+}
+
+// #349 r31: row s of a chunk runs s periods from now, so over the measured pose a
+// FREE hand may lead s periods at the speed bound on top of the lead bound. Lag rig:
+// 0.02 m/s x 0.5 s = 0.01 m per row, 0.06 m/rad, bound 0.005 m. Measured at 0.5 rad
+// (1.5 mm clear of the cell), rows 0.45/0.4/0.3 rad lead 0.003/0.006/0.012 m against
+// 0.005/0.015/0.025: the chunk goes out whole. Row 0 gets no allowance: the same
+// 0.1 rad push at row 0 still brakes, and the tightest row sets the creep.
+TEST_F(LifecycleKernelTest, ALaterRowMayLeadByItsPeriodsAtTheSpeedBound) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lead_rows",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.45);
+  chunk.horizon = 3;
+  chunk.flat = {0.45, 0.4, 0.3};
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[2], 0.3) << "unscaled";
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U) << logs.joined();
+  chunk.flat = {0.4, 0.4, 0.3};
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_NEAR(rig.last_flat[0], kLagMeasuredQ - 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+}
+
+// #349 review A: a hand already touching is not carried along by its command, so no
+// row gets the allowance: one open-loop chunk could otherwise push a blocked hand
+// max_lead + s*v*T. Measured in the cell at 0 rad, row 1 at 0.1 rad leads 0.006 m:
+// within 0.005 + one period's 0.01 m, over the bare 0.005 m — it now creeps at half
+// the lead bound on every row.
+TEST_F(LifecycleKernelTest, AHandAlreadyTouchingGetsNoLaterRowAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_lead_touching",
+               with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                          rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.0);
+  chunk.horizon = 3;
+  chunk.flat = {0.0, 0.1, 0.1};
+  ASSERT_TRUE(rig.send_once(&b, 0.0, chunk)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 3U);
+  EXPECT_NEAR(rig.last_flat[1], 0.1 * 0.0025 / 0.006, 1e-3) << logs.joined();
+}
+
+// #349 r20: a command the relaxed check still refuses (here: into a cell outside
+// the workspace box) while the measured pose is clear is held — never executed — up
+// to `workspace_contact_hold_max_consecutive` chunks in a row, then latches.
+TEST_F(LifecycleKernelTest, ARefusedCommandWithAClearMeasuredPoseHoldsUpToTheCap) {
+  LogCapture logs;
+  auto params =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{2}));
+  GraspRig rig("kernel_ws_hold_cap", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: no exemption for it
+  rig.warm(&b, kLagMeasuredQ, 300);
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << i << logs.joined();
+    EXPECT_FALSE(rig.node->fault_latched());
+    ASSERT_EQ(rig.last_flat.size(), 1U);
+    EXPECT_DOUBLE_EQ(rig.last_flat[0], kLagMeasuredQ) << "held, the command never executed";
+  }
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "past the cap: today's latched stop";
+  EXPECT_GE(logs.count("reason=command_refused"), 1U) << logs.joined();
+}
+
+// #349 review F: the brake's dry run records its trips without building strings; a
+// stop it does not answer reports the dry run's first trip once, not a re-check.
+TEST_F(LifecycleKernelTest, ARefusedBrakeReportsTheDryRunsFirstTripOnce) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_replay", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                    rclcpp::ParameterValue(true)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: the relaxed check refuses too
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.collision kind=world a=link0 b=voxel_0 step=0"), 1U)
+      << logs.joined();
+}
+
+// #349 review F: the brake's whole decision on a refused chunk — the relaxed pass, the
+// hold check, the creep scan and its scaled-row checks, the jaw hold — allocates
+// nothing; the kernel's probe brackets it, before any report, log or publish. Three
+// outcomes: a creep (speed only), a held refused command, a stop past the hold cap.
+TEST_F(LifecycleKernelTest, TheWorkspaceBrakeDecisionDoesNotAllocate) {
+  LogCapture logs;
+  auto params = with_param(lag_params(0.005), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{1}));
+  GraspRig rig("kernel_ws_brake_noalloc", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  g_brake_allocs.store(0);
+  g_brake_decisions.store(0);
+  osk::SafetyKernelLifecycleNode::workspace_brake_probe.store(&brake_probe);
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(0.4);
+  chunk.horizon = 3;
+  chunk.flat = {0.4, 0.4, 0.3};  // row 0 leads 0.006 > 0.005: speed/lead only, a creep
+  const bool crept = rig.send_once(&b, kLagMeasuredQ, chunk);
+  b.workspace_x = 0.5;  // the cell now outside the box: the relaxed check refuses
+  const bool held = rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0));
+  const std::vector<double> held_flat = rig.last_flat;
+  const bool stopped = !rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0));
+  osk::SafetyKernelLifecycleNode::workspace_brake_probe.store(nullptr);
+  t_count_allocs = false;
+  EXPECT_TRUE(crept) << logs.joined();
+  EXPECT_TRUE(held) << logs.joined();
+  EXPECT_TRUE(stopped) << logs.joined();
+  EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  EXPECT_EQ(held_flat, std::vector<double>{kLagMeasuredQ}) << "held, never executed";
+  EXPECT_TRUE(rig.node->fault_latched()) << "past the hold cap";
+  EXPECT_EQ(g_brake_decisions.load(), 3U) << "every refused chunk ran the decision";
+  EXPECT_EQ(g_brake_allocs.load(), 0U)
+      << "the workspace brake decision allocated; CLAUDE.md §2 forbids this.";
+}
+
+TEST_F(LifecycleKernelTest, AHoldCapNeedsTheBrake) {
+  GraspRig rig("kernel_ws_hold_nobrake",
+               with_param(lag_params(), "workspace_contact_hold_max_consecutive",
+                          rclcpp::ParameterValue(std::int64_t{3})));
+  EXPECT_FALSE(rig.configure());
+}
+
+TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeedsAFreshMeasuredVelocity) {
+  // No measured velocity: the speed is the commanded fallback, nothing measured
+  // says the arm can be held where it is — the stop latches as before.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_brake_nov", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                 rclcpp::ParameterValue(true)));
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U);
+}
+
+TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
+  // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
+  // rad into the cell — a 0.03 m lead over a 0.02 bound. Row 0's step is read by the
+  // lead, not as speed (#349 r41).
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_lead", lag_params(0.02));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0 hand_lead_m=0.03 hand_speed_source=measured"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, JointStatesWithoutAVelocityFallBackToTheCommandedSpeed) {
+  // Velocities published, then a message without them: the measured velocity
+  // is forgotten and the commanded jump (0.06 m/s) trips.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_none", lag_params());
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ)));
+  rig.js_velocity = {};
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleMeasuredVelocityFallsBackToTheCommandedSpeed) {
+  // j0's velocity last landed > collision_state_deadline (300 ms) ago; the
+  // stream stays alive on another joint name, so positions read fresh while
+  // j0's velocity does not — the commanded jump (0.06 m/s) trips.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_stale", with_param(lag_params(), "collision_state_deadline_ms",
+                                                  rclcpp::ParameterValue(300.0)));
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ)));
+  rig.js_names = {"j_unrelated"};
+  rig.warm(&b, kLagMeasuredQ, 400);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("hand_speed_source=commanded"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, WorkspaceContactConfigureRefusals) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  GraspRig ok("kernel_ws_cfg_ok", workspace_params());
+  EXPECT_TRUE(ok.configure());
+  auto no_grasp =
+      with_param(workspace_params(), "grasp_allowance_enabled", rclcpp::ParameterValue(false));
+  GraspRig a("kernel_ws_cfg_grasp", no_grasp);
+  EXPECT_FALSE(a.configure()) << "the workspace rides the grasp declaration";
+  for (const double v : {0.0, -0.1, nan, std::numeric_limits<double>::infinity()}) {
+    GraspRig speed("kernel_ws_cfg_speed", workspace_params(true, v));
+    EXPECT_FALSE(speed.configure()) << "speed " << v;
+    GraspRig period("kernel_ws_cfg_period", workspace_params(true, kWsMaxMps, v));
+    EXPECT_FALSE(period.configure()) << "period " << v;
+  }
+  for (const double v : {0.0, -0.01, 0.1001, nan, std::numeric_limits<double>::infinity()}) {
+    GraspRig lead("kernel_ws_cfg_lead",
+                  workspace_params(true, kWsMaxMps, kWsPeriodS, {"link0"}, v));
+    EXPECT_FALSE(lead.configure()) << "lead " << v;
+  }
+  GraspRig lead_cap("kernel_ws_cfg_lead_cap",
+                    workspace_params(true, kWsMaxMps, kWsPeriodS, {"link0"}, 0.10));
+  EXPECT_TRUE(lead_cap.configure()) << "0.10 m is the cap, inclusive";
+  GraspRig empty("kernel_ws_cfg_empty", workspace_params(true, kWsMaxMps, kWsPeriodS, {}));
+  EXPECT_FALSE(empty.configure());
+  GraspRig unknown("kernel_ws_cfg_unknown",
+                   workspace_params(true, kWsMaxMps, kWsPeriodS, {"link0", "openarm_hand"}));
+  EXPECT_FALSE(unknown.configure());
+  const auto jaws = [](std::vector<std::string> names) {
+    return with_param(workspace_params(), "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::move(names)));
+  };
+  GraspRig jaw_ok("kernel_ws_cfg_jaw_ok", jaws({"j0"}));
+  EXPECT_TRUE(jaw_ok.configure());
+  GraspRig jaw_bad("kernel_ws_cfg_jaw_bad", jaws({"left_gripper"}));
+  EXPECT_FALSE(jaw_bad.configure()) << "a jaw joint the model does not have";
+  GraspRig brake_alone("kernel_ws_cfg_brake",
+                       with_param(workspace_params(false, 0.0, 0.0, {}),
+                                  "workspace_contact_brake_enabled", rclcpp::ParameterValue(true)));
+  EXPECT_FALSE(brake_alone.configure()) << "the brake needs the workspace rule";
+  GraspRig off("kernel_ws_cfg_off", workspace_params(false, 0.0, 0.0, {}));
+  EXPECT_TRUE(off.configure()) << "off, nothing is read";
+  // Sim-only until Safety-WG review, enforced by the kernel itself (#349 review):
+  // a real or unknown HAL mode never arms the rule, whatever launched the kernel.
+  for (const char* mode : {"real", "", "Sim"}) {
+    GraspRig real("kernel_ws_cfg_real", with_param(workspace_params(), "hal_mode",
+                                                   rclcpp::ParameterValue(std::string(mode))));
+    EXPECT_FALSE(real.configure()) << "hal_mode '" << mode << "'";
+  }
+  GraspRig real_off("kernel_ws_cfg_real_off",
+                    with_param(workspace_params(false, 0.0, 0.0, {}), "hal_mode",
+                               rclcpp::ParameterValue(std::string("real"))));
+  EXPECT_TRUE(real_off.configure()) << "the rule off: real configures as before";
+}
+
+// #349 review: a hold publishes the arm at measured but the jaws at their command,
+// so a refused command whose jaw motion is itself the collision must stop, not hold.
+// Hold-cap rig with j0 as the jaw: the command walks j0 into a cell outside the box.
+TEST_F(LifecycleKernelTest, AHoldWhoseJawCommandCollidesStops) {
+  LogCapture logs;
+  auto params =
+      with_param(lag_params(), "workspace_contact_brake_enabled", rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{5}));
+  params = with_param(params, "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::vector<std::string>{"j0"}));
+  GraspRig rig("kernel_ws_hold_jaw", params);
+  rig.js_velocity = {0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;  // the box well away from the cell: no exemption for it
+  rig.warm(&b, kLagMeasuredQ, 300);
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_TRUE(rig.node->fault_latched()) << "the jaw command is the collision: today's stop";
+  EXPECT_GE(logs.count("jaw_hold_clear=0"), 1U) << logs.joined();
+}
+
+// #349 CodeRabbit: the brake's own row checks (creep, jaw hold) also check this tick's
+// other committed targets, as the row check does. Two arms with self-collision, link1
+// 0.1 m behind link0; j0 the jaw. j1's slot moves link1 to (-0.05, 0); j0's slot then
+// closes link0 onto that spot (3.0 rad) — clear of link1's measured pose, so only the
+// partner check refuses it. Held, that jaw command would go out: it must stop.
+TEST_F(LifecycleKernelTest, AJawHoldIsCheckedAgainstTheOtherArmsTickTarget) {
+  LogCapture logs;
+  auto params = with_param(lag_params_two_arm(), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{5}));
+  params = with_param(params, "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::vector<std::string>{"j0"}));
+  params = with_param(params, "self_collision_enabled", rclcpp::ParameterValue(true));
+  params = with_param(
+      params, "collision_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0, 0, 0, 0, 0, 0, -0.1, 0, 0, 0, 0, 0}));
+  GraspRig rig("kernel_ws_hold_jaw_partner", params);
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {kGraspClearQ};
+  rig.js_velocity = {0.0, 0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kGraspClearQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kGraspClearQ, two_arm_chunk(0.0, 0.0, {"j1"}, 1))) << logs.joined();
+  EXPECT_FALSE(rig.send_once(&b, kGraspClearQ, two_arm_chunk(3.0, 0.0, {"j0"}, 1)))
+      << logs.joined();
+  EXPECT_TRUE(rig.node->fault_latched()) << "the jaw meets the other arm's target: a stop";
+  EXPECT_EQ(logs.count("safety.collision kind=self a=link0 b=link1 step=0"), 1U) << logs.joined();
+}
+
+// #349 review: holds are counted per commanded joint. Two arms slot-dispatched per
+// tick: j1's slot passes every tick, j0's command is refused every tick (into a cell
+// outside the box) — j1 passing must not reset j0's run, so j0 latches at the cap.
+TEST_F(LifecycleKernelTest, TheOtherArmPassingDoesNotResetAHoldRun) {
+  LogCapture logs;
+  auto params = with_param(lag_params_two_arm(), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{2}));
+  GraspRig rig("kernel_ws_hold_two_arm", params);
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {0.0};
+  rig.js_velocity = {0.0, 0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  b.workspace_x = 0.5;
+  rig.warm(&b, kLagMeasuredQ, 300);
+  std::uint32_t tick = 1;
+  for (; tick <= 2; ++tick) {
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)))
+        << "tick " << tick << logs.joined();
+    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)))
+        << "held, tick " << tick << logs.joined();
+    EXPECT_FALSE(rig.node->fault_latched());
+  }
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)));
+  EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)));
+  EXPECT_TRUE(rig.node->fault_latched()) << "past j0's cap despite j1 passing every tick";
 }

@@ -81,14 +81,18 @@ def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
     origin = np.asarray(params["collision_origin_xyzrpy"], dtype=float).reshape(n, 6)
     axis = np.asarray(params["collision_axis"], dtype=float).reshape(n, 3)
     world: list[np.ndarray] = []
+    mult = params.get("collision_mimic_multiplier", [1.0] * n)
+    off = params.get("collision_mimic_offset", [0.0] * n)
     for i in range(n):
         motion = np.eye(4)
         dof = int(params["collision_dof_index"][i])
         kind = int(params["collision_joint_kind"][i])
-        if dof >= 0 and kind == 1:
-            motion[:3, :3] = _axis_angle(axis[i] / np.linalg.norm(axis[i]), q[dof])
-        elif dof >= 0 and kind == 2:
-            motion[:3, 3] = axis[i] * q[dof]
+        # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
+        qi = float(mult[i]) * q[dof] + float(off[i]) if dof >= 0 and kind in (3, 4) else q[dof]
+        if dof >= 0 and kind in (1, 3):
+            motion[:3, :3] = _axis_angle(axis[i] / np.linalg.norm(axis[i]), qi)
+        elif dof >= 0 and kind in (2, 4):
+            motion[:3, 3] = axis[i] * qi
         local = _tf(origin[i]) @ motion
         parent = int(params["collision_parent"][i])
         world.append(local if parent < 0 else world[parent] @ local)

@@ -498,7 +498,14 @@ def test_the_foxglove_attachment_markers_get_the_bridges_tf_frames(tmp_path: Pat
 
 # ── Grasp-target exemption (DeployRuntime.grasp_allowance_enabled) ───────────
 
-_OPENARM_FINGER_LINKS = ("openarm_left_finger_pair", "openarm_right_finger_pair")
+# The manifest's `role: gripper` jaws, then their mimic followers (the kernel
+# must exempt both jaws of a gripper in a grasp region).
+_OPENARM_FINGER_LINKS = (
+    "openarm_left_finger_pair",
+    "openarm_right_finger_pair",
+    "openarm_left_finger_follower",
+    "openarm_right_finger_follower",
+)
 
 
 def _scene_with_grasp_allowance(tmp_path: Path, *, enabled: bool | None) -> Path:

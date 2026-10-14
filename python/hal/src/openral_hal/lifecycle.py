@@ -1917,6 +1917,7 @@ if _ROS2_AVAILABLE:
             # bespoke service wiring.
             self._reset_to_pose_srv: Any = None
             self._reset_episode_srv: Any = None
+            self._active_task_sub: Any = None
 
         def _create_hal(self) -> HAL:
             from openral_core import RobotDescription
@@ -2026,6 +2027,7 @@ if _ROS2_AVAILABLE:
             self._attach_ros_control_transport()
             self._attach_interbotix_transport()
             self._open_reset_episode_service()
+            self._subscribe_active_task()
             if not callable(getattr(self._hal, "reset_to_pose", None)):
                 return TransitionCallbackReturn.SUCCESS
             from pathlib import Path
@@ -2080,6 +2082,33 @@ if _ROS2_AVAILABLE:
                 Trigger, topic, self._handle_reset_episode
             )
             self.get_logger().info(f"reset_episode service ready at {topic}")
+
+        def _subscribe_active_task(self) -> None:
+            """Feed ``/openral/reward/active_task`` to the HAL iff it grades goals.
+
+            Reflection, like ``reset_episode``: a sim-attached HAL exposes
+            ``set_active_task`` (deploy sim's per-goal placement grading). The rSkill
+            runner publishes each goal's prompt there on accept and ``""`` at its
+            end (the reasoner the same, in a mission). The callback runs on the
+            executor thread that steps the env, so the sidecar socket is never
+            shared. RELIABLE / VOLATILE / KEEP_LAST 1 matches both publishers.
+            """
+            set_active_task = getattr(self._hal, "set_active_task", None)
+            if not callable(set_active_task):
+                return
+            from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+            from std_msgs.msg import String
+
+            self._active_task_sub = self.create_subscription(
+                String,
+                "/openral/reward/active_task",
+                lambda msg: set_active_task(str(msg.data)),
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
+            )
 
         def _handle_reset_episode(self, request: object, response: object) -> object:
             """Start a fresh sim episode on the live env; reply with the seed it used.
@@ -2583,6 +2612,9 @@ if _ROS2_AVAILABLE:
             if self._reset_episode_srv is not None:
                 self.destroy_service(self._reset_episode_srv)
                 self._reset_episode_srv = None
+            if self._active_task_sub is not None:
+                self.destroy_subscription(self._active_task_sub)
+                self._active_task_sub = None
 
     # Back-compat alias for the manifest node's prior private name (issue
     # #191 promoted it to public API). Existing imports keep working.

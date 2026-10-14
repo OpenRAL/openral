@@ -55,6 +55,7 @@ from openral_core.schemas import (
     JointState,
     JointType,
     LinkCollisionGeometry,
+    MimicJoint,
     OccupancyGridRef,
     PhysicsBackend,
     PlaceDeclaration,
@@ -329,6 +330,9 @@ _grasp_declaration_st = st.builds(
     stamp_ns=_ns,
     active=st.booleans(),
     region=st.none() | _grasp_region_st,
+    # #349: under the grasp caps is under the workspace caps too.
+    workspace_box=st.none() | _grasp_region_st,
+    workspace_region=st.none() | _grasp_region_st,
 )
 
 _place_declaration_st = st.builds(
@@ -426,6 +430,25 @@ _link_collision_geometry_st = st.builds(
     link_name=_name,
     shape=_collision_shape_st,
     origin_xyz_rpy=st.tuples(*([_safe_float] * 6)),
+)
+
+# A follower link of the collision tree (URDF <mimic>): a finite, non-zero
+# multiplier, a moving joint type, distinct parent and child.
+_mimic_joint_st = st.builds(
+    MimicJoint,
+    name=_name,
+    parent_link=_name.map(lambda n: f"{n}_parent"),
+    child_link=_name.map(lambda n: f"{n}_child"),
+    mimics=_name,
+    multiplier=st.one_of(
+        st.floats(min_value=0.01, max_value=1e3), st.floats(min_value=-1e3, max_value=-0.01)
+    ),
+    offset=_safe_float,
+    joint_type=st.sampled_from([JointType.REVOLUTE, JointType.CONTINUOUS, JointType.PRISMATIC]),
+    axis_xyz=st.tuples(_safe_float, _safe_float, _safe_float),
+    origin_xyz=st.tuples(_safe_float, _safe_float, _safe_float),
+    origin_rpy=st.tuples(_safe_float, _safe_float, _safe_float),
+    sim_joint_name=st.none() | _name,
 )
 
 _occupancy_grid_ref_st = st.builds(
@@ -720,6 +743,14 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_mimic_joint_st)
+def test_fuzz_mimic_joint(instance: MimicJoint) -> None:
+    """MimicJoint round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(MimicJoint, instance)
+    assert instance.value_at(0.0) == instance.offset
 
 
 @_FUZZ_SETTINGS

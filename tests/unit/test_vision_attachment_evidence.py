@@ -458,6 +458,8 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
     assert attachment.primitives[0].shape.half_extents_m == (0.05, 0.05, 0.05)
+    # The SO-101's tool point is the jaw centre and its jaw hinges at the link origin
+    # (palm plane 0): the cube stays centred on the tool point.
     assert attachment.pose_in_link.xyz == _TCP_IN_LINK
     assert attachment.confidence < 0.5
     assert "vision_gate_rejected" in (attachment.evidence_ref or "")
@@ -532,11 +534,15 @@ def test_volume_backstop_fires_on_a_thick_over_large_payload() -> None:
 
 
 def test_a_per_joint_producer_serves_one_openarm_hand() -> None:
-    """On a bimanual robot each hand gets its own attach link and touch link."""
+    """On a bimanual robot each hand gets its own attach link and touch links.
+
+    The touch links are the jaw and its mimic follower: a held payload sits between both
+    fingers, so checking it against the follower stops every grasp (#349 p_mix07).
+    """
     openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
     left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
     assert left.attach_link == "openarm_left_link7"
-    assert list(left.touch_links) == ["openarm_left_finger_pair"]
+    assert list(left.touch_links) == ["openarm_left_finger_pair", "openarm_left_finger_follower"]
     right = VisionAttachmentEvidenceProducer(openarm, gripper_joint="right_gripper")
     assert right.attach_link == "openarm_right_link7"
 
@@ -552,3 +558,54 @@ def test_a_non_gripper_joint_is_rejected_by_the_producer() -> None:
     """Naming an arm joint is a typed error."""
     with pytest.raises(ROSConfigError, match="not a gripper-role joint"):
         VisionAttachmentEvidenceProducer(_robot(), gripper_joint="wrist_roll")
+
+
+def test_the_openarm_fallback_box_starts_at_the_palm_plane() -> None:
+    """An OpenArm's tool point is its finger hinge, the palm plane: the jaw-span cube's
+    back face sits on it, never inside the carrying wrist (#349 p2_mix00)."""
+    openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
+    tcp = np.asarray(left.palm_in_link)
+    held, report = left.on_grasp(
+        masks=[],
+        depth_m=np.zeros((4, 4)),
+        intrinsics=_wrist_intrinsics(4, 4),
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=tuple(tcp),
+        object_id="payload",
+        stamp_ns=1,
+        mask_scores_advisory=[],
+    )
+    assert not report.accepted
+    u = tcp / np.linalg.norm(tcp)
+    centre = np.asarray(held.pose_in_link.xyz)
+    assert float(centre @ u) == pytest.approx(np.linalg.norm(tcp) + 0.05)
+
+
+def test_the_extent_caps_compare_extents_sorted_by_extent() -> None:
+    """The jaw cap bounds the SHORTEST extent, not the least-variance axis (#349 p3_mix04).
+
+    A ~8 x 8 cm patch at 12 cm with a few pixels 10.5 cm deeper: the depth axis has the
+    least variance but the longest extent. Read in variance order, its 10.5 cm met the
+    10 cm jaw cap and a carton the jaws held was rejected.
+    """
+    producer = VisionAttachmentEvidenceProducer(_robot())
+    k = _wrist_intrinsics(320, 240)
+    side_px = round(0.075 * k.fx / 0.12)
+    mask = np.zeros((240, 320), dtype=bool)
+    r0, c0 = 120 - side_px // 2, 160 - side_px // 2
+    mask[r0 : r0 + side_px, c0 : c0 + side_px] = True
+    depth = _plane_depth(mask.shape, distance_m=0.12).copy()
+    depth[120, 160:164] = 0.12 + 0.105
+    _, report = producer.on_grasp(
+        masks=[mask],
+        depth_m=depth,
+        intrinsics=k,
+        t_link_from_cam=_T_LINK_FROM_CAM,
+        tcp_in_link=_TCP_IN_LINK,
+        object_id="payload",
+        stamp_ns=11,
+        mask_scores_advisory=[0.9],
+    )
+    assert max(report.extents_m) > producer.config.max_payload_extents_m[0]
+    assert "payload_extent" not in report.rejections, report

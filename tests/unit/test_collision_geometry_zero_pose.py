@@ -78,23 +78,36 @@ def _joint_motion(joint_type: JointType, axis: tuple[float, float, float], q: fl
 
 def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, np.ndarray]:
     """World pose of every link at joint positions ``q`` (missing joints at 0)."""
-    edges = [*robot.fixed_attachments, *robot.joints]
+    edges = [*robot.fixed_attachments, *robot.joints, *robot.mimic_joints]
     roots = {e.parent_link for e in edges} - {e.child_link for e in edges}
     # The kernel roots its model at the chain's single root; a `base_frame`
     # outside the chain (UR's `ur5e_base_link`) names that same frame.
     root = robot.base_frame if robot.base_frame in roots or len(roots) != 1 else roots.pop()
     poses: dict[str, np.ndarray] = {root: np.eye(4)}
-    pending = [
-        (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))
-        for a in robot.fixed_attachments
-    ] + [
-        (
-            j.parent_link,
-            j.child_link,
-            _tf(j.origin_xyz, j.origin_rpy) @ _joint_motion(j.joint_type, j.axis_xyz, q[j.name]),
-        )
-        for j in robot.joints
-    ]
+    pending = (
+        [
+            (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))
+            for a in robot.fixed_attachments
+        ]
+        + [
+            (
+                j.parent_link,
+                j.child_link,
+                _tf(j.origin_xyz, j.origin_rpy)
+                @ _joint_motion(j.joint_type, j.axis_xyz, q[j.name]),
+            )
+            for j in robot.joints
+        ]
+        + [
+            (
+                m.parent_link,
+                m.child_link,
+                _tf(m.origin_xyz, m.origin_rpy)
+                @ _joint_motion(m.joint_type, m.axis_xyz, m.value_at(q[m.mimics])),
+            )
+            for m in robot.mimic_joints
+        ]
+    )
     # Fixed-point pass: parents may be declared after children.
     progressed = True
     while pending and progressed:

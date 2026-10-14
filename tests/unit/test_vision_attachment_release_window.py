@@ -41,6 +41,7 @@ _OPENARM = Path("robots/openarm/robot.yaml")
 _BASE = "openarm_base"
 _HAND = "openarm_left_link7"
 _FINGER = "openarm_left_finger_pair"
+_FOLLOWER = "openarm_left_finger_follower"
 _CLEAR_M = VisionAttachmentConfig().release_clear_m
 _TIMEOUT_S = VisionAttachmentConfig().release_timeout_s
 
@@ -93,7 +94,7 @@ def test_the_frozen_record_sits_on_the_collision_root_and_exempts_what_the_held_
     frozen = freeze_released_attachment(held, base_link=_BASE, t_base_from_link=t_hand)
 
     assert frozen.attach_link == _BASE == frozen.pose_in_link.frame_id
-    assert frozen.touch_links == [_HAND, _FINGER]
+    assert frozen.touch_links == [_HAND, _FINGER, _FOLLOWER]
     assert {held.attach_link, *held.touch_links} == set(frozen.touch_links)
     expected = t_hand @ homogeneous_from_quat_xyz(
         held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -171,14 +172,16 @@ def test_the_window_closes_on_separation_only_once_hand_and_jaws_are_clear(
     at_release, verdict = reason(0.0)
     assert at_release is not None and at_release <= 0.0, "the jaws surround the payload"
     assert verdict == ""
-    # 10 cm up the frozen payload still overlaps the finger box: the window holds.
-    assert reason(0.10)[1] == ""
-    # Pinned on the manifest's hand + finger boxes against the 10 cm jaw box: at 20 cm the
-    # gap is positive but inside margin + one voxel — still held; at 25 cm it is clear.
-    gap_20, verdict_20 = reason(0.20)
-    assert gap_20 is not None and 0.0 < gap_20 <= _CLEAR_M and verdict_20 == ""
-    gap_25, verdict_25 = reason(0.25)
-    assert gap_25 is not None and gap_25 > _CLEAR_M and verdict_25 == "separation"
+    # 10 cm up the frozen payload still overlaps the finger boxes: the window holds.
+    gap_10, verdict_10 = reason(0.10)
+    assert gap_10 is not None and gap_10 <= 0.0 and verdict_10 == ""
+    # Pinned on the manifest's hand + both finger boxes (the leader `finger_pair` and the
+    # mimic follower, each one rigid finger since #349) against the 10 cm jaw box: at 13 cm
+    # the gap is positive but inside margin + one voxel — still held; at 16 cm it is clear.
+    gap_13, verdict_13 = reason(0.13)
+    assert gap_13 is not None and 0.0 < gap_13 <= _CLEAR_M and verdict_13 == ""
+    gap_16, verdict_16 = reason(0.16)
+    assert gap_16 is not None and gap_16 > _CLEAR_M and verdict_16 == "separation"
     # The payload never moved: the record's pose is the DETACH pose throughout.
     assert window.record.pose_in_link.xyz == pytest.approx(
         tuple((t_hand @ np.array([*_held(description).pose_in_link.xyz, 1.0]))[:3])

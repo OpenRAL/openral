@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
     import numpy as np
     from numpy.typing import NDArray
+    from openral_core import JointSpec, MimicJoint
 
     _Arr = NDArray[np.float64]
 
@@ -1868,6 +1869,11 @@ def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
         # The parent link maps to the MJCF body's parent (root link of the chain).
         if j.parent_link not in link_body:
             link_body[j.parent_link] = int(m.body_parentid[child_b])
+    # A mimic joint's child (the follower finger) maps by the same rule.
+    for mim in robot.mimic_joints:
+        ji = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, mim.sim_joint_name or mim.name))
+        if ji >= 0:
+            link_body[mim.child_link] = int(m.jnt_bodyid[ji])
     for ln in {g.link_name for g in robot.collision_geometry} | {
         j.parent_link for j in robot.joints
     }:
@@ -2032,6 +2038,54 @@ def _stroke_swept_meshes(
     return parts
 
 
+def _declared_mimic_followers(
+    robot: RobotDescription, model: object, followers: Mapping[int, list[tuple[int, float, float]]]
+) -> set[int]:
+    """MJCF follower joints the manifest models as ``mimic_joints`` — checked against the MJCF.
+
+    Each declared mimic must be an equality follower of its ``mimics`` joint in
+    the MJCF with the SAME ``multiplier`` / ``offset`` (the kernel poses the
+    follower from the manifest's numbers, the fit from the MJCF's; a
+    disagreement would put the kernel's finger at the wrong opening).
+
+    Returns:
+        The MJCF joint ids of the declared followers.
+
+    Raises:
+        ROSConfigError: A mimic names a joint the MJCF lacks, one that is not
+            an equality follower of its leader, or a relation the MJCF spells
+            differently.
+    """
+    import mujoco
+
+    m: Any = model
+    jid = {j.name: j.sim_joint_name or j.name for j in robot.joints}
+    declared: set[int] = set()
+    for mim in robot.mimic_joints:
+        fj = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, mim.sim_joint_name or mim.name))
+        lj = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, jid[mim.mimics]))
+        if fj < 0 or lj < 0:
+            raise ROSConfigError(
+                f"mimic_joints[{mim.name!r}]: the MJCF has no joint "
+                f"{mim.sim_joint_name or mim.name!r} or no leader {jid[mim.mimics]!r}"
+            )
+        relation = next(((c0, c1) for f, c0, c1 in followers.get(lj, []) if f == fj), None)
+        if relation is None:
+            raise ROSConfigError(
+                f"mimic_joints[{mim.name!r}]: the MJCF has no joint equality coupling it to "
+                f"{jid[mim.mimics]!r}"
+            )
+        c0, c1 = relation
+        if abs(c0 - mim.offset) > 1e-9 or abs(c1 - mim.multiplier) > 1e-9:
+            raise ROSConfigError(
+                f"mimic_joints[{mim.name!r}]: multiplier/offset ({mim.multiplier}, {mim.offset}) "
+                f"disagree with the MJCF equality ({c1}, {c0}); the kernel would pose the "
+                "follower at the wrong opening"
+            )
+        declared.add(fj)
+    return declared
+
+
 def fit_collision_geometry_from_mjcf(
     robot: RobotDescription,
     *,
@@ -2057,7 +2111,10 @@ def fit_collision_geometry_from_mjcf(
     link: sampled at ``stroke_samples`` evenly spaced leader positions across
     the joint's range, with the follower set by the equality's polynomial, and
     expressed in the leader's child body frame. The primitive therefore encloses
-    both fingers at every opening the gripper can reach.
+    both fingers at every opening the gripper can reach. A follower the manifest
+    declares in ``mimic_joints`` is NOT folded in: it is its own link, fitted
+    rigidly in its own body frame like every other link, and the kernel poses
+    it at the gripper's value (``docs/reference/finger-mimic-geometry.md``).
 
     A STATIC link — a ``fixed_attachments`` child the MJCF has no body for (the
     OpenArm torso) — is fitted to its URDF geometry instead
@@ -2084,8 +2141,14 @@ def fit_collision_geometry_from_mjcf(
     data = mujoco.MjData(model)
     link_body = _mjcf_link_bodies(robot, model)
 
-    # Equality-coupled followers of each joint, from whichever side it is driven.
+    # Equality-coupled followers of each joint, from whichever side it is driven,
+    # minus the ones the manifest models as mimic links of their own.
     followers = mjcf_coupled_joints(model)
+    declared = _declared_mimic_followers(robot, model, followers)
+    followers = {
+        leader: [f for f in fs if f[0] not in declared] for leader, fs in followers.items()
+    }
+    followers = {leader: fs for leader, fs in followers.items() if fs}
 
     def at_rest() -> None:
         mujoco.mj_resetData(model, data)
@@ -2096,7 +2159,9 @@ def fit_collision_geometry_from_mjcf(
     geometry: list[LinkCollisionGeometry] = []
     # Parents too: a chain's root link (each OpenArm arm's ``link0``) is only
     # ever a parent, and a bimanual robot has one root per arm.
-    ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)]
+    ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)] + [
+        mim.child_link for mim in robot.mimic_joints
+    ]
     seen: set[str] = set()
     for link in ordered_links:
         if link in seen or link not in link_body:
@@ -2220,12 +2285,17 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     # names them.
     static_world = _fixed_link_world(robot, link_body, body_tf)
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = {}
-    for j in robot.joints:
+    # Mimic joints too: the follower finger's frame and axis are the MJCF's,
+    # like every other joint's (the manifest's multiplier/offset were checked
+    # against the MJCF equality by the geometry fit above).
+    fk_edges: list[JointSpec | MimicJoint] = [*robot.joints, *robot.mimic_joints]
+    for j in fk_edges:
         if j.parent_link not in link_body or j.child_link not in link_body:
             continue
         tf = np.linalg.inv(body_tf(link_body[j.parent_link])) @ body_tf(link_body[j.child_link])
         roll, pitch, yaw = _mat_to_rpy(tf[:3, :3])
-        ji = jid(j.sim_joint_name)
+        # The same name rule `_mjcf_link_bodies` mapped this edge's bodies by.
+        ji = jid(j.sim_joint_name or j.name)
         if ji >= 0 and int(model.jnt_type[ji]) in hinge_slide:
             ax = model.jnt_axis[ji]
             axis: _Vec3 = (float(ax[0]), float(ax[1]), float(ax[2]))
@@ -2242,7 +2312,11 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     # Each link's primitives are placed by mujoco FK and the pair gap is the
     # kernel's own predicate on the actual shapes, folded over the two links'
     # primitives as `check_self_collision` folds it (issue #155).
-    sweep: list[tuple[int, float, float]] = []
+    # Equality followers (the OpenArm's second finger) are set from the driven
+    # joint at every sample: `mj_kinematics` does not enforce equalities, and
+    # a follower left at zero would be swept at the wrong opening.
+    coupled = mjcf_coupled_joints(model)
+    sweep: list[tuple[int, float, float, list[tuple[int, float, float]]]] = []
     for j in robot.joints:
         ji = jid(j.sim_joint_name)
         if ji < 0 or int(model.jnt_type[ji]) not in hinge_slide:
@@ -2252,12 +2326,21 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
             lo, hi = float(model.jnt_range[ji][0]), float(model.jnt_range[ji][1])
         else:
             lo, hi = -math.pi, math.pi
-        sweep.append((adr, lo, hi))
+        followed = [(int(model.jnt_qposadr[f]), c0, c1) for f, c0, c1 in coupled.get(ji, [])]
+        sweep.append((adr, lo, hi, followed))
 
     disabled: _AcmPairs = set()
     for j in robot.joints:
         if j.parent_link in geoms and j.child_link in geoms and j.parent_link != j.child_link:
             disabled.add(frozenset({j.parent_link, j.child_link}))  # adjacent
+    leader_child = {j.name: j.child_link for j in robot.joints}
+    for mim in robot.mimic_joints:
+        # A mimic child is adjacent to its parent, and the two jaws of one
+        # gripper are rigidly related by the one coordinate they share: they
+        # are designed to meet, and no commanded motion can change what they do.
+        for other in (mim.parent_link, leader_child[mim.mimics]):
+            if mim.child_link in geoms and other in geoms and other != mim.child_link:
+                disabled.add(frozenset({mim.child_link, other}))
     for att in robot.fixed_attachments:
         if att.parent_link in geoms and att.child_link in geoms:
             disabled.add(frozenset({att.parent_link, att.child_link}))  # rigidly adjacent
@@ -2287,8 +2370,10 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     world = {ln: np.empty((n_samples, 4, 4)) for ln in links}
     for s in range(n_samples):
         mujoco.mj_resetData(model, data)
-        for adr, lo, hi in sweep:
+        for adr, lo, hi, followed in sweep:
             data.qpos[adr] = lo + (hi - lo) * rng.random()
+            for f_adr, c0, c1 in followed:
+                data.qpos[f_adr] = c0 + c1 * data.qpos[adr]
         mujoco.mj_kinematics(model, data)
         placed = _fixed_link_world(robot, link_body, body_tf) if static_world else {}
         for ln in links:

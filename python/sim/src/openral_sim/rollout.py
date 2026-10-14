@@ -9,6 +9,7 @@ custom) without leaking framework specifics into the eval layer.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -331,6 +332,102 @@ class SimRollout(Protocol):
         """Release any underlying engine resources."""
 
 
+DEFAULT_SUCCESS_KEY = "is_success"
+"""Step ``info`` key read for success when ``TaskSpec.success_key`` is unset.
+
+The sidecar backends (Isaac Sim, RoboTwin, RLBench) start their sidecar with this key
+when the task names none; the runner reads the same key, so an unset key no longer
+silently reports every episode as failed (a placed Isaac box graded ``complete`` while
+``success`` stayed False).
+"""
+
+ROBOT_CONTACTS_INFO_KEY = "robot_contacts"
+"""Step ``info`` key a backend fills with this step's robot-vs-world contacts.
+
+Each entry: ``{"link", "other_prim", "min_separation_m", "impulse_ns"}`` (separation
+negative = penetration; impulse in N*s), optionally ``"link_speed_mps"`` (the robot
+link's world speed, ``None`` if unknown). Isaac fills it from the PhysX contact report.
+"""
+
+
+def fold_robot_contacts(
+    stats: dict[tuple[str, str], dict[str, Any]],
+    contacts: Sequence[Mapping[str, Any]],
+    step: int,
+) -> None:
+    """Fold one step's robot-vs-world contacts into per-pair episode statistics.
+
+    One record per ``(link, other_prim)``: ``steps`` in contact, ``first_step`` /
+    ``last_step``, the deepest ``max_penetration_m`` (``max(0, -separation)``),
+    the closest ``min_separation_m``, the largest per-step ``max_impulse_ns`` and, when
+    the backend reports it, the link's fastest contact onset (``onset_speed_mps``: its
+    speed on the first step of each run of consecutive contact steps) and its peak
+    speed while in contact (``max_speed_mps``).
+
+    Example:
+        >>> stats = {}
+        >>> fold_robot_contacts(
+        ...     stats,
+        ...     [
+        ...         {
+        ...             "link": "finger",
+        ...             "other_prim": "/World/box",
+        ...             "min_separation_m": 0.002,
+        ...             "impulse_ns": 0.0,
+        ...         }
+        ...     ],
+        ...     step=3,
+        ... )
+        >>> fold_robot_contacts(
+        ...     stats,
+        ...     [
+        ...         {
+        ...             "link": "finger",
+        ...             "other_prim": "/World/box",
+        ...             "min_separation_m": -0.004,
+        ...             "impulse_ns": 0.5,
+        ...         }
+        ...     ],
+        ...     step=4,
+        ... )
+        >>> rec = stats[("finger", "/World/box")]
+        >>> rec["steps"], rec["first_step"], rec["last_step"], rec["max_penetration_m"]
+        (2, 3, 4, 0.004)
+        >>> rec["min_separation_m"], rec["max_impulse_ns"]
+        (-0.004, 0.5)
+    """
+    for c in contacts:
+        sep = float(c["min_separation_m"])
+        imp = float(c["impulse_ns"])
+        rec = stats.setdefault(
+            (str(c["link"]), str(c["other_prim"])),
+            {
+                "link": str(c["link"]),
+                "other_prim": str(c["other_prim"]),
+                "steps": 0,
+                "first_step": step,
+                "last_step": step,
+                "min_separation_m": sep,
+                "max_penetration_m": 0.0,
+                "max_impulse_ns": 0.0,
+            },
+        )
+        speed = c.get("link_speed_mps")
+        if rec["steps"] == 0 or rec["last_step"] != step - 1:
+            # A run's onset is its first sample WITH a speed (the backend has none on
+            # the first step after a reset). Private: `SimRunner` drops `_` keys.
+            rec["_onset_pending"] = True
+        if speed is not None:
+            if rec.pop("_onset_pending", False):
+                rec["onset_speed_mps"] = max(rec.get("onset_speed_mps") or 0.0, float(speed))
+            rec["max_speed_mps"] = max(rec.get("max_speed_mps") or 0.0, float(speed))
+        rec["steps"] += 1
+        rec["last_step"] = step
+        rec["min_separation_m"] = min(rec["min_separation_m"], sep)
+        rec["max_penetration_m"] = max(rec["max_penetration_m"], -sep)
+        rec["max_impulse_ns"] = max(rec["max_impulse_ns"], imp)
+
+
 @dataclass
 class EpisodeResult:
     """Outcome of one episode rollout.
@@ -383,6 +480,10 @@ class EpisodeResult:
     # shows separate policy/world panels or collapses to one full-width tile.
     num_input_cameras: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Robot-vs-world contacts the simulator reported over the episode, one record
+    # per (robot link, other prim) pair (``fold_robot_contacts``). Empty when the
+    # backend does not report contacts (``info["robot_contacts"]`` absent).
+    contact_stats: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> str:
         """Human-readable single-line summary.

@@ -66,7 +66,8 @@ protected:
     out_ = "/test_sf_out_" + suffix;
     js_ = "/test_sf_js_" + suffix;
     rclcpp::NodeOptions options;
-    options.arguments({"--ros-args", "-r", "cloud_in:=" + in_, "-r", "cloud_out:=" + out_});
+    options.arguments({"--ros-args", "-r", "cloud_in:=" + in_, "-r", "cloud_out:=" + out_, "-r",
+                       "cloud_out_rgb:=" + out_ + "_rgb"});
     // root (fixed) -> l1 (revolute about z); the primitives ride l1.
     std::vector<rclcpp::Parameter> params = {
         {"collision_n_links", std::int64_t{2}},
@@ -187,6 +188,55 @@ TEST_F(SelfFilterNode, RemovesTheRobotAtTheCloudStampAndKeepsTheWorld) {
   ASSERT_EQ(last_.width, 1U);
   std::memcpy(&x, last_.data.data(), sizeof(float));
   EXPECT_FLOAT_EQ(x, 0.5F) << "the filter follows the joint, not a fixed mask";
+}
+
+TEST_F(SelfFilterNode, AColouredCloudReachesTheMapAsXyzAndViewersWithItsColour) {
+  // Review G: the map never carries colour; a viewer gets it, robot removed.
+  sensor_msgs::msg::PointCloud2 rgb_last;
+  std::atomic<int> rgb_received{0};
+  auto rgb_sub = peer_->create_subscription<sensor_msgs::msg::PointCloud2>(
+      out_ + "_rgb", rclcpp::QoS(2).reliable(), [&](sensor_msgs::msg::PointCloud2::SharedPtr m) {
+        rgb_last = *m;
+        ++rgb_received;
+      });
+  spin_for(300ms);
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  auto cloud = make_cloud({{0.5F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now);
+  // Re-pack as x, y, z, rgb (16 bytes), as the sim bridge publishes a coloured cloud.
+  std::vector<std::uint8_t> packed(2 * 16);
+  for (std::size_t i = 0; i < 2; ++i) {
+    std::memcpy(packed.data() + i * 16, cloud.data.data() + i * 12, 12);
+    const std::uint32_t colour = 0x00FF8000U + static_cast<std::uint32_t>(i);
+    std::memcpy(packed.data() + i * 16 + 12, &colour, 4);
+  }
+  sensor_msgs::msg::PointField rgb;
+  rgb.name = "rgb";
+  rgb.offset = 12;
+  rgb.datatype = sensor_msgs::msg::PointField::FLOAT32;
+  rgb.count = 1;
+  cloud.fields.push_back(rgb);
+  cloud.point_step = 16;
+  cloud.row_step = 32;
+  cloud.data = packed;
+  cloud_pub_->publish(cloud);
+  spin_for(400ms);
+
+  ASSERT_EQ(received_.load(), 1);
+  EXPECT_EQ(last_.point_step, 12U) << "the map's cloud carries x/y/z only";
+  ASSERT_EQ(last_.fields.size(), 3U);
+  ASSERT_EQ(last_.width, 1U);
+  float x = 0.0F;
+  std::memcpy(&x, last_.data.data(), sizeof(float));
+  EXPECT_FLOAT_EQ(x, 2.0F);
+
+  ASSERT_EQ(rgb_received.load(), 1) << "a viewer gets the coloured, robot-free cloud";
+  EXPECT_EQ(rgb_last.point_step, 16U);
+  ASSERT_EQ(rgb_last.width, 1U);
+  std::uint32_t colour = 0;
+  std::memcpy(&colour, rgb_last.data.data() + 12, 4);
+  EXPECT_EQ(colour, 0x00FF8001U) << "the world point keeps its own colour";
 }
 
 TEST_F(SelfFilterNode, AJointStateFarFromTheCaptureStampIsNotUsed) {

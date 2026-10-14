@@ -909,10 +909,15 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
     Transform motion;  // identity for fixed joints
     const int dof = model.dof_index[i];
     if (dof >= 0 && static_cast<std::size_t>(dof) < n_dof) {
-      const double q = qpos[static_cast<std::size_t>(dof)];
-      if (model.joint_kind[i] == JointKind::kRevolute) {
+      const JointKind kind = model.joint_kind[i];
+      double q = qpos[static_cast<std::size_t>(dof)];
+      if (is_mimic(kind) && i < model.mimic_multiplier.size() && i < model.mimic_offset.size()) {
+        // A mimic link reads its leader's column: q = multiplier * q_leader + offset.
+        q = model.mimic_multiplier[i] * q + model.mimic_offset[i];
+      }
+      if (kind == JointKind::kRevolute || kind == JointKind::kMimicRevolute) {
         axis_angle(model.axis[i], q, motion.r);
-      } else if (model.joint_kind[i] == JointKind::kPrismatic) {
+      } else if (kind == JointKind::kPrismatic || kind == JointKind::kMimicPrismatic) {
         motion.t = scale(model.axis[i], q);
       }
     }
@@ -950,6 +955,13 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
     const int dof = model.dof_index[li];
     if (dof < 0 || static_cast<std::size_t>(dof) >= n_dof) {
       continue;  // fixed joint (or out-of-range) — no column
+    }
+    if (is_mimic(model.joint_kind[li])) {
+      // No column of its own: a mimic link rides its leader's column, which
+      // this walk adds when it reaches the leader. A mimic on the EE chain
+      // (no gripper finger is: both jaws are leaves) would need the chain
+      // rule folded into that column; refused at configure instead.
+      continue;
     }
     if (dof_blocked != nullptr && dof_blocked[static_cast<std::size_t>(dof)] != 0) {
       continue;  // excluded (e.g. mobile-base dof) — not driven by the arm twist
@@ -1042,7 +1054,8 @@ namespace {
 // advisory one at any depth; within one severity, deepest still wins.
 void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int link_a, int link_b,
                bool allowance_active = false, bool advisory = false,
-               bool place_target_adjudicated = false, bool depth_is_box_bound = false) noexcept {
+               bool place_target_adjudicated = false, bool depth_is_box_bound = false,
+               int workspace_denied = 0) noexcept {
   if (d < sweep_min) {
     sweep_min = d;
   }
@@ -1060,6 +1073,7 @@ void fold_pair(CollisionHit& hit, double& sweep_min, double d, bool tripped, int
     hit.advisory = advisory;
     hit.place_target_adjudicated = place_target_adjudicated;
     hit.depth_is_box_bound = depth_is_box_bound;
+    hit.workspace_denied = workspace_denied;
   }
 }
 
@@ -1107,8 +1121,17 @@ double refine_self_pair(const CollisionModel& model, std::size_t bi, const Trans
 
 }  // namespace
 
+namespace {
+bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScratch& scratch, int a,
+                           int b) noexcept;
+// Fold one self pair, exempting a slow hand-hand pair inside the workspace (#349).
+void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
+                    const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
+                    bool depth_is_box_bound = false) noexcept;
+}  // namespace
+
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin) noexcept {
+                                  double margin, const WorkspaceContactRegion* workspace) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
@@ -1129,7 +1152,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           capsule_distance(cap_i, model.capsules[i].radius, model.capsules[i].half_length, cap_j,
                            model.capsules[j].radius, model.capsules[j].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, li, lj);
+      fold_self_pair(result, sweep_min, d, margin, li, lj, workspace, scratch);
     }
   }
   // Blocky links carry an OBB instead of a capsule (issue #84):
@@ -1152,7 +1175,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           box_capsule_distance(box_i, model.boxes[bi].half_extents, cap_j,
                                model.capsules[cj].radius, model.capsules[cj].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, lb, lc);
+      fold_self_pair(result, sweep_min, d, margin, lb, lc, workspace, scratch);
     }
     for (std::size_t bj = bi + 1; bj < n_boxes; ++bj) {
       const int lb2 = model.box_link[bj];
@@ -1170,8 +1193,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
         // ship one; otherwise `d` comes back unchanged.
         d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d, &depth_is_box_bound);
       }
-      fold_pair(result, sweep_min, d, d <= margin, lb, lb2, /*allowance_active=*/false,
-                /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
+      fold_self_pair(result, sweep_min, d, margin, lb, lb2, workspace, scratch, depth_is_box_bound);
     }
   }
   return finish_sweep(result, sweep_min);
@@ -1274,6 +1296,141 @@ bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& cen
          grasp_region_contains(grid.grasp_region, center);
 }
 
+namespace {
+
+// Is `link` a hand link of a live workspace whose hand is slow and close to its
+// measured pose (speed AND lead within their bounds)? Evaluated once per
+// capsule/box, outside the cell loop. A NaN/inf speed or lead (the lifecycle's
+// "unknown") or an unsound bound never passes.
+bool workspace_link_slow(const WorkspaceContactRegion& ws, int link) noexcept {
+  return ws.valid && link >= 0 && static_cast<std::size_t>(link) < kMaxGraspMaskLinks &&
+         ws.link_mask[static_cast<std::size_t>(link)] && std::isfinite(ws.max_speed_mps) &&
+         ws.max_speed_mps > 0.0 && std::isfinite(ws.hand_speed_mps) &&
+         ws.hand_speed_mps <= ws.max_speed_mps && std::isfinite(ws.max_lead_m) &&
+         ws.max_lead_m > 0.0 && std::isfinite(ws.hand_lead_m) && ws.hand_lead_m <= ws.max_lead_m;
+}
+
+// Disclose one tolerated workspace pair (within the margin, exempted).
+void note_workspace_pair(CollisionHit& hit, double d, int link, int cell) noexcept {
+  ++hit.workspace_pairs;
+  if (d < hit.workspace_min_distance) {
+    hit.workspace_min_distance = d;
+    hit.workspace_link = link;
+    hit.workspace_cell = cell;
+  }
+}
+
+bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScratch& scratch, int a,
+                           int b) noexcept {
+  if (ws == nullptr || !workspace_link_slow(*ws, a) || !workspace_link_slow(*ws, b)) {
+    return false;
+  }
+  const auto inside = [&](int l) {
+    return static_cast<std::size_t>(l) < scratch.link_world.size() &&
+           point_in_obb(ws->pose, ws->half_extents,
+                        scratch.link_world[static_cast<std::size_t>(l)].t);
+  };
+  return inside(a) && inside(b);
+}
+
+void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
+                    const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
+                    bool depth_is_box_bound) noexcept {
+  const bool exempt = d <= margin && workspace_self_exempt(ws, scratch, a, b);
+  if (exempt) {
+    note_workspace_pair(result, d, a, b);
+  }
+  fold_pair(result, sweep_min, d, d <= margin && !exempt, a, b, /*allowance_active=*/false,
+            /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
+}
+
+}  // namespace
+
+bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
+  return workspace_link_slow(grid.workspace_region, link_index) &&
+         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center);
+}
+
+namespace {
+
+// Why a live workspace does not tolerate `link` against a cell centred at `center`
+// (base frame): see `CollisionHit::workspace_denied`. 0 when it would (or no live
+// workspace).
+int workspace_denial(const VoxelGrid& grid, int link, const Vec3& center) noexcept {
+  const WorkspaceContactRegion& ws = grid.workspace_region;
+  if (!ws.valid) {
+    return 0;
+  }
+  if (link < 0 || static_cast<std::size_t>(link) >= kMaxGraspMaskLinks ||
+      !ws.link_mask[static_cast<std::size_t>(link)]) {
+    return 1;
+  }
+  if (!std::isfinite(ws.hand_speed_mps) || ws.hand_speed_mps > ws.max_speed_mps) {
+    return 2;
+  }
+  if (!std::isfinite(ws.hand_lead_m) || ws.hand_lead_m > ws.max_lead_m) {
+    return 3;
+  }
+  if (!point_in_obb(ws.pose, ws.half_extents, center)) {
+    return 4;
+  }
+  return 0;
+}
+
+}  // namespace
+
+double link_geometry_reach(const CollisionModel& model, int link) noexcept {
+  double reach = 0.0;
+  const auto norm = [](const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
+  for (std::size_t c = 0; c < model.capsules.size() && c < model.capsule_link.size(); ++c) {
+    if (model.capsule_link[c] == link) {
+      const Capsule& cap = model.capsules[c];
+      reach = std::max(reach, norm(cap.origin.t) + cap.half_length + cap.radius);
+    }
+  }
+  for (std::size_t b = 0; b < model.boxes.size() && b < model.box_link.size(); ++b) {
+    if (model.box_link[b] == link) {
+      const Obb& box = model.boxes[b];
+      reach = std::max(reach, norm(box.origin.t) + norm(box.half_extents));
+    }
+  }
+  return reach;
+}
+
+double attached_object_reach(const AttachedModel& attached, const AttachedObject& object) noexcept {
+  double reach = 0.0;
+  for (int p = 0; p < object.prim_count; ++p) {
+    const auto k = static_cast<std::size_t>(object.prim_first + p);
+    if (k >= attached.primitives.size()) {
+      return std::numeric_limits<double>::infinity();  // a malformed model reads unbounded
+    }
+    const AttachedPrimitive& prim = attached.primitives[k];
+    const Vec3 o = compose(object.pose_in_link, prim.pose_in_object).t;
+    const Vec3& h = prim.half_extents;
+    const double bound = prim.kind == AttachedShapeKind::kBox
+                             ? std::sqrt(h.x * h.x + h.y * h.y + h.z * h.z)
+                             : prim.half_length + prim.radius;
+    reach = std::max(reach, std::sqrt(o.x * o.x + o.y * o.y + o.z * o.z) + bound);
+  }
+  return std::isfinite(reach) ? reach : std::numeric_limits<double>::infinity();
+}
+
+double link_displacement_bound(const Transform& from, const Transform& to, double reach) noexcept {
+  const double dx = to.t.x - from.t.x;
+  const double dy = to.t.y - from.t.y;
+  const double dz = to.t.z - from.t.z;
+  // trace(R0^T R1) = sum_ij R0_ij R1_ij (row-major 3x3).
+  double trace = 0.0;
+  for (std::size_t k = 0; k < 9; ++k) {
+    trace += from.r[k] * to.r[k];
+  }
+  const double c = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+  const double bound = std::sqrt(dx * dx + dy * dy + dz * dz) + std::acos(c) * reach;
+  return std::isfinite(bound) && std::isfinite(trace) && std::isfinite(reach)
+             ? bound
+             : std::numeric_limits<double>::infinity();
+}
+
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin, double band_m) noexcept {
   CollisionHit result;
@@ -1311,6 +1468,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
     const bool grasp_link = grasp_mask_has(grid.grasp_region, li);
+    const bool workspace_link = workspace_link_slow(grid.workspace_region, li);
     // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
     const double reach = r + margin + band_m + half_side;
     const auto [ix0, ix1] =
@@ -1332,9 +1490,19 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
           // ADR-0115: a declared contact link vs a cell centred in the grasp
           // region never trips and never supplies the reported evidence.
-          const bool exempt =
-              grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t));
-          fold_pair(result, sweep_min, d, !exempt && d <= margin, li, static_cast<int>(idx));
+          const Vec3 base_center =
+              grasp_link || workspace_link ? apply(grid.pose, voxel.t) : Vec3{};
+          const bool exempt = grasp_link && grasp_target_exempts(grid, li, base_center);
+          // #349: a slow hand link vs a cell centred in the live workspace.
+          // Never silent: a tolerated pair within the margin is counted.
+          const bool ws_exempt =
+              !exempt && workspace_link && workspace_contact_exempts(grid, li, base_center);
+          if (ws_exempt && d <= margin) {
+            note_workspace_pair(result, d, li, static_cast<int>(idx));
+          }
+          const bool tripped = !exempt && !ws_exempt && d <= margin;
+          fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx), false, false, false,
+                    false, tripped ? workspace_denial(grid, li, base_center) : 0);
         }
       }
     }
@@ -1360,6 +1528,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
     const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
+    const bool workspace_link = workspace_link_slow(grid.workspace_region, lb);
     TightPose tight;
     GjkWitness witness;
     if (hull_index >= 0) {
@@ -1389,8 +1558,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // cells inside stage 1's margin, enough to exhaust the budget and
           // leave a non-exempt link on the looser fallback bound (a false
           // stop). Stage 1's lower bound is all its clamped slack needs.
-          const bool exempt =
-              grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
+          // #349's workspace exemption joins it here, under the same accounting.
+          const Vec3 base_center = grasp_link || workspace_link ? apply(grid.pose, center) : Vec3{};
+          const bool grasp_exempt = grasp_link && grasp_target_exempts(grid, lb, base_center);
+          const bool ws_exempt =
+              !grasp_exempt && workspace_link && workspace_contact_exempts(grid, lb, base_center);
+          const bool exempt = grasp_exempt || ws_exempt;
           double d;
           if (hull_index < 0) {
             Transform voxel;
@@ -1425,7 +1598,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               }
             }
           }
-          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
+          if (ws_exempt && d <= margin) {
+            note_workspace_pair(result, d, lb, static_cast<int>(idx));
+          }
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx), false,
+                    false, false, false,
+                    !exempt && d <= margin ? workspace_denial(grid, lb, base_center) : 0);
         }
       }
     }
@@ -1971,6 +2149,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // inside the payload when the baseline was snapshotted, so it
                 // is the payload's own uncleared occupancy, not an obstacle.
                 tripped = false;
+              } else if (workspace_contact_exempts(grid, obj.attach_link, center)) {
+                // Manipulation workspace (#349, draft): a payload carried by a
+                // hand link is part of that hand — inside the confirmed
+                // workspace, while the hand (its speed and lead bounded with
+                // the payload's reach, `attached_object_reach`) is slow, it may
+                // touch. Same predicate as the hand links', on its attach link.
+                tripped = false;
+                note_workspace_pair(result, d, obj.attach_link, static_cast<int>(idx));
               }
             }
             // Advisory band (#176). A payload ARRIVED in its own declared
@@ -1993,7 +2179,8 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 cell_margin - place_advisory_depth(grid.resolution) - kGateTieEpsilonM;
             const bool advisory = tripped && allowance > 0.0 && d > advisory_floor;
             fold_pair(result, sweep_min, d, tripped, static_cast<int>(i), static_cast<int>(idx),
-                      allowance > 0.0, advisory, adjudicated);
+                      allowance > 0.0, advisory, adjudicated, false,
+                      tripped ? workspace_denial(grid, obj.attach_link, center) : 0);
           }
         }
       }
@@ -2210,10 +2397,14 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
   return "unknown";
 }
 
-GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_extents,
-                                      const std::bitset<kMaxGraspMaskLinks>& link_mask,
-                                      GraspTargetRegion& out) noexcept {
-  out = GraspTargetRegion{};
+namespace {
+
+// The geometry half of a region ingest, shared by the grasp target and the
+// workspace: a non-empty mask, a finite pose, finite positive half-extents
+// within `max_half`, a volume within `max_volume`.
+GraspRegionStatus check_region_box(const Transform& pose, const Vec3& half_extents,
+                                   const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                   double max_half, double max_volume) noexcept {
   if (link_mask.none()) {
     return GraspRegionStatus::kNoLinks;
   }
@@ -2234,17 +2425,49 @@ GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_ex
   if (hx <= 0.0 || hy <= 0.0 || hz <= 0.0) {
     return GraspRegionStatus::kDegenerate;
   }
-  if (hx > kMaxGraspRegionHalfExtentM || hy > kMaxGraspRegionHalfExtentM ||
-      hz > kMaxGraspRegionHalfExtentM) {
+  if (hx > max_half || hy > max_half || hz > max_half) {
     return GraspRegionStatus::kOversize;
   }
-  if (8.0 * hx * hy * hz > kMaxGraspRegionVolumeM3) {
+  if (8.0 * hx * hy * hz > max_volume) {
     return GraspRegionStatus::kOversizeVolume;
+  }
+  return GraspRegionStatus::kOk;
+}
+
+}  // namespace
+
+GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_extents,
+                                      const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                      GraspTargetRegion& out) noexcept {
+  out = GraspTargetRegion{};
+  const GraspRegionStatus status = check_region_box(
+      pose, half_extents, link_mask, kMaxGraspRegionHalfExtentM, kMaxGraspRegionVolumeM3);
+  if (status != GraspRegionStatus::kOk) {
+    return status;
   }
   out.valid = true;
   out.link_mask = link_mask;
   out.pose = pose;
   out.half_extents = half_extents;
+  return GraspRegionStatus::kOk;
+}
+
+GraspRegionStatus ingest_workspace_region(const Transform& pose, const Vec3& half_extents,
+                                          const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                          double max_speed_mps, double max_lead_m,
+                                          WorkspaceContactRegion& out) noexcept {
+  out = WorkspaceContactRegion{};
+  const GraspRegionStatus status = check_region_box(
+      pose, half_extents, link_mask, kMaxWorkspaceRegionHalfExtentM, kMaxWorkspaceRegionVolumeM3);
+  if (status != GraspRegionStatus::kOk) {
+    return status;
+  }
+  out.valid = true;
+  out.link_mask = link_mask;
+  out.pose = pose;
+  out.half_extents = half_extents;
+  out.max_speed_mps = max_speed_mps;
+  out.max_lead_m = max_lead_m;
   return GraspRegionStatus::kOk;
 }
 
@@ -2432,18 +2655,48 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 
 CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
-                                           const CollisionScratch& scratch,
-                                           double margin) noexcept {
+                                           const CollisionScratch& scratch, double margin,
+                                           const WorkspaceContactRegion* workspace) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
   const std::size_t n_boxes = model.boxes.size();
+  // #349: a carried payload is part of its hand — against another hand link, the
+  // two-slow-hands-inside-the-workspace rule on its attach link.
+  const auto fold = [&](double d, int object, int attach_link, int link) {
+    const bool exempt = d <= margin && workspace_self_exempt(workspace, scratch, attach_link, link);
+    if (exempt) {
+      note_workspace_pair(result, d, attach_link, link);
+    }
+    fold_pair(result, sweep_min, d, d <= margin && !exempt, object, link);
+  };
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
     for (int p = 0; p < obj.prim_count; ++p) {
-      const AttachedPrimitive& prim =
+      const AttachedPrimitive& prim0 =
           attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+      // #349: against the robot's own exact geometry, a box payload with a
+      // stage-2 refinement is checked as the box its 26-DOP's first three slabs
+      // span — the producer's MEASURED object (the refinement is proved inside
+      // the shipped box at ingest); the shipped box's padding is for the map's
+      // quantisation, not for the robot's own links (r24-r29: a padded carton
+      // 1 cm from the torso read -15 to -40 mm against it). Only under a live
+      // workspace (the sim-only #349 rule): without one this is today's check on
+      // the shipped, padded box (#349 review).
+      AttachedPrimitive inner = prim0;
+      if (workspace != nullptr && workspace->valid && prim0.kind == AttachedShapeKind::kBox &&
+          prim0.hull_index >= 0 &&
+          static_cast<std::size_t>(prim0.hull_index) < attached.hulls.size()) {
+        const LinkHull& hull = attached.hulls[static_cast<std::size_t>(prim0.hull_index)];
+        const Vec3 lo{hull.dop_lo[0], hull.dop_lo[1], hull.dop_lo[2]};
+        const Vec3 hi{hull.dop_hi[0], hull.dop_hi[1], hull.dop_hi[2]};
+        Transform shift;
+        shift.t = Vec3{0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y), 0.5 * (lo.z + hi.z)};
+        inner.pose_in_object = compose(prim0.pose_in_object, shift);
+        inner.half_extents = Vec3{0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.5 * (hi.z - lo.z)};
+      }
+      const AttachedPrimitive& prim = inner;
       const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
       for (std::size_t c = 0; c < n_caps; ++c) {
         const int lc = model.capsule_link[c];
@@ -2454,7 +2707,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
             compose(scratch.link_world[static_cast<std::size_t>(lc)], model.capsules[c].origin);
         const double d = attached_primitive_capsule_distance(
             prim, prim_xf, cap_j, model.capsules[c].radius, model.capsules[c].half_length);
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lc);
+        fold(d, static_cast<int>(i), obj.attach_link, lc);
       }
       for (std::size_t b = 0; b < n_boxes; ++b) {
         const int lb = model.box_link[b];
@@ -2470,7 +2723,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
           d = box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf, prim.radius,
                                    prim.half_length);
         }
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), lb);
+        fold(d, static_cast<int>(i), obj.attach_link, lb);
       }
     }
   }

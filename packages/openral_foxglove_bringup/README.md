@@ -140,7 +140,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, held payload + grasp/place regions |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_cloud/self_filtered_rgb`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, `/openral/viz/collisions`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, the depth cloud with the robot cut out (in colour when it carries `rgb`; the raw camera cloud would draw a second, lagging arm), held payload + grasp/place regions, search box, workspace, declared static geometry |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -149,8 +149,10 @@ stack beside it; everything else is tabbed, one click away.
 |---|---|---|
 | Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
 | Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
-| World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
+| World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/openral/viz/static_geometry`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
+
+Both panels that draw the URDF set **Ignore COLLADA `<up_axis>`** (`scene.ignoreColladaUpAxis`): Collada vertices are read as authored, the way RViz, Gazebo and Isaac Sim read them. OpenArm v2's meshes are Blender exports that bake the Z-up conversion into their node matrices but still declare `Y_UP`; honouring the declaration turns every link 90° in its own frame, so the arms look broken (upper arm detached from the elbow, segments apparently missing). A layout imported before this setting existed needs the toggle (Panel → Scene) or a re-import.
 
 **Telemetry tabs**
 
@@ -263,7 +265,11 @@ draws it natively — no TypeScript extension:
 | In (`openral_msgs`) | Out (standard) | Topic |
 |---|---|---|
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
-| `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + grasp/place regions) | `/openral/viz/attachments` |
+| `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + measured inner box, grasp/place regions, search box, manipulation workspace) | `/openral/viz/attachments` |
+| `StaticGeometry` YAML (`static_geometry_file` param) | `visualization_msgs/MarkerArray` (declared fixtures: boxes + triangle meshes, latched) | `/openral/viz/static_geometry` |
+| `/openral/failure/safety` (`FailureTrigger`, collision) | `visualization_msgs/MarkerArray` (a red sphere + label where each kernel stop happened, latched) | `/openral/viz/collisions` |
+
+The voxel cloud leaves out the cells inside a declared box fixture (`hide_static_voxels`, default on): walls, floor and fixtures are drawn once, by their markers, and the voxels show what the camera adds. Viewer only — the kernel's grid is unchanged.
 
 The attachment markers draw each held payload's collision primitives on its
 attach link's TF frame (`pose_in_link ∘ pose_in_object`, frame-locked so they

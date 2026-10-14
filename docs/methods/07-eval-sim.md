@@ -14,26 +14,30 @@ _Policy adapter protocol — the contract every VLA backend must satisfy._
 ### `python/sim/src/openral_sim/rollout.py`
 _Sim rollout protocol — the typed contract every scene adapter must satisfy._
 
-- `class StepResult` — One environment transition. (L214)
+- `class StepResult` — One environment transition. (L215)
   fields: `observation, reward, terminated, truncated, info`
-- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L233)
+- `class SimRollout(Protocol)` — Minimal gym-style env contract. (L234)
   - attr `scene: SceneSpec`, `task: TaskSpec`
-  - `reset(seed=None) -> Observation` (L321)
-  - `step(action) -> StepResult` (L324)
-  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L327)
-  - `close() -> None` (L330)
+  - `reset(seed=None) -> Observation` (L322)
+  - `step(action) -> StepResult` (L325)
+  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L328)
+  - `close() -> None` (L331)
   - duck-typed extension: `mujoco_handles() -> tuple[mujoco.MjModel, mujoco.MjData] | None` — Optional, not part of the Protocol; MuJoCo-backed adapters implement it so `sim run --view` can open a passive viewer. Callers must `getattr(...)` and tolerate `None`.
   - duck-typed extension: `task_success() -> bool | None` — Optional, not part of the Protocol: the backend's own live task-success predicate, read on demand and side-effect free (not latched — an undone task reads `False` again). `None` means no predicate and must never be read as failure; used by `deploy sim`'s `SimAttachedHAL`, not by `sim run`/benchmark.
   - duck-typed extension: `sim_time_ns() -> int | None` — Optional, not part of the Protocol: the backend's elapsed sim time in ns, feeding a `/clock` publisher. Monotonic only within an episode; callers must treat missing and `None` alike as “no clock” (fall back to wall time).
   - duck-typed extension: `enable_intrinsic_viewer() -> None` — Optional, not part of the Protocol; adapters with their own render window (e.g. gym_pusht) implement it so `SimRunner` uses live-view mode instead of the MuJoCo viewer.
-- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L22) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, always derived from robosuite's native dt (recorded on the macros module at the first pin) so an earlier pin in the process never carries over, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and every LIBERO build (the eval path pins the native 20 Hz) (issue #358); returns the pinned dt.
-- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L67) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
-- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L105)
-- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L174)
-- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L136)
-- `class EpisodeResult` — Outcome of one episode. (L335)
+- `pin_robosuite_time_base(control_freq_hz) -> float` — Sets the process-global `robosuite.macros.SIMULATION_TIMESTEP` (L23) to the `openral_core.physics_steps_per_tick` dt (shrunk, never grown; logged as `robosuite.time_base.timestep_shrunk`) **before** an env is built, always derived from robosuite's native dt (recorded on the macros module at the first pin) so an earlier pin in the process never carries over, so robosuite's `int(control_timestep / model_timestep)` step loop integrates exactly one control period (1/30 s is 16.67 default steps). Called by the RoboCasa kitchen factory and every LIBERO build (the eval path pins the native 20 Hz) (issue #358); returns the pinned dt.
+- `sim_dt_per_tick_from_robosuite_env(env) -> float | None` — Walks `env` / `.env` / `.unwrapped` / `._env` (L68) to robosuite's `MujocoEnv` and returns what its step loop really integrates, `int(control_timestep / model_timestep) * model_timestep` — the `sim_dt_per_tick_s` `SimAttachedHAL.connect` holds to the robot; `None` when unreachable.
+- `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper: `round(MjData.time * 1e9)` from a `mujoco_handles()` pair, `None` when `handles` is `None`. (L106)
+- `env_action_dim(env: object) -> int | None` — The one action-width probe: `env.action_dim`, then `env._env.action_dim`, then a wrapped gym `Box` shape; `None` when not introspectable. Used by `SimAttachedHAL._probe_env_action_dim` and by `SimRunner` to size mock policies. (L175)
+- `render_named_rgb_mujoco(renderer, model, data, camera_name, *, height, width) -> tuple[Any, NDArray[np.uint8]]` — Render one named MuJoCo camera, lazily building `mujoco.Renderer` when absent; returns `(renderer, rgb)` so the caller can cache the expensive-to-build renderer. Shared by the `tabletop_push` and `so101_box` scene backends. (L137)
+- `class EpisodeResult` — Outcome of one episode; `contact_stats` lists the robot-vs-world contact pairs the backend reported over the episode (`fold_robot_contacts`), deepest first, and is written to `summary.json`. (L432)
+  - `EpisodeResult.summary() -> str` — Human-readable single-line summary of the episode. (L488)
+- `DEFAULT_SUCCESS_KEY = "is_success"` — Step `info` key read for success when `TaskSpec.success_key` is unset; the Isaac / RoboTwin / RLBench sidecars start with it, and `SimRunner` reads the same key. (L335)
+- `ROBOT_CONTACTS_INFO_KEY = "robot_contacts"` — Step `info` key a backend fills with that step's robot-vs-world contacts (`{link, other_prim, min_separation_m, impulse_ns}`); Isaac fills it from the PhysX contact report. (L344)
+- `fold_robot_contacts(stats, contacts, step) -> None` — Folds one step's contacts into per-(link, other prim) episode records: `steps`, `first_step`/`last_step`, `min_separation_m`, `max_penetration_m`, `max_impulse_ns`; `SimRunner` calls it every step the info carries `robot_contacts`. (L353)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L387)
+  - `summary() -> str` — Human-readable single line. (L488)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._
@@ -67,38 +71,38 @@ _Registries that map ID strings to backend factories._
 ### `python/sim/src/openral_sim/sim_runner.py`
 _Per-step `InferenceRunner` for the simulation runtime._
 
-- `class SimRunner(InferenceRunnerBase)` — One-tick = one-env-step inference runner that drives a `SimEnvironment` for `n_episodes` episodes. Subclasses `InferenceRunnerBase` so sim and hardware (`DeployRunner`) share the `InferenceRunner` Protocol. (L297)
-- `SimRunner.__init__(env_cfg, *, view=False, strict_view=False, instruction_override=None, deadline_overrun_policy=WARN, recorder=None)` — Defers env/policy construction to `activate()`; `rate_hz` is fixed at 1000 Hz (sim is not real-time). `instruction_override` (the `--instruction` CLI value) wins over a scene's per-episode language instruction. `recorder` is an optional `RolloutRecorder` fanned out alongside the episode buffer, additive not a substitute. (L341)
+- `class SimRunner(InferenceRunnerBase)` — One-tick = one-env-step inference runner that drives a `SimEnvironment` for `n_episodes` episodes. Subclasses `InferenceRunnerBase` so sim and hardware (`DeployRunner`) share the `InferenceRunner` Protocol. (L305)
+- `SimRunner.__init__(env_cfg, *, view=False, strict_view=False, instruction_override=None, deadline_overrun_policy=WARN, recorder=None)` — Defers env/policy construction to `activate()`; `rate_hz` is fixed at 1000 Hz (sim is not real-time). `instruction_override` (the `--instruction` CLI value) wins over a scene's per-episode language instruction. `recorder` is an optional `RolloutRecorder` fanned out alongside the episode buffer, additive not a substitute. (L349)
 - `SimRunner._record_to_recorder(action, reward, terminated, truncated) -> None` — Extracts per-step state/rendered frame/action and forwards to the attached recorder; broadcasts the single rendered viewpoint to every camera key declared on the robot. Errors are logged, not raised. (L380-ish)
-- `SimRunner.activate() -> None` — Validates the manifest, builds env + policy concurrently, arms the first reset-tick, opens the outer `sim.run` OTel span. (L418)
-- `SimRunner.deactivate() -> None` — Flush a trailing episode if any, close the viewer / policy / env, close the outer span. Idempotent. (L515)
-- `SimRunner._should_terminate() -> bool` — Returns True once `n_episodes` `EpisodeResult`s have been emitted. (L552)
-- `SimRunner._tick_impl(tick_idx) -> TickResult` — Dispatch reset-tick vs step-tick. (L600)
-- `SimRunner._reset_tick(tick_idx) -> TickResult` — env.reset + policy.reset; `action_applied=False`, `inference_ms=0.0`, `step_idx=None`. (L610)
-- `SimRunner._step_tick(tick_idx) -> TickResult` — policy.step + env.step; populates `step_idx`, `reward`, `terminated`, `truncated`, `action_applied=True`. (L664)
-- `SimRunner._finalize_episode() -> None` — Build an `EpisodeResult` from the per-step `_EpisodeBuffer`, append to `episode_results`, reset the buffer. (L866)
-- `class _EpisodeBuffer` — Private dataclass accumulating per-step latencies / frames / rewards inside one episode; reset on each boundary. (L265)
-- `_check_rskill_compatibility(env_cfg) -> RSkillManifest | None` — Load the rSkill manifest, run `rSkill.check_compatibility` against the registered `RobotDescription`, return the manifest or `None` for built-in mock policies. Strict-by-construction; also runs `_check_policy_units_owned`. (L1029)
-- `_check_policy_units_owned(manifest, robot, scene_id) -> None` — `ROSConfigError` when `PolicyIOCodec.from_manifest(manifest, robot)` is non-identity (degrees / `gripper_scale` / joint permutation) and `SCENES.meta(scene_id)["converts_policy_units"]` is not `True` — `sim run` applies no codec, so only a converting scene (`so101_box`, `tabletop_push`, `openarm_tabletop_pnp`) may take such a checkpoint. Fail-loud guard, never a conversion. (L943)
-- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1136)
-- `_policy_scene_cameras(scene_cameras, description, manifest) -> (list[str], dict[str, str])` — Camera keys the policy is built on plus the obs rekey (scene name → VLA slot): scene cameras that are all robot RGB sensor names become their slots; an empty `scene.cameras` becomes `required_vla_camera_slots`; anything else is unchanged. Makes slot-keyed `image_preprocessing.aliases` mean the same under `sim run` as on deploy. (L209)
-- `_rekey_obs_images(obs, rekey) -> Observation` — Returns `obs` with `images` rekeyed scene-name → slot (renamed keys win over an env's own slot alias); applied after every `env.reset`/`env.step`. (L243)
-- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1186)
-- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1279)
-- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1328)
-- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1390)
-- `SimRunner.episode_start(task_string) -> int` — No-op on `SimRunner`: sim derives episode boundaries from env signals, not this `InferenceRunner` hook. (L566)
-- `SimRunner.episode_end(*, success) -> None` — No-op on `SimRunner`: sim closes episodes inside `_finalize_episode`. (L575)
-- `const _VIDEO_FRAMES_INFO_KEY = '_openral_video_frames'` (L60)
-- `const _IMAGE_NDIM = 3` (L66)
-- `const _VIDEO_FRAME_CAP = 8192` (L65)
-- `const _GRAYSCALE_CHANNELS = 1` (L67)
-- `const _RGB_CHANNELS = 3` (L68)
-- `const _RGBA_CHANNELS = 4` (L69)
-- `const _MOCK_POLICY_IDS = frozenset({'zero', 'random'})` (L939)
-- `const _MOCK_PLACEHOLDER_URI = 'placeholder'` (L940)
-- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1144)
-- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1179)
+- `SimRunner.activate() -> None` — Validates the manifest, builds env + policy concurrently, arms the first reset-tick, opens the outer `sim.run` OTel span. (L426)
+- `SimRunner.deactivate() -> None` — Flush a trailing episode if any, close the viewer / policy / env, close the outer span. Idempotent. (L523)
+- `SimRunner._should_terminate() -> bool` — Returns True once `n_episodes` `EpisodeResult`s have been emitted. (L560)
+- `SimRunner._tick_impl(tick_idx) -> TickResult` — Dispatch reset-tick vs step-tick. (L608)
+- `SimRunner._reset_tick(tick_idx) -> TickResult` — env.reset + policy.reset; `action_applied=False`, `inference_ms=0.0`, `step_idx=None`. (L618)
+- `SimRunner._step_tick(tick_idx) -> TickResult` — policy.step + env.step; populates `step_idx`, `reward`, `terminated`, `truncated`, `action_applied=True`. (L672)
+- `SimRunner._finalize_episode() -> None` — Build an `EpisodeResult` from the per-step `_EpisodeBuffer`, append to `episode_results`, reset the buffer. (L877)
+- `class _EpisodeBuffer` — Private dataclass accumulating per-step latencies / frames / rewards inside one episode; reset on each boundary. (L271)
+- `_check_rskill_compatibility(env_cfg) -> RSkillManifest | None` — Load the rSkill manifest, run `rSkill.check_compatibility` against the registered `RobotDescription`, return the manifest or `None` for built-in mock policies. Strict-by-construction; also runs `_check_policy_units_owned`. (L1047)
+- `_check_policy_units_owned(manifest, robot, scene_id) -> None` — `ROSConfigError` when `PolicyIOCodec.from_manifest(manifest, robot)` is non-identity (degrees / `gripper_scale` / joint permutation) and `SCENES.meta(scene_id)["converts_policy_units"]` is not `True` — `sim run` applies no codec, so only a converting scene (`so101_box`, `tabletop_push`, `openarm_tabletop_pnp`) may take such a checkpoint. Fail-loud guard, never a conversion. (L961)
+- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1154)
+- `_policy_scene_cameras(scene_cameras, description, manifest) -> (list[str], dict[str, str])` — Camera keys the policy is built on plus the obs rekey (scene name → VLA slot): scene cameras that are all robot RGB sensor names become their slots; an empty `scene.cameras` becomes `required_vla_camera_slots`; anything else is unchanged. Makes slot-keyed `image_preprocessing.aliases` mean the same under `sim run` as on deploy. (L215)
+- `_rekey_obs_images(obs, rekey) -> Observation` — Returns `obs` with `images` rekeyed scene-name → slot (renamed keys win over an env's own slot alias); applied after every `env.reset`/`env.step`. (L249)
+- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1204)
+- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1297)
+- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1346)
+- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1408)
+- `SimRunner.episode_start(task_string) -> int` — No-op on `SimRunner`: sim derives episode boundaries from env signals, not this `InferenceRunner` hook. (L574)
+- `SimRunner.episode_end(*, success) -> None` — No-op on `SimRunner`: sim closes episodes inside `_finalize_episode`. (L583)
+- `const _VIDEO_FRAMES_INFO_KEY = '_openral_video_frames'` (L66)
+- `const _IMAGE_NDIM = 3` (L72)
+- `const _VIDEO_FRAME_CAP = 8192` (L71)
+- `const _GRAYSCALE_CHANNELS = 1` (L73)
+- `const _RGB_CHANNELS = 3` (L74)
+- `const _RGBA_CHANNELS = 4` (L75)
+- `const _MOCK_POLICY_IDS = frozenset({'zero', 'random'})` (L957)
+- `const _MOCK_PLACEHOLDER_URI = 'placeholder'` (L958)
+- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1162)
+- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1197)
 
 ### `python/sim/src/openral_sim/benchmark.py`
 _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benchmark_suite` + `raise_on_invalid_suite`) and emits a `RSkillEvalResult`._
@@ -127,11 +131,11 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 - `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L539)
 - `main(argv=None) -> int` — Thin wrapper invoking `sim_run_app` with `standalone_mode=False` so tests get a return code without `sys.exit`. (L465)
 - `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L721)
-- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L844)
-- `_control_rate_hz(robot) -> float` (L826) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
-- `_robot_control_rate_hz(robot_id) -> float` (L837) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
-- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L859)
-- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`; `--video-grid` adds the tiled clip. (L905)
+- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L845)
+- `_control_rate_hz(robot) -> float` (L827) — The robot's `action_spec.control_freq_hz`, else 30 Hz; the rate datasets and videos are written at (one frame per env step, real-time playback).
+- `_robot_control_rate_hz(robot_id) -> float` (L838) — `_control_rate_hz` of a registered robot; 30 Hz for a scene with no robot id.
+- `_write_debug_videos(args, results, env_cfg) -> None` — Render the two-band debug MP4(s) via `openral_sim._video.save_episode_mp4`, at the robot's control rate (the top band is the policy input, so a chunked policy's frame holds for a chunk; `--video-style world` shows the per-step render). (L860)
+- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`; `--video-grid` adds the tiled clip. (L906)
 
 ### `python/sim/src/openral_sim/_video.py`
 _Shared two-band rollout-debug MP4 helper (was `examples/_video.py`)._
@@ -334,33 +338,38 @@ _Canonical openral-side out-of-process sidecar transport — ZMQ REQ/REP + a num
 _NVIDIA Isaac Sim (Omniverse + PhysX + RTX) free-axis scene adapter. Drives an Isaac Sim env in a separate py3.11 sidecar venv (Isaac ships per-interpreter wheels; the openral workspace is py3.12) over the shared `SidecarClient`. The heavy `isaacsim`/`isaaclab` install is an externally-provisioned venv (Omniverse Kit is proprietary, never vendored). Scene id `isaac_sim`; task id `isaac_sim/<name>`._
 - `_ISAAC_SCENE_ID = "isaac_sim"` — module constant; scene-registry key.
 - `class _IsaacSimSidecar(SidecarSimRollout)` — `reset`/`step`/`render`/`close`/`sim_time_ns` inherited from `SidecarSimRollout`. Implements `_wrap_obs` for the eval-shaped Observation (incl. `image_time_ns` — the sim time each camera's frame shows, by obs key, since Isaac delivers frames steps behind the state (issue #361) — and the sidecar's per-depth-camera `depth_frames` — registered colour + metric depth + K + optical pose in `base_frame`, typed into numpy arrays) and caches `action_dim` + `sim_dt_per_tick_s` from one sidecar `ping` (`_ping`: a reply without the field is an older sidecar and stays unchecked; the field present but `null` raises `ROSConfigError`, since the scene never resolved its time base). Minimal bring-up only — `/joint_states` reads zeros for this non-MuJoCo backend.
-  - **(property)** `_IsaacSimSidecar.sim_dt_per_tick_s -> float | None` (L421) — Sim seconds one `step` advances, as the sidecar's ping reports it (the scene derives its physics substeps so this is one control period, `1 / action_spec.control_freq_hz`); `None` for a sidecar predating the field. `SimAttachedHAL.connect` refuses the env when it is not one control period (issue #355).
+  - **(property)** `_IsaacSimSidecar.sim_dt_per_tick_s -> float | None` (L424) — Sim seconds one `step` advances, as the sidecar's ping reports it (the scene derives its physics substeps so this is one control period, `1 / action_spec.control_freq_hz`); `None` for a sidecar predating the field. `SimAttachedHAL.connect` refuses the env when it is not one control period (issue #355).
+  - `_IsaacSimSidecar.contact_ground_truth() -> dict[str, Any]` (L435) — The sidecar `contacts` endpoint: PhysX robot-vs-world contacts of the last physics step (`IsaacManifestScene.contact_ground_truth`). Read by `SimSensorBridge` on each kernel stop.
+  - `_IsaacSimSidecar.static_collider_boxes() -> dict[str, Any]` (L448) — The sidecar `static_colliders` endpoint: the stage's static colliders in `base_frame`, boxes and triangle meshes (`IsaacManifestScene.static_collider_boxes`); `tools/isaac_static_geometry.py` writes them as a scene's declared static geometry.
+  - `_IsaacSimSidecar.set_task(instruction) -> dict[str, Any]` (L458) — The sidecar `set_task` endpoint (`IsaacManifestScene.set_task`): under deploy sim activates `placement_success.tasks[instruction]` (none for a prompt without an entry or `""`) and restarts its grading; a `sim run` sidecar keeps its build-time rubric. Reply `graded`, `grade_scores`, `prompts`. Called by `SimAttachedHAL.set_active_task`.
 - `_sidecar_python() -> Path` / `_provision_isaac_venv() -> Path` / `_locate_sidecar_script() -> Path` — Resolve the Isaac interpreter (env override → opt-in auto-provision → cache default pip venv → a host-wide binary install's `python.sh` under `_BINARY_INSTALL_ROOTS` (`/opt/isaac-sim`, `~/isaacsim`) → typed `ROSConfigError`) and `tools/isaac_sidecar.py` (env override → walk-up). Auto-provision runs before the existing-venv shortcut so a venv built from superseded pins gets repaired, not silently reused.
 - `_find_sidecar_python() -> Path | None` — The same lookup without provisioning (override, pip venv, binary install), for availability checks such as the sim-test gate.
 - `_is_binary_install(py) -> bool` / `_binary_site_dir(py) -> Path` — A binary install's `python.sh` skips the pip venv's `--require-min` CUDA floors (it bundles its own runtime) and gets the sidecar's wire deps (pyzmq, msgpack) `pip install --target`-ed into a user-cache dir keyed on install path + `VERSION`, passed as `--site-dir` — never into the (often root-owned, shared) install.
-- `class IsaacActionLayout` (L189) — The scene's action vector, named (frozen dataclass: `joints`, `roles`, `end_effectors`).
-  - `IsaacActionLayout.from_description(desc) -> IsaacActionLayout` (L211) — THE slot layout, which `_build_robot_spec` also derives the sidecar's from: every manifest joint in order (slot rows are zero-padded to all of them) with a role — `fixed` / `base` (no slot) / `gripper` / `arm`.
-  - `IsaacActionLayout.slots -> tuple[str, ...]` (L235) — Non-base manifest joints, manifest order: one action slot each.
-  - `IsaacActionLayout.has_base -> bool` (L242) — A planar base: three twist slots at the end.
-  - `IsaacActionLayout.dim -> int` (L247) — Action vector width.
-  - `IsaacActionLayout.gripper_for(ee_name) -> str` (L251) — The gripper joint a gripper action drives: a named gripper joint, or with exactly one gripper any end-effector name (franka's `panda_hand` → `panda_gripper`); else `ROSConfigError`.
-- `pack_isaac_action(action, layout, prev, *, carry_twist=False) -> NDArray[np.float32]` (L269) — One typed `Action` → the scene's vector, by name (ADR-0102): JOINT_POSITION by `joint_names` (zero-padded full-dof row) or a whole-vector row (all / slot / arm joints); GRIPPER_POSITION by `ee_name`; BODY_TWIST into the last three slots. Other slots keep `prev` (NaN = hold); the twist starts at zero for each committed step unless `carry_twist` (an earlier slot of the same step); other modes raise `ROSConfigError`.
+- `class IsaacActionLayout` (L192) — The scene's action vector, named (frozen dataclass: `joints`, `roles`, `end_effectors`).
+  - `IsaacActionLayout.from_description(desc) -> IsaacActionLayout` (L214) — THE slot layout, which `_build_robot_spec` also derives the sidecar's from: every manifest joint in order (slot rows are zero-padded to all of them) with a role — `fixed` / `base` (no slot) / `gripper` / `arm`.
+  - `IsaacActionLayout.slots -> tuple[str, ...]` (L238) — Non-base manifest joints, manifest order: one action slot each.
+  - `IsaacActionLayout.has_base -> bool` (L245) — A planar base: three twist slots at the end.
+  - `IsaacActionLayout.dim -> int` (L250) — Action vector width.
+  - `IsaacActionLayout.gripper_for(ee_name) -> str` (L254) — The gripper joint a gripper action drives: a named gripper joint, or with exactly one gripper any end-effector name (franka's `panda_hand` → `panda_gripper`); else `ROSConfigError`.
+- `pack_isaac_action(action, layout, prev, *, carry_twist=False) -> NDArray[np.float32]` (L272) — One typed `Action` → the scene's vector, by name (ADR-0102): JOINT_POSITION by `joint_names` (zero-padded full-dof row) or a whole-vector row (all / slot / arm joints); GRIPPER_POSITION by `ee_name`; BODY_TWIST into the last three slots. Other slots keep `prev` (NaN = hold); the twist starts at zero for each committed step unless `carry_twist` (an earlier slot of the same step); other modes raise `ROSConfigError`.
 - `_IsaacSimSidecar.pack_action(action, prev, *, carry_twist=False)` / `_IsaacSimSidecar.idle_action()` — The env hooks `SimAttachedHAL` uses: name-addressed packing, and an idle vector that HOLDs every joint (NaN) with the base stopped.
-- `class IsaacCameraImagePost(BaseModel)` (L824) — Per-camera RGB post-process (`IsaacSimOptions.camera_image_post`): `blur_sigma_px` (overrides `image_blur_sigma_px`), `auto_exposure_target` (mean BT.601 luma; re-exposes through the inverse op-6 ACES tonemap, settling with `auto_exposure_tau_s` sim seconds, converged at reset), `white_balance_rgb` (scene-linear gains), `color_lut_rgb` (per-channel 8-bit tone curve, 3 × 256, applied to the final frame — e.g. a histogram match onto the real camera). Relighting requires `exposure_ev`.
-  - `IsaacCameraImagePost.relights -> bool` (L862) — Whether the camera is re-exposed (auto exposure or a non-unit white balance); `IsaacSimOptions` then requires `exposure_ev`.
-- `class IsaacSimOptions(BaseModel)` (L1023) — The scene's registered `options_model` (`extra="forbid"`): `layout`, `headless`, `host`, `port`, `boot_timeout_s`, `timeout_ms`, `objects`, `camera_mounts` (manifest camera name → `IsaacCameraMount`, overriding `default_camera_mounts`; part of the sidecar identity via `_camera_mounts_json`, validated against the robot's camera sensors in `_write_robot_spec`), `initial_joint_positions` (manifest joint → start value in the HAL's units, validated against the joint limits in `_write_robot_spec`; each reset teleports the joints there and holds; part of the sidecar identity), `camera_intrinsics`, `translucent_materials`, `exposure_ev`, `image_blur_sigma_px` (Gaussian sigma in px on every RGB frame, `0` = off, at most 5; part of the scene port key), `camera_image_post` (RGB sensor name → `IsaacCameraImagePost`: per-camera `blur_sigma_px` override, `auto_exposure_target` / `auto_exposure_tau_s` auto-exposure emulation and scene-linear `white_balance_rgb`; the latter two need `exposure_ev`; plus `color_lut_rgb`, a per-channel 8-bit tone curve (3 × 256) applied to the final frame, e.g. a histogram match onto the real camera; part of the scene port key), `robot_material_colors` (material-name `fnmatch` pattern → diffuse RGB in [0, 1], applied to the imported robot's visual materials; appearance only; part of the scene port key); speed knobs, all part of the scene port key (physics substeps are no knob: the scene derives them from `action_spec.control_freq_hz`, #355): `camera_render_height` (RGB sensor → render raster height; width, intrinsics and blur scale with it, same field of view), `depth_cameras` (`False` drops the depth sensors from the sidecar: no depth render, no point clouds). `gripper_finger_coupling_rad` (fingers that share one motor: no finger may close more than this past its partner's mirrored position, so the pair stops together on the object instead of one finger pinning it against the other; `None` = independent drives; part of the sidecar identity), `gripper_joint_curve` (manifest gripper joint → piecewise-linear calibration points `[(manifest value, URDF finger value), …]`, strictly monotonic; commands map manifest → finger and joint states finger → manifest through it, for a jaw whose reading is not its URDF finger angle — OpenArm reads 0.28 rad on a 6 cm carton where the URDF finger touches at 0.69; part of the sidecar identity), `joint_drive_gains` (URDF joint-name regex → `(stiffness Nm/rad, damping Nm·s/rad)`, pattern order, later matches win; unmatched joints keep the sidecar's 1000 / 100; set to the real motors' PD gains so the arm sags under gravity like the real one; part of the sidecar identity), `placement_success` (`IsaacPlacementSuccess`: graded success for the scene's prompt; its objects must be scene objects; part of the sidecar identity). Object names must be unique and not the scene's own (`robot`, `obstacle_<i>`).
-- `class IsaacCameraMount(BaseModel)` (L779) — Where one manifest camera sits on the robot: a child of URDF `link` (`None` = the robot root; the manifest `base_frame` resolves even when it is no URDF link) at `xyz`, oriented by exactly one of `quat_wxyz` (in Isaac's `axes`: `world` / `usd` / `ros`) or `look_at` (world axes); optional `hfov_deg` (else the sensor's manifest intrinsics). A scene entry overrides the manifest-derived default.
-- `class IsaacSceneObject(BaseModel)` (L746) — One scene object: `usd` (same forms as `scene.assets_uri`), `name`, `xyz`, `roll`/`pitch`/`yaw` (rad, URDF rpy order), `dynamic` (graspable rigid body vs static prop), `pose_noise` (optional `IsaacObjectPoseNoise`).
-- `class IsaacObjectPoseNoise(BaseModel)` (L694) — Per-reset planar jitter of a scene object from the episode seed: `xy_sigma_m`, `yaw_sigma_deg`, `yaw_offsets_deg` (one entry picked uniformly per draw before the yaw noise, e.g. `(0, 90)` for a box set down square or quarter-turned; a single entry draws nothing), `clip_sigma` (truncated normal, redrawn), `keep_inside_xy` (world rectangle the footprint stays inside), `max_tries` (then the declared pose, logged). `z`/roll/pitch stay declared; drawn footprints never overlap earlier objects.
-- `class IsaacPlacementGrade(BaseModel)` (L903) — One level of a placement rubric (`IsaacPlacementSuccess.grades`): `name`, `score` (0..1), `region` (`target` / `adjacent`), `requires_upright`. Levels are tried in order; first match wins.
-- `DEFAULT_PLACEMENT_GRADES: tuple[IsaacPlacementGrade, ...]` (L926) — The default rubric: `complete` 1.0 (in the target, upright), `partial` 0.5 (in the target, fallen), `semi` 0.25 (in an adjacent region); `fail` 0 is implicit.
-- `class IsaacPlacementSuccess(BaseModel)` (L933) — Graded task success for placement prompts (`IsaacSimOptions.placement_success`): `regions` (name → `IsaacPlacementRegion`), `tasks` (prompt, verbatim `task.instruction` → list of `IsaacPlacement`; an object at most once per task), `grades` (the rubric, default `DEFAULT_PLACEMENT_GRADES`; unique names, the first scores 1.0 and is the success grade), `upright_tol_deg` (20), `settle_s` (1.0 s at rest before an object is graded), `rest_speed_m_s` (0.02), `rest_turn_deg_s` (10; a turning object is not at rest). The episode's grade is its worst placement's; the scene terminates with `info[success_key]` true and reward 1.0 once every placement reaches the first grade; otherwise the last step's reward is the grade's score, so `total_reward` carries the partial credit; every step's `info["placement_grade"]` is the current grade. Regions a task names must exist; graded objects must be `dynamic`.
-- `class IsaacPlacementRegion(BaseModel)` (L867) — World-frame box (`min_xyz` < `max_xyz` on every axis) a placed object's centre must rest inside.
-- `class IsaacPlacement(BaseModel)` (L889) — One object a prompt asks to place: `object` (a scene `objects[].name`, checked by `IsaacSimOptions`), `target` region, `adjacent` regions ("the one next to it").
-- `_placement_success_spec(placement_success, instruction) -> dict[str, Any] | None` (L1922) — The sidecar's grading spec for the scene's prompt, regions resolved to `{"min", "max"}` boxes, written into the robot spec (`placement_success`); `ROSConfigError` when the block has no entry for the instruction; `None` without a block.
+- `class IsaacCameraImagePost(BaseModel)` (L863) — Per-camera RGB post-process (`IsaacSimOptions.camera_image_post`): `blur_sigma_px` (overrides `image_blur_sigma_px`), `auto_exposure_target` (mean BT.601 luma; re-exposes through the inverse op-6 ACES tonemap, settling with `auto_exposure_tau_s` sim seconds, converged at reset), `white_balance_rgb` (scene-linear gains), `color_lut_rgb` (per-channel 8-bit tone curve, 3 × 256, applied to the final frame — e.g. a histogram match onto the real camera). Relighting requires `exposure_ev`.
+  - `IsaacCameraImagePost.relights -> bool` (L901) — Whether the camera is re-exposed (auto exposure or a non-unit white balance); `IsaacSimOptions` then requires `exposure_ev`.
+- `class IsaacSimOptions(BaseModel)` (L1062) — The scene's registered `options_model` (`extra="forbid"`): `layout`, `headless`, `host`, `port`, `boot_timeout_s`, `timeout_ms`, `objects`, `camera_mounts` (manifest camera name → `IsaacCameraMount`, overriding `default_camera_mounts`; part of the sidecar identity via `_camera_mounts_json`, validated against the robot's camera sensors in `_write_robot_spec`), `initial_joint_positions` (manifest joint → start value in the HAL's units, validated against the joint limits in `_write_robot_spec`; each reset teleports the joints there and holds; part of the sidecar identity), `camera_intrinsics`, `translucent_materials`, `exposure_ev`, `image_blur_sigma_px` (Gaussian sigma in px on every RGB frame, `0` = off, at most 5; part of the scene port key), `camera_image_post` (RGB sensor name → `IsaacCameraImagePost`: per-camera `blur_sigma_px` override, `auto_exposure_target` / `auto_exposure_tau_s` auto-exposure emulation and scene-linear `white_balance_rgb`; the latter two need `exposure_ev`; plus `color_lut_rgb`, a per-channel 8-bit tone curve (3 × 256) applied to the final frame, e.g. a histogram match onto the real camera; part of the scene port key), `robot_material_colors` (material-name `fnmatch` pattern → diffuse RGB in [0, 1], applied to the imported robot's visual materials; appearance only; part of the scene port key); speed knobs, all part of the scene port key (physics substeps are no knob: the scene derives them from `action_spec.control_freq_hz`, #355): `camera_render_height` (RGB sensor → render raster height; width, intrinsics and blur scale with it, same field of view), `depth_cameras` (`False` drops the depth sensors from the sidecar: no depth render, no point clouds). `gripper_finger_coupling_rad` (fingers that share one motor: no finger may close more than this past its partner's mirrored position, so the pair stops together on the object instead of one finger pinning it against the other; `None` = independent drives; part of the sidecar identity), `gripper_joint_curve` (manifest gripper joint → piecewise-linear calibration points `[(manifest value, URDF finger value), …]`, strictly monotonic; commands map manifest → finger and joint states finger → manifest through it, for a jaw whose reading is not its URDF finger angle — OpenArm reads 0.28 rad on a 6 cm carton where the URDF finger touches at 0.69; part of the sidecar identity), `joint_drive_gains` (URDF joint-name regex → `(stiffness Nm/rad, damping Nm·s/rad)`, pattern order, later matches win; unmatched joints keep the sidecar's 1000 / 100; set to the real motors' PD gains so the arm sags under gravity like the real one; part of the sidecar identity), `placement_success` (`IsaacPlacementSuccess`: graded success for the scene's prompt; its objects must be scene objects; part of the sidecar identity). Object names must be unique and not the scene's own (`robot`, `obstacle_<i>`).
+- `class IsaacCameraMount(BaseModel)` (L818) — Where one manifest camera sits on the robot: a child of URDF `link` (`None` = the robot root; the manifest `base_frame` resolves even when it is no URDF link) at `xyz`, oriented by exactly one of `quat_wxyz` (in Isaac's `axes`: `world` / `usd` / `ros`) or `look_at` (world axes); optional `hfov_deg` (else the sensor's manifest intrinsics). A scene entry overrides the manifest-derived default.
+- `class IsaacSceneObject(BaseModel)` (L785) — One scene object: `usd` (same forms as `scene.assets_uri`), `name`, `xyz`, `roll`/`pitch`/`yaw` (rad, URDF rpy order), `dynamic` (graspable rigid body vs static prop), `pose_noise` (optional `IsaacObjectPoseNoise`).
+- `class IsaacObjectPoseNoise(BaseModel)` (L733) — Per-reset planar jitter of a scene object from the episode seed: `xy_sigma_m`, `yaw_sigma_deg`, `yaw_offsets_deg` (one entry picked uniformly per draw before the yaw noise, e.g. `(0, 90)` for a box set down square or quarter-turned; a single entry draws nothing), `clip_sigma` (truncated normal, redrawn), `keep_inside_xy` (world rectangle the footprint stays inside), `max_tries` (then the declared pose, logged). `z`/roll/pitch stay declared; drawn footprints never overlap earlier objects.
+- `class IsaacPlacementGrade(BaseModel)` (L942) — One level of a placement rubric (`IsaacPlacementSuccess.grades`): `name`, `score` (0..1), `region` (`target` / `adjacent`), `requires_upright`. Levels are tried in order; first match wins.
+- `DEFAULT_PLACEMENT_GRADES: tuple[IsaacPlacementGrade, ...]` (L965) — The default rubric: `complete` 1.0 (in the target, upright), `partial` 0.5 (in the target, fallen), `semi` 0.25 (in an adjacent region); `fail` 0 is implicit.
+- `class IsaacPlacementSuccess(BaseModel)` (L972) — Graded task success for placement prompts (`IsaacSimOptions.placement_success`): `regions` (name → `IsaacPlacementRegion`), `tasks` (prompt, verbatim `task.instruction` → list of `IsaacPlacement`; an object at most once per task), `grades` (the rubric, default `DEFAULT_PLACEMENT_GRADES`; unique names, the first scores 1.0 and is the success grade), `upright_tol_deg` (20), `settle_s` (1.0 s at rest before an object is graded), `rest_speed_m_s` (0.02), `rest_turn_deg_s` (10; a turning object is not at rest). The episode's grade is its worst placement's; the scene terminates with `info[success_key]` true and reward 1.0 once every placement reaches the first grade (never under deploy sim, which grades the dispatched goal's prompt via `set_task` and only reports); otherwise the last step's reward is the grade's score, so `total_reward` carries the partial credit; every step's `info["placement_grade"]` is the current grade. Regions a task names must exist; graded objects must be `dynamic`.
+- `class IsaacPlacementRegion(BaseModel)` (L906) — World-frame box (`min_xyz` < `max_xyz` on every axis) a placed object's centre must rest inside.
+- `class IsaacPlacement(BaseModel)` (L928) — One object a prompt asks to place: `object` (a scene `objects[].name`, checked by `IsaacSimOptions`), `target` region, `adjacent` regions ("the one next to it").
+- `_placement_success_spec(placement_success, instruction) -> dict[str, Any] | None` (L1961) — The sidecar's grading spec for the scene's prompt, regions resolved to `{"min", "max"}` boxes, written into the robot spec (`placement_success`); `ROSConfigError` when the block has no entry for the instruction; `None` without a block.
+- `_placement_success_robot_spec(placement_success, task) -> dict[str, Any]` (L1992) — The robot spec's grading fields. `sim run`: `placement_success` = `_placement_success_spec` of the scene's `task.instruction` (still a `ROSConfigError` without an entry), `placement_success_by_prompt` `None`. Deploy sim (task id `<scene>/_hal_deploy_noop`, empty instruction): no active rubric, `placement_success_by_prompt` = every prompt's spec (sorted, so the spec hash is stable), for the sidecar's `set_task`.
+- `_resolve_placement_rubric(placement_success, placements) -> dict[str, Any]` (L2030) — One prompt's placements with regions resolved to boxes, plus the shared rubric fields; shared by both helpers above.
 - `_ISAAC_CUDA_FLOORS = {"nvidia-nvjitlink-cu12": "12.8", "nvidia-cusparse-cu12": "12.5"}` → `_ISAAC_CUDA_DEPS` — CUDA runtime floors forced on top of the Isaac install, and the single source of both the pip spec and the sidecar's `--require-min` boot probe. Needed because Isaac's bundled CUDA-12.8 `libcusparse` has no matching `libnvJitLink`, and a too-old bundled one hangs Kit past `app ready` instead of raising.
 - `_sensor_dict(sensor) -> dict` / `_build_robot_spec(desc, robot_id) -> dict` / `_write_robot_spec(env_cfg, camera_mounts=None, initial_joint_positions=None, camera_intrinsics=None, translucent_materials=False, exposure_ev=None) -> tuple[str, RobotDescription]` — Robot-agnostic `--layout manifest` marshalling: since the sidecar can't import `openral_core`, `_build_robot_spec` serialises the `RobotDescription` to plain JSON — joints with their `urdf_name`, one `grippers[]` entry per manifest gripper, the `ros_package_paths`, the action contract (`[arm, one slot per gripper, base twist]` plus `control_freq_hz` = `RobotDescription.control_rate_hz`, refused as `ROSConfigError` when the manifest declares none — the scene derives its physics substeps and base-twist interval from it, issue #355), sensors including distortion model/coefficients; `_write_robot_spec` first lays the robot unit's sensor overlays (`$OPENRAL_ROBOT_UNIT`) over the manifest, mounts every camera from `default_camera_mounts` with the scene's `camera_mounts` on top, writes it to a temp file passed via `--robot-spec`, rejects mounts naming no camera sensor, and prints the robot-framed (`frame_id != "world"`) cameras left unmounted, which render a generic viewpoint instead of their frame's view.
-- `default_camera_mounts(desc, manifest_dir, mountable, calibrated=None) -> dict[str, IsaacCameraMount]` (L1796) — Each manifest camera's Isaac mount from the manifest: `shares_mount_with` → that sensor's mount; `parent_frame` + `static_transform_xyz_rpy` → that link (`axes: world` for a body frame, `ros` for an `*_optical_frame`); else the robot MJCF's camera of that name (`_mjcf_camera_mounts`: body pose, `axes: usd`, the MJCF FOV unless the unit calibrated the intrinsics). `_quat_wxyz_from_rpy(roll, pitch, yaw)` converts URDF rpy.
+- `default_camera_mounts(desc, manifest_dir, mountable, calibrated=None) -> dict[str, IsaacCameraMount]` (L1835) — Each manifest camera's Isaac mount from the manifest: `shares_mount_with` → that sensor's mount; `parent_frame` + `static_transform_xyz_rpy` → that link (`axes: world` for a body frame, `ros` for an `*_optical_frame`); else the robot MJCF's camera of that name (`_mjcf_camera_mounts`: body pose, `axes: usd`, the MJCF FOV unless the unit calibrated the intrinsics). `_quat_wxyz_from_rpy(roll, pitch, yaw)` converts URDF rpy.
 - `_parse_urdf_joints(urdf_path) -> dict[str, _UrdfJoint]` / `_match_urdf_joint(j, urdf, claimed) -> str` — Map a manifest joint onto the URDF joint it drives by the URDF's own structure: manifest name → same `(parent_link, child_link)` → `sim_joint_name` (usually the MuJoCo name, so not trusted first) → the one unclaimed movable non-mimic joint below the manifest `parent_link`; ambiguity or no match is a `ROSConfigError`.
 - `_gripper_spec(j, leader, urdf, *, passthrough, command_convention=None) -> dict` — Open/closed targets in URDF units from the manifest's declared unit (`SimDescription.grippers[].write_mode`): `passthrough` — the manifest's own physical range, written unchanged on the URDF joint's axis (a range outside the URDF limits is a `ROSConfigError`: the two disagree on the axis); `normalised` (default) — the full URDF travel, closed at the zero pose (SO-100: 0 → 2.0 rad). Plus the manifest's closed/open ends for mapping `/joint_states` back, the command's closed/open ends in the driving end effector's `command_convention` (`_CONVENTION_ENDS` for the normalised ones, e.g. panda_mobile's `normalized_close_symmetric` +1 = closed; the manifest ends for `raw_joint_rad` on a passthrough jaw or no declaration; any other convention is a `ROSConfigError`), and the URDF `<mimic>` followers the scene drives itself. `_build_robot_spec` resolves each end effector's gripper joint via `IsaacActionLayout.gripper_for`.
 - `_ros_package_paths(urdf_path) -> list[dict[str, str]]` — `package://<pkg>` roots via `AMENT_PREFIX_PATH` (`share/<pkg>`), else an ancestor directory named `<pkg>`, else a known public package fetched into the openral cache (`_fetch_public_package` → `openral_hal.ros_package_overlay.fetch_public_package`: `openarm_description` → `openral_hal._openarm_description_assets`); unresolved is a `ROSConfigError`.
@@ -369,31 +378,31 @@ _NVIDIA Isaac Sim (Omniverse + PhysX + RTX) free-axis scene adapter. Drives an I
 - `_world_key(environment_usd, base_pose, objects_json="") -> str` — The environment + spawn + objects part of a scene's sidecar identity; empty when none is set, so unplaced scenes keep their existing port.
 - `_root_to_base(desc) -> NDArray[np.float64]` — 4x4 pose of the manifest `base_frame` in the URDF root frame (inverse of `assets.urdf.base_to_root_xyz_rpy`, identity when unset); marshalled as the robot spec's `root_to_base` so depth clouds are expressed in `base_frame` (OpenArm: 0.698 m above the URDF root).
 - `_camera_mounts_json(mounts) -> str` — The mounts as stable JSON (`""` when none), appended to the sidecar world key.
-- `_curve_gripper_specs(spec, gripper_joint_curve) -> None` (L1842) — Attaches each named gripper's calibration curve (sorted `[manifest, URDF]` pairs) to its robot-spec entry as `curve` (`IsaacSimOptions.gripper_joint_curve`); `ROSConfigError` on a name that is not a gripper joint.
+- `_curve_gripper_specs(spec, gripper_joint_curve) -> None` (L1881) — Attaches each named gripper's calibration curve (sorted `[manifest, URDF]` pairs) to its robot-spec entry as `curve` (`IsaacSimOptions.gripper_joint_curve`); `ROSConfigError` on a name that is not a gripper joint.
 - `_camera_render_scale(desc, camera_render_height) -> dict[str, float]` — `camera_render_height` as per-camera scale factors on the manifest raster; refuses non-RGB / intrinsic-less names (`ROSConfigError`).
 - `_render_desc(desc, camera_render_height, depth_cameras) -> tuple[RobotDescription, dict[str, float]]` — The description the sidecar renders: RGB rasters scaled by `scale_intrinsics_to`, depth sensors kept or dropped; plus the scales (blur sigma follows them).
 - `_objects_json(objects) -> str` — The validated `IsaacSceneObject`s as the sidecar's `--objects-json`, each `usd` checked by `_resolve_environment_usd`.
 - `_placement(env_cfg, opts) -> (layout, environment_usd, spawn, objects_json, world_key)` — Resolves the environment USD, spawn pose, objects JSON and the world key; `layout` is always `manifest`.
 - `_scene_default_port(task_id, robot_id, layout, world="") -> int` — Deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)`; `world` (from `_world_key`) keeps two scenes that differ only in stage/spawn on distinct sidecars.
 - `_build_isaac_sim_scene(env_cfg) -> _IsaacSimSidecar` — Factory: validates `backend_options` (`IsaacSimOptions`), resolves placement (`_placement`); writes the robot spec, appends `--robot-spec`, and unlinks it after `connect()`; forwards `--environment-usd` / `--spawn-pose` / `--objects-json`, and `--site-dir` (binary install) or the `--require-min` floors (pip venv). Connects a `SidecarClient(name="isaac", …)` whose `expected_identity` includes the environment, the spawn (as the sidecar parses it back), the robot and the objects; the spawn is passed fixed-point, since argparse reads `-1e-05` as a flag.
-- `provision_isaac_sim() -> None` — Pre-launch provisioner: builds the sidecar venv (auto under `OPENRAL_ISAAC_AUTO_PROVISION=1`, else raises the manual recipe). Covers provisioning only — the Omniverse Kit boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is raised well past that bound. (L2115)
+- `provision_isaac_sim() -> None` — Pre-launch provisioner: builds the sidecar venv (auto under `OPENRAL_ISAAC_AUTO_PROVISION=1`, else raises the manual recipe). Covers provisioning only — the Omniverse Kit boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is raised well past that bound. (L2200)
 - Module side effect: `SCENES.register("isaac_sim", fixed_robot=None, provision=provision_isaac_sim, sim_clock=True, base_pose=True, options_model=IsaacSimOptions)(_build_isaac_sim_scene)` at import.
-- `const _ISAAC_SCENE_ID = 'isaac_sim'` (L99)
-- `const _AUTO_SPAWN_ENV = 'OPENRAL_ISAAC_AUTO_SPAWN'` (L100)
-- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ISAAC_SIDECAR_PYTHON'` (L101)
-- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ISAAC_SIDECAR_SCRIPT'` (L102)
-- `const _AUTO_PROVISION_ENV = 'OPENRAL_ISAAC_AUTO_PROVISION'` (L103)
-- `const _ISAAC_PYTHON = '3.11'` (L113)
-- `const _ISAAC_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'isaac-sidecar'` (L112)
-- `const _ISAAC_DEPS` — Pinned `isaacsim==5.1.0.0` install spec (core/robot/replicator/… subpackages). (L114)
-- `const _ISAAC_CUDA_FLOORS = {'nvidia-nvjitlink-cu12': '12.8', 'nvidia-cusparse-cu12': '12.5'}` (L133)
-- `const _ISAAC_CUDA_DEPS` — `_ISAAC_CUDA_FLOORS` rendered as `>=floor,<13` pip specs. (L137)
-- `const _DEFAULT_HOST = '127.0.0.1'` (L145)
-- `const _SIDECAR_PORT_MIN = 20000` (L153)
-- `const _SIDECAR_PORT_MAX = 40000` (L154)
-- `const _DEFAULT_TIMEOUT_MS = 120000` (L176)
-- `const _DEFAULT_BOOT_TIMEOUT_S = 900.0` (L177)
-- `const _DEFAULT_MAX_STEPS = 1000000` (L179)
+- `const _ISAAC_SCENE_ID = 'isaac_sim'` (L100)
+- `const _AUTO_SPAWN_ENV = 'OPENRAL_ISAAC_AUTO_SPAWN'` (L101)
+- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ISAAC_SIDECAR_PYTHON'` (L102)
+- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ISAAC_SIDECAR_SCRIPT'` (L103)
+- `const _AUTO_PROVISION_ENV = 'OPENRAL_ISAAC_AUTO_PROVISION'` (L104)
+- `const _ISAAC_PYTHON = '3.11'` (L116)
+- `const _ISAAC_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'isaac-sidecar'` (L115)
+- `const _ISAAC_DEPS` — Pinned `isaacsim==5.1.0.0` install spec (core/robot/replicator/… subpackages). (L117)
+- `const _ISAAC_CUDA_FLOORS = {'nvidia-nvjitlink-cu12': '12.8', 'nvidia-cusparse-cu12': '12.5'}` (L136)
+- `const _ISAAC_CUDA_DEPS` — `_ISAAC_CUDA_FLOORS` rendered as `>=floor,<13` pip specs. (L140)
+- `const _DEFAULT_HOST = '127.0.0.1'` (L148)
+- `const _SIDECAR_PORT_MIN = 20000` (L156)
+- `const _SIDECAR_PORT_MAX = 40000` (L157)
+- `const _DEFAULT_TIMEOUT_MS = 120000` (L179)
+- `const _DEFAULT_BOOT_TIMEOUT_S = 900.0` (L180)
+- `const _DEFAULT_MAX_STEPS = 1000000` (L182)
 
 #### `tools/isaac_sidecar.py` + `tools/_isaac_scene_base.py` + `tools/isaac_manifest_scene.py`
 _Isaac-side sidecar (runs under the py3.11 Isaac Sim venv only). Verifies its dependency floors before launching the headless Omniverse Kit `SimulationApp`, then serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `IsaacSceneBase` owns the shared lifecycle; subclasses override `build`/`_apply_action`/`_images`/`_state`/`_reward_terminated`. The one scene (`--layout manifest`):_
@@ -421,31 +430,31 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter, fixed to the `aloha_agilex` embodim
 - `_scene_default_port(task_id, robot_id) -> int` — deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)` (SHA-256 digest, not the salted builtin `hash`), so distinct tasks never share a sidecar endpoint; an explicit `backend_options.port` still wins.
 - `_robotwin_task_name(task_id) -> str` — strips the `robotwin/` namespace to the bare upstream task name the LeRobot env wants.
 - `_provision_robotwin_venv() -> Path` / `_sidecar_python() -> Path` / `_locate_sidecar_script() -> Path` — opt-in (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1`) provisioning of the py3.10 venv (lerobot from git `main` + SAPIEN + wire — the RoboTwin task package + multi-GB assets remain a manual step), interpreter resolution (env override → cache default → opt-in provision → typed `ROSConfigError` carrying the full conda recipe), and `tools/robotwin_sidecar.py` location (env override → walk-up).
-- `_download_assets_script(root: Path) -> str` (L317) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
+- `_download_assets_script(root: Path) -> str` (L318) — Path of RoboTwin's asset download script relative to the checkout; accepts the pre-2026 `script/` and current `scripts/` layouts.
 - `_build_robotwin_scene(env_cfg) -> _RoboTwinSimSidecar` — factory: builds the launch argv (`--task`, `--cameras`, `--episode-length`, obs h/w, host/port), connects a `SidecarClient(name="robotwin", expected_identity={"env": "robotwin", "task": <name>})`.
-- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L414)
+- `provision_robotwin() -> None` — Pre-launch provisioner: `ensure_backend_deps("robotwin_client")` + `_sidecar_python()` (opt-in multi-GB LeRobot + SAPIEN venv under `OPENRAL_ROBOTWIN_AUTO_PROVISION=1`, else the manual recipe). Registered as `provision=`; keeps the venv build out of the HAL's 300 s `on_configure`. Note this covers **provisioning only** — the sidecar *boot* still happens inside `on_configure` via `_build_robotwin_scene`'s `connect()`, and this backend's `_DEFAULT_BOOT_TIMEOUT_S = 600.0` exceeds that bound (latent: no in-tree deploy scene selects `robotwin`). (L415)
 - Module side effect: `SCENES.register("robotwin", fixed_robot="aloha_agilex", provision=provision_robotwin, sim_clock=True)(_build_robotwin_scene)` at import.
-- `const _ROBOTWIN_SCENE_ID = 'robotwin'` (L72)
-- `const _ROBOTWIN_ROBOT_ID = 'aloha_agilex'` (L73)
-- `const _DEPLOY_NOOP_SUFFIX = '/_hal_deploy_noop'` (L74)
-- `const _DEFAULT_DEPLOY_TASK = 'lift_pot'` (L75)
-- `const _AUTO_SPAWN_ENV = 'OPENRAL_ROBOTWIN_AUTO_SPAWN'` (L77)
-- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ROBOTWIN_SIDECAR_PYTHON'` (L78)
-- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ROBOTWIN_SIDECAR_SCRIPT'` (L79)
-- `const _ROBOTWIN_ROOT_ENV = 'OPENRAL_ROBOTWIN_ROOT'` (L80)
-- `const _AUTO_PROVISION_ENV = 'OPENRAL_ROBOTWIN_AUTO_PROVISION'` (L81)
-- `const _ROBOTWIN_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'robotwin-sidecar'` (L89)
-- `const _ROBOTWIN_PYTHON = '3.12'` (L90)
-- `const _ROBOTWIN_REPO = 'https://github.com/RoboTwin-Platform/RoboTwin.git'` (L91)
-- `const _ROBOTWIN_BASE_DEPS` — Pinned `lerobot==0.6.0` + `sapien==3.0.3` + CUDA/Open3D/h5py sidecar install spec. (L94)
-- `const _ROBOTWIN_MPLIB_DEPS = ('mplib==0.2.1',)` (L108)
-- `const _DEFAULT_HOST = '127.0.0.1'` (L110)
-- `const _SIDECAR_PORT_MIN = 20000` (L116)
-- `const _SIDECAR_PORT_MAX = 40000` (L117)
-- `const _DEFAULT_TIMEOUT_MS = 120000` (L121)
-- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L123)
-- `const _DEFAULT_MAX_STEPS = 1000000` (L125)
-- `const _FALLBACK_SIM_DT_S = 1.0 / 30.0` (L129)
+- `const _ROBOTWIN_SCENE_ID = 'robotwin'` (L73)
+- `const _ROBOTWIN_ROBOT_ID = 'aloha_agilex'` (L74)
+- `const _DEPLOY_NOOP_SUFFIX = '/_hal_deploy_noop'` (L75)
+- `const _DEFAULT_DEPLOY_TASK = 'lift_pot'` (L76)
+- `const _AUTO_SPAWN_ENV = 'OPENRAL_ROBOTWIN_AUTO_SPAWN'` (L78)
+- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ROBOTWIN_SIDECAR_PYTHON'` (L79)
+- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ROBOTWIN_SIDECAR_SCRIPT'` (L80)
+- `const _ROBOTWIN_ROOT_ENV = 'OPENRAL_ROBOTWIN_ROOT'` (L81)
+- `const _AUTO_PROVISION_ENV = 'OPENRAL_ROBOTWIN_AUTO_PROVISION'` (L82)
+- `const _ROBOTWIN_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'robotwin-sidecar'` (L90)
+- `const _ROBOTWIN_PYTHON = '3.12'` (L91)
+- `const _ROBOTWIN_REPO = 'https://github.com/RoboTwin-Platform/RoboTwin.git'` (L92)
+- `const _ROBOTWIN_BASE_DEPS` — Pinned `lerobot==0.6.0` + `sapien==3.0.3` + CUDA/Open3D/h5py sidecar install spec. (L95)
+- `const _ROBOTWIN_MPLIB_DEPS = ('mplib==0.2.1',)` (L109)
+- `const _DEFAULT_HOST = '127.0.0.1'` (L111)
+- `const _SIDECAR_PORT_MIN = 20000` (L117)
+- `const _SIDECAR_PORT_MAX = 40000` (L118)
+- `const _DEFAULT_TIMEOUT_MS = 120000` (L122)
+- `const _DEFAULT_BOOT_TIMEOUT_S = 600.0` (L124)
+- `const _DEFAULT_MAX_STEPS = 1000000` (L126)
+- `const _FALLBACK_SIM_DT_S = 1.0 / 30.0` (L130)
 
 #### `tools/robotwin_sidecar.py`
 _RoboTwin-side sidecar (runs under the py3.10 lerobot-main + RoboTwin + SAPIEN venv only). Constructs LeRobot's native `robotwin` gym env and serves a ZMQ REP loop matching the openral wire framing, re-keying the env's native cameras to `camera1`/`camera2`/`camera3` and including `sim_time_ns`. Not imported by the openral venv._
@@ -603,14 +612,14 @@ _Tiny shared utility for VLA adapters to record what they fed the policy — the
 
 #### `python/sim/src/openral_sim/policies/mock.py`
 - `class _MockSim` — Tiny gym-like env for tests. (L32)
-- `class _ZeroPolicy` — Always emits zero-vector actions. (L128)
-- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L147)
-- `_coerce_int(value, default) -> int` (L89)
-- `_build_mock_scene(env_cfg) -> _MockSim` (L101)
-- `_resolve_action_dim(env_cfg) -> int | None` — Explicit mock width from `vla.extra` / `backend_options.action_dim`, else `None` (sized to the built env by `SimRunner` via `env_action_dim`; no per-scene table). (L170)
-- `_require_dim(action_dim) -> int` — `ROSConfigError` when a mock policy steps without a width. (L117)
-- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L188)
-- `_build_random_policy(env_cfg) -> _RandomPolicy` (L201)
+- `class _ZeroPolicy` — Always emits zero-vector actions. (L127)
+- `class _RandomPolicy` — Fixed-seed Gaussian samples. (L146)
+- `_coerce_int(value, default) -> int` (L88)
+- `_build_mock_scene(env_cfg) -> _MockSim` (L100)
+- `_resolve_action_dim(env_cfg) -> int | None` — Explicit mock width from `vla.extra` / `backend_options.action_dim`, else `None` (sized to the built env by `SimRunner` via `env_action_dim`; no per-scene table). (L169)
+- `_require_dim(action_dim) -> int` — `ROSConfigError` when a mock policy steps without a width. (L116)
+- `_build_zero_policy(env_cfg) -> _ZeroPolicy` (L187)
+- `_build_random_policy(env_cfg) -> _RandomPolicy` (L200)
 
 #### `python/sim/src/openral_sim/policies/smolvla.py`
 - **Chunk-executor wiring (all chunked adapters)** — policy factories assign `build_chunk_executor(...)` to their adapter (SmolVLA/xVLA via `predict_action_chunk`; pi05/GR00T/MolmoAct2/OpenVLA via family-specific producers). pi05/SmolVLA/xVLA hand their lerobot postprocessor to the executor as `postprocess_action` and return its finished actions unchanged; GR00T/MolmoAct2/OpenVLA already decode inside their producers. Diffusion Policy is excluded (needs full observation history each tick); ZMQ sidecars stay synchronous (REQ sockets can't share a prefetch thread). **Real-Time Chunking**: an enabled `policy_extras.rtc` block (smolvla + pi05 only, requires `chunk_prefetch`) installs lerobot's `RTCProcessor` to blend prefetched chunks; the producer must accept the `inference_delay`/`prev_chunk_left_over` kwargs.

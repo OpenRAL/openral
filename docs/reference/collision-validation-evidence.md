@@ -901,7 +901,10 @@ other end and found that **48 % of live stops** are held by
 base-frame grid share a resolution but not a *phase*, so a leaf holding a real
 surface also marks base cells up to one full cell away from it. The displacement
 is **exactly one cell and deterministic** — not stale, not sensor noise, and not
-a frame-alignment bug, but a dilation the bridge introduces on purpose.
+a frame-alignment bug, but a dilation the bridge introduced on purpose. (Since
+2026-08-25 it no longer does: `/openral/world_voxels` is published on the
+octree's own lattice, one cell per leaf — see the superseded-in-part note at the
+top of that page and `packages/openral_octomap_bridge/README.md`.)
 
 That is the mechanism for the pattern this page's re-measurement kept
 surfacing, and the baguette row is its signature: an empty cell with solid
@@ -1415,9 +1418,10 @@ kernel's own standoff rather than by porting any arithmetic into the test:
 
 Same dominant link on both layouts, same ordering, uniformly more generous —
 which is the direction `world-map-fidelity.md` predicts and the scene file
-already states: the live map also holds non-collidable decoration and the
-octree→grid bridge dilates whatever it holds, so it stops *more* often than a
-grid built from true surfaces, never less.
+already states: the live map also holds non-collidable decoration (and, when
+this was measured, the octree→grid bridge dilated whatever it held — removed
+2026-08-25, the grid now sits on the octree's own lattice), so it stops *more*
+often than a grid built from true surfaces, never less.
 
 **So layout 30 clears at zero margin here and stops on the live map, and the
 test says so in its own docstring.** It is not evidence for restoring layout 30.

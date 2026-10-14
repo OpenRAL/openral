@@ -57,6 +57,11 @@ DEPTH_TOPICS: list[str] = [
     _CAMERAS + r"/.*/depth/image",  # sensor_msgs/Image — per-camera depth
     _CAMERAS + r"/.*/depth/camera_info",  # sensor_msgs/CameraInfo
     _CAMERAS + r"/.*/points",  # sensor_msgs/PointCloud2 — back-projected RGBD
+    # The depth cloud with the robot cut out, every input field kept (a sim cloud's
+    # rgb; octomap's own input, /openral/world_cloud/self_filtered, is x/y/z only). A
+    # sim render shows the robot in its own depth, so the raw cloud draws a second,
+    # lagging arm beside the URDF model; this one shows only the world.
+    r"/openral/world_cloud/self_filtered_rgb",  # sensor_msgs/PointCloud2
     r"/openral/depth/image",  # sensor_msgs/Image — DA3 metric-depth sidecar
     r"/openral/depth/camera_info",  # sensor_msgs/CameraInfo
     r"/openral/nvblox/depth_filtered/image",  # sensor_msgs/Image
@@ -75,6 +80,10 @@ BUCKET2_TOPICS: list[str] = [
     r"/openral/world_voxels_cloud",  # sensor_msgs/PointCloud2 — occupied voxel centres
     # visualization_msgs/MarkerArray — attached-object primitives + grasp/place regions
     r"/openral/viz/attachments",
+    # visualization_msgs/MarkerArray — declared static geometry (always-occupied fixtures)
+    r"/openral/viz/static_geometry",
+    # visualization_msgs/MarkerArray — where each kernel stop happened (red)
+    r"/openral/viz/collisions",
 ]
 
 #: **Telemetry** — the mission/state plane the OTel dashboard also renders,

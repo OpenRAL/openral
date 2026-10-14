@@ -265,7 +265,7 @@ def _kernel_params(description: Any) -> dict[str, object]:
         "attached_collision_margin_m": 0.0,
         "attached_collision_deadline_ms": 2000.0,
         "grasp_allowance_enabled": True,
-        "grasp_contact_links": [j.child_link for j in description.joints if j.role == "gripper"],
+        "grasp_contact_links": list(description.grasp_contact_links()),
         "collision_joint_names": list(_JOINTS),
         "collision_state_deadline_ms": 2000.0,
         "collision_seed_dt_s": 0.0,

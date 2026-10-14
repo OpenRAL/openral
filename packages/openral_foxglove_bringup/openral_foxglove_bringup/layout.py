@@ -136,7 +136,11 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the hero view: the robot inside its environment."""
     return {
         "followTf": follow_frame,
-        "scene": {"transforms": {"showLabel": False}},
+        # ROS Collada meshes are drawn as their vertices say, like RViz, Gazebo and Isaac
+        # do: Blender exports (OpenArm v2's) bake the Z-up conversion into the node
+        # matrices yet declare Y_UP, and honouring it turns every link 90 deg in its own
+        # frame — the arms then look broken (upper arm detached, segments "missing").
+        "scene": {"transforms": {"showLabel": False}, "ignoreColladaUpAxis": True},
         "cameraState": {
             "perspective": True,
             "distance": 5,
@@ -164,8 +168,19 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
                 "colorMap": "turbo",
                 "pointSize": 0.04,
             },
+            # The world as the depth camera sees it, the robot cut out (a raw cloud
+            # would draw a second, lagging arm), in its own colours where it has them.
+            "/openral/world_cloud/self_filtered_rgb": {
+                "visible": True,
+                "colorField": "rgb",
+                "colorMode": "rgb",
+                "pointSize": 3,
+            },
             # Grasped-object collision primitives + grasp/place regions.
             "/openral/viz/attachments": {"visible": True},
+            "/openral/viz/static_geometry": {"visible": True},
+            # Where each kernel stop happened (red).
+            "/openral/viz/collisions": {"visible": True},
             "/odom": {"visible": True},
             "/scan": {"visible": True},
         },
@@ -204,7 +219,7 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the Bucket-2 converter outputs, close in on the robot."""
     return {
         "followTf": follow_frame,
-        "scene": {},
+        "scene": {"ignoreColladaUpAxis": True},  # see _scene_panel
         "cameraState": {
             "perspective": True,
             "distance": 4,
@@ -225,6 +240,8 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
             },
             # Grasped-object collision primitives + grasp/place regions.
             "/openral/viz/attachments": {"visible": True},
+            "/openral/viz/static_geometry": {"visible": True},
+            "/openral/viz/collisions": {"visible": True},
         },
         # The robot in the close-up too: self-occupancy reads off the overlap.
         "layers": urdf_layer(),

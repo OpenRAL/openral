@@ -99,6 +99,13 @@ steps per action from the same rate at connect (issue #358).
 Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
 with the time each image shows, not the publish time (issue #361).
+Every Isaac step also carries `info["robot_contacts"]` (this step's PhysX robot-vs-world contacts), and `openral sim run` folds them into each episode's `contact_stats` in `summary.json`: which links touched what, for how many steps, how deep (`max_penetration_m`) and how hard (`max_impulse_ns`). That is the evidence for which contacts a successful episode needs, to compare against the safety kernel's stops.
+
+Isaac safety-kernel stops carry ground truth too: each `sim.estop_ground_truth_snapshot`
+line (`backend: "isaacsim"`) lists the PhysX robot-vs-world contact pairs of the
+stop's physics step (link, other prim, `min_separation_m` (negative = penetration),
+contact count, impulse). PhysX has no shape-to-shape distance, so unlike MuJoCo there
+are no near-miss probes beyond the contact-offset band (`contacts_caveat`).
 
 ## SimScene catalogue (`scenes/sim/`)
 
@@ -121,6 +128,18 @@ grade terminates the episode with `success`; otherwise the episode's
 `total_reward` is its final grade's score, and every step's
 `info["placement_grade"]` reports the grade so far. Without the block an Isaac
 scene has no task reward.
+
+Under `openral deploy sim` the scene is task-less (`<scene>/_hal_deploy_noop`, empty
+instruction), so no rubric is active at boot and every prompt's rubric ships to the
+sidecar. The HAL follows `/openral/reward/active_task`, where the rSkill runner
+publishes each `ExecuteRskill` goal's prompt on accept and `""` at its end: the
+goal's prompt, verbatim, selects `tasks[prompt]` (sidecar `set_task`); a prompt with
+no entry is not graded (one `sim.placement_grade_unavailable` line). Each grade
+change logs `sim.placement_grade` and the goal's end `sim.placement_grade_final`
+(closing and best grade); the rubric keeps grading the settle after the goal ends,
+until the next prompt replaces it. A deploy run never terminates on the grade -- it
+is only reported (see [telemetry](telemetry.md)). `openral sim run` still resolves
+the scene's own `task.instruction` at build and refuses one without an entry.
 
 ```yaml
 task:

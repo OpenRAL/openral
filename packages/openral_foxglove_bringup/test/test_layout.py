@@ -201,6 +201,18 @@ def test_no_user_scripts_are_shipped() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_panels_drawing_the_urdf_ignore_the_collada_up_axis() -> None:
+    """Every 3D panel with the URDF layer reads Collada vertices as authored (as RViz,
+    Gazebo and Isaac do); honouring OpenArm's declared Y_UP rotates each link 90 deg."""
+    panels = [
+        cfg
+        for cfg in build_layout()["configById"].values()
+        if "openral-urdf" in cfg.get("layers", {})
+    ]
+    assert panels
+    assert all(cfg["scene"].get("ignoreColladaUpAxis") is True for cfg in panels)
+
+
 def test_shipped_layout_matches_the_generator() -> None:
     """``config/openral_layout.json`` is ``build_layout(DEFAULT_CAMERAS)``.
 

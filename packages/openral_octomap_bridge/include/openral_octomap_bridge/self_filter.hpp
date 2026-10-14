@@ -45,8 +45,16 @@
 
 namespace openral_octomap_bridge {
 
-/// Joint connecting a link to its parent — the kernel's `JointKind` codes.
-enum class SelfJointKind : std::uint8_t { kFixed = 0, kRevolute = 1, kPrismatic = 2 };
+/// Joint connecting a link to its parent — the kernel's `JointKind` codes. A
+/// mimic kind reads another joint's column (`dof_index`) and moves by
+/// `mimic_multiplier * q + mimic_offset` (the OpenArm's follower finger).
+enum class SelfJointKind : std::uint8_t {
+  kFixed = 0,
+  kRevolute = 1,
+  kPrismatic = 2,
+  kMimicRevolute = 3,
+  kMimicPrismatic = 4,
+};
 
 /// Number of 26-DOP axis directions (3 face, 4 corner, 6 edge) — the kernel's
 /// `kDopAxes`.
@@ -131,6 +139,9 @@ struct SelfModelParams {
   std::vector<std::int64_t> dof_index;
   std::vector<double> origin_xyzrpy;
   std::vector<double> axis;
+  /// Per link when the model has a mimic link (`collision_mimic_*`), else empty.
+  std::vector<double> mimic_multiplier;
+  std::vector<double> mimic_offset;
   std::vector<std::string> link_names;
   std::vector<std::int64_t> capsule_link;
   std::vector<double> capsule_radius;
@@ -159,6 +170,8 @@ struct SelfModel {
   std::vector<int> dof_index;
   std::vector<tf2::Transform> origin;
   std::vector<tf2::Vector3> axis;
+  std::vector<double> mimic_multiplier;      ///< per link, or empty (identity)
+  std::vector<double> mimic_offset;          ///< per link, or empty (identity)
   std::vector<int> primitive_link;           ///< link index each primitive rides
   std::vector<PayloadPrimitive> primitives;  ///< pose = primitive in its link frame
   std::vector<int> primitive_hull;           ///< parallel: index into `hulls`, or -1
@@ -240,6 +253,13 @@ private:
   std::vector<Entry> entries_;
   double padding_m_{0.0};
 };
+
+/// The x/y/z of each `point_step`-byte record of `data` as packed 12-byte FLOAT32
+/// records (offsets 0, 4, 8): a coloured cloud's points for a consumer that reads
+/// x/y/z only (octomap), so it never carries or pays for the other fields.
+std::vector<std::uint8_t> xyz_records(const std::vector<std::uint8_t>& data, std::size_t point_step,
+                                      std::size_t x_offset, std::size_t y_offset,
+                                      std::size_t z_offset);
 
 /// Counts from one `filter_xyz_points` call.
 struct SelfFilterStats {

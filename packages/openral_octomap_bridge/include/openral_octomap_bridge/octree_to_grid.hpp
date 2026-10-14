@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <octomap/OcTree.h>
 #include <tf2/LinearMath/Transform.h>
@@ -72,5 +73,28 @@ openral_msgs::msg::OccupancyVoxels rasterize_octree_to_grid(const octomap::OcTre
                                                             const tf2::Transform& base_to_octomap,
                                                             const GridSpec& spec,
                                                             const std::string& base_frame);
+
+/// Mark every cell of `grid` that contains one of `base_points` occupied.
+///
+/// The declared static geometry of the scene (walls, shelf frame, table, tote
+/// shell — `docs/reference/manipulation-workspace-contact.md` §3.1), sampled as
+/// surface points in `base_frame` a quarter cell apart
+/// (`openral_safety.static_geometry.surface_points`), so every cell a declared
+/// surface crosses by more than that spacing holds a point. Marking
+/// ONLY adds occupancy — the fail-closed direction — so it needs no
+/// measurement: a fixture the camera has not seen (out of view, occluded) is in
+/// the grid anyway. Points outside the grid are ignored.
+///
+/// Uses the grid's own placement: `origin` + `orientation` (the base-frame pose
+/// of cell (0,0,0)'s minimum corner) and `resolution`; cells are indexed
+/// `ix + size_x * (iy + size_y * iz)`. Returns the number of cells that were
+/// free and are now marked.
+std::size_t mark_base_points(openral_msgs::msg::OccupancyVoxels& grid,
+                             const std::vector<tf2::Vector3>& base_points);
+
+/// Read base-frame points from a text file: one `x y z` (metres) per line,
+/// blank lines and lines starting with `#` skipped. Returns false and sets
+/// `error` on an unreadable file or a malformed line; `out` is then empty.
+bool load_points_file(const std::string& path, std::vector<tf2::Vector3>& out, std::string& error);
 
 }  // namespace openral_octomap_bridge

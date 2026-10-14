@@ -521,6 +521,40 @@ def sample_object_poses(
     return out
 
 
+def oriented_box(
+    frame_from_local: NDArray[np.float64],
+    local_min: Sequence[float],
+    local_max: Sequence[float],
+) -> dict[str, list[float] | list[list[float]]]:
+    """The oriented box a local axis-aligned range spans, expressed in another frame.
+
+    ``frame_from_local`` is a 4x4 column-vector transform that may carry scale (a USD
+    bound's matrix composed into the target frame); the box keeps the local axes,
+    with the scale folded into its half-extents and removed from its rotation.
+
+    Returns:
+        ``{"center_m": [x, y, z], "rotation": 3x3 rows, "half_extents_m": [hx, hy, hz]}``.
+
+    Example:
+        >>> m = np.diag([2.0, 1.0, 1.0, 1.0])  # scale x by 2
+        >>> m[:3, 3] = (1.0, 0.0, 0.5)
+        >>> box = oriented_box(m, (-0.5, -0.5, -0.5), (0.5, 0.5, 0.5))
+        >>> box["center_m"], box["half_extents_m"]
+        ([1.0, 0.0, 0.5], [1.0, 0.5, 0.5])
+    """
+    lo = np.asarray(local_min, dtype=np.float64)
+    hi = np.asarray(local_max, dtype=np.float64)
+    linear = frame_from_local[:3, :3]
+    scale = np.linalg.norm(linear, axis=0)
+    scale[scale == 0.0] = 1.0
+    center = linear @ ((lo + hi) / 2.0) + frame_from_local[:3, 3]
+    return {
+        "center_m": [round(float(v), 6) for v in center],
+        "rotation": [[round(float(v), 9) for v in row] for row in linear / scale],
+        "half_extents_m": [round(float(v), 6) for v in (hi - lo) / 2.0 * scale],
+    }
+
+
 def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
     """4x4 rigid transform from a position and a ``(w, x, y, z)`` quaternion (normalised).
 
@@ -1334,6 +1368,109 @@ def resolve_beam_range(
     return float(range_max_m)
 
 
+#: What a PhysX contact list does and does not say; sent with every ``contacts`` reply.
+CONTACTS_CAVEAT = (
+    "PhysX contact report for the LAST physics step only (contact buffers live one step). "
+    "A pair is reported once its shapes come within the sum of their contactOffsets, so a "
+    "listed pair with min_separation_m > 0 is a near miss inside that band, not a touch; "
+    "separation is measured to the restOffset-inflated shapes. An empty list means no robot "
+    "collider was within contactOffset of a non-robot collider -- NOT that nothing is close: "
+    "PhysX's Python API offers no shape-to-shape distance query, so there is no "
+    "nearest-pair probe beyond the contactOffset band. Colliders PhysX filters (collision "
+    "groups, filtered pairs) or that carry no CollisionAPI are never reported, nor is a "
+    "fixed-base root link against static geometry (observed: a Panda's panda_link0 on the "
+    "ground plane reports nothing). Offsets of null are unauthored: PhysX derives them "
+    "from the geometry."
+)
+
+
+def aggregate_robot_contacts(
+    points: Iterable[Mapping[str, Any]], robot_prim: str
+) -> tuple[list[dict[str, Any]], int]:
+    """Fold per-point PhysX contacts into one record per (robot collider, other collider).
+
+    Each point is ``{"actor0", "actor1", "collider0", "collider1", "separation",
+    "impulse": (x, y, z), "position": (x, y, z)}`` (paths as strings, metres, N*s).
+    A point whose two colliders are both under ``robot_prim`` (self-contact) or
+    neither is (world-world) is not a robot-vs-world contact and is dropped; self
+    contacts are counted. Records are oriented robot side first and sorted by
+    ``min_separation_m`` (negative = penetration), deepest first.
+
+    Returns:
+        ``(pairs, self_contact_points)``.
+
+    Example:
+        >>> pts = [
+        ...     {
+        ...         "actor0": "/World/box",
+        ...         "actor1": "/panda/link3",
+        ...         "collider0": "/World/box",
+        ...         "collider1": "/panda/link3/collisions",
+        ...         "separation": -0.004,
+        ...         "impulse": (0.0, 0.0, 0.3),
+        ...         "position": (0.1, 0.0, 0.5),
+        ...     },
+        ...     {
+        ...         "actor0": "/panda/link3",
+        ...         "actor1": "/World/box",
+        ...         "collider0": "/panda/link3/collisions",
+        ...         "collider1": "/World/box",
+        ...         "separation": 0.001,
+        ...         "impulse": (0.0, 0.4, 0.0),
+        ...         "position": (0.1, 0.1, 0.5),
+        ...     },
+        ... ]
+        >>> pairs, n_self = aggregate_robot_contacts(pts, "/panda")
+        >>> [
+        ...     (p["link"], p["other_prim"], p["min_separation_m"], p["contact_points"])
+        ...     for p in pairs
+        ... ]
+        [('link3', '/World/box', -0.004, 2)]
+        >>> round(pairs[0]["impulse_ns"], 3), n_self
+        (0.7, 0)
+    """
+    root = robot_prim.rstrip("/")
+
+    def on_robot(path: str) -> bool:
+        return path == root or path.startswith(root + "/")
+
+    pairs: dict[tuple[str, str], dict[str, Any]] = {}
+    self_points = 0
+    for p in points:
+        c0, c1 = str(p["collider0"]), str(p["collider1"])
+        r0, r1 = on_robot(c0), on_robot(c1)
+        if r0 and r1:
+            self_points += 1
+            continue
+        if not (r0 or r1):
+            continue
+        robot_actor, robot_col, other_actor, other_col = (
+            (str(p["actor0"]), c0, str(p["actor1"]), c1)
+            if r0
+            else (str(p["actor1"]), c1, str(p["actor0"]), c0)
+        )
+        sep = float(p["separation"])
+        rec = pairs.setdefault(
+            (robot_col, other_col),
+            {
+                "link": robot_actor.rsplit("/", 1)[-1],
+                "robot_collider": robot_col,
+                "other_prim": other_col,
+                "other_body": other_actor,
+                "min_separation_m": sep,
+                "contact_points": 0,
+                "impulse_ns": 0.0,
+                "deepest_point_xyz": [float(v) for v in p["position"]],
+            },
+        )
+        rec["contact_points"] += 1
+        rec["impulse_ns"] += float(np.linalg.norm(np.asarray(p["impulse"], dtype=np.float64)))
+        if sep < rec["min_separation_m"]:
+            rec["min_separation_m"] = sep
+            rec["deepest_point_xyz"] = [float(v) for v in p["position"]]
+    return sorted(pairs.values(), key=lambda r: r["min_separation_m"]), self_points
+
+
 class IsaacManifestScene(IsaacSceneBase):
     """A URDF-imported, manifest-driven Isaac Sim scene."""
 
@@ -1408,23 +1545,17 @@ class IsaacManifestScene(IsaacSceneBase):
         self._object_footprints: dict[str, tuple[float, float, float, float]] = {}
         self._object_nominal: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
         self._object_prims: dict[str, Any] = {}
-        # Graded placement success, resolved host-side for this scene's prompt
-        # (openral_sim.backends.isaac_sim._placement_success_spec); None = no task reward.
-        self._placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
-        self._placement_grade = "fail"
+        # Graded placement success, resolved host-side
+        # (openral_sim.backends.isaac_sim._placement_success_robot_spec): `sim run` gets
+        # its prompt's rubric (None = no task reward); deploy sim gets none active and
+        # one per prompt, which `set_task` switches between and never terminates on.
+        self._placement_by_prompt: dict[str, dict[str, Any]] | None = robot_spec.get(
+            "placement_success_by_prompt"
+        )
         self._rest_s: dict[str, float] = {}
         self._last_pos: dict[str, NDArray[np.float64]] = {}
         self._last_quat: dict[str, NDArray[np.float64]] = {}
-        self._grades: list[dict[str, Any]] = list((self._placement_success or {}).get("grades", []))
-        self._grade_scores = grade_scores(self._grades)
-        declared = {str(o["name"]): o for o in self._objects}
-        self._up_axis = {
-            str(p["object"]): object_up_axis(
-                float(declared[str(p["object"])].get("roll", 0.0)),
-                float(declared[str(p["object"])].get("pitch", 0.0)),
-            )
-            for p in (self._placement_success or {}).get("placements", [])
-        }
+        self._activate_placement_success(robot_spec.get("placement_success"))
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -1440,6 +1571,10 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._robot: Any = None
         self._robot_prim = ""
+        # Robot rigid bodies (contact-reported) and their last two world positions.
+        self._robot_body_paths: list[str] = []
+        self._body_positions: dict[str, NDArray[np.float64]] = {}
+        self._prev_body_positions: dict[str, NDArray[np.float64]] = {}
         # (prim path, 4x4 pose in the root frame at import) of the root rigid body.
         self._root_body: tuple[str, NDArray[np.float64]] = ("", np.eye(4))
         # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
@@ -1704,6 +1839,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # clouds are published in base_frame, which need not be the URDF root
         # (OpenArm's openarm_base sits 0.698 m above it).
         self._root_to_base = self._link_offset(self._spec.get("base_frame"))
+        self._enable_contact_reports()
         self._world.reset()
         # Opening/importing a stage can restore renderer defaults. Apply the
         # requested settings after those operations and before the first image.
@@ -2256,6 +2392,9 @@ class IsaacManifestScene(IsaacSceneBase):
         self._rest_s.clear()
         self._last_pos.clear()
         self._last_quat.clear()
+        # A reset teleports the robot: no finite-difference link speed across it.
+        self._body_positions = {}
+        self._prev_body_positions = {}
         self._jitter_objects(rng)
 
     def _jitter_objects(self, rng: np.random.Generator) -> None:
@@ -2513,6 +2652,40 @@ class IsaacManifestScene(IsaacSceneBase):
         joints = self._joint_positions()
         return joints if joints is not None else np.zeros(0, dtype=np.float32)
 
+    def _activate_placement_success(self, spec: dict[str, Any] | None) -> None:
+        """Make ``spec`` (one prompt's grading spec, or None) the rubric, from a fresh grade."""
+        self._placement_success: dict[str, Any] | None = spec
+        self._placement_grade = "fail"
+        self._rest_s.clear()
+        self._last_pos.clear()
+        self._last_quat.clear()
+        self._grades: list[dict[str, Any]] = list((spec or {}).get("grades", []))
+        self._grade_scores = grade_scores(self._grades)
+        declared = {str(o["name"]): o for o in self._objects}
+        self._up_axis = {
+            str(p["object"]): object_up_axis(
+                float(declared[str(p["object"])].get("roll", 0.0)),
+                float(declared[str(p["object"])].get("pitch", 0.0)),
+            )
+            for p in (spec or {}).get("placements", [])
+        }
+
+    def set_task(self, instruction: str) -> dict[str, Any]:
+        """Grade ``instruction``'s placements from now on (deploy sim's dispatched goal).
+
+        Under deploy sim (``placement_success_by_prompt`` in the robot spec) activates
+        the prompt's rubric, or none for a prompt it does not grade; a ``sim run``
+        scene keeps the rubric it resolved at build. Reply: ``graded``,
+        ``grade_scores`` (``{}`` when ungraded) and ``prompts`` (the graded prompts).
+        """
+        if self._placement_by_prompt is not None:
+            self._activate_placement_success(self._placement_by_prompt.get(instruction))
+        return {
+            "graded": self._placement_success is not None,
+            "grade_scores": self._grade_scores if self._placement_success is not None else {},
+            "prompts": sorted(self._placement_by_prompt or {}),
+        }
+
     def _grade_placements(self) -> str:
         """Advance each placed object's rest timer and grade the episode (worst placement)."""
         ps = self._placement_success
@@ -2557,18 +2730,247 @@ class IsaacManifestScene(IsaacSceneBase):
     def _reward_terminated(self) -> tuple[float, bool]:
         """Graded placement success (``placement_success``), else no task reward.
 
-        Terminates with reward 1.0 once every placement reaches the rubric's first grade;
-        otherwise the episode's last step scores its grade, every other step 0.
+        Terminates with reward 1.0 once every placement reaches the rubric's first grade
+        (never under deploy sim); otherwise the episode's last step scores its grade,
+        every other step 0.
         """
         if self._placement_success is None:
             return 0.0, False  # bring-up scene: no task reward / termination
         self._placement_grade = self._grade_placements()
-        return placement_reward(
+        reward, terminated = placement_reward(
             self._placement_grade,
             self._step_idx >= self.max_steps,
             self._grade_scores,
             str(self._grades[0]["name"]),
         )
+        # Deploy sim has no episodes to end: the grade is only reported (info).
+        return reward, terminated and self._placement_by_prompt is None
+
+    def _enable_contact_reports(self) -> None:
+        """Report every contact of every robot rigid body (threshold 0), for ``contacts``.
+
+        Applied before physics initializes; diagnostics only, the contacts themselves
+        are unchanged.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import PhysxSchema, Usd, UsdPhysics
+
+        self._robot_body_paths = []
+        for prim in Usd.PrimRange(get_current_stage().GetPrimAtPath(self._robot_prim)):
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr().Set(0.0)
+                self._robot_body_paths.append(str(prim.GetPath()))
+        print(
+            f"[isaac_manifest_scene] contact reports on {len(self._robot_body_paths)} robot "
+            "rigid bodies",
+            flush=True,
+        )
+
+    def _sample_body_positions(self) -> None:
+        """Record every robot rigid body's world position for this step (finite-difference speed).
+
+        Read through PhysX (``get_rigidbody_transformation``), which serves articulation
+        links too; the previous step's sample is kept so ``_body_speed`` is the link's
+        mean speed over the last control period.
+        """
+        from omni.physx import get_physx_interface
+
+        physx = get_physx_interface()
+        self._prev_body_positions = self._body_positions
+        self._body_positions = {
+            path: np.asarray(physx.get_rigidbody_transformation(path)["position"], dtype=float)
+            for path in self._robot_body_paths
+        }
+
+    def _body_speed(self, collider: str) -> float | None:
+        """Mean world speed (m/s) over the last control period of the robot body owning ``collider``.
+
+        The body is the deepest captured robot rigid-body path that prefixes the
+        collider path. ``None`` when no robot body owns it, on the first step after a
+        reset (no previous sample), or without a control period.
+        """
+        owner = max(
+            (b for b in self._robot_body_paths if collider == b or collider.startswith(b + "/")),
+            key=len,
+            default=None,
+        )
+        tick = self.sim_dt_per_tick_s
+        if owner is None or not tick or owner not in self._prev_body_positions:
+            return None
+        delta = self._body_positions[owner] - self._prev_body_positions[owner]
+        return float(np.linalg.norm(delta) / tick)
+
+    def static_collider_boxes(self) -> dict[str, Any]:
+        """Every static collider of the stage in the manifest ``base_frame``: a box or a mesh.
+
+        Static = carries ``UsdPhysics.CollisionAPI``, is not under the robot, and has no
+        enabled, non-kinematic rigid body on itself or an ancestor (a dynamic object
+        moves; it is the camera's to see). A triangle-mesh collider (approximation ``none``)
+        is exported as its triangles (``kind: mesh``, its surface is its collision geometry);
+        any other collider as its USD bound (``kind: box``, ``BBoxCache``, every purpose — a
+        superset of the collision geometry, the fail-closed direction). Both are expressed in
+        ``base_frame`` through PhysX's measured robot pose (``_world_from_base``).
+        The sidecar ``static_colliders`` endpoint; ``tools/isaac_static_geometry.py`` writes
+        them into a deploy scene's declared static geometry.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = get_current_stage()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), ["default", "render", "proxy", "guide"], useExtentsHint=False
+        )
+        base_from_world = np.linalg.inv(self._world_from_base())
+        root = self._robot_prim.rstrip("/")
+
+        def moves(prim: Any) -> bool:
+            while prim and prim.IsValid() and str(prim.GetPath()) != "/":
+                if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    api = UsdPhysics.RigidBodyAPI(prim)
+                    enabled = api.GetRigidBodyEnabledAttr().Get()
+                    kinematic = api.GetKinematicEnabledAttr().Get()
+                    if enabled is not False and not kinematic:
+                        return True
+                prim = prim.GetParent()
+            return False
+
+        boxes = []
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path == root or path.startswith(root + "/"):
+                continue
+            if not prim.HasAPI(UsdPhysics.CollisionAPI) or moves(prim):
+                continue
+            enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
+            approx = (
+                UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+                if prim.HasAPI(UsdPhysics.MeshCollisionAPI)
+                else None
+            )
+            entry: dict[str, Any] = {
+                "path": path,
+                "type": str(prim.GetTypeName()),
+                "approximation": None if approx is None else str(approx),
+                "collision_enabled": enabled is not False,
+            }
+            if prim.IsA(UsdGeom.Mesh) and str(approx or "none") == "none":
+                # A triangle-mesh collider: its surface IS the collision geometry (a bound
+                # would fill a shelf's open slots). Fan-triangulated, in base_frame.
+                mesh = UsdGeom.Mesh(prim)
+                points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=np.float64)
+                counts = list(mesh.GetFaceVertexCountsAttr().Get() or [])
+                indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
+                if len(points) == 0:
+                    continue
+                world_from_local = np.asarray(
+                    UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
+                    dtype=np.float64,
+                ).T  # USD rows
+                m = base_from_world @ world_from_local
+                verts = points @ m[:3, :3].T + m[:3, 3]
+                tris: list[list[int]] = []
+                at = 0
+                for n in counts:
+                    face = indices[at : at + n]
+                    tris.extend([face[0], face[i], face[i + 1]] for i in range(1, n - 1))
+                    at += n
+                entry["kind"] = "mesh"
+                entry["vertices_m"] = [[round(float(v), 6) for v in row] for row in verts]
+                entry["triangles"] = tris
+            else:
+                bound = cache.ComputeWorldBound(prim)
+                rng = bound.GetRange()
+                if rng.IsEmpty():
+                    continue
+                world_from_local = np.asarray(bound.GetMatrix(), dtype=np.float64).T  # USD rows
+                entry["kind"] = "box"
+                entry.update(
+                    oriented_box(base_from_world @ world_from_local, rng.GetMin(), rng.GetMax())
+                )
+            boxes.append(entry)
+        return {"frame": "base_frame", "boxes": boxes}
+
+    def _contact_points(self) -> list[dict[str, Any]]:
+        """Every PhysX contact point of the last physics step, as plain dicts.
+
+        The shape ``aggregate_robot_contacts`` folds: ``actor0``/``actor1``/
+        ``collider0``/``collider1`` (prim paths), ``separation`` (m, negative =
+        penetration), ``impulse`` and ``position`` (``(x, y, z)``). Covers only the
+        last physics step: a contact made and broken inside a control step's earlier
+        substeps is not reported.
+        """
+        from omni.physx import get_physx_simulation_interface
+        from pxr import PhysicsSchemaTools
+
+        headers, data = get_physx_simulation_interface().get_contact_report()[:2]
+
+        def path(i: int) -> str:
+            return str(PhysicsSchemaTools.intToSdfPath(i))
+
+        def f3(v: Any) -> tuple[float, float, float]:
+            return (float(v.x), float(v.y), float(v.z))
+
+        points = []
+        for h in headers:
+            ends = (path(h.actor0), path(h.actor1), path(h.collider0), path(h.collider1))
+            for d in data[h.contact_data_offset : h.contact_data_offset + h.num_contact_data]:
+                points.append(
+                    {
+                        "actor0": ends[0],
+                        "actor1": ends[1],
+                        "collider0": ends[2],
+                        "collider1": ends[3],
+                        "separation": float(d.separation),
+                        "impulse": f3(d.impulse),
+                        "position": f3(d.position),
+                    }
+                )
+        return points
+
+    def contact_ground_truth(self) -> dict[str, Any]:
+        """PhysX robot-vs-world contacts of the last physics step (the sidecar ``contacts``).
+
+        One record per (robot collider, other collider) pair from
+        ``aggregate_robot_contacts``, each with both colliders' authored
+        contact/rest offsets (``None`` = unauthored, PhysX-derived), plus the
+        ``CONTACTS_CAVEAT`` that says what an empty list means. There is no nearest
+        distance beyond the contactOffset band (``nearest_robot_world_pairs`` is
+        ``None`` with the reason): PhysX's Python API has no shape-to-shape distance.
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import PhysxSchema
+
+        pairs, self_points = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
+        stage = get_current_stage()
+
+        def offsets(collider: str) -> dict[str, float | None]:
+            api = PhysxSchema.PhysxCollisionAPI(stage.GetPrimAtPath(collider))
+
+            def read(attr: Any) -> float | None:
+                v = attr.Get() if attr else None
+                return float(v) if v is not None and math.isfinite(float(v)) else None
+
+            return {
+                "contact_offset_m": read(api.GetContactOffsetAttr()),
+                "rest_offset_m": read(api.GetRestOffsetAttr()),
+            }
+
+        for rec in pairs:
+            rec["robot_collider_offsets"] = offsets(rec["robot_collider"])
+            rec["other_collider_offsets"] = offsets(rec["other_prim"])
+        return {
+            "sim_time_ns": self.sim_time_ns(),
+            "robot_prim": self._robot_prim,
+            "robot_world_contacts": pairs,
+            "self_contact_points": self_points,
+            "nearest_robot_world_pairs": None,
+            "nearest_unavailable_reason": (
+                "PhysX (omni.physx Python) exposes no shape-to-shape distance query -- only "
+                "point-to-prim closest points and sweeps; pairs inside the contactOffset band "
+                "appear in robot_world_contacts with min_separation_m > 0"
+            ),
+            "contacts_caveat": CONTACTS_CAVEAT,
+        }
 
     def _extra_info(self) -> dict[str, Any]:
         """Simulator ground truth in the step ``info`` — never a policy observation.
@@ -2577,7 +2979,12 @@ class IsaacManifestScene(IsaacSceneBase):
         holds it (where the robot physically is, vs. the integrated odometry);
         ``object_positions``: ``{name: [x, y, z]}`` per scene object, for
         checking a grasp or a placement; ``object_orientations_wxyz``: their
-        orientations (``pose_noise`` draws a new yaw each reset).
+        orientations (``pose_noise`` draws a new yaw each reset); ``robot_contacts``:
+        this step's robot-vs-world PhysX contacts (``{link, other_prim,
+        min_separation_m, impulse_ns, link_speed_mps}`` per pair, last physics step
+        only; the speed is the robot link body's mean world speed over the last control
+        period, ``None`` on the first step after a reset), which
+        ``SimRunner`` folds into ``EpisodeResult.contact_stats``.
         """
         info: dict[str, Any] = {
             "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
@@ -2593,6 +3000,18 @@ class IsaacManifestScene(IsaacSceneBase):
             }
         if self._placement_success is not None:
             info["placement_grade"] = self._placement_grade
+        self._sample_body_positions()
+        pairs, _ = aggregate_robot_contacts(self._contact_points(), self._robot_prim)
+        info["robot_contacts"] = [
+            {
+                "link": p["link"],
+                "other_prim": p["other_prim"],
+                "min_separation_m": p["min_separation_m"],
+                "impulse_ns": p["impulse_ns"],
+                "link_speed_mps": self._body_speed(p["robot_collider"]),
+            }
+            for p in pairs
+        ]
         return info
 
     def _joint_positions(self) -> NDArray[np.float32] | None:

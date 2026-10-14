@@ -5,7 +5,21 @@
   (``PointCloud2``): one point per occupied voxel, at the voxel centre.
 - ``/openral/attachment_state`` (``AttachmentState``) → ``/openral/viz/attachments``
   (``visualization_msgs/MarkerArray``): every attached object's collision
-  primitives on its attach link, plus the grasp / place declaration regions.
+  primitives on its attach link (and the measured inner box a payload's stage-2
+  refinement carries), plus the grasp / place declaration regions and the grasp
+  declaration's search box and manipulation workspace.
+- Parameter ``static_geometry_file`` (``DeployRuntime.static_geometry_file``) →
+  ``/openral/viz/static_geometry`` (latched ``MarkerArray``): the declared fixtures
+  the kernel always treats as occupied, drawn as their boxes and triangle meshes.
+- ``/openral/failure/safety`` (kernel ``FailureTrigger``, kind collision) →
+  ``/openral/viz/collisions`` (latched ``MarkerArray``): a red sphere where each kernel
+  stop happened — the colliding voxel's centre (the voxel index mapped back through the
+  grid the kernel checked, matched by the origin it discloses), or the first link's
+  own frame for a link-vs-link stop — labelled with the link.
+  With ``hide_static_voxels`` (default on) the voxel cloud leaves out the cells inside
+  a declared box fixture (grown by one cell): walls, floor and fixtures are drawn once,
+  by their markers, and the voxels show what the camera adds. Viewer only — the
+  kernel's grid is unchanged.
 
 Conversion math lives in pure functions (``occupied_voxel_centers``,
 ``attachment_markers``) so unit tests exercise it without a ROS context
@@ -17,22 +31,28 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import structlog
+from numpy.typing import NDArray
 
 __all__ = [
     "ATTACHMENT_MARKERS_TOPIC",
+    "STATIC_GEOMETRY_MARKERS_TOPIC",
     "Bucket2MarkersNode",
     "attachment_markers",
     "main",
     "occupied_voxel_centers",
     "parse_attach_link_tf_frames",
+    "static_geometry_markers",
 ]
 
 #: Where the attachment / declaration-region markers are published.
 ATTACHMENT_MARKERS_TOPIC = "/openral/viz/attachments"
+#: Where the declared static geometry is published (latched, once).
+STATIC_GEOMETRY_MARKERS_TOPIC = "/openral/viz/static_geometry"
 
 log = structlog.get_logger(__name__)
 
@@ -103,6 +123,101 @@ def occupied_voxel_centers(
     return [tuple(c) for c in centers.tolist()]
 
 
+def outside_boxes(
+    centers: NDArray[np.float64],
+    boxes: Sequence[tuple[NDArray[np.float64], NDArray[np.float64]]],
+    pad_m: float,
+) -> NDArray[np.bool_]:
+    """Mask of ``centers`` ``(N, 3)`` outside every box ``(base_from_box 4x4, half_extents)``.
+
+    A box is grown by ``pad_m`` on each side (a voxel centre within one cell of a face
+    is that face's cell).
+
+    >>> box = (np.eye(4), np.array([0.5, 0.5, 0.5]))
+    >>> outside_boxes(np.array([[0.0, 0, 0], [0.55, 0, 0], [0.7, 0, 0]]), [box], 0.1).tolist()
+    [False, False, True]
+    """
+    keep = np.ones(len(centers), dtype=bool)
+    for base_from_box, half in boxes:
+        inv = np.linalg.inv(base_from_box)
+        local = centers @ inv[:3, :3].T + inv[:3, 3]
+        keep &= ~np.all(np.abs(local) <= half + pad_m, axis=1)
+    return keep
+
+
+def static_boxes(path: str) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]]:
+    """The declared box fixtures of a ``StaticGeometry`` YAML as ``(base_from_box, half)``.
+
+    Raises ``OSError`` (unreadable) or ``ValueError`` (malformed YAML or schema).
+    """
+    import yaml
+    from openral_core import StaticBox, StaticGeometry
+    from openral_core.geometry import homogeneous_from_quat_xyz
+
+    try:
+        raw = yaml.safe_load(Path(path).read_text())
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: not valid YAML: {exc}") from exc
+    geometry = StaticGeometry.model_validate(raw)
+    return [
+        (
+            np.asarray(homogeneous_from_quat_xyz(e.xyz, e.quat_xyzw), dtype=np.float64),
+            np.asarray(e.half_extents, dtype=np.float64),
+        )
+        for e in geometry.static_geometry
+        if isinstance(e, StaticBox)
+    ]
+
+
+#: Where kernel stops are drawn (latched ``MarkerArray``).
+COLLISION_MARKERS_TOPIC = "/openral/viz/collisions"
+#: A kernel stop: solid red.
+COLLISION_RGBA = (1.0, 0.0, 0.0, 0.95)
+
+
+def voxel_center(
+    index: int,
+    origin: tuple[float, float, float],
+    resolution: float,
+    size: tuple[int, int, int],
+    orientation_xyzw: tuple[float, float, float, float],
+) -> tuple[float, float, float]:
+    """The centre of grid cell ``index`` (row-major, x fastest), as ``occupied_voxel_centers``.
+
+    >>> voxel_center(5, (0.0, 0.0, 0.0), 0.1, (2, 3, 4), (0.0, 0.0, 0.0, 1.0))
+    (0.15, 0.25, 0.05)
+    """
+    occupancy = np.zeros(size[0] * size[1] * size[2], dtype=np.uint8)
+    occupancy[index] = 1
+    (center,) = occupied_voxel_centers(origin, resolution, size, occupancy, orientation_xyzw)
+    return tuple(round(c, 9) for c in center)  # type: ignore[return-value]
+
+
+def collision_markers(stops: Sequence[tuple[str, tuple[float, float, float], str]]) -> Any:
+    """Every kernel stop so far as red spheres + labels: ``(frame, xyz, label)`` each."""
+    from visualization_msgs.msg import Marker, MarkerArray
+
+    array = MarkerArray()
+    for i, (frame, xyz, label) in enumerate(stops):
+        t = np.eye(4)
+        t[:3, 3] = xyz
+        sphere = _marker("collision", frame, Marker.SPHERE, _pose_of(t), [0.05] * 3, COLLISION_RGBA)
+        sphere.id = 2 * i
+        t[2, 3] += 0.06
+        text = _marker(
+            "collision_label",
+            frame,
+            Marker.TEXT_VIEW_FACING,
+            _pose_of(t),
+            [0, 0, 0.04],
+            COLLISION_RGBA,
+        )
+        text.id = 2 * i + 1
+        text.text = label
+        array.markers += [sphere, text]
+    return array
+
+
 def parse_attach_link_tf_frames(entries: Sequence[str]) -> dict[str, str]:
     """Parse ``"link=frame"`` entries into a manifest-link → TF-frame map.
 
@@ -153,6 +268,14 @@ OTHER_EVIDENCE_RGBA = (0.8, 0.3, 1.0, 0.45)
 GRASP_REGION_RGBA = (0.1, 0.9, 0.2, 0.2)
 PLACE_REGION_RGBA = (0.2, 0.4, 1.0, 0.2)
 INACTIVE_REGION_RGBA = (0.6, 0.6, 0.6, 0.12)
+#: The grasp declaration's search box (where the target is looked for): faint white.
+SEARCH_BOX_RGBA = (0.9, 0.9, 0.9, 0.08)
+#: The manipulation workspace (#349): amber once map-confirmed, grey while only declared.
+WORKSPACE_RGBA = (1.0, 0.75, 0.1, 0.1)
+#: A payload's measured inner box (stage-2 refinement): the shape payload-vs-robot uses.
+MEASURED_RGBA = (1.0, 1.0, 1.0, 0.6)
+#: Declared static geometry: always-occupied fixtures.
+STATIC_RGBA = (0.62, 0.55, 0.55, 0.10)
 
 #: ``evidence_ref`` suffix of a released payload frozen on the base frame
 #: (``openral_hal.vision_attachment_bridge.freeze_released_attachment``).
@@ -182,6 +305,12 @@ def attachment_markers(state: Any, attach_link_tf_frames: Mapping[str, str] | No
       declaration and its ``region`` are both valid) as a translucent box plus
       wireframe edges in the region's own frame, green / blue while active and
       grey once retracted, labelled with the target id.
+    - A box primitive's measured inner box (its stage-2 refinement, the first three
+      ``tight_dop_lo``/``tight_dop_hi`` axes) as a white ``CUBE`` in ns
+      ``attached_measured``: the shape the kernel checks payload-vs-robot with.
+    - The grasp declaration's ``search_box`` (faint white) and manipulation
+      workspace: ``workspace_region`` in amber once map-confirmed, else the declared
+      ``workspace_box`` in grey.
 
     Args:
         state: An ``openral_msgs/AttachmentState``.
@@ -211,7 +340,30 @@ def attachment_markers(state: Any, attach_link_tf_frames: Mapping[str, str] | No
         if valid and decl.region_valid:
             frame = frames.get(decl.region.frame_id, decl.region.frame_id)
             rgba = active_rgba if decl.active else INACTIVE_REGION_RGBA
-            adds += _region_markers(name, decl, frame, rgba)
+            text = f"{name}: {decl.target_id}" + ("" if decl.active else " (inactive)")
+            adds += _region_markers(f"{name}_region", decl.region, frame, rgba, text)
+    if state.grasp_declaration_valid:
+        g = state.grasp_declaration
+        boxes = [("search_box", g.search_box_valid, g.search_box, SEARCH_BOX_RGBA, "search box")]
+        if g.workspace_region_valid:
+            boxes.append(
+                ("workspace", True, g.workspace_region, WORKSPACE_RGBA, "workspace (confirmed)")
+            )
+        else:
+            boxes.append(
+                (
+                    "workspace",
+                    g.workspace_box_valid,
+                    g.workspace_box,
+                    INACTIVE_REGION_RGBA,
+                    "workspace (declared, unconfirmed)",
+                )
+            )
+        for ns, valid, region, rgba, text in boxes:
+            if valid:
+                adds += _region_markers(
+                    ns, region, frames.get(region.frame_id, region.frame_id), rgba, text
+                )
     for i, m in enumerate(adds, start=1):
         m.id = i
         m.header.stamp = stamp
@@ -278,6 +430,23 @@ def _object_markers(obj: Any, frame: str) -> list[Any]:
         if prim.shape_type == _SHAPE_BOX:
             box = [2 * d for d in dims]
             out.append(_marker("attached", frame, Marker.CUBE, _pose_of(t), box, rgba))
+            lo, hi = list(prim.tight_dop_lo)[:3], list(prim.tight_dop_hi)[:3]
+            if len(lo) == 3 and len(hi) == 3:
+                # The refinement's first three 26-DOP axes are the box's own x/y/z: the
+                # measured inner box, the shape payload-vs-robot is checked with.
+                inner = t.copy()
+                inner[:3, 3] = t[:3, :3] @ ((np.asarray(lo) + np.asarray(hi)) / 2.0) + t[:3, 3]
+                size = [b - a for a, b in zip(lo, hi, strict=True)]
+                out.append(
+                    _marker(
+                        "attached_measured",
+                        frame,
+                        Marker.CUBE,
+                        _pose_of(inner),
+                        size,
+                        MEASURED_RGBA,
+                    )
+                )
             continue
         d = 2 * dims[0]
         seg = dims[1] if prim.shape_type == _SHAPE_CAPSULE else 0.0
@@ -308,14 +477,14 @@ def _object_markers(obj: Any, frame: str) -> list[Any]:
     return out
 
 
-def _region_markers(name: str, decl: Any, frame: str, rgba: Sequence[float]) -> list[Any]:
-    """A declaration's region: translucent box, wireframe edges and a target label."""
+def _region_markers(
+    ns: str, region: Any, frame: str, rgba: Sequence[float], text: str
+) -> list[Any]:
+    """A ``PlaceRegion``: translucent box, wireframe edges and a label above it."""
     from geometry_msgs.msg import Point, Pose
     from visualization_msgs.msg import Marker
 
-    region = decl.region
     he = (region.half_extents.x, region.half_extents.y, region.half_extents.z)
-    ns = f"{name}_region"
     box = _marker(ns, frame, Marker.CUBE, region.pose, [2 * h for h in he], rgba)
     edges = _marker(ns, frame, Marker.LINE_LIST, region.pose, (0.003, 0, 0), (*rgba[:3], 1.0))
     signs = (-1, 1)
@@ -326,11 +495,70 @@ def _region_markers(name: str, decl: Any, frame: str, rgba: Sequence[float]) -> 
                 edges.points += [Point(x=a[0], y=a[1], z=a[2]), Point(x=b[0], y=b[1], z=b[2])]
     p = region.pose.position
     top = Pose(position=Point(x=p.x, y=p.y, z=p.z + he[2] + 0.03))
-    text = f"{name}: {decl.target_id}" + ("" if decl.active else " (inactive)")
     label = _marker(
         f"{ns}_label", frame, Marker.TEXT_VIEW_FACING, top, (0, 0, 0.03), _LABEL_RGBA, text
     )
     return [box, edges, label]
+
+
+def static_geometry_markers(path: str, frame: str) -> Any:
+    """The declared static geometry (``StaticGeometry`` YAML) as a ``MarkerArray``.
+
+    Every box is a translucent ``CUBE`` at its pose; every mesh a ``TRIANGLE_LIST`` from
+    its ``.npz`` (``vertices``, ``triangles``). Both are in ``frame`` — the manifest
+    ``base_frame`` the file is declared in — and labelled with their ``source``.
+
+    Raises:
+        openral_core.ROSConfigError: the file is missing or does not validate, or a
+            mesh file is missing or malformed.
+    """
+    from pathlib import Path
+
+    import yaml
+    from geometry_msgs.msg import Point
+    from openral_core import ROSConfigError, StaticBox, StaticGeometry
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from visualization_msgs.msg import Marker, MarkerArray
+
+    p = Path(path)
+    try:
+        geometry = StaticGeometry.model_validate(yaml.safe_load(p.read_text()))
+    except (OSError, yaml.YAMLError, ValueError) as exc:
+        raise ROSConfigError(f"static geometry {p}: {exc}") from exc
+    out: list[Any] = [Marker(action=Marker.DELETEALL)]
+    for entry in geometry.static_geometry:
+        if isinstance(entry, StaticBox):
+            t = homogeneous_from_quat_xyz(entry.xyz, entry.quat_xyzw)
+            size = [2 * h for h in entry.half_extents]
+            out.append(
+                _marker("static_geometry", frame, Marker.CUBE, _pose_of(t), size, STATIC_RGBA)
+            )
+            continue
+        mesh = p.parent / entry.file
+        try:
+            with np.load(mesh) as data:
+                verts = np.asarray(data["vertices"], dtype=np.float64)
+                tris = np.asarray(data["triangles"], dtype=np.int64)
+            if tris.size and (tris.min() < 0 or tris.max() >= len(verts)):
+                raise ValueError(f"triangle index outside 0..{len(verts) - 1}")
+        except (OSError, KeyError, ValueError) as exc:
+            raise ROSConfigError(f"static mesh {mesh}: {exc}") from exc
+        m = _marker(
+            "static_geometry",
+            frame,
+            Marker.TRIANGLE_LIST,
+            _pose_of(np.eye(4)),
+            (1, 1, 1),
+            STATIC_RGBA,
+        )
+        m.points = [
+            Point(x=float(x), y=float(y), z=float(z)) for x, y, z in verts[tris.reshape(-1)]
+        ]
+        out.append(m)
+    for i, m in enumerate(out[1:], start=1):
+        m.id = i
+        m.frame_locked = False
+    return MarkerArray(markers=out)
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +631,56 @@ class Bucket2MarkersNode:
         self._sub_attachments = self._node.create_subscription(
             AttachmentState, "/openral/attachment_state", self._on_attachment_state, latched
         )
+        # Declared static geometry (`static_geometry_file`, in `base_frame`): published
+        # once, latched. A file the deploy launch already validated; a bad one is logged.
+        static_file = str(self._node.declare_parameter("static_geometry_file", "").value or "")
+        base_frame = str(self._node.declare_parameter("base_frame", "").value or "")
+        self._pub_static = None
+        if static_file and base_frame:
+            from openral_core import ROSConfigError
+
+            self._pub_static = self._node.create_publisher(
+                MarkerArray, STATIC_GEOMETRY_MARKERS_TOPIC, latched
+            )
+            try:
+                self._pub_static.publish(static_geometry_markers(static_file, base_frame))
+            except ROSConfigError:
+                log.exception("bucket2: static_geometry_file unreadable — not drawn")
+        # Voxels inside a declared box fixture are drawn once, by the fixture's marker.
+        self._hidden_boxes: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+        if static_file and bool(self._node.declare_parameter("hide_static_voxels", True).value):
+            try:
+                self._hidden_boxes = static_boxes(static_file)
+            except (OSError, ValueError):
+                log.exception("bucket2: static boxes unreadable — every voxel drawn")
+
+        # Kernel stops, drawn where they happened. The voxel a stop names is an index into
+        # the grid the kernel checked: kept here by origin (the last few) to map it back.
+        import collections
+
+        from openral_msgs.msg import FailureTrigger
+
+        self._grids: collections.deque[
+            tuple[
+                str,
+                tuple[float, float, float],
+                float,
+                tuple[int, int, int],
+                tuple[float, float, float, float],
+            ]
+        ] = collections.deque(maxlen=16)
+        self._stops: list[tuple[str, tuple[float, float, float], str]] = []
+        self._pub_collisions = self._node.create_publisher(
+            MarkerArray, COLLISION_MARKERS_TOPIC, latched
+        )
+        failure_qos = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
+            depth=50,
+        )
+        self._sub_failure = self._node.create_subscription(
+            FailureTrigger, "/openral/failure/safety", self._on_failure, failure_qos
+        )
 
         log.info("bucket2_markers node ready", attach_link_tf_frames=self._tf_frames)
 
@@ -427,16 +705,21 @@ class Bucket2MarkersNode:
             float(msg.orientation.w),  # type: ignore[union-attr]
         )
 
+        self._grids.append((str(msg.header.frame_id), origin, resolution, size, orientation))  # type: ignore[union-attr]
         try:
             centers = occupied_voxel_centers(origin, resolution, size, occupancy, orientation)
         except ValueError:
             log.exception("bucket2: malformed OccupancyVoxels message — skipping")
             return
 
+        points = np.asarray(centers, dtype=np.float64).reshape(-1, 3)
+        if self._hidden_boxes and len(points):
+            points = points[outside_boxes(points, self._hidden_boxes, resolution)]
+
         cloud = PointCloud2()
         cloud.header = msg.header  # type: ignore[union-attr]
         cloud.height = 1
-        cloud.width = len(centers)
+        cloud.width = len(points)
         cloud.is_dense = True
         cloud.is_bigendian = False
 
@@ -449,10 +732,45 @@ class Bucket2MarkersNode:
         cloud.point_step = 12
         cloud.row_step = cloud.point_step * cloud.width
 
-        cloud.data = np.asarray(centers, dtype="<f4").reshape(-1, 3).tobytes()
+        cloud.data = np.asarray(points, dtype="<f4").tobytes()
 
         self._pub_cloud.publish(cloud)
-        log.debug("bucket2: published world_voxels_cloud", points=len(centers))
+        log.debug("bucket2: published world_voxels_cloud", points=len(points))
+
+    def _on_failure(self, msg: object) -> None:
+        """A kernel collision stop → a red marker where it happened (latched, accumulated)."""
+        import json
+
+        from openral_msgs.msg import FailureTrigger
+
+        if msg.kind != FailureTrigger.KIND_COLLISION:  # type: ignore[attr-defined]
+            return
+        try:
+            ev = json.loads(msg.evidence_json)  # type: ignore[attr-defined]
+            link_a, other = str(ev["link_a"]), str(ev["link_b_or_object"])
+        except (ValueError, KeyError, TypeError):
+            log.exception("bucket2: collision evidence unreadable — not drawn")
+            return
+        label = f"STOP {link_a}"
+        if other.startswith("voxel_"):
+            want = ev.get("world_grid_origin_m")
+            grid = next(
+                (
+                    g
+                    for g in reversed(self._grids)
+                    if want is None or np.allclose(g[1], want, atol=1e-6)
+                ),
+                None,
+            )
+            if grid is None:
+                log.warning("bucket2: no grid matching the stop's origin — not drawn", origin=want)
+                return
+            frame, origin, res, size, orientation = grid
+            xyz = voxel_center(int(other[len("voxel_") :]), origin, res, size, orientation)
+        else:
+            frame, xyz, label = link_a, (0.0, 0.0, 0.0), f"STOP {link_a} vs {other}"
+        self._stops.append((frame, xyz, label))
+        self._pub_collisions.publish(collision_markers(self._stops))
 
     def _on_attachment_state(self, msg: object) -> None:
         """Convert AttachmentState → MarkerArray (DELETEALL + re-add) and publish."""

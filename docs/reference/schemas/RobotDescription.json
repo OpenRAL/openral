@@ -1121,6 +1121,128 @@
       "title": "LinkCollisionGeometry",
       "type": "object"
     },
+    "MimicJoint": {
+      "additionalProperties": false,
+      "description": "A link posed by another joint's value: ``q = multiplier * q[mimics] + offset``.\n\nThe URDF ``<mimic>`` / MuJoCo joint-equality relation, for a link that\nmoves but has **no command channel of its own** \u2014 the OpenArm's second\n(follower) finger, driven through the first by the gripper's linkage.\n``RobotDescription.joints`` is consumed unfiltered as the action width,\nthe sim ``qpos`` map and the runner's permutation, so a follower cannot be\na ``JointSpec``; and a ``FixedAttachment`` cannot move. This is the third\nedge kind of the collision tree, and nothing else: no limits, no sensor,\nno DoF, invisible to every ``joints`` consumer. The safety kernel poses\n``child_link`` rigidly at the mimicked value every check\n(``JointKind::kMimicRevolute`` / ``kMimicPrismatic``), so the follower\nfinger is checked at the opening the gripper is commanded to, like every\nother link, instead of swept over its whole stroke\n(``docs/reference/finger-mimic-geometry.md``).\n\nEvery geometric value comes from the robot's real URDF/MJCF (``openral\ncollision lower`` re-injects ``origin_*`` / ``axis_xyz`` from the MJCF and\nrefuses a ``multiplier`` / ``offset`` the MJCF equality disagrees with).\nNever hand-estimate one.\n\nAttributes:\n    name: Joint name, matching the source URDF ``<joint>`` where one exists.\n    parent_link: The link this joint hangs from.\n    child_link: The link it poses. Defined by no other edge.\n    mimics: The ``JointSpec`` (by ``name``) whose value drives this one.\n    multiplier: ``q = multiplier * q[mimics] + offset``; finite, non-zero.\n    offset: Same relation; finite, in the joint's own unit.\n    joint_type: ``revolute`` (or ``continuous``) or ``prismatic``.\n    axis_xyz: This joint's own axis in its frame (the source model's, not\n        the leader's: the OpenArm follower's axis is the leader's negated\n        in the URDF, the same with ``multiplier = -1``; the MJCF spells it\n        as the same axis with ``multiplier = 1``).\n    origin_xyz: Translation (metres) of the joint frame in ``parent_link``.\n    origin_rpy: Orientation ``(roll, pitch, yaw)``, radians, same frame.\n    sim_joint_name: The MJCF joint this is, when the twin spells it\n        differently (the OpenArm's ``openarm_left_finger_joint2``).\n\nExample:\n    >>> m = MimicJoint(\n    ...     name=\"openarm_left_finger_joint2\",\n    ...     parent_link=\"openarm_left_link7\",\n    ...     child_link=\"openarm_left_finger_follower\",\n    ...     mimics=\"left_gripper\",\n    ...     multiplier=1.0,\n    ...     axis_xyz=(1.0, 0.0, 0.0),\n    ...     origin_xyz=(-0.00143, 0.018, -0.068),\n    ... )\n    >>> m.value_at(0.5)\n    0.5",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "parent_link": {
+          "title": "Parent Link",
+          "type": "string"
+        },
+        "child_link": {
+          "title": "Child Link",
+          "type": "string"
+        },
+        "mimics": {
+          "title": "Mimics",
+          "type": "string"
+        },
+        "multiplier": {
+          "default": 1.0,
+          "title": "Multiplier",
+          "type": "number"
+        },
+        "offset": {
+          "default": 0.0,
+          "title": "Offset",
+          "type": "number"
+        },
+        "joint_type": {
+          "$ref": "#/$defs/JointType",
+          "default": "revolute"
+        },
+        "axis_xyz": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Axis Xyz",
+          "type": "array"
+        },
+        "origin_xyz": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Origin Xyz",
+          "type": "array"
+        },
+        "origin_rpy": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Origin Rpy",
+          "type": "array"
+        },
+        "sim_joint_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim Joint Name"
+        }
+      },
+      "required": [
+        "name",
+        "parent_link",
+        "child_link",
+        "mimics"
+      ],
+      "title": "MimicJoint",
+      "type": "object"
+    },
     "ObservationSpec": {
       "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: **Deprecated; has no effect on image processing.** The\n        live knob is the per-checkpoint\n        ``RSkillManifest.image_preprocessing.flip_180``. Kept so existing\n        manifests still load; setting it emits a ``FutureWarning``.",
       "properties": {
@@ -2623,6 +2745,13 @@
         "$ref": "#/$defs/FixedAttachment"
       },
       "title": "Fixed Attachments",
+      "type": "array"
+    },
+    "mimic_joints": {
+      "items": {
+        "$ref": "#/$defs/MimicJoint"
+      },
+      "title": "Mimic Joints",
       "type": "array"
     },
     "footprint_polygon": {

@@ -33,7 +33,13 @@ from openral_runner.base import InferenceRunnerBase
 from opentelemetry import trace
 
 from openral_sim.factory import make_env, make_policy, make_robot
-from openral_sim.rollout import EpisodeResult, env_action_dim
+from openral_sim.rollout import (
+    DEFAULT_SUCCESS_KEY,
+    ROBOT_CONTACTS_INFO_KEY,
+    EpisodeResult,
+    env_action_dim,
+    fold_robot_contacts,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -287,6 +293,8 @@ class _EpisodeBuffer:
     success: bool = False
     steps_done: int = 0
     budget_violations: int = 0
+    # (link, other_prim) -> episode contact record (``fold_robot_contacts``).
+    contacts: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
     @property
     def has_data(self) -> bool:
@@ -745,10 +753,13 @@ class SimRunner(InferenceRunnerBase):
             self._buf.max_step_reward = max(self._buf.max_step_reward, step_result.reward)
             self._step_idx += 1
             self._buf.steps_done = self._step_idx
+            step_contacts = step_result.info.get(ROBOT_CONTACTS_INFO_KEY)
+            if step_contacts:
+                fold_robot_contacts(self._buf.contacts, step_contacts, self._step_idx)
             step_span.set_attribute("reward", step_result.reward)
             step_span.set_attribute("cum_reward", self._buf.total_reward)
 
-            success_key = self._env_cfg.task.success_key
+            success_key = self._env_cfg.task.success_key or DEFAULT_SUCCESS_KEY
             if (
                 success_key in step_result.info
                 and bool(step_result.info[success_key])
@@ -889,6 +900,13 @@ class SimRunner(InferenceRunnerBase):
             actions=self._buf.actions,
             num_input_cameras=num_cams,
             metadata=dict(env_cfg.metadata),
+            contact_stats=sorted(
+                (
+                    {k: v for k, v in r.items() if not k.startswith("_")}
+                    for r in self._buf.contacts.values()
+                ),
+                key=lambda r: r["min_separation_m"],
+            ),
         )
         self.episode_results.append(out)
         # ``scene.id`` / ``task.id`` / ``vla.id`` are closed sets per the

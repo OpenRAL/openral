@@ -5449,7 +5449,8 @@ TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
 //
 // The real OpenArm cell runs the world-voxel check at a 20 mm margin on 20 mm
 // cells, and the finger link (`openarm_left_finger_pair`, one box + 26-DOP
-// swept over the stroke) contains the grasp target during a grasp, so the
+// swept over the stroke when this was written; the leader finger alone since #349)
+// contains the grasp target during a grasp, so the
 // check stops on the target's own cells before any attachment can exist. The
 // exemption spares exactly (declared contact link, cell centred in the
 // producer-measured region) and nothing else; these tests pin that scope and
@@ -6223,4 +6224,562 @@ TEST(RetiredGraspSet, OverflowEvictsOnlyTheOldestAndSaysSo) {
   retired.clear();
   EXPECT_EQ(retired.size(), 0U);
   EXPECT_FALSE(retired.contains(5, 7));
+}
+
+// ── Mimic joints (docs/reference/finger-mimic-geometry.md) ───────────────────
+//
+// A two-jaw gripper as the kernel now models the OpenArm's: link 1 is the
+// LEADER finger, revolute about -x on joint column 0 at y = -0.018; link 2 the
+// FOLLOWER finger, `kMimicRevolute` on the SAME column with multiplier -1 and
+// offset 0 about -x at y = +0.018 (the URDF `<mimic>` spelling). Each finger is
+// a box 0.02 x 0.01 x 0.08 hanging down its link's -z. At q = 0 the inner faces
+// are 26 mm apart; at q = 0.6 rad the jaws open mirror-symmetrically.
+
+namespace {
+
+constexpr int kMimicLeader = 1;
+constexpr int kMimicFollower = 2;
+constexpr double kMimicMultiplier = -1.0;
+constexpr double kMimicOffset = 0.0;
+constexpr double kMimicFingerY = 0.018;
+constexpr double kMimicMargin = 0.01;
+
+osk::CollisionModel mimic_model() {
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kRevolute,
+                  osk::JointKind::kMimicRevolute};
+  m.dof_index = {-1, 0, 0};  // the follower reads the leader's column
+  m.origin = {identity(), translate(0.0, -kMimicFingerY, 0.0), translate(0.0, kMimicFingerY, 0.0)};
+  m.axis = {{0, 0, 1}, {-1, 0, 0}, {-1, 0, 0}};
+  m.mimic_multiplier = {1.0, 1.0, kMimicMultiplier};
+  m.mimic_offset = {0.0, 0.0, kMimicOffset};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.005, 0.04};
+  finger.origin = translate(0.0, 0.0, -0.04);
+  m.box_link = {kMimicLeader, kMimicFollower};
+  m.boxes = {finger, finger};
+  return m;
+}
+
+osk::CollisionScratch mimic_scratch(const osk::CollisionModel& m) {
+  osk::CollisionScratch s;
+  s.link_world.resize(m.n_links);
+  return s;
+}
+
+// One occupied 20 mm cell centred at `c`.
+struct MimicCell {
+  std::vector<std::uint8_t> occ{1};
+  osk::VoxelGrid grid;
+  explicit MimicCell(const osk::Vec3& c) {
+    grid.pose.t = {c.x - 0.01, c.y - 0.01, c.z - 0.01};
+    grid.resolution = 0.02;
+    grid.sx = 1;
+    grid.sy = 1;
+    grid.sz = 1;
+    grid.occupancy = occ.data();
+  }
+};
+
+osk::CollisionHit mimic_check(const osk::CollisionModel& m, osk::CollisionScratch& s,
+                              const osk::VoxelGrid& g, double q) {
+  const double qpos[1] = {q};
+  osk::forward_kinematics(m, qpos, 1, s);
+  return osk::check_voxel_collision(m, s, g, kMimicMargin);
+}
+
+// Where the follower finger's inner-face centre (box-local (0, -0.005, 0),
+// i.e. the face toward the leader) sits in the base frame at gripper value q,
+// by hand: the follower rotates by (multiplier * q + offset) about -x, so by
+// -theta about +x, from its joint origin at y = +0.018.
+osk::Vec3 follower_inner_face_by_hand(double q) {
+  const double theta = -(kMimicMultiplier * q + kMimicOffset);  // about +x
+  const double y = -0.005;
+  const double z = -0.04;
+  return {0.0, kMimicFingerY + y * std::cos(theta) - z * std::sin(theta),
+          y * std::sin(theta) + z * std::cos(theta)};
+}
+
+}  // namespace
+
+TEST(MimicJoint, ForwardKinematicsPlacesTheFollowerAtMultiplierQPlusOffset) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  for (const double q : {0.0, 0.25, 0.6, 0.7854}) {
+    const double qpos[1] = {q};
+    osk::forward_kinematics(m, qpos, 1, s);
+    const double theta = -(kMimicMultiplier * q + kMimicOffset);  // the same rotation about +x
+    const double c = std::cos(theta);
+    const double sn = std::sin(theta);
+    const double expected_r[9] = {1, 0, 0, 0, c, -sn, 0, sn, c};
+    const auto& f = s.link_world[kMimicFollower];
+    for (int k = 0; k < 9; ++k) {
+      EXPECT_NEAR(f.r[k], expected_r[k], 1e-12) << "q=" << q << " r[" << k << "]";
+    }
+    EXPECT_NEAR(f.t.x, 0.0, 1e-12);
+    EXPECT_NEAR(f.t.y, kMimicFingerY, 1e-12);
+    EXPECT_NEAR(f.t.z, 0.0, 1e-12);
+    // The leader rotates the other way about the same axis: a mirror pair.
+    const auto& l = s.link_world[kMimicLeader];
+    EXPECT_NEAR(l.r[4], f.r[4], 1e-12);
+    EXPECT_NEAR(l.r[5], -f.r[5], 1e-12);
+  }
+}
+
+TEST(MimicJoint, WithoutMimicArraysTheFollowerFollowsTheLeadersColumnUnchanged) {
+  // Identity relation: multiplier 1, offset 0 — the OpenArm MJCF spelling.
+  auto m = mimic_model();
+  m.mimic_multiplier.clear();
+  m.mimic_offset.clear();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.6};
+  osk::forward_kinematics(m, qpos, 1, s);
+  EXPECT_NEAR(s.link_world[kMimicFollower].r[5], s.link_world[kMimicLeader].r[5], 1e-12)
+      << "same axis, same value: the same rotation";
+}
+
+TEST(MimicJoint, ACellBetweenTheFingersClearsWhenOpenAndTripsWhenClosed) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const MimicCell between({0.0, 0.0, -0.06});
+  EXPECT_TRUE(mimic_check(m, s, between.grid, 0.0).hit) << "closed: 3 mm gap inside the margin";
+  const auto open = mimic_check(m, s, between.grid, 0.6);
+  EXPECT_FALSE(open.hit) << "open: both jaws swung clear of the gap, min=" << open.min_distance;
+  EXPECT_GT(open.min_distance, kMimicMargin);
+}
+
+TEST(MimicJoint, ACellOnTheFollowerSurfaceTripsAtThatOpening) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  for (const double q : {0.0, 0.2, 0.45, 0.7854}) {
+    // A cell whose centre sits 5 mm inside the follower's inner face: a real
+    // follower contact at this opening, and nowhere near the leader when open.
+    const osk::Vec3 face = follower_inner_face_by_hand(q);
+    const MimicCell touching({face.x, face.y + 0.005, face.z});
+    const auto hit = mimic_check(m, s, touching.grid, q);
+    EXPECT_TRUE(hit.hit) << "q=" << q;
+    EXPECT_EQ(hit.link_a, kMimicFollower) << "q=" << q;
+  }
+}
+
+TEST(MimicJoint, TheGraspRegionExemptionCoversAFollowerInItsMask) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double q = 0.3;
+  const osk::Vec3 face = follower_inner_face_by_hand(q);
+  const MimicCell touching({face.x, face.y + 0.005, face.z});
+  auto grid = touching.grid;
+  ASSERT_TRUE(mimic_check(m, s, grid, q).hit);
+  std::bitset<osk::kMaxGraspMaskLinks> leader_only;
+  leader_only.set(kMimicLeader);
+  std::bitset<osk::kMaxGraspMaskLinks> both = leader_only;
+  both.set(kMimicFollower);
+  const osk::Vec3 half{0.03, 0.03, 0.03};
+  // Declared for the leader alone the follower still stops: the exemption is
+  // per masked link, so the lifecycle node widens the mask to the other jaw of
+  // the same joint column (tested in test_lifecycle_kernel).
+  ASSERT_EQ(osk::ingest_grasp_region(translate(face.x, face.y, face.z), half, leader_only,
+                                     grid.grasp_region),
+            osk::GraspRegionStatus::kOk);
+  EXPECT_TRUE(mimic_check(m, s, grid, q).hit);
+  ASSERT_EQ(
+      osk::ingest_grasp_region(translate(face.x, face.y, face.z), half, both, grid.grasp_region),
+      osk::GraspRegionStatus::kOk);
+  EXPECT_FALSE(mimic_check(m, s, grid, q).hit) << "both jaws declared: the target cell is exempt";
+}
+
+TEST(MimicJoint, LeaderAndFollowerSelfCollideOnlyWhenNotExempt) {
+  auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.0};
+  osk::forward_kinematics(m, qpos, 1, s);
+  // Closed, the inner faces are 26 mm apart: inside a 30 mm margin.
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.03).hit);
+  m.allowed_pairs.emplace_back(kMimicLeader, kMimicFollower);  // the regenerated ACM row
+  EXPECT_FALSE(osk::check_self_collision(m, s, 0.03).hit);
+}
+
+TEST(MimicJoint, AMimicLinkAddsNoJacobianColumn) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const double qpos[1] = {0.2};
+  osk::forward_kinematics(m, qpos, 1, s);
+  const double twist[6] = {0.0, 0.01, 0.0, 0.0, 0.0, 0.0};
+  double dq[1] = {0.0};
+  // Through the leader the one column is its own.
+  EXPECT_TRUE(osk::jacobian_dls_step(m, s, kMimicLeader, twist, 0.01, dq, 1, nullptr));
+  // Through the follower there is no column at all: it never predicts.
+  EXPECT_FALSE(osk::jacobian_dls_step(m, s, kMimicFollower, twist, 0.01, dq, 1, nullptr));
+  EXPECT_EQ(dq[0], 0.0);
+}
+
+TEST(NoAlloc, MimicForwardKinematicsAndTheVoxelCheckAreAllocationFree) {
+  const auto m = mimic_model();
+  auto s = mimic_scratch(m);
+  const MimicCell between({0.0, 0.0, -0.06});
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  for (int i = 0; i < 1000; ++i) {
+    const auto hit = mimic_check(m, s, between.grid, 0.3);
+    (void)hit;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}
+
+// ── Manipulation-workspace contact (issue #349, draft; Safety-WG pending) ────
+//
+// Same OpenArm finger fixture as the grasp-target tests above. The workspace is
+// the source tote's interior: a declared, map-confirmed box. A HAND link (in
+// the workspace mask) vs a cell centred in the box does not trip while the
+// hand is slow; everything else is today's check bit for bit.
+
+namespace {
+
+constexpr double kWsMaxSpeed = 0.10;  // m/s, the test's bound
+constexpr double kWsMaxLead = 0.05;   // m, the test's lead (push) bound
+
+osk::WorkspaceContactRegion workspace(double half, std::initializer_list<int> links,
+                                      double hand_speed_mps, double hand_lead_m = 0.0) {
+  osk::WorkspaceContactRegion ws;
+  EXPECT_EQ(osk::ingest_workspace_region(
+                translate(kFingerBoxCentre.x, kFingerBoxCentre.y, kFingerBoxCentre.z),
+                osk::Vec3{half, half, half}, grasp_mask(links), kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  EXPECT_TRUE(std::isinf(ws.hand_speed_mps)) << "ingest leaves the speed unknown";
+  EXPECT_TRUE(std::isinf(ws.hand_lead_m)) << "ingest leaves the lead unknown";
+  EXPECT_DOUBLE_EQ(ws.max_lead_m, kWsMaxLead);
+  ws.hand_speed_mps = hand_speed_mps;
+  ws.hand_lead_m = hand_lead_m;
+  return ws;
+}
+
+}  // namespace
+
+TEST(WorkspaceContact, ASlowHandLinkInsideTheWorkspaceDoesNotTripAndIsDisclosed) {
+  const osk::CollisionModel m = grasp_cell_model();
+  for (const int hand : {kGraspLeftFinger, kGraspCapFinger}) {  // box pass, capsule pass
+    osk::CollisionScratch s = grasp_scratch_all_away();
+    s.link_world[static_cast<std::size_t>(hand)] = identity();
+    const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}});
+    auto grid = grasp_grid(occ);
+    const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    ASSERT_TRUE(today.hit) << hand;
+    EXPECT_EQ(today.workspace_pairs, 0);
+
+    grid.workspace_region = workspace(0.10, {hand}, 0.5 * kWsMaxSpeed);
+    const auto slow = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    EXPECT_FALSE(slow.hit) << hand;
+    EXPECT_GE(slow.workspace_pairs, 1) << "never silent: every tolerated pair is counted";
+    EXPECT_EQ(slow.workspace_link, hand);
+    EXPECT_LE(slow.workspace_min_distance, kGraspMargin);
+    EXPECT_EQ(slow.sweep_min_distance, today.sweep_min_distance)
+        << "the tolerated pair still reaches the sweep minimum at its own depth";
+
+    // At the bound exactly it still holds; just above it, today's stop.
+    grid.workspace_region.hand_speed_mps = kWsMaxSpeed;
+    EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kGraspMargin).hit);
+    grid.workspace_region.hand_speed_mps = kWsMaxSpeed * 1.0001;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, AFastOrUnknownHandSpeedTripsExactlyAsToday) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  for (const double v : {2.0 * kWsMaxSpeed, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, v);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_pairs, 0) << v;
+    EXPECT_EQ(hit.workspace_denied, 2) << "disclosed: the hand is over its speed bound";
+  }
+  // A non-positive or non-finite bound exempts nothing either.
+  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
+    grid.workspace_region.max_speed_mps = bound;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, ALeadAboveTheBoundTripsEvenWhenTheHandIsStill) {
+  // The push bound: a hand whose commanded target is stationary (speed 0) but
+  // sits deep past where the hand really is would keep pressing. Above
+  // `max_lead_m`, or unknown, or with an unsound bound: today's stop.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, kWsMaxLead);
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kGraspMargin).hit) << "at the bound";
+  for (const double lead : {kWsMaxLead * 1.0001, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, lead);
+    const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+    expect_same_hit(hit, today);
+    EXPECT_EQ(hit.workspace_pairs, 0) << lead;
+    EXPECT_EQ(hit.workspace_denied, 3) << "disclosed: the hand is over its lead bound";
+  }
+  for (const double bound : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
+    grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0, 0.0);
+    grid.workspace_region.max_lead_m = bound;
+    expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  }
+}
+
+TEST(WorkspaceContact, AnArmLinkInsideTheWorkspaceStillTrips) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspArm] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
+  auto grid = grasp_grid(occ);
+  const auto before = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(before.hit);
+  ASSERT_EQ(before.link_a, kGraspArm);
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger, kGraspCapFinger}, 0.0);
+  ASSERT_TRUE(osk::workspace_contact_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+  EXPECT_FALSE(osk::workspace_contact_exempts(grid, kGraspArm, grasp_centre(0, 0, 0)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  expect_same_hit(with, before);
+  EXPECT_EQ(with.workspace_pairs, 0);
+  EXPECT_EQ(with.workspace_denied, 1) << "disclosed: not a hand link";
+  EXPECT_EQ(before.workspace_denied, 0) << "no live workspace: not applicable";
+}
+
+TEST(WorkspaceContact, AHandLinkOutsideTheWorkspaceStillTrips) {
+  // Workspace tight around cell (0,0,0); the finger's margin also reaches the
+  // neighbour two cells over, outside the box: that one stops, as alone.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto near_only = grasp_occ({{2, 0, 0}});
+  const auto alone = osk::check_voxel_collision(m, s, grasp_grid(near_only), kGraspMargin);
+  ASSERT_TRUE(alone.hit);
+  const auto occ = grasp_occ({{0, 0, 0}, {2, 0, 0}});
+  auto grid = grasp_grid(occ);
+  grid.workspace_region = workspace(0.015, {kGraspLeftFinger}, 0.0);
+  ASSERT_FALSE(osk::workspace_contact_exempts(grid, kGraspLeftFinger, grasp_centre(2, 0, 0)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(with.hit);
+  EXPECT_EQ(with.link_b, grasp_index(2, 0, 0));
+  EXPECT_EQ(with.min_distance, alone.min_distance);
+  EXPECT_EQ(with.workspace_denied, 4) << "disclosed: the cell lies outside the box";
+}
+
+TEST(WorkspaceContact, TheGraspTargetExemptionKeepsPrecedence) {
+  // A cell both regions cover is the grasp target's (ADR-0115): it is not
+  // counted as a workspace contact. A cell only the workspace covers is.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
+  grid.workspace_region = workspace(0.10, {kGraspLeftFinger}, 0.0);
+  const auto both = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  EXPECT_FALSE(both.hit);
+  EXPECT_EQ(both.workspace_pairs, 0) << "the target's own cell is the grasp exemption's";
+
+  const auto occ2 = grasp_occ({{0, 0, 0}, {1, 0, 0}});
+  auto grid2 = grasp_grid(occ2);
+  grid2.grasp_region = grid.grasp_region;
+  grid2.workspace_region = grid.workspace_region;
+  const auto neighbour = osk::check_voxel_collision(m, s, grid2, kGraspMargin);
+  EXPECT_FALSE(neighbour.hit);
+  EXPECT_EQ(neighbour.workspace_pairs, 1) << "the neighbour carton is the workspace's";
+  EXPECT_EQ(neighbour.workspace_cell, grasp_index(1, 0, 0));
+}
+
+TEST(WorkspaceContact, IngestAppliesTheWorkspaceCaps) {
+  osk::WorkspaceContactRegion ws;
+  const auto mask = grasp_mask({kGraspLeftFinger});
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.30, 0.20, 0.15}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOk)
+      << "a 0.6 x 0.4 x 0.3 m tote interior";
+  EXPECT_TRUE(ws.valid);
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.51, 0.1, 0.1}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOversize);
+  EXPECT_FALSE(ws.valid);
+  EXPECT_EQ(
+      osk::ingest_workspace_region(identity(), osk::Vec3{0.45, 0.45, 0.2}, mask, 0.1, 0.05, ws),
+      osk::GraspRegionStatus::kOversizeVolume);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.1, 0.1}, grasp_mask({}), 0.1,
+                                         0.05, ws),
+            osk::GraspRegionStatus::kNoLinks);
+  EXPECT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.1, 0.0, 0.1}, mask, 0.1, 0.05, ws),
+            osk::GraspRegionStatus::kDegenerate);
+  EXPECT_FALSE(ws.valid);
+}
+
+TEST(WorkspaceContact, TheDisplacementBoundCoversEveryPointOfTheLink) {
+  const osk::Transform a = identity();
+  EXPECT_NEAR(osk::link_displacement_bound(a, translate(0.03, 0.04, 0.0), 0.1), 0.05, 1e-12);
+  // A pure rotation by 0.2 rad about z: the origin stays, a point at 0.1 m
+  // moves 2·0.1·sin(0.1) < 0.1·0.2, the bound.
+  const osk::Transform rz = osk::transform_from_xyz_rpy(0, 0, 0, 0, 0, 0.2);
+  const double bound = osk::link_displacement_bound(a, rz, 0.1);
+  EXPECT_NEAR(bound, 0.02, 1e-9);
+  EXPECT_GE(bound, 2.0 * 0.1 * std::sin(0.1));
+  osk::Transform nan = identity();
+  nan.t.x = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isinf(osk::link_displacement_bound(a, nan, 0.1)));
+  // The reach is the farthest geometry from the frame origin.
+  const osk::CollisionModel m = grasp_cell_model();
+  const double cap = std::sqrt(0.0004 * 0.0004 + 0.0484 * 0.0484 + 0.0298 * 0.0298) + 0.02 + 0.01;
+  EXPECT_NEAR(osk::link_geometry_reach(m, kGraspCapFinger), cap, 1e-12);
+  EXPECT_EQ(osk::link_geometry_reach(m, 0), 0.0) << "no geometry, nothing to move";
+}
+
+// A payload carried by a hand link is part of that hand (#349 place phase): the
+// same workspace predicate on its attach link. Fixture as in AttachedVoxelCollision.
+TEST(WorkspaceContact, ASlowHandsPayloadInsideTheWorkspaceDoesNotTrip) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  const auto today = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(today.hit);
+
+  const auto ws = [](std::initializer_list<int> links, const osk::Transform& at, double speed) {
+    osk::WorkspaceContactRegion r;
+    EXPECT_EQ(osk::ingest_workspace_region(at, osk::Vec3{0.2, 0.2, 0.2}, grasp_mask(links),
+                                           kWsMaxSpeed, kWsMaxLead, r),
+              osk::GraspRegionStatus::kOk);
+    r.hand_speed_mps = speed;
+    r.hand_lead_m = 0.0;
+    return r;
+  };
+  grid.workspace_region = ws({1}, identity(), 0.5 * kWsMaxSpeed);
+  const auto slow = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_GE(slow.workspace_pairs, 1) << "never silent";
+  EXPECT_EQ(slow.workspace_link, 1) << "disclosed on the attach link";
+
+  grid.workspace_region = ws({1}, identity(), 2.0 * kWsMaxSpeed);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit) << "fast hand";
+  grid.workspace_region = ws({2}, identity(), 0.0);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "carried by a link that is not a hand link";
+  grid.workspace_region = ws({1}, translate(1.0, 0.0, 0.0), 0.0);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit)
+      << "cell outside the workspace";
+}
+
+// Two hands meeting inside the workspace (#349: 6+ deploy-sim stops were the two
+// OpenArm hands' fingers touching, 0.07-1.9 mm on the meshes, at 0.10-0.20 m/s).
+TEST(WorkspaceContact, TwoSlowHandsMeetingInsideTheWorkspaceDoNotTrip) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 2, 0.05, 0.0, identity());
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.08, 0.0, 0.0)};
+  const auto today = osk::check_self_collision(m, s, 0.0);
+  ASSERT_TRUE(today.hit) << "the two capsules overlap by 2 cm";
+
+  osk::WorkspaceContactRegion ws;
+  ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({2, 3}),
+                                         kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.hand_lead_m = 0.0;
+  const auto slow = osk::check_self_collision(m, s, 0.0, &ws);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_EQ(slow.workspace_pairs, 1) << "never silent";
+  EXPECT_EQ(slow.sweep_min_distance, today.sweep_min_distance);
+
+  ws.hand_speed_mps = 2.0 * kWsMaxSpeed;
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "fast hands";
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.link_mask = grasp_mask({2});
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "link 3 is not a hand link";
+  ws.link_mask = grasp_mask({2, 3});
+  s.link_world[3] = translate(0.25, 0.0, 0.0);
+  s.link_world[2] = translate(0.17, 0.0, 0.0);
+  EXPECT_TRUE(osk::check_self_collision(m, s, 0.0, &ws).hit) << "link 3 outside the box";
+}
+
+TEST(WorkspaceContact, ASlowHandsPayloadMeetingTheOtherHandDoesNotTrip) {
+  // #349 p8_mix04: the right hand's payload against the left hand's finger.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.12, 0.0, 0.0)};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  const auto today = osk::check_attached_self_collision(m, att, s, 0.0);
+  ASSERT_TRUE(today.hit) << "sphere 0.1 vs capsule 0.05 at 0.12";
+
+  osk::WorkspaceContactRegion ws;
+  ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({1, 3}),
+                                         kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.hand_lead_m = 0.0;
+  const auto slow = osk::check_attached_self_collision(m, att, s, 0.0, &ws);
+  EXPECT_FALSE(slow.hit);
+  EXPECT_EQ(slow.workspace_pairs, 1);
+  ws.link_mask = grasp_mask({1});
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit)
+      << "link 3 is an arm link: stops";
+  ws.link_mask = grasp_mask({1, 3});
+  ws.hand_speed_mps = 2.0 * kWsMaxSpeed;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "fast";
+}
+
+// #349: against the robot's own links a box payload with a stage-2 refinement is
+// the refinement's box (the producer's measured object), not the padded one — only
+// under a live workspace (the sim-only rule); without one, today's padded check.
+TEST(AttachedSelfCollision, ARefinedBoxPayloadIsCheckedAgainstTheRobotAsItsInnerBox) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.02, 0.0, translate(0.15, 0.0, 0.0));  // arm (non-touch), 0.13..0.17
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  // Padded box half 0.14 (reaches x 0.14: overlaps the capsule); measured box
+  // half 0.11 (reaches 0.11: 20 mm clear of the capsule's surface at 0.13).
+  osk::AttachedModel padded;
+  append_object(padded, 1, identity(), {box_prim(0.14, 0.05, 0.05)});
+  ASSERT_TRUE(osk::check_attached_self_collision(m, padded, s, 0.0).hit);
+
+  std::vector<osk::Vec3> verts;
+  osk::AttachedModel refined;
+  refined.hulls = {axis_aligned_box_hull(osk::Vec3{0.11, 0.05, 0.05}, verts)};
+  refined.hull_vertices = verts;
+  osk::AttachedPrimitive prim = box_prim(0.14, 0.05, 0.05);
+  prim.hull_index = 0;
+  append_object(refined, 1, identity(), {prim});
+  EXPECT_TRUE(osk::check_attached_self_collision(m, refined, s, 0.0).hit)
+      << "no workspace: the shipped, padded box, as before the rule";
+  osk::WorkspaceContactRegion invalid;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, refined, s, 0.0, &invalid).hit)
+      << "an invalid workspace is no workspace";
+  const osk::WorkspaceContactRegion ws = workspace(0.3, {1}, 0.0);
+  const auto hit = osk::check_attached_self_collision(m, refined, s, 0.0, &ws);
+  EXPECT_FALSE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, 0.02, 1e-6);
+}
+
+TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
+  osk::AttachedModel att;
+  append_object(att, 1, translate(0.05, 0.0, 0.0),
+                {sphere_prim(0.1), box_prim(0.03, 0.04, 0.0, translate(0.0, 0.2, 0.0))});
+  // Sphere: 0.05 + 0.1; box: |(0.05, 0.2, 0)| + 0.05.
+  EXPECT_NEAR(osk::attached_object_reach(att, att.objects[0]), std::hypot(0.05, 0.2) + 0.05, 1e-12);
 }

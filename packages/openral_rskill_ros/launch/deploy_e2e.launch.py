@@ -278,13 +278,16 @@ def _octomap_resolution(hal_mode: str) -> float:
 
     **Real hardware ships 20 mm on that same sim evidence, and nothing else.**
     No real map has been measured at any resolution. Sim rasterises a kitchen's
-    own solid geometry; a real map comes from a depth camera and is dilated by
-    the octree->grid bridge, and `docs/reference/world-map-fidelity.md` is
-    explicit that the live map stops MORE often than the rasterised one, never
-    less. The quantisation term is also not the only thing between the payload
-    and reality on hardware -- depth noise, extrinsics and the octree dilation
-    sit beside it, and 50 -> 20 mm removes 25.98 mm of guaranteed margin while
-    leaving those untouched. Recorded as a deliberate reduction in
+    own solid geometry; a real map comes from a depth camera and its octree
+    holds whatever the sensor saw (decoration, noise, the robot's own
+    unfiltered parts), and `docs/reference/world-map-fidelity.md` is explicit
+    that the live map stops MORE often than the rasterised one, never less.
+    (The octree->grid cube-overlap dilation that page also measured is gone
+    since 2026-08-25: the grid is published on the octree's own lattice.) The
+    quantisation term is also not the only thing between the payload and
+    reality on hardware -- depth noise and extrinsics sit beside it, and
+    50 -> 20 mm removes 25.98 mm of guaranteed margin while leaving those
+    untouched. Recorded as a deliberate reduction in
     conservatism, gated on the safety-WG, in its own hazard-log entry. It
     should be re-measured on a real map before it is relied on.
 
@@ -307,6 +310,43 @@ def _octomap_resolution(hal_mode: str) -> float:
         if 0.001 <= value <= 0.5:
             return value
     return 0.015 if hal_mode == "sim" else 0.02
+
+
+def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
+    """Sample the declared static geometry for the octomap bridge; returns the points file.
+
+    Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
+    ``/tmp`` file named by the source and a digest of the points: the same geometry reuses one
+    file instead of leaving one per launch (each is hundreds of MB, and nothing can delete it
+    at exit while the bridge may still be reading it). Written to a temporary name and moved
+    into place, so a concurrent launch never reads a partial file. Raises ``ROSConfigError``
+    on a geometry that does not load or a mesh that is malformed.
+    """
+    import hashlib
+    import tempfile
+
+    from openral_safety.static_geometry import (
+        load_static_geometry,
+        surface_points,
+        write_points_file,
+    )
+
+    geometry, base_dir = load_static_geometry(static_geometry_file)
+    points = surface_points(geometry, base_dir, resolution_m / 4.0)
+    digest = hashlib.sha256(points.tobytes()).hexdigest()[:16]
+    out = pathlib.Path(tempfile.gettempdir()) / (
+        f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{digest}.txt"
+    )
+    if not out.exists():
+        partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
+        write_points_file(points, partial)
+        partial.replace(out)
+    print(
+        f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
+        f"{len(points)} surface points at {resolution_m / 4.0 * 1000:.2f} mm -> {out}",
+        flush=True,
+    )
+    return str(out)
 
 
 def _robot_unit(scene_unit: str | None) -> str | None:
@@ -393,6 +433,10 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
 # Where the filtered cloud is published for octomap_server. Not a camera topic
 # (ADR-0108): it is not one camera's cloud, it is the world map's input.
 _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
+# The same robot-free cloud with every input field kept (a sim cloud's ``rgb``), for
+# viewers only: the self filter publishes it while subscribed and strips octomap's
+# input to x/y/z, so the map never carries colour.
+_SELF_FILTERED_RGB_CLOUD_TOPIC = "/openral/world_cloud/self_filtered_rgb"
 
 
 def _self_filter_params(
@@ -507,6 +551,14 @@ class _ReachModel:
         )
         self.origin = _xyzrpy_to_matrices(floats("collision_origin_xyzrpy", 6))
         self.axis = floats("collision_axis", 3)
+        n_links = len(self.parent)
+        # A mimic kind (3/4) reads its leader's column: multiplier * q + offset.
+        self.mimic_mult = [float(v) for v in params.get("collision_mimic_multiplier", [])] or [
+            1.0
+        ] * n_links
+        self.mimic_off = [float(v) for v in params.get("collision_mimic_offset", [])] or [
+            0.0
+        ] * n_links
         self.base = set(base_dofs)
         n = len(self.parent)
         moving = [False] * n
@@ -541,10 +593,12 @@ class _ReachModel:
         world: list[np.ndarray] = []
         for i in range(len(self.parent)):
             motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
-            if self.dof[i] >= 0 and self.kind[i] in (1, 2):
+            if self.dof[i] >= 0 and self.kind[i] in (1, 2, 3, 4):
                 qi = q[:, self.dof[i]]
+                if self.kind[i] in (3, 4):
+                    qi = self.mimic_mult[i] * qi + self.mimic_off[i]
                 a = self.axis[i] / np.linalg.norm(self.axis[i])
-                if self.kind[i] == 1:  # revolute: Rodrigues about the joint axis
+                if self.kind[i] in (1, 3):  # revolute: Rodrigues about the joint axis
                     k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
                     motion[:, :3, :3] = (
                         np.eye(3)
@@ -936,6 +990,84 @@ def _runner_joint_state_staleness_s(
             "to size its staleness window."
         )
     return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
+
+
+def _workspace_contact_kernel_params(
+    description: RobotDescription,
+    *,
+    enabled: bool,
+    max_speed_mps: float | None,
+    max_lead_m: float | None,
+    grasp_allowance_enabled: bool,
+    hal_mode: str,
+) -> dict[str, object]:
+    """The safety kernel's manipulation-workspace contact params (issue #349).
+
+    Off: ``{"workspace_contact_enabled": False}`` — the kernel exactly as without the
+    rule. On: the hand links come from the manifest (``RobotDescription.hand_links()``,
+    never configured by name) and the control period from its
+    ``action_spec.control_freq_hz`` (the chunk row spacing the kernel measures the hand
+    speed over); the speed and lead (push) bounds are the scene's calibration points.
+
+    Raises:
+        ROSConfigError: Enabled on a non-sim HAL (sim-only until Safety-WG review),
+            without ``grasp_allowance_enabled``, without a positive speed bound, without a
+            lead bound in (0, 0.10] m, or for a robot with no gripper or no
+            ``action_spec.control_freq_hz``.
+    """
+    if not enabled:
+        return {"workspace_contact_enabled": False}
+    from openral_core.exceptions import ROSConfigError
+
+    if hal_mode != "sim":
+        raise ROSConfigError(
+            "workspace_contact_enabled is sim-only until Safety-WG review "
+            "(docs/reference/manipulation-workspace-contact.md); refused on hal_mode="
+            f"{hal_mode!r}."
+        )
+    if not grasp_allowance_enabled:
+        raise ROSConfigError(
+            "workspace_contact_enabled requires grasp_allowance_enabled: the workspace "
+            "rides the grasp declaration."
+        )
+    if max_speed_mps is None or not max_speed_mps > 0.0:
+        raise ROSConfigError(
+            f"workspace_contact_enabled needs workspace_contact_max_speed_mps > 0, got "
+            f"{max_speed_mps!r}: the hand speed bound is a calibration point, never a default."
+        )
+    if max_lead_m is None or not 0.0 < max_lead_m <= 0.10:
+        raise ROSConfigError(
+            f"workspace_contact_enabled needs 0 < workspace_contact_max_lead_m <= 0.10, got "
+            f"{max_lead_m!r}: the hand lead (push) bound is a calibration point, never a "
+            "default."
+        )
+    links = list(description.hand_links())
+    if not links:
+        raise ROSConfigError(
+            f"workspace_contact_enabled but robot {description.name!r} declares no "
+            "role: gripper joint, so it has no hand links."
+        )
+    rate_hz = description.control_rate_hz
+    if rate_hz is None or not rate_hz > 0.0:
+        raise ROSConfigError(
+            f"workspace_contact_enabled but robot {description.name!r} declares no "
+            "action_spec.control_freq_hz: the kernel measures the hand speed over one "
+            "control period."
+        )
+    return {
+        "workspace_contact_enabled": True,
+        "workspace_contact_links": links,
+        "workspace_contact_max_speed_mps": float(max_speed_mps),
+        "workspace_contact_max_lead_m": float(max_lead_m),
+        # The lead is the arm's push: taken with the jaws at their measured value.
+        "workspace_contact_jaw_joints": [j.name for j in description.joints if j.role == "gripper"],
+        # A position chunk whose only reason to stop is the hand speed holds the measured pose.
+        "workspace_contact_brake_enabled": True,
+        # A refused command with a clear measured pose is held (never executed) for up
+        # to 2 s of chunks in a row before the latched stop (MoveIt Servo's halt).
+        "workspace_contact_hold_max_consecutive": round(2.0 * float(rate_hz)),
+        "workspace_contact_control_period_s": 1.0 / float(rate_hz),
+    }
 
 
 def _depth_camera(description: RobotDescription) -> str:
@@ -1535,6 +1667,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         context
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
+    static_geometry_file = LaunchConfiguration("static_geometry_file").perform(context)
+    if static_geometry_file and not enable_octomap:
+        # Declared walls must never be dropped silently: with the octomap leg off there
+        # is no world grid to mark them in, and the kernel would run without them.
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"static_geometry_file={static_geometry_file!r} needs enable_octomap: the declared "
+            "static geometry is marked in the octomap bridge's world grid, and with the leg "
+            "off it would be dropped silently."
+        )
     rig = _rig_from_launch_args(
         {name: LaunchConfiguration(name).perform(context) for name in _RIG_LAUNCH_ARGS}
     )
@@ -1571,6 +1714,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     grasp_allowance_enabled = LaunchConfiguration("grasp_allowance_enabled").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # Manipulation-workspace contact (DeployRuntime.workspace_contact_enabled, #349).
+    workspace_contact_enabled = LaunchConfiguration("workspace_contact_enabled").perform(
+        context
+    ).lower() in ("1", "true", "yes")
+    _ws_speed = LaunchConfiguration("workspace_contact_max_speed_mps").perform(context)
+    workspace_contact_max_speed_mps = float(_ws_speed) if _ws_speed else None
+    _ws_lead = LaunchConfiguration("workspace_contact_max_lead_m").perform(context)
+    workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -1770,6 +1921,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
+    # The kernel refuses sim-only rules (workspace contact, #349) on anything but sim.
+    kernel_params["hal_mode"] = hal_mode
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
     # in the action's dof index space — same order as the per-joint envelope arrays +
     # collision_dof_index. `collision_seed_dt_s` is the velocity-integration look-ahead step;
@@ -1870,10 +2023,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         }
     # Grasp-target exemption (real pick-and-place design §2.1; ADR draft in
     # docs/reference/real-pick-place-adr-drafts.md). The allowlist is ALWAYS the manifest's
-    # gripper links, on or off, so the kernel resolves the same names either way and a
-    # GraspDeclaration can never name a link the robot does not grip with. Omitted when
-    # empty (an empty list has no ROS parameter type), and refused when the flag is on.
-    grasp_contact_links = [j.child_link for j in description.joints if j.role == "gripper"]
+    # gripper links — every `role: gripper` jaw and its mimic follower jaw — on or off, so
+    # the kernel resolves the same names either way and a GraspDeclaration can never name a
+    # link the robot does not grip with. Omitted when empty (an empty list has no ROS
+    # parameter type), and refused when the flag is on.
+    grasp_contact_links = list(description.grasp_contact_links())
     if grasp_allowance_enabled and not grasp_contact_links:
         from openral_core.exceptions import ROSConfigError
 
@@ -1911,6 +2065,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     kernel_params["place_region_max_age_s"] = 2.0 * world_voxel_deadline_s
     if grasp_contact_links:
         kernel_params["grasp_contact_links"] = grasp_contact_links
+    kernel_params.update(
+        _workspace_contact_kernel_params(
+            description,
+            enabled=workspace_contact_enabled,
+            max_speed_mps=workspace_contact_max_speed_mps,
+            max_lead_m=workspace_contact_max_lead_m,
+            grasp_allowance_enabled=grasp_allowance_enabled,
+            hal_mode=hal_mode,
+        )
+    )
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         assert coverage is not None  # reason: computed whenever enable_octomap
         kernel_params = {
@@ -3027,6 +3191,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     remappings=[
                         ("cloud_in", octomap_cloud_topic),
                         ("cloud_out", _SELF_FILTERED_CLOUD_TOPIC),
+                        ("cloud_out_rgb", _SELF_FILTERED_RGB_CLOUD_TOPIC),
                     ],
                     additional_env=otel_env,
                     output="screen",
@@ -3107,6 +3272,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
+                    # Declared static geometry (manipulation-workspace-contact.md §3.1):
+                    # surface points the bridge marks occupied in every grid. Omitted
+                    # (off) when the scene declares none.
+                    **(
+                        {
+                            "static_points_file": _static_points_file(
+                                static_geometry_file, _octomap_resolution(hal_mode)
+                            )
+                        }
+                        if static_geometry_file
+                        else {}
+                    ),
                     # A held payload is cleared by looking its (manifest) attach link up
                     # on TF; a cell that names that body differently needs the rename.
                     # Omitted when there is none (an empty list has no ROS param type).
@@ -3562,6 +3739,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                             if attach_link_tf_frames
                             else {}
                         ),
+                        # Declared static geometry, drawn on /openral/viz/static_geometry
+                        # in the manifest base frame it is declared in (#349).
+                        **(
+                            {
+                                "static_geometry_file": static_geometry_file,
+                                "base_frame": description.base_frame,
+                            }
+                            if static_geometry_file
+                            else {}
+                        ),
                     }
                 ],
                 additional_env=otel_env,
@@ -3942,6 +4129,17 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "static_geometry_file",
+            default_value="",
+            description=(
+                "Declared static geometry (StaticGeometry YAML, absolute path): walls, shelf "
+                "frame, table, tote shell in base_frame. Sampled a quarter cell apart and "
+                "marked occupied in every published world grid by the octomap bridge, so a "
+                "fixture the camera has not seen still stops an arm. Needs enable_octomap. "
+                "Empty (default) = off."
+            ),
+        ),
+        DeclareLaunchArgument(
             "octomap_cloud_topic",
             default_value="",
             description=(
@@ -4021,6 +4219,34 @@ def generate_launch_description() -> LaunchDescription:
                 "Safety kernel grasp-target exemption (DeployRuntime.grasp_allowance_enabled): "
                 "world-voxel cells inside a live GraspDeclaration's producer-measured region "
                 "do not trip the manifest's gripper contact links. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_enabled",
+            default_value="false",
+            description=(
+                "Safety kernel manipulation-workspace contact (DeployRuntime."
+                "workspace_contact_enabled, issue #349; sim-only until Safety-WG review): "
+                "the manifest's hand links may touch cells inside a live GraspDeclaration's "
+                "producer-confirmed workspace while the hand is slow and close to its "
+                "measured pose. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_max_speed_mps",
+            default_value="",
+            description=(
+                "Hand speed bound (m/s) of the workspace contact rule; required when it is "
+                "enabled (DeployRuntime.workspace_contact_max_speed_mps)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_max_lead_m",
+            default_value="",
+            description=(
+                "Hand lead (push) bound (m) of the workspace contact rule: commanded vs "
+                "measured hand displacement; required when it is enabled "
+                "(DeployRuntime.workspace_contact_max_lead_m)."
             ),
         ),
         DeclareLaunchArgument(

@@ -326,3 +326,48 @@ def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
         f"{rows[first][0] / 1e9:.4f} s) is stamped {shown / 1e9:.4f} s, but the joint "
         f"moved in the step ending {t_move / 1e9:.4f} s"
     )
+
+
+def test_an_attachment_is_recorded_without_body_masking_on_isaac(env: Any) -> None:
+    """Regression (#349): after a kernel-accepted ATTACH the Isaac HAL raised
+    ("attachment body masking requires MuJoCo handles"), the attachment barrier never
+    released and every later action was held. Isaac records the set and masks nothing;
+    the octomap bridge clears the payload by its pose, as on real hardware."""
+    from openral_core import (
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+        RobotDescription,
+    )
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
+    hal = SimAttachedHAL(env, desc)
+    hal.connect()
+    payload = AttachedCollisionObject(
+        object_id="carton",
+        attach_link="openarm_right_link7",
+        touch_links=["openarm_right_finger_pair"],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.06, 0.04, 0.04)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="carton"
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(
+            xyz=(0.0, 0.0, 0.12), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_right_link7"
+        ),
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.VISION_SEGMENTATION,
+        evidence_ref="segment_in_view:test@0",
+        stamp_ns=1,
+    )
+    hal.update_attached_objects([payload])
+    assert [o.object_id for o in hal.read_attached_objects()] == ["carton"]
+    assert hal.read_attached_body_ids() == frozenset()
+    hal.update_attached_objects([])
+    assert hal.read_attached_objects() == []

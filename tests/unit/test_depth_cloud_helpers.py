@@ -799,3 +799,20 @@ def test_cloud_from_raster_equals_a_second_cast() -> None:
     assert 0 < derived.shape[0] < depth.size
     assert derived.shape == cast_again.shape
     assert np.allclose(derived, cast_again, atol=1e-5)
+
+
+def test_pointcloud2_from_points_xyz_packs_rgb() -> None:
+    pytest.importorskip("sensor_msgs")
+    from openral_hal.depth_cloud import pointcloud2_from_points_xyz
+    from sensor_msgs_py import point_cloud2
+
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    rgb = np.array([[255, 0, 0], [1, 2, 3]], dtype=np.uint8)
+    msg = pointcloud2_from_points_xyz(points, frame_id="base_link", rgb=rgb)
+    assert [f.name for f in msg.fields] == ["x", "y", "z", "rgb"]
+    assert msg.point_step == 16
+    # xyz-only readers (octomap, world_cloud_bridge) still see the points.
+    xyz = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"))
+    assert np.allclose(xyz, points)
+    packed = np.frombuffer(bytes(msg.data), dtype="<u4").reshape(2, 4)[:, 3]
+    assert packed.tolist() == [0xFF0000, 0x010203]

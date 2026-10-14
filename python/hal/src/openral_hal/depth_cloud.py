@@ -515,17 +515,22 @@ def pointcloud2_from_points_xyz(
     *,
     frame_id: str,
     stamp: Any = None,
+    rgb: NDArray[np.uint8] | None = None,
 ) -> Any:
     """Pack an ``(N, 3)`` float32 array into a ``sensor_msgs/PointCloud2``.
 
     The cloud is an unordered list (``height=1``, ``width=N``) of XYZ float32
-    points — the standard layout octomap_server's ``cloud_in`` expects.
+    points — the standard layout octomap_server's ``cloud_in`` expects. With
+    ``rgb`` each point also carries the PCL ``rgb`` field (``0x00RRGGBB`` in a
+    float32), which viewers (Foxglove, RViz) colour by; consumers that read only
+    ``x``/``y``/``z`` are unaffected.
 
     Args:
         points: ``(N, 3)`` float32 array of XYZ in the ``frame_id`` frame.
         frame_id: tf2 frame the points live in (the camera optical frame).
         stamp: ``builtin_interfaces/Time`` for the header; ``None`` leaves the
             default (zero) stamp — callers normally pass ``node.get_clock().now()``.
+        rgb: optional ``(N, 3)`` uint8 colour per point.
     """
     from sensor_msgs.msg import PointCloud2, PointField  # reason: defer ROS dep
 
@@ -543,12 +548,48 @@ def pointcloud2_from_points_xyz(
         PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
         PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
     ]
+    if rgb is not None:
+        c = np.asarray(rgb, dtype=np.uint32).reshape(n, 3)
+        packed = ((c[:, 0] << 16) | (c[:, 1] << 8) | c[:, 2]).astype("<u4")
+        msg.fields.append(PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1))
+        pts = np.hstack([pts.reshape(n, 3), packed.view("<f4").reshape(n, 1)])
     msg.is_bigendian = False
-    msg.point_step = 12
-    msg.row_step = 12 * n
+    msg.point_step = 4 * len(msg.fields)
+    msg.row_step = msg.point_step * n
     msg.data = pts.reshape(-1).tobytes()
     msg.is_dense = True
     return msg
+
+
+def colours_from_frame(
+    points: NDArray[np.float32],
+    rgb: NDArray[np.uint8],
+    k: NDArray[np.float64],
+    optical_in_base: NDArray[np.float64],
+) -> NDArray[np.uint8]:
+    """Colour ``base_frame`` points by projecting them into a registered RGB frame.
+
+    ``k`` is ``[fx, fy, cx, cy]`` of the ``(H, W, 3)`` ``rgb`` raster and
+    ``optical_in_base`` the 4x4 pose of its REP-103 optical frame. A point behind
+    the camera or outside the image is grey.
+
+    >>> pts = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], dtype=np.float32)
+    >>> img = np.zeros((2, 2, 3), dtype=np.uint8)
+    >>> img[1, 1] = (255, 0, 0)
+    >>> colours_from_frame(pts, img, np.array([1.0, 1.0, 1.0, 1.0]), np.eye(4)).tolist()
+    [[255, 0, 0], [128, 128, 128]]
+    """
+    base_to_opt = np.linalg.inv(np.asarray(optical_in_base, dtype=np.float64))
+    p = np.asarray(points, dtype=np.float64) @ base_to_opt[:3, :3].T + base_to_opt[:3, 3]
+    fx, fy, cx, cy = (float(v) for v in k)
+    h, w = rgb.shape[:2]
+    z = np.where(p[:, 2] > 0.0, p[:, 2], np.inf)
+    u = np.floor(fx * p[:, 0] / z + cx).astype(np.int64)
+    v = np.floor(fy * p[:, 1] / z + cy).astype(np.int64)
+    ok = np.isfinite(z) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    out = np.full((len(p), 3), 128, dtype=np.uint8)
+    out[ok] = rgb[v[ok], u[ok], :3]
+    return out
 
 
 def depth_image_from_grid(

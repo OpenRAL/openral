@@ -101,6 +101,7 @@ def map_confirms(
     support_z: float,
     min_cover: float,
     pad_m: float = 0.0,
+    own: Sequence[PlaceRegion] = (),
 ) -> tuple[str, str]:
     """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
@@ -125,6 +126,8 @@ def map_confirms(
         min_cover: ``region_covers_occupied``'s fraction. *Calibration point.*
         pad_m: The padding the fit added to the box's sides and top (``fit_pad_m``); a
             second body confined to that band is a sliver, not a split.
+        own: Boxes the robot itself fills (its hands, padded), in the grid frame: a
+            second body wholly inside them is the robot's own and does not split it.
 
     Raises:
         ROSConfigError: On a frame mismatch or a tilted region.
@@ -170,7 +173,12 @@ def map_confirms(
             "pose": region.pose.model_copy(update={"xyz": (x, y, z - pad_m / 2)}),
         }
     )
-    deep = [c for c in comps[1:] if _in_region(above[c], inner).any()]
+    deep = [
+        c
+        for c in comps[1:]
+        if _in_region(above[c], inner).any()
+        and not np.any([_in_region(above[c], b) for b in own], axis=0).all()
+    ]
     if deep:
         parts = [len(c) for c in comps]
         return "map_split", f"{len(parts)} separate bodies inside the instance box (cells {parts})"

@@ -11,6 +11,7 @@ environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
     reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
     render->{"frame": uint8 HWC|None}   close->{"ok"}
+    contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
 IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
@@ -301,6 +302,12 @@ def _serve(
                 reply = scene.step(np.asarray(data["action"], dtype=np.float32))
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
+            elif endpoint == "contacts":
+                reply = scene.contact_ground_truth()
+            elif endpoint == "static_colliders":
+                reply = scene.static_collider_boxes()
+            elif endpoint == "set_task":
+                reply = scene.set_task(str(data.get("instruction", "")))
             elif endpoint == "close":
                 reply = {"ok": True}
                 running = False

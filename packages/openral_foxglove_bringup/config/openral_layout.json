@@ -5,7 +5,8 @@
    "scene": {
     "transforms": {
      "showLabel": false
-    }
+    },
+    "ignoreColladaUpAxis": true
    },
    "cameraState": {
     "perspective": true,
@@ -39,7 +40,19 @@
      "colorMap": "turbo",
      "pointSize": 0.04
     },
+    "/openral/world_cloud/self_filtered_rgb": {
+     "visible": true,
+     "colorField": "rgb",
+     "colorMode": "rgb",
+     "pointSize": 3
+    },
     "/openral/viz/attachments": {
+     "visible": true
+    },
+    "/openral/viz/static_geometry": {
+     "visible": true
+    },
+    "/openral/viz/collisions": {
      "visible": true
     },
     "/odom": {
@@ -119,7 +132,9 @@
   },
   "3D!bucket2": {
    "followTf": "base_link",
-   "scene": {},
+   "scene": {
+    "ignoreColladaUpAxis": true
+   },
    "cameraState": {
     "perspective": true,
     "distance": 4,
@@ -143,6 +158,12 @@
      "pointSize": 0.04
     },
     "/openral/viz/attachments": {
+     "visible": true
+    },
+    "/openral/viz/static_geometry": {
+     "visible": true
+    },
+    "/openral/viz/collisions": {
      "visible": true
     }
    },

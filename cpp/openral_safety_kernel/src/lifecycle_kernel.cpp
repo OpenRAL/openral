@@ -326,6 +326,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::int64_t>>("collision_hull_vertex_count",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<double>>("collision_hull_vertices", std::vector<double>{});
+  // Mimic joints (`RobotDescription.mimic_joints`, the URDF `<mimic>`): a link
+  // of `collision_joint_kind` 3/4 reads the column `collision_dof_index` names
+  // and moves by `multiplier * q + offset`. Per link, parallel to
+  // `collision_parent`; empty = no mimic link (identity for every link).
+  this->declare_parameter<std::vector<double>>("collision_mimic_multiplier", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("collision_mimic_offset", std::vector<double>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
                                                      std::vector<std::int64_t>{});
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
@@ -431,6 +437,44 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // while the matching allowance is enabled.
   this->declare_parameter<double>("grasp_region_max_age_s", 0.0);
   this->declare_parameter<double>("place_region_max_age_s", 0.0);
+  // Manipulation-workspace contact (issue #349, draft; Safety-WG review
+  // pending). Default OFF. When on: a hand link (`workspace_contact_links`, the
+  // launch-derived hand links — gripper leaders, mimic followers and the link
+  // carrying them) inside the live grasp declaration's producer-confirmed
+  // `workspace_region` does not trip the world-voxel check while the hand's
+  // speed is at most `workspace_contact_max_speed_mps` AND its lead over the
+  // measured pose is at most `workspace_contact_max_lead_m`. The speed is the
+  // MEASURED hand speed (/joint_states velocity over one
+  // `workspace_contact_control_period_s`); without a fresh measured velocity,
+  // the commanded speed (row spacing, row 0 from the previously accepted
+  // command while fresh) is the fallback.
+  // No default the kernel would silently use: enabled with a speed, lead or
+  // period that is not finite and > 0 (lead also <= kMaxWorkspaceContactLeadM)
+  // refuses configure, as does enabled without `grasp_allowance_enabled`.
+  this->declare_parameter<bool>("workspace_contact_enabled", false);
+  // The HAL mode the graph runs (`sim` | `real`). The workspace rule is sim-only until
+  // Safety-WG review, and the kernel enforces that itself rather than trusting every
+  // launch to (#349 review). Defaults to real: an unset mode never arms a sim-only rule.
+  this->declare_parameter<std::string>("hal_mode", "real");
+  this->declare_parameter<std::vector<std::string>>("workspace_contact_links",
+                                                    std::vector<std::string>{});
+  this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
+  this->declare_parameter<double>("workspace_contact_max_lead_m", 0.0);
+  // The gripper (jaw) joints, from the manifest's `role: gripper` joints: the lead
+  // is taken with them at their measured value, so it bounds the ARM's push and
+  // not a closing jaw's remaining stroke (a grasp squeeze is bounded by the
+  // gripper's own effort limit). Empty = every joint counts (the stricter reading).
+  this->declare_parameter<std::vector<std::string>>("workspace_contact_jaw_joints",
+                                                    std::vector<std::string>{});
+  // #349 workspace brake: with the workspace rule on, a position chunk whose only
+  // reason to stop is the measured hand speed holds the measured pose instead.
+  this->declare_parameter<bool>("workspace_contact_brake_enabled", false);
+  // ... and, up to this many consecutive chunks, a command the relaxed check still
+  // refuses while the measured pose passes is held too (MoveIt Servo's halt: the
+  // command is never executed, the arm stays where it is clear); past it, today's
+  // latched stop. 0 = off.
+  this->declare_parameter<std::int64_t>("workspace_contact_hold_max_consecutive", 0);
+  this->declare_parameter<double>("workspace_contact_control_period_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
   // `collision_joint_names` is the actuated joint order (length n_dof) the
@@ -566,6 +610,133 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     RCLCPP_INFO(this->get_logger(), "safety.region_max_age grasp_s=%g place_s=%g",
                 grasp_region_max_age_s_, place_region_max_age_s_);
   }
+  // Manipulation-workspace contact (#349). Every refusal is a misconfiguration
+  // of a safety surface: configure fails rather than running with a rule whose
+  // bound or scope it cannot state.
+  workspace_contact_enabled_ = this->get_parameter("workspace_contact_enabled").as_bool();
+  workspace_brake_enabled_ = this->get_parameter("workspace_contact_brake_enabled").as_bool();
+  workspace_brakes_ = 0;
+  workspace_command_holds_.clear();
+  {
+    const std::int64_t cap = this->get_parameter("workspace_contact_hold_max_consecutive").as_int();
+    if (cap < 0 || (cap > 0 && !workspace_brake_enabled_)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "workspace_contact_hold_max_consecutive refused: must be >= 0 and needs "
+                   "workspace_contact_brake_enabled, got %lld",
+                   static_cast<long long>(cap));
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    workspace_hold_max_consecutive_ = static_cast<std::uint64_t>(cap);
+  }
+  if (workspace_brake_enabled_ && !workspace_contact_enabled_) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "workspace_contact_brake_enabled refused: it requires workspace_contact_enabled");
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
+  workspace_links_.reset();
+  workspace_link_index_.clear();
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  if (workspace_contact_enabled_ && this->get_parameter("hal_mode").as_string() != "sim") {
+    RCLCPP_ERROR(this->get_logger(),
+                 "workspace_contact_enabled refused: sim-only until Safety-WG review "
+                 "(docs/reference/manipulation-workspace-contact.md), hal_mode=%s",
+                 this->get_parameter("hal_mode").as_string().c_str());
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
+  if (workspace_contact_enabled_) {
+    const auto refuse = [this](const std::string& why) {
+      RCLCPP_ERROR(this->get_logger(), "workspace_contact_enabled refused: %s", why.c_str());
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    };
+    if (!grasp_allowance_enabled_) {
+      return refuse("it requires grasp_allowance_enabled (the workspace rides the grasp "
+                    "declaration)");
+    }
+    workspace_max_speed_mps_ = this->get_parameter("workspace_contact_max_speed_mps").as_double();
+    workspace_control_period_s_ =
+        this->get_parameter("workspace_contact_control_period_s").as_double();
+    if (!std::isfinite(workspace_max_speed_mps_) || workspace_max_speed_mps_ <= 0.0) {
+      return refuse("workspace_contact_max_speed_mps must be finite and > 0, got " +
+                    std::to_string(workspace_max_speed_mps_));
+    }
+    if (!std::isfinite(workspace_control_period_s_) || workspace_control_period_s_ <= 0.0) {
+      return refuse("workspace_contact_control_period_s must be finite and > 0, got " +
+                    std::to_string(workspace_control_period_s_));
+    }
+    workspace_max_lead_m_ = this->get_parameter("workspace_contact_max_lead_m").as_double();
+    if (!std::isfinite(workspace_max_lead_m_) || workspace_max_lead_m_ <= 0.0 ||
+        workspace_max_lead_m_ > kMaxWorkspaceContactLeadM) {
+      return refuse("workspace_contact_max_lead_m must be finite, > 0 and <= " +
+                    std::to_string(kMaxWorkspaceContactLeadM) + ", got " +
+                    std::to_string(workspace_max_lead_m_));
+    }
+    const auto names = this->get_parameter("workspace_contact_links").as_string_array();
+    if (names.empty()) {
+      return refuse("workspace_contact_links is empty");
+    }
+    std::string listed;
+    for (const auto& name : names) {
+      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
+          index >= collision_model_.n_links) {
+        return refuse("workspace_contact_links names '" + name +
+                      "', which is not a collision link of this model");
+      }
+      if (!workspace_links_[index]) {
+        workspace_links_.set(index);
+        workspace_link_index_.push_back(static_cast<int>(index));
+        listed += (listed.empty() ? "" : ",") + name;
+      }
+    }
+    const std::size_t n_links = collision_model_.n_links;
+    workspace_link_reach_.assign(n_links, 0.0);
+    for (const int l : workspace_link_index_) {
+      workspace_link_reach_[static_cast<std::size_t>(l)] = link_geometry_reach(collision_model_, l);
+    }
+    workspace_prev_plain_.assign(n_links, Transform{});
+    workspace_prev_partner_.assign(n_links, Transform{});
+    workspace_creep_prev_.assign(n_links, Transform{});
+    workspace_meas_pose_.assign(n_links, Transform{});
+    workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
+    q_workspace_.assign(envelope_.n_dof, 0.0);
+    q_lead_.assign(envelope_.n_dof, 0.0);
+    workspace_jaw_cols_.clear();
+    // Resolved against the parameter: `collision_joint_names_` is read further down.
+    const auto joint_names = this->get_parameter("collision_joint_names").as_string_array();
+    const auto jaw_joints = this->get_parameter("workspace_contact_jaw_joints").as_string_array();
+    for (const auto& name : jaw_joints) {
+      const auto it = std::find(joint_names.begin(), joint_names.end(), name);
+      const auto d = static_cast<std::size_t>(it - joint_names.begin());
+      if (it == joint_names.end() || d >= envelope_.n_dof) {
+        return refuse("workspace_contact_jaw_joints names '" + name +
+                      "', which is not a joint of this model");
+      }
+      workspace_jaw_cols_.push_back(static_cast<int>(d));
+    }
+    workspace_cmd_q_.assign(envelope_.n_dof, 0.0);
+    workspace_cmd_due_ns_.assign(envelope_.n_dof, 0);
+    workspace_cmd_set_.assign(envelope_.n_dof, 0);
+    workspace_command_holds_.assign(envelope_.n_dof, 0);
+    clear_workspace_commands();
+    RCLCPP_WARN(this->get_logger(),
+                "safety.workspace_contact enabled (issue #349 draft, Safety-WG review pending): "
+                "hand links [%s] inside a live grasp declaration's map-confirmed workspace do "
+                "not trip the world-voxel check while BOTH the hand's speed is <= %g m/s "
+                "(the larger of the /joint_states velocity over one %g s period and the "
+                "commanded row-to-row speed, row 0 from the previously accepted command while "
+                "it is fresh, %g periods, else from the measured state) AND its lead over the "
+                "measured pose is <= %g m (the push bound; no per-row allowance while the "
+                "measured hand touches); arm links, contact outside the "
+                "workspace and a fast or far-leading hand stop as before",
+                listed.c_str(), workspace_max_speed_mps_, workspace_control_period_s_,
+                kWorkspaceCommandFreshPeriods, workspace_max_lead_m_);
+  }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
                 collision_model_.n_links, self_collision_margin_m_);
@@ -593,6 +764,19 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
   }
 
+  if (!collision_model_.mimic_multiplier.empty()) {
+    std::size_t n_mimic = 0;
+    for (const JointKind kind : collision_model_.joint_kind) {
+      if (is_mimic(kind)) {
+        ++n_mimic;
+      }
+    }
+    RCLCPP_INFO(this->get_logger(),
+                "collision model: %zu mimic link(s) posed from another joint's column "
+                "(multiplier * q + offset), rigid, checked at the commanded value",
+                n_mimic);
+  }
+
   // Set up the measured joint-state seed used to reconstruct
   // non-position chunks (Phase 1) for the velocity check (Phase 2). Sized to
   // n_dof; the name→dof map lets /joint_states (named) fill q_meas_ in the
@@ -607,8 +791,12 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   const std::size_t ndof = envelope_.n_dof;
   q_meas_.assign(ndof, 0.0);
   q_meas_seen_.assign(ndof, false);
+  dq_meas_.assign(ndof, 0.0);
+  dq_meas_seen_.assign(ndof, 0);
+  dq_meas_stamp_ns_.assign(ndof, 0);
   q_check_.assign(ndof, 0.0);
   q_fk_.assign(ndof, 0.0);
+  ws_trip_q_.assign(ndof, 0.0);
   slot_commanded_.assign(ndof, 0);
   tick_target_.assign(ndof, 0.0);
   tick_target_set_.assign(ndof, 0);
@@ -650,6 +838,21 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       static_cast<std::size_t>(collision_ee_link_) >= collision_model_.n_links) {
     collision_ee_link_ = -1;  // out of range → disable predictive (fail-safe to reactive)
   }
+  // The EE Jacobian walks root -> ee and gives a mimic link no column of its
+  // own (`jacobian_dls_step`); a mimic ON that chain would move the EE without
+  // a column, so the prediction would be wrong. No finger is on it (both jaws
+  // are leaves); refuse rather than predict wrongly.
+  for (int l = collision_ee_link_; l >= 0;
+       l = collision_model_.parent[static_cast<std::size_t>(l)]) {
+    if (is_mimic(collision_model_.joint_kind[static_cast<std::size_t>(l)])) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "collision_ee_link_index %d has a mimic link on its chain; the EE Jacobian "
+                   "cannot predict through a mimic joint",
+                   collision_ee_link_);
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+  }
 
   joint_name_to_dof_.clear();
   for (std::size_t i = 0; i < collision_joint_names_.size() && i < ndof; ++i) {
@@ -657,7 +860,10 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   }
   collision_fk_dofs_.clear();
   for (const int d : collision_model_.dof_index) {
-    if (d >= 0 && static_cast<std::size_t>(d) < ndof) {
+    // Once per column: a mimic link shares its leader's column.
+    if (d >= 0 && static_cast<std::size_t>(d) < ndof &&
+        std::find(collision_fk_dofs_.begin(), collision_fk_dofs_.end(), d) ==
+            collision_fk_dofs_.end()) {
       collision_fk_dofs_.push_back(d);
     }
   }
@@ -747,6 +953,7 @@ SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_activate(const rclcpp_lifecycle::State& state) {
   // rclcpp_lifecycle::LifecycleNode::on_activate() default activates all
   // registered managed publishers; we still call it via the base.
+  clear_workspace_commands();
   safe_pub_->on_activate();
   estop_pub_->on_activate();
   failure_pub_->on_activate();
@@ -816,6 +1023,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -823,6 +1031,14 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_latched_stamp_ns_ = 0;
   grasp_latched_ = false;
   grasp_latched_moved_warned_ = false;
+  workspace_contact_enabled_ = false;
+  workspace_links_.reset();
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_target_.clear();
+  workspace_refusal_reason_.clear();
+  workspace_pairs_total_ = 0;
+  clear_workspace_commands();
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
   status_msg_ = openral_msgs::msg::SafetyStatus{};
@@ -868,6 +1084,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                              },
                              span_opts);
   auto span_scope = opentelemetry::trace::Scope(span);
+
+  // #349: a refused chunk (any drop path, latching or not) since the last
+  // candidate ends the previous-command chain — the robot's command is no
+  // longer known to be the last accepted row. Checked here, once, so no drop
+  // path can forget to do it.
+  if (chunks_dropped_ != workspace_cmd_drops_seen_) {
+    workspace_cmd_drops_seen_ = chunks_dropped_;
+    clear_workspace_commands();
+  }
 
   if (fault_latch_) {
     ++chunks_dropped_;
@@ -1094,6 +1319,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         return std::string("attached_") + std::to_string(idx);
       };
+      // A trip's named geometry as evidence text; only on a report or a log line.
+      const auto name_str = [&](WsName n) -> std::string {
+        switch (n.tag) {
+        case 'a':
+          return attached_label(n.idx);
+        case 'v':
+          return std::string("voxel_") + std::to_string(n.idx);
+        case 'p':
+          return "place:" + place_declaration_target_ + "#" + std::to_string(n.idx);
+        case 'f':
+          return "force:" + place_declaration_target_;
+        default:
+          return link_name(n.idx);
+        }
+      };
+      const auto trip_str = [&](const WsTrip& t) -> std::string {
+        return t.set ? std::string(t.kind) + " " + name_str(t.a) + " " + name_str(t.b)
+                     : std::string();
+      };
       // Report one collision hit. `hit` supplies BOTH identity and distance,
       // so E-stop evidence always describes a single geometry pair:
       // hit.min_distance is that pair's own surface distance, never the
@@ -1109,8 +1353,31 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // (depends on the kernel's own DLS Jacobian, lambda, dt) — the
       // drawer-opening stop that opened this issue was adjudicated against
       // the *measured* joints, where the two named links sit 53 mm apart.
-      const auto report = [&](const char* kind, const std::string& a, const std::string& b,
-                              int step, const CollisionHit& hit) {
+      const auto report = [&](const char* kind, WsName na, WsName nb, int step,
+                              const CollisionHit& hit) {
+        if (ws_dry_run_) {
+          // #349 brake dry run: nothing is reported. The first trip of each pass is
+          // recorded without allocating (#349 review F): the as-is pass's is the
+          // verdict if the brake does not answer it, the relaxed pass's says why.
+          WsTrip& t = ws_speed_override_ ? ws_refused_trip_ : ws_first_trip_;
+          if (!t.set) {
+            t = WsTrip{true,
+                       kind,
+                       na,
+                       nb,
+                       step,
+                       hit,
+                       voxel_grid_.workspace_region.hand_speed_mps,
+                       voxel_grid_.workspace_region.hand_lead_m,
+                       ws_speed_measured_row_};
+            if (!ws_speed_override_) {
+              std::copy(q_fk_.begin(), q_fk_.end(), ws_trip_q_.begin());
+            }
+          }
+          return;
+        }
+        const std::string a = name_str(na);
+        const std::string b = name_str(nb);
         ++chunks_dropped_;
         // Advisory band (#176): a declared payload's own receptacle contact is
         // refused, not latched — chunk dropped, skill may retry, instead of an
@@ -1159,14 +1426,27 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
                      "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
-                     "grasp_target=%s",
+                     "grasp_target=%s workspace_contact_active=%d hand_speed_mps=%g "
+                     "hand_lead_m=%g hand_speed_source=%s workspace_denied=%d",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
                      static_cast<int>(hit.depth_is_box_bound),
                      static_cast<int>(voxel_grid_.grasp_region.valid),
-                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "");
+                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
+                     static_cast<int>(voxel_grid_.workspace_region.valid),
+                     voxel_grid_.workspace_region.hand_speed_mps,
+                     voxel_grid_.workspace_region.hand_lead_m,
+                     ws_speed_measured_row_ ? "measured" : "commanded", hit.workspace_denied);
+        if (voxel_grid_.workspace_region.valid) {
+          span->SetAttribute("safety.workspace_hand_speed_mps",
+                             voxel_grid_.workspace_region.hand_speed_mps);
+          span->SetAttribute("safety.workspace_hand_speed_source",
+                             ws_speed_measured_row_ ? "measured" : "commanded");
+          span->SetAttribute("safety.workspace_hand_lead_m",
+                             voxel_grid_.workspace_region.hand_lead_m);
+        }
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1252,6 +1532,20 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       }
       voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
       span->SetAttribute("safety.grasp_exemption_active", grasp_live);
+      // #349: the manipulation workspace, re-evaluated per candidate like the
+      // grasp region. Its hand speed and lead are set per checked row below;
+      // they are known only for a JOINT_POSITION chunk with a fresh measured
+      // state (the lead's reference, and row 0's fallback). Every other mode
+      // keeps them +inf, i.e. no exemption.
+      const bool workspace_on = workspace_contact_enabled_ && workspace_live();
+      voxel_grid_.workspace_region = workspace_on ? workspace_region_ : WorkspaceContactRegion{};
+      const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
+      workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
+      ws_hand_contact_ = false;
+      ws_speed_measured_row_ = false;
+      span->SetAttribute("safety.workspace_contact_active", workspace_on);
+      std::uint64_t workspace_chunk_pairs = 0;
+      double workspace_chunk_min = std::numeric_limits<double>::infinity();
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -1275,11 +1569,115 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           collision_min_slack_m = slack;
         }
       };
-      const auto check_config = [&](const double* q, int step, double extra_margin = 0.0) -> bool {
-        fk_config(q);
+      // #349 disclosure of tolerated workspace pairs, never silent: count, tally,
+      // WARN <= 1 Hz per link. `who` prefixes the link: "" for a hand link,
+      // "payload@" for a payload carried by it.
+      const auto disclose_workspace = [&](const CollisionHit& hit, int step, const char* who) {
+        if (hit.workspace_pairs <= 0 || ws_quiet_) {
+          return;
+        }
+        const double speed = voxel_grid_.workspace_region.hand_speed_mps;
+        const double lead = voxel_grid_.workspace_region.hand_lead_m;
+        workspace_chunk_pairs += static_cast<std::uint64_t>(hit.workspace_pairs);
+        workspace_chunk_min = std::min(workspace_chunk_min, hit.workspace_min_distance);
+        workspace_pairs_total_ += static_cast<std::uint64_t>(hit.workspace_pairs);
+        workspace_min_distance_total_ =
+            std::min(workspace_min_distance_total_, hit.workspace_min_distance);
+        if (speed > workspace_speed_max_seen_) {
+          workspace_speed_max_seen_ = speed;
+          workspace_speed_max_measured_ = ws_speed_measured_row_;
+        }
+        workspace_lead_max_seen_ = std::max(workspace_lead_max_seen_, lead);
+        const auto l = static_cast<std::size_t>(hit.workspace_link);
+        const auto wall = std::chrono::steady_clock::now();
+        if (l < workspace_last_warn_.size() &&
+            wall - workspace_last_warn_[l] >= std::chrono::seconds(1)) {
+          workspace_last_warn_[l] = wall;
+          RCLCPP_WARN(this->get_logger(),
+                      "safety.workspace_contact link=%s%s cell=%d depth_mm=%.1f "
+                      "speed_mps=%.3f speed_source=%s max_mps=%g lead_m=%.4f "
+                      "lead_allow_m=%.4f max_lead_m=%g pairs=%d step=%d target=%s",
+                      who, link_name(hit.workspace_link).c_str(), hit.workspace_cell,
+                      std::max(0.0, -hit.workspace_min_distance) * 1e3, speed,
+                      ws_speed_measured_row_ ? "measured" : "commanded", workspace_max_speed_mps_,
+                      lead, ws_lead_allow_m_, workspace_max_lead_m_, hit.workspace_pairs, step,
+                      workspace_target_.c_str());
+        }
+        span->SetAttribute("safety.workspace_contact_pairs",
+                           static_cast<int64_t>(workspace_chunk_pairs));
+        span->SetAttribute("safety.workspace_contact_max_depth_m",
+                           std::max(0.0, -workspace_chunk_min));
+        span->SetAttribute("safety.workspace_hand_speed_mps", speed);
+        span->SetAttribute("safety.workspace_hand_speed_source",
+                           ws_speed_measured_row_ ? "measured" : "commanded");
+        span->SetAttribute("safety.workspace_hand_lead_m", lead);
+      };
+      // `workspace_prev`: the hand links' poses at the previous row of the same
+      // construction (for row 0, the previously accepted command where fresh,
+      // else the measured state); nullptr = speed and lead unknown.
+      const auto check_config = [&](const double* q, int step, double extra_margin = 0.0,
+                                    std::vector<Transform>* workspace_prev = nullptr) -> bool {
+        if (voxel_grid_.workspace_region.valid) {
+          const bool known = workspace_prev != nullptr;
+          // The lead at `q` with the jaws held at measured: the arm's push only.
+          if (known) {
+            std::copy(q, q + q_lead_.size(), q_lead_.begin());
+            for (const int d : workspace_jaw_cols_) {
+              q_lead_[static_cast<std::size_t>(d)] = q_meas_[static_cast<std::size_t>(d)];
+            }
+            fk_config(q_lead_.data());
+          }
+          // Row `step` is executed `step` periods from now: by then a free hand may
+          // have travelled `step` periods at the speed bound, so only the lead past
+          // that allowance is a push (#349 r31: a chunk's last row 1.7 s out led
+          // 0.48 m on a plain carry and braked every chunk). Row 0 (and the measured
+          // state, step -1) gets no allowance: a blocked hand is re-judged against
+          // the fresh measured pose at every chunk, so the executed push never
+          // exceeds the lead bound plus one period. A hand already touching
+          // (`ws_hand_contact_`) gets no allowance on any row (#349 review A: a blocked
+          // hand does not travel with the command, and one open-loop chunk could push
+          // it max_lead + s*v*T, ~0.18 m). A hand free now that meets something
+          // mid-chunk keeps the allowance until the next chunk's re-check, which sees
+          // it in contact: that push is bounded by one chunk's allowance.
+          ws_lead_allow_m_ = step > 0 && !ws_hand_contact_
+                                 ? workspace_max_speed_mps_ * workspace_control_period_s_ *
+                                       static_cast<double>(step)
+                                 : 0.0;
+          voxel_grid_.workspace_region.hand_lead_m =
+              !known               ? std::numeric_limits<double>::infinity()
+              : ws_speed_override_ ? 0.0
+                                   : std::max(0.0, workspace_hand_lead() - ws_lead_allow_m_);
+          fk_config(q);
+          // Row 0 with a fresh measured velocity: the measured speed only. Its
+          // commanded step (from the previous command or the measured state) is the
+          // chunk-boundary jump the arm smooths, already bounded by the lead (#349 r41:
+          // reading it as speed held the arm still every chunk, 2013 brakes a run).
+          // Rows s >= 1: the larger of the measured and the commanded row-to-row speed
+          // (#349 review B: a fast command within a chunk must not read slow). Without a
+          // fresh measured velocity the commanded speed governs every row.
+          double speed =
+              known && ws_speed_override_ ? 0.0 : std::numeric_limits<double>::infinity();
+          ws_speed_measured_row_ = false;
+          if (known && !ws_speed_override_) {
+            const double commanded = workspace_hand_speed(*workspace_prev);  // advances prev
+            speed = commanded;
+            if (workspace_speed_measured_ &&
+                (step <= 0 || workspace_measured_speed_mps_ >= commanded)) {
+              speed = workspace_measured_speed_mps_;
+              ws_speed_measured_row_ = true;
+            }
+          }
+          voxel_grid_.workspace_region.hand_speed_mps = speed;
+        } else {
+          fk_config(q);
+        }
         if (self_collision_enabled_) {
-          const auto hit = check_self_collision(collision_model_, collision_scratch_,
-                                                self_collision_margin_m_ + extra_margin);
+          // #349: two slow hands meeting inside the live workspace are tolerated
+          // like a hand meeting an object there (WARN `link=self@<a> cell=<b index>`).
+          const auto hit = check_self_collision(
+              collision_model_, collision_scratch_, self_collision_margin_m_ + extra_margin,
+              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr);
+          disclose_workspace(hit, step, "self@");
           // NOT folded into the graded band (#188), deliberately, since #191.
           // A robot's tightest self-pair is a property of how it is BUILT, not
           // of where it is going: on `panda_mobile`, `panda_link5` <->
@@ -1293,7 +1691,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           // velocity band is dropped, which restores the pre-#188 rate on the
           // self path and leaves the world path doing what #188 built it for.
           if (hit.hit) {
-            report("self", link_name(hit.link_a), link_name(hit.link_b), step, hit);
+            report("self", WsName{'l', hit.link_a}, WsName{'l', hit.link_b}, step, hit);
             return true;
           }
         }
@@ -1309,9 +1707,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
+          disclose_workspace(hit, step, "");
           if (hit.hit) {
-            report("world", link_name(hit.link_a),
-                   std::string("voxel_") + std::to_string(hit.link_b), step, hit);
+            report("world", WsName{'l', hit.link_a}, WsName{'v', hit.link_b}, step, hit);
             return true;
           }
         }
@@ -1334,25 +1732,25 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                             collision_scratch_, voxel_grid_,
                                                             amargin, collision_scale_proximity_m_);
             note_slack(hit, amargin);
+            disclose_workspace(hit, step, "payload@");
             if (hit.hit) {
               // ADR-0098: when declared target geometry adjudicated the pair,
               // hit.min_distance is the distance to that BODY, not the cell
               // link_b indexes, so the evidence must name the body —
               // quoting one geometry's distance under another's identity is
               // the CollisionHit-forbidden failure #187 fixed.
-              const std::string other =
-                  hit.place_target_adjudicated
-                      ? "place:" + place_declaration_target_ + "#" + std::to_string(hit.link_b)
-                      : std::string("voxel_") + std::to_string(hit.link_b);
-              report("world", attached_label(hit.link_a), other, step, hit);
+              report("world", WsName{'a', hit.link_a},
+                     WsName{hit.place_target_adjudicated ? 'p' : 'v', hit.link_b}, step, hit);
               return true;
             }
           }
-          const auto hit = check_attached_self_collision(collision_model_, attached_model_,
-                                                         collision_scratch_, amargin);
+          const auto hit = check_attached_self_collision(
+              collision_model_, attached_model_, collision_scratch_, amargin,
+              workspace_contact_enabled_ ? &voxel_grid_.workspace_region : nullptr);
           note_slack(hit, amargin);
+          disclose_workspace(hit, step, "payload-self@");
           if (hit.hit) {
-            report("self", attached_label(hit.link_a), link_name(hit.link_b), step, hit);
+            report("self", WsName{'a', hit.link_a}, WsName{'l', hit.link_b}, step, hit);
             return true;
           }
           // ADR-0100 contact-force gate, survey Path C. Evaluated LAST, after
@@ -1384,8 +1782,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                          attached_label(force.object_index).c_str(),
                          place_declaration_target_.c_str(), force.magnitude_n, force.threshold_n,
                          step);
-            report("world", attached_label(force.object_index),
-                   "force:" + place_declaration_target_, step, fhit);
+            report("world", WsName{'a', force.object_index}, WsName{'f', 0}, step, fhit);
             return true;
           }
         }
@@ -1393,32 +1790,403 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       };
 
       if (is_position) {
-        for (std::uint16_t s = 0; s < view.horizon; ++s) {
-          const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
-          if (!slot_row) {
-            // A full row is the joint configuration itself.
-            if (check_config(row, static_cast<int>(s))) {
-              return;
+        // #349 hand speed and lead. The speed bound is about impact energy. Two
+        // readings, the larger governs (#349 review B): the measured hand speed,
+        // FK(q_meas + dq_meas * period) against FK(q_meas) over one period, the
+        // same for every row; and the commanded row-to-row speed below, so a fast
+        // command issued from rest does not read as slow. The chunk executor's
+        // 0.5-1 rad chunk-boundary steps read fast this way: under the brake such
+        // a speed-only violation creeps at the bounded speed instead of stopping.
+        //
+        // Commanded speed: row s is reached from row s-1 in one
+        // control period. Row 0's previous row is, per joint the row commands,
+        // that joint's previously ACCEPTED command while it is fresh, else its
+        // measured value (a position-controlled arm trails its command by
+        // several periods, so measured-to-row reads tracking lag as speed;
+        // the fallback can only read the hand faster, never slower). Joints the
+        // row does not command keep the value the check places them at (the
+        // measured state; for the tick-partner check, the partner's committed
+        // target), so they add no phantom motion. The lead is always taken
+        // against the MEASURED configuration.
+        std::vector<Transform>* ws_plain = nullptr;
+        std::vector<Transform>* ws_partner = nullptr;
+        if (workspace_speed_known) {
+          const std::int64_t now_ns = this->now().nanoseconds();
+          const bool full_row = msg->joint_names.empty();
+          fk_config(q_meas_.data());
+          workspace_snapshot(workspace_meas_pose_);
+          // Is the measured hand (or its payload) already touching? Every hand pair
+          // read as tolerated (speed and lead 0), so only contact is asked; an arm
+          // link's hit counts too (#349 review A: a touching hand gets no per-row
+          // lead allowance).
+          if (world_voxel_enabled_) {
+            voxel_grid_.workspace_region.hand_speed_mps = 0.0;
+            voxel_grid_.workspace_region.hand_lead_m = 0.0;
+            const auto touch = check_voxel_collision(collision_model_, collision_scratch_,
+                                                     voxel_grid_, world_voxel_margin_m_);
+            ws_hand_contact_ = touch.hit || touch.workspace_pairs > 0;
+            if (!ws_hand_contact_ && attached_collision_enabled_ && attached_model_.n_objects > 0) {
+              const auto ptouch = check_attached_voxel_collision(collision_model_, attached_model_,
+                                                                 collision_scratch_, voxel_grid_,
+                                                                 attached_collision_margin_m_);
+              ws_hand_contact_ = ptouch.hit || ptouch.workspace_pairs > 0;
             }
-            continue;
           }
-          // Slot row: commanded joints from the row, the rest measured ...
+          if (measured_velocity_fresh(now_ns)) {
+            workspace_snapshot(workspace_prev_plain_);
+            std::copy(q_meas_.begin(), q_meas_.end(), q_workspace_.begin());
+            for (const int d : collision_fk_dofs_) {
+              // The jaws' own velocity is not the hand's: a jaw squeezing an object
+              // jitters at its contact (#349 p4_mix00, 0.11 -> 0.38 m/s in a second
+              // with the arm slow); its closing force is the gripper's effort limit.
+              if (std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(), d) !=
+                  workspace_jaw_cols_.end()) {
+                continue;
+              }
+              const auto i = static_cast<std::size_t>(d);
+              q_workspace_[i] += dq_meas_[i] * workspace_control_period_s_;
+            }
+            fk_config(q_workspace_.data());
+            workspace_measured_speed_mps_ = workspace_hand_speed(workspace_prev_plain_);
+            workspace_speed_measured_ = true;
+          }
           for (std::size_t d = 0; d < robot_ndof; ++d) {
-            q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
+            const bool commanded = full_row || slot_commanded_[d] != 0;
+            q_workspace_[d] =
+                commanded && workspace_command_fresh(d, now_ns) ? workspace_cmd_q_[d] : q_meas_[d];
           }
-          if (check_config(q_check_.data(), static_cast<int>(s))) {
-            return;
-          }
-          // ... and, additionally, at this tick's other committed targets.
-          // Only ever an extra check: it can refuse, never accept.
+          fk_config(q_workspace_.data());
+          workspace_snapshot(workspace_prev_plain_);
+          ws_plain = &workspace_prev_plain_;
           if (tick_partner) {
             for (std::size_t d = 0; d < robot_ndof; ++d) {
               if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
-                q_check_[d] = tick_target_[d];
+                q_workspace_[d] = tick_target_[d];
               }
             }
-            if (check_config(q_check_.data(), static_cast<int>(s))) {
-              return;
+            fk_config(q_workspace_.data());
+            workspace_snapshot(workspace_prev_partner_);
+            ws_partner = &workspace_prev_partner_;
+          }
+        }
+        // A slot row in `q_check_` (its uncommanded joints measured) re-checked at this
+        // tick's other committed targets. Only ever an extra check: it can refuse, never
+        // accept. Overwrites `q_check_`'s uncommanded joints.
+        const auto partner_trips = [&](int step) -> bool {
+          if (!tick_partner) {
+            return false;
+          }
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+              q_check_[d] = tick_target_[d];
+            }
+          }
+          return check_config(q_check_.data(), step, 0.0, ws_partner);
+        };
+        const auto check_rows = [&]() -> bool {
+          for (std::uint16_t s = 0; s < view.horizon; ++s) {
+            const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+            if (!slot_row) {
+              // A full row is the joint configuration itself.
+              if (check_config(row, static_cast<int>(s), 0.0, ws_plain)) {
+                return true;
+              }
+              continue;
+            }
+            // Slot row: commanded joints from the row, the rest measured ...
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
+            }
+            if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
+              return true;
+            }
+            // ... and, additionally, at this tick's other committed targets.
+            if (partner_trips(static_cast<int>(s))) {
+              return true;
+            }
+          }
+          return false;
+        };
+        // #349 workspace brake (sim-only draft). With a live workspace and a fresh
+        // measured state the rows are first checked as a dry run (nothing reported,
+        // disclosure kept): no trip is today's accept, at today's cost. On a trip
+        // they are checked again with the workspace hand speed AND lead read as
+        // within bound — every other check, every pair's exemption and the measured
+        // pose itself unchanged. Passing then means the speed and/or the push were
+        // the ONLY reasons to stop, and a hold at the measured pose answers both:
+        // no further motion and no push (lead 0) is commanded, power is kept, no
+        // latch, and the next chunk is judged afresh. Jaw joints keep their command
+        // (a hold must not drop the payload). Any other reason stops as before.
+        bool rows_checked = false;
+        if (workspace_brake_enabled_ && voxel_grid_.workspace_region.valid &&
+            workspace_speed_measured_) {
+          // Holds are counted per commanded joint (#349 review): with slot dispatch the
+          // other arm's chunk passing must not reset this arm's run of holds.
+          const bool full_cmd = msg->joint_names.empty();
+          const auto commanded_dof = [&](std::size_t d) {
+            return d < workspace_command_holds_.size() && (full_cmd || slot_commanded_[d] != 0);
+          };
+          const bool full_row = full_cmd;
+          const auto is_jaw = [&](std::size_t d) {
+            return std::find(workspace_jaw_cols_.begin(), workspace_jaw_cols_.end(),
+                             static_cast<int>(d)) != workspace_jaw_cols_.end();
+          };
+          std::uint64_t holds = 0;
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            if (commanded_dof(d)) {
+              holds = std::max(holds, workspace_command_holds_[d]);
+            }
+          }
+          ws_dry_run_ = true;
+          ws_first_trip_.set = false;
+          const bool as_is = check_rows();
+          ws_dry_run_ = false;
+          rows_checked = !as_is;
+          if (!as_is) {
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              if (commanded_dof(d)) {
+                workspace_command_holds_[d] = 0;
+              }
+            }
+          }
+          // The brake decision for a refused chunk: dry, quiet passes only — no report,
+          // no log, no message, no allocation (#349 review F; `workspace_brake_probe`
+          // brackets it for the allocation test). Its outcome is acted on below.
+          bool rows_refused = false;
+          bool hold_trips = true;
+          bool slowed = true;
+          bool hold_clear = false;
+          double creep = 0.0;
+          if (as_is) {
+            if (const auto probe = workspace_brake_probe.load(std::memory_order_relaxed)) {
+              probe(true);
+            }
+            ws_dry_run_ = true;
+            ws_quiet_ = true;
+            ws_speed_override_ = true;
+            ws_refused_trip_.set = false;
+            rows_refused = check_rows();
+            // The hold IS the measured pose: it must pass.
+            std::copy(q_meas_.begin(), q_meas_.end(), q_check_.begin());
+            hold_trips = check_config(q_check_.data(), -1, 0.0, ws_plain);
+            // Speed/lead only (rows pass relaxed): always a hold. A command the relaxed
+            // check still refuses: a hold up to the consecutive cap, then a stop.
+            const bool command_hold = rows_refused && holds < workspace_hold_max_consecutive_;
+            slowed = hold_trips || (rows_refused && !command_hold);
+            ws_creep_lead_m_ = 0.0;
+            ws_creep_row_ = -1;
+            if (!slowed && !rows_refused && view.horizon > 0) {
+              // Creep, not freeze, when speed/lead are the only reasons (#349 r24/r25: a
+              // held policy re-issues the same command and stalls, 200-1700 holds a run):
+              // the commanded rows scaled toward the measured pose so the tightest row
+              // leads by one control period at the speed bound while the measured hand is
+              // over its speed bound, else by half the lead bound (r32: scaling a 0.12 m
+              // lead to one period, 0.017 m, stalled the policy as a hold did); row s adds
+              // its allowance (s periods at the bound; none while the hand touches, #349
+              // review A). The scaled rows must pass the relaxed check themselves;
+              // otherwise (and for a refused command) the measured pose is held.
+              const double per_period = workspace_max_speed_mps_ * workspace_control_period_s_;
+              const double base = workspace_measured_speed_mps_ > workspace_max_speed_mps_
+                                      ? std::min(0.5 * workspace_max_lead_m_, per_period)
+                                      : 0.5 * workspace_max_lead_m_;
+              const double per_row = ws_hand_contact_ ? 0.0 : per_period;
+              // The same speed rule as the row check: row 0 is bounded by the lead (its
+              // step is the chunk-boundary jump), rows s >= 1 also by the row-to-row speed
+              // — scaling toward the measured pose scales those steps by `creep`.
+              creep = 1.0;
+              for (std::uint16_t s = 0; s < view.horizon; ++s) {
+                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                for (std::size_t d = 0; d < robot_ndof; ++d) {
+                  const bool commanded = full_row || slot_commanded_[d] != 0;
+                  q_check_[d] = commanded && !is_jaw(d) ? row[d] : q_meas_[d];
+                }
+                fk_config(q_check_.data());
+                const double lead = workspace_hand_lead();
+                const double allow = base + per_row * static_cast<double>(s);
+                if (std::isfinite(lead) && lead > allow && allow / lead < creep) {
+                  creep = allow / lead;
+                  ws_creep_lead_m_ = lead;
+                  ws_creep_row_ = static_cast<int>(s);
+                }
+                if (s == 0) {
+                  workspace_snapshot(workspace_creep_prev_);
+                } else {
+                  const double v = workspace_hand_speed(workspace_creep_prev_);
+                  if (v > workspace_max_speed_mps_ && workspace_max_speed_mps_ / v < creep) {
+                    creep = workspace_max_speed_mps_ / v;
+                    ws_creep_row_ = static_cast<int>(s);
+                  }
+                }
+              }
+              // Lead and speed are Cartesian, not linear in the joint deltas (#349 review):
+              // every scaled row must pass its own lead, speed and relaxed check. On an
+              // overshoot the creep halves and is re-checked, so a creep still moves
+              // (#349 r41: creep=0.000 held the arm still); after three halvings, a hold.
+              // ponytail: halving, not a solve; a bisection if holds stay common.
+              bool clear = false;
+              for (int attempt = 0; attempt < 4 && creep > 0.0 && !clear; ++attempt) {
+                if (attempt > 0) {
+                  creep *= 0.5;
+                }
+                clear = true;
+                for (std::uint16_t s = 0; s < view.horizon && clear; ++s) {
+                  const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                  for (std::size_t d = 0; d < robot_ndof; ++d) {
+                    const bool commanded = full_row || slot_commanded_[d] != 0;
+                    q_check_[d] = !commanded  ? q_meas_[d]
+                                  : is_jaw(d) ? row[d]
+                                              : q_meas_[d] + creep * (row[d] - q_meas_[d]);
+                  }
+                  std::copy(q_check_.begin(), q_check_.end(), q_lead_.begin());
+                  for (const int jd : workspace_jaw_cols_) {
+                    q_lead_[static_cast<std::size_t>(jd)] = q_meas_[static_cast<std::size_t>(jd)];
+                  }
+                  fk_config(q_lead_.data());
+                  const double scaled_lead = workspace_hand_lead();
+                  double v = 0.0;
+                  if (s == 0) {
+                    workspace_snapshot(workspace_creep_prev_);
+                  } else {
+                    v = workspace_hand_speed(workspace_creep_prev_);
+                  }
+                  clear = scaled_lead <= base + per_row * static_cast<double>(s) + 1e-9 &&
+                          v <= workspace_max_speed_mps_ + 1e-9 &&
+                          !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain) &&
+                          !partner_trips(static_cast<int>(s));
+                }
+              }
+              if (!clear) {
+                creep = 0.0;  // the scaled motion itself is not clear: hold
+              }
+            }
+            if (!slowed) {
+              // A hold publishes the arm at measured but the jaws at their command (a hold
+              // must not drop the payload): every row of exactly that must pass (#349
+              // review: only the all-measured pose was checked, so a refused jaw motion
+              // was executed under the hold).
+              hold_clear = true;
+              if (creep == 0.0 && !workspace_jaw_cols_.empty()) {
+                ws_refused_trip_.set = false;
+                for (std::uint16_t s = 0; s < view.horizon && hold_clear; ++s) {
+                  const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                  for (std::size_t d = 0; d < robot_ndof; ++d) {
+                    const bool commanded = full_row || slot_commanded_[d] != 0;
+                    q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
+                  }
+                  hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain) &&
+                               !partner_trips(static_cast<int>(s));
+                }
+              }
+            }
+            ws_speed_override_ = false;
+            ws_quiet_ = false;
+            ws_dry_run_ = false;
+            if (const auto probe = workspace_brake_probe.load(std::memory_order_relaxed)) {
+              probe(false);
+            }
+          }
+          if (as_is && !slowed && hold_clear) {
+            if (rows_refused) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (commanded_dof(d)) {
+                  ++workspace_command_holds_[d];
+                }
+              }
+            }
+            scaled_chunk_ = *msg;
+            for (std::uint16_t s = 0; s < view.horizon; ++s) {
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                const std::size_t k = static_cast<std::size_t>(s) * robot_ndof + d;
+                if ((full_row || slot_commanded_[d] != 0) && !is_jaw(d) &&
+                    k < scaled_chunk_.flat.size()) {
+                  scaled_chunk_.flat[k] = q_meas_[d] + creep * (scaled_chunk_.flat[k] - q_meas_[d]);
+                }
+              }
+            }
+            safe_pub_->publish(scaled_chunk_);
+            ++workspace_brakes_;
+            // A brake is an accept of the scaled chunk: the status says so, and the
+            // tick's later slots are checked against what this slot now commits
+            // (#349 review: they were checked against its measured pose).
+            set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE, "workspace brake",
+                              msg->rskill_id, msg->trace_id);
+            if (slot_row && msg->tick_index != 0 && view.horizon > 0) {
+              const std::size_t last = static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+              for (std::size_t d = 0; d < robot_ndof; ++d) {
+                if (slot_commanded_[d] != 0 && last + d < scaled_chunk_.flat.size()) {
+                  tick_target_[d] = scaled_chunk_.flat[last + d];
+                  tick_target_set_[d] = 1;
+                }
+              }
+            }
+            clear_workspace_commands();
+            const auto wall = std::chrono::steady_clock::now();
+            if (wall - workspace_brake_last_warn_ >= std::chrono::seconds(1)) {
+              workspace_brake_last_warn_ = wall;
+              RCLCPP_WARN(this->get_logger(),
+                          "safety.workspace_brake hand_speed_mps=%.3f max_mps=%g max_lead_m=%g "
+                          "brakes=%llu reason=%s refused=%s creep=%.3f lead_m=%.3f row=%d "
+                          "target=%s rskill_id=%s (0 = held at the measured pose; no latch)",
+                          workspace_measured_speed_mps_, workspace_max_speed_mps_,
+                          workspace_max_lead_m_, static_cast<unsigned long long>(workspace_brakes_),
+                          rows_refused ? "command_refused" : "speed_lead",
+                          rows_refused ? trip_str(ws_refused_trip_).c_str() : "", creep,
+                          ws_creep_lead_m_, ws_creep_row_, workspace_target_.c_str(),
+                          msg->rskill_id.c_str());
+            }
+            span->SetAttribute("safety.severity", "info");
+            span->SetAttribute("safety.workspace_brake", true);
+            span->SetAttribute("safety.workspace_hand_speed_mps", workspace_measured_speed_mps_);
+            span->End();
+            return;
+          }
+          if (as_is) {
+            if (slowed) {
+              RCLCPP_WARN_THROTTLE(
+                  this->get_logger(), *this->get_clock(), 1000,
+                  "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                  "hold_clear=%d command_holds=%llu/%llu (stops as before)",
+                  workspace_measured_speed_mps_, trip_str(ws_refused_trip_).c_str(),
+                  static_cast<int>(!hold_trips), static_cast<unsigned long long>(holds),
+                  static_cast<unsigned long long>(workspace_hold_max_consecutive_));
+            } else {
+              RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                   "safety.workspace_brake_refused hand_speed_mps=%.3f pair=%s "
+                                   "jaw_hold_clear=0 (stops as before)",
+                                   workspace_measured_speed_mps_,
+                                   trip_str(ws_refused_trip_).c_str());
+            }
+            // Stops as before, on the dry run's own first trip: reported as recorded,
+            // at the configuration and hand readings it was measured at, not re-checked
+            // (#349 review F: no re-run, no second disclosure).
+            const WsTrip t = ws_first_trip_;
+            std::copy(ws_trip_q_.begin(), ws_trip_q_.end(), q_fk_.begin());
+            voxel_grid_.workspace_region.hand_speed_mps = t.hand_speed_mps;
+            voxel_grid_.workspace_region.hand_lead_m = t.hand_lead_m;
+            ws_speed_measured_row_ = t.speed_measured;
+            report(t.kind, t.a, t.b, t.step, t.hit);
+            return;
+          }
+        }
+        if (!rows_checked && check_rows()) {
+          return;
+        }
+        // #349: accepted — remember each commanded joint's final row as the
+        // previous row of the next chunk's row 0, due once the chunk has
+        // played out ((horizon-1) periods from now).
+        if (workspace_contact_enabled_ && view.horizon > 0) {
+          const double* last =
+              view.flat_data + static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+          const std::int64_t due_ns =
+              this->now().nanoseconds() +
+              static_cast<std::int64_t>(static_cast<double>(view.horizon - 1) *
+                                        workspace_control_period_s_ * 1e9);
+          const bool full_row = msg->joint_names.empty();
+          for (std::size_t d = 0; d < robot_ndof && d < workspace_cmd_q_.size(); ++d) {
+            if (full_row || slot_commanded_[d] != 0) {
+              workspace_cmd_q_[d] = last[d];
+              workspace_cmd_due_ns_[d] = due_ns;
+              workspace_cmd_set_[d] = 1;
             }
           }
         }
@@ -1659,6 +2427,10 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   if (msg == nullptr) {
     return;
   }
+  // #349: the measured velocity rides the same message. A joint named without
+  // a finite velocity entry forgets its last one, so the workspace speed bound
+  // falls back to the commanded speed rather than trusting an old reading.
+  const std::int64_t now_ns = this->now().nanoseconds();
   const std::size_t n = std::min(msg->name.size(), msg->position.size());
   for (std::size_t i = 0; i < n; ++i) {
     const auto it = joint_name_to_dof_.find(msg->name[i]);
@@ -1669,10 +2441,29 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
     if (d < q_meas_.size()) {
       q_meas_[d] = msg->position[i];
       q_meas_seen_[d] = true;
+      const bool has_v = i < msg->velocity.size() && std::isfinite(msg->velocity[i]);
+      dq_meas_[d] = has_v ? msg->velocity[i] : 0.0;
+      dq_meas_seen_[d] = has_v ? 1 : 0;
+      dq_meas_stamp_ns_[d] = now_ns;
     }
   }
   q_meas_received_ = true;
   q_meas_stamp_ = this->now();
+}
+
+bool SafetyKernelLifecycleNode::measured_velocity_fresh(std::int64_t now_ns) const noexcept {
+  const double deadline_ns = collision_state_deadline_s_ * 1e9;
+  for (const int d : collision_fk_dofs_) {
+    const auto i = static_cast<std::size_t>(d);
+    if (i >= dq_meas_seen_.size() || dq_meas_seen_[i] == 0) {
+      return false;
+    }
+    const std::int64_t age_ns = now_ns - dq_meas_stamp_ns_[i];
+    if (age_ns < 0 || static_cast<double>(age_ns) > deadline_ns) {
+      return false;
+    }
+  }
+  return !collision_fk_dofs_.empty();
 }
 
 bool SafetyKernelLifecycleNode::measured_state_fresh() const noexcept {
@@ -1696,6 +2487,7 @@ void SafetyKernelLifecycleNode::on_external_estop(const std_msgs::msg::Empty::Sh
     fault_latch_ = true;
     last_estop_at_ = std::chrono::steady_clock::now();
     last_drop_reason_ = "external_estop";
+    clear_workspace_commands();
     // ADR-0096 — /openral/estop is a bare std_msgs/Empty, so the publisher
     // (deadman watchdog, hardware pendant, dashboard button, the passthrough
     // node) is unknowable from the wire. DROP_EXTERNAL_ESTOP names the topic
@@ -1730,6 +2522,7 @@ void SafetyKernelLifecycleNode::on_estop_reset(
   }
   fault_latch_ = false;
   last_drop_reason_.clear();
+  clear_workspace_commands();
   // ADR-0096 clear transition — the durable value must follow recovery, or a
   // late-joining consumer would read a cleared kernel as still latched.
   set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
@@ -2054,6 +2847,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -2061,6 +2855,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_latched_stamp_ns_ = 0;
   grasp_latched_ = false;
   grasp_latched_moved_warned_ = false;
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_target_.clear();
+  workspace_refusal_reason_.clear();
+  workspace_pairs_total_ = 0;
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
@@ -2118,6 +2917,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   const auto hull_verts = this->get_parameter("collision_hull_vertices").as_double_array();
   const auto pairs = this->get_parameter("collision_allowed_pairs").as_integer_array();
   const auto names = this->get_parameter("collision_link_names").as_string_array();
+  const auto mimic_mult = this->get_parameter("collision_mimic_multiplier").as_double_array();
+  const auto mimic_off = this->get_parameter("collision_mimic_offset").as_double_array();
 
   // Per-link arrays are sized to n_links; capsule/box arrays are sized to the
   // (independent) primitive count — a link may carry zero, one, or several.
@@ -2147,6 +2948,12 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
     error = "collision_hull_* supplied without collision_box_hull";
     return false;
   }
+  // Mimic relation: all-or-nothing per model, one entry per link.
+  if (mimic_mult.size() != mimic_off.size() ||
+      (!mimic_mult.empty() && mimic_mult.size() != n_links)) {
+    error = "collision_mimic_* array shapes disagree with collision_n_links";
+    return false;
+  }
 
   CollisionModel m;
   m.n_links = n_links;
@@ -2155,10 +2962,29 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   m.dof_index.resize(n_links);
   m.origin.resize(n_links);
   m.axis.resize(n_links);
+  m.mimic_multiplier.assign(mimic_mult.begin(), mimic_mult.end());
+  m.mimic_offset.assign(mimic_off.begin(), mimic_off.end());
   for (std::size_t i = 0; i < n_links; ++i) {
     m.parent[i] = static_cast<int>(parent[i]);
+    if (kind[i] < 0 || kind[i] > static_cast<std::int64_t>(JointKind::kMimicPrismatic)) {
+      error = "collision_joint_kind carries an unknown joint code";
+      return false;
+    }
     m.joint_kind[i] = static_cast<JointKind>(static_cast<std::uint8_t>(kind[i]));
     m.dof_index[i] = static_cast<int>(dof[i]);
+    if (is_mimic(m.joint_kind[i])) {
+      // A mimic link reads another joint's column: it needs that column, a
+      // finite relation and a non-zero multiplier (zero is a fixed link
+      // wearing a moving kind), all of which the manifest schema also
+      // refuses — the kernel does not trust the producer for it.
+      if (m.dof_index[i] < 0 || m.mimic_multiplier.empty() ||
+          !std::isfinite(m.mimic_multiplier[i]) || !std::isfinite(m.mimic_offset[i]) ||
+          m.mimic_multiplier[i] == 0.0) {
+        error = "a mimic link (collision_joint_kind 3/4) needs a dof column and a finite, "
+                "non-zero collision_mimic_multiplier / finite collision_mimic_offset";
+        return false;
+      }
+    }
     m.origin[i] = transform_from_xyz_rpy(origin[6 * i + 0], origin[6 * i + 1], origin[6 * i + 2],
                                          origin[6 * i + 3], origin[6 * i + 4], origin[6 * i + 5]);
     m.axis[i] = Vec3{axis[3 * i + 0], axis[3 * i + 1], axis[3 * i + 2]};
@@ -2364,7 +3190,15 @@ void SafetyKernelLifecycleNode::on_world_state(
   const auto clock_type = this->get_clock()->get_clock_type();
   const bool stamp_valid = msg->attachment_stamp_ns > 0;
   const rclcpp::Time producer_stamp(stamp_valid ? msg->attachment_stamp_ns : 0, clock_type);
-  const auto fail_closed = [this, producer_stamp]() {
+  const auto fail_closed = [this, producer_stamp](const char* reason) {
+    // Never silent (CLAUDE.md §1.4): a producer stuck on a message the kernel
+    // refuses looks, from outside, like a kernel that lost its payload model.
+    const auto wall = std::chrono::steady_clock::now();
+    if (wall - attached_fail_closed_last_warn_ >= std::chrono::seconds(1)) {
+      attached_fail_closed_last_warn_ = wall;
+      RCLCPP_WARN(this->get_logger(), "safety.attachment_fail_closed reason=%s objects=%zu", reason,
+                  attached_model_.n_objects);
+    }
     attached_model_.n_objects = 0;
     attached_overflow_ = true;
     attached_received_ = true;
@@ -2384,11 +3218,11 @@ void SafetyKernelLifecycleNode::on_world_state(
 
   const auto& wire = msg->attached_objects;
   if (!stamp_valid) {
-    fail_closed();
+    fail_closed("no_attachment_stamp");
     return;
   }
   if (wire.size() > attached_max_objects_) {
-    fail_closed();
+    fail_closed("too_many_objects");
     return;
   }
   // Total-primitive cap across every attached object (early fail-closed before
@@ -2398,7 +3232,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     total_primitives += obj.primitives.size();
   }
   if (total_primitives > attached_max_primitives_) {
-    fail_closed();
+    fail_closed("too_many_primitives");
     return;
   }
 
@@ -2425,7 +3259,7 @@ void SafetyKernelLifecycleNode::on_world_state(
         RCLCPP_WARN(this->get_logger(),
                     "safety.support_witness_rejected object=%s patch_m=%g penetration_m=%g",
                     obj.object_id.c_str(), witness.patch_radius_m, witness.max_penetration_m);
-        fail_closed();
+        fail_closed("support_witness_out_of_bounds");
         return;
       }
       in.support_point = Vec3{witness.contact_point_in_object.x, witness.contact_point_in_object.y,
@@ -2479,7 +3313,7 @@ void SafetyKernelLifecycleNode::on_world_state(
       // Unknown shape tag or too few dimensions → fail closed (an unrecognised
       // payload is not safe to ignore).
       if (!decode_attached_primitive(prim, pin)) {
-        fail_closed();
+        fail_closed("undecodable_primitive");
         return;
       }
       // Moved, not copied: `AttachedPrimitiveInput` now owns a vertex vector,
@@ -2588,6 +3422,9 @@ void SafetyKernelLifecycleNode::on_world_state(
   ingest_place_declaration(*msg);
   if (grasp_allowance_enabled_) {
     ingest_grasp_declaration(*msg);
+  }
+  if (workspace_contact_enabled_) {
+    ingest_workspace_contact(*msg);
   }
   attached_overflow_ = false;
   attached_received_ = true;
@@ -2877,6 +3714,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   grasp_declaration_stamp_ns_ = 0;
   grasp_declaration_timeout_s_ = 0.0;
   grasp_declaration_target_.clear();
+  grasp_declaration_refused_ = false;
 
   const auto announce_dropped = [&](const char* reason) {
     grasp_region_refusal_reason_.clear();
@@ -2930,6 +3768,9 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   }
   const auto& region = declaration.region;
   const auto reject = [&](const char* reason) {
+    // A producer error refuses the message's workspace too (#349 review E); a stale
+    // measurement is no error, the workspace carries its own confirmation stamp.
+    grasp_declaration_refused_ = std::strcmp(reason, "region_stale") != 0;
     if (was_valid) {
       RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
                   previous_target.c_str());
@@ -2947,6 +3788,12 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 region.half_extents.x, region.half_extents.y, region.half_extents.z,
                 region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.rskill_id.c_str(),
                 declaration.trace_id.c_str(), region.evidence_ref.c_str());
+  };
+  // The grasp claim itself was wrong (not a release): its workspace goes with it.
+  const auto note_wrong_claim = [&]() {
+    grasp_wrong_claim_ = true;
+    grasp_wrong_claim_hash_ = std::hash<std::string>{}(declaration.target_id);
+    grasp_wrong_claim_stamp_ns_ = declaration.stamp_ns;
   };
   if (declaration.target_id.empty()) {
     reject("no_target");
@@ -2995,6 +3842,23 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
       return;
     }
     mask.set(index);
+  }
+  // The other jaw of the same gripper: a link posed from the SAME joint column
+  // as a declared contact link (the follower finger, a `kMimic*` link of the
+  // gripper joint, or the leader when the producer named the follower) is the
+  // same hand's finger and is exempt with it — the exemption is per gripper,
+  // not per jaw. Only an allowlisted link joins; one off the allowlist stays
+  // checked (and fails the declaration if named, above).
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks && c < collision_model_.n_links; ++c) {
+    const int d = collision_model_.dof_index[c];
+    if (!mask[c] || d < 0) {
+      continue;
+    }
+    for (std::size_t k = 0; k < kMaxGraspMaskLinks && k < collision_model_.n_links; ++k) {
+      if (collision_model_.dof_index[k] == d && grasp_allowlist_[k]) {
+        mask.set(k);
+      }
+    }
   }
   // One hand per declaration. The producer may infer the target from the
   // robot's own approach instead of a named one, and it arms one hand at a
@@ -3060,6 +3924,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 declaration.target_id.c_str(), declaration.object_id.c_str(),
                 attached_on_gripper->c_str(), declaration.rskill_id.c_str(),
                 declaration.trace_id.c_str());
+    note_wrong_claim();
     retire_grasp_declaration("handover_object_mismatch");
     return;
   }
@@ -3082,6 +3947,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                   declaration.target_id.c_str(), grasp_latched_object_.c_str(), held.c_str(),
                   grasp_latched_region_.link_mask.count(), grasp_region_.link_mask.count(),
                   declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+      note_wrong_claim();
       retire_grasp_declaration("latch_mismatch");
       return;
     }
@@ -3184,6 +4050,224 @@ bool SafetyKernelLifecycleNode::grasp_declaration_live() const noexcept {
   // the handover has latched the box (see ingest_grasp_declaration).
   return grasp_region_.handover ||
          region_measurement_fresh(grasp_region_stamp_ns_, grasp_region_max_age_s_);
+}
+
+void SafetyKernelLifecycleNode::drop_workspace(const char* reason) {
+  if (workspace_region_.valid) {
+    RCLCPP_INFO(this->get_logger(), "safety.workspace_region_dropped reason=%s target=%s", reason,
+                workspace_target_.c_str());
+    RCLCPP_INFO(this->get_logger(),
+                "safety.workspace_contact_summary target=%s pairs=%llu max_depth_mm=%.1f "
+                "max_speed_mps=%.3f max_speed_source=%s max_mps=%g max_lead_m=%.3f "
+                "lead_bound_m=%g",
+                workspace_target_.c_str(), static_cast<unsigned long long>(workspace_pairs_total_),
+                workspace_pairs_total_ > 0 ? std::max(0.0, -workspace_min_distance_total_) * 1e3
+                                           : 0.0,
+                workspace_speed_max_seen_, workspace_speed_max_measured_ ? "measured" : "commanded",
+                workspace_max_speed_mps_, workspace_lead_max_seen_, workspace_max_lead_m_);
+    clear_workspace_commands();  // the declaration changed: start the chain afresh
+  }
+  workspace_region_ = WorkspaceContactRegion{};
+  voxel_grid_.workspace_region = WorkspaceContactRegion{};
+  workspace_pairs_total_ = 0;
+  workspace_min_distance_total_ = std::numeric_limits<double>::infinity();
+  workspace_speed_max_seen_ = 0.0;
+  workspace_speed_max_measured_ = false;
+  workspace_lead_max_seen_ = 0.0;
+}
+
+void SafetyKernelLifecycleNode::ingest_workspace_contact(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  const std::string previous_target = workspace_target_;
+  const bool was_valid = workspace_region_.valid;
+  // A refusal the producer keeps re-sending is a standing state: WARN once per
+  // change of (reason, target), drop silently after.
+  const auto reject = [&](const char* reason, const std::string& target) {
+    drop_workspace(reason);
+    const std::string key = std::string(reason) + ":" + target;
+    if (workspace_refusal_reason_ == key) {
+      return;
+    }
+    workspace_refusal_reason_ = key;
+    RCLCPP_WARN(this->get_logger(), "safety.workspace_region_rejected reason=%s target=%s", reason,
+                target.c_str());
+  };
+  if (!msg.grasp_declaration_valid) {
+    drop_workspace("no_declaration");
+    return;
+  }
+  const auto& declaration = msg.grasp_declaration;
+  if (!declaration.active) {
+    drop_workspace("retracted");
+    return;
+  }
+  if (!declaration.workspace_region_valid) {
+    drop_workspace("no_workspace");
+    workspace_refusal_reason_.clear();
+    return;
+  }
+  if (grasp_declaration_refused_) {
+    // The kernel refused this declaration's grasp part (e.g. a link off the
+    // allowlist): the same producer's workspace is not trusted either (#349 review E).
+    reject("grasp_refused", declaration.target_id);
+    return;
+  }
+  if (grasp_wrong_claim_ &&
+      grasp_wrong_claim_hash_ == std::hash<std::string>{}(declaration.target_id) &&
+      grasp_wrong_claim_stamp_ns_ == declaration.stamp_ns) {
+    // Retired because its grasp claim was wrong (the gripper holds another object, or
+    // the latched pick changed): the workspace it armed goes too, for good. A correct
+    // handover's retirement keeps it (p12_mix04, above).
+    reject("grasp_claim_wrong", declaration.target_id);
+    return;
+  }
+  if (declaration.target_id.empty()) {
+    reject("no_target", declaration.target_id);
+    return;
+  }
+  if (!std::isfinite(declaration.timeout_s) || declaration.timeout_s <= 0.0 ||
+      declaration.timeout_s > kMaxGraspDeclarationTimeoutS) {
+    reject("timeout_out_of_range", declaration.target_id);
+    return;
+  }
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - declaration.stamp_ns;
+  if (elapsed_ns < 0 || elapsed_ns > static_cast<std::int64_t>(declaration.timeout_s * 1e9)) {
+    drop_workspace("expired");
+    return;
+  }
+  // A retired identity (handover exit, a release) ends its GRASP REGION, which
+  // belonged to that pick — not the workspace (a REFUSED grasp part does, above): carry, place and
+  // a regrasp happen in the same declared, map-confirmed workspace (#349 p12_mix04 / p12_mix07
+  // stopped right after a handover_exit / detach dropped it). The workspace ends
+  // with the declaration itself: retraction, expiry, a stale confirmation.
+  const std::size_t target_hash = std::hash<std::string>{}(declaration.target_id);
+  const auto& region = declaration.workspace_region;
+  if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
+    reject("frame_mismatch", declaration.target_id);
+    return;
+  }
+  if (!region.geometry.empty()) {
+    reject("geometry_not_supported", declaration.target_id);
+    return;
+  }
+  if (!region_measurement_fresh(region.stamp_ns, grasp_region_max_age_s_)) {
+    reject("region_stale", declaration.target_id);
+    return;
+  }
+  const Transform pose = transform_from_translation_quat(
+      region.pose.position.x, region.pose.position.y, region.pose.position.z,
+      region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
+      region.pose.orientation.w);
+  const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
+  WorkspaceContactRegion candidate;
+  const GraspRegionStatus status =
+      is_unit_quaternion(region.pose.orientation)
+          ? ingest_workspace_region(pose, half, workspace_links_, workspace_max_speed_mps_,
+                                    workspace_max_lead_m_, candidate)
+          : GraspRegionStatus::kBadPose;
+  if (status != GraspRegionStatus::kOk) {
+    reject(grasp_region_status_reason(status), declaration.target_id);
+    return;
+  }
+  if (was_valid && previous_target != declaration.target_id) {
+    drop_workspace("target_changed");  // the summary belongs to the previous identity
+  }
+  const bool announce = !workspace_region_.valid;
+  workspace_region_ = candidate;
+  workspace_region_stamp_ns_ = region.stamp_ns;
+  workspace_declaration_stamp_ns_ = declaration.stamp_ns;
+  workspace_declaration_timeout_s_ = declaration.timeout_s;
+  workspace_target_ = declaration.target_id;
+  workspace_target_hash_ = target_hash;
+  workspace_refusal_reason_.clear();
+  if (announce) {
+    clear_workspace_commands();  // a new declaration: start the chain afresh
+    RCLCPP_INFO(this->get_logger(),
+                "safety.workspace_region_armed target=%s links=%zu half_m=%g,%g,%g "
+                "max_speed_mps=%g max_lead_m=%g rskill=%s trace=%s evidence=%s",
+                declaration.target_id.c_str(), workspace_links_.count(), half.x, half.y, half.z,
+                workspace_max_speed_mps_, workspace_max_lead_m_, declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str(), region.evidence_ref.c_str());
+  }
+}
+
+bool SafetyKernelLifecycleNode::workspace_live() const noexcept {
+  if (!workspace_contact_enabled_ || !workspace_region_.valid ||
+      workspace_declaration_timeout_s_ <= 0.0) {
+    return false;
+  }
+  const std::int64_t elapsed_ns = this->now().nanoseconds() - workspace_declaration_stamp_ns_;
+  if (elapsed_ns < 0 ||
+      elapsed_ns > static_cast<std::int64_t>(workspace_declaration_timeout_s_ * 1e9)) {
+    return false;
+  }
+  // A retirement (e.g. `handover_exit`) ends the grasp region, not the workspace
+  // (see `ingest_workspace_contact`).
+  const double age_s = (this->now() - attached_stamp_).seconds();
+  if (!(attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+        age_s <= attached_collision_deadline_s_)) {
+    return false;
+  }
+  return region_measurement_fresh(workspace_region_stamp_ns_, grasp_region_max_age_s_);
+}
+
+void SafetyKernelLifecycleNode::workspace_snapshot(std::vector<Transform>& out) const noexcept {
+  for (const int l : workspace_link_index_) {
+    out[static_cast<std::size_t>(l)] = collision_scratch_.link_world[static_cast<std::size_t>(l)];
+  }
+}
+
+double SafetyKernelLifecycleNode::workspace_hand_speed(std::vector<Transform>& prev) noexcept {
+  double moved = 0.0;
+  for (const int l : workspace_link_index_) {
+    const auto i = static_cast<std::size_t>(l);
+    const Transform& now = collision_scratch_.link_world[i];
+    moved = std::max(moved, link_displacement_bound(prev[i], now, workspace_reach(i)));
+    prev[i] = now;
+  }
+  const double speed = moved / workspace_control_period_s_;
+  return std::isfinite(speed) ? speed : std::numeric_limits<double>::infinity();
+}
+
+double SafetyKernelLifecycleNode::workspace_reach(std::size_t link) const noexcept {
+  double reach = workspace_link_reach_[link];
+  if (attached_collision_enabled_) {
+    for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
+      const AttachedObject& obj = attached_model_.objects[i];
+      if (obj.attach_link == static_cast<int>(link)) {
+        reach = std::max(reach, attached_object_reach(attached_model_, obj));
+      }
+    }
+  }
+  return reach;
+}
+
+double SafetyKernelLifecycleNode::workspace_hand_lead() const noexcept {
+  double lead = 0.0;
+  for (const int l : workspace_link_index_) {
+    const auto i = static_cast<std::size_t>(l);
+    lead = std::max(lead, link_displacement_bound(workspace_meas_pose_[i],
+                                                  collision_scratch_.link_world[i],
+                                                  workspace_link_reach_[i]));
+  }
+  return std::isfinite(lead) ? lead : std::numeric_limits<double>::infinity();
+}
+
+void SafetyKernelLifecycleNode::clear_workspace_commands() noexcept {
+  std::fill(workspace_cmd_set_.begin(), workspace_cmd_set_.end(), std::uint8_t{0});
+  workspace_cmd_drops_seen_ = chunks_dropped_;
+}
+
+bool SafetyKernelLifecycleNode::workspace_command_fresh(std::size_t d,
+                                                        std::int64_t now_ns) const noexcept {
+  if (d >= workspace_cmd_set_.size() || workspace_cmd_set_[d] == 0) {
+    return false;
+  }
+  const double window_ns = kWorkspaceCommandFreshPeriods * workspace_control_period_s_ * 1e9;
+  const std::int64_t since_due = now_ns - workspace_cmd_due_ns_[d];
+  // Not yet due: the robot is still on an earlier row of that chunk, which the
+  // kernel cannot name — fall back to measured.
+  return since_due >= 0 && static_cast<double>(since_due) <= window_ns;
 }
 
 }  // namespace openral_safety_kernel

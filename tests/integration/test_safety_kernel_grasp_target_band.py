@@ -196,9 +196,7 @@ def _kernel_params(*, grasp_allowance_enabled: bool) -> dict[str, object]:
     params["collision_state_deadline_ms"] = 1000.0
     params["collision_ee_link_index"] = ee_link_index_from_collision_params(collision)
     params["grasp_allowance_enabled"] = grasp_allowance_enabled
-    params["grasp_contact_links"] = [
-        j.child_link for j in description.joints if j.role == "gripper"
-    ]
+    params["grasp_contact_links"] = list(description.grasp_contact_links())
     params["world_voxel_enabled"] = True
     params["world_voxel_margin_m"] = REAL_WORLD_VOXEL_MARGIN_M
     params["world_voxel_max_cells"] = 4096

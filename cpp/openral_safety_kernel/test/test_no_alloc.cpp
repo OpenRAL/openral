@@ -190,6 +190,44 @@ TEST(NoAlloc, VoxelCheckWithALiveGraspRegionIsAllocationFree) {
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
       << "the voxel check allocated with a live grasp region; CLAUDE.md §2 forbids this.";
   EXPECT_LT(sink, 0.0) << "the loop really exercised penetrating cells";
+
+  // #349: the workspace exemption and the hand-speed bound sit in the same hot
+  // path (per candidate row); with a live, slow workspace the check stays
+  // allocation-free and really tolerates pairs.
+  osk::Transform ws_pose;
+  ws_pose.t = {0.0, 0.0, 0.0};
+  ASSERT_EQ(osk::ingest_workspace_region(ws_pose, osk::Vec3{0.15, 0.15, 0.15}, mask, 0.1, 0.05,
+                                         grid.workspace_region),
+            osk::GraspRegionStatus::kOk);
+  grid.workspace_region.hand_speed_mps = 0.05;
+  grid.workspace_region.hand_lead_m = 0.01;
+  const osk::Transform moved = osk::transform_from_xyz_rpy(0.001, 0.0, 0.0, 0.0, 0.0, 0.01);
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int tolerated = 0;
+  for (int i = 0; i < 10000; ++i) {
+    sink += osk::link_displacement_bound(s.link_world[1], moved, 0.1);
+    tolerated += osk::check_voxel_collision(m, s, grid, 0.02).workspace_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the voxel check allocated with a live workspace; CLAUDE.md §2 forbids this.";
+  EXPECT_GT(tolerated, 0) << "the loop really exercised tolerated workspace pairs";
+
+  // #349 review F: a REFUSED chunk — the hand over its speed bound, so the same pairs
+  // trip — is the brake's dry-run path, and it stays allocation-free too.
+  grid.workspace_region.hand_speed_mps = 0.5;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int refused = 0;
+  for (int i = 0; i < 10000; ++i) {
+    const auto hit = osk::check_voxel_collision(m, s, grid, 0.02);
+    refused += hit.hit && hit.workspace_denied == 2 ? 1 : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the voxel check allocated on a refused workspace row; CLAUDE.md §2 forbids this.";
+  EXPECT_EQ(refused, 10000) << "the loop really exercised the speed refusal";
 }
 
 TEST(NoAlloc, RetiringAndCheckingGraspIdentitiesIsAllocationFree) {

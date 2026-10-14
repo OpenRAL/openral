@@ -11,6 +11,7 @@
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <memory>
@@ -64,6 +65,12 @@ inline constexpr double kMaxRegionMeasurementAgeS = 2.0 * kMaxWorldVoxelDeadline
 
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
+  /// Test seam (#349 review F): when set, called with `true` as the workspace brake
+  /// starts deciding on a refused chunk and `false` when it has decided — before any
+  /// report, log or publish — so a test can count the decision's allocations (zero).
+  /// Unset in production: one relaxed atomic load per refused chunk.
+  static inline std::atomic<void (*)(bool)> workspace_brake_probe{nullptr};
+
   explicit SafetyKernelLifecycleNode(const std::string& node_name = "openral_safety_kernel",
                                      const rclcpp::NodeOptions& options = rclcpp::NodeOptions{});
 
@@ -216,6 +223,54 @@ private:
   bool attachment_on_grasp_chain(int attach_link,
                                  const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept;
 
+  // Manipulation-workspace contact (issue #349, draft; Safety-WG review
+  // pending). Resolve the producer-confirmed `workspace_region` riding the
+  // grasp declaration into `workspace_region_`. Only called with
+  // `workspace_contact_enabled`, after `ingest_grasp_declaration`. Every refusal
+  // yields NO workspace, and so does a declaration whose grasp part that ingest
+  // refused (a producer error such as a non-allowlisted link: the same message's
+  // workspace is not trusted either), and so does one retired because its grasp
+  // claim was wrong (`handover_object_mismatch`, `latch_mismatch`). A grasp identity
+  // retired by a normal handover exit or release does not end the
+  // workspace: carry and place happen after the handover (#349 p12_mix04), so it
+  // lives to the declaration's own end — retraction, `timeout_s`, a stale
+  // confirmation.
+  void ingest_workspace_contact(const openral_msgs::msg::WorldStateStamped& msg);
+  // Drop the ingested workspace (no-op when none): logs
+  // `safety.workspace_region_dropped reason=<reason>` and the declaration's
+  // `safety.workspace_contact_summary` once, then resets the tallies.
+  void drop_workspace(const char* reason);
+  // Is the ingested workspace in force at `now`? Dead on: no workspace, the
+  // declaration's `timeout_s` lapsed or stamped in the future (a retired grasp
+  // identity does not end it), the world-state stream older than `attached_collision_deadline`,
+  // or the confirmation older than `grasp_region_max_age_s`.
+  bool workspace_live() const noexcept;
+  // Hand speed bound (m/s) of the configuration FK'd into `collision_scratch_`,
+  // relative to `prev` (the hand links' poses at the previous row; updated to
+  // this row's): max over the workspace links of `link_displacement_bound` /
+  // `workspace_control_period_s_`.
+  double workspace_hand_speed(std::vector<Transform>& prev) noexcept;
+  // Hand lead (m) of the configuration FK'd into `collision_scratch_` over the
+  // measured configuration (`workspace_meas_pose_`): max over the workspace
+  // links of `link_displacement_bound`, NOT divided by the period. On a
+  // joint-PD arm commanded-minus-measured is what the drives push with.
+  double workspace_hand_lead() const noexcept;
+  /// Hand link `link`'s reach for the SPEED bound: its geometry reach, or a payload
+  /// it carries (`attached_object_reach`) when that reaches further — a carried
+  /// box's corners strike at their own speed. The lead (push) keeps the hand's own
+  /// reach: the drives' push is set by the joint error, which a longer lever only
+  /// magnifies on paper (#349 p3_mix02: 95.6 mm with the payload's reach).
+  double workspace_reach(std::size_t link) const noexcept;
+  // Forget every previously accepted command (row 0 falls back to measured).
+  void clear_workspace_commands() noexcept;
+  // Is joint `d`'s previously accepted command still row 0's previous row at
+  // `now_ns`? Recorded, not cleared since, its last row due (acceptance +
+  // (horizon-1) periods) at or before now, and at most
+  // `kWorkspaceCommandFreshPeriods` periods ago.
+  bool workspace_command_fresh(std::size_t d, std::int64_t now_ns) const noexcept;
+  // Copy the workspace links' current FK poses into `out`.
+  void workspace_snapshot(std::vector<Transform>& out) const noexcept;
+
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint
   // name) so a velocity chunk can be reconstructed into the configurations FK
@@ -227,6 +282,10 @@ private:
   // seed-requiring modes: an incomplete/stale seed must reject, never check a
   // wrong (zero-filled) configuration.
   bool measured_state_fresh() const noexcept;
+  // True iff every FK-relevant dof has a finite measured velocity from a
+  // /joint_states message at most `collision_state_deadline_s_` old at
+  // `now_ns`. A message naming a joint without a velocity entry forgets it.
+  bool measured_velocity_fresh(std::int64_t now_ns) const noexcept;
 
   // Subscriptions / publishers / service / timer.
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
@@ -382,6 +441,130 @@ private:
   /// only; the standing state is on the 1 Hz `/diagnostics` `grasp_region` key.
   std::string grasp_region_refusal_reason_;
   std::string grasp_region_refusal_target_;
+  /// Manipulation-workspace contact (#349, draft). Off unless
+  /// `workspace_contact_enabled` (which requires `grasp_allowance_enabled`).
+  /// `workspace_links_` is the launch-derived hand-link mask
+  /// (`workspace_contact_links`, resolved at configure); `workspace_link_index_`
+  /// lists the same links, `workspace_link_reach_` their geometry reach (per
+  /// link index). The control period is the chunk row spacing the hand speed
+  /// is measured over (`workspace_contact_control_period_s`, from the
+  /// manifest's `action_spec.control_freq_hz`).
+  bool workspace_contact_enabled_{false};
+  std::bitset<kMaxGraspMaskLinks> workspace_links_{};
+  std::vector<int> workspace_link_index_;
+  std::vector<double> workspace_link_reach_;
+  double workspace_max_speed_mps_{0.0};
+  double workspace_max_lead_m_{0.0};  ///< `workspace_contact_max_lead_m` (push bound)
+  double workspace_control_period_s_{0.0};
+  // Lead allowance of the row last checked: `step` periods at the speed bound (0 for
+  // row 0, the measured state, and every row while `ws_hand_contact_`). Disclosure only.
+  double ws_lead_allow_m_{0.0};
+  // The measured hand (or its payload) already touches something: a blocked hand does
+  // not travel with the command, so no row gets the per-row allowance (#349 review A).
+  bool ws_hand_contact_{false};
+  // The checked row's hand speed came from the measured velocity (true) or from the
+  // commanded row-to-row motion (false): the larger of the two governs (#349 review B).
+  bool ws_speed_measured_row_{false};
+  std::chrono::steady_clock::time_point attached_fail_closed_last_warn_{};
+  // The row that set the last creep scale and its lead (disclosure only).
+  double ws_creep_lead_m_{0.0};
+  int ws_creep_row_{-1};
+  WorkspaceContactRegion workspace_region_{};
+  std::int64_t workspace_region_stamp_ns_{0};
+  std::int64_t workspace_declaration_stamp_ns_{0};
+  double workspace_declaration_timeout_s_{0.0};
+  std::string workspace_target_;
+  std::size_t workspace_target_hash_{0};
+  std::string workspace_refusal_reason_;  ///< last announced refusal (logged on change)
+  /// The last grasp declaration ingested was refused (a producer error, not a stale
+  /// measurement): its workspace is refused with it (#349 review E).
+  bool grasp_declaration_refused_{false};
+  /// The last declaration (target hash, stamp) retired because its grasp claim was
+  /// wrong — `handover_object_mismatch`, `latch_mismatch` — not a normal release or
+  /// handover exit: its workspace is disarmed and does not re-arm on its heartbeat
+  /// (#349 review E). A new declaration arms afresh.
+  bool grasp_wrong_claim_{false};
+  std::size_t grasp_wrong_claim_hash_{0};
+  std::int64_t grasp_wrong_claim_stamp_ns_{0};
+  /// Disclosure tallies for the armed declaration (summary on drop).
+  std::uint64_t workspace_pairs_total_{0};
+  double workspace_min_distance_total_{std::numeric_limits<double>::infinity()};
+  double workspace_speed_max_seen_{0.0};
+  double workspace_lead_max_seen_{0.0};
+  /// Per-link last WARN time (≤ 1 Hz per link), sized to the model's links.
+  std::vector<std::chrono::steady_clock::time_point> workspace_last_warn_;
+  /// Hand-link poses at the previous checked row (plain / tick-partner rows),
+  /// sized to the model's links at configure; never allocated on the hot path.
+  std::vector<Transform> workspace_prev_plain_;
+  std::vector<Transform> workspace_prev_partner_;
+  std::vector<Transform> workspace_creep_prev_;  ///< the brake creep's previous scaled row
+  std::vector<double> q_workspace_;              ///< row 0's previous configuration (n_dof)
+  /// The jaw columns (`workspace_contact_jaw_joints`) and the row they are reset
+  /// to measured in, for the lead:
+  /// the lead bounds the ARM's push, a closing jaw's squeeze is the gripper's own
+  /// effort limit (#349 p_mix02: a closure stroke read as an 80 mm lead).
+  std::vector<int> workspace_jaw_cols_;
+  std::vector<double> q_lead_;
+  /// Hand-link poses at the measured configuration (the lead's reference).
+  std::vector<Transform> workspace_meas_pose_;
+  /// The last ACCEPTED JOINT_POSITION command per joint (its chunk's last row),
+  /// when its last row is due (node clock, ns), and whether one is held. Sized
+  /// n_dof at configure. `workspace_cmd_drops_seen_` is `chunks_dropped_` as of
+  /// the last candidate: any refusal since forgets every command.
+  std::vector<double> workspace_cmd_q_;
+  std::vector<std::int64_t> workspace_cmd_due_ns_;
+  std::vector<std::uint8_t> workspace_cmd_set_;
+  std::uint64_t workspace_cmd_drops_seen_{0};
+  /// The candidate's hand speed source: true = measured (FK of q_meas_ +
+  /// dq_meas_ * period vs q_meas_, row-independent, in
+  /// `workspace_measured_speed_mps_`); false = the commanded-speed fallback.
+  bool workspace_speed_measured_{false};
+  /// #349 workspace brake (`workspace_contact_brake_enabled`, needs the workspace
+  /// rule): a JOINT_POSITION chunk whose ONLY reasons to stop are the workspace's
+  /// measured hand speed and/or lead is replaced by a hold at the measured pose
+  /// (jaws keep their command) instead of an E-stop. `ws_dry_run_` runs the
+  /// checks without reporting; `ws_quiet_` also skips the workspace disclosure;
+  /// `ws_speed_override_` reads the workspace hand speed and lead as 0.
+  bool workspace_brake_enabled_{false};
+  bool ws_dry_run_{false};
+  bool ws_quiet_{false};
+  bool ws_speed_override_{false};
+  std::uint64_t workspace_brakes_{0};
+  /// Holds answering a COMMAND the relaxed check still refuses (the measured pose
+  /// passing): consecutive count and its cap (`workspace_contact_hold_max_consecutive`,
+  /// 0 = such commands stop as before). Counted per commanded joint (length n_dof,
+  /// sized at configure): a chunk passing as-is resets only the joints it commands,
+  /// so another arm's slot passing never resets this arm's run (#349 review).
+  std::vector<std::uint64_t> workspace_command_holds_;
+  std::uint64_t workspace_hold_max_consecutive_{0};
+  /// A named geometry of a trip, formatted only when reported or logged: `tag` 'l'
+  /// robot link, 'a' attached payload, 'v' voxel cell, 'p' place-target primitive,
+  /// 'f' place force gate.
+  struct WsName {
+    char tag{'l'};
+    int idx{-1};
+  };
+  /// A trip recorded during a brake dry run without allocating (#349 review F).
+  struct WsTrip {
+    bool set{false};
+    const char* kind{""};
+    WsName a{};
+    WsName b{};
+    int step{0};
+    CollisionHit hit{};
+    double hand_speed_mps{0.0};
+    double hand_lead_m{0.0};
+    bool speed_measured{false};
+  };
+  /// The as-is dry run's first trip (and `q_fk_` at it, sized n_dof at configure):
+  /// the verdict reported when the brake does not answer it — never re-checked.
+  WsTrip ws_first_trip_{};
+  std::vector<double> ws_trip_q_;
+  /// The first trip of the speed/lead-relaxed pass: why a brake was refused.
+  WsTrip ws_refused_trip_{};
+  std::chrono::steady_clock::time_point workspace_brake_last_warn_{};
+  double workspace_measured_speed_mps_{std::numeric_limits<double>::infinity()};
+  bool workspace_speed_max_measured_{false};  ///< source of `workspace_speed_max_seen_`
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
@@ -391,8 +574,13 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   std::vector<std::string> collision_joint_names_;  ///< action-dof-order joint names
   std::unordered_map<std::string, int> joint_name_to_dof_;
-  std::vector<double> q_meas_;            ///< latest measured config, dof order
-  std::vector<bool> q_meas_seen_;         ///< per-dof: a measurement has landed
+  std::vector<double> q_meas_;     ///< latest measured config, dof order
+  std::vector<bool> q_meas_seen_;  ///< per-dof: a measurement has landed
+  /// Latest measured joint velocity per dof (dof order), whether the last
+  /// message naming that joint carried a finite one, and when it landed (ns).
+  std::vector<double> dq_meas_;
+  std::vector<std::uint8_t> dq_meas_seen_;
+  std::vector<std::int64_t> dq_meas_stamp_ns_;
   std::vector<int> collision_fk_dofs_;    ///< dof indices FK actually consumes
   std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
   std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)
