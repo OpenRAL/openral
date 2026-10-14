@@ -2515,6 +2515,11 @@ class MimicJoint(BaseModel):
                 f"mimic_joints[{self.name!r}]: a mimic joint moves; a fixed one is a "
                 "fixed_attachments row"
             )
+        if self.joint_type not in (JointType.REVOLUTE, JointType.CONTINUOUS, JointType.PRISMATIC):
+            raise ValueError(
+                f"mimic_joints[{self.name!r}]: joint_type {self.joint_type.value!r} is not "
+                "revolute, continuous or prismatic; the kernel has no mimic kind for it"
+            )
         return self
 
     def value_at(self, leader_value: float) -> float:

@@ -58,3 +58,12 @@ def test_contacts_without_a_speed_record_no_speed_fields() -> None:
     stats: dict[tuple[str, str], dict[str, Any]] = {}
     fold_robot_contacts(stats, [_c("finger", "/World/carton", -0.001)], step=1)
     assert "onset_speed_mps" not in stats[("finger", "/World/carton")]
+
+
+def test_a_run_whose_first_sample_has_no_speed_takes_its_first_speed_as_onset() -> None:
+    stats: dict[tuple[str, str], dict[str, Any]] = {}
+    fold_robot_contacts(stats, [_c("finger", "/World/tote/wall", 0.0)], step=0)  # after reset
+    c = _c("finger", "/World/tote/wall", 0.0) | {"link_speed_mps": 0.2}
+    fold_robot_contacts(stats, [c], step=1)
+    fold_robot_contacts(stats, [c | {"link_speed_mps": 0.5}], step=2)  # same run: not an onset
+    assert stats[("finger", "/World/tote/wall")]["onset_speed_mps"] == 0.2

@@ -2294,7 +2294,8 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
             continue
         tf = np.linalg.inv(body_tf(link_body[j.parent_link])) @ body_tf(link_body[j.child_link])
         roll, pitch, yaw = _mat_to_rpy(tf[:3, :3])
-        ji = jid(j.sim_joint_name)
+        # The same name rule `_mjcf_link_bodies` mapped this edge's bodies by.
+        ji = jid(j.sim_joint_name or j.name)
         if ji >= 0 and int(model.jnt_type[ji]) in hinge_slide:
             ax = model.jnt_axis[ji]
             axis: _Vec3 = (float(ax[0]), float(ax[1]), float(ax[2]))

@@ -573,6 +573,14 @@ def test_voxels_inside_a_declared_box_fixture_are_not_drawn(tmp_path: Path) -> N
     assert keep.tolist() == [False, False, True, True]
 
 
+def test_malformed_static_yaml_raises_the_value_error_the_viewer_catches(tmp_path: Path) -> None:
+    """A YAML syntax error is a ValueError, so the node's fallback (every voxel drawn) runs."""
+    path = tmp_path / "static.yaml"
+    path.write_text("static_geometry: [unclosed\n")
+    with pytest.raises(ValueError, match="not valid YAML"):
+        _b2.static_boxes(str(path))  # type: ignore[attr-defined]
+
+
 def test_a_stop_voxel_index_maps_back_to_its_cell_centre() -> None:
     """The kernel names a voxel by index; the marker goes to that cell's centre."""
     centre = _b2.voxel_center(  # type: ignore[attr-defined]

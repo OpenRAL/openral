@@ -408,8 +408,12 @@ def fold_robot_contacts(
             },
         )
         speed = c.get("link_speed_mps")
+        if rec["steps"] == 0 or rec["last_step"] != step - 1:
+            # A run's onset is its first sample WITH a speed (the backend has none on
+            # the first step after a reset). Private: `SimRunner` drops `_` keys.
+            rec["_onset_pending"] = True
         if speed is not None:
-            if rec["steps"] == 0 or rec["last_step"] != step - 1:
+            if rec.pop("_onset_pending", False):
                 rec["onset_speed_mps"] = max(rec.get("onset_speed_mps") or 0.0, float(speed))
             rec["max_speed_mps"] = max(rec.get("max_speed_mps") or 0.0, float(speed))
         rec["steps"] += 1

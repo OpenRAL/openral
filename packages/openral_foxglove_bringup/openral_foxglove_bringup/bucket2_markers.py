@@ -146,12 +146,19 @@ def outside_boxes(
 
 
 def static_boxes(path: str) -> list[tuple[NDArray[np.float64], NDArray[np.float64]]]:
-    """The declared box fixtures of a ``StaticGeometry`` YAML as ``(base_from_box, half)``."""
+    """The declared box fixtures of a ``StaticGeometry`` YAML as ``(base_from_box, half)``.
+
+    Raises ``OSError`` (unreadable) or ``ValueError`` (malformed YAML or schema).
+    """
     import yaml
     from openral_core import StaticBox, StaticGeometry
     from openral_core.geometry import homogeneous_from_quat_xyz
 
-    geometry = StaticGeometry.model_validate(yaml.safe_load(Path(path).read_text()))
+    try:
+        raw = yaml.safe_load(Path(path).read_text())
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: not valid YAML: {exc}") from exc
+    geometry = StaticGeometry.model_validate(raw)
     return [
         (
             np.asarray(homogeneous_from_quat_xyz(e.xyz, e.quat_xyzw), dtype=np.float64),

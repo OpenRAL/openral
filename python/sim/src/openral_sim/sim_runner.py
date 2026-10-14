@@ -900,7 +900,13 @@ class SimRunner(InferenceRunnerBase):
             actions=self._buf.actions,
             num_input_cameras=num_cams,
             metadata=dict(env_cfg.metadata),
-            contact_stats=sorted(self._buf.contacts.values(), key=lambda r: r["min_separation_m"]),
+            contact_stats=sorted(
+                (
+                    {k: v for k, v in r.items() if not k.startswith("_")}
+                    for r in self._buf.contacts.values()
+                ),
+                key=lambda r: r["min_separation_m"],
+            ),
         )
         self.episode_results.append(out)
         # ``scene.id`` / ``task.id`` / ``vla.id`` are closed sets per the

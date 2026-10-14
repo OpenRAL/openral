@@ -32,6 +32,7 @@ from openral_safety.urdf_lowering import (  # noqa: E402
     _declared_mimic_followers,
     _mjcf_link_bodies,
     _xyzrpy_matrix,
+    lower_robot_from_mjcf,
     mjcf_coupled_joints,
 )
 from pydantic import ValidationError  # noqa: E402
@@ -216,6 +217,25 @@ def test_the_generated_acm_exempts_the_follower_against_its_leader_and_its_paren
         assert exempt == {f"openarm_{side}_finger_pair", f"openarm_{side}_link7"}, exempt
 
 
+def test_a_mimic_without_sim_joint_name_lowers_its_mjcf_axis_by_name(openarm) -> None:
+    """The axis lookup uses the body mapping's rule, ``sim_joint_name or name``: a
+    follower named like its MJCF joint gets the MJCF axis, not the +z default."""
+    robot = openarm[0]
+    unnamed = robot.model_copy(
+        update={
+            "mimic_joints": [
+                m.model_copy(update={"sim_joint_name": None}) for m in robot.mimic_joints
+            ]
+        }
+    )
+    lowered = lower_robot_from_mjcf(
+        unnamed, n_samples=1, manifest_dir=_MANIFEST.parent, acm_only=True
+    )
+    for mimic in robot.mimic_joints:
+        assert mimic.sim_joint_name == mimic.name  # the fallback finds the same joint
+        assert lowered.joint_fk[mimic.name][2] == pytest.approx(mimic.axis_xyz)
+
+
 def test_mimic_joint_schema_refusals() -> None:
     good = MimicJoint(name="f", parent_link="hand", child_link="jaw", mimics="g")
     assert good.value_at(0.5) == 0.5
@@ -227,6 +247,9 @@ def test_mimic_joint_schema_refusals() -> None:
         MimicJoint(
             name="f", parent_link="hand", child_link="jaw", mimics="g", joint_type=JointType.FIXED
         )
+    for kind in (JointType.FLOATING, JointType.PLANAR):
+        with pytest.raises(ValidationError, match="no mimic kind"):
+            MimicJoint(name="f", parent_link="hand", child_link="jaw", mimics="g", joint_type=kind)
     raw = RobotDescription.from_yaml(str(_MANIFEST)).model_dump()
     unknown = {**raw, "mimic_joints": [{**raw["mimic_joints"][0], "mimics": "no_such_joint"}]}
     with pytest.raises(ValidationError, match="not in joints"):
