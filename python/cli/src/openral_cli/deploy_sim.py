@@ -1308,7 +1308,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             description,
             overlays,
             robot_unit,
-            deploy_scene.sensors if deploy_scene is not None else (),
+            # The scene the launch reads, as the estimated camera was resolved against.
+            launched_scene.sensors if launched_scene is not None else (),
             estimated_camera=estimated_depth_camera,
         )
     rig = rt if rt is not None else DeployRuntime()

@@ -191,16 +191,24 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         run_cmd("da3-sidecar", [*pip, "--no-deps", _AARCH64_DA3])
         _defer_pycolmap_import(py)
 
-    return ensure_pip_venv(
-        label="da3-sidecar",
-        home=home,
-        python="3.12",
-        install=_install,
-        override=override,
-        override_env=_VENV_ENV,
-        # Keyed on the pins so editing them repairs an existing venv.
-        spec=spec,
-    )
+    # The deploy launch can start two of these at once (mono SLAM's DA3-SMALL on :5771 and
+    # estimated_depth_camera's DA3METRIC on :5772) over the same home: serialise
+    # provisioning so the second reuses the first's venv instead of racing its install.
+    import fcntl
+
+    home.mkdir(parents=True, exist_ok=True)
+    with open(home / ".provision.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return ensure_pip_venv(
+            label="da3-sidecar",
+            home=home,
+            python="3.12",
+            install=_install,
+            override=override,
+            override_env=_VENV_ENV,
+            # Keyed on the pins so editing them repairs an existing venv.
+            spec=spec,
+        )
 
 
 def main() -> int:

@@ -149,9 +149,16 @@ def main(args: Any = None) -> None:
             if self._metric:
                 from sensor_msgs.msg import PointCloud2
 
-                # RELIABLE matches both kinds of CameraInfo publisher (sim and real).
+                # BEST_EFFORT matches every CameraInfo publisher: in-tree ones are RELIABLE,
+                # but a driver on sensor-data QoS would never match a RELIABLE subscriber.
+                rgb_info_qos = QoSProfile(
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                )
                 self._info_sub = self.create_subscription(
-                    CameraInfo, rgb_info_topic, self._on_rgb_info, info_qos
+                    CameraInfo, rgb_info_topic, self._on_rgb_info, rgb_info_qos
                 )
                 if points_topic:
                     self._points_pub = self.create_publisher(PointCloud2, points_topic, sensor_qos)
@@ -310,6 +317,14 @@ def main(args: Any = None) -> None:
             depth = np.frombuffer(rep["depth"], dtype=np.float32).reshape(dh, dw)
             if self._metric:
                 self._publish_metric(msg, rep, depth, rectifier)
+                return
+            if not all(np.isfinite(float(rep.get(c, np.nan))) for c in ("fx", "fy", "cx", "cy")):
+                # A DA3METRIC sidecar predicts no camera (NaN K): never hand nvblox NaN.
+                self.get_logger().error(
+                    f"depth_provider: sidecar {rep.get('model', '?')!r} returned no finite "
+                    "intrinsics; SLAM mode needs DA3's own K, frame dropped",
+                    throttle_duration_sec=5.0,
+                )
                 return
             stamp = msg.header.stamp
             slam_frame = self._depth_frame or "camera_depth_optical_frame"

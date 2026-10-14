@@ -573,16 +573,16 @@ _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, c
 - `_DEFAULT_HOME: Path` (L53) — default cache dir.
 - `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L54) — `--venv` override env var name.
 - `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L55) — `--home` override env var name.
-- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L60) — x86_64 install set.
-- `_NVRTC_OVERRIDE: Path` (L74) — aarch64 nvrtc override file passed at install time.
-- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L77) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
-- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L104) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
-- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L110) — the anchor statement `_defer_pycolmap_import` rewrites.
-- `_PYCOLMAP_LAZY_IMPORT: str` (L111) — the lazy `__getattr__` proxy it rewrites that statement into.
-- `ensure_venv(home, *, override=None) -> Path` (L165) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
-- `_site_packages(py) -> Path` (L130) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
-- `_defer_pycolmap_import(py) -> None` (L138) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L205) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L61) — x86_64 install set.
+- `_NVRTC_OVERRIDE: Path` (L75) — aarch64 nvrtc override file passed at install time.
+- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L78) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
+- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L105) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
+- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L111) — the anchor statement `_defer_pycolmap_import` rewrites.
+- `_PYCOLMAP_LAZY_IMPORT: str` (L112) — the lazy `__getattr__` proxy it rewrites that statement into.
+- `ensure_venv(home, *, override=None) -> Path` (L166) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
+- `_site_packages(py) -> Path` (L131) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
+- `_defer_pycolmap_import(py) -> None` (L139) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
+- `main() -> int` (L214) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
 - `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
 - `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 

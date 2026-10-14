@@ -75,6 +75,8 @@ def camera_info_problem(
     fx, fy = k[0], k[1]
     if not (np.isfinite(fx) and np.isfinite(fy) and fx > 0.0 and fy > 0.0):
         return f"CameraInfo focal fx={fx} fy={fy} is not a positive finite number"
+    if not (np.isfinite(k[2]) and np.isfinite(k[3])):
+        return f"CameraInfo principal point cx={k[2]} cy={k[3]} is not finite"
     (iw, ih), (w, h) = info_wh, image_wh
     if min(iw, ih, w, h) <= 0:
         return f"empty size: CameraInfo {iw}x{ih}, image {w}x{h}"

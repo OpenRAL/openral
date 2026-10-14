@@ -225,6 +225,23 @@ class TestCameraMount:
         calibrated = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
         assert depth_extrinsic_problems(calibrated, thor, estimated_camera="top") == []
 
+    def test_a_scene_camera_sharing_a_robot_mount_is_checked_at_that_mount(self) -> None:
+        robot = str(_REPO / "robots/openarm/robot.yaml")
+        desc = RobotDescription.from_yaml(robot)
+        thor = load_robot_unit(robot, "thor").sensors
+        calibrated = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
+        top = next(s for s in desc.sensors if s.name == "top")
+        bench = top.model_copy(
+            update={
+                "name": "bench_cam",
+                "shares_mount_with": "head_zed",
+                "parent_frame": None,
+                "static_transform_xyz_rpy": None,
+            }
+        )
+        args = (calibrated, thor, [bench])
+        assert depth_extrinsic_problems(*args, estimated_camera="bench_cam") == []
+
 
 class TestMetricDepth:
     def test_a_point_survives_the_round_trip_through_da3s_raster(self) -> None:
@@ -260,6 +277,7 @@ class TestMetricDepth:
             ((500.0, 0.0, 319.5, 239.5), (640, 480), (640, 480), "not a positive finite"),
             ((float("nan"), 500.0, 319.5, 239.5), (640, 480), (640, 480), "not a positive"),
             ((500.0, 500.0, 319.5, 239.5), (0, 0), (640, 480), "empty size"),
+            ((500.0, 500.0, float("nan"), 239.5), (640, 480), (640, 480), "principal point"),
         ],
     )
     def test_a_camera_info_that_cannot_scale_the_image_is_named(

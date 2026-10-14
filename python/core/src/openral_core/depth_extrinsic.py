@@ -75,7 +75,10 @@ def depth_extrinsic_problems(
     declared = {o.name for o in overlays if o.static_transform_xyz_rpy is not None}
     if estimated_camera is not None:
         # The camera sits at its own mount or the one it shares; that mount is checked.
-        spec = next((s for s in description.sensors if s.name == estimated_camera), None)
+        spec = next(
+            (s for s in (*description.sensors, *scene_sensors) if s.name == estimated_camera),
+            None,
+        )
         if spec is not None and spec.shares_mount_with:
             estimated_camera = spec.shares_mount_with
     problems = []
