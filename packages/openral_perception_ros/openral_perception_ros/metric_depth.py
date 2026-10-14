@@ -25,6 +25,7 @@ from numpy.typing import NDArray
 
 __all__ = [
     "DA3_CANONICAL_FOCAL_PX",
+    "camera_info_problem",
     "da3_metric_depth",
     "is_metric_model",
     "points_from_depth",
@@ -46,6 +47,44 @@ def is_metric_model(model_id: str) -> bool:
         (True, False)
     """
     return "DA3METRIC" in model_id.upper()
+
+
+#: Largest relative aspect-ratio difference between an image and its ``CameraInfo`` that
+#: still reads as one uniform resize (integer rounding of a downscale), not another view.
+_ASPECT_TOLERANCE = 0.01
+
+
+def camera_info_problem(
+    k: tuple[float, float, float, float], info_wh: tuple[int, int], image_wh: tuple[int, int]
+) -> str | None:
+    """Why ``CameraInfo`` (``k`` = ``(fx, fy, cx, cy)`` at ``info_wh``) cannot scale an image.
+
+    The provider scales K from the ``CameraInfo``'s size to DA3's raster, which is correct
+    for any uniform resize of the image it describes: a driver's full-resolution
+    ``CameraInfo`` for a downscaled republish. It is wrong for a different view (another
+    aspect ratio: a crop, another stream) and meaningless for an unset K (all zeros, as an
+    uncalibrated driver publishes). ``None`` when the pair is usable.
+
+    Example:
+        >>> camera_info_problem((1498.0, 1498.0, 959.5, 539.5), (1920, 1080), (960, 540))
+        >>> camera_info_problem((500.0, 500.0, 319.5, 239.5), (640, 360), (640, 480))
+        'image 640x480 is not a resize of CameraInfo 640x360 (aspect 1.333 vs 1.778)'
+        >>> camera_info_problem((0.0, 0.0, 0.0, 0.0), (640, 480), (640, 480))
+        'CameraInfo focal fx=0.0 fy=0.0 is not a positive finite number'
+    """
+    fx, fy = k[0], k[1]
+    if not (np.isfinite(fx) and np.isfinite(fy) and fx > 0.0 and fy > 0.0):
+        return f"CameraInfo focal fx={fx} fy={fy} is not a positive finite number"
+    (iw, ih), (w, h) = info_wh, image_wh
+    if min(iw, ih, w, h) <= 0:
+        return f"empty size: CameraInfo {iw}x{ih}, image {w}x{h}"
+    info_aspect, image_aspect = iw / ih, w / h
+    if abs(image_aspect / info_aspect - 1.0) > _ASPECT_TOLERANCE:
+        return (
+            f"image {w}x{h} is not a resize of CameraInfo {iw}x{ih} "
+            f"(aspect {image_aspect:.3f} vs {info_aspect:.3f})"
+        )
+    return None
 
 
 def scale_intrinsics(

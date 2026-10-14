@@ -10,7 +10,8 @@ transport, ``CameraInfo`` in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinn
 * the cloud is the plane at 1.5 m, in the RGB ``CameraInfo``'s optical frame, through the
   camera's own K scaled to DA3's raster (never DA3's estimated K);
 * a sidecar serving a non-metric checkpoint (``DA3-SMALL``) yields no cloud at all;
-* a ``CameraInfo`` whose size is not the image's (K would be mis-scaled) yields no cloud.
+* a full-resolution ``CameraInfo`` for a downscaled image still gives the plane at 1.5 m,
+  while one of another aspect ratio (another view: K would be wrong) yields no cloud.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like its neighbours.
 """
@@ -82,7 +83,7 @@ def _run(
     tmp_path: Path,
     wait_s: float,
     frame: str = "",
-    info_wh: tuple[int, int] = (_W, _H),
+    info_scale: tuple[float, float] = (1.0, 1.0),
 ) -> tuple[dict[str, Any], int, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
     import rclpy
@@ -115,8 +116,12 @@ def _run(
         )
         info = CameraInfo()
         info.header.frame_id = _FRAME
-        info.width, info.height = info_wh
-        info.k = [_F, 0.0, (_W - 1) / 2.0, 0.0, _F, (_H - 1) / 2.0, 0.0, 0.0, 1.0]
+        # The camera's K at ``info_scale`` x the image: a driver's full-resolution
+        # CameraInfo beside a downscaled republish, or (unequal scales) another view.
+        sx, sy = info_scale
+        info.width, info.height = round(_W * sx), round(_H * sy)
+        fx, fy = _F * sx, _F * sy
+        info.k = [fx, 0.0, info.width / 2.0 - 0.5, 0.0, fy, info.height / 2.0 - 0.5, 0.0, 0.0, 1.0]
         image = Image()
         image.header.frame_id = "test_camera"  # sim stamps the camera name; K's frame wins
         image.height, image.width, image.encoding = _H, _W, "rgb8"
@@ -124,7 +129,8 @@ def _run(
         image.data = bytes(np.full((_H, _W, 3), 120, np.uint8).tobytes())
         with _provider(prefix, sidecar.port, log, frame):
             deadline = time.monotonic() + wait_s
-            while time.monotonic() < deadline and "cloud" not in got:
+            # Cloud and CameraInfo arrive on separate topics, in either order.
+            while time.monotonic() < deadline and not ("cloud" in got and "info" in got):
                 now = node.get_clock().now().to_msg()
                 info.header.stamp = now
                 image.header.stamp = now
@@ -179,11 +185,24 @@ def test_the_launch_resolved_frame_wins_over_the_camera_info_frame(tmp_path: Pat
     assert got["info"].header.frame_id == "zed_camera_link_optical_frame"
 
 
-def test_a_camera_info_of_another_size_feeds_the_map_nothing(tmp_path: Path) -> None:
-    """K scaled from a 1280x960 CameraInfo onto a 640x480 image would halve every depth."""
+def test_a_full_resolution_camera_info_scales_to_a_downscaled_image(tmp_path: Path) -> None:
+    """A driver's own CameraInfo at 2x the republished image: K scales, the plane holds."""
+    from sensor_msgs_py.point_cloud2 import read_points_numpy
+
     got, requests, log = _run(
-        "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=8.0, info_wh=(2 * _W, 2 * _H)
+        "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=30.0, info_scale=(2.0, 2.0)
+    )
+    assert "cloud" in got, f"no cloud after {requests} sidecar requests; provider log:\n{log}"
+    pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
+    assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
+    assert got["info"].k[0] == pytest.approx(_F / 4.0)
+
+
+def test_a_camera_info_of_another_aspect_feeds_the_map_nothing(tmp_path: Path) -> None:
+    """A 640x360 CameraInfo does not describe a 640x480 image: its K would misplace depth."""
+    got, requests, log = _run(
+        "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=8.0, info_scale=(1.0, 0.75)
     )
     assert requests > 0, f"the provider never asked the sidecar; log:\n{log}"
     assert "cloud" not in got
-    assert "!= CameraInfo" in log
+    assert "is not a resize of CameraInfo" in log

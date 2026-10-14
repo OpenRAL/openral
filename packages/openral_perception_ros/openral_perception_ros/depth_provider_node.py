@@ -49,6 +49,7 @@ def main(args: Any = None) -> None:
     )
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
     from openral_perception_ros.metric_depth import (
+        camera_info_problem,
         da3_metric_depth,
         is_metric_model,
         points_from_depth,
@@ -171,21 +172,18 @@ def main(args: Any = None) -> None:
                     throttle_duration_sec=5.0,
                 )
                 return
-            # K is scaled from the CameraInfo's size: one that does not describe this image
-            # (a resizing driver, a runtime resolution change) mis-scales every depth.
-            if (int(msg.width), int(msg.height)) != (int(info.width), int(info.height)):
+            # K is scaled from the CameraInfo's size to DA3's raster: right for a uniform
+            # resize of the image it describes, wrong for another view or an unset K.
+            k = (float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5]))
+            info_wh = (int(info.width), int(info.height))
+            problem = camera_info_problem(k, info_wh, (int(msg.width), int(msg.height)))
+            if problem is not None:
                 self.get_logger().warning(
-                    f"depth_provider: image {msg.width}x{msg.height} != CameraInfo "
-                    f"{info.width}x{info.height}; frame dropped",
-                    throttle_duration_sec=5.0,
+                    f"depth_provider: {problem}; frame dropped", throttle_duration_sec=5.0
                 )
                 return
             dh, dw = canonical.shape
-            fx, fy, cx, cy = scale_intrinsics(
-                (float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5])),
-                (int(info.width), int(info.height)),
-                (dw, dh),
-            )
+            fx, fy, cx, cy = scale_intrinsics(k, info_wh, (dw, dh))
             depth = da3_metric_depth(canonical, fx=fx, fy=fy)
             # The launch's resolved optical frame wins over the CameraInfo's own frame_id.
             frame = self._depth_frame or str(info.header.frame_id)
