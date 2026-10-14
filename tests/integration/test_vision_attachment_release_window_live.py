@@ -72,6 +72,8 @@ _ROBOT_YAML = _REPO / "robots" / "openarm" / "robot.yaml"
 _BASE = "openarm_base"
 _HAND = "openarm_left_link7"
 _FINGER = "openarm_left_finger_pair"
+# The leader's mimic follower (#349): the producer lists it as a touch link too.
+_FOLLOWER = "openarm_left_finger_follower"
 #: The Thor cell's ``tf_frames`` (scenes/deploy/openarm_real_world_voxels.yaml).
 _TF_FRAMES = {
     "openarm_left_link7": "openarm_left_ee_base_link",
@@ -312,14 +314,14 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
 
         # ── ATTACH: the held box rides the hand. ─────────────────────────────────────
         _, held_revision, (held,) = grasp()
-        assert held.attach_link == _HAND and held.touch_links == [_FINGER]
+        assert held.attach_link == _HAND and held.touch_links == [_FINGER, _FOLLOWER]
 
         # ── DETACH: frozen in the base frame at the DETACH pose, ack untouched. ──────
         opened_at, frozen_revision, (frozen,) = release()
         assert frozen_revision == held_revision + 1
         assert frozen.object_id == held.object_id
         assert frozen.attach_link == _BASE == frozen.pose_in_link.frame_id
-        assert frozen.touch_links == [_HAND, _FINGER]
+        assert frozen.touch_links == [_HAND, _FINGER, _FOLLOWER]
         assert frozen.primitives == held.primitives
         expected = t_hand @ homogeneous_from_quat_xyz(
             held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -475,7 +477,7 @@ def test_the_kernel_accepts_the_retreat_only_while_the_frozen_record_is_publishe
     held = AttachedCollisionObject(
         object_id=_OBJECT_ID,
         attach_link=_HAND,
-        touch_links=[_FINGER],
+        touch_links=[_FINGER, _FOLLOWER],
         primitives=[
             AttachedCollisionPrimitive(
                 shape=BoxShape(half_extents_m=_PAYLOAD_HALF),
@@ -645,7 +647,7 @@ def test_the_kernel_accepts_the_retreat_only_while_the_frozen_record_is_publishe
                 spin(0.6)
                 send("dropped-remarked", expect_accept=False)
                 evidence = refused("dropped-remarked")
-                assert evidence["link_a"] == _FINGER, evidence
+                assert evidence["link_a"] in (_FINGER, _FOLLOWER), evidence
                 assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PAYLOAD_CELLS}
             finally:
                 rclpy.shutdown()
