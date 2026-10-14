@@ -402,7 +402,8 @@ explicitly by the scene (no default).
 | `workspace_contact_max_lead_m` (schema cap `le=0.10`, mirrored by the kernel's `kMaxWorkspaceContactLeadM`) | **0.10 m** (the cap) | **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac kernel stops measured, plus margin | **open Safety-WG question**: issue #374 names the candidate as "a lead below the sim value" without saying which sim value (0.10 m restock or 0.05 m earlier evaluation); at most 0.10 m either way |
 
 The restock values are those of `scenes/deploy/local/restock_mix*.yaml` (gitignored, so not
-verifiable from this repo; stated per issue #374). The §6 measurements predate them: the stops
+in this repo; checked against `restock_mix00`–`07` on 2026-10-14: all set
+`workspace_contact_max_speed_mps: 0.5` and `workspace_contact_max_lead_m: 0.1`). The §6 measurements predate them: the stops
 quoted there ("against the 0.35 bound"; across 9 place batches, contact at 0.35–0.41 m/s and a
 lead of 80–96 mm) could only fire under a speed bound ≤ 0.35 m/s and a lead bound < 80 mm, which
 is consistent with the earlier 0.35 m/s / 0.05 m values; the exact bounds of each batch were not
