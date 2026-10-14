@@ -764,6 +764,7 @@ def _build_estimated_depth_nodes(
     camera: str,
     *,
     rgb_camera_info_topic: str,
+    rgb_image_rectified: bool,
     cloud_frame: str,
     optical_parent: str | None,
     use_sim_time: bool,
@@ -772,7 +773,9 @@ def _build_estimated_depth_nodes(
 
     The provider converts DA3's canonical output to metres through the camera's own
     ``CameraInfo`` focal (``rgb_camera_info_topic``: :func:`_live_camera_info_topic`,
-    the driver's calibration on a real deploy) and publishes depth, that ``CameraInfo``
+    the driver's calibration on a real deploy; the frame is first rectified to a pinhole
+    with that ``CameraInfo``'s lens model, or, ``rgb_image_rectified``, read through its
+    ``p``) and publishes depth, that ``CameraInfo``
     and the back-projected cloud on the camera's canonical ``DEPTH_IMAGE`` /
     ``DEPTH_CAMERA_INFO`` / ``POINTS`` topics (``deploy_cloud_topic`` then maps the
     cloud), all stamped in ``cloud_frame``
@@ -826,6 +829,7 @@ def _build_estimated_depth_nodes(
                     "use_sim_time": use_sim_time,
                     "image_topic": camera_topic(camera),
                     "rgb_camera_info_topic": rgb_camera_info_topic,
+                    "rgb_image_rectified": rgb_image_rectified,
                     "depth_topic": camera_topic(camera, CameraTopicKind.DEPTH_IMAGE),
                     "camera_info_topic": camera_topic(camera, CameraTopicKind.DEPTH_CAMERA_INFO),
                     "points_topic": camera_topic(camera, CameraTopicKind.POINTS),
@@ -1958,13 +1962,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # This host's unit overlay (scene `robot_unit`, or $OPENRAL_ROBOT_UNIT which `openral
     # deploy` resolved identically before launching): per-host bindings and per-unit mount
     # calibration replace the manifest's nominal values for every consumer below.
+    unit_overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
     description = description.model_copy(
-        update={
-            "sensors": apply_sensor_overlays(
-                description.sensors,
-                resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real"),
-            )
-        }
+        update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     gripper_convention = LaunchConfiguration("gripper_convention").perform(context)
@@ -3268,17 +3268,28 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             estimated_depth_camera,
             hal_mode=hal_mode,
             scene_sensor_names={s.name for s in scene_sensors},
+            calibrated_intrinsics={o.name for o in unit_overlays or () if o.intrinsics is not None},
         )
         if mount.problems:
             raise ROSConfigError("estimated_depth_camera: " + "; ".join(mount.problems))
-        # The resolver passed, so on a real deploy this is the driver's own CameraInfo.
-        estimated_info_topic = _live_camera_info_topic(
-            next(s for s in estimated_sensors if s.name == estimated_depth_camera), hal_mode
+        # The resolver passed: on a real deploy the driver's own CameraInfo, else the
+        # sensor leg's, built from this unit's calibrated intrinsics (lens model included).
+        # The binding says whether a driver image is already rectified (image_rect).
+        estimated_spec = next(s for s in estimated_sensors if s.name == estimated_depth_camera)
+        estimated_info_topic = _live_camera_info_topic(estimated_spec, hal_mode) or camera_topic(
+            estimated_depth_camera, CameraTopicKind.CAMERA_INFO
+        )
+        estimated_binding = estimated_spec.deploy_binding
+        estimated_rectified = (
+            hal_mode == "real"
+            and estimated_binding is not None
+            and estimated_binding.backend_params.get("rectified") is True
         )
         extra_nodes.extend(
             _build_estimated_depth_nodes(
                 estimated_depth_camera,
                 rgb_camera_info_topic=estimated_info_topic,
+                rgb_image_rectified=estimated_rectified,
                 cloud_frame=mount.cloud_frame,
                 optical_parent=mount.optical_parent,
                 use_sim_time=use_sim_time,

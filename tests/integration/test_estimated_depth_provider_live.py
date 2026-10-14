@@ -11,7 +11,9 @@ transport, ``CameraInfo`` in, depth + ``CameraInfo`` + ``PointCloud2`` out. Pinn
   camera's own K scaled to DA3's raster (never DA3's estimated K);
 * a sidecar serving a non-metric checkpoint (``DA3-SMALL``) yields no cloud at all;
 * a full-resolution ``CameraInfo`` for a downscaled image still gives the plane at 1.5 m,
-  while one of another aspect ratio (another view: K would be wrong) yields no cloud.
+  while one of another aspect ratio (another view: K would be wrong) yields no cloud;
+* a distorted lens (the real Arducam ``plumb_bob`` calibration) is rectified first, and
+  the cloud goes through the rectified pinhole K; an unsupported lens model yields none.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like its neighbours.
 """
@@ -84,6 +86,8 @@ def _run(
     wait_s: float,
     frame: str = "",
     info_scale: tuple[float, float] = (1.0, 1.0),
+    lens: tuple[str, list[float]] = ("plumb_bob", [0.0] * 5),
+    focal_raster: float | None = None,
 ) -> tuple[dict[str, Any], int, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
     import rclpy
@@ -93,7 +97,8 @@ def _run(
     sys.path.insert(0, str(Path(__file__).parent))
     from fakes.fake_da3_sidecar import FakeDa3Sidecar
 
-    focal_raster = _F * _RASTER[1] / _W
+    # The focal DA3 "sees" at its raster: the camera's, or a rectified lens's pinhole.
+    focal_raster = focal_raster if focal_raster is not None else _F * _RASTER[1] / _W
     sidecar = FakeDa3Sidecar(
         model=model, plane_z_m=_PLANE_Z_M, raster_hw=_RASTER, focal_px=focal_raster
     )
@@ -122,6 +127,7 @@ def _run(
         info.width, info.height = round(_W * sx), round(_H * sy)
         fx, fy = _F * sx, _F * sy
         info.k = [fx, 0.0, info.width / 2.0 - 0.5, 0.0, fy, info.height / 2.0 - 0.5, 0.0, 0.0, 1.0]
+        info.distortion_model, info.d = lens[0], list(lens[1])
         image = Image()
         image.header.frame_id = "test_camera"  # sim stamps the camera name; K's frame wins
         image.height, image.width, image.encoding = _H, _W, "rgb8"
@@ -203,6 +209,45 @@ def test_a_camera_info_of_another_aspect_feeds_the_map_nothing(tmp_path: Path) -
     got, requests, log = _run(
         "depth-anything/DA3METRIC-LARGE", tmp_path, wait_s=8.0, info_scale=(1.0, 0.75)
     )
-    assert requests > 0, f"the provider never asked the sidecar; log:\n{log}"
+    assert requests == 0, "a frame whose CameraInfo cannot describe it never reaches DA3"
     assert "cloud" not in got
     assert "is not a resize of CameraInfo" in log
+
+
+# Thor's calibrated left wrist Arducam (robots/openarm/units/thor.yaml), plumb_bob.
+_ARDUCAM_D = [-0.072761672, -0.056848830, 0.002163274, 0.001326299, 0.035500496]
+
+
+def test_a_distorted_lens_goes_through_its_rectified_pinhole(tmp_path: Path) -> None:
+    from openral_perception_ros.lens_rectify import build_rectifier
+    from sensor_msgs_py.point_cloud2 import read_points_numpy
+
+    rect = build_rectifier(
+        (_F, _F, _W / 2.0 - 0.5, _H / 2.0 - 0.5), (_W, _H), "plumb_bob", _ARDUCAM_D
+    )
+    assert rect.maps is not None and rect.k[0] == rect.k[1] != _F
+    got, requests, log = _run(
+        "depth-anything/DA3METRIC-LARGE",
+        tmp_path,
+        wait_s=30.0,
+        lens=("plumb_bob", _ARDUCAM_D),
+        focal_raster=rect.k[0] * _RASTER[1] / _W,
+    )
+    assert "cloud" in got, f"no cloud after {requests} sidecar requests; provider log:\n{log}"
+    pts = read_points_numpy(got["cloud"], field_names=("x", "y", "z"))
+    assert np.allclose(pts[:, 2], _PLANE_Z_M, atol=1e-4)
+    # The rectified pinhole, not the raw K, and no distortion left on the depth CameraInfo.
+    assert got["info"].k[0] == pytest.approx(rect.k[0] / 4.0)
+    assert not any(got["info"].d)
+    assert "lens plumb_bob" in log
+
+
+def test_an_unsupported_lens_feeds_the_map_nothing(tmp_path: Path) -> None:
+    got, requests, log = _run(
+        "depth-anything/DA3METRIC-LARGE",
+        tmp_path,
+        wait_s=8.0,
+        lens=("kannala_brandt", [0.1, 0.0, 0.0, 0.0]),
+    )
+    assert requests == 0 and "cloud" not in got
+    assert "unsupported distortion_model" in log

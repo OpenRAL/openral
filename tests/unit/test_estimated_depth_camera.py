@@ -149,29 +149,56 @@ class TestCameraMount:
             mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
             assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
 
-    def test_a_real_camera_without_a_driver_calibration_is_refused(self) -> None:
-        """A real deploy takes DA3's focal from the driver's CameraInfo, never the manifest's
-        K (OpenArm's `top` K is a sim stand-in): no ros2_image binding, no estimate."""
-        arm = [
+    def _arm_rgb_only(self) -> list:  # type: ignore[type-arg]
+        """OpenArm with ``head_zed`` wired colour-only: ``top`` rides its mount, no cloud."""
+        return [
             s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s
             for s in RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml")).sensors
         ]
+
+    def _bind(self, sensors: list, binding: SensorDeployBinding) -> list:  # type: ignore[type-arg]
+        return [
+            s.model_copy(update={"deploy_binding": binding}) if s.name == "top" else s
+            for s in sensors
+        ]
+
+    def test_a_real_camera_needs_a_binding_to_publish(self) -> None:
+        arm = self._arm_rgb_only()
         assert resolve_estimated_depth_camera(arm, "top", hal_mode="sim").problems == []
         (problem,) = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems
-        assert "has no deploy_binding" in problem
-        assert "ros2_image deploy_binding" in problem
-        opencv = [
-            s.model_copy(
-                update={
-                    "deploy_binding": SensorDeployBinding(backend=SensorReaderBackend.OPENCV_THREAD)
-                }
-            )
-            if s.name == "top"
-            else s
-            for s in arm
-        ]
+        assert "no deploy_binding" in problem
+
+    def test_a_real_camera_needs_a_measured_calibration(self) -> None:
+        """DA3's metres scale with the focal: OpenArm's `top` K is a sim stand-in, so the
+        manifest's nominal intrinsics are refused; the driver's CameraInfo (ros2_image) or
+        this unit's calibrated intrinsics (an overlay) are accepted."""
+        opencv = self._bind(
+            self._arm_rgb_only(), SensorDeployBinding(backend=SensorReaderBackend.OPENCV_THREAD)
+        )
         (problem,) = resolve_estimated_depth_camera(opencv, "top", hal_mode="real").problems
-        assert "has a opencv_thread binding" in problem
+        assert "manifest's nominal value" in problem and "opencv_thread" in problem
+        calibrated = resolve_estimated_depth_camera(
+            opencv, "top", hal_mode="real", calibrated_intrinsics={"top"}
+        )
+        assert calibrated.problems == []
+        driver = self._bind(
+            self._arm_rgb_only(),
+            SensorDeployBinding(
+                backend=SensorReaderBackend.ROS2_IMAGE, backend_params={"topic": "/cam/image_raw"}
+            ),
+        )
+        assert resolve_estimated_depth_camera(driver, "top", hal_mode="real").problems == []
+
+    def test_the_rectified_declaration_must_be_a_bool(self) -> None:
+        bad = self._bind(
+            self._arm_rgb_only(),
+            SensorDeployBinding(
+                backend=SensorReaderBackend.ROS2_IMAGE,
+                backend_params={"topic": "/cam/image_rect", "rectified": "yes"},
+            ),
+        )
+        (problem,) = resolve_estimated_depth_camera(bad, "top", hal_mode="real").problems
+        assert "rectified must be true or false" in problem
 
     @pytest.mark.parametrize(
         ("robot", "camera", "match"),

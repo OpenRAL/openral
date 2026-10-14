@@ -130,6 +130,7 @@ def resolve_estimated_depth_camera(
     *,
     hal_mode: str,
     scene_sensor_names: Collection[str] = (),
+    calibrated_intrinsics: Collection[str] = (),
 ) -> EstimatedDepthMount:
     """Resolve ``camera``'s mount for DA3 world-collision depth: any RGB camera tied to the robot.
 
@@ -149,10 +150,17 @@ def resolve_estimated_depth_camera(
     ``world`` (a camera whose pose relative to the robot nobody declared) and a bare
     robot link (``panda_hand``: the camera is not at the link's origin) are refused.
     The camera must also be RGB (a depth sensor publishes its own depth) with
-    ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then). On a real
-    deploy it must also have a ``ros2_image`` ``deploy_binding`` with a ``topic``: DA3's
-    metres scale with the focal, which then comes from the driver's own calibrated
-    ``CameraInfo`` beside that topic, never the manifest's (possibly sim stand-in) K.
+    ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then).
+
+    On a real deploy DA3's metres scale with the focal, so the camera needs a
+    ``deploy_binding`` (or the sensor leg never publishes it) and a *measured* calibration,
+    never the manifest's nominal (possibly sim stand-in) K: either its driver's own
+    ``CameraInfo`` (a ``ros2_image`` binding with a ``topic``), or ``intrinsics`` set by
+    this unit's overlay (``calibrated_intrinsics``: the overlays that set them; the sensor
+    leg publishes them, lens model included). The provider rectifies a raw image with that
+    ``CameraInfo``'s lens model; a ``ros2_image`` topic that is already rectified
+    (``image_rect``, sharing the raw ``CameraInfo``) declares
+    ``backend_params.rectified: true`` and is read through ``CameraInfo.p``.
     ``sensors`` are the deploy's manifest (unit-overlaid) + scene sensors.
 
     An estimate never replaces a measurement: when any of ``sensors``
@@ -197,8 +205,8 @@ def resolve_estimated_depth_camera(
         >>> resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="sim")[:3]
         ('shoulder_left_optical_frame', None, 'shoulder_left')
         >>> real = resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="real")
-        >>> [p.split(": ")[1].split(";")[0] for p in real.problems]  # nor a driver's K
-        ['has no deploy_binding', 'no mount ties it to the robot']
+        >>> [p.split(": ")[1].split(",")[0] for p in real.problems]  # nor a binding
+        ['no deploy_binding', 'no mount ties it to the robot']
     """
     by_name = {s.name: s for s in sensors}
     spec = by_name.get(camera)
@@ -229,21 +237,31 @@ def resolve_estimated_depth_camera(
     if spec.intrinsics is None:
         problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")
     if hal_mode == "real":
-        # DA3's metres scale with the focal. A real camera's manifest intrinsics may be a
-        # sim stand-in, so the focal comes from its driver's own CameraInfo, which only a
-        # ros2_image binding has; without a binding the sensor leg never publishes it.
+        # DA3's metres scale with the focal: a measured calibration only (see above).
         binding = spec.deploy_binding
-        topic = binding.backend_params.get("topic") if binding is not None else None
-        if (
-            binding is None
-            or binding.backend.value != "ros2_image"
-            or not (isinstance(topic, str) and topic)
-        ):
-            has = "no deploy_binding" if binding is None else f"a {binding.backend.value} binding"
+        params = binding.backend_params if binding is not None else {}
+        topic = params.get("topic")
+        driver_info = (
+            binding is not None
+            and binding.backend.value == "ros2_image"
+            and isinstance(topic, str)
+            and bool(topic)
+        )
+        if binding is None:
             problems.append(
-                f"{camera}: has {has}; a real deploy takes DA3's focal from the camera "
-                "driver's own calibrated CameraInfo, so it needs a ros2_image deploy_binding "
-                "with backend_params.topic"
+                f"{camera}: no deploy_binding, so a real deploy never publishes its image"
+            )
+        elif not driver_info and camera not in calibrated_intrinsics:
+            problems.append(
+                f"{camera}: its intrinsics are the manifest's nominal value and its "
+                f"{binding.backend.value} binding has no driver CameraInfo; DA3's metres "
+                "scale with the focal, so set this unit's calibrated intrinsics in "
+                "units/<unit>.yaml or bind the driver's topic (ros2_image)"
+            )
+        if not isinstance(params.get("rectified", False), bool):
+            problems.append(
+                f"{camera}: deploy_binding.backend_params.rectified must be true or false "
+                "(true: the topic is already rectified, read through CameraInfo.p)"
             )
     mount = by_name.get(spec.shares_mount_with or camera, spec)
     if mount.parent_frame is not None and mount.static_transform_xyz_rpy is not None:

@@ -16,7 +16,10 @@ the ones `nvblox.launch.py` remaps onto nvblox's `depth/image` + `depth/camera_i
 **Metric mode** (``DeployRuntime.estimated_depth_camera``, world collision): with
 ``rgb_camera_info_topic`` set, the sidecar must serve ``DA3METRIC-*`` (checked on every
 reply). Its canonical output becomes metres through the camera's own ``CameraInfo``
-focal scaled to DA3's raster (``metric_depth``), the depth + that scaled ``CameraInfo``
+focal scaled to DA3's raster (``metric_depth``) — after the frame is rectified to an
+exact pinhole with that ``CameraInfo``'s lens model (``lens_rectify``; or read through
+``CameraInfo.p`` when ``rgb_image_rectified`` declares the stream already rectified) —
+the depth + that scaled ``CameraInfo``
 are published in the ``CameraInfo``'s optical frame, and, with ``points_topic`` set, the
 depth back-projected (clipped at ``max_range_m``) as a ``PointCloud2`` for octomap. A
 frame with no ``CameraInfo`` yet, or from a non-metric model, is dropped and logged —
@@ -48,6 +51,12 @@ def main(args: Any = None) -> None:
         depth_array_to_image_msg,
     )
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
+    from openral_perception_ros.lens_rectify import (
+        PinholeRectifier,
+        build_rectifier,
+        distortion_problem,
+        rectified_stream_k,
+    )
     from openral_perception_ros.metric_depth import (
         camera_info_problem,
         da3_metric_depth,
@@ -78,6 +87,9 @@ def main(args: Any = None) -> None:
             self.declare_parameter("rgb_camera_info_topic", "")
             self.declare_parameter("points_topic", "")
             self.declare_parameter("max_range_m", 3.0)
+            # The image is already rectified (image_pipeline's image_rect shares the raw
+            # stream's CameraInfo): take its pinhole from CameraInfo.p, never undistort.
+            self.declare_parameter("rgb_image_rectified", False)
 
             gp = self.get_parameter
             missing = [
@@ -92,6 +104,9 @@ def main(args: Any = None) -> None:
             self._depth_frame = gp("depth_frame_id").get_parameter_value().string_value
             self._max_range_m = gp("max_range_m").get_parameter_value().double_value
             self._rgb_info: Any = None
+            self._image_rectified = gp("rgb_image_rectified").get_parameter_value().bool_value
+            self._rectifier: PinholeRectifier | None = None
+            self._rectifier_key: tuple[Any, ...] = ()
             self._process_res = gp("process_res").get_parameter_value().integer_value
 
             import zmq
@@ -154,7 +169,58 @@ def main(args: Any = None) -> None:
         def _on_rgb_info(self, msg: Any) -> None:
             self._rgb_info = msg
 
-        def _publish_metric(self, msg: Any, rep: dict[str, Any], canonical: Any) -> None:
+        def _metric_input(self, msg: Any, rgb: Any) -> tuple[Any, Any] | None:
+            """Metric mode: the pinhole image DA3 must see, and its K; ``None`` drops it.
+
+            The camera's ``CameraInfo`` is checked against the image (an unset focal,
+            another aspect ratio), then the frame is rectified with that ``CameraInfo``'s
+            lens model to an exact pinhole: DA3's metric scale and the back-projection both
+            assume one. The remap is rebuilt only when the calibration or size changes.
+            """
+            info = self._rgb_info
+            if info is None or not (self._depth_frame or info.header.frame_id) or not info.width:
+                self.get_logger().warning(
+                    "depth_provider: no CameraInfo (with a frame and size) for the RGB "
+                    "camera yet; frame dropped",
+                    throttle_duration_sec=5.0,
+                )
+                return None
+            if self._image_rectified:
+                k = rectified_stream_k(info.p)
+                model, coeffs = "none", ()
+            else:
+                k = (float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5]))
+                model, coeffs = str(info.distortion_model), tuple(float(c) for c in info.d)
+            info_wh = (int(info.width), int(info.height))
+            image_wh = (int(msg.width), int(msg.height))
+            problem = camera_info_problem(k, info_wh, image_wh) or distortion_problem(model, coeffs)
+            if problem is not None:
+                self.get_logger().warning(
+                    f"depth_provider: {problem}; frame dropped", throttle_duration_sec=5.0
+                )
+                return None
+            key = (k, info_wh, image_wh, model, coeffs)
+            if self._rectifier is None or key != self._rectifier_key:
+                # A uniform resize scales K and leaves the (normalised) coefficients alone.
+                try:
+                    self._rectifier = build_rectifier(
+                        scale_intrinsics(k, info_wh, image_wh), image_wh, model, coeffs
+                    )
+                except ValueError as exc:
+                    self.get_logger().warning(
+                        f"depth_provider: {exc}; frame dropped", throttle_duration_sec=5.0
+                    )
+                    return None
+                self._rectifier_key = key
+                self.get_logger().info(
+                    f"depth_provider: lens {model or 'none'} at {image_wh[0]}x{image_wh[1]} -> "
+                    f"pinhole K {tuple(round(v, 2) for v in self._rectifier.k)}"
+                )
+            return self._rectifier.apply(rgb), self._rectifier
+
+        def _publish_metric(
+            self, msg: Any, rep: dict[str, Any], canonical: Any, rectifier: Any
+        ) -> None:
             """Metric mode: canonical DA3 output -> metres, CameraInfo and the cloud."""
             model = str(rep.get("model", ""))
             if not is_metric_model(model):
@@ -165,25 +231,9 @@ def main(args: Any = None) -> None:
                 )
                 return
             info = self._rgb_info
-            if info is None or not (self._depth_frame or info.header.frame_id) or not info.width:
-                self.get_logger().warning(
-                    "depth_provider: no CameraInfo (with a frame and size) for the RGB "
-                    "camera yet; frame dropped",
-                    throttle_duration_sec=5.0,
-                )
-                return
-            # K is scaled from the CameraInfo's size to DA3's raster: right for a uniform
-            # resize of the image it describes, wrong for another view or an unset K.
-            k = (float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5]))
-            info_wh = (int(info.width), int(info.height))
-            problem = camera_info_problem(k, info_wh, (int(msg.width), int(msg.height)))
-            if problem is not None:
-                self.get_logger().warning(
-                    f"depth_provider: {problem}; frame dropped", throttle_duration_sec=5.0
-                )
-                return
+            # DA3 saw the rectified image: its pinhole K, scaled to DA3's raster.
             dh, dw = canonical.shape
-            fx, fy, cx, cy = scale_intrinsics(k, info_wh, (dw, dh))
+            fx, fy, cx, cy = scale_intrinsics(rectifier.k, rectifier.size, (dw, dh))
             depth = da3_metric_depth(canonical, fx=fx, fy=fy)
             # The launch's resolved optical frame wins over the CameraInfo's own frame_id.
             frame = self._depth_frame or str(info.header.frame_id)
@@ -226,6 +276,12 @@ def main(args: Any = None) -> None:
                 )
                 return
             rgb = np.frombuffer(bgr, dtype=np.uint8).reshape(h, w, 3)[..., ::-1]
+            rectifier = None
+            if self._metric:
+                prepared = self._metric_input(msg, np.ascontiguousarray(rgb))
+                if prepared is None:
+                    return
+                rgb, rectifier = prepared
             buf = io.BytesIO()
             PILImage.fromarray(np.ascontiguousarray(rgb), "RGB").save(buf, format="PNG")
 
@@ -253,7 +309,7 @@ def main(args: Any = None) -> None:
             dh, dw = int(rep["h"]), int(rep["w"])
             depth = np.frombuffer(rep["depth"], dtype=np.float32).reshape(dh, dw)
             if self._metric:
-                self._publish_metric(msg, rep, depth)
+                self._publish_metric(msg, rep, depth, rectifier)
                 return
             stamp = msg.header.stamp
             slam_frame = self._depth_frame or "camera_depth_optical_frame"
