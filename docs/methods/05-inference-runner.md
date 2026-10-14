@@ -405,12 +405,12 @@ _``DeployRunner`` — concrete `InferenceRunnerBase` subclass composing HAL + Sk
 ### `python/runner/src/openral_runner/safety.py`
 _``SafetyClient`` stub — Python-side seam for the future C++ safety kernel._
 
-- `class SafetyClient(Protocol)` — `@runtime_checkable` Protocol. `check_action(action)` returns `None` to allow or raises `ROSSafetyViolation` to reject; the inference runner catches it only at its supervisor boundary, never silently. (L40)
+- `class SafetyClient(Protocol)` — `@runtime_checkable` Protocol. `check_action(action)` returns `None` to allow or raises `ROSSafetyViolation` to reject; the inference runner catches it only at its supervisor boundary, never silently. (L42)
   - attr `envelope: SafetyEnvelope` — the envelope checked against.
-  - `check_action(action: Action) -> None` (L56)
-- `class NullSafetyClient` — no-op stub that always allows. Every call opens a `safety.check` OTel span at `severity="info"` carrying `control_mode`, `horizon`, `envelope_max_ee_speed_m_s`, `envelope_max_force_n`. Used by digital-twin runs and pre-hardware tests so traces show the seam is wired before the C++ kernel arrives. (L72)
-  - `__init__(envelope: SafetyEnvelope | None = None)` — defaults to a stock `SafetyEnvelope`. (L97)
-  - `check_action(action: Action) -> None` (L101)
+  - `check_action(action: Action) -> None` (L58)
+- `class NullSafetyClient` — no-op stub that always allows. Every call opens a `safety.check` OTel span at `severity="info"` carrying `control_mode`, `horizon`, `envelope_max_ee_speed_m_s`, `envelope_max_force_n`. Used by digital-twin runs and pre-hardware tests so traces show the seam is wired before the C++ kernel arrives. (L74)
+  - `__init__(envelope: SafetyEnvelope | None = None)` — defaults to a stock `SafetyEnvelope`. (L99)
+  - `check_action(action: Action) -> None` (L103)
 
 ### `python/runner/src/openral_runner/base.py`
 _Shared base for inference runners. Subclasses override `_tick_impl`._

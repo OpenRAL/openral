@@ -146,7 +146,7 @@ def _ur_joint_specs(
             position_limits=_UR5E_POSITION_LIMITS[name],
             velocity_limit=velocity_limits[name],
             effort_limit=effort_limits[name],
-            has_torque_sensor=True,  # UR provides motor torque feedback
+            has_torque_sensor=False,  # current-derived estimate, not a joint torque sensor
             actuator_kind="bldc",
         )
         for name, parent, child in zip(_UR_JOINT_NAMES, parents, children, strict=True)
