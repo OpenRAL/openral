@@ -375,10 +375,15 @@ bodies) hidden from both:
 
 | scene | geoms | rays disagreeing | geoms skipped | of those, intangible | max **farther** | **nearer** | lost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| baguette | 2 383 | 3 815 (23.3 %) | 3 | **0** | 434.2 mm | **0** | 0 |
+| baguette | 2 383 | 3 816 (23.3 %) | 3 | **0** | 434.2 mm | **0** | 0 |
 | sink_cup | 2 380 | 39 (0.2 %) | 2 | **0** | 480.2 mm | **0** | 0 |
 | fridge | 1 541 | **0** | 0 | — | — | **0** | 0 |
 | utensil | 1 502 | 259 (1.6 %) | 6 | **0** | 205.9 mm | **0** | 0 |
+
+Re-measured 2026-10-14 at the scenes' deployed 30 Hz time base (#362 pins
+`control_freq_hz: 30.0`, which shrinks the physics dt and moves the reset pose
+slightly): baguette went from 3 815 to 3 816 disagreeing rays; every other cell
+is unchanged.
 
 Four things this settles.
 
@@ -391,7 +396,7 @@ described, but not the same cause: #111 blamed visual-only geometry, and after
 #174 there is none left in the cast.
 
 **The direction is uniformly unsafe.** Across all 65 536 rays not one return
-came back nearer and not one was lost; 4 113 came back *farther*, by up to
+came back nearer and not one was lost; 4 114 came back *farther*, by up to
 480 mm. A depth cloud that reports free space where a countertop is, feeding
 `octomap_server` and then the kernel's world grid, is the one error mode this
 whole page exists to bound. #174's filter was safe *because* it could only push
@@ -406,7 +411,7 @@ ray/box slab intersection sharing no code with MuJoCo's caster was run over
 **The fridge's zero is a property of that camera, not a reprieve.** Its
 `front_depth` looks at the fridge front at close range — median return 1.28 m,
 `..._freezer_door_main` alone taking 4 711 of 16 384 rays — with no counter run
-in view for the cull to fire on. One scene over the same caster loses 3 815
+in view for the cull to fire on. One scene over the same caster loses 3 816
 rays.
 
 **The mechanism is open, and #111's account of it is not it.** #111 recorded

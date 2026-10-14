@@ -11,7 +11,7 @@ mis-skipped non-collidable geoms".
 #195 measured that conjecture instead of adopting it, and it is **false**. On
 the four validation-matrix scenes at the deploy stride, with #180's filter
 applied to both casters so they see the identical world, the batched cast
-disagrees on 4 113 of 65 536 rays — and **every geom it skips is collidable**
+disagrees on 4 114 of 65 536 rays — and **every geom it skips is collidable**
 (``contype`` or ``conaffinity`` set). Not one is the intangible decoration #180
 removed. The failure is entirely in the unsafe direction: no return ever comes
 back nearer, they come back up to 480 mm *farther*, which is the perception
@@ -96,9 +96,12 @@ class _SceneCast:
 #: The fridge's 0 is not a reprieve. Its camera is on the fridge front at close
 #: range — median return 1.28 m, and `..._freezer_door_main` alone takes 4 711
 #: of the 16 384 rays — with **no** counter geom in view at all, so nothing
-#: there fires the skip. The same caster loses 3 815 rays one scene over.
+#: there fires the skip. The same caster loses 3 816 rays one scene over.
+#:
+#: Measured at each scene's deployed time base: #362's 30 Hz pin moved baguette's
+#: reset pose, and with it the count, from 3 815 to 3 816.
 _SCENES = (
-    ("scenes/deploy/robocasa_baguette.yaml", 3815),
+    ("scenes/deploy/robocasa_baguette.yaml", 3816),
     ("scenes/deploy/robocasa_sink_cup.yaml", 39),
     ("scenes/deploy/robocasa_fridge_drawer.yaml", 0),
     ("scenes/deploy/robocasa_drawer_utensil.yaml", 259),
