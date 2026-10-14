@@ -1245,14 +1245,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # hardware, any depth / point-cloud sensor (whose driver topic must then be pinned).
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
     if estimated_depth_camera:
-        from openral_core.depth_extrinsic import estimated_depth_camera_problems
+        from openral_core.depth_extrinsic import resolve_estimated_depth_camera
 
-        problems = estimated_depth_camera_problems(
+        problems = resolve_estimated_depth_camera(
             merge_deploy_sensors(
                 description.sensors, deploy_scene.sensors if deploy_scene is not None else []
             ),
             estimated_depth_camera,
-        )
+            hal_mode=hal_mode,
+        ).problems
         if problems:
             raise ROSConfigError(
                 "runtime.estimated_depth_camera cannot feed the world map:\n  "

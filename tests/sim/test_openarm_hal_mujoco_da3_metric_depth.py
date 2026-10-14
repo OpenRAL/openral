@@ -99,6 +99,10 @@ def _frames() -> tuple[np.ndarray, np.ndarray, Any]:
         while time.monotonic() < deadline and len(got) < 3:
             time.sleep(0.05)
         executor.shutdown()
+        # rclpy's shutdown() does not wait for a running callback: a depth timer still in
+        # mujoco.mj_ray at interpreter exit segfaults (pthread_exit through pybind11).
+        spin.join(timeout=5.0)
+        assert not spin.is_alive(), "executor thread still running a callback"
         bridge.teardown()
         node.destroy_node()
     finally:

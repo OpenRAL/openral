@@ -44,7 +44,7 @@ _FRAME = "test_camera_optical_frame"
 
 
 @contextlib.contextmanager
-def _provider(prefix: str, port: int, log: Path) -> Iterator[subprocess.Popen[bytes]]:
+def _provider(prefix: str, port: int, log: Path, frame: str) -> Iterator[subprocess.Popen[bytes]]:
     params = {
         "image_topic": f"{prefix}/image",
         "rgb_camera_info_topic": f"{prefix}/camera_info",
@@ -54,6 +54,8 @@ def _provider(prefix: str, port: int, log: Path) -> Iterator[subprocess.Popen[by
         "sidecar_port": str(port),
         "max_range_m": "3.0",
     }
+    if frame:  # rcl refuses an empty `-p name:=`
+        params["depth_frame_id"] = frame
     argv = [sys.executable, str(_NODE), "--ros-args"]
     for key, value in params.items():
         argv += ["-p", f"{key}:={value}"]
@@ -74,7 +76,9 @@ def _provider(prefix: str, port: int, log: Path) -> Iterator[subprocess.Popen[by
                 proc.wait(timeout=5)
 
 
-def _run(model: str, tmp_path: Path, wait_s: float) -> tuple[dict[str, Any], int, str]:
+def _run(
+    model: str, tmp_path: Path, wait_s: float, frame: str = ""
+) -> tuple[dict[str, Any], int, str]:
     """Feed the provider RGB + CameraInfo for ``wait_s``; return what it published."""
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
@@ -113,7 +117,7 @@ def _run(model: str, tmp_path: Path, wait_s: float) -> tuple[dict[str, Any], int
         image.height, image.width, image.encoding = _H, _W, "rgb8"
         image.step = _W * 3
         image.data = bytes(np.full((_H, _W, 3), 120, np.uint8).tobytes())
-        with _provider(prefix, sidecar.port, log):
+        with _provider(prefix, sidecar.port, log, frame):
             deadline = time.monotonic() + wait_s
             while time.monotonic() < deadline and "cloud" not in got:
                 now = node.get_clock().now().to_msg()
@@ -155,3 +159,16 @@ def test_a_non_metric_sidecar_feeds_the_map_nothing(tmp_path: Path) -> None:
     assert requests > 0, f"the provider never asked the sidecar; log:\n{log}"
     assert "cloud" not in got
     assert "not DA3METRIC" in log
+
+
+def test_the_launch_resolved_frame_wins_over_the_camera_info_frame(tmp_path: Path) -> None:
+    """A top camera riding another sensor's mount stamps its CameraInfo elsewhere."""
+    got, _, log = _run(
+        "depth-anything/DA3METRIC-LARGE",
+        tmp_path,
+        wait_s=30.0,
+        frame="zed_camera_link_optical_frame",
+    )
+    assert "cloud" in got, log
+    assert got["cloud"].header.frame_id == "zed_camera_link_optical_frame"
+    assert got["info"].header.frame_id == "zed_camera_link_optical_frame"

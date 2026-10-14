@@ -760,19 +760,43 @@ _ESTIMATED_DEPTH_MODEL = "depth-anything/DA3METRIC-LARGE"
 _ESTIMATED_DEPTH_PORT = 5772
 
 
-def _build_estimated_depth_nodes(camera: str, *, use_sim_time: bool) -> list:  # type: ignore[type-arg]  # reason: launch actions, deferred import
+def _build_estimated_depth_nodes(
+    camera: str, *, cloud_frame: str, optical_parent: str | None, use_sim_time: bool
+) -> list:  # type: ignore[type-arg]  # reason: launch actions, deferred import
     """The DA3METRIC sidecar + depth provider that give ``camera`` a world-collision cloud.
 
     The provider converts DA3's canonical output to metres through the camera's own
     ``CameraInfo`` focal and publishes depth, that ``CameraInfo`` and the back-projected
     cloud on the camera's canonical ``DEPTH_IMAGE`` / ``DEPTH_CAMERA_INFO`` / ``POINTS``
-    topics (``deploy_cloud_topic`` then maps the cloud). The sidecar provisions its venv
-    on first boot (minutes); until it answers the provider publishes nothing, so the
-    kernel's world-voxel deadline stops motion rather than run on an empty map.
+    topics (``deploy_cloud_topic`` then maps the cloud), all stamped in ``cloud_frame``
+    (``openral_core.depth_extrinsic.resolve_estimated_depth_camera``). A body-convention
+    mount (``optical_parent``) gets ``cloud_frame`` as its REP-103 optical child on
+    /tf_static, as the sim bridge does for a depth sensor's mount. The sidecar provisions
+    its venv on first boot (minutes); until it answers the provider publishes nothing, so
+    the kernel's world-voxel deadline stops motion rather than run on an empty map.
     """
     from launch.actions import ExecuteProcess
 
+    optical_tf = (
+        [
+            Node(
+                package="tf2_ros",
+                executable="static_transform_publisher",
+                name=f"static_{optical_parent}_to_{cloud_frame}",
+                # REP-103 body (x fwd, z up) -> optical (z fwd, y down): the quaternion
+                # openral_hal.depth_cloud.BODY_TO_OPTICAL_QUAT_XYZW.
+                arguments=[
+                    *("--qx", "-0.5", "--qy", "0.5", "--qz", "-0.5", "--qw", "0.5"),
+                    *("--frame-id", optical_parent, "--child-frame-id", cloud_frame),
+                ],
+                output="log",
+            )
+        ]
+        if optical_parent is not None
+        else []
+    )
     return [
+        *optical_tf,
         ExecuteProcess(
             cmd=[
                 sys.executable,
@@ -798,6 +822,9 @@ def _build_estimated_depth_nodes(camera: str, *, use_sim_time: bool) -> list:  #
                     "depth_topic": camera_topic(camera, CameraTopicKind.DEPTH_IMAGE),
                     "camera_info_topic": camera_topic(camera, CameraTopicKind.DEPTH_CAMERA_INFO),
                     "points_topic": camera_topic(camera, CameraTopicKind.POINTS),
+                    # The camera's placed optical frame, not its CameraInfo's frame_id
+                    # (a top camera sharing a mount may stamp ``world``).
+                    "depth_frame_id": cloud_frame,
                     "sidecar_port": _ESTIMATED_DEPTH_PORT,
                     # A large model's first frames (CUDA warm-up) can exceed 2 s.
                     "request_timeout_ms": 10000,
@@ -3223,16 +3250,23 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # DA3 depth from an RGB camera (DeployRuntime.estimated_depth_camera): a cloud for
         # the world map on a robot with no depth sensor. Refused here too for a direct
         # ``ros2 launch``: a camera that cannot be placed would feed a misplaced map.
-        from openral_core.depth_extrinsic import estimated_depth_camera_problems
+        from openral_core.depth_extrinsic import resolve_estimated_depth_camera
         from openral_core.exceptions import ROSConfigError
 
-        problems = estimated_depth_camera_problems(
-            merge_deploy_sensors(description.sensors, scene_sensors), estimated_depth_camera
+        mount = resolve_estimated_depth_camera(
+            merge_deploy_sensors(description.sensors, scene_sensors),
+            estimated_depth_camera,
+            hal_mode=hal_mode,
         )
-        if problems:
-            raise ROSConfigError("estimated_depth_camera: " + "; ".join(problems))
+        if mount.problems:
+            raise ROSConfigError("estimated_depth_camera: " + "; ".join(mount.problems))
         extra_nodes.extend(
-            _build_estimated_depth_nodes(estimated_depth_camera, use_sim_time=use_sim_time)
+            _build_estimated_depth_nodes(
+                estimated_depth_camera,
+                cloud_frame=mount.cloud_frame,
+                optical_parent=mount.optical_parent,
+                use_sim_time=use_sim_time,
+            )
         )
 
     if enable_octomap:

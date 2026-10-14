@@ -3,7 +3,8 @@
 
 ``DeployRuntime.estimated_depth_camera`` names the camera; the deploy resolves its cloud
 as octomap's input, refuses a camera whose cloud could not be placed, and on a real
-deploy requires its mount like any cloud source. ``openral_perception_ros.metric_depth``
+deploy requires its mount like any cloud source. Any RGB camera qualifies (top, context,
+wrist) once a declared mount ties it to the robot. ``openral_perception_ros.metric_depth``
 turns DA3METRIC's canonical output into metres through the camera's own focal.
 
 Real manifests and scenes (CLAUDE.md §1.11); the provider node itself runs in
@@ -16,10 +17,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import DeployRuntime, RobotDescription
+from openral_core import (
+    DeployRuntime,
+    RobotDescription,
+    apply_sensor_overlays,
+    load_robot_unit,
+)
 from openral_core.depth_extrinsic import (
     depth_extrinsic_problems,
-    estimated_depth_camera_problems,
+    resolve_estimated_depth_camera,
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import deploy_cloud_topic
@@ -66,41 +72,51 @@ class TestRuntimeField:
             assert topic == "/openral/cameras/shoulder_right/points"
 
 
-class TestCameraChecks:
-    def _sensors(self) -> list:  # type: ignore[type-arg]
+class TestCameraMount:
+    """Any RGB camera tied to the robot by a declared mount; sim adds the bridge's live TF."""
+
+    def _vslam(self) -> list:  # type: ignore[type-arg]
         return list(RobotDescription.from_yaml(str(_VSLAM)).sensors)
 
-    def test_an_optical_rgb_camera_with_intrinsics_is_accepted(self) -> None:
-        assert estimated_depth_camera_problems(self._sensors(), "shoulder_right") == []
+    def test_a_sim_optical_camera_is_placed_by_the_bridge(self) -> None:
+        mount = resolve_estimated_depth_camera(self._vslam(), "shoulder_right", hal_mode="sim")
+        assert mount == ("shoulder_right_optical_frame", None, "shoulder_right", [])
+
+    def test_the_same_camera_has_no_mount_on_a_real_deploy(self) -> None:
+        mount = resolve_estimated_depth_camera(self._vslam(), "shoulder_right", hal_mode="real")
+        assert "no mount ties it to the robot" in mount.problems[0]
+
+    def test_a_top_camera_sharing_the_zed_mount_is_placed_in_sim_and_real(self) -> None:
+        """OpenArm's ``top`` is the ZED's colour: it rides ``head_zed``'s calibrated mount."""
+        arm = RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml")).sensors
+        for mode in ("sim", "real"):
+            mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
+            assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
 
     @pytest.mark.parametrize(
-        ("camera", "match"),
+        ("robot", "camera", "match"),
         [
-            ("front_depth", "depth sensor"),
-            ("wrist", "not an \\*_optical_frame"),
-            ("nope", "no such sensor"),
+            ("panda_mobile_vslam", "front_depth", "depth sensor"),
+            ("panda_mobile_vslam", "wrist", "no mount ties"),  # panda_hand is not the camera
+            ("panda_mobile_vslam", "nope", "no such sensor"),
+            ("so101_follower", "top", "no mount ties"),  # declared in `world`
+            ("so101_follower", "wrist", "no mount ties"),  # parent gripper, no offset
         ],
     )
-    def test_a_camera_whose_cloud_cannot_be_placed_is_refused(
-        self, camera: str, match: str
-    ) -> None:
-        import re
+    def test_a_camera_nobody_placed_is_refused(self, robot: str, camera: str, match: str) -> None:
+        sensors = RobotDescription.from_yaml(str(_REPO / f"robots/{robot}/robot.yaml")).sensors
+        for mode in ("sim", "real"):
+            problems = resolve_estimated_depth_camera(sensors, camera, hal_mode=mode).problems
+            assert problems and match in problems[0], (mode, problems)
 
-        problems = estimated_depth_camera_problems(self._sensors(), camera)
-        assert problems and re.search(match, problems[0])
-
-    def test_a_top_camera_framed_in_world_is_refused(self) -> None:
-        """SO-101's ``top`` is declared in ``world``: no TF places a cloud there."""
-        so101 = RobotDescription.from_yaml(str(_REPO / "robots/so101_follower/robot.yaml"))
-        (problem,) = estimated_depth_camera_problems(so101.sensors, "top")
-        assert "'world'" in problem
-
-    def test_a_real_deploy_needs_its_mount_like_any_cloud_source(self) -> None:
-        desc = RobotDescription.from_yaml(str(_VSLAM))
-        without = depth_extrinsic_problems(desc, [])
-        with_cam = depth_extrinsic_problems(desc, [], estimated_camera="shoulder_right")
-        assert not any(p.startswith("shoulder_right:") for p in without)
-        assert any(p.startswith("shoulder_right:") for p in with_cam)
+    def test_a_real_deploy_checks_the_mount_the_camera_rides(self) -> None:
+        robot = str(_REPO / "robots/openarm/robot.yaml")
+        desc = RobotDescription.from_yaml(robot)
+        nominal = depth_extrinsic_problems(desc, [], estimated_camera="top")
+        assert [p.split(":")[0] for p in nominal] == ["head_zed"]
+        thor = load_robot_unit(robot, "thor").sensors
+        calibrated = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, thor)})
+        assert depth_extrinsic_problems(calibrated, thor, estimated_camera="top") == []
 
 
 class TestMetricDepth:
@@ -155,5 +171,5 @@ class TestDeployResolution:
         assert "estimated_depth_camera:=shoulder_right" in " ".join(inv.argv_template)  # type: ignore[attr-defined]
 
     def test_an_unplaceable_camera_is_refused_before_launch(self, tmp_path: Path) -> None:
-        with pytest.raises(ROSConfigError, match="optical_frame"):
+        with pytest.raises(ROSConfigError, match="no mount ties"):
             self._resolve(self._scene(tmp_path, "wrist"))

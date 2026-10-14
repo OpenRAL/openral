@@ -10741,9 +10741,14 @@ class DeployRuntime(BaseModel):
 
     An ESTIMATE, not a measurement: it can misplace or miss surfaces (glass, low texture,
     far range), and it reaches the safety kernel's world voxels. The launch logs that at
-    WARN. The camera must be RGB with ``intrinsics`` and an ``*_optical_frame``
-    ``frame_id`` placed by TF; on ``deploy run`` its mount must be calibrated in
-    ``units/<unit>.yaml`` like any cloud source's (``depth_extrinsic_problems``).
+    WARN. Any RGB camera with ``intrinsics`` qualifies (top, context or wrist) once it is
+    tied to the robot by a declared mount: ``parent_frame`` + ``static_transform_xyz_rpy``
+    on it or on the sensor it ``shares_mount_with``; in sim, an ``*_optical_frame``
+    camera the bridge places from the MJCF also does
+    (``openral_core.depth_extrinsic.resolve_estimated_depth_camera``). A camera in
+    ``world`` or on a bare robot link is refused. On ``deploy run`` that mount must be
+    calibrated in ``units/<unit>.yaml`` like any cloud source's
+    (``depth_extrinsic_problems``).
     Mutually exclusive with ``octomap_cloud_topic`` (which cloud is mapped must be one
     answer) and with ``slam_mono_camera`` naming the same camera (both would publish
     its depth topics). ``None`` = off. Backward-compatible addition."""

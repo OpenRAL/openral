@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
     from openral_core.schemas import RobotDescription, SensorOverlay, SensorSpec
@@ -58,8 +58,8 @@ def depth_extrinsic_problems(
     because someone set that cell up and measured it. A scene-mounted cloud source is
     declared per deployment already; it must carry ``parent_frame`` and
     ``static_transform_xyz_rpy``. ``estimated_camera`` (``DeployRuntime.
-    estimated_depth_camera``) is an RGB camera that feeds octomap DA3's cloud, so it is a
-    cloud source here too.
+    estimated_depth_camera``) is an RGB camera that feeds octomap DA3's cloud, so its
+    mount (its own, or the one it ``shares_mount_with``) is a cloud source's here too.
 
     Example:
         >>> from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
@@ -73,6 +73,11 @@ def depth_extrinsic_problems(
         []
     """
     declared = {o.name for o in overlays if o.static_transform_xyz_rpy is not None}
+    if estimated_camera is not None:
+        # The camera sits at its own mount or the one it shares; that mount is checked.
+        spec = next((s for s in description.sensors if s.name == estimated_camera), None)
+        if spec is not None and spec.shares_mount_with:
+            estimated_camera = spec.shares_mount_with
     problems = []
     for spec in description.sensors:
         if not spec.is_cloud_source and spec.name != estimated_camera:
@@ -99,42 +104,90 @@ def depth_extrinsic_problems(
     return problems
 
 
-def estimated_depth_camera_problems(sensors: Sequence[SensorSpec], camera: str) -> list[str]:
-    """Why ``camera`` cannot carry ``DeployRuntime.estimated_depth_camera`` (empty = go).
+class EstimatedDepthMount(NamedTuple):
+    """Where ``DeployRuntime.estimated_depth_camera``'s DA3 cloud is placed, or why it cannot be.
 
-    The depth provider turns its RGB into DA3 metric depth with the camera's own
-    ``CameraInfo`` focal and back-projects it in the ``CameraInfo`` frame, so the camera
-    must be RGB (a depth sensor publishes its own depth topics), have ``intrinsics`` (the
-    real sensor leg publishes ``CameraInfo`` only then), and be stamped in a REP-103
-    ``*_optical_frame`` that TF places (``world`` or a body-convention link would rotate
-    or strand the cloud). ``sensors`` are the deploy's manifest + scene sensors.
+    Attributes:
+        cloud_frame: The REP-103 optical frame the depth, ``CameraInfo`` and cloud are
+            stamped in (``""`` when ``problems``).
+        optical_parent: The body-convention mount frame the launch must hang
+            ``cloud_frame`` under (``BODY_TO_OPTICAL``), or ``None`` when ``cloud_frame``
+            is already on TF (a declared optical mount, or the sim bridge's live one).
+        mount_sensor: The sensor whose mount places the camera (itself, or the one it
+            ``shares_mount_with``); a real deploy's extrinsic gate checks that one.
+        problems: Why the camera cannot feed the world map (empty = go).
+    """
+
+    cloud_frame: str
+    optical_parent: str | None
+    mount_sensor: str
+    problems: list[str]
+
+
+def resolve_estimated_depth_camera(
+    sensors: Sequence[SensorSpec], camera: str, *, hal_mode: str
+) -> EstimatedDepthMount:
+    """Resolve ``camera``'s mount for DA3 world-collision depth: any RGB camera tied to the robot.
+
+    A monocular cloud is only useful where TF can place it, so the camera (top, context
+    or wrist alike) must be *extrinsically linked to the robot*:
+
+    1. its mount is declared — ``parent_frame`` + ``static_transform_xyz_rpy`` on the
+       camera, or on the sensor it ``shares_mount_with`` (the same physical device, e.g.
+       a ZED's colour stream and its depth). The launch publishes that mount; a
+       body-convention mount frame gets its ``<frame>_optical_frame`` child. A wrist
+       camera's parent is a robot link, so TF moves it with the arm. Works in sim and
+       on real hardware (where the mount must also be unit-calibrated,
+       :func:`depth_extrinsic_problems`).
+    2. in sim only, its ``frame_id`` is already an ``*_optical_frame`` — the sim bridge
+       publishes that camera's live pose from the MJCF.
+
+    ``world`` (a camera whose pose relative to the robot nobody declared) and a bare
+    robot link (``panda_hand``: the camera is not at the link's origin) are refused.
+    The camera must also be RGB (a depth sensor publishes its own depth) with
+    ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then).
+    ``sensors`` are the deploy's manifest (unit-overlaid) + scene sensors.
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> sensors = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").sensors
-        >>> estimated_depth_camera_problems(sensors, "shoulder_left")
-        []
-        >>> estimated_depth_camera_problems(sensors, "front_depth")
-        ['front_depth: a depth sensor, which publishes its own depth; name an RGB camera']
-        >>> estimated_depth_camera_problems(sensors, "head")
-        ["head: frame_id 'base_link' is not an *_optical_frame, so the cloud cannot be placed"]
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
+        >>> resolve_estimated_depth_camera(arm, "top", hal_mode="real")[:3]
+        ('zed_camera_link_optical_frame', 'zed_camera_link', 'head_zed')
+        >>> mobile = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").sensors
+        >>> resolve_estimated_depth_camera(mobile, "shoulder_left", hal_mode="sim")[:3]
+        ('shoulder_left_optical_frame', None, 'shoulder_left')
+        >>> real = resolve_estimated_depth_camera(mobile, "shoulder_left", hal_mode="real")
+        >>> "no mount ties it to the robot" in real.problems[0]
+        True
     """
-    spec = next((s for s in sensors if s.name == camera), None)
+    by_name = {s.name: s for s in sensors}
+    spec = by_name.get(camera)
     if spec is None:
-        return [f"{camera}: no such sensor on the robot or in the scene"]
+        return EstimatedDepthMount("", None, camera, [f"{camera}: no such sensor"])
     if spec.modality != "rgb":
         what = (
             "a depth sensor, which publishes its own depth"
             if spec.is_cloud_source
             else f"a {spec.modality} sensor"
         )
-        return [f"{camera}: {what}; name an RGB camera"]
+        return EstimatedDepthMount("", None, camera, [f"{camera}: {what}; name an RGB camera"])
     problems = []
     if spec.intrinsics is None:
         problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")
-    if not str(spec.frame_id).endswith("_optical_frame"):
-        problems.append(
-            f"{camera}: frame_id {spec.frame_id!r} is not an *_optical_frame, so the cloud "
-            "cannot be placed"
+    mount = by_name.get(spec.shares_mount_with or camera, spec)
+    if mount.parent_frame is not None and mount.static_transform_xyz_rpy is not None:
+        frame = str(mount.frame_id)
+        optical = frame.endswith("_optical_frame")
+        return EstimatedDepthMount(
+            frame if optical else f"{frame}_optical_frame",
+            None if optical else frame,
+            mount.name,
+            problems,
         )
-    return problems
+    if hal_mode == "sim" and str(spec.frame_id).endswith("_optical_frame"):
+        return EstimatedDepthMount(str(spec.frame_id), None, camera, problems)
+    problems.append(
+        f"{camera}: no mount ties it to the robot: declare parent_frame + "
+        "static_transform_xyz_rpy (or shares_mount_with) for it"
+    )
+    return EstimatedDepthMount("", None, mount.name, problems)

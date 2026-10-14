@@ -65,7 +65,9 @@ def main(args: Any = None) -> None:
             self.declare_parameter("image_topic", "")
             self.declare_parameter("depth_topic", "")
             self.declare_parameter("camera_info_topic", "")
-            self.declare_parameter("depth_frame_id", "camera_depth_optical_frame")
+            # "" = metric mode stamps in the RGB CameraInfo's frame_id; the SLAM mode's
+            # historic default otherwise.
+            self.declare_parameter("depth_frame_id", "")
             self.declare_parameter("sidecar_host", "127.0.0.1")
             self.declare_parameter("sidecar_port", 5771)
             self.declare_parameter("process_res", 504)
@@ -162,7 +164,7 @@ def main(args: Any = None) -> None:
                 )
                 return
             info = self._rgb_info
-            if info is None or not info.header.frame_id or info.width == 0:
+            if info is None or not (self._depth_frame or info.header.frame_id) or not info.width:
                 self.get_logger().warning(
                     "depth_provider: no CameraInfo (with a frame and size) for the RGB "
                     "camera yet; frame dropped",
@@ -176,7 +178,8 @@ def main(args: Any = None) -> None:
                 (dw, dh),
             )
             depth = da3_metric_depth(canonical, fx=fx, fy=fy)
-            frame = str(info.header.frame_id)
+            # The launch's resolved optical frame wins over the CameraInfo's own frame_id.
+            frame = self._depth_frame or str(info.header.frame_id)
             stamp = msg.header.stamp
             self._depth_pub.publish(depth_array_to_image_msg(depth, frame_id=frame, stamp=stamp))
             self._info_pub.publish(
@@ -246,7 +249,8 @@ def main(args: Any = None) -> None:
                 self._publish_metric(msg, rep, depth)
                 return
             stamp = msg.header.stamp
-            depth_msg = depth_array_to_image_msg(depth, frame_id=self._depth_frame, stamp=stamp)
+            slam_frame = self._depth_frame or "camera_depth_optical_frame"
+            depth_msg = depth_array_to_image_msg(depth, frame_id=slam_frame, stamp=stamp)
             info_msg = camera_info_from_intrinsics(
                 fx=rep["fx"],
                 fy=rep["fy"],
@@ -254,7 +258,7 @@ def main(args: Any = None) -> None:
                 cy=rep["cy"],
                 width=dw,
                 height=dh,
-                frame_id=self._depth_frame,
+                frame_id=slam_frame,
                 stamp=stamp,
             )
             self._depth_pub.publish(depth_msg)
