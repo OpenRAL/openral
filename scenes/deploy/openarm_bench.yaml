@@ -80,7 +80,7 @@ robot_unit: orin
 # Camera-only check with exactly these args on the lab Orin, 2026-09-22: HD720,
 # positional tracking FALSE, `cloud_registered` 9.9 Hz, `depth_registered`
 # 29.7 Hz, zero reboots — measured with the arms untouched. Since 2026-10-07 the
-# override grabs VGA, not HD720, and advertises the raw image: the restock policy was
+# override grabs VGA, not HD720, and advertises the raw image: the pick-and-place policy was
 # trained on the unrectified VGA stream, and the units bind `top` to it (see the file).
 #
 # `zed_wrapper` is built in its own colcon workspace, so source that overlay
@@ -136,7 +136,7 @@ runtime:
   # is the motion budget: the filter pairs each cloud with the nearest 30 Hz joint state
   # (<= ~17 ms off), i.e. ~8.5 mm at 0.5 m/s at the gripper. Do not tighten below 1.5 cm
   # until the tail is measured with the arms MOVING (attended real bringup). Wider costs real
-  # obstacles: the restock box sits 2-4 cm from the hanging grippers.
+  # obstacles: the target box sits 2-4 cm from the hanging grippers.
   robot_self_filter_padding_m: 0.02
   # No `joint_states_topic`: on `deploy run` the launch derives the HAL's 30 Hz
   # `/openral_hal_openarm/joint_states` republish for any ros2_control arm

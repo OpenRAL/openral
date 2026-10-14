@@ -10,7 +10,7 @@ collider's oriented bounding box in the manifest ``base_frame``
 Each box is a superset of its collider (the USD bound), the fail-closed direction for
 geometry a scene adds to the kernel's world. Needs Isaac Sim (the sidecar); run::
 
-    python tools/isaac_static_geometry.py --config scenes/deploy/local/restock.yaml \\
+    python tools/isaac_static_geometry.py --config scenes/deploy/local/<scene>.yaml \\
         [--out static.yaml] [--max-distance 1.0]
 """
 

@@ -294,9 +294,9 @@ def test_a_grasp_declaration_rides_attachment_state_to_world_state_stamped() -> 
     # production-clock aggregator -> WorldStateStamped, then expired by the stream clock.
     sim_arm_ns = 1_240_000_000
     declaration = GraspDeclaration(
-        target_id="cell:restock_box",
+        target_id="cell:pick_box",
         contact_links=("openarm_left_finger_pair", "openarm_right_finger_pair"),
-        rskill_id="openral/pi05-openarm-restock",
+        rskill_id="openral/pi05-openarm-pick-place",
         trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
         timeout_s=70.0,
         stamp_ns=sim_arm_ns,
@@ -306,7 +306,7 @@ def test_a_grasp_declaration_rides_attachment_state_to_world_state_stamped() -> 
                 xyz=(0.45, 0.0, 0.12), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
             ),
             half_extents=(0.06, 0.05, 0.04),
-            evidence_ref="zed_sam2_obb:restock_box",
+            evidence_ref="zed_sam2_obb:pick_box",
             stamp_ns=sim_arm_ns,
         ),
     )

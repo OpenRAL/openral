@@ -585,7 +585,7 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
-    # The ZED-M left image at the restock rSkill's training raster (672x376): the Thor
+    # The ZED-M left image at the pick-and-place rSkill's training raster (672x376): the Thor
     # cell's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
     # 1920x1080, 2026-10-02) scaled per axis, so a sim renders the policy's view at its
     # field of view (65.3 deg horizontal) and aspect.
@@ -604,7 +604,7 @@ sensors:
     # device; `ros2_image` subscribes). The frame and intrinsics above are the sim
     # render's stand-ins: fine for a policy view, which conditions on pixels, but NOT
     # for anything geometric on real hardware — use `head_zed` for that. The key stays
-    # `observation.images.top`: the restock π0.5 rSkill aliases it onto its checkpoint's
+    # `observation.images.top`: the pick-and-place π0.5 rSkill aliases it onto its checkpoint's
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.

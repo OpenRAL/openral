@@ -196,7 +196,7 @@ pinhole + plumb_bob from the 2026-10-02 calibration at 960x600, so the wrists ca
 960x600 too). The robot and its cameras moved from the Thor host to the Orin host on
 2026-10-07, so `orin.yaml` carries the Thor measurements. Select the unit with
 `OPENRAL_ROBOT_UNIT=<unit>` or the scene's `robot_unit`; a real deploy refuses when
-neither names one. `top` is the ZED's UNRECTIFIED left image at VGA — what the restock
+neither names one. `top` is the ZED's UNRECTIFIED left image at VGA — what the pick-and-place
 policy was trained on (the driver override grabs VGA and advertises the raw topic) —
 `head_zed` its SDK depth, the two Arducams are
 `wrist_left` / `wrist_right`. Their bus topic (`/openral/cameras/wrist_*/image`) is the

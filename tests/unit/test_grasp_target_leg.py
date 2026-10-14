@@ -84,7 +84,7 @@ def _dispatched(stamp_ns: int = 10 * _S) -> GraspDeclaration:
     assert scene is not None
     return scene.model_copy(
         update={
-            "rskill_id": "openral/pi05-openarm-restock",
+            "rskill_id": "openral/pi05-openarm-pick-place",
             "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
             "stamp_ns": stamp_ns,
             "search_box": _box(),
@@ -851,7 +851,7 @@ def _goal_scope(stamp_ns: int = 10 * _S) -> GraspDeclaration:
     return GraspDeclaration(
         target_id="approach",
         contact_links=_LEFT + _RIGHT,
-        rskill_id="openral/pi05-openarm-restock",
+        rskill_id="openral/pi05-openarm-pick-place",
         trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
         timeout_s=60.0,
         stamp_ns=stamp_ns,
@@ -912,7 +912,7 @@ def test_one_approaching_hand_arms_a_one_hand_declaration_with_the_goals_attribu
     assert target.target_id.startswith(f"{APPROACH_TARGET_PREFIX}openarm_left_finger_pair:")
     assert target.contact_links == _LEFT, "the exemption is for the approaching hand only"
     assert (target.rskill_id, target.trace_id, target.stamp_ns, target.timeout_s) == (
-        "openral/pi05-openarm-restock",
+        "openral/pi05-openarm-pick-place",
         "4bf92f3577b34da6a3ce929d0e0e4736",
         10 * _S,
         60.0,

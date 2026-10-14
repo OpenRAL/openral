@@ -276,7 +276,7 @@ def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
     moved the joint (within one tick), not the time of the step that returned it. And a
     frame the renderer repeats keeps its time: equal times are equal images, for every
     camera. The lag itself is not asserted: it is the renderer's and not constant
-    (Isaac 6.1, this scene: mostly 2 steps, with repeats and skips; 4 in the restock
+    (Isaac 6.1, this scene: mostly 2 steps, with repeats and skips; 4 in the tote
     scene of the issue), which is why the time header is the contract.
     """
     tick_ns = 1e9 / 30.0

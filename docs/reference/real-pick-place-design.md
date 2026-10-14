@@ -10,7 +10,7 @@ Facts in §1 cite code at `fe3c8944` unless marked *since*; §2 is now the desig
 
 Goal: on the real OpenArm cell (Thor: ZED-M head camera, RGB-only wrist Arducams,
 `openral deploy run` with the safety kernel's world-voxel check at the real 20 mm margin on
-20 mm cells), pick an object (the restock box) and place it (on a shelf) without a kernel stop,
+20 mm cells), pick an object (the target box) and place it (on a shelf) without a kernel stop,
 using SAM 2.1 to see the object.
 
 ## 1. Why it cannot work today (facts)
@@ -989,7 +989,7 @@ decide; 7 and 8 need the attended cell for calibration.
   1920x1080 ZED left frame, point prompt: warm median 53 ms, p95 57 ms, cold 635 ms, peak
   279 MiB allocated — the same as the RTX 4070 Laptop figures, with π0.5 not loaded. The
   attach barrier (~100 ms) holds it; measure again beside the running policy.
-- The restock box dimensions (for the caps) and finger-shelf clearance during a real place.
+- The target box dimensions (for the caps) and finger-shelf clearance during a real place.
 
 Sources: four read-only investigations of this branch (kernel allowance, pre-grasp perception,
 HAL vision leg, place path), 2026-10-02.

@@ -178,7 +178,7 @@ drivers:
       enable_ipc: "false"
       # Scene-relative. Pins VGA (the ZED-M shares a USB hub with other
       # cameras and reboots in a loop at HD1080; VGA raw is also what the
-      # restock policy was trained on), advertises the raw image topics,
+      # pick-and-place policy was trained on), advertises the raw image topics,
       # turns positional tracking
       # off and depth stabilization to 0 (the SDK force-enables tracking
       # otherwise, defeating the setting above).
@@ -232,7 +232,7 @@ sensors:
       max_age_ms: 500
 
   # RGB: the wrapper's UNRECTIFIED left image, the policy's `top` view — the
-  # restock policy was trained on raw VGA frames, so the override grabs VGA
+  # pick-and-place policy was trained on raw VGA frames, so the override grabs VGA
   # and sets `video.publish_raw: true`. Use `rgb/color/rect/image` (with its
   # zero-distortion CameraInfo) for consumers that assume a pinhole camera.
   # It is published as `bgra8`; the reader drops the constant alpha plane and
