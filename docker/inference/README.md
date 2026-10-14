@@ -147,6 +147,17 @@ both are easy to drop in a refactor without noticing:
   and the cost is invisible in a `phase_timer` breakdown because it lands
   inside `from_pretrained`.
 
+The `ros-jazzy-*` apt packages are not version-pinned, so two builds of one
+commit can resolve different ROS releases. Each build records what it got:
+`/opt/openral/ros-jazzy-versions.txt` (the runtime stage, what the image runs)
+and `/opt/openral/ros-jazzy-versions.builder.txt` (what the colcon overlay was
+compiled against). Diff them between two images when a ROS-level regression
+appears without a code change (issue #381):
+
+```bash
+docker run --rm --entrypoint cat openral:x86 /opt/openral/ros-jazzy-versions.txt
+```
+
 ## Driving the container's ROS graph from the host
 
 The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with

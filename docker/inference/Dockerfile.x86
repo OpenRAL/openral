@@ -157,7 +157,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl-dev \
         libcurl4-openssl-dev \
         zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Record the resolved ros-* versions (issue #381): these apt packages are
+    # unpinned, so two builds of one commit can differ. The colcon overlay is
+    # compiled against THIS set; the runtime stage copies the file next to its
+    # own list so a crashing run and a clean one can be diffed.
+    && mkdir -p /opt/openral \
+    && dpkg-query -W "ros-${ROS_DISTRO}-*" > "/opt/openral/ros-${ROS_DISTRO}-versions.builder.txt" \
+    && cat "/opt/openral/ros-${ROS_DISTRO}-versions.builder.txt"
 
 # uv installs to /usr/local/bin so it's on the default PATH.
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
@@ -424,11 +431,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # container. These are plain graphics/threading libs — NOT gstreamer.
         libgl1 \
         libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # The ros-* set the image actually runs (issue #381) -- see the builder
+    # stage. The docker-build "Live ROS tests" step prints it before the suite.
+    && mkdir -p /opt/openral \
+    && dpkg-query -W "ros-${ROS_DISTRO}-*" > "/opt/openral/ros-${ROS_DISTRO}-versions.txt" \
+    && cat "/opt/openral/ros-${ROS_DISTRO}-versions.txt"
 
 # Carry the resolved venv + workspace + colcon install/ from the builder.
 COPY --from=builder /workspace /workspace
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+# The builder's ros-* versions -- what the colcon overlay was compiled against.
+COPY --from=builder /opt/openral/ros-${ROS_DISTRO}-versions.builder.txt /opt/openral/
 
 # LTTng opt-in: splice the distro's python3-lttngust (2.13.x, the only working
 # Python 3.12 build) into the venv so openral_observability.tracing_lttng picks

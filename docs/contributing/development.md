@@ -164,6 +164,15 @@ No GPU is required — the free-VRAM readings are pinned at the `nvidia-smi`
 process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
+On CI the step prints the image's `ros-jazzy-*` versions first, and runs the
+suite with core dumps enabled (`--ulimit core=-1`, host `core_pattern` pointed
+at a bind-mounted `/cores`). If the step fails, a follow-up step runs a `gdb`
+backtrace on any core it finds, and the cores are uploaded as the
+`live-ros-cores-*` artifact (kept 7 days). This is for issue #381, an
+intermittent SIGSEGV after the suite passes. The suite itself runs without
+instrumentation (`gdb` and `PYTHONFAULTHANDLER=1` both hid the crash), and its
+exit code is never masked.
+
 Adding a live-ROS test means adding its file to `TARGETS` in that script — the
 one place that decides what runs — and to the `paths:` filter in
 `.github/workflows/docker-build.yml`, so a diff touching only that test still
