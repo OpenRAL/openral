@@ -49,6 +49,6 @@ def depth_frame(depth: Any, rgb: Any, k: Any, optical_in_base: Any) -> dict[str,
             f"depth frame: depth {d.shape} must be (H, W), k {kk.size} values must be 4, "
             f"optical_in_base {pose.shape} must be 4x4"
         )
-    if c.size and c.shape != (*d.shape, _RGB_CHANNELS):
+    if c.shape not in {(0, 0, _RGB_CHANNELS), (*d.shape, _RGB_CHANNELS)}:
         raise ROSConfigError(f"depth frame: rgb {c.shape} is not registered to depth {d.shape}")
     return {"depth": d, "rgb": c, "k": kk, "optical_in_base": pose}

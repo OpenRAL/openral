@@ -52,6 +52,8 @@ class TestDepthFrameContract:
         ("depth", "rgb", "k", "pose"),
         [
             (np.ones((2, 2)), np.zeros((3, 2, 3)), [1, 1, 1, 1], np.eye(4)),
+            (np.ones((2, 2)), np.zeros((0,)), [1, 1, 1, 1], np.eye(4)),
+            (np.ones((2, 2)), np.zeros((0, 0, 4)), [1, 1, 1, 1], np.eye(4)),
             (np.ones(4), None, [1, 1, 1, 1], np.eye(4)),
             (np.ones((2, 2)), None, [1, 1, 1], np.eye(4)),
             (np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(3)),

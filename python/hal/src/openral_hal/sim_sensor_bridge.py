@@ -2755,10 +2755,10 @@ class SimSensorBridge:
         self._depth_info_pubs: dict[str, Any] = {}
         # A MuJoCo depth camera also publishes its colour at the depth raster,
         # registered to it pixel for pixel (``_render_registered_colour``): one
-        # (model, renderer) and Image/CameraInfo pair each; a camera whose K the MJCF
-        # camera cannot render registered is disabled once.
+        # (model, renderer, scene option) and Image/CameraInfo pair each; a camera whose
+        # K the MJCF camera cannot render registered, or whose render fails, is disabled once.
         self._depth_colour_pubs: dict[str, tuple[Any, Any]] = {}
-        self._depth_colour_renderers: dict[str, tuple[Any, Any]] = {}
+        self._depth_colour_renderers: dict[str, tuple[Any, Any, Any]] = {}
         self._depth_colour_disabled: set[str] = set()
         # Depth sensors on a manifest mount (body-convention ``frame_id``): their
         # optical child is a static TF under the mount, never a live one.
@@ -2954,7 +2954,7 @@ class SimSensorBridge:
         self._depth_image_pubs.clear()
         self._depth_info_pubs.clear()
         self._depth_colour_pubs.clear()
-        for _model, renderer in self._depth_colour_renderers.values():
+        for _model, renderer, _opt in self._depth_colour_renderers.values():
             with contextlib.suppress(Exception):  # reason: GL context already gone
                 renderer.close()
         self._depth_colour_renderers.clear()
@@ -4291,6 +4291,8 @@ class SimSensorBridge:
 
         import mujoco  # reason: defer optional sim dep
 
+        from openral_hal.depth_cloud import apply_robosuite_visual_geomgroups
+
         if name in self._depth_colour_disabled:
             return None
         fx, fy, cx, cy = k
@@ -4317,14 +4319,26 @@ class SimSensorBridge:
         # Keyed by model too: RoboCasa builds a fresh MjModel on every reset, and a
         # renderer bound to a freed model renders garbage.
         cached = self._depth_colour_renderers.get(name)
-        if cached is None or cached[0] is not model:
-            if cached is not None:
-                with contextlib.suppress(Exception):  # reason: GL context already gone
-                    cached[1].close()
-            cached = (model, mujoco.Renderer(model, height=h, width=w))
-            self._depth_colour_renderers[name] = cached
-        cached[1].update_scene(data, camera=camera_name)
-        return cached[1].render()
+        try:
+            if cached is None or cached[0] is not model:
+                if cached is not None:
+                    with contextlib.suppress(Exception):  # reason: GL context already gone
+                        cached[1].close()
+                # Robosuite/RoboCasa collision shells (group 0) would cover the
+                # textured geoms otherwise.
+                opt = mujoco.MjvOption()
+                apply_robosuite_visual_geomgroups(opt, model)
+                cached = (model, mujoco.Renderer(model, height=h, width=w), opt)
+                self._depth_colour_renderers[name] = cached
+            cached[1].update_scene(data, camera=camera_name, scene_option=cached[2])
+            return cached[1].render()
+        except Exception as exc:  # reason: GL/render failure must not stop depth
+            self._depth_colour_disabled.add(name)
+            self._node.get_logger().warning(
+                f"registered colour for depth camera {name!r} disabled: render failed "
+                f"({exc!s}); publishing depth only."
+            )
+            return None
 
     def _resolve_depth_base_body(self, model: object) -> None:
         """Resolve + cache the MJCF base bodies (self-exclusion **and** TF parent).
