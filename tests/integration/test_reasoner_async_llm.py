@@ -71,6 +71,25 @@ def _publish_prompt(pub_node: Any, pub: Any, text: str) -> None:
     pub.publish(msg)
 
 
+def _shutdown_executor(executor: Any) -> None:
+    """Join the executor's worker pool before any node or the context is destroyed.
+
+    ``MultiThreadedExecutor.spin_once`` hands each callback to a thread pool and
+    returns, so a callback (an ``ExecuteRskill`` execute body, a reasoner result
+    handler) can still be running when the loop above stops spinning. Destroying
+    the nodes and calling ``rclpy.shutdown()`` under it races those threads: the
+    callback then touches a destroyed rcl handle (``cannot use Destroyable because
+    destruction was requested``, stored on an rclpy Task nobody awaits), and the
+    never-shut-down pool and guard conditions linger until interpreter teardown.
+    Issue #381 (CI exit 139 after the summary line) is a suspected consequence of
+    that window -- not yet proven; joining here closes it either way. Nodes are
+    already removed, so no new callbacks can be scheduled while it drains.
+    """
+    assert executor.shutdown(timeout_sec=15.0), (
+        "MultiThreadedExecutor did not drain its callbacks within 15 s at teardown"
+    )
+
+
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_goal_result_lands_while_llm_call_is_in_flight() -> None:
     """(a) A goal result is processed < 1 s after the server succeeds, mid-LLM-call."""
@@ -164,6 +183,7 @@ def test_goal_result_lands_while_llm_call_is_in_flight() -> None:
 
         executor.remove_node(reasoner)
         executor.remove_node(server_node)
+        _shutdown_executor(executor)
         pub_node.destroy_node()
         server_node.destroy_node()
         reasoner.destroy_node()
@@ -208,6 +228,11 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
     timeout_seen = threading.Event()
     timeout_seen_at: list[float] = []
     dispatched = threading.Event()
+    # Teardown releases the stalling execute callback below. Without it the
+    # callback keeps looping on a pool thread (no one spins, so the cancel
+    # never lands) and calls ``abort()`` after the action server and context
+    # are gone -- issue #381.
+    tearing_down = threading.Event()
 
     def _selector(_context: str, _palette: Any) -> Any:
         if not dispatched.is_set():
@@ -237,7 +262,11 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
         def _execute(goal_handle: Any) -> Any:
             goal_started_at.append(time.monotonic())
             hard_stop = time.monotonic() + _SLOW_LLM_S + 8.0
-            while time.monotonic() < hard_stop and not goal_handle.is_cancel_requested:
+            while (
+                time.monotonic() < hard_stop
+                and not goal_handle.is_cancel_requested
+                and not tearing_down.is_set()
+            ):
                 time.sleep(0.05)
             result = ExecuteRskill.Result()
             result.success = False
@@ -288,9 +317,11 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
             executor.spin_once(timeout_sec=0.05)
         llm_still_in_flight_at_timeout = not slow_finished.is_set()
 
+        tearing_down.set()
         executor.remove_node(reasoner)
         executor.remove_node(server_node)
         executor.remove_node(sub_node)
+        _shutdown_executor(executor)
         pub_node.destroy_node()
         sub_node.destroy_node()
         server_node.destroy_node()
@@ -386,6 +417,7 @@ def test_tier_a_failure_is_ingested_mid_call_and_ticks_right_after() -> None:
                 ingested_mid_call_at.append(time.monotonic())
 
         executor.remove_node(reasoner)
+        _shutdown_executor(executor)
         pub_node.destroy_node()
         reasoner.destroy_node()
     finally:
@@ -511,6 +543,7 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
 
         executor.remove_node(reasoner)
         executor.remove_node(server_node)
+        _shutdown_executor(executor)
         pub_node.destroy_node()
         server_node.destroy_node()
         reasoner.destroy_node()
@@ -584,6 +617,7 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
             executor.spin_once(timeout_sec=0.05)
 
         executor.remove_node(reasoner)
+        _shutdown_executor(executor)
         pub_node.destroy_node()
         reasoner.destroy_node()
     finally:
