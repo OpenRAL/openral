@@ -14,9 +14,13 @@ metric-depth provider (DA3-Small by default, 0.27 GB / ~27 Hz on an 8 GB Ada;
 see `openral_perception_ros` + the depth sidecar).
 
 Like cuVSLAM, nvblox's node is a **composable node** (`nvblox::NvbloxNode`)
-run inside a `ComposableNodeContainer`. nvblox is Apache-2.0 (unlike
-cuVSLAM, which is a closed NVIDIA binary); OpenRAL does not vendor it — the
-operator installs the prebuilt `nvblox_ros` from NVIDIA's apt repo.
+run inside a `ComposableNodeContainer`. The nvblox library and
+`isaac_ros_nvblox` are Apache-2.0 (unlike cuVSLAM, a closed NVIDIA binary); the
+Isaac ROS NITROS/GXF runtime they pull in may carry NVIDIA licensing — review
+before commercial deployment (`nvblox_ros` release-4.x depends on
+`isaac_ros_managed_nitros` / `isaac_ros_gxf`, under the NVIDIA Isaac ROS
+Software License). OpenRAL vendors none of it — the operator installs the
+prebuilt `nvblox_ros` from NVIDIA's apt repo.
 """
 
 from __future__ import annotations
