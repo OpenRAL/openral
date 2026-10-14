@@ -152,7 +152,7 @@ def _sidecar() -> Any:
         proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=20)
-        ctx.term()
+        ctx.destroy(linger=0)  # closes the yielded socket too; term() alone blocks on it
 
 
 def test_da3metric_metres_match_the_ray_cast(tmp_path: Path) -> None:
