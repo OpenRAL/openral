@@ -166,8 +166,9 @@ process boundary. Pass extra pytest flags through the recipe, e.g.
 
 On CI the step prints the image's `ros-jazzy-*` versions first, and runs the
 suite with core dumps enabled (`--ulimit core=-1`, host `core_pattern` pointed
-at a bind-mounted `/cores`). If the step fails, a follow-up step runs a `gdb`
-backtrace on any core it finds, and the cores are uploaded as the
+at a bind-mounted `/cores`, files named `core.<exe path, / as !>.<pid>`). If
+the step fails, a follow-up step runs a `gdb` backtrace on any core it finds,
+against the executable named in its filename, and the cores are uploaded as the
 `live-ros-cores-*` artifact (kept 7 days). This is for issue #381, an
 intermittent SIGSEGV after the suite passes. The suite itself runs without
 instrumentation (`gdb` and `PYTHONFAULTHANDLER=1` both hid the crash), and its
