@@ -1340,7 +1340,7 @@ const LAYERS = [
         title: "SafetyEnvelope schema",
         pkg: "python/core · schemas.py",
         status: "green",
-        desc: "Workspace box, no-go zones, max_ee_speed/accel, max_force_n, deadman_required, e_stop_topic, contact_force_threshold_n. Already loaded into RobotDescription.",
+        desc: "Workspace box, no-go zones, max_ee_speed/accel, max_force_n, deadman_required, e_stop_topic, contact_force_threshold_n. Already loaded into RobotDescription. max_force_n is declared and passed to the C++ kernel but not enforced by any check yet (#373); ROSForceLimitExceeded is never raised.",
         schemas: ["SafetyEnvelope"],
       },
       {

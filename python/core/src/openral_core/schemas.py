@@ -1401,7 +1401,10 @@ class RobotCapabilities(BaseModel):
 
 
 class SafetyEnvelope(BaseModel):
-    """Safety constraints enforced by the C++ safety kernel.
+    """Safety constraints handed to the C++ safety kernel.
+
+    Not every field is enforced yet: ``max_force_n`` is declared and passed
+    to the kernel, but no check compares a force against it (issue #373).
 
     Attributes:
         workspace_box_min_xyz: Lower corner of allowed workspace (m).
@@ -1411,7 +1414,10 @@ class SafetyEnvelope(BaseModel):
             Also the C++ safety kernel's CARTESIAN_TWIST linear bound.
         max_ee_accel_m_s2: Maximum end-effector acceleration in m/s².
         max_joint_speed_factor: Fraction of joint velocity_limit allowed.
-        max_force_n: Maximum contact force in Newtons.
+        max_force_n: Declared maximum contact force in Newtons. **Not
+            enforced yet**: it is validated here and passed to the C++
+            safety kernel as a parameter, but no check compares any
+            measured or estimated force against it (issue #373).
         max_torque_nm: Maximum joint torque in Nm.
         deadman_required: Whether a deadman switch is required.
         e_stop_topic: ROS 2 topic for E-stop commands.
