@@ -10488,8 +10488,8 @@ class StaticGeometry(BaseModel):
         ...         ]
         ...     }
         ... )
-        >>> [e.kind for e in g.static_geometry]
-        ['box', 'mesh']
+        >>> " ".join(e.kind for e in g.static_geometry)
+        'box mesh'
     """
 
     model_config = ConfigDict(extra="forbid")
