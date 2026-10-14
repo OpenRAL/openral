@@ -110,10 +110,14 @@ def test_derived_scene_validates_without_hand_written_inputs(kitchen: Any, tmp_p
     # reset pose. The box holds the object where the world puts it.
     odom = RobotDescription.from_yaml(str(ROBOT)).odom_frame
     assert search.frame_id == odom
-    workspace = scene.grasp_declaration.workspace_box
-    assert workspace is None or workspace.frame_id == odom
     obj = np.asarray(kitchen.scene_ground_truth(base_body_id=0)["objects"]["obj"]["center_m"])
     assert np.all(np.abs(obj - np.asarray(search.pose.xyz)) <= np.asarray(search.half_extents))
+    # The cabinet is ~2 m from the island, out of the pick's cap window: the workspace is
+    # the pick side, the island top around the object (not RoboCasa's parked panels).
+    workspace = scene.grasp_declaration.workspace_box
+    assert workspace is not None and workspace.frame_id == odom
+    ws_offset = np.abs(obj - np.asarray(workspace.pose.xyz))
+    assert np.all(ws_offset <= np.asarray(workspace.half_extents))
     # panda_mobile drives: base-frame fixtures would be true only at the reset pose, so the
     # tool declares none (the export itself is test_static_fixtures_never_include_the_robot).
     assert not (derived.get("runtime") or {}).get("static_geometry_file")

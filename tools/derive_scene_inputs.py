@@ -112,14 +112,17 @@ def aabb(box: dict[str, Any]) -> Bbox:
 
 
 def source_fixture(
-    obj: Bbox, colliders: list[dict[str, Any]], tol_m: float = 0.02
+    obj: Bbox, colliders: list[dict[str, Any]], tol_m: float = 0.02, gap_m: float = 0.25
 ) -> tuple[Bbox, str] | None:
     """The bound of the static collider group ``obj`` rests on, and that group's path.
 
     The support is the highest static box whose footprint holds the object's centre
     and whose top is at most ``tol_m`` above the object's bottom; its group is every
     collider sharing its parent path (a tote's floor, walls and rims; a counter body's
-    geoms). ``None`` when nothing static is under the object.
+    geoms) and connected to it, each within ``gap_m`` of another (a tote's rims ride
+    13 cm over its floor with no wall collider between). A part of the fixture nowhere
+    near it — RoboCasa parks the panels a fixture does not use 10 m up — is not part of
+    the bound. ``None`` when nothing static is under the object.
 
     Example:
         >>> eye = np.eye(3)
@@ -135,19 +138,31 @@ def source_fixture(
         ...     "rotation": eye,
         ...     "half_extents_m": [0.01, 0.2, 0.1],
         ... }
-        >>> source_fixture((-0.05, -0.05, 0.01, 0.05, 0.05, 0.1), [floor, wall])
+        >>> parked = {**wall, "path": "/T/Unused", "center_m": [0, 0, 10.0]}
+        >>> source_fixture((-0.05, -0.05, 0.01, 0.05, 0.05, 0.1), [floor, wall, parked])
         ((-0.2, -0.2, -0.01, 0.21, 0.2, 0.2), '/T')
     """
     cx, cy = (obj[0] + obj[3]) / 2.0, (obj[1] + obj[4]) / 2.0
-    best: tuple[float, str] | None = None
+    best: tuple[Bbox, str] | None = None
     for c in colliders:
         b = aabb(c)
         supports = b[0] <= cx <= b[3] and b[1] <= cy <= b[4] and b[5] <= obj[2] + tol_m
-        if supports and (best is None or b[5] > best[0]):
-            best = (b[5], c["path"].rsplit("/", 1)[0])
+        if supports and (best is None or b[5] > best[0][5]):
+            best = (b, c["path"].rsplit("/", 1)[0])
     if best is None:
         return None
-    group = [aabb(c) for c in colliders if c["path"].rsplit("/", 1)[0] == best[1]]
+    rest = [aabb(c) for c in colliders if c["path"].rsplit("/", 1)[0] == best[1]]
+
+    def touches(a: Bbox, b: Bbox) -> bool:
+        return all(a[i] <= b[i + 3] + gap_m and b[i] <= a[i + 3] + gap_m for i in range(3))
+
+    group = [best[0]]
+    grown = True
+    while grown:  # ponytail: O(n^2) flood over one fixture's geoms (tens)
+        joined = [b for b in rest if any(touches(b, g) for g in group)]
+        rest = [b for b in rest if b not in joined]
+        group += joined
+        grown = bool(joined)
     lo = [min(b[i] for b in group) for i in range(3)]
     hi = [max(b[i + 3] for b in group) for i in range(3)]
     return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]), best[1]
@@ -371,15 +386,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     source = source_fixture(obj_box, colliders)
     centre = truth["objects"][obj_name]["center_m"]
+    # A destination nowhere within the pick's cap window (a mobile base drives between
+    # pick and place) is a separate workspace: this one is the pick side only.
+    cap = GraspDeclaration.MAX_WORKSPACE_HALF_EXTENT_M
+    reachable = all(
+        destination[i] <= centre[i] + cap and destination[i + 3] >= centre[i] - cap
+        for i in range(3)
+    )
+    if not reachable:
+        print(
+            "workspace_box: destination outside the pick's "
+            f"{2 * cap:.1f} m window — the pick side only"
+        )
     try:
         workspace = ground_workspace(
             source[0] if source is not None else obj_box,
-            destination,
+            destination if reachable else None,
             anchor_xyz=(float(centre[0]), float(centre[1]), float(centre[2])),
             base_frame=base_frame,
             pad_m=args.workspace_pad_m,
             headroom_m=args.workspace_headroom_m,
-            evidence_ref=f"sim:{source[1] if source else obj_name} + destination",
+            evidence_ref=f"sim:{source[1] if source else obj_name}"
+            + (" + destination" if reachable else ""),
         )
     except ROSReasonerInvalidPlan as exc:
         print(f"workspace_box: not derived ({exc})")
