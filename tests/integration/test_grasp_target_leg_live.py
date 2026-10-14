@@ -183,12 +183,20 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
-    from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
+    from openral_core import (
+        Action,
+        AttachedCollisionObject,
+        ControlMode,
+        JointState,
+        PlaceRegion,
+        RobotDescription,
+    )
     from openral_core.geometry import homogeneous_from_quat_xyz
     from openral_hal._grasp_target import lowered_to_support
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
+        primitive_poses,
     )
     from openral_msgs.msg import AttachmentState, OccupancyVoxels
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
@@ -491,16 +499,19 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             "cell:restock_box", lowered_to_support(region, support), payload=True
         )
         assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
-        assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
-        np.testing.assert_allclose(
-            [
-                held.pose_in_link.position.x,
-                held.pose_in_link.position.y,
-                held.pose_in_link.position.z,
-            ],
-            np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz,
-            atol=1e-6,
-        )
+        # Only the closed box's margin padding behind the palm plane is clipped off
+        # (#349 / #370, ``_padding_clip_point``), never measured geometry: the payload is
+        # the closed box on the sides, still rests on the support, and still holds the
+        # whole measured region.
+        (t_base_prim,) = primitive_poses(AttachedCollisionObject.from_idl(held), t_base_link7)
+        half = np.asarray(held.primitives[0].shape_dimensions)
+        assert abs(t_base_prim[2, 2]) == pytest.approx(1.0, abs=1e-9), "still gravity-aligned"
+        assert half[:2] == pytest.approx(closed.half_extents[:2])
+        assert t_base_prim[:2, 3] == pytest.approx(closed.pose.xyz[:2], abs=1e-6)
+        payload_bottom, payload_top = t_base_prim[2, 3] - half[2], t_base_prim[2, 3] + half[2]
+        assert payload_bottom == pytest.approx(support, abs=1e-6)
+        assert payload_top <= closed.pose.xyz[2] + closed.half_extents[2] + 1e-6
+        assert payload_top >= region.pose.xyz[2] + region.half_extents[2] - 1e-6
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )
