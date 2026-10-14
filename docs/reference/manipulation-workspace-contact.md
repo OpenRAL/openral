@@ -88,21 +88,13 @@ Contact classes, per (robot link, world cell, task state):
     2013 brakes in one run, mix02 0/3). Rows s ≥ 1 read the larger of the measured and the
     **commanded** speed between consecutive rows, so a fast command within a chunk does not read
     slow (#349 review B); under the brake (§6) such a speed-only violation creeps at the bounded
-    speed. Without a fresh measured velocity the commanded speed governs every row. Calibration (§2): the restock deploy-sim scenes
-    (`scenes/deploy/local/restock_mix*.yaml`, gitignored; values per issue #374) run
-    **0.5 m/s**. The earlier sim evaluation value, **0.35 m/s**, was set just above the
-    fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s) and is the bound
-    the §2 evidence below was measured against; candidate for real hardware **0.25 m/s**,
-    ISO 10218-1's reduced speed — a Safety-WG decision.
+    speed. Without a fresh measured velocity the commanded speed governs every row.
+    Calibration: §8.
   - **Lead** (push force): the hand's displacement from its **measured** pose to the checked row,
     at most `workspace_contact_max_lead_m`. On a joint-PD position-controlled arm the
     commanded-minus-measured gap is proportional to the force the joint drives apply, so this
     bounds how hard the hand may push into what it touches. The speed bound alone would let a
-    hand whose stationary target is buried deep in a carton keep pushing. Calibration: the restock
-    deploy-sim scenes run **0.10 m**, the schema cap (`le=0.10`, mirrored by the kernel's
-    `kMaxWorkspaceContactLeadM`). The earlier sim evaluation value, **0.05 m**, came from the
-    3.3–4 cm free-motion tracking lag the Isaac stops measured plus margin; the real-hardware
-    value is a Safety-WG decision (candidate: below the sim value; capped at 0.10 m).
+    hand whose stationary target is buried deep in a carton keep pushing. Calibration: §8.
 
   Both are set explicitly by the scene; there is no default. Faster or further-leading motion
   inside the workspace is checked as today.
@@ -400,14 +392,25 @@ Cartesian control modes, the force/current contact layer.
 5. Both hands share one max-speed test and one mask: the idle hand entering the declared box while
    slow is exempt too.
 
-**Calibration points:** `workspace_contact_max_speed_mps` (`v_contact`; the restock deploy-sim
-scenes, `scenes/deploy/local/restock_mix*.yaml`, run **0.5 m/s**; the earlier sim evaluation value
-**0.35 m/s** came from the `sim run` contact steps; real-hardware candidate 0.25 m/s);
-`workspace_contact_max_lead_m` (the restock scenes run **0.10 m**, the cap; the earlier sim
-evaluation value **0.05 m** came from the 3.3–4 cm free-motion lag of the Isaac stops plus margin;
-real-hardware candidate below the sim value); the freshness window
-`kWorkspaceCommandFreshPeriods` (2 periods); `WORKSPACE_MIN_COVER` (10 %); the workspace caps
-(0.50 m half-extent, 0.25 m³). The real-hardware values of both bounds are a Safety-WG decision.
+**Calibration points.** This table is the single source for the two bounds' values; the
+`DeployRuntime` field docstrings and the safety-kernel README point here. Both bounds are set
+explicitly by the scene (no default).
+
+| bound | restock deploy-sim scenes | earlier sim evaluation value | real hardware (Safety-WG decision, issue #374) |
+|---|---|---|---|
+| `workspace_contact_max_speed_mps` (`v_contact`; schema cap `le=1.0`) | **0.5 m/s** | **0.35 m/s**, derived from the §2 `openral sim run` contact speeds (no kernel in the loop): just above the fastest sustained non-target contact, a finger sliding on the tote at 0.32 m/s | candidate **0.25 m/s**, ISO 10218-1's reduced speed |
+| `workspace_contact_max_lead_m` (schema cap `le=0.10`, mirrored by the kernel's `kMaxWorkspaceContactLeadM`) | **0.10 m** (the cap) | **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac kernel stops measured, plus margin | **open Safety-WG question**: issue #374 names the candidate as "a lead below the sim value" without saying which sim value (0.10 m restock or 0.05 m earlier evaluation); at most 0.10 m either way |
+
+The restock values are those of `scenes/deploy/local/restock_mix*.yaml` (gitignored, so not
+verifiable from this repo; stated per issue #374). The §6 measurements predate them: the stops
+quoted there ("against the 0.35 bound"; across 9 place batches, contact at 0.35–0.41 m/s and a
+lead of 80–96 mm) could only fire under a speed bound ≤ 0.35 m/s and a lead bound < 80 mm, which
+is consistent with the earlier 0.35 m/s / 0.05 m values; the exact bounds of each batch were not
+recorded. Under the restock 0.5 m/s / 0.10 m those readings would be tolerated, so §6's stop tails
+do not describe the restock bounds.
+
+Other calibration points: the freshness window `kWorkspaceCommandFreshPeriods` (2 periods);
+`WORKSPACE_MIN_COVER` (10 %); the workspace caps (0.50 m half-extent, 0.25 m³).
 
 **Validation owed:** the 8 restock prompts in Isaac deploy sim with ground truth (completion rate
 vs `sim run`, zero arm-link stops missed, a deliberate arm/shelf collision still stopped); the
