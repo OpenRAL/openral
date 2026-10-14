@@ -505,4 +505,4 @@ def test_the_llm_is_never_told_it_must_name_a_grasp_target() -> None:
     assert "When a skill grasps an object, set grasp_target" not in DEFAULT_SYSTEM_PROMPT
     field = ExecuteRskillTool.model_fields["grasp_target"]
     assert field.default is None and (field.description or "").startswith("Optional")
-    assert ExecuteRskillTool(rskill_id="openral/pi05-openarm-restock").grasp_target is None
+    assert ExecuteRskillTool(rskill_id="openral/pi05-openarm-pick-place").grasp_target is None

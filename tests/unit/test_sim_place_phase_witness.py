@@ -979,7 +979,7 @@ def test_an_unresolvable_grasp_target_is_refused_and_leaves_no_region() -> None:
     rig = _Rig()
     rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
     with pytest.raises(ROSConfigError, match="names no MuJoCo body"):
-        rig.tracker.set_grasp_declaration(_grasp(target_id="cell:restock_box", stamp_ns=rig.tick))
+        rig.tracker.set_grasp_declaration(_grasp(target_id="cell:pick_box", stamp_ns=rig.tick))
     assert rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick) is None
 
 

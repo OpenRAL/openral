@@ -1,7 +1,7 @@
 """ChunkedExecutor ``postprocess_action``: chunks are finished where they are produced.
 
 The regression this guards was measured on the OpenArm/Thor cell with the pi0.5
-restock policy, whose lerobot pipeline pairs ``RelativeActionsProcessorStep`` (pre)
+pick-and-place policy, whose lerobot pipeline pairs ``RelativeActionsProcessorStep`` (pre)
 with ``AbsoluteActionsProcessorStep`` (post). Postprocessing at pop time made the
 post step add the state cached by the *latest* preprocessor call, and the prefetch
 launch replaces that state mid-chunk, so the rest of the chunk was shifted by how far

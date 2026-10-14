@@ -436,7 +436,7 @@ def test_bridge_records_only_rgb_when_a_depth_frame_shares_the_world_state(
     )
     state_dim = action_dim = 16
     n_ticks = 2
-    bridge._on_episode(SimpleNamespace(phase=0, task_string="restock", success=False))
+    bridge._on_episode(SimpleNamespace(phase=0, task_string="pick_place", success=False))
     for step in range(n_ticks):
         _feed_snapshot(aggregator, robot, state_dim=state_dim, fill=10 + step, step=step)
         for name in depth_sensors:
@@ -455,7 +455,7 @@ def test_bridge_records_only_rgb_when_a_depth_frame_shares_the_world_state(
                 ),
             )
         bridge._on_action(SimpleNamespace(flat=[0.25] * action_dim, n_dof=action_dim))
-    bridge._on_episode(SimpleNamespace(phase=1, task_string="restock", success=True))
+    bridge._on_episode(SimpleNamespace(phase=1, task_string="pick_place", success=True))
     bridge.destroy()
 
     from mcap.reader import make_reader

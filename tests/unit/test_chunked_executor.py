@@ -394,7 +394,7 @@ class TestPrefetchTimeAlignment:
         """Each chunk is planned so action i targets observation step k + i (the
         lerobot/openpi convention a synchronous chunk is served with). A correctly
         aligned executor therefore serves exactly the step number on every tick: a
-        boundary that replays the chunk head shows up as a repeat (the OpenArm restock
+        boundary that replays the chunk head shows up as a repeat (the OpenArm pick-and-place
         snap-back), a skipped action as a gap."""
 
         def chunk_fn(payload: dict[str, int]) -> list[torch.Tensor]:

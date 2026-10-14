@@ -1037,7 +1037,10 @@ class JointSpec(BaseModel):
         effort_limit: Maximum effort (N or Nm).
         has_position_sensor: Whether position feedback is available.
         has_velocity_sensor: Whether velocity feedback is available.
-        has_torque_sensor: Whether torque feedback is available.
+        has_torque_sensor: Whether the joint has a dedicated joint torque
+            sensor. A torque *estimate* derived from motor current does
+            not count: declare ``False`` for current-derived estimates so
+            force decisions do not over-trust them.
         backlash_estimate: Estimated backlash in radians.
         actuator_kind: Type of actuator.
         sim_joint_name: Optional override carrying the **MJCF/MuJoCo
@@ -1408,24 +1411,53 @@ class RobotCapabilities(BaseModel):
 
 
 class SafetyEnvelope(BaseModel):
-    """Safety constraints enforced by the C++ safety kernel.
+    """Safety constraints handed to the C++ safety kernel.
+
+    Not every field is enforced yet. Several are **declared, not yet enforced
+    by the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2``,
+    ``contact_force_threshold_n`` and ``deadman_required`` are passed to the
+    kernel as ROS parameters but no check consults them, and ``no_go_zones``,
+    ``e_stop_topic``, ``e_stop_qos``, ``cycle_time_violation_threshold_ms``
+    and ``human_in_loop_required`` are not read by any runtime component.
+    Each attribute below says which case it is in.
 
     Attributes:
-        workspace_box_min_xyz: Lower corner of allowed workspace (m).
-        workspace_box_max_xyz: Upper corner of allowed workspace (m).
+        workspace_box_min_xyz: Lower corner of allowed workspace (m). The
+            kernel checks it only against CARTESIAN_POSE chunk positions.
+        workspace_box_max_xyz: Upper corner of allowed workspace (m). Same
+            scope as ``workspace_box_min_xyz``.
         no_go_zones: List of polygon definitions (dicts with 'vertices').
+            **Declared, not yet enforced**: not passed to the kernel and
+            not read by any runtime component.
         max_ee_speed_m_s: Maximum end-effector linear speed in m/s.
             Also the C++ safety kernel's CARTESIAN_TWIST linear bound.
         max_ee_accel_m_s2: Maximum end-effector acceleration in m/s².
+            **Declared, not yet enforced by the kernel**: passed as a ROS
+            parameter, but no check compares an acceleration against it.
         max_joint_speed_factor: Fraction of joint velocity_limit allowed.
-        max_force_n: Maximum contact force in Newtons.
-        max_torque_nm: Maximum joint torque in Nm.
+        max_force_n: Declared maximum contact force in Newtons. **Not
+            enforced yet**: it is validated here and passed to the C++
+            safety kernel as a parameter, but no check compares any
+            measured or estimated force against it (issue #373).
+        max_torque_nm: Maximum joint torque in Nm. The kernel caps
+            JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.
         deadman_required: Whether a deadman switch is required.
-        e_stop_topic: ROS 2 topic for E-stop commands.
-        e_stop_qos: QoS profile for E-stop topic.
+            **Declared, not yet enforced by the kernel**: passed as a ROS
+            parameter but never consulted. The deploy launch starts the
+            deadman watchdog unconditionally, whatever this says.
+        e_stop_topic: ROS 2 topic for E-stop commands. **Declared, not
+            read**: the kernel latches on its hardcoded ``/openral/estop``
+            topic.
+        e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**
         contact_force_threshold_n: Force threshold for contact detection.
-        cycle_time_violation_threshold_ms: Control cycle time violation threshold.
+            **Declared, not yet enforced by the kernel**: passed as a ROS
+            parameter but never consulted. The kernel's place-contact force
+            gate takes its threshold from each placement declaration
+            instead.
+        cycle_time_violation_threshold_ms: Control cycle time violation
+            threshold. **Declared, not read** by any runtime component.
         human_in_loop_required: rSkill names requiring human supervision.
+            **Declared, not read** by any runtime component.
         max_cartesian_step_m: Per-control-mode bound the C++ safety
             kernel enforces — per-step magnitude bound on
             CARTESIAN_DELTA's xyz triplet (Euclidean, after
@@ -2778,6 +2810,10 @@ class RobotDescription(BaseModel):
     #: that carry a schema default. A real robot must declare every one of them
     #: itself: a schema default is a number nobody measured on that rig, and it
     #: would otherwise reach the kernel silently (issue #303 follow-up).
+    #: Declared is not enforced: ``max_force_n`` (issue #373),
+    #: ``max_ee_accel_m_s2``, ``contact_force_threshold_n`` and
+    #: ``deadman_required`` are required here as declarations, but the kernel
+    #: loads them without any check consulting them (see `SafetyEnvelope`).
     REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
         "max_ee_speed_m_s",
         "max_ee_accel_m_s2",
@@ -2787,6 +2823,16 @@ class RobotDescription(BaseModel):
         "contact_force_threshold_n",
         "deadman_required",
         "self_collision_margin_m",
+    )
+
+    #: The subset of `REAL_HARDWARE_SAFETY_FIELDS` the kernel loads but no
+    #: check consults yet. Still required, so the declaration is in place
+    #: when enforcement lands; the validator's error names them as such.
+    UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
+        "max_ee_accel_m_s2",
+        "max_force_n",
+        "contact_force_threshold_n",
+        "deadman_required",
     )
 
     @property
@@ -2840,7 +2886,10 @@ class RobotDescription(BaseModel):
           trajectory deadline (issue #303).
         * every field in ``REAL_HARDWARE_SAFETY_FIELDS`` set explicitly in
           ``safety`` (an explicit value equal to the default is fine; what is
-          refused is silently inheriting it).
+          refused is silently inheriting it). ``max_force_n`` is required as a
+          declaration but is not yet enforced by the kernel (issue #373); the
+          same holds for ``max_ee_accel_m_s2``, ``contact_force_threshold_n``
+          and ``deadman_required``.
         * the starting-pose approach speed and tolerance for every joint type
           the robot has: ``safety.starting_pose_max_joint_speed_rad_s`` /
           ``safety.starting_pose_tolerance_rad`` when it has a non-prismatic
@@ -2882,11 +2931,23 @@ class RobotDescription(BaseModel):
             f"safety.{name} (> 0)" for name in required if getattr(self.safety, name) is None
         )
         if missing:
+            unenforced = [
+                f"safety.{name}"
+                for name in self.UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS
+                if f"safety.{name}" in missing
+            ]
+            note = (
+                f". Of these, {', '.join(unenforced)} must be declared but are not yet "
+                "enforced by the safety kernel (max_force_n: issue #373)"
+                if unenforced
+                else ""
+            )
             raise ValueError(
                 f"robot {self.name!r} declares a real HAL ({self.hal.real}) but not every "
                 "value the real path consumes. A schema default is a number nobody "
                 "measured on this rig, so each must be declared in the manifest: "
                 + ", ".join(missing)
+                + note
             )
         return self
 
@@ -3845,7 +3906,7 @@ class GraspDeclaration(BaseModel):
 
     Attributes:
         target_id: Identity of the declared grasp target, e.g.
-            ``"cell:restock_box"``. Required while ``active``.
+            ``"cell:pick_box"``. Required while ``active``.
         object_id: Payload identity the grasp produces once attached
             (``AttachedCollisionObject.object_id``); empty = discovered at
             attach time.
@@ -3889,7 +3950,7 @@ class GraspDeclaration(BaseModel):
 
     Example:
         >>> declaration = GraspDeclaration(
-        ...     target_id="cell:restock_box",
+        ...     target_id="cell:pick_box",
         ...     contact_links=("openarm_left_finger_pair",),
         ...     timeout_s=70.0,
         ...     stamp_ns=1_000_000_000,
@@ -10797,19 +10858,19 @@ class DeployRuntime(BaseModel):
     velocity the kernel falls back to the speed between consecutive **commanded** rows
     (row 0 from the previously accepted command while fresh, else the measured state),
     which reads the hand faster. Required when ``workspace_contact_enabled`` — there is no
-    default the kernel would silently use. **Calibration point** (0.35 m/s in the Isaac deploy sim,
-    issue #349); capped at 1 m/s, beyond which the rule is not a contact-energy bound at
-    all."""
+    default the kernel would silently use. **Calibration point**: see
+    ``docs/reference/manipulation-workspace-contact.md`` §8. Capped at 1 m/s (``le=1.0``),
+    beyond which the rule is not a contact-energy bound at all."""
     workspace_contact_max_lead_m: float | None = Field(default=None, gt=0.0, le=0.10)
     """The hand lead (push) bound (m) of the workspace contact rule: the largest
     displacement of any point of a hand link's collision geometry between the MEASURED
     configuration and each checked row. On a joint-PD arm commanded-minus-measured is what
     the drives push with, so this bounds how hard a hand may press into what it touches —
     the speed bound alone would let a hand whose stationary target is buried deep keep
-    pushing. Required when ``workspace_contact_enabled``. **Calibration point** (0.05 m in
-    the Isaac deploy sim, from the 3.3-4 cm free-motion lag the stops measured plus
-    margin; the real-hardware value is a Safety-WG decision); capped at 0.10 m, mirrored
-    by the kernel's ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
+    pushing. Required when ``workspace_contact_enabled``. **Calibration point**: see
+    ``docs/reference/manipulation-workspace-contact.md`` §8 (the real-hardware value is a
+    Safety-WG decision). Capped at 0.10 m (``le=0.10``), mirrored by the kernel's
+    ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.

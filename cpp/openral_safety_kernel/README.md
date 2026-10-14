@@ -1104,8 +1104,9 @@ from the launch). Configure refuses: enabled without `grasp_allowance_enabled`; 
 that is not finite and > 0; a lead that is not finite, > 0 and ≤ `kMaxWorkspaceContactLeadM`
 (0.10 m, a WG placeholder) — there is no default the kernel would silently use; an empty link list
 or a name that is not a collision link. It WARNs `safety.workspace_contact enabled ... Safety-WG
-review pending` with the links, both bounds and the freshness window. Sim calibration points:
-0.35 m/s and 0.05 m; the real-hardware values are a Safety-WG decision.
+review pending` with the links, both bounds and the freshness window. Calibration: see
+[`docs/reference/manipulation-workspace-contact.md`](../../docs/reference/manipulation-workspace-contact.md)
+§8; the real-hardware values are a Safety-WG decision (issue #374).
 
 **Disclosure — never silent.** Every tolerated pair within the margin is counted
 (`CollisionHit::workspace_pairs`, the deepest one's link/cell/distance). The node WARNs

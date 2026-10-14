@@ -9,9 +9,11 @@ default, and every tick already emits a ``safety.check`` span via
 
 Contract: ``SafetyClient.check_action`` returns ``None`` on pass
 (forwarded to the HAL) or raises
-``ROSSafetyViolation`` (or a subclass —
-``ROSWorkspaceViolation``, ``ROSForceLimitExceeded``,
-``ROSEStopRequested``) on rejection. Per CLAUDE.md §10 this is never
+``ROSSafetyViolation`` (or a subclass, e.g. ``ROSWorkspaceViolation``
+or ``ROSEStopRequested``) on rejection. No implementation raises
+``ROSForceLimitExceeded``: nothing checks a force against
+``SafetyEnvelope.max_force_n`` yet (issue #373), and the only shipped
+implementation, ``NullSafetyClient``, never raises. Per CLAUDE.md §10 this is never
 silently caught; the runner catches it at its supervisor boundary
 (``DeployRunner``), records into
 ``TickResult.safety_violations``, flips
@@ -47,7 +49,7 @@ class SafetyClient(Protocol):
 
     Attributes:
         envelope: The ``SafetyEnvelope`` against which the action
-            is validated. Real implementations consult its workspace
+            is validated. A real implementation would consult its workspace
             box, force / velocity limits, deadman state, etc.
     """
 

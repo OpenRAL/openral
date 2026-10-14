@@ -1087,10 +1087,10 @@ class IsaacSimOptions(BaseModel):
     translucent_materials: bool = False
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
-    # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
+    # sharper than a real camera's compressed stream (OpenArm pick-and-place: ~0.9 px). 0 = off.
     image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
     # Per-camera overrides (RGB sensor name -> IsaacCameraImagePost): a camera whose real
-    # counterpart differs from the scene-wide look (OpenArm restock: the Arducam wrists run
+    # counterpart differs from the scene-wide look (OpenArm pick-and-place: the Arducam wrists run
     # auto exposure / white balance and are softer than the top ZED).
     camera_image_post: dict[str, IsaacCameraImagePost] = Field(default_factory=dict)
     # Robot visual material name pattern (fnmatch) -> diffuse RGB in [0, 1], applied after

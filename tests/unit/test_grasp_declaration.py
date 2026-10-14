@@ -49,16 +49,16 @@ def _region(*, half: tuple[float, float, float] = (0.06, 0.05, 0.04)) -> PlaceRe
         frame_id="openarm_base",
         pose=Pose6D(xyz=(0.45, 0.0, 0.12), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"),
         half_extents=half,
-        evidence_ref="zed_sam2_obb:restock_box",
+        evidence_ref="zed_sam2_obb:pick_box",
         stamp_ns=_SIM_NS,
     )
 
 
 def _declaration(stamp_ns: int = _SIM_NS, **update: Any) -> GraspDeclaration:
     fields: dict[str, Any] = {
-        "target_id": "cell:restock_box",
+        "target_id": "cell:pick_box",
         "contact_links": _FINGERS,
-        "rskill_id": "openral/pi05-openarm-restock",
+        "rskill_id": "openral/pi05-openarm-pick-place",
         "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
         "timeout_s": 70.0,
         "stamp_ns": stamp_ns,
@@ -157,7 +157,7 @@ def test_a_direct_dispatch_scene_declares_its_grasp_target() -> None:
     scene = DeployScene.from_yaml(str(_OPENARM_SCENE))
     declaration = scene.grasp_declaration
     assert declaration is not None
-    assert declaration.target_id == "cell:restock_box"
+    assert declaration.target_id == "cell:pick_box"
     assert declaration.contact_links == ("openarm_left_finger_pair",)  # one hand grasps
     assert declaration.timeout_s == 70.0
     assert declaration.region is None
