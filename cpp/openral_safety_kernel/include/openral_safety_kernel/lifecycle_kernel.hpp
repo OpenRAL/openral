@@ -497,7 +497,8 @@ private:
   /// sized to the model's links at configure; never allocated on the hot path.
   std::vector<Transform> workspace_prev_plain_;
   std::vector<Transform> workspace_prev_partner_;
-  std::vector<double> q_workspace_;  ///< row 0's previous configuration (n_dof)
+  std::vector<Transform> workspace_creep_prev_;  ///< the brake creep's previous scaled row
+  std::vector<double> q_workspace_;              ///< row 0's previous configuration (n_dof)
   /// The jaw columns (`workspace_contact_jaw_joints`) and the row they are reset
   /// to measured in, for the lead:
   /// the lead bounds the ARM's push, a closing jaw's squeeze is the gripper's own

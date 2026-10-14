@@ -81,13 +81,14 @@ Contact classes, per (robot link, world cell, task state):
   grid) and retracts it when the map disagrees — the same "declared, then measured" rule as the
   grasp and place targets.
 - **Slow** = two bounds, both required:
-  - **Speed** (impact energy): the larger of the hand's Cartesian speed as **measured** — the
-    `/joint_states` velocity carried one control period forward from the measured pose (§6) —
-    and the **commanded** speed between consecutive commanded rows, at most `v_contact`. The
-    commanded reading keeps a fast command issued from rest from reading slow (#349 review B);
-    the chunk executor's 0.5–1 rad chunk-boundary jumps read fast this way, and under the brake
-    (§6) such a speed-only violation creeps at the bounded speed instead of stopping. Without a
-    fresh measured velocity the commanded speed alone governs. Calibration (§2): sim evaluation **0.35 m/s**, just above the
+  - **Speed** (impact energy): at most `v_contact`. Row 0 reads the hand's Cartesian speed as
+    **measured** — the `/joint_states` velocity carried one control period forward from the
+    measured pose (§6): its commanded step is the chunk executor's 0.5–1 rad chunk-boundary jump,
+    which the arm smooths and the lead bounds (#349 r41: reading it as speed held the arm still,
+    2013 brakes in one run, mix02 0/3). Rows s ≥ 1 read the larger of the measured and the
+    **commanded** speed between consecutive rows, so a fast command within a chunk does not read
+    slow (#349 review B); under the brake (§6) such a speed-only violation creeps at the bounded
+    speed. Without a fresh measured velocity the commanded speed governs every row. Calibration (§2): sim evaluation **0.35 m/s**, just above the
     fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s); candidate for
     real hardware **0.25 m/s**, ISO 10218-1's reduced speed — a Safety-WG decision.
   - **Lead** (push force): the hand's displacement from its **measured** pose to the checked row,
@@ -180,7 +181,8 @@ point-in-OBB), the **hand speed** of that row is ≤ `workspace_contact_max_spee
   v_meas            = max over hand links l of D_l(q_meas, q_meas + dq_meas · control_period)
                       / control_period                      (measured; the same for every row)
   v_cmd(row s)      = max over hand links l of D_l(row s−1, row s) / control_period
-  hand_speed(row s) = max(v_meas, v_cmd(row s))   (v_cmd alone without a fresh velocity)
+  hand_speed(row 0) = v_meas;  hand_speed(row s ≥ 1) = max(v_meas, v_cmd(row s))
+                                                  (v_cmd on every row without a fresh velocity)
   hand_lead(row s)  = max(0, max over hand links l of D_l(measured, row s with the jaws at measured)
                            − s · max_speed · control_period)         (row allowance;
                                                    0 while the measured hand touches)
@@ -328,9 +330,12 @@ through the `workspace_brake_probe` test seam).
 the measured pose so the tightest row leads by one control period at the speed bound while the
 measured hand is over its speed bound, else by half the lead bound (r32: scaling a 0.12 m lead to
 one period, 0.017 m, stalled the policy as a hold did), plus its row allowance (none while the
-measured hand touches) — the arm keeps moving toward the policy's target at the
+measured hand touches), and rows s ≥ 1 also so their row-to-row speed is within the bound —
+the arm keeps moving toward the policy's target at the
 bounded speed; the scaled rows
-must pass the relaxed check, else the measured pose is held. Why: r24/r25 runs logged 200–1700
+must pass their own lead, speed and relaxed check; on an overshoot (the lead is not linear in
+the joint deltas) the creep halves and is re-checked, up to three times, else the measured pose is
+held (r41: a creep of 0 on every overshoot held the arm still). Why: r24/r25 runs logged 200–1700
 holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
 the 70 s declaration timeout). WARN `creep=<factor>` (0 = held).
 

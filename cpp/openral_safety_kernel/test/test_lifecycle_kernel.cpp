@@ -6092,11 +6092,16 @@ TEST_F(LifecycleKernelTest, TheTickPartnerCheckSeedsFromThePreviousCommandToo) {
 // bound catches a commanded jump into the obstacle; with no fresh measured
 // velocity the commanded speed is the fallback (it reads faster).
 
-// #349 review B: the larger of the measured and the commanded speed governs, so a fast
-// command from rest no longer reads slow; under the brake it creeps instead of stopping.
+// #349 review B: within a chunk (rows s >= 1) the larger of the measured and the
+// commanded row-to-row speed governs, so a fast command does not read slow; under the
+// brake the creep scales that step down to the speed bound and the arm still moves.
 TEST_F(LifecycleKernelTest, ACommandedJumpIsReadAtItsCommandedSpeedEvenWithASlowMeasuredHand) {
-  // Accepted at 0.5, then a jump to the cell at 0: commanded 0.06 m/s. Measured at
-  // 0.1 rad/s the hand moves 0.1 * 0.06 = 0.006 m/s; the lead is 0.03 <= 0.05.
+  // Row 0 holds at 0.5, row 1 jumps to the cell at 0 in one period: commanded 0.06 m/s.
+  // Measured at 0.1 rad/s the hand moves 0.1 * 0.06 = 0.006 m/s; the lead, 0.03 m less
+  // the free hand's one-period allowance 0.01, is 0.02 <= 0.05.
+  openral_msgs::msg::ActionChunk chunk = grasp_chunk(kLagMeasuredQ);
+  chunk.horizon = 2;
+  chunk.flat = {kLagMeasuredQ, 0.0};
   {
     LogCapture logs;
     GraspRig rig("kernel_ws_meas_slow", lag_params());
@@ -6104,10 +6109,10 @@ TEST_F(LifecycleKernelTest, ACommandedJumpIsReadAtItsCommandedSpeedEvenWithASlow
     rig.start();
     GraspBeat b = workspace_beat(rig.now_ns());
     rig.warm(&b, kLagMeasuredQ, 300);
-    ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
-    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+    EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
     EXPECT_TRUE(rig.node->fault_latched());
-    EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
+    EXPECT_EQ(logs.count("b=voxel_0 step=1"), 1U) << logs.joined();
+    EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.02 hand_speed_source=commanded"), 1U)
         << logs.joined();
   }
   LogCapture logs;
@@ -6118,12 +6123,34 @@ TEST_F(LifecycleKernelTest, ACommandedJumpIsReadAtItsCommandedSpeedEvenWithASlow
   rig.start();
   GraspBeat b = workspace_beat(rig.now_ns());
   rig.warm(&b, kLagMeasuredQ, 300);
-  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
-  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, chunk)) << logs.joined();
   EXPECT_FALSE(rig.node->fault_latched()) << "speed only: a creep, no latch";
   EXPECT_GE(logs.count("reason=speed_lead"), 1U) << logs.joined();
+  ASSERT_EQ(rig.last_flat.size(), 2U);
+  // The 0.5 rad step scaled to the 0.02 m/s bound: at most 0.5 / 3 of it, and moving.
+  EXPECT_LT(rig.last_flat[1], kLagMeasuredQ) << "a creep moves";
+  EXPECT_GE(rig.last_flat[1], kLagMeasuredQ - 0.5 / 3.0 - 1e-3) << logs.joined();
+}
+
+// #349 r41: row 0's commanded step (from the previously accepted command, or the
+// measured state, to the new chunk's first row) is the chunk-boundary jump the arm
+// smooths. With a fresh measured velocity it is not read as speed — the lead bounds it
+// — so a jump within the lead bound with a slow measured hand goes out whole.
+TEST_F(LifecycleKernelTest, ARowZeroBoundaryJumpWithinTheLeadBoundDoesNotBrake) {
+  LogCapture logs;
+  GraspRig rig("kernel_ws_row0_jump", with_param(lag_params(), "workspace_contact_brake_enabled",
+                                                 rclcpp::ParameterValue(true)));
+  rig.js_velocity = {-0.1};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kLagMeasuredQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(kLagMeasuredQ))) << logs.joined();
+  ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
   ASSERT_EQ(rig.last_flat.size(), 1U);
-  EXPECT_GT(rig.last_flat[0], 0.0) << "scaled toward the measured pose";
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.0) << "unscaled: no brake";
+  EXPECT_EQ(logs.count("safety.workspace_brake"), 0U) << logs.joined();
+  EXPECT_GE(logs.count("speed_mps=0.006 speed_source=measured"), 1U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
@@ -6379,8 +6406,8 @@ TEST_F(LifecycleKernelTest, AWorkspaceBrakeNeedsAFreshMeasuredVelocity) {
 
 TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStillHand) {
   // The jump guard: the hand is still (0 m/s measured), the command jumps 0.5
-  // rad into the cell — a 0.03 m lead over a 0.02 bound, and (#349 review B) its
-  // commanded 0.06 m/s governs over the still hand's 0.
+  // rad into the cell — a 0.03 m lead over a 0.02 bound. Row 0's step is read by the
+  // lead, not as speed (#349 r41).
   LogCapture logs;
   GraspRig rig("kernel_ws_meas_lead", lag_params(0.02));
   rig.js_velocity = {0.0};
@@ -6389,7 +6416,7 @@ TEST_F(LifecycleKernelTest, ACommandedJumpWhoseLeadExceedsTheBoundTripsWithAStil
   rig.warm(&b, kLagMeasuredQ, 300);
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, grasp_chunk(0.0)));
   EXPECT_TRUE(rig.node->fault_latched());
-  EXPECT_EQ(logs.count("hand_speed_mps=0.06 hand_lead_m=0.03 hand_speed_source=commanded"), 1U)
+  EXPECT_EQ(logs.count("hand_speed_mps=0 hand_lead_m=0.03 hand_speed_source=measured"), 1U)
       << logs.joined();
 }
 

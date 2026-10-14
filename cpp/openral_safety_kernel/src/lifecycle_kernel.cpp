@@ -701,6 +701,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
     workspace_prev_plain_.assign(n_links, Transform{});
     workspace_prev_partner_.assign(n_links, Transform{});
+    workspace_creep_prev_.assign(n_links, Transform{});
     workspace_meas_pose_.assign(n_links, Transform{});
     workspace_last_warn_.assign(n_links, std::chrono::steady_clock::time_point{});
     q_workspace_.assign(envelope_.n_dof, 0.0);
@@ -1647,14 +1648,21 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               : ws_speed_override_ ? 0.0
                                    : std::max(0.0, workspace_hand_lead() - ws_lead_allow_m_);
           fk_config(q);
-          // The commanded row-to-row speed, and the measured one where fresh: the
-          // larger governs (#349 review B: a fast command from rest reads slow measured).
+          // Row 0 with a fresh measured velocity: the measured speed only. Its
+          // commanded step (from the previous command or the measured state) is the
+          // chunk-boundary jump the arm smooths, already bounded by the lead (#349 r41:
+          // reading it as speed held the arm still every chunk, 2013 brakes a run).
+          // Rows s >= 1: the larger of the measured and the commanded row-to-row speed
+          // (#349 review B: a fast command within a chunk must not read slow). Without a
+          // fresh measured velocity the commanded speed governs every row.
           double speed =
               known && ws_speed_override_ ? 0.0 : std::numeric_limits<double>::infinity();
           ws_speed_measured_row_ = false;
           if (known && !ws_speed_override_) {
-            speed = workspace_hand_speed(*workspace_prev);
-            if (workspace_speed_measured_ && workspace_measured_speed_mps_ >= speed) {
+            const double commanded = workspace_hand_speed(*workspace_prev);  // advances prev
+            speed = commanded;
+            if (workspace_speed_measured_ &&
+                (step <= 0 || workspace_measured_speed_mps_ >= commanded)) {
               speed = workspace_measured_speed_mps_;
               ws_speed_measured_row_ = true;
             }
@@ -1976,6 +1984,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                       ? std::min(0.5 * workspace_max_lead_m_, per_period)
                                       : 0.5 * workspace_max_lead_m_;
               const double per_row = ws_hand_contact_ ? 0.0 : per_period;
+              // The same speed rule as the row check: row 0 is bounded by the lead (its
+              // step is the chunk-boundary jump), rows s >= 1 also by the row-to-row speed
+              // — scaling toward the measured pose scales those steps by `creep`.
               creep = 1.0;
               for (std::uint16_t s = 0; s < view.horizon; ++s) {
                 const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
@@ -1991,27 +2002,54 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                   ws_creep_lead_m_ = lead;
                   ws_creep_row_ = static_cast<int>(s);
                 }
+                if (s == 0) {
+                  workspace_snapshot(workspace_creep_prev_);
+                } else {
+                  const double v = workspace_hand_speed(workspace_creep_prev_);
+                  if (v > workspace_max_speed_mps_ && workspace_max_speed_mps_ / v < creep) {
+                    creep = workspace_max_speed_mps_ / v;
+                    ws_creep_row_ = static_cast<int>(s);
+                  }
+                }
               }
-              for (std::uint16_t s = 0; s < view.horizon && creep > 0.0; ++s) {
-                const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
-                for (std::size_t d = 0; d < robot_ndof; ++d) {
-                  const bool commanded = full_row || slot_commanded_[d] != 0;
-                  q_check_[d] = !commanded  ? q_meas_[d]
-                                : is_jaw(d) ? row[d]
-                                            : q_meas_[d] + creep * (row[d] - q_meas_[d]);
+              // Lead and speed are Cartesian, not linear in the joint deltas (#349 review):
+              // every scaled row must pass its own lead, speed and relaxed check. On an
+              // overshoot the creep halves and is re-checked, so a creep still moves
+              // (#349 r41: creep=0.000 held the arm still); after three halvings, a hold.
+              // ponytail: halving, not a solve; a bisection if holds stay common.
+              bool clear = false;
+              for (int attempt = 0; attempt < 4 && creep > 0.0 && !clear; ++attempt) {
+                if (attempt > 0) {
+                  creep *= 0.5;
                 }
-                // The lead is Cartesian and not linear in the joint deltas (#349 review):
-                // the scaled row's own lead must be within its allowance too.
-                std::copy(q_check_.begin(), q_check_.end(), q_lead_.begin());
-                for (const int jd : workspace_jaw_cols_) {
-                  q_lead_[static_cast<std::size_t>(jd)] = q_meas_[static_cast<std::size_t>(jd)];
+                clear = true;
+                for (std::uint16_t s = 0; s < view.horizon && clear; ++s) {
+                  const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
+                  for (std::size_t d = 0; d < robot_ndof; ++d) {
+                    const bool commanded = full_row || slot_commanded_[d] != 0;
+                    q_check_[d] = !commanded  ? q_meas_[d]
+                                  : is_jaw(d) ? row[d]
+                                              : q_meas_[d] + creep * (row[d] - q_meas_[d]);
+                  }
+                  std::copy(q_check_.begin(), q_check_.end(), q_lead_.begin());
+                  for (const int jd : workspace_jaw_cols_) {
+                    q_lead_[static_cast<std::size_t>(jd)] = q_meas_[static_cast<std::size_t>(jd)];
+                  }
+                  fk_config(q_lead_.data());
+                  const double scaled_lead = workspace_hand_lead();
+                  double v = 0.0;
+                  if (s == 0) {
+                    workspace_snapshot(workspace_creep_prev_);
+                  } else {
+                    v = workspace_hand_speed(workspace_creep_prev_);
+                  }
+                  clear = scaled_lead <= base + per_row * static_cast<double>(s) + 1e-9 &&
+                          v <= workspace_max_speed_mps_ + 1e-9 &&
+                          !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
                 }
-                fk_config(q_lead_.data());
-                const double scaled_lead = workspace_hand_lead();
-                if (!(scaled_lead <= base + per_row * static_cast<double>(s) + 1e-9) ||
-                    check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain)) {
-                  creep = 0.0;  // the scaled motion itself is not clear: hold
-                }
+              }
+              if (!clear) {
+                creep = 0.0;  // the scaled motion itself is not clear: hold
               }
             }
             if (!slowed) {
