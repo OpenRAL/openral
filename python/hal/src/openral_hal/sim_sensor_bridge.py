@@ -193,6 +193,30 @@ def should_idle_step(
     return step_while_active or now_ns - last_action_ns >= idle_hold_ns
 
 
+def _raster_point_colours(depth: Any, rgb: Any, clearing: Any) -> Any:
+    """Each ``points_from_depth_grid`` point's colour, read off its own raster pixel.
+
+    The cloud is the raster's measured (``> 0``) and cleared pixels in row-major order,
+    so each point takes its pixel's colour exactly (no re-projection, which can land on
+    the neighbouring pixel); a clearing endpoint (the robot occluded that ray) is grey.
+
+    Example:
+        >>> import numpy as np
+        >>> depth = np.array([[0.0, 2.0], [0.0, 0.0]], dtype=np.float32)
+        >>> rgb = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+        >>> clearing = np.array([[True, False], [False, False]])
+        >>> _raster_point_colours(depth, rgb, clearing).tolist()
+        [[128, 128, 128], [3, 4, 5]]
+        >>> _raster_point_colours(depth, rgb, None).tolist()
+        [[3, 4, 5]]
+    """
+    import numpy as np
+
+    measured = np.asarray(depth) > 0.0
+    selected = measured if clearing is None else measured | np.asarray(clearing, dtype=bool)
+    return np.where(measured[selected][:, None], rgb[selected], np.uint8(128)).astype(np.uint8)
+
+
 def _rgb8_image(rgb: Any, *, frame_id: str, stamp: Any) -> Any:
     """Pack an ``(H, W, 3)`` uint8 array as an ``rgb8`` ``sensor_msgs/Image``."""
     from sensor_msgs.msg import Image as RosImage
@@ -2652,9 +2676,6 @@ class SimSensorBridge:
         depth_rate_hz: float = 10.0,
         depth_max_range_m: float = 5.0,
         depth_pixel_stride: int = 4,
-        estimated_depth_cameras: tuple[str, ...] = (),
-        estimated_depth_feeds_safety: bool = False,
-        depth_estimator: Any = None,
         idle_hold_ms: float = 2000.0,
         attachment_heartbeat: bool = True,
         on_step: Any = None,
@@ -2739,13 +2760,6 @@ class SimSensorBridge:
         self._depth_colour_pubs: dict[str, tuple[Any, Any]] = {}
         self._depth_colour_renderers: dict[str, tuple[Any, Any]] = {}
         self._depth_colour_disabled: set[str] = set()
-        # Explicit opt-in: these depth cameras get DA3's monocular estimate from
-        # their colour instead of the ray-cast (``_mujoco_depth_frame``); refused at
-        # setup unless ``estimated_depth_feeds_safety`` acknowledges that the
-        # estimate reaches octomap and the kernel.
-        self._estimated_depth: frozenset[str] = frozenset(estimated_depth_cameras)
-        self._estimated_depth_feeds_safety = estimated_depth_feeds_safety
-        self._depth_estimator: Any = depth_estimator
         # Depth sensors on a manifest mount (body-convention ``frame_id``): their
         # optical child is a static TF under the mount, never a live one.
         self._depth_static_optical: set[str] = set()
@@ -2949,10 +2963,6 @@ class SimSensorBridge:
         self._depth_frames_published.clear()
         self._depth_clouds_published.clear()
         self._depth_colour_mismatch_warned.clear()
-        if self._depth_estimator is not None and callable(
-            getattr(self._depth_estimator, "close", None)
-        ):
-            self._depth_estimator.close()
         self._depth_disabled.clear()
         self._depth_base_body = None
         self._depth_base_body_id = -1
@@ -4117,7 +4127,6 @@ class SimSensorBridge:
         depth_specs = [s for s in self._description.sensors if depth_cloud.is_depth_sensor(s)]
         if not depth_specs:
             return
-        self._check_estimated_depth(depth_specs, has_mujoco=has_mujoco)
 
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -4172,42 +4181,6 @@ class SimSensorBridge:
             )
         )
 
-    def _check_estimated_depth(self, depth_specs: list[Any], *, has_mujoco: bool) -> None:
-        """Refuse an ``estimated_depth_cameras`` opt-in that is not explicit and complete.
-
-        Estimated depth goes out on the camera's canonical depth topics, so it reaches
-        octomap, the safety kernel's world voxels and the vision attachment leg: the
-        opt-in must say so (``estimated_depth_feeds_safety``). Only a camera this
-        bridge renders colour for can be estimated (a MuJoCo depth camera).
-
-        Raises:
-            ROSConfigError: a listed camera is not a depth sensor, the backend renders
-                no MuJoCo colour, or the safety acknowledgement is missing.
-        """
-        if not self._estimated_depth:
-            return
-        from openral_core.exceptions import ROSConfigError
-
-        unknown = sorted(self._estimated_depth - {s.name for s in depth_specs})
-        if unknown:
-            raise ROSConfigError(f"estimated_depth_cameras {unknown} are not depth sensors")
-        if not has_mujoco:
-            raise ROSConfigError(
-                "estimated_depth_cameras needs a MuJoCo backend (the bridge renders the "
-                "colour it estimates from); this backend publishes its own depth frames"
-            )
-        if not self._estimated_depth_feeds_safety:
-            raise ROSConfigError(
-                f"estimated_depth_cameras {sorted(self._estimated_depth)}: DA3's estimate "
-                "would feed octomap and the safety kernel in place of ground truth; set "
-                "estimated_depth_feeds_safety=true to accept that explicitly"
-            )
-        self._node.get_logger().warning(
-            "SimSensorBridge: ESTIMATED depth (DA3, monocular) replaces the ray-cast for "
-            f"{sorted(self._estimated_depth)}; it feeds octomap and the safety kernel "
-            "(estimated_depth_feeds_safety=true)"
-        )
-
     def _publish_depth_optical_mount(self, spec: Any) -> None:
         """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame depth sensor.
 
@@ -4258,20 +4231,15 @@ class SimSensorBridge:
         the robot's own body occludes). The colour is the same MJCF camera rendered at
         that raster (``_render_registered_colour``); ``optical_in_base`` the camera's
         live optical pose in ``base_frame`` (identity when no base body resolves; the
-        TF then comes from the manifest mount). A camera listed in
-        ``estimated_depth_cameras`` skips the cast: its depth is DA3's estimate from
-        that colour (``estimated_depth_frame``, ``source="estimated:da3"``) and it
-        clears nothing.
+        TF then comes from the manifest mount).
         """
         import numpy as np
-        from openral_core.exceptions import ROSConfigError
         from openral_sim.backends.depth_camera import synthesize_depth_frame
-        from openral_sim.depth_frames import depth_frame, estimated_depth_frame
+        from openral_sim.depth_frames import depth_frame
 
         from openral_hal.depth_cloud import camera_optical_tf_to_base
 
-        # The strided raster: one pixel per ``range(0, size, stride)`` sample.
-        h, w = -(-int(kwargs["height"]) // stride), -(-int(kwargs["width"]) // stride)
+        # The raster's own intrinsics: the manifest's, scaled by 1/stride.
         k = [float(kwargs[key]) / stride for key in ("fx", "fy", "cx", "cy")]
         pose = np.eye(4)
         if self._base_frame_body is not None:
@@ -4284,20 +4252,6 @@ class SimSensorBridge:
                 base_body_name=self._base_frame_body,
             )
             pose = homogeneous_from_quat_xyz(xyz, quat)
-        if name in self._estimated_depth:
-            rgb = self._render_registered_colour(name, model, data, kwargs["camera_name"], w, h, k)
-            if rgb is None:
-                raise ROSConfigError(
-                    f"estimated depth for {name!r} needs its registered colour, which this "
-                    "camera model cannot render"
-                )
-            if self._depth_estimator is None:
-                from openral_sim.da3_depth import Da3DepthClient
-
-                self._depth_estimator = Da3DepthClient()
-                self._depth_estimator.connect()
-            frame = estimated_depth_frame(rgb, k, pose, self._depth_estimator)
-            return frame, None
         excluded_bodies = self._depth_excluded_body_ids()
         depth_grid, clearing = synthesize_depth_frame(
             model=model,
@@ -4456,7 +4410,7 @@ class SimSensorBridge:
                     return (w, h)
         return None
 
-    def _publish_depth_clouds(self) -> None:  # reason: one atomic per-camera publish transaction
+    def _publish_depth_clouds(self) -> None:
         """Ray-cast + publish a PointCloud2 (+ depth image) per camera, and its TF.
 
         The deploy-sim source for octomap_server. Each depth ``SensorSpec`` is
@@ -4492,11 +4446,9 @@ class SimSensorBridge:
             return
         model, data = handle
 
-        import numpy as np
         from openral_core.exceptions import ROSConfigError
 
         from openral_hal.depth_cloud import (
-            colours_from_frame,
             depth_optical_frame_id,
             depth_synth_kwargs,
             is_depth_sensor,
@@ -4539,12 +4491,10 @@ class SimSensorBridge:
                     cy=cy,
                 )
                 optical_frame = depth_optical_frame_id(spec)
-                # Coloured from the frame's own registered RGB (for viewers; octomap
-                # and the kernel read x/y/z only). The cloud is optical-frame.
+                # Coloured from the frame's own registered RGB, for viewers (octomap
+                # and the kernel read x/y/z only).
                 rgb = frame["rgb"]
-                colours = (
-                    colours_from_frame(points, rgb, frame["k"], np.eye(4)) if rgb.size else None
-                )
+                colours = _raster_point_colours(depth_grid, rgb, clearing) if rgb.size else None
                 cloud = pointcloud2_from_points_xyz(
                     points, frame_id=optical_frame, stamp=stamp, rgb=colours
                 )

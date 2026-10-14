@@ -179,11 +179,9 @@ real cell supplies the same boxes from its scene graph.
 
 **One perception contract.** Every backend publishes depth through one registered RGB-D frame
 (`openral_sim.depth_frames.depth_frame`: depth, colour from the same render, K, optical pose in
-`base_frame`, `source`): Isaac renders it; the MuJoCo bridge builds it from its ray-cast and the
-same MJCF camera's colour; Depth Anything V3 can estimate it from colour for a MuJoCo camera,
-only on an explicit `estimated_depth_cameras` opt-in that must also set
-`estimated_depth_feeds_safety` (the estimate reaches octomap, the kernel and the attachment leg,
-and the launch then self-filters that cloud, since DA3 sees the arm).
+`base_frame`): Isaac renders it; the MuJoCo bridge builds it from its ray-cast and the same
+MJCF camera's colour. Both are ground truth; no estimated depth reaches octomap or the kernel
+through it.
 
 ## 4. Why this is sound enough to propose
 

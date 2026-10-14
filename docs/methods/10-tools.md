@@ -32,13 +32,13 @@ _Overlays a robot's kernel collision primitives — the shapes the C++ safety ke
 
 Derive a deploy scene's safety inputs from the simulator instead of by hand (#349): the declared static geometry and the grasp declaration's `search_box` / `workspace_box`. Backend-neutral (Isaac sidecar or MuJoCo); explicit scene values win unless `--replace`, and both are printed for comparison.
 
-- `to_declared(box) -> dict` (L38) — A backend `kind: box` collider as a `StaticBox` entry (`quat_xyzw`, base frame).
-- `mesh_bounds(vertices) -> tuple[list[float], list[float]]` (L66) — Centre and half-extents of a vertex set's axis-aligned bound.
-- `nearest_distance_m(entry) -> float` (L78) — Lower bound on an entry's distance from the base-frame origin.
-- `aabb(box) -> Bbox` (L93) — Base-frame axis-aligned bound `(x0, y0, z0, x1, y1, z1)` of an oriented `{center_m, rotation, half_extents_m}` box.
-- `source_fixture(obj, colliders, tol_m=0.02) -> tuple[Bbox, str] | None` (L115) — The static collider group the object rests on (highest box under the object's centre, then every collider sharing its parent path) and its bound: a tote's floor + walls + rims, a counter body's geoms.
-- `write_static(reply, out, max_distance) -> int` (L179) — The backend's colliders as a `StaticGeometry` YAML (meshes as `.npz` beside it).
-- `main(argv=None) -> int` (L238) — Boots the scene (`build_sim_env_from_yaml`), resets at its seed, exports static colliders (Isaac `static_collider_boxes`; MuJoCo `mujoco_geometry.static_collider_boxes` with the robot's bodies excluded; none for a mobile base, whose base-frame fixtures hold only at the reset pose), `set_task(prompt)` + `scene_ground_truth`, grounds `search_box` with `ground_grasp_target` (sim objects as `DetectedObject`s) and `workspace_box` with `ground_workspace` (source fixture + destination region and its graded-adjacent regions), and writes the derived scene (`--out`, static geometry beside it).
+- `to_declared(box) -> dict` (L39) — A backend `kind: box` collider as a `StaticBox` entry (`quat_xyzw`, base frame).
+- `mesh_bounds(vertices) -> tuple[list[float], list[float]]` (L67) — Centre and half-extents of a vertex set's axis-aligned bound.
+- `nearest_distance_m(entry) -> float` (L79) — Lower bound on an entry's distance from the base-frame origin.
+- `aabb(box) -> Bbox` (L91) — Base-frame axis-aligned bound `(x0, y0, z0, x1, y1, z1)` of an oriented `{center_m, rotation, half_extents_m}` box.
+- `source_fixture(obj, colliders, tol_m=0.02) -> tuple[Bbox, str] | None` (L113) — The static collider group the object rests on (highest box under the object's centre, then every collider sharing its parent path) and its bound: a tote's floor + walls + rims, a counter body's geoms.
+- `write_static(reply, out, max_distance) -> int` (L177) — The backend's colliders as a `StaticGeometry` YAML (meshes as `.npz` beside it).
+- `main(argv=None) -> int` (L236) — Boots the scene (`build_sim_env_from_yaml`), resets at its seed, exports static colliders (Isaac `static_collider_boxes`; MuJoCo `mujoco_geometry.static_collider_boxes` with the robot's bodies excluded; none for a mobile base, whose base-frame fixtures hold only at the reset pose), `set_task(prompt)` + `scene_ground_truth`, grounds `search_box` with `ground_grasp_target` (sim objects as `DetectedObject`s) and `workspace_box` with `ground_workspace` (source fixture + destination region and its graded-adjacent regions), and writes the derived scene (`--out`, static geometry beside it).
 
 ### `tools/generate_tight_geometry.py`
 

@@ -2,8 +2,7 @@
 """Generic scene inputs: the one RGB-D frame contract and the derived safety declarations.
 
 * ``openral_sim.depth_frames``: every backend's registered RGB-D frame goes through
-  ``depth_frame`` (Isaac obs, the MuJoCo bridge, DA3's estimate) and says its source.
-* ``SimSensorBridge``: DA3-estimated depth is an explicit, safety-acknowledged opt-in.
+  ``depth_frame`` (Isaac obs, the MuJoCo bridge).
 * ``openral_sim.backends.mujoco_geometry`` / ``tools/derive_scene_inputs.py`` /
   ``openral_reasoner.grounding.ground_workspace``: static fixtures and the grasp
   declaration's boxes are derived from the sim, never required by hand.
@@ -23,7 +22,7 @@ import pytest
 from openral_core import GraspDeclaration, RobotDescription
 from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_reasoner.grounding import ground_workspace
-from openral_sim.depth_frames import depth_frame, is_estimated
+from openral_sim.depth_frames import depth_frame
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -48,65 +47,19 @@ class TestDepthFrameContract:
         )
         assert f["depth"].tolist() == [[1.0, 0.0], [0.0, 3.0]]  # no-return sentinel
         assert f["rgb"].dtype == np.uint8 and f["k"].shape == (4,)
-        assert not is_estimated(f)
-
-    def test_an_estimated_frame_says_so(self) -> None:
-        f = depth_frame(np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(4), source="estimated:da3")
-        assert is_estimated(f) and f["rgb"].shape == (0, 0, 3)
 
     @pytest.mark.parametrize(
-        ("depth", "rgb", "k", "pose", "source"),
+        ("depth", "rgb", "k", "pose"),
         [
-            (np.ones((2, 2)), np.zeros((3, 2, 3)), [1, 1, 1, 1], np.eye(4), "rendered"),
-            (np.ones(4), None, [1, 1, 1, 1], np.eye(4), "rendered"),
-            (np.ones((2, 2)), None, [1, 1, 1], np.eye(4), "rendered"),
-            (np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(3), "rendered"),
-            (np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(4), "estimated:"),
-            (np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(4), "guessed"),
+            (np.ones((2, 2)), np.zeros((3, 2, 3)), [1, 1, 1, 1], np.eye(4)),
+            (np.ones(4), None, [1, 1, 1, 1], np.eye(4)),
+            (np.ones((2, 2)), None, [1, 1, 1], np.eye(4)),
+            (np.ones((2, 2)), None, [1, 1, 1, 1], np.eye(3)),
         ],
     )
-    def test_off_contract_frames_are_refused(self, depth, rgb, k, pose, source) -> None:  # type: ignore[no-untyped-def]  # reason: parametrized fixtures
+    def test_off_contract_frames_are_refused(self, depth, rgb, k, pose) -> None:  # type: ignore[no-untyped-def]  # reason: parametrized fixtures
         with pytest.raises(ROSConfigError):
-            depth_frame(depth, rgb, k, pose, source=source)
-
-
-class TestEstimatedDepthOptIn:
-    """DA3 depth reaches octomap and the kernel, so the opt-in must acknowledge it."""
-
-    def _bridge(self, **kw: object) -> tuple[object, object]:
-        rclpy = pytest.importorskip("rclpy", reason="ROS 2 (rclpy) not sourced")
-        from openral_hal.sim_sensor_bridge import SimSensorBridge
-
-        rclpy.init()
-        node = rclpy.create_node("test_estimated_depth_opt_in")
-        desc = RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml"))
-        return node, SimSensorBridge(node=node, hal=None, description=desc, **kw)
-
-    def _check(self, **kw: object) -> None:
-        node, bridge = self._bridge(**kw)
-        import rclpy
-
-        try:
-            desc = RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml"))
-            specs = [s for s in desc.sensors if s.is_depth_camera]
-            bridge._check_estimated_depth(specs, has_mujoco=True)  # type: ignore[attr-defined]
-        finally:
-            node.destroy_node()  # type: ignore[attr-defined]
-            rclpy.shutdown()
-
-    def test_off_by_default(self) -> None:
-        self._check()
-
-    def test_refused_without_the_safety_acknowledgement(self) -> None:
-        with pytest.raises(ROSConfigError, match="estimated_depth_feeds_safety"):
-            self._check(estimated_depth_cameras=("head_zed",))
-
-    def test_refused_for_a_camera_that_is_not_a_depth_sensor(self) -> None:
-        with pytest.raises(ROSConfigError, match="not depth sensors"):
-            self._check(estimated_depth_cameras=("top",), estimated_depth_feeds_safety=True)
-
-    def test_accepted_when_acknowledged(self) -> None:
-        self._check(estimated_depth_cameras=("head_zed",), estimated_depth_feeds_safety=True)
+            depth_frame(depth, rgb, k, pose)
 
 
 class TestMujocoStaticColliders:

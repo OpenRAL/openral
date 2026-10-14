@@ -33,6 +33,7 @@ from typing import Any
 
 import numpy as np
 import yaml
+from openral_reasoner.grounding import Bbox
 
 
 def to_declared(box: dict[str, Any]) -> dict[str, Any]:
@@ -85,9 +86,6 @@ def nearest_distance_m(entry: dict[str, Any]) -> float:
     return max(
         0.0, float(np.linalg.norm(entry["xyz"])) - float(np.linalg.norm(entry["half_extents"]))
     )
-
-
-Bbox = tuple[float, float, float, float, float, float]
 
 
 def aabb(box: dict[str, Any]) -> Bbox:

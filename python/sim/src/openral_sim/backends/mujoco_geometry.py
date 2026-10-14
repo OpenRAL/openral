@@ -46,6 +46,10 @@ def _geom_box(
     }
 
 
+def _body_name(mujoco: Any, model: Any, b: int) -> str:
+    return str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or f"body{b}")
+
+
 def _collides(model: Any, g: int) -> bool:
     return bool(model.geom_contype[g]) or bool(model.geom_conaffinity[g])
 
@@ -56,24 +60,32 @@ def static_collider_boxes(
     """Every static collision geom as an oriented box in the base body's frame.
 
     Static = welded to the world (``body_weldid == 0``: no joint between it and the
-    world body, so it never moves); collision = ``contype`` or ``conaffinity`` set.
-    ``exclude_body_ids`` (the robot's own bodies) are skipped; an infinite plane has no
-    box and is skipped. ``path`` is ``<body name>/<geom name or index>``, so a fixture's
-    geoms share their body as parent (``tools/derive_scene_inputs.py`` groups by it).
+    world body) and not mocap-driven (a mocap body is welded too, but the simulation
+    moves it); collision = ``contype`` or ``conaffinity`` set. ``exclude_body_ids`` (the
+    robot's own bodies) are skipped; an infinite plane has no box and is skipped.
+    ``path`` is ``<fixture>/<geom>``: the fixture is the body's top-level ancestor (the
+    world's child it hangs from), so every geom of a fixture made of several bodies
+    shares one parent (``tools/derive_scene_inputs.py`` groups by it), and the geom is
+    named ``<body>.<geom>`` below that ancestor. A geom on the world body itself is its
+    own fixture (``world.<geom>/<geom>``), never one group of everything unparented.
 
     Example:
         >>> import mujoco
         >>> m = mujoco.MjModel.from_xml_string(
         ...     "<mujoco><worldbody><body name='base'/>"
         ...     "<body name='shelf' pos='1 0 0'><geom name='board' type='box' size='.1 .2 .3'/>"
-        ...     "</body><body name='can'><freejoint/><geom size='.03'/></body>"
+        ...     "<body name='lip'><geom name='rim' type='box' size='.1 .01 .01'/></body></body>"
+        ...     "<body name='can'><freejoint/><geom size='.03'/></body>"
+        ...     "<body name='tag' mocap='true'><geom size='.01'/></body>"
         ...     "</worldbody></mujoco>"
         ... )
         >>> d = mujoco.MjData(m)
         >>> mujoco.mj_forward(m, d)
         >>> boxes = static_collider_boxes(m, d, base_body_id=1)["boxes"]
-        >>> [(b["path"], b["center_m"], b["half_extents_m"]) for b in boxes]
-        [('shelf/board', [1.0, 0.0, 0.0], [0.1, 0.2, 0.3])]
+        >>> for b in boxes:
+        ...     print(b["path"], b["center_m"], b["half_extents_m"])
+        shelf/board [1.0, 0.0, 0.0] [0.1, 0.2, 0.3]
+        shelf/lip.rim [1.0, 0.0, 0.0] [0.1, 0.01, 0.01]
     """
     import mujoco  # reason: optional sim dep
 
@@ -84,13 +96,24 @@ def static_collider_boxes(
         b = int(model.geom_bodyid[g])
         if int(model.body_weldid[b]) != 0 or b in skip or not _collides(model, g):
             continue
-        if int(model.geom_type[g]) == _MJGEOM_PLANE:
+        if int(model.geom_type[g]) == _MJGEOM_PLANE or int(model.body_mocapid[b]) >= 0:
             continue
-        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or f"body{b}"
         geom = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or f"geom{g}"
+        root = b
+        while root != 0 and int(model.body_parentid[root]) != 0:
+            root = int(model.body_parentid[root])
+        if root == 0:
+            path = f"world.{geom}/{geom}"
+        else:
+            fixture = _body_name(mujoco, model, root)
+            path = (
+                f"{fixture}/{geom}"
+                if b == root
+                else f"{fixture}/{_body_name(mujoco, model, b)}.{geom}"
+            )
         boxes.append(
             {
-                "path": f"{body}/{geom}",
+                "path": path,
                 "kind": "box",
                 "collision_enabled": True,
                 **_geom_box(model, data, g, base_from_world),

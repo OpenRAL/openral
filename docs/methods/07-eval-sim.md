@@ -865,18 +865,13 @@ _Thin ZMQ client for the DA3 monocular metric-depth sidecar — the same model t
 - `const DEFAULT_DA3_PORT = 5771` — the shared bind port (matches `depth_provider_node`). (L41)
 
 #### `python/sim/src/openral_sim/depth_frames.py`
-_The one registered RGB-D frame contract every sim backend publishes depth through: `{"depth" (H,W) f32 m, "rgb" (H,W,3) u8 or (0,0,3), "k" [fx,fy,cx,cy], "optical_in_base" 4x4, "source"}`. Producers: the Isaac obs (`_IsaacSimSidecar._wrap_obs`), the MuJoCo sensor bridge (`SimSensorBridge._mujoco_depth_frame`), and the opt-in DA3 estimate._
-- `const RENDERED = "rendered"` — `source` of a ground-truth (rendered / ray-cast) frame. (L35)
-- `class DepthEstimator(Protocol)` — `infer(rgb) -> depth` (`Da3DepthClient`). (L40)
-  - `DepthEstimator.infer(rgb) -> NDArray[np.float32]` — metric depth pixel-aligned with `rgb`. (L43)
-- `depth_frame(depth, rgb, k, optical_in_base, *, source="rendered") -> dict` — Builds and checks one frame: NaN/inf/negative depth → `0.0`; `rgb=None` → `(0, 0, 3)`; refuses (`ROSConfigError`) off-contract shapes, colour not registered to the raster, or a `source` other than `rendered` / `estimated:<model>`. (L48)
-- `is_estimated(frame) -> bool` — Whether the frame's depth was estimated from colour. (L83)
-- `estimated_depth_frame(rgb, k, optical_in_base, estimator, *, model="da3") -> dict` — A frame whose depth `estimator` inferred from `rgb` (`source="estimated:<model>"`); built only on the bridge's explicit `estimated_depth_cameras` opt-in. (L93)
+_The one registered RGB-D frame contract every sim backend publishes depth through: `{"depth" (H,W) f32 m, "rgb" (H,W,3) u8 or (0,0,3), "k" [fx,fy,cx,cy], "optical_in_base" 4x4}`. Producers: the Isaac obs (`_IsaacSimSidecar._wrap_obs`) and the MuJoCo sensor bridge (`SimSensorBridge._mujoco_depth_frame`), both ground truth._
+- `depth_frame(depth, rgb, k, optical_in_base) -> dict` — Builds and checks one frame: NaN/inf/negative depth → `0.0`; `rgb=None` → `(0, 0, 3)`; refuses (`ROSConfigError`) off-contract shapes or colour not registered to the raster. (L29)
 
 #### `python/sim/src/openral_sim/backends/mujoco_geometry.py`
 _MuJoCo scene geometry in the robot's base frame, in the Isaac sidecar's `static_colliders` reply shape (`tools/derive_scene_inputs.py`)._
-- `static_collider_boxes(model, data, *, base_body_id, exclude_body_ids=()) -> dict` — Every world-welded (`body_weldid == 0`) collision geom (`contype | conaffinity`), robot bodies excluded, planes skipped, as an oriented box from `geom_aabb`; `path = <body>/<geom>`. (L53)
-- `body_subtree_box(model, data, root_body_ids, *, base_body_id) -> dict | None` — Base-frame axis-aligned bound of every collision geom under the given bodies (an object, a fixture). (L102)
+- `static_collider_boxes(model, data, *, base_body_id, exclude_body_ids=()) -> dict` — Every world-welded (`body_weldid == 0`) collision geom (`contype | conaffinity`), robot bodies excluded, planes skipped, as an oriented box from `geom_aabb`; `path = <body>/<geom>`. (L57)
+- `body_subtree_box(model, data, root_body_ids, *, base_body_id) -> dict | None` — Base-frame axis-aligned bound of every collision geom under the given bodies (an object, a fixture). (L125)
 
 #### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
 _Boot helper + server for the InternVLA-N1 nav sidecar, companion to `openral_sim.policies.internvla_n1`._ The launcher provisions a py3.11 venv (clones `InternRobotics/InternNav`, installs the inference-only pin set, no flash-attn), then execs the server. The server loads the checkpoint with quantization-aware `from_pretrained` (NF4 on the Qwen backbone, NavDP head left bf16) and answers the same ZMQ+msgpack protocol as other sidecars; refuses an all-zero depth frame.

@@ -731,26 +731,20 @@ def _octomap_input_bounds(ball: _CoverageBall) -> dict[str, float]:
     }
 
 
-def _cloud_shows_the_robot(
-    hal_mode: str, scene_backend: str | None, *, estimated_depth: bool = False
-) -> bool:
+def _cloud_shows_the_robot(hal_mode: str, scene_backend: str | None) -> bool:
     """Whether the octomap input cloud contains the robot's own body, so it needs the self filter.
 
     A real depth camera sees the arm. In sim it depends on who makes the cloud: the MuJoCo
     sensor bridge ray-casts with the robot's bodies transparent, but an Isaac Sim scene
-    renders its depth camera with the robot in view (``read_depth_clouds``), and so does a
-    depth camera whose depth is estimated from its colour (the bridge's
-    ``estimated_depth_cameras``: DA3 sees the arm). Unfiltered, those returns become
-    occupied voxels on the arm and the kernel's world-voxel check stops every motion as a
-    collision with the robot itself.
+    renders its depth camera with the robot in view (``read_depth_clouds``). Unfiltered,
+    those returns become occupied voxels on the arm and the kernel's world-voxel check stops
+    every motion as a collision with the robot itself.
 
     Example:
         >>> _cloud_shows_the_robot("sim", "isaacsim"), _cloud_shows_the_robot("sim", "mujoco")
         (True, False)
-        >>> _cloud_shows_the_robot("sim", "mujoco", estimated_depth=True)
-        True
     """
-    return hal_mode == "real" or scene_backend == "isaacsim" or estimated_depth
+    return hal_mode == "real" or scene_backend == "isaacsim"
 
 
 def _attached_collision_enabled(hal_mode: str, vision_attachment_enabled: bool) -> bool:
@@ -2042,8 +2036,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "role: gripper joint, so there is no contact link the exemption could apply to."
         )
     hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
-    # A depth camera estimated from colour (the HAL's opt-in) shows the robot.
-    estimated_depth = bool(str(hal_file_params.get("estimated_depth_cameras", "")).strip())
     # On real the HAL's vision target leg is the only grasp-region producer (in sim the HAL's
     # MuJoCo evidence tracker is), so the exemption must not arm without it — checked here as
     # well as in `openral deploy run`, so a bare `ros2 launch` cannot skip it.
@@ -2369,7 +2361,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # fit drops the robot's own points as the map does (empty: no filter).
                 "vision_attachment_self_filtered_cloud_topic": _SELF_FILTERED_CLOUD_TOPIC
                 if enable_octomap
-                and _cloud_shows_the_robot(hal_mode, scene_backend, estimated_depth=estimated_depth)
+                and _cloud_shows_the_robot(hal_mode, scene_backend)
                 and has_collision_capsules
                 else "",
             }
@@ -3176,10 +3168,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # against.
         octomap_input_topic = octomap_cloud_topic
         self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
-        if (
-            _cloud_shows_the_robot(hal_mode, scene_backend, estimated_depth=estimated_depth)
-            and has_collision_capsules
-        ):
+        if _cloud_shows_the_robot(hal_mode, scene_backend) and has_collision_capsules:
             octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
             self_filter_nodes.append(
                 Node(
