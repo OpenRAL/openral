@@ -1497,9 +1497,9 @@ def _live_leg(name: str, **config: Any) -> Iterator[_LiveLeg]:
 def test_a_fixed_frame_box_resolves_at_the_grids_stamp_not_the_latest_tf() -> None:
     """The base moves 1 m between two tf2 samples: the box lands where the base was when
     the grid was built, and with no tf2 at that time it stays unresolved (fail closed)."""
-    from geometry_msgs.msg import TransformStamped
+    with _live_leg("test_rebase_at_stamp") as live:  # skips without ROS (rclpy, tf2_ros)
+        from geometry_msgs.msg import TransformStamped
 
-    with _live_leg("test_rebase_at_stamp") as live:
         for stamp_s, x in ((10, 0.0), (11, 1.0)):
             tf = TransformStamped()
             tf.header.frame_id, tf.child_frame_id = "odom", "openarm_base"
