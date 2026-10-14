@@ -1030,7 +1030,10 @@ class JointSpec(BaseModel):
         effort_limit: Maximum effort (N or Nm).
         has_position_sensor: Whether position feedback is available.
         has_velocity_sensor: Whether velocity feedback is available.
-        has_torque_sensor: Whether torque feedback is available.
+        has_torque_sensor: Whether the joint has a dedicated joint torque
+            sensor. A torque *estimate* derived from motor current does
+            not count: declare ``False`` for current-derived estimates so
+            force decisions do not over-trust them.
         backlash_estimate: Estimated backlash in radians.
         actuator_kind: Type of actuator.
         sim_joint_name: Optional override carrying the **MJCF/MuJoCo

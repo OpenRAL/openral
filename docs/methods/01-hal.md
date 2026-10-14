@@ -370,8 +370,8 @@ _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body forc
 ### `python/hal/src/openral_hal/openarm.py`
 _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fresh `HALBase` subclass — v2's native `<position>` actuators with per-class PD baked into the MJCF mean the HAL just writes target → ctrl and steps, no software PD loop needed._
 
-- `class OpenArmMujocoHAL(MujocoArmHAL)` (L0) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L472) ADR-0102 slot-group reassembly, the stale-tick guard and `last_committed_tick` are inherited from `MujocoArmHAL.send_action` (this class held its own copy until 2026-09-24).
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L510)
+- `class OpenArmMujocoHAL(MujocoArmHAL)` (L0) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L474) ADR-0102 slot-group reassembly, the stale-tick guard and `last_committed_tick` are inherited from `MujocoArmHAL.send_action` (this class held its own copy until 2026-09-24).
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L512)
 - `_openarm_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_openarm_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_openarm_joint_specs() -> list[JointSpec]` (L167, L190, L206)
 - module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L106) — left-arm joint names.
 - module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L107) — right-arm joint names.
@@ -386,7 +386,7 @@ _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fres
 - module const `_OPENARM_GRIPPER_EFFORT_LIMIT: float` (L166)
 - module const `_OPENARM_ARM_VELOCITY_LIMIT: float` (L169)
 - module const `_OPENARM_GRIPPER_VELOCITY_LIMIT: float` (L170)
-- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L248) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
+- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L250) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
 
 ### `python/hal/src/openral_hal/openarm_real.py`
 _Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s ros2_control stack (400 Hz) rather than SocketCAN directly: Skill → Action → this adapter → four command topics → controller_manager → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors._
@@ -449,8 +449,8 @@ _Reassembles a slot-dispatched inference tick into one whole-robot command (ADR-
 ### `python/hal/src/openral_hal/anvil_openarm_v2.py`
 _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured variant of the standard OpenArm v2. Differs from the Enactic v2 twin only in two joint ranges (J1, J6) and a wrist support bracket, baked into the fetched MJCF, so the HAL stays a thin manifest-driven subclass._
 
-- `class AnvilOpenArmV2MujocoHAL(MujocoArmHAL)` — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `models/anvil_openarm_bimanual.xml` from the pinned `bensonlee5/anvil-openarm-mujoco` clone. All wiring lives in `ANVIL_OPENARM_V2_DESCRIPTION.sim`. Structurally identical to `OpenArmMujocoHAL` — the Anvil-ness is entirely in the asset. (L368)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ANVIL_OPENARM_V2_DESCRIPTION, …)`. (L409)
+- `class AnvilOpenArmV2MujocoHAL(MujocoArmHAL)` — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `models/anvil_openarm_bimanual.xml` from the pinned `bensonlee5/anvil-openarm-mujoco` clone. All wiring lives in `ANVIL_OPENARM_V2_DESCRIPTION.sim`. Structurally identical to `OpenArmMujocoHAL` — the Anvil-ness is entirely in the asset. (L370)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ANVIL_OPENARM_V2_DESCRIPTION, …)`. (L411)
 - `_anvil_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_anvil_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_anvil_joint_specs() -> list[JointSpec]` (L160, L184, L204)
 - module const `_ANVIL_LEFT_ARM_JOINTS: tuple[str, ...]` (L89) — left-arm joint names.
 - module const `_ANVIL_RIGHT_ARM_JOINTS: tuple[str, ...]` (L90) — right-arm joint names.
@@ -464,7 +464,7 @@ _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured 
 - module const `_ANVIL_GRIPPER_EFFORT_LIMIT: float` (L144)
 - module const `_ANVIL_ARM_VELOCITY_LIMIT: float` (L148)
 - module const `_ANVIL_GRIPPER_VELOCITY_LIMIT: float` (L149)
-- const `ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(...)` (L213) — Sim baseline (`name="anvil_openarm_v2"`, 16 revolute joints, Anvil's J1/J6 ranges, two wrist RGB `SensorSpec`s). `sdk_kind="open"`, `hal.sim=None` (derived `MujocoArmHAL`), `hal.real=None` (sim-only; a real driver wrapper is a tracked follow-up). Drift-guarded against `robots/anvil_openarm_v2/robot.yaml`.
+- const `ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(...)` (L215) — Sim baseline (`name="anvil_openarm_v2"`, 16 revolute joints, Anvil's J1/J6 ranges, two wrist RGB `SensorSpec`s). `sdk_kind="open"`, `hal.sim=None` (derived `MujocoArmHAL`), `hal.real=None` (sim-only; a real driver wrapper is a tracked follow-up). Drift-guarded against `robots/anvil_openarm_v2/robot.yaml`.
 
 ### `python/hal/src/openral_hal/_pinned_clone.py`
 

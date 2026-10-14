@@ -186,7 +186,9 @@ def _openarm_arm_joint_specs(
             position_limits=position_limits[name],
             velocity_limit=_OPENARM_ARM_VELOCITY_LIMIT,
             effort_limit=_OPENARM_ARM_EFFORT_LIMITS[name],
-            has_torque_sensor=True,
+            # Current-derived torque estimate from the motor driver, not a
+            # joint torque sensor: force decisions must not over-trust it.
+            has_torque_sensor=False,
             actuator_kind="bldc",
             # Upstream MJCF qualifies the logical joint with the `openarm_`
             # prefix; the openarm_robosuite scene reads this to resolve the
