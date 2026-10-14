@@ -491,16 +491,24 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             "cell:restock_box", lowered_to_support(region, support), payload=True
         )
         assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
-        assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
-        np.testing.assert_allclose(
+        # The hand-side face is clipped at the palm plane (#349, ``_padding_clip_point``):
+        # only padding goes — the sides and the support-side face stay the closed box's.
+        held_half = np.asarray(held.primitives[0].shape_dimensions)
+        held_centre = np.asarray(
             [
                 held.pose_in_link.position.x,
                 held.pose_in_link.position.y,
                 held.pose_in_link.position.z,
-            ],
-            np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz,
-            atol=1e-6,
+            ]
         )
+        closed_centre = np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz
+        np.testing.assert_allclose(held_half[:2], closed.half_extents[:2], atol=1e-6)
+        np.testing.assert_allclose(held_centre[:2], closed_centre[:2], atol=1e-6)
+        assert held_centre[2] - held_half[2] == pytest.approx(
+            closed_centre[2] - closed.half_extents[2], abs=1e-6
+        )
+        cut = 2.0 * (closed.half_extents[2] - held_half[2])
+        assert 0.0 < cut <= margin + 1e-6, f"clipped {cut} m; expected 0 < cut <= {margin} m"
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )

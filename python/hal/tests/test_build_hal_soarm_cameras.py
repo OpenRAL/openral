@@ -76,3 +76,34 @@ def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
         # The staging floor + fill light guarantee a non-black frame (a forward
         # wrist camera over a bare arm with no floor would otherwise be void).
         assert a.std() > 1.0, f"{name} looks blank (std={a.std():.2f})"
+
+
+@requires_renderer
+def test_estop_closes_the_render_contexts() -> None:
+    """``estop`` frees each camera's GL context, not only ``disconnect``.
+
+    ``disconnect`` is a no-op once ``estop`` has dropped the connection, so a
+    renderer ``estop`` left open would only be freed by the GC, at interpreter
+    teardown at the latest, after its GL library. Not confirmed as the cause of
+    the live-ROS exit 139 (tracked in #381).
+    """
+    from openral_core.exceptions import ROSEStopRequested
+
+    hal = build_hal(RobotDescription.from_yaml(_SOARM[0]), mode="sim")
+    hal.connect()
+    try:
+        try:
+            frames = hal.read_images()
+        except Exception as exc:  # pragma: no cover - headless GL not available
+            pytest.skip(f"offscreen MuJoCo render unavailable: {exc}")
+        if not frames:
+            pytest.skip("offscreen MuJoCo render produced no frames (no GL context)")
+        renderers = list(hal._renderers.values())  # type: ignore[attr-defined]  # reason: white-box GL handle
+        assert renderers
+
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+
+        assert all(r._gl_context is None and r._mjr_context is None for r in renderers)
+    finally:
+        hal.disconnect()
