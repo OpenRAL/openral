@@ -1094,11 +1094,11 @@ class _RoboCasaSim:
         The RoboCasa side of the ground-truth hook ``tools/derive_scene_inputs.py``
         derives a scene's grasp ``search_box`` / ``workspace_box`` from (Isaac:
         ``IsaacManifestScene.scene_ground_truth``). ``objects``: every task object's
-        collision bound (``body_subtree_box``). ``placements``: the graspable object
-        cfg (the task object) and, as ``target``, the bound of the one registered
-        fixture ref that is not the fixture it is placed on — the destination of an
-        atomic pick-and-place (``PickPlaceCounterToCabinet``: ``cab``). Empty when the
-        task has no such single destination: the derivation then has nothing to ground.
+        collision bound (``body_subtree_box``). ``placements``: one per candidate
+        destination of the graspable object cfg (the task object) — each registered
+        fixture ref that is not the fixture it is placed on, once even when registered
+        under two keys, its bound as ``target`` (``PickPlaceCounterToCabinet``: ``cab``).
+        Empty when the task registers no other fixture: nothing to ground.
         """
         import mujoco  # reason: optional sim dep
 
@@ -1133,12 +1133,16 @@ class _RoboCasaSim:
             if not cfg.get("graspable") or cfg.get("name") not in objects:
                 continue
             source = (cfg.get("placement") or {}).get("fixture")
-            others = [f for f in refs.values() if f is not source]
-            target = box(str(others[0].root_body)) if len(others) == 1 else None
-            if target is not None:
-                placements.append(
-                    {"object": cfg["name"], "target": target, "target_name": others[0].name}
-                )
+            seen: set[int] = set()
+            for fixture in refs.values():  # one placement per candidate destination
+                if fixture is source or id(fixture) in seen:  # a fixture under two keys
+                    continue
+                seen.add(id(fixture))
+                target = box(str(fixture.root_body))
+                if target is not None:
+                    placements.append(
+                        {"object": cfg["name"], "target": target, "target_name": fixture.name}
+                    )
             break
         return {"frame": "base_frame", "objects": objects, "placements": placements}
 

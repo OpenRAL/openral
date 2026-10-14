@@ -168,6 +168,72 @@ def source_fixture(
     return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]), best[1]
 
 
+def destination_hull(
+    placements: list[dict[str, Any]], obj_name: str, anchor: Any, cap_m: float
+) -> tuple[Bbox | None, list[str], list[str]]:
+    """The hull of ``obj_name``'s candidate destinations within the pick's cap window.
+
+    A task may name several candidate destinations (one placement each). A candidate
+    — its ``target`` plus any regions graded as ``adjacent`` (the hand works there too)
+    — joins the hull only when it reaches into the ``anchor`` ± ``cap_m`` window the
+    workspace is cut to; one wholly outside it (a mobile base drives between pick and
+    place) is a separate workspace. Returns the hull (``None`` when no candidate is
+    within reach) and the names kept and dropped.
+
+    Example:
+        >>> near = {
+        ...     "object": "o",
+        ...     "target_name": "shelf",
+        ...     "target": {
+        ...         "center_m": [0.4, 0, 0],
+        ...         "rotation": np.eye(3),
+        ...         "half_extents_m": [0.1, 0.1, 0.1],
+        ...     },
+        ... }
+        >>> far = {
+        ...     "object": "o",
+        ...     "target_name": "cab",
+        ...     "target": {
+        ...         "center_m": [3.0, 0, 0],
+        ...         "rotation": np.eye(3),
+        ...         "half_extents_m": [0.1, 0.1, 0.1],
+        ...     },
+        ... }
+        >>> hull, kept, dropped = destination_hull([near, far], "o", [0, 0, 0], 0.5)
+        >>> [round(v, 2) for v in hull], kept, dropped
+        ([0.3, -0.1, -0.1, 0.5, 0.1, 0.1], ['shelf'], ['cab'])
+    """
+    boxes: list[Bbox] = []
+    kept: list[str] = []
+    dropped: list[str] = []
+    for placement in placements:
+        if str(placement["object"]) != obj_name:
+            continue
+        parts = [aabb(placement["target"]), *(aabb(a) for a in placement.get("adjacent", []))]
+        lo = [min(b[i] for b in parts) for i in range(3)]
+        hi = [max(b[i + 3] for b in parts) for i in range(3)]
+        name = str(placement.get("target_name", "destination"))
+        if all(lo[i] <= anchor[i] + cap_m and hi[i] >= anchor[i] - cap_m for i in range(3)):
+            boxes += parts
+            kept.append(name)
+        else:
+            dropped.append(name)
+    if not boxes:
+        return None, kept, dropped
+    return (
+        (
+            min(b[0] for b in boxes),
+            min(b[1] for b in boxes),
+            min(b[2] for b in boxes),
+            max(b[3] for b in boxes),
+            max(b[4] for b in boxes),
+            max(b[5] for b in boxes),
+        ),
+        kept,
+        dropped,
+    )
+
+
 def _static_reply(
     env: Any, description: Any, *, world: bool = False
 ) -> tuple[dict[str, Any], int | None]:
@@ -345,8 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             f"grasp declaration boxes: in {base_frame} — this backend reports base-frame "
             "truth only, true at the reset pose"
         )
-    placement = truth["placements"][0]
-    obj_name = str(placement["object"])
+    obj_name = str(truth["placements"][0]["object"])
     live = [
         DetectedObject(
             label=name,
@@ -374,44 +439,43 @@ def main(argv: list[str] | None = None) -> int:
         for c in static["boxes"]
         if c.get("kind", "box") == "box" and c.get("collision_enabled", True)
     ]
-    # The destination and any regions graded as adjacent to it (the hand works there too).
-    dest = [aabb(placement["target"]), *(aabb(a) for a in placement.get("adjacent", []))]
-    destination: Bbox = (
-        min(b[0] for b in dest),
-        min(b[1] for b in dest),
-        min(b[2] for b in dest),
-        max(b[3] for b in dest),
-        max(b[4] for b in dest),
-        max(b[5] for b in dest),
-    )
     source = source_fixture(obj_box, colliders)
     centre = truth["objects"][obj_name]["center_m"]
-    # A destination nowhere within the pick's cap window (a mobile base drives between
-    # pick and place) is a separate workspace: this one is the pick side only.
     cap = GraspDeclaration.MAX_WORKSPACE_HALF_EXTENT_M
-    reachable = all(
-        destination[i] <= centre[i] + cap and destination[i + 3] >= centre[i] - cap
-        for i in range(3)
-    )
-    if not reachable:
+    destination, kept, dropped = destination_hull(truth["placements"], obj_name, centre, cap)
+    if dropped:
         print(
-            "workspace_box: destination outside the pick's "
-            f"{2 * cap:.1f} m window — the pick side only"
+            f"workspace_box: destination(s) {dropped} outside the pick's {2 * cap:.1f} m "
+            f"window — {'kept ' + str(kept) if kept else 'the pick side only'}"
         )
-    try:
-        workspace = ground_workspace(
-            source[0] if source is not None else obj_box,
-            destination if reachable else None,
+    source_box = source[0] if source is not None else obj_box
+    source_name = source[1] if source is not None else obj_name
+
+    def workspace_for(dest: Bbox | None, names: list[str]) -> Any:
+        return ground_workspace(
+            source_box,
+            dest,
             anchor_xyz=(float(centre[0]), float(centre[1]), float(centre[2])),
             base_frame=base_frame,
             pad_m=args.workspace_pad_m,
             headroom_m=args.workspace_headroom_m,
-            evidence_ref=f"sim:{source[1] if source else obj_name}"
-            + (" + destination" if reachable else ""),
+            evidence_ref=f"sim:{'+'.join([source_name, *names])}",
         )
+
+    try:
+        workspace = workspace_for(destination, kept)
     except ROSReasonerInvalidPlan as exc:
-        print(f"workspace_box: not derived ({exc})")
         workspace = None
+        if destination is not None:
+            # Pick side and destination together are too big for one workspace: the
+            # pick side alone covers less (the place keeps the default margins).
+            print(f"workspace_box: with {kept}: {exc} — the pick side only")
+            try:
+                workspace = workspace_for(None, [])
+            except ROSReasonerInvalidPlan as pick_exc:
+                exc = pick_exc
+        if workspace is None:
+            print(f"workspace_box: not derived ({exc})")
     derived = {
         "search_box": grounded.search_box.model_dump(mode="json")
         if grounded.search_box is not None
