@@ -181,8 +181,9 @@ jobs:
           # writes into the daemon's containerd store); it is kept so the
           # command still means the same thing if the driver is ever changed
           # back.
-          # shellcheck disable=SC2086 -- intentional word-splitting of the
-          # $cache_from / $cache_to flag strings.
+          # Intentional word-splitting of the $cache_from / $cache_to flag
+          # strings (a directive line takes no trailing prose, so it goes here).
+          # shellcheck disable=SC2086
           docker buildx build --progress=plain \
             -f docker/inference/Dockerfile.x86 \
             $cache_from \
