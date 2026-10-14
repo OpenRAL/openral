@@ -91,8 +91,11 @@ def _shutdown_executor(executor: Any, timeout_s: float = _DRAIN_TIMEOUT_S) -> No
     Issue #381 (CI exit 139 after the summary line) is a suspected consequence of
     that window -- not yet proven; joining here closes the executor side of it.
     Nodes are already removed, so no new callbacks can be scheduled while it
-    drains. The reasoner's own ``reasoner-llm`` / ``reasoner-vlm`` worker pools
-    are not the executor's and are not joined here.
+    drains. The reasoner's OWN ``reasoner-llm`` / ``reasoner-vlm`` worker pools
+    are not the executor's and are not joined here: ``ReasonerNode.destroy_node``
+    reaps them and detaches its inbox guard, so an LLM call still sleeping in a
+    worker drops its completion instead of triggering a destroyed guard
+    (``test_destroy_node_mid_llm_call_drops_the_late_completion``).
 
     ``executor.shutdown(timeout_sec=...)`` cannot enforce the bound itself in
     Jazzy: ``Executor.shutdown`` sets ``_is_shutdown`` and then only waits on its
@@ -153,6 +156,10 @@ class _LiveRosSession:
         """Register ``node`` for teardown and return it."""
         self._nodes.append(node)
         return node
+
+    def release(self, node: Any) -> None:
+        """Unregister ``node``; the test destroys it itself."""
+        self._nodes.remove(node)
 
     def use(self, executor: Any) -> Any:
         """Register the (single) executor for a bounded drain and return it."""
@@ -693,4 +700,87 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
     )
     assert verdicts == [False], (
         f"expected the delayed canned 'no' adjudication to deliver False; got {verdicts!r}"
+    )
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_destroy_node_mid_llm_call_drops_the_late_completion() -> None:
+    """``destroy_node()`` alone (no cleanup transition) reaps the reasoner's LLM worker hand-back.
+
+    The LLM call is still sleeping in the ``reasoner-llm`` worker when the node is
+    destroyed. Before ``ReasonerNode.destroy_node`` existed, that worker later
+    appended its completion to the inbox and triggered the guard condition the base
+    ``destroy_node`` had destroyed -- rclpy's ``cannot use Destroyable because
+    destruction was requested`` (#381), raised on a pool thread and lost on its
+    future. Now the guard is detached first, so the late completion is dropped:
+    the inbox stays empty once the worker has finished.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import WaitTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.executors import MultiThreadedExecutor
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    slow_started = threading.Event()
+    slow_finished = threading.Event()
+
+    def _selector(_context: str, _palette: Any) -> Any:
+        slow_started.set()
+        time.sleep(_SLOW_LLM_S)
+        slow_finished.set()
+        return WaitTool(rationale="finishing after the node is gone")
+
+    with _LiveRosSession(rclpy) as live:
+        client = FakeToolUseClient(selector=_selector)
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-e"})),
+                tick_hz=5.0,
+            )
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        from openral_msgs.msg import PromptStamped
+
+        pub_node = live.node(rclpy.create_node("openral_test_async_pub_e"))
+        prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
+
+        executor = live.use(MultiThreadedExecutor(num_threads=2))
+        executor.add_node(reasoner)
+
+        _publish_prompt(pub_node, prompt_pub, "think slowly")
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not slow_started.is_set():
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        _shutdown_executor(executor)
+        llm_pool = reasoner._llm_pool
+        destroyed_mid_call = slow_started.is_set() and not slow_finished.is_set()
+        live.release(reasoner)  # destroyed by hand, mid-call; not again at teardown
+        reasoner.destroy_node()
+        pools_reaped = reasoner._llm_pool is None and reasoner._vlm_pool is None
+        guard_released = reasoner._inbox_guard is None
+        # Join the abandoned worker (bounded by the selector's sleep) so its
+        # late _post_to_executor has run before the inbox is inspected.
+        if llm_pool is not None:
+            llm_pool.shutdown(wait=True)
+        late_completion_dropped = not reasoner._executor_inbox
+
+    assert destroyed_mid_call, (
+        "the slow LLM call was not in flight at destroy_node -- the test did not "
+        "exercise the late-completion path; raise _SLOW_LLM_S"
+    )
+    assert slow_finished.is_set(), "the abandoned LLM worker never finished its call"
+    assert pools_reaped, "destroy_node left the reasoner-llm / reasoner-vlm pools alive"
+    assert guard_released, "destroy_node left _inbox_guard pointing at a destroyed guard"
+    assert late_completion_dropped, (
+        "the late LLM completion was marshaled onto a destroyed node's inbox "
+        "instead of being dropped at the released guard"
     )
