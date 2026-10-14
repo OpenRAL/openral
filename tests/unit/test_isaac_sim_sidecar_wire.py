@@ -146,7 +146,9 @@ def _make_rollout(port: int, scene: SceneSpec, task: TaskSpec) -> _IsaacSimSidec
         host="127.0.0.1",
         port=port,
         timeout_ms=5_000,
-        boot_timeout_s=1.0,
+        # Generous: the fake answers in milliseconds, but its thread can be slow to
+        # start on a loaded host (1.0 s failed right after the Isaac sim suite on spark).
+        boot_timeout_s=5.0,
         launch_argv=["/bin/false"],  # never used — server already up
         auto_spawn=False,
     )
