@@ -10746,7 +10746,11 @@ class DeployRuntime(BaseModel):
     on it or on the sensor it ``shares_mount_with``; in sim, an ``*_optical_frame``
     camera the bridge places from the MJCF also does
     (``openral_core.depth_extrinsic.resolve_estimated_depth_camera``). A camera in
-    ``world`` or on a bare robot link is refused. On ``deploy run`` that mount must be
+    ``world`` or on a bare robot link is refused. An estimate never replaces a
+    measurement: on a deploy whose manifest or scene has a measured cloud source (any
+    ``SensorSpec.is_cloud_source`` — a depth camera, a point-cloud sensor) the camera is
+    refused, with no override; pin ``octomap_cloud_topic`` to that sensor's cloud instead
+    (Safety-WG, hazard HZ-0382-6). On ``deploy run`` that mount must be
     calibrated in ``units/<unit>.yaml`` like any cloud source's
     (``depth_extrinsic_problems``).
     Mutually exclusive with ``octomap_cloud_topic`` (which cloud is mapped must be one

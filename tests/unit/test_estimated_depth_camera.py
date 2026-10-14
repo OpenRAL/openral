@@ -4,7 +4,9 @@
 ``DeployRuntime.estimated_depth_camera`` names the camera; the deploy resolves its cloud
 as octomap's input, refuses a camera whose cloud could not be placed, and on a real
 deploy requires its mount like any cloud source. Any RGB camera qualifies (top, context,
-wrist) once a declared mount ties it to the robot. ``openral_perception_ros.metric_depth``
+wrist) once a declared mount ties it to the robot — unless the deploy has a measured cloud
+source (a depth camera, a 3D lidar): an estimate never replaces a measurement (Safety-WG,
+hazard HZ-0382-6). ``openral_perception_ros.metric_depth``
 turns DA3METRIC's canonical output into metres through the camera's own focal.
 
 Real manifests and scenes (CLAUDE.md §1.11); the provider node itself runs in
@@ -17,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from openral_core import (
     DeployRuntime,
     RobotDescription,
@@ -76,7 +79,8 @@ class TestCameraMount:
     """Any RGB camera tied to the robot by a declared mount; sim adds the bridge's live TF."""
 
     def _vslam(self) -> list:  # type: ignore[type-arg]
-        return list(RobotDescription.from_yaml(str(_VSLAM)).sensors)
+        """panda_mobile_vslam without ``front_depth``: the mount rules apply only then."""
+        return [s for s in RobotDescription.from_yaml(str(_VSLAM)).sensors if not s.is_cloud_source]
 
     def test_a_sim_optical_camera_is_placed_by_the_bridge(self) -> None:
         mount = resolve_estimated_depth_camera(self._vslam(), "shoulder_right", hal_mode="sim")
@@ -86,9 +90,29 @@ class TestCameraMount:
         mount = resolve_estimated_depth_camera(self._vslam(), "shoulder_right", hal_mode="real")
         assert "no mount ties it to the robot" in mount.problems[0]
 
-    def test_a_top_camera_sharing_the_zed_mount_is_placed_in_sim_and_real(self) -> None:
-        """OpenArm's ``top`` is the ZED's colour: it rides ``head_zed``'s calibrated mount."""
-        arm = RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml")).sensors
+    @pytest.mark.parametrize(
+        ("robot", "camera", "measured"),
+        [
+            ("panda_mobile_vslam", "shoulder_right", "front_depth"),
+            ("openarm", "top", "head_zed"),  # top is the ZED's colour; its depth is measured
+        ],
+    )
+    def test_a_measured_cloud_source_refuses_the_estimate(
+        self, robot: str, camera: str, measured: str
+    ) -> None:
+        """An estimate never replaces a measurement (hazard HZ-0382-6), in sim and real."""
+        sensors = RobotDescription.from_yaml(str(_REPO / f"robots/{robot}/robot.yaml")).sensors
+        for mode in ("sim", "real"):
+            problems = resolve_estimated_depth_camera(sensors, camera, hal_mode=mode).problems
+            assert problems and f"measured cloud source ({measured})" in problems[0], problems
+
+    def test_a_camera_sharing_a_non_cloud_mount_is_placed_in_sim_and_real(self) -> None:
+        """OpenArm's ``top`` rides ``head_zed``'s mount; with that ZED wired colour-only
+        (no depth stream, so no measured cloud) the estimate is placed on its mount."""
+        arm = [
+            s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s
+            for s in RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml")).sensors
+        ]
         for mode in ("sim", "real"):
             mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
             assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
@@ -107,7 +131,7 @@ class TestCameraMount:
         sensors = RobotDescription.from_yaml(str(_REPO / f"robots/{robot}/robot.yaml")).sensors
         for mode in ("sim", "real"):
             problems = resolve_estimated_depth_camera(sensors, camera, hal_mode=mode).problems
-            assert problems and match in problems[0], (mode, problems)
+            assert any(match in p for p in problems), (mode, problems)
 
     def test_a_real_deploy_checks_the_mount_the_camera_rides(self) -> None:
         robot = str(_REPO / "robots/openarm/robot.yaml")
@@ -144,6 +168,21 @@ class TestMetricDepth:
 
 
 class TestDeployResolution:
+    """The shipped mono scene's robot, as shipped (``front_depth``) and without it."""
+
+    def _rgb_only_robot(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """panda_mobile_vslam minus ``front_depth``, via ``$OPENRAL_ROBOTS_DIR``."""
+        src = _VSLAM.parent
+        out = tmp_path / "robots" / src.name
+        out.mkdir(parents=True)
+        manifest = yaml.safe_load(_VSLAM.read_text())
+        manifest["sensors"] = [s for s in manifest["sensors"] if s["name"] != "front_depth"]
+        (out / "robot.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+        for f in src.iterdir():
+            if f.name != "robot.yaml":
+                (out / f.name).write_bytes(f.read_bytes())
+        monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
+
     def _scene(self, tmp_path: Path, camera: str) -> Path:
         text = (_REPO / "scenes" / "deploy" / "robocasa_vslam_mono.yaml").read_text()
         text = text.replace(
@@ -165,11 +204,21 @@ class TestDeployResolution:
             hal_param_overrides=None,
         )
 
-    def test_the_scene_field_reaches_the_launch(self, tmp_path: Path) -> None:
+    def test_the_shipped_robots_depth_camera_refuses_it_before_launch(self, tmp_path: Path) -> None:
+        with pytest.raises(ROSConfigError, match=r"measured cloud source \(front_depth\)"):
+            self._resolve(self._scene(tmp_path, "shoulder_right"))
+
+    def test_the_scene_field_reaches_the_launch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._rgb_only_robot(tmp_path, monkeypatch)
         inv = self._resolve(self._scene(tmp_path, "shoulder_right"))
         assert inv.estimated_depth_camera == "shoulder_right"  # type: ignore[attr-defined]
         assert "estimated_depth_camera:=shoulder_right" in " ".join(inv.argv_template)  # type: ignore[attr-defined]
 
-    def test_an_unplaceable_camera_is_refused_before_launch(self, tmp_path: Path) -> None:
+    def test_an_unplaceable_camera_is_refused_before_launch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._rgb_only_robot(tmp_path, monkeypatch)
         with pytest.raises(ROSConfigError, match="no mount ties"):
             self._resolve(self._scene(tmp_path, "wrist"))

@@ -148,15 +148,46 @@ def resolve_estimated_depth_camera(
     ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then).
     ``sensors`` are the deploy's manifest (unit-overlaid) + scene sensors.
 
+    An estimate never replaces a measurement: when any of ``sensors``
+    :attr:`~openral_core.schemas.SensorSpec.is_cloud_source` (a depth camera, a 3D lidar),
+    the camera is refused and the world map must use that sensor's cloud
+    (``octomap_cloud_topic``). There is no override (Safety-WG, hazard HZ-0382-6).
+
     Example:
         >>> from openral_core import RobotDescription
+        >>> from openral_core.schemas import SensorSpec
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
-        >>> resolve_estimated_depth_camera(arm, "top", hal_mode="real")[:3]
-        ('zed_camera_link_optical_frame', 'zed_camera_link', 'head_zed')
+        >>> resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems[0][:56]
+        'top: the deploy has a measured cloud source (head_zed); '
+        >>> k = arm[1].intrinsics  # top's K; an RGB camera riding an RGB sensor's mount:
+        >>> rig = [
+        ...     SensorSpec(
+        ...         name="color",
+        ...         modality="rgb",
+        ...         frame_id="cam_link",
+        ...         rate_hz=30.0,
+        ...         intrinsics=k,
+        ...         shares_mount_with="rig",
+        ...     ),
+        ...     SensorSpec(
+        ...         name="rig",
+        ...         modality="rgb",
+        ...         frame_id="cam_link",
+        ...         rate_hz=30.0,
+        ...         intrinsics=k,
+        ...         parent_frame="openarm_base",
+        ...         static_transform_xyz_rpy=(0.1, 0.0, 0.6, 0.0, 0.5, 0.0),
+        ...     ),
+        ... ]
+        >>> resolve_estimated_depth_camera(rig, "color", hal_mode="real")[:3]
+        ('cam_link_optical_frame', 'cam_link', 'rig')
+        >>> resolve_estimated_depth_camera(rig, "color", hal_mode="real").problems
+        []
         >>> mobile = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").sensors
-        >>> resolve_estimated_depth_camera(mobile, "shoulder_left", hal_mode="sim")[:3]
+        >>> rgb_only = [s for s in mobile if not s.is_cloud_source]  # drop front_depth
+        >>> resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="sim")[:3]
         ('shoulder_left_optical_frame', None, 'shoulder_left')
-        >>> real = resolve_estimated_depth_camera(mobile, "shoulder_left", hal_mode="real")
+        >>> real = resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="real")
         >>> "no mount ties it to the robot" in real.problems[0]
         True
     """
@@ -172,6 +203,14 @@ def resolve_estimated_depth_camera(
         )
         return EstimatedDepthMount("", None, camera, [f"{camera}: {what}; name an RGB camera"])
     problems = []
+    measured = [s.name for s in sensors if s.is_cloud_source]
+    if measured:
+        # Safety-WG (hazard Entry 059, HZ-0382-6): an estimate never replaces a measurement.
+        problems.append(
+            f"{camera}: the deploy has a measured cloud source ({', '.join(measured)}); the "
+            "world map must use it, not a monocular estimate — pin octomap_cloud_topic to "
+            "its cloud instead"
+        )
     if spec.intrinsics is None:
         problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")
     mount = by_name.get(spec.shares_mount_with or camera, spec)

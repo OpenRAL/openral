@@ -4213,7 +4213,9 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "RGB camera whose DA3METRIC depth feeds the world-collision map "
                 "(sidecar on ZMQ :5772 + depth provider; its cloud becomes octomap's "
-                "input). From DeployRuntime.estimated_depth_camera. Empty = off."
+                "input). From DeployRuntime.estimated_depth_camera. Empty = off. "
+                "Refused when the deploy has a measured cloud source (a depth camera "
+                "or point-cloud sensor): an estimate never replaces a measurement."
             ),
         ),
         DeclareLaunchArgument(
