@@ -508,7 +508,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             closed_centre[2] - closed.half_extents[2], abs=1e-6
         )
         cut = 2.0 * (closed.half_extents[2] - held_half[2])
-        assert 0.0 <= cut <= margin + 1e-6, f"clipped {cut} m, past the {margin} m padding"
+        assert 0.0 < cut <= margin + 1e-6, f"clipped {cut} m; expected 0 < cut <= {margin} m"
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )

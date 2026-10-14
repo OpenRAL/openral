@@ -1110,6 +1110,11 @@ _WITHIN_MARGIN = frozenset(_index(i, 7, 6) for i in (2, 3))
 #: One column further (y 0.26-0.28, j = 8): past the bloat (y <= 0.265 once cell-closed);
 #: a few millimetres from the old swept finger hull, beyond the margin of the rigid jaws.
 _PAST_MARGIN = frozenset(_index(i, 8, 6) for i in (2, 3))
+#: The held region shifted +y (y 0.19-0.25): its 25 mm bloat, cell-closed, starts at
+#: y = 0.16, so the target's j = 2 column (y 0.14-0.16) is occupied but past the bloat.
+_SHIFTED_CENTRE = (0.0, 0.22, -0.60)
+_SHIFTED_HALF = (0.03, 0.03, 0.02)
+_PAST_LATERAL = frozenset(c for c in _TARGET if (c // _SX) % _SY == 2)
 
 
 def _kernel_box(
@@ -1170,6 +1175,8 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
                                                           (the HZ-0115-32 residual)
     25 mm, a cell one column past the bloat               ACCEPTED, and undeclared too: the
                                                           rigid jaws (#349) never reach it
+    25 mm, region shifted +y: the target's j = 2 column   REFUSED, a jaw on that column: the
+    occupied but laterally past the bloat                 exemption ends at the lateral face
     25 mm, world raised a voxel: the plane 13.5 mm from   REFUSED, left finger on the plane: its
     the finger, its centres 30 mm under the held bottom   centres lie deeper than the margin
     50 mm (the cap), same raised world                    ACCEPTED: the plane's top layer is in
@@ -1224,6 +1231,18 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
         cell.world(_PLANE | _PAST_MARGIN, None)
         cell.send("past-undeclared", expect_accept=True)
         assert "past-undeclared" in cell.safe, cell.log()
+
+        # ── The lateral face, target present: occupied target cells past the bloat ────
+        # No world cell beside the target is within the jaws' reach (probed), so the
+        # declaration moves instead: its bloat ends at y = 0.16, and the target's own
+        # j = 2 column, which the leader jaw touches, lies laterally past it.
+        cell.world(_TARGET | _PLANE, _declaration(bloated(_SHIFTED_CENTRE, _SHIFTED_HALF, 0.025)))
+        cell.send("margin-25-lateral", expect_accept=False)
+        evidence = cell.refused("margin-25-lateral")
+        assert evidence["link_a"] in _LEFT_JAWS
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PAST_LATERAL}, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
 
         # ── The support deeper than the margin: still a stop ──────────────────────────
         cell.world(
