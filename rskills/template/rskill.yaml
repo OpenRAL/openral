@@ -116,6 +116,21 @@ latency_budget:
 #     execution_horizon: 10
 #     max_guidance_weight: 10.0
 #     prefix_attention_schedule: ones  # full-weight blend; measurably better OOD, equal in-distribution
+#
+# OPTIONAL — chunk_boundary_blend stitches chunks WITHOUT RTC (any chunked
+# family; refused alongside an enabled rtc block). Each new chunk's offset
+# from the last served action is faded out over its first `steps` rows on
+# `dims`, so row 0 no longer jumps (openral/openral#378). List the arm joint
+# indices in `dims` and leave out the gripper (and any delta-action dim);
+# omit `dims` to blend every dim. `steps` must be < the chunk size
+# (n_action_steps) and, with chunk_prefetch, < the rows a pre-fetched chunk
+# keeps after its stale-row drop: n_action_steps - chunk_prefetch_at - 1
+# (25 - 20 - 1 = 4 here, so steps <= 3). The loader refuses anything longer.
+# policy_extras:
+#   chunk_prefetch: true
+#   chunk_boundary_blend:
+#     steps: 3
+#     dims: [0, 1, 2, 3, 4, 5, 6]  # arm joints; gripper (7) left out
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2410.24164"

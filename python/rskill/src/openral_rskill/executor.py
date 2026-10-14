@@ -58,7 +58,10 @@ then row 0 of the new one, which re-plans from a fresher observation and can sit
 opt-in ``boundary_blend_steps`` *K* stitches the two: when a chunk enters after a
 previous one, ``delta = last_served - new[0]`` is added to its first *K* rows with
 weight ``1 - (i + 1) / (K + 1)`` on the ``blend_dims`` dims, so the boundary step is
-``1 / (K + 1)`` of the raw jump and row *K* onward is the policy's own. It runs on
+``1 / (K + 1)`` of the raw jump and row *K* onward is the policy's own. *K* must
+leave that row *K* inside the entering chunk: ``K < chunk_size`` for synchronous
+re-plans, and with a pre-fetch ``K < chunk_size - prefetch_at - 1``, the rows a
+merged chunk keeps after its stale-row drop (``_check_boundary_blend``). It runs on
 the robot-facing (postprocessed) actions and is refused together with RTC, whose
 guidance already conditions the new chunk on the executing one.
 
@@ -93,6 +96,101 @@ __all__ = ["ChunkedExecutor"]
 log = structlog.get_logger(__name__)
 
 _CHUNK_TENSOR_RANK = 3
+
+
+def _check_boundary_blend(
+    steps: int,
+    dims: Sequence[int] | None,
+    *,
+    chunk_size: int,
+    prefetch_at: int,
+    rtc_enabled: bool,
+    steps_name: str,
+    dims_name: str,
+) -> tuple[int, tuple[int, ...] | None]:
+    """Validate a chunk-boundary blend config; the single source of its rules.
+
+    Shared by ``ChunkedExecutor`` and ``build_chunk_executor`` (which only checks the
+    YAML shape of ``policy_extras.chunk_boundary_blend`` itself), so both refuse the
+    same configs; ``steps_name`` / ``dims_name`` label the errors for the caller.
+
+    The blend must finish inside the chunk it is applied to — row *K* has to be the
+    policy's own — so ``steps`` is bounded by the shortest chunk that can enter behind
+    a previous one: ``chunk_size`` rows on a synchronous re-plan, and with a pre-fetch
+    (``prefetch_at >= 1``) the ``chunk_size - prefetch_at - 1`` rows a merged chunk
+    keeps after its stale-row drop. When that drop empties the chunk (``prefetch_at
+    == chunk_size - 1``) every boundary is a synchronous re-plan, bounded by
+    ``chunk_size``.
+
+    Args:
+        steps: Blend length *K*; ``0`` disables blending.
+        dims: Action indices to blend, or ``None`` for every dim.
+        chunk_size: Actions consumed per inference.
+        prefetch_at: The effective (clamped) pre-fetch trigger; ``0`` is synchronous.
+        rtc_enabled: Whether an enabled RTC config is in use.
+        steps_name: Label for ``steps`` in error messages.
+        dims_name: Label for ``dims`` in error messages.
+
+    Returns:
+        ``(steps, dims)`` as stored, ``dims`` as a tuple.
+
+    Raises:
+        ROSConfigError: ``steps`` is not an integer ``>= 0``, leaves no policy row
+            inside the entering chunk, or is combined with RTC; ``dims`` is given
+            without ``steps``, or is not a non-empty list of distinct non-negative
+            integers.
+    """
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 0:
+        raise ROSConfigError(f"{steps_name} must be an integer >= 0; got {steps!r}")
+    if steps and rtc_enabled:
+        raise ROSConfigError(
+            f"{steps_name} cannot be combined with RTC — RTC's guidance already "
+            "conditions each chunk on the executing one; pick one"
+        )
+    merged_rows = chunk_size - prefetch_at - 1
+    if prefetch_at >= 1 and merged_rows >= 1:
+        bound = merged_rows
+        why = (
+            f"the rows a pre-fetched chunk keeps after its stale-row drop: chunk size "
+            f"{chunk_size} - prefetch_at {prefetch_at} - 1"
+        )
+    else:
+        bound, why = chunk_size, "the chunk size"
+    if steps >= bound:
+        raise ROSConfigError(
+            f"{steps_name} ({steps}) must be < {bound} ({why}) so the blend finishes "
+            "inside the entering chunk and its last row is the policy's own"
+        )
+    if dims is None:
+        return steps, None
+    if not steps:
+        raise ROSConfigError(f"{dims_name} needs {steps_name} >= 1; got {dims_name}={dims!r}")
+    parsed = tuple(dims)
+    if (
+        not parsed
+        or any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in parsed)
+        or len(set(parsed)) != len(parsed)
+    ):
+        raise ROSConfigError(
+            f"{dims_name} must be a non-empty list of distinct non-negative integers; got {dims!r}"
+        )
+    return steps, parsed
+
+
+def _copy_action(action: Any) -> Any:
+    """Return an independent copy of a NumPy / torch action (no aliasing)."""
+    return action.clone() if hasattr(action, "clone") else np.array(action, copy=True)
+
+
+def _host_norm(value: Any) -> float:
+    """L2 norm of a NumPy / torch action as a Python float, for any float dtype.
+
+    Torch reduces in float32 itself (``np.asarray`` cannot hold bfloat16); NumPy
+    reduces in float64.
+    """
+    if hasattr(value, "clone"):  # torch tensor
+        return float(value.detach().float().norm().item())
+    return float(np.linalg.norm(np.asarray(value, dtype=np.float64)))
 
 
 class ChunkedExecutor:
@@ -162,22 +260,25 @@ class ChunkedExecutor:
                 docstring). ``0`` (default) serves every chunk unchanged. Applied
                 whenever a chunk enters behind a previous one — a pre-fetch merge
                 (after the stale-row drop) or a synchronous re-plan — never to the
-                first chunk after construction or ``reset()``. If fewer than *K*
-                current rows remain, the blend covers those that do. Actions must
-                be NumPy arrays or torch tensors. Must be ``<= chunk_size``.
+                first chunk after construction or ``reset()``. Actions must be
+                NumPy arrays or torch tensors. Must be ``< chunk_size``, and with
+                a pre-fetch ``< chunk_size - prefetch_at - 1`` (the rows a merged
+                chunk keeps), so row *K* is always the policy's own.
             blend_dims: Indices along the action's last axis that are blended
                 (e.g. the arm joints). ``None`` (default) blends every dim; pass
                 the joint indices to leave a gripper, or any delta-action dim
                 whose row 0 is not a position, untouched. Only valid with
                 ``boundary_blend_steps >= 1``. An index past the action width is
-                refused at the first boundary.
+                refused when the first chunk lands, before any action is served
+                (the robot-facing width is only known once postprocessed).
 
         Raises:
             ROSConfigError: ``prefetch_at`` is negative.
             ValueError: Neither a policy nor ``chunk_fn`` + ``chunk_size``
                 was provided.
             ROSConfigError: RTC is enabled without a background pre-fetch, a
-                malformed ``boundary_blend_steps`` / ``blend_dims``, or blending
+                malformed or too long ``boundary_blend_steps`` / malformed
+                ``blend_dims`` (see ``_check_boundary_blend``), or blending
                 requested together with RTC.
         """
         if policy is None and (chunk_fn is None or chunk_size is None):
@@ -236,8 +337,17 @@ class ChunkedExecutor:
             self._rtc_queue = ActionQueue(rtc_config)
 
         # ── Chunk-boundary blend (non-RTC stitching, openral/openral#378) ────
-        self._blend_steps, self._blend_dims = self._validate_blend(boundary_blend_steps, blend_dims)
-        # The last action handed to the caller: the tail a new chunk is stitched to.
+        self._blend_steps, self._blend_dims = _check_boundary_blend(
+            boundary_blend_steps,
+            blend_dims,
+            chunk_size=self._chunk_size,
+            prefetch_at=self._prefetch_at,
+            rtc_enabled=self._rtc_enabled,
+            steps_name="ChunkedExecutor: boundary_blend_steps",
+            dims_name="ChunkedExecutor: blend_dims",
+        )
+        # A copy of the last action handed to the caller: the tail a new chunk is
+        # stitched to (a copy, so a caller mutating its action cannot move it).
         self._last_served: Any = None
         if self._blend_steps:
             log.info(
@@ -357,7 +467,7 @@ class ChunkedExecutor:
         action = self._buffer.popleft()
         self._popped += 1
         if self._blend_steps:
-            self._last_served = action
+            self._last_served = _copy_action(action)
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= len(self._buffer) and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
@@ -385,83 +495,53 @@ class ChunkedExecutor:
             )
         return actions[elapsed:]
 
-    def _validate_blend(
-        self, steps: int, dims: Sequence[int] | None
-    ) -> tuple[int, tuple[int, ...] | None]:
-        """Check the boundary-blend config; return ``(steps, dims)`` as stored."""
-        if isinstance(steps, bool) or not isinstance(steps, int) or steps < 0:
-            raise ROSConfigError(
-                f"ChunkedExecutor: boundary_blend_steps must be an integer >= 0; got {steps!r}"
-            )
-        if steps > self._chunk_size:
-            raise ROSConfigError(
-                f"ChunkedExecutor: boundary_blend_steps ({steps}) exceeds the chunk size "
-                f"({self._chunk_size}); the blend must finish inside one chunk"
-            )
-        if steps and self._rtc_enabled:
-            raise ROSConfigError(
-                "ChunkedExecutor: boundary_blend_steps cannot be combined with RTC — RTC's "
-                "guidance already conditions each chunk on the executing one; pick one"
-            )
-        if dims is None:
-            return steps, None
-        if not steps:
-            raise ROSConfigError(
-                "ChunkedExecutor: blend_dims needs boundary_blend_steps >= 1; got "
-                f"blend_dims={dims!r} with boundary_blend_steps=0"
-            )
-        parsed = tuple(dims)
-        if (
-            not parsed
-            or any(isinstance(d, bool) or not isinstance(d, int) or d < 0 for d in parsed)
-            or len(set(parsed)) != len(parsed)
-        ):
-            raise ROSConfigError(
-                "ChunkedExecutor: blend_dims must be a non-empty list of distinct "
-                f"non-negative integers; got {dims!r}"
-            )
-        return steps, parsed
-
     def _blend_boundary(self, actions: list[Any]) -> list[Any]:
         """Fade the new chunk's offset from the last served action over its first K rows.
 
         Row *i* < *K* gets ``delta * (1 - (i + 1) / (K + 1))`` added on the blended dims,
         with ``delta = last_served - actions[0]``: row 0 moves ``1 / (K + 1)`` of the raw
-        jump away from the tail and row *K* is the policy's own. A no-op when blending is
-        off or nothing was served since construction / ``reset()``.
+        jump away from the tail and row *K* is the policy's own. Every chunk entering the
+        buffer passes through here, the first one included, so the action type and the
+        ``blend_dims`` width are checked before any of its actions is served; the blend
+        itself is a no-op when off or nothing was served since construction / ``reset()``.
         """
-        if not self._blend_steps or self._last_served is None or not actions:
+        if not self._blend_steps or not actions:
             return actions
-        tail, head = self._last_served, actions[0]
-        for name, value in (("served", tail), ("new", head)):
-            if not isinstance(value, np.ndarray) and not hasattr(value, "clone"):
-                raise ROSRuntimeError(
-                    "ChunkedExecutor: boundary blending needs NumPy or torch actions; the "
-                    f"{name} action is {type(value).__name__}"
-                )
+        head = actions[0]
+        if not isinstance(head, np.ndarray) and not hasattr(head, "clone"):
+            raise ROSRuntimeError(
+                "ChunkedExecutor: boundary blending needs NumPy or torch actions; got "
+                f"{type(head).__name__}"
+            )
+        width = int(head.shape[-1])
+        if self._blend_dims is not None and max(self._blend_dims) >= width:
+            raise ROSConfigError(
+                f"ChunkedExecutor: blend_dims {list(self._blend_dims)} index past the "
+                f"action width {width}"
+            )
+        tail = self._last_served
+        if tail is None:
+            return actions
         if tuple(tail.shape) != tuple(head.shape):
             raise ROSRuntimeError(
                 "ChunkedExecutor: cannot blend a chunk boundary between actions of shape "
                 f"{tuple(tail.shape)} and {tuple(head.shape)}"
             )
-        width = int(head.shape[-1])
-        delta = tail - head
-        if self._blend_dims is not None:
-            if max(self._blend_dims) >= width:
-                raise ROSConfigError(
-                    f"ChunkedExecutor: blend_dims {list(self._blend_dims)} index past the "
-                    f"action width {width}"
-                )
-            masked = delta * 0
+        if self._blend_dims is None:
+            delta = tail - head
+        else:
+            # Only the blended dims are differenced: a non-finite value in a dim left out
+            # (inf - inf, or inf * 0) must not turn into NaN there.
             idx = list(self._blend_dims)
-            masked[..., idx] = delta[..., idx]
-            delta = masked
+            delta = (
+                np.zeros_like(head) if isinstance(head, np.ndarray) else head.new_zeros(head.shape)
+            )
+            delta[..., idx] = tail[..., idx] - head[..., idx]
         k = min(self._blend_steps, len(actions))
         out = [actions[i] + delta * (1.0 - (i + 1) / (self._blend_steps + 1)) for i in range(k)]
-        jump = float(np.linalg.norm(np.asarray(delta.cpu() if hasattr(delta, "cpu") else delta)))
         log.debug(
             "chunked_executor.boundary_blend",
-            jump_norm=round(jump, 6),
+            jump_norm=round(_host_norm(delta), 6),
             steps=k,
             configured_steps=self._blend_steps,
         )

@@ -138,10 +138,14 @@ class TestBoundaryBlend:
         raw_jump = torch.from_numpy(_raw_row(1, 0)).unsqueeze(0) - tail
         torch.testing.assert_close(head - tail, raw_jump / (k + 1))
 
-    def test_prefetch_path_blends_only_the_first_k_rows_after_each_boundary(self) -> None:
+    # prefetch_at 3 on a chunk of 8: a merged chunk keeps 8 - 3 - 1 = 4 rows, so K = 3
+    # is the longest blend that still ends on a policy row.
+    @pytest.mark.parametrize("k", [2, 3])
+    def test_prefetch_path_blends_only_the_first_k_rows_after_each_boundary(self, k: int) -> None:
         """Background pre-fetch, with the stale-row drop: the blend is applied to the
-        rows that are actually served, starting at the first current one."""
-        k, prefetch_at = 2, 3
+        rows that are actually served, starting at the first current one, and finishes
+        inside every merged chunk."""
+        prefetch_at = 3
 
         def run(steps: int) -> list[NDArray[np.float32]]:
             calls = [0]
@@ -179,11 +183,62 @@ class TestBoundaryBlend:
         for a, b in itertools.pairwise(changed):
             current = current + 1 if b == a + 1 else 1
             longest = max(longest, current)
+        # Stretches never run into the next boundary: each merged chunk ends on policy rows.
         assert longest <= k
+
+    def test_bfloat16_torch_actions_blend_and_log(self) -> None:
+        """bf16 rows (a pi05 / GR00T dtype) blend; the DEBUG jump norm must not go
+        through NumPy, which has no bfloat16."""
+        k = 2
+        bf16 = _JumpingProducer(as_torch=True)
+        ex = _sync(k, (0, 1), chunk_fn=lambda p: [r.to(torch.bfloat16) for r in bf16(p)])
+        ex.start()
+        served = [ex.select_action({"obs": 0}) for _ in range(2 * CHUNK)]
+        ex.stop()
+        assert all(a.dtype == torch.bfloat16 for a in served)
+        tail, head = served[CHUNK - 1].float(), served[CHUNK].float()
+        raw_head = torch.from_numpy(_raw_row(1, 0)).unsqueeze(0).to(torch.bfloat16).float()
+        torch.testing.assert_close(
+            head[..., :2] - tail[..., :2], (raw_head - tail)[..., :2] / (k + 1), atol=2e-2, rtol=0
+        )
+        torch.testing.assert_close(head[..., 2:], raw_head[..., 2:])
+
+    def test_non_finite_values_in_unblended_dims_stay_as_produced(self) -> None:
+        """A dim outside ``blend_dims`` carrying inf (e.g. an unused slot) must stay inf,
+        not become NaN through the masked delta."""
+        inner = _JumpingProducer()
+
+        def with_inf(payload: Any) -> list[NDArray[np.float32]]:
+            rows = inner(payload)
+            for r in rows:
+                r[3] = np.inf
+            return rows
+
+        served = _serve(_sync(3, (0, 1, 2), chunk_fn=with_inf), 2 * CHUNK)
+        for a in served:
+            assert np.isposinf(a[3])
+            assert np.all(np.isfinite(a[:3]))
+        assert served[CHUNK][0] != _raw_row(1, 0)[0]  # the blend still ran on dims 0..2
+
+    def test_a_caller_mutating_its_action_does_not_move_the_tail(self) -> None:
+        """The stored tail is a copy: in-place edits of a returned action (clipping,
+        a hand-off buffer) must not change what the next chunk is stitched to."""
+        k = 3
+        reference = _serve(_sync(k), 2 * CHUNK)
+        ex = _sync(k)
+        ex.start()
+        served = []
+        for _ in range(2 * CHUNK):
+            action = ex.select_action({"obs": 0})
+            served.append(np.array(action, copy=True))
+            action[...] = 1e3  # the caller scribbles over what it was handed
+        ex.stop()
+        for got, want in zip(served, reference, strict=True):
+            np.testing.assert_array_equal(got, want)
 
 
 class TestBoundaryBlendConfig:
-    @pytest.mark.parametrize("steps", [-1, True, 1.5, CHUNK + 1])
+    @pytest.mark.parametrize("steps", [-1, True, 1.5, CHUNK, CHUNK + 1])
     def test_bad_steps_are_rejected(self, steps: Any) -> None:
         with pytest.raises(ROSConfigError, match="boundary_blend_steps"):
             ChunkedExecutor(
@@ -204,14 +259,37 @@ class TestBoundaryBlendConfig:
         with pytest.raises(ROSConfigError, match="blend_dims"):
             ChunkedExecutor(chunk_fn=_JumpingProducer(), chunk_size=CHUNK, blend_dims=(0,))
 
-    def test_dim_beyond_the_action_is_rejected_at_the_first_boundary(self) -> None:
+    def test_dim_beyond_the_action_is_rejected_before_any_action_is_served(self) -> None:
         ex = _sync(2, (0, DOF))
         ex.start()
-        for _ in range(CHUNK):
-            ex.select_action({"obs": 0})
         with pytest.raises(ROSConfigError, match="blend_dims"):
             ex.select_action({"obs": 0})
         ex.stop()
+
+    @pytest.mark.parametrize(
+        ("prefetch_at", "longest_ok"),
+        [
+            (3, CHUNK - 3 - 2),  # a merged chunk keeps CHUNK - 3 - 1 = 4 rows -> K <= 3
+            (1, CHUNK - 1 - 2),
+            (CHUNK - 1, CHUNK - 1),  # every merge is fully stale -> synchronous re-plans
+        ],
+    )
+    def test_steps_are_bounded_by_the_rows_a_prefetched_chunk_keeps(
+        self, prefetch_at: int, longest_ok: int
+    ) -> None:
+        ChunkedExecutor(
+            chunk_fn=_JumpingProducer(),
+            chunk_size=CHUNK,
+            prefetch_at=prefetch_at,
+            boundary_blend_steps=longest_ok,
+        )
+        with pytest.raises(ROSConfigError, match="boundary_blend_steps"):
+            ChunkedExecutor(
+                chunk_fn=_JumpingProducer(),
+                chunk_size=CHUNK,
+                prefetch_at=prefetch_at,
+                boundary_blend_steps=longest_ok + 1,
+            )
 
     def test_rtc_and_blending_are_mutually_exclusive(self) -> None:
         rtc = pytest.importorskip("lerobot.policies.rtc")
@@ -256,8 +334,11 @@ class TestBuildChunkExecutorWiring:
             {"steps": 0},
             {"steps": -2},
             {"steps": True},
+            {"steps": CHUNK},
             {"steps": CHUNK + 1},
             {"dims": [0]},
+            {"steps": 2, "dims": [0, 0]},
+            {"steps": 2, "dims": []},
             {"steps": 2, "dims": "0,1"},
             {"steps": 2, "dims": [0, -1]},
             {"steps": 2, "mask": [0]},
@@ -268,6 +349,69 @@ class TestBuildChunkExecutorWiring:
             build_chunk_executor(
                 {"chunk_boundary_blend": block}, chunk_fn=_JumpingProducer(), chunk_size=CHUNK
             )
+
+    def test_prefetch_drop_bounds_steps_in_policy_extras(self) -> None:
+        extras: dict[str, Any] = {"chunk_prefetch": True, "chunk_prefetch_at": 3}
+        ok = build_chunk_executor(
+            {**extras, "chunk_boundary_blend": {"steps": 3}},
+            chunk_fn=_JumpingProducer(),
+            chunk_size=CHUNK,
+        )
+        assert ok is not None
+        ok.stop()
+        with pytest.raises(ROSConfigError, match=r"chunk_boundary_blend\.steps.*stale-row drop"):
+            build_chunk_executor(
+                {**extras, "chunk_boundary_blend": {"steps": 4}},
+                chunk_fn=_JumpingProducer(),
+                chunk_size=CHUNK,
+            )
+
+    @pytest.mark.parametrize(
+        ("steps", "dims", "prefetch_at"),
+        [
+            (1, None, 0),
+            (CHUNK - 1, None, 0),
+            (CHUNK, None, 0),
+            (3, None, 3),
+            (4, None, 3),
+            (CHUNK - 1, None, CHUNK - 1),
+            (2, [0, 2], 0),
+            (2, [0, 0], 0),
+            (2, [-1], 0),
+            (2, [], 2),
+        ],
+    )
+    def test_parser_and_executor_apply_the_same_rules(
+        self, steps: int, dims: list[int] | None, prefetch_at: int
+    ) -> None:
+        """One rule set: a block is accepted by ``build_chunk_executor`` exactly when
+        the equivalent ``ChunkedExecutor`` arguments are."""
+
+        def outcome(build: Any) -> bool:
+            try:
+                ex = build()
+            except ROSConfigError:
+                return False
+            ex.stop()
+            return True
+
+        block: dict[str, Any] = {"steps": steps} | ({} if dims is None else {"dims": dims})
+        extras: dict[str, Any] = {"chunk_boundary_blend": block}
+        if prefetch_at:
+            extras |= {"chunk_prefetch": True, "chunk_prefetch_at": prefetch_at}
+        via_extras = outcome(
+            lambda: build_chunk_executor(extras, chunk_fn=_JumpingProducer(), chunk_size=CHUNK)
+        )
+        direct = outcome(
+            lambda: ChunkedExecutor(
+                chunk_fn=_JumpingProducer(),
+                chunk_size=CHUNK,
+                prefetch_at=prefetch_at,
+                boundary_blend_steps=steps,
+                blend_dims=dims,
+            )
+        )
+        assert via_extras == direct
 
     def test_single_step_policy_refuses_a_blend(self) -> None:
         class _OneStep:
@@ -302,7 +446,7 @@ _finite = st.floats(min_value=-3.0, max_value=3.0, allow_nan=False, width=32)
 @given(
     tail=st.lists(_finite, min_size=DOF, max_size=DOF),
     head=st.lists(_finite, min_size=DOF, max_size=DOF),
-    k=st.integers(min_value=1, max_value=CHUNK),
+    k=st.integers(min_value=1, max_value=CHUNK - 1),
 )
 def test_blended_boundary_step_never_exceeds_the_raw_jump(
     tail: list[float], head: list[float], k: int
