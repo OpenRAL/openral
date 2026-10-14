@@ -165,7 +165,7 @@ def _declaration(stamp_ns: int, centre: np.ndarray, *, active: bool = True) -> A
         half_extents=(0.15, 0.20, 0.15),
     )
     declaration = GraspDeclaration(
-        target_id="cell:restock_box",
+        target_id="cell:pick_box",
         contact_links=("openarm_left_finger_pair", "openarm_right_finger_pair"),
         rskill_id="openral/itest-grasp-target",
         trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
@@ -183,20 +183,12 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
-    from openral_core import (
-        Action,
-        AttachedCollisionObject,
-        ControlMode,
-        JointState,
-        PlaceRegion,
-        RobotDescription,
-    )
+    from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
     from openral_core.geometry import homogeneous_from_quat_xyz
     from openral_hal._grasp_target import lowered_to_support
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
-        primitive_poses,
     )
     from openral_msgs.msg import AttachmentState, OccupancyVoxels
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
@@ -358,7 +350,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         )
         envelope = latest()
         declared = envelope.grasp_declaration
-        assert declared.target_id == "cell:restock_box"
+        assert declared.target_id == "cell:pick_box"
         assert declared.rskill_id == "openral/itest-grasp-target"
         assert declared.search_box_valid
         region = PlaceRegion.from_idl(declared.region)
@@ -487,7 +479,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         )
         (held,) = latest().objects
         assert held.evidence_kind == "grasp_target_region"
-        assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
+        assert held.object_id == "cell:pick_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
         # The payload is the region lowered onto the measured support top (one cell under
         # its lower face; Isaac i56/i57), bloated on the sides and top, then cell-closed
@@ -496,22 +488,27 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         # named here.
         support = region.pose.xyz[2] - region.half_extents[2] - _RES
         closed = bridge._grasp_target.kernel_region(
-            "cell:restock_box", lowered_to_support(region, support), payload=True
+            "cell:pick_box", lowered_to_support(region, support), payload=True
         )
         assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
-        # Only the closed box's margin padding behind the palm plane is clipped off
-        # (#349 / #370, ``_padding_clip_point``), never measured geometry: the payload is
-        # the closed box on the sides, still rests on the support, and still holds the
-        # whole measured region.
-        (t_base_prim,) = primitive_poses(AttachedCollisionObject.from_idl(held), t_base_link7)
-        half = np.asarray(held.primitives[0].shape_dimensions)
-        assert abs(t_base_prim[2, 2]) == pytest.approx(1.0, abs=1e-9), "still gravity-aligned"
-        assert half[:2] == pytest.approx(closed.half_extents[:2])
-        assert t_base_prim[:2, 3] == pytest.approx(closed.pose.xyz[:2], abs=1e-6)
-        payload_bottom, payload_top = t_base_prim[2, 3] - half[2], t_base_prim[2, 3] + half[2]
-        assert payload_bottom == pytest.approx(support, abs=1e-6)
-        assert payload_top <= closed.pose.xyz[2] + closed.half_extents[2] + 1e-6
-        assert payload_top >= region.pose.xyz[2] + region.half_extents[2] - 1e-6
+        # The hand-side face is clipped at the palm plane (#349, ``_padding_clip_point``):
+        # only padding goes — the sides and the support-side face stay the closed box's.
+        held_half = np.asarray(held.primitives[0].shape_dimensions)
+        held_centre = np.asarray(
+            [
+                held.pose_in_link.position.x,
+                held.pose_in_link.position.y,
+                held.pose_in_link.position.z,
+            ]
+        )
+        closed_centre = np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz
+        np.testing.assert_allclose(held_half[:2], closed.half_extents[:2], atol=1e-6)
+        np.testing.assert_allclose(held_centre[:2], closed_centre[:2], atol=1e-6)
+        assert held_centre[2] - held_half[2] == pytest.approx(
+            closed_centre[2] - closed.half_extents[2], abs=1e-6
+        )
+        cut = 2.0 * (closed.half_extents[2] - held_half[2])
+        assert 0.0 < cut <= margin + 1e-6, f"clipped {cut} m; expected 0 < cut <= {margin} m"
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )
@@ -530,7 +527,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         #       face one voxel below), normal up — until it is lifted three cells.
         assert held.support_contact_valid, "the measured support was not attested"
         witness = held.support_contact
-        assert witness.support_id == "map_support_under:cell:restock_box"
+        assert witness.support_id == "map_support_under:cell:pick_box"
         assert witness.evidence_kind == "map_support_proximity"
         t_base_obj = t_base_link7 @ homogeneous_from_quat_xyz(
             (
@@ -564,7 +561,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ), f"the witness outlived the lift: {[ln for ln in logs if 'support witness' in ln]}"
         (carried,) = latest().objects
         assert (carried.object_id, carried.stamp_ns) == (held.object_id, held.stamp_ns)
-        assert any("support witness for 'cell:restock_box' retired" in ln for ln in logs)
+        assert any("support witness for 'cell:pick_box' retired" in ln for ln in logs)
     finally:
         # Stop the executor first: a timer callback waiting on the bridge lock must not
         # run on entities the teardown destroyed.

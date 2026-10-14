@@ -329,7 +329,7 @@ class ChunkedExecutor:
         were already served from the previous chunk's tail, so its first ``elapsed``
         actions are in the past.
         Serving them would replay that stretch — the arm snaps back by ``prefetch_at``
-        steps at every boundary (measured on the OpenArm restock π0.5: the chunk-2 head
+        steps at every boundary (measured on the OpenArm pick-and-place π0.5: the chunk-2 head
         landed 0.46 rad from the live state). Returns ``[]`` when the whole chunk is
         stale; the caller then replans synchronously from the current observation.
         """

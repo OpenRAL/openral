@@ -4,7 +4,7 @@ A deploy scene is where a cell says what its cameras are — including the
 ``vla_feature_key`` naming the view a checkpoint was trained on. The scene used
 to be merged into the robot description only for the sensor readers, so the
 runner kept the manifest's key: on the OpenArm bench the ZED view arrived as
-``base`` while the restock π0.5 asked for ``context``, the slot was dropped, and
+``base`` while the pick-and-place π0.5 asked for ``context``, the slot was dropped, and
 lerobot fed the policy a masked blank in place of its head camera on real arms
 (lab Orin, 2026-09-23).
 
@@ -112,7 +112,7 @@ def test_merging_a_scene_never_drops_or_renames_a_manifest_slot(scene_path: Path
         before = sensor_name_to_slot(manifest_only)
         after = sensor_name_to_slot(runtime.description)
         # A scene may re-key a camera on purpose (the OpenArm bench binds the
-        # ZED view to the restock checkpoint's `context`); only an explicit
+        # ZED view to the pick-and-place checkpoint's `context`); only an explicit
         # `vla_feature_key` on the scene entry is allowed to do that.
         rekeyed = {s.name for s in scene.sensors if "vla_feature_key" in s.model_fields_set}
         for sensor, slot in before.items():

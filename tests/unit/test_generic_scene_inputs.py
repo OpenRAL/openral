@@ -119,7 +119,7 @@ class TestMujocoStaticColliders:
 
 
 class TestDerivedDeclarations:
-    # The restock cell's source tote (static colliders, base frame) and one shelf slot,
+    # A pick-and-place cell's source tote (static colliders, base frame) and one shelf slot,
     # from the Isaac export the hand-written scene was built from.
     TOTE: ClassVar[dict[str, tuple[list[float], list[float]]]] = {
         "SourceToteCollision/Floor": ([0.1937, -0.0059, -0.58705], [0.1191, 0.1759, 0.0045]),

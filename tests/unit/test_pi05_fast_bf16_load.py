@@ -66,7 +66,7 @@ def test_rope_and_position_buffers_are_rebuilt() -> None:
 def test_real_gemma_modules_rebuild_to_their_constructed_values() -> None:
     """The buffers PaliGemma / gemma_expert actually carry, via meta init + ``to_empty``.
 
-    ``embed_scale`` is the one the restock checkpoint ran with as garbage
+    ``embed_scale`` is the one the pick-and-place checkpoint ran with as garbage
     (cosine 0.03 vs ``from_pretrained``, Thor 2026-09-23): every token
     embedding is multiplied by it. Real transformers modules, a non-default
     ``rope_theta`` so the config lookup is what is tested, no lerobot policy.

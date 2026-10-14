@@ -327,9 +327,9 @@ runtime:
     grasp_target_premeasure: true
 ```
 
-## 5. Evaluation plan — restock shelves in Isaac Sim
+## 5. Evaluation plan — shelf placement in Isaac Sim
 
-**Environment.** A private restock-shelf USD stage (four cartons on a shelf board in front of the
+**Environment.** A private shelf USD stage (four cartons on a shelf board in front of the
 bimanual OpenArm, `deploy sim` with the Isaac backend, octomap at 15 mm, the kernel's world-voxel
 check and grasp allowance on, the vision bridge with the head camera and the segmenter). The stage
 and its scene YAML live outside this repository and are referenced only as such.

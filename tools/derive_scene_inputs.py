@@ -21,8 +21,8 @@ Boots the scene's sim env exactly as ``openral deploy sim`` does
 Explicit wins: a value the scene already declares is kept unless ``--replace`` (then the
 declared and derived boxes are both logged for comparison)::
 
-    python tools/derive_scene_inputs.py --config scenes/deploy/local/restock.yaml \\
-        --out scenes/deploy/local/restock_derived.yaml [--replace] [--max-distance 1.0]
+    python tools/derive_scene_inputs.py --config scenes/deploy/local/<scene>.yaml \\
+        --out scenes/deploy/local/<scene>_derived.yaml [--replace] [--max-distance 1.0]
 """
 
 from __future__ import annotations
@@ -346,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         default=0.045,
         help="Search box pad per side: it must hold the producer's measured region, the "
         "object grown by its fit margin and one cell's quantisation, plus pose error "
-        "(15 mm each at the restock cell's 15 mm grid).",
+        "(15 mm each at a 15 mm grid).",
     )
     parser.add_argument("--workspace-pad-m", type=float, default=0.02)
     parser.add_argument(

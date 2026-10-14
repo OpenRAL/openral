@@ -55,7 +55,7 @@ joints:
     position_limits: [-6.283185307179586, 6.283185307179586]   # ±2π
     velocity_limit: 3.1415926535897932653589793                # π rad/s
     effort_limit: 150.0                    # Nm
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "shoulder_lift_joint"
     origin_xyz: [0, 0, 0]
@@ -67,7 +67,7 @@ joints:
     position_limits: [-6.283185307179586, 6.283185307179586]
     velocity_limit: 3.141592653589793
     effort_limit: 150.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "elbow_joint"
     origin_xyz: [-0.425, 0, 0]
@@ -79,7 +79,7 @@ joints:
     position_limits: [-3.141592653589793, 3.141592653589793]   # ±π — mechanical stop
     velocity_limit: 3.141592653589793
     effort_limit: 150.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "wrist_1_joint"
     origin_xyz: [-0.3922, 0, 0.1333]
@@ -91,7 +91,7 @@ joints:
     position_limits: [-6.283185307179586, 6.283185307179586]
     velocity_limit: 3.141592653589793
     effort_limit: 28.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "wrist_2_joint"
     origin_xyz: [0, -0.0997, 0]
@@ -103,7 +103,7 @@ joints:
     position_limits: [-6.283185307179586, 6.283185307179586]
     velocity_limit: 3.141592653589793
     effort_limit: 28.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "wrist_3_joint"
     origin_xyz: [0, 0.0996, 0]
@@ -115,7 +115,7 @@ joints:
     position_limits: [-6.283185307179586, 6.283185307179586]
     velocity_limit: 3.141592653589793
     effort_limit: 28.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
 
 end_effectors:

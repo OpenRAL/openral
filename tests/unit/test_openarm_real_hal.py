@@ -883,7 +883,7 @@ class TestSlotGroupDispatch:
     def test_the_manifest_declares_every_mode_the_group_path_executes(self) -> None:
         # Keeps robots/openarm/robot.yaml honest in the other direction: the
         # reasoner's real-mode gate reads this list, so it must now include
-        # gripper_position or the restock skill is dropped again.
+        # gripper_position or the pick-and-place skill is dropped again.
         manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
         declared = set(manifest.capabilities.supported_control_modes)
         assert {"joint_position", "gripper_position"} <= declared

@@ -314,7 +314,7 @@ def _rebuild_gemma_buffer(name: str, mod: Any, buf: Any, *, torch: Any) -> bool:
       (``GemmaTextScaledWordEmbedding``), kept by the module as the plain float
       ``scalar_embed_scale``. Left as garbage, every language token is scaled
       by noise and the policy runs to completion producing plausible-looking
-      nonsense: cosine 0.03 against ``from_pretrained`` on the OpenArm restock
+      nonsense: cosine 0.03 against ``from_pretrained`` on the OpenArm pick-and-place
       checkpoint (Thor, 2026-09-23), while all 813 loaded tensors matched.
 
     ``position_ids`` and the refusal of any other non-persistent buffer are the

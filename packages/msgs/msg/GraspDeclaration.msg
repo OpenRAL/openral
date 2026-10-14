@@ -15,7 +15,7 @@
 # end/cancel and E-stop; every consumer MUST also expire it on timeout_s so a
 # dispatcher dying mid-goal cannot leave an exemption armed.
 
-# Identity of the declared grasp target (e.g. "cell:restock_box"). Empty is
+# Identity of the declared grasp target (e.g. "cell:pick_box"). Empty is
 # invalid while active=true.
 string target_id
 

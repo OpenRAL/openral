@@ -5,7 +5,7 @@ the ADR and the Isaac deploy-sim validation are owed (§7). Issue #349.
 
 ## 1. Problem (measured)
 
-Isaac deploy-sim runs of a VLA restock policy on the bimanual OpenArm stopped on world-voxel
+Isaac deploy-sim runs of a VLA pick-and-place policy on the bimanual OpenArm stopped on world-voxel
 collisions of `openarm_left_finger_pair` / `openarm_right_finger_pair` while PhysX ground truth
 said the fingers touched nothing: 0 mm penetration in 23 of 24 stops, the nearest surfaces 7-10 mm
 or more away. 10 mm octomap cells did not remove the stops, so cell quantisation was not the main
@@ -179,5 +179,5 @@ measured-state dependency. `robots/openarm/robot.yaml` is ~5600 lines shorter th
 - **ADR** (§6) recorded in the management decision log.
 - **WG decision** on the leader's `finger_pair ↔ link5/link6` SRDF rows, measured against the old
   swept hull: the rigid leader's hull may no longer overlap them (the follower's does not).
-- **Isaac deploy-sim validation** on the restock policy: the stop count and the PhysX ground truth
-  against the 24-stop baseline.
+- **Isaac deploy-sim validation** on the pick-and-place policy: the stop count and the PhysX
+  ground truth against the 24-stop baseline.
