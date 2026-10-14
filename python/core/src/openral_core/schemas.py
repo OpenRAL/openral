@@ -10762,19 +10762,19 @@ class DeployRuntime(BaseModel):
     velocity the kernel falls back to the speed between consecutive **commanded** rows
     (row 0 from the previously accepted command while fresh, else the measured state),
     which reads the hand faster. Required when ``workspace_contact_enabled`` — there is no
-    default the kernel would silently use. **Calibration point** (0.35 m/s in the Isaac deploy sim,
-    issue #349); capped at 1 m/s, beyond which the rule is not a contact-energy bound at
-    all."""
+    default the kernel would silently use. **Calibration point**: see
+    ``docs/reference/manipulation-workspace-contact.md`` §8. Capped at 1 m/s (``le=1.0``),
+    beyond which the rule is not a contact-energy bound at all."""
     workspace_contact_max_lead_m: float | None = Field(default=None, gt=0.0, le=0.10)
     """The hand lead (push) bound (m) of the workspace contact rule: the largest
     displacement of any point of a hand link's collision geometry between the MEASURED
     configuration and each checked row. On a joint-PD arm commanded-minus-measured is what
     the drives push with, so this bounds how hard a hand may press into what it touches —
     the speed bound alone would let a hand whose stationary target is buried deep keep
-    pushing. Required when ``workspace_contact_enabled``. **Calibration point** (0.05 m in
-    the Isaac deploy sim, from the 3.3-4 cm free-motion lag the stops measured plus
-    margin; the real-hardware value is a Safety-WG decision); capped at 0.10 m, mirrored
-    by the kernel's ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
+    pushing. Required when ``workspace_contact_enabled``. **Calibration point**: see
+    ``docs/reference/manipulation-workspace-contact.md`` §8 (the real-hardware value is a
+    Safety-WG decision). Capped at 0.10 m (``le=0.10``), mirrored by the kernel's
+    ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.
