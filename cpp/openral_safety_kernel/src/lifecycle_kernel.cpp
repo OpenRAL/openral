@@ -1869,6 +1869,20 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             ws_partner = &workspace_prev_partner_;
           }
         }
+        // A slot row in `q_check_` (its uncommanded joints measured) re-checked at this
+        // tick's other committed targets. Only ever an extra check: it can refuse, never
+        // accept. Overwrites `q_check_`'s uncommanded joints.
+        const auto partner_trips = [&](int step) -> bool {
+          if (!tick_partner) {
+            return false;
+          }
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+              q_check_[d] = tick_target_[d];
+            }
+          }
+          return check_config(q_check_.data(), step, 0.0, ws_partner);
+        };
         const auto check_rows = [&]() -> bool {
           for (std::uint16_t s = 0; s < view.horizon; ++s) {
             const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
@@ -1887,16 +1901,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               return true;
             }
             // ... and, additionally, at this tick's other committed targets.
-            // Only ever an extra check: it can refuse, never accept.
-            if (tick_partner) {
-              for (std::size_t d = 0; d < robot_ndof; ++d) {
-                if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
-                  q_check_[d] = tick_target_[d];
-                }
-              }
-              if (check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_partner)) {
-                return true;
-              }
+            if (partner_trips(static_cast<int>(s))) {
+              return true;
             }
           }
           return false;
@@ -2045,7 +2051,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                   }
                   clear = scaled_lead <= base + per_row * static_cast<double>(s) + 1e-9 &&
                           v <= workspace_max_speed_mps_ + 1e-9 &&
-                          !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
+                          !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain) &&
+                          !partner_trips(static_cast<int>(s));
                 }
               }
               if (!clear) {
@@ -2066,7 +2073,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                     const bool commanded = full_row || slot_commanded_[d] != 0;
                     q_check_[d] = commanded && is_jaw(d) ? row[d] : q_meas_[d];
                   }
-                  hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain);
+                  hold_clear = !check_config(q_check_.data(), static_cast<int>(s), 0.0, ws_plain) &&
+                               !partner_trips(static_cast<int>(s));
                 }
               }
             }

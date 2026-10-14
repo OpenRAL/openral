@@ -6532,6 +6532,37 @@ TEST_F(LifecycleKernelTest, AHoldWhoseJawCommandCollidesStops) {
   EXPECT_GE(logs.count("jaw_hold_clear=0"), 1U) << logs.joined();
 }
 
+// #349 CodeRabbit: the brake's own row checks (creep, jaw hold) also check this tick's
+// other committed targets, as the row check does. Two arms with self-collision, link1
+// 0.1 m behind link0; j0 the jaw. j1's slot moves link1 to (-0.05, 0); j0's slot then
+// closes link0 onto that spot (3.0 rad) — clear of link1's measured pose, so only the
+// partner check refuses it. Held, that jaw command would go out: it must stop.
+TEST_F(LifecycleKernelTest, AJawHoldIsCheckedAgainstTheOtherArmsTickTarget) {
+  LogCapture logs;
+  auto params = with_param(lag_params_two_arm(), "workspace_contact_brake_enabled",
+                           rclcpp::ParameterValue(true));
+  params = with_param(params, "workspace_contact_hold_max_consecutive",
+                      rclcpp::ParameterValue(std::int64_t{5}));
+  params = with_param(params, "workspace_contact_jaw_joints",
+                      rclcpp::ParameterValue(std::vector<std::string>{"j0"}));
+  params = with_param(params, "self_collision_enabled", rclcpp::ParameterValue(true));
+  params = with_param(
+      params, "collision_origin_xyzrpy",
+      rclcpp::ParameterValue(std::vector<double>{0, 0, 0, 0, 0, 0, -0.1, 0, 0, 0, 0, 0}));
+  GraspRig rig("kernel_ws_hold_jaw_partner", params);
+  rig.js_names = {"j0", "j1"};
+  rig.js_tail = {kGraspClearQ};
+  rig.js_velocity = {0.0, 0.0};
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, kGraspClearQ, 300);
+  ASSERT_TRUE(rig.send_once(&b, kGraspClearQ, two_arm_chunk(0.0, 0.0, {"j1"}, 1))) << logs.joined();
+  EXPECT_FALSE(rig.send_once(&b, kGraspClearQ, two_arm_chunk(3.0, 0.0, {"j0"}, 1)))
+      << logs.joined();
+  EXPECT_TRUE(rig.node->fault_latched()) << "the jaw meets the other arm's target: a stop";
+  EXPECT_EQ(logs.count("safety.collision kind=self a=link0 b=link1 step=0"), 1U) << logs.joined();
+}
+
 // #349 review: holds are counted per commanded joint. Two arms slot-dispatched per
 // tick: j1's slot passes every tick, j0's command is refused every tick (into a cell
 // outside the box) — j1 passing must not reset j0's run, so j0 latches at the cap.
