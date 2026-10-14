@@ -1,0 +1,6 @@
+# Docs and Markdown are left out so large PRs stay under CodeRabbit's
+# 100-file review limit; code and tests are still reviewed.
+reviews:
+  path_filters:
+    - "!docs/**"
+    - "!**/*.md"
