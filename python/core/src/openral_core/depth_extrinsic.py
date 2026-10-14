@@ -18,7 +18,7 @@ Kept out of ``openral_core.__init__`` and free of numpy, so the launch file can 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
@@ -125,7 +125,11 @@ class EstimatedDepthMount(NamedTuple):
 
 
 def resolve_estimated_depth_camera(
-    sensors: Sequence[SensorSpec], camera: str, *, hal_mode: str
+    sensors: Sequence[SensorSpec],
+    camera: str,
+    *,
+    hal_mode: str,
+    scene_sensor_names: Collection[str] = (),
 ) -> EstimatedDepthMount:
     """Resolve ``camera``'s mount for DA3 world-collision depth: any RGB camera tied to the robot.
 
@@ -157,8 +161,9 @@ def resolve_estimated_depth_camera(
         >>> from openral_core import RobotDescription
         >>> from openral_core.schemas import SensorSpec
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
-        >>> resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems[0][:56]
-        'top: the deploy has a measured cloud source (head_zed); '
+        >>> (refusal,) = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems
+        >>> refusal.startswith("top: REFUSED"), "robot sensor 'head_zed' (depth)" in refusal
+        (True, True)
         >>> k = arm[1].intrinsics  # top's K; an RGB camera riding an RGB sensor's mount:
         >>> rig = [
         ...     SensorSpec(
@@ -203,13 +208,19 @@ def resolve_estimated_depth_camera(
         )
         return EstimatedDepthMount("", None, camera, [f"{camera}: {what}; name an RGB camera"])
     problems = []
-    measured = [s.name for s in sensors if s.is_cloud_source]
+    measured = [
+        f"{'scene' if s.name in scene_sensor_names else 'robot'} sensor {s.name!r} ({s.modality})"
+        for s in sensors
+        if s.is_cloud_source
+    ]
     if measured:
-        # Safety-WG (hazard Entry 059, HZ-0382-6): an estimate never replaces a measurement.
+        # Safety-WG (hazard Entry 059, HZ-0382-6): an estimate never replaces a measurement,
+        # in sim or on real hardware, and no flag overrides it.
         problems.append(
-            f"{camera}: the deploy has a measured cloud source ({', '.join(measured)}); the "
-            "world map must use it, not a monocular estimate — pin octomap_cloud_topic to "
-            "its cloud instead"
+            f"{camera}: REFUSED — estimated depth never replaces a measured depth or "
+            f"point-cloud sensor, and this deploy has {', '.join(measured)}. Map that "
+            "sensor's cloud (runtime.octomap_cloud_topic) or remove "
+            "runtime.estimated_depth_camera; there is no override"
         )
     if spec.intrinsics is None:
         problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")

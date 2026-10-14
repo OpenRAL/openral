@@ -31,7 +31,7 @@ from openral_core.depth_extrinsic import (
     resolve_estimated_depth_camera,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_core.schemas import deploy_cloud_topic
+from openral_core.schemas import SensorSpec, deploy_cloud_topic
 from openral_perception_ros.metric_depth import (
     DA3_CANONICAL_FOCAL_PX,
     da3_metric_depth,
@@ -104,7 +104,28 @@ class TestCameraMount:
         sensors = RobotDescription.from_yaml(str(_REPO / f"robots/{robot}/robot.yaml")).sensors
         for mode in ("sim", "real"):
             problems = resolve_estimated_depth_camera(sensors, camera, hal_mode=mode).problems
-            assert problems and f"measured cloud source ({measured})" in problems[0], problems
+            assert problems and problems[0].startswith(f"{camera}: REFUSED"), problems
+            assert f"robot sensor {measured!r}" in problems[0], problems
+            assert "no override" in problems[0], problems
+
+    def test_a_scene_mounted_measured_sensor_refuses_it_too_and_is_named_as_such(self) -> None:
+        robot = RobotDescription.from_yaml(str(_VSLAM)).sensors
+        rgb_only = [s for s in robot if not s.is_cloud_source]
+        lidar = SensorSpec(
+            name="cell_lidar",
+            modality="point_cloud",
+            frame_id="cell_lidar",
+            parent_frame="base_link",
+            static_transform_xyz_rpy=(1.0, 0.0, 1.5, 0.0, 0.0, 0.0),
+            rate_hz=10.0,
+        )
+        (problem,) = resolve_estimated_depth_camera(
+            [*rgb_only, lidar],
+            "shoulder_right",
+            hal_mode="sim",
+            scene_sensor_names={"cell_lidar"},
+        ).problems
+        assert "scene sensor 'cell_lidar' (point_cloud)" in problem
 
     def test_a_camera_sharing_a_non_cloud_mount_is_placed_in_sim_and_real(self) -> None:
         """OpenArm's ``top`` rides ``head_zed``'s mount; with that ZED wired colour-only
@@ -205,7 +226,7 @@ class TestDeployResolution:
         )
 
     def test_the_shipped_robots_depth_camera_refuses_it_before_launch(self, tmp_path: Path) -> None:
-        with pytest.raises(ROSConfigError, match=r"measured cloud source \(front_depth\)"):
+        with pytest.raises(ROSConfigError, match=r"REFUSED.*robot sensor 'front_depth' \(depth\)"):
             self._resolve(self._scene(tmp_path, "shoulder_right"))
 
     def test_the_scene_field_reaches_the_launch(

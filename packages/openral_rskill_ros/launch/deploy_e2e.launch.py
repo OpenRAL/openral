@@ -3259,6 +3259,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             merge_deploy_sensors(description.sensors, scene_sensors),
             estimated_depth_camera,
             hal_mode=hal_mode,
+            scene_sensor_names={s.name for s in scene_sensors},
         )
         if mount.problems:
             raise ROSConfigError("estimated_depth_camera: " + "; ".join(mount.problems))
@@ -4214,8 +4215,9 @@ def generate_launch_description() -> LaunchDescription:
                 "RGB camera whose DA3METRIC depth feeds the world-collision map "
                 "(sidecar on ZMQ :5772 + depth provider; its cloud becomes octomap's "
                 "input). From DeployRuntime.estimated_depth_camera. Empty = off. "
-                "Refused when the deploy has a measured cloud source (a depth camera "
-                "or point-cloud sensor): an estimate never replaces a measurement."
+                "REFUSED whenever the robot or the scene has any measured depth or "
+                "point-cloud sensor, sim and real, no override: an estimate never "
+                "replaces a measurement."
             ),
         ),
         DeclareLaunchArgument(

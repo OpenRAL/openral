@@ -1253,6 +1253,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             ),
             estimated_depth_camera,
             hal_mode=hal_mode,
+            scene_sensor_names={
+                s.name for s in (deploy_scene.sensors if deploy_scene is not None else [])
+            },
         ).problems
         if problems:
             raise ROSConfigError(
