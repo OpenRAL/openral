@@ -57,7 +57,8 @@ _HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"
 # Pinned dependency source. A fully hash-locked `.lock` (uv pip compile
 # --generate-hashes) is the reproducibility target (CLAUDE.md §1.8); until it is
 # generated, install the package set verified working on the 8 GB Ada host.
-_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")
+# `addict`: imported by depth_anything_3/model/da3.py but undeclared upstream (0.1.1).
+_REQUIREMENTS = ("depth-anything-3", "addict", "pyzmq", "msgpack")
 
 # aarch64 (GB10 / DGX Spark, Jetson Thor): `pip install depth-anything-3` is unsatisfiable —
 # two declared deps ship no linux-aarch64 wheel:
