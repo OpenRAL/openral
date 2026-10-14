@@ -2870,15 +2870,18 @@ class VisionAttachmentBridge:
                 return f"ROSConfigError: {exc}"
         return aligned, intrinsics
 
-    def _lookup(self, target: str, source: str) -> NDArray[np.float64] | None:
-        """Latest ``target <- source`` transform as a 4x4, or ``None``."""
+    def _lookup(
+        self, target: str, source: str, *, stamp_ns: int | None = None
+    ) -> NDArray[np.float64] | None:
+        """``target <- source`` as a 4x4 — the latest, or at ``stamp_ns`` — or ``None``."""
         if target == source:
             return np.eye(4, dtype=np.float64)
         import rclpy
         from openral_core.geometry import homogeneous_from_quat_xyz
 
+        at = rclpy.time.Time() if stamp_ns is None else rclpy.time.Time(nanoseconds=stamp_ns)
         try:
-            tf = self._tf_buffer.lookup_transform(target, source, rclpy.time.Time())
+            tf = self._tf_buffer.lookup_transform(target, source, at)
         except Exception as exc:  # tf2 raises several distinct lookup errors
             self._node.get_logger().debug(f"tf {target} <- {source} unavailable: {exc}")
             return None

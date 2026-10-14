@@ -570,8 +570,8 @@ class GraspTargetTracker:
         )
 
     @_locked
-    def rebase(self, resolve: Callable[[PlaceRegion], PlaceRegion]) -> None:
-        """Re-express the declared boxes through ``resolve``, from the boxes as declared.
+    def rebase(self, resolve: Callable[[str, PlaceRegion], PlaceRegion]) -> None:
+        """Re-express the declared boxes through ``resolve(field, box)``, from as declared.
 
         A scene may declare ``search_box`` / ``workspace_box`` in a fixed frame (``odom``,
         ``map``) so they stay put while a mobile base moves; the leg resolves them into
@@ -582,8 +582,8 @@ class GraspTargetTracker:
         search, workspace = self._declared_boxes
         self._declaration = self._declaration.model_copy(
             update={
-                "search_box": None if search is None else resolve(search),
-                "workspace_box": None if workspace is None else resolve(workspace),
+                "search_box": None if search is None else resolve("search_box", search),
+                "workspace_box": None if workspace is None else resolve("workspace_box", workspace),
             }
         )
 
@@ -1761,7 +1761,7 @@ class GraspTargetLeg:
         # logged workspace state, so a transition is logged once (``_set_workspace``).
         self._workspace: PlaceRegion | None = None
         self._workspace_state = ""
-        self._rebase_state = ""
+        self._rebase_state: dict[str, str] = {}
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1988,28 +1988,38 @@ class GraspTargetLeg:
     def _now_ns(self) -> int:
         return int(self._node.get_clock().now().nanoseconds)
 
-    def _in_frame(self, box: PlaceRegion, frame: str) -> PlaceRegion:
+    def _in_frame(self, field: str, box: PlaceRegion, frame: str, stamp_ns: int) -> PlaceRegion:
         """A declared box in ``frame`` through tf2 (``rebase_box``), else as declared.
 
-        A box left in its own frame meets the grid-frame checks it always met: the
-        search refuses it (``frame_mismatch``) and the workspace is retracted.
+        The transform is the one at ``stamp_ns``, the grid's ``source_stamp``: the box
+        lands where the base was when the map it is checked against was built, not
+        where it is now (a moving base would otherwise shift it by its travel over the
+        grid's latency). A box left in its own frame — no tf2 at that time, or a tilted
+        base — meets the grid-frame checks it always met: the search refuses it
+        (``frame_mismatch``) and the workspace is retracted. Logged once per change of
+        each field's state.
         """
         if box.frame_id == frame:
             return box
-        t = self._bridge._lookup(frame, box.frame_id)
+        t = self._bridge._lookup(frame, box.frame_id, stamp_ns=stamp_ns)
         if t is None:
-            state, line = "no_tf", f"no tf2 {frame} <- {box.frame_id}; box left unresolved"
+            state, line = "no_tf", f"no tf2 {frame} <- {box.frame_id} at the grid's stamp"
             resolved = box
         else:
             try:
                 resolved = rebase_box(box, t, frame)
-                state, line = "resolved", f"declared boxes resolved {box.frame_id} -> {frame}"
+                state, line = "resolved", f"resolved {box.frame_id} -> {frame}"
             except ROSConfigError as exc:
-                state, line, resolved = "rejected", f"declared box not resolved: {exc}", box
-        if state != self._rebase_state:
-            self._rebase_state = state
-            log = self._node.get_logger()
-            (log.info if state == "resolved" else log.warning)(f"grasp target: {line}")
+                state, line, resolved = "rejected", f"not resolved: {exc}", box
+        if state != self._rebase_state.get(field):
+            self._rebase_state[field] = state
+            # Two call sites: rclpy refuses one call site logging at two severities.
+            if state == "resolved":
+                self._node.get_logger().info(f"grasp target: declared {field} {line}")
+            else:
+                self._node.get_logger().warning(
+                    f"grasp target: declared {field} {line}; box left unresolved"
+                )
         return resolved
 
     # ── manipulation workspace (#349) ────────────────────────────────────────
@@ -2033,6 +2043,10 @@ class GraspTargetLeg:
         that is merely stale or missing keeps the last confirmation, which then ages
         out ``freeze_s`` after its stamp (``published_workspace``). Independent of the
         target region: valid before it is measured and after it is handed over.
+
+        A box declared in a fixed frame is resolved at the grid's ``source_stamp``
+        (``_in_frame``), so with no newer grid it resolves to the same box and the hold
+        stands; a newer grid re-resolves it and re-confirms it at once.
         """
         declaration = self.tracker.declaration
         if (
@@ -2090,7 +2104,10 @@ class GraspTargetLeg:
         Only the confirmation of ``declaration``'s own ``workspace_box`` (same frame,
         pose and extents) and only within ``freeze_s`` of its stamp — the kernel ages it
         out at ``grasp_region_max_age_s`` anyway; publishing it longer would only be
-        refused there.
+        refused there. A fixed-frame box re-resolved at a newer grid's stamp no longer
+        matches a confirmation made at an older base pose: that confirmation is not
+        published (it is where the box was, not where it is) until the newer grid
+        confirms the box — within the same tick unless the newer grid is not fresh.
         """
         held = self._workspace
         box = declaration.workspace_box
@@ -2118,8 +2135,8 @@ class GraspTargetLeg:
         now_ns = self._now_ns()
         newest = self._grid
         if newest is not None:
-            frame = newest[0].frame_id
-            self.tracker.rebase(lambda box: self._in_frame(box, frame))
+            frame, source_ns = newest[0].frame_id, newest[1]
+            self.tracker.rebase(lambda field, box: self._in_frame(field, box, frame, source_ns))
         self._confirm_workspace(now_ns)
         begun = self._begin_tick(now_ns)
         if self.tracker.region is None:

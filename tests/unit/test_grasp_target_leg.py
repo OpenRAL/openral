@@ -143,7 +143,7 @@ def test_a_fixed_frame_search_box_stays_put_while_the_base_moves() -> None:
     tracker.accept(_measured(11 * _S))
     for base_x, yaw, expected in ((0.0, 0.0, (2.0, 0.0)), (1.5, np.pi / 2, (0.0, -0.5))):
         t = _odom_from_base(base_x, yaw)
-        tracker.rebase(lambda box, t=t: rebase_box(box, t, "openarm_base"))
+        tracker.rebase(lambda _field, box, t=t: rebase_box(box, t, "openarm_base"))
         box = tracker.declaration.search_box  # type: ignore[union-attr]  # reason: declared above
         assert box is not None and box.frame_id == "openarm_base"
         assert np.allclose(box.pose.xyz[:2], expected, atol=1e-9)
@@ -1492,6 +1492,37 @@ def _live_leg(name: str, **config: Any) -> Iterator[_LiveLeg]:
             node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+def test_a_fixed_frame_box_resolves_at_the_grids_stamp_not_the_latest_tf() -> None:
+    """The base moves 1 m between two tf2 samples: the box lands where the base was when
+    the grid was built, and with no tf2 at that time it stays unresolved (fail closed)."""
+    from geometry_msgs.msg import TransformStamped
+
+    with _live_leg("test_rebase_at_stamp") as live:
+        for stamp_s, x in ((10, 0.0), (11, 1.0)):
+            tf = TransformStamped()
+            tf.header.frame_id, tf.child_frame_id = "odom", "openarm_base"
+            tf.header.stamp.sec = stamp_s
+            tf.transform.translation.x = x
+            tf.transform.rotation.w = 1.0
+            live.buffer.set_transform(tf, "test")
+        box = _box(x=2.0).model_copy(
+            update={
+                "frame_id": "odom",
+                "pose": Pose6D(xyz=(2.0, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
+            }
+        )
+        at_10 = live.leg._in_frame("search_box", box, "openarm_base", 10 * _S)
+        at_11 = live.leg._in_frame("search_box", box, "openarm_base", 11 * _S)
+        assert at_10.frame_id == at_11.frame_id == "openarm_base"
+        assert at_10.pose.xyz[0] == pytest.approx(2.0)
+        assert at_11.pose.xyz[0] == pytest.approx(1.0)
+        assert live.leg._rebase_state == {"search_box": "resolved"}
+        before = live.leg._in_frame("workspace_box", box, "openarm_base", 5 * _S)
+        assert before == box  # no tf2 at the grid's stamp: left in odom
+        # One state per field: the workspace's refusal does not flip the search's.
+        assert live.leg._rebase_state == {"search_box": "resolved", "workspace_box": "no_tf"}
 
 
 def test_a_pending_segmentation_spanning_a_leg_tick_still_hands_over() -> None:
