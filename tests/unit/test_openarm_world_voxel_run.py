@@ -211,7 +211,7 @@ def test_a_local_scene_with_a_grasp_declaration_reaches_the_last_gate() -> None:
     _skip_unless_ros_and_openral()
     doc = _committed_scene()
     doc["grasp_declaration"] = {
-        "target_id": "cell:restock_item",
+        "target_id": "cell:pick_item",
         "contact_links": ["openarm_left_finger_pair"],
         "timeout_s": 70.0,
         "stamp_ns": 0,

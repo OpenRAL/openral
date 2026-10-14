@@ -3838,7 +3838,7 @@ class GraspDeclaration(BaseModel):
 
     Attributes:
         target_id: Identity of the declared grasp target, e.g.
-            ``"cell:restock_box"``. Required while ``active``.
+            ``"cell:pick_box"``. Required while ``active``.
         object_id: Payload identity the grasp produces once attached
             (``AttachedCollisionObject.object_id``); empty = discovered at
             attach time.
@@ -3882,7 +3882,7 @@ class GraspDeclaration(BaseModel):
 
     Example:
         >>> declaration = GraspDeclaration(
-        ...     target_id="cell:restock_box",
+        ...     target_id="cell:pick_box",
         ...     contact_links=("openarm_left_finger_pair",),
         ...     timeout_s=70.0,
         ...     stamp_ns=1_000_000_000,

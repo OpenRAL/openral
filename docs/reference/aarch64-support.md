@@ -462,7 +462,7 @@ answer. Observed on the lab AGX Orin (torch 2.13+cu130, 2026-09-22): the
 RuntimeError: Expected NVML_SUCCESS == DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_( nvml_device, &fabricInfo) to be true, but got false.
 ```
 
-363 s into loading the OpenArm restock π0.5, while the identical load in the
+363 s into loading the OpenArm pick-and-place π0.5, while the identical load in the
 same venv without the variable succeeded (371 s, 7.8 GiB). An explicit
 `PYTORCH_ALLOC_CONF` in the operator's environment still passes through.
 Every place that turns the setting on goes through

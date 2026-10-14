@@ -518,13 +518,13 @@ def test_policy_stays_resident_across_goal_prompts() -> None:
     resolver = _prompted_resolver(built, seen)
     with _compose_harness(resolver=resolver) as (executor, runtime, _s, _o):
         node = runtime.skill_runner_node
-        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        _run_goal(executor, node, "openral/skill-a", prompt="place box x1 into lower slot 2")
         n_first = len(seen)
-        _run_goal(executor, node, "openral/skill-a", prompt="restock box x2 into upper slot 1")
+        _run_goal(executor, node, "openral/skill-a", prompt="place box x2 into upper slot 1")
         assert len(built) == 1, "a prompt change must not reload the policy"
         assert n_first > 0 and len(seen) > n_first, "both goals must step the policy"
-        assert set(seen[:n_first]) == {"restock box x1 into lower slot 2"}
-        assert set(seen[n_first:]) == {"restock box x2 into upper slot 1"}
+        assert set(seen[:n_first]) == {"place box x1 into lower slot 2"}
+        assert set(seen[n_first:]) == {"place box x2 into upper slot 1"}
 
 
 def test_revision_change_reloads_a_resident_policy() -> None:
@@ -566,9 +566,9 @@ def test_preload_prompt_is_only_a_warm_up_prompt() -> None:
         while node._preload_in_flight.is_set() and time.monotonic() < deadline:
             executor.spin_once(timeout_sec=0.02)
         assert len(built) == 1, "preload did not load the policy"
-        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        _run_goal(executor, node, "openral/skill-a", prompt="place box x1 into lower slot 2")
         assert len(built) == 1, "a goal prompt differing from preload_prompt must not reload"
-        assert set(seen) == {"restock box x1 into lower slot 2"}
+        assert set(seen) == {"place box x1 into lower slot 2"}
 
 
 @pytest.fixture

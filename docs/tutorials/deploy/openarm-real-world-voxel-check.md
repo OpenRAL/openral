@@ -409,7 +409,7 @@ Run these tests in order:
    one by `grasp_target.object_id`; perception grounds the search box
    ([design §2.2](../../reference/real-pick-place-design.md)). Grounding refuses a bare
    label that several detections carry. The only OpenArm VLA today is task-specific (the
-   restock policy): a general "pick up X" needs a language-conditioned pick/place policy
+   pick-and-place policy): a general "pick up X" needs a language-conditioned pick/place policy
    installed for the OpenArm, and until one is, expect the reasoner to hand off.
 
    Direct dispatch (debug only, reasoner off): copy the committed scene into the gitignored

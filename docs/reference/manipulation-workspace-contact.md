@@ -9,14 +9,14 @@ Safety-WG review**, 2026-10-11. Issue #349, PR #370. Builds on the grasp-target 
 
 ## 1. Problem
 
-A learned manipulation policy (π0.5 restock, bimanual OpenArm, joint-position chunks at 30 Hz)
+A learned manipulation policy (π0.5 pick-and-place, bimanual OpenArm, joint chunks at 30 Hz)
 completes its task only by touching the world. The safety kernel stops on any overlap between
 conservative link geometry and the occupied voxel map (15 mm cells, margin 0 in sim, 20 mm real),
 with one scoped relaxation per declared, measured region: the grasp target (fingers) and the place
-target (carried payload). Every Isaac deploy-sim run of the restock task ended in a kernel stop
+target (carried payload). Every Isaac deploy-sim run of the task ended in a kernel stop
 before the grasp, while the same prompts place the box without the kernel.
 
-## 2. Evidence (Isaac Sim 6.1, restock tote scene, 2026-10-11)
+## 2. Evidence (Isaac Sim 6.1, tote scene, 2026-10-11)
 
 **Kernel stops, adjudicated against PhysX ground truth** (`sim.estop_ground_truth_snapshot`,
 `docs/reference/sim-environments.md`): 44 stops over 40 deploy-sim trials, 8 prompts. In all but
@@ -104,7 +104,7 @@ Contact classes, per (robot link, world cell, task state):
 
 ### 3.1 Static geometry: what the camera has not seen is not free
 
-**Evidence (deliberate-collision probes, 2026-10-11).** Joint sweeps from the restock start
+**Evidence (deliberate-collision probes, 2026-10-11).** Joint sweeps from the task start
 pose, published on `/openral/candidate_action` with no goal active, kernel and Isaac live. The
 probe E-stops the graph itself when the kernel has not, so the sim HAL logs PhysX ground truth
 at the end pose either way. Single-joint sweeps either hit joint-envelope limits
@@ -123,7 +123,7 @@ toward the cell's left wall (y = +0.55 m):
 | no static geometry | **no stop** | left `ee_base_link` and **`link6`** pressed against `Cell/LeftWall`: 0 mm separation, impulse 1.33 and 0.14 N·s |
 | with static geometry | stopped at 2.7 s, before any contact | none — the finger reached the declared shelf-rack post first |
 
-Unobserved space is free end to end (octomap → bridge → kernel); for the restock stage the
+Unobserved space is free end to end (octomap → bridge → kernel); for the tote stage the
 declared fixtures add about **59 400 cells the camera map lacks**.
 
 **Rule:** a scene declares its static fixtures (walls, shelf frame, table, tote shell) as
@@ -413,7 +413,7 @@ tails do not describe the deploy-sim bounds.
 Other calibration points: the freshness window `kWorkspaceCommandFreshPeriods` (2 periods);
 `WORKSPACE_MIN_COVER` (10 %); the workspace caps (0.50 m half-extent, 0.25 m³).
 
-**Validation owed:** the 8 restock prompts in Isaac deploy sim with ground truth (completion rate
+**Validation owed:** the 8 task prompts in Isaac deploy sim with ground truth (completion rate
 vs `sim run`, zero arm-link stops missed, a deliberate arm/shelf collision still stopped); the
 Safety-WG review; then the real-cell posture (the `deploy run` refusal lifts only with the ADR).
 
@@ -427,6 +427,6 @@ Safety-WG review; then the real-cell posture (the `deploy run` refusal lifts onl
 4. Kernel: hand-link mask from the manifest; per-cell workspace containment; hand speed from the
    checked row; disclosure on every exempted contact (log + span), never silent.
 5. Measure `v_contact` from the sim-run contact data (hand speed at the contact steps).
-6. Validate: the same 8 restock prompts in deploy sim with ground truth — target: completion rate
+6. Validate: the same 8 task prompts in deploy sim with ground truth — target: completion rate
    approaching `sim run`'s, zero arm-link stops missed, and a deliberate arm/shelf collision still
    stopped.

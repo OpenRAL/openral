@@ -96,7 +96,7 @@ def test_the_real_top_camera_keeps_the_sim_slot() -> None:
     and an overlay cannot change its feature key, so the
     checkpoint sees the real camera on the slot it saw the MuJoCo render on. A
     checkpoint trained on a different name maps it with `image_preprocessing.aliases`
-    (the restock π0.5 maps `top` onto its `context` input), not a scene edit.
+    (the pick-and-place π0.5 maps `top` onto its `context` input), not a scene edit.
     """
     from openral_core import (
         DeployScene,
