@@ -396,19 +396,19 @@ Cartesian control modes, the force/current contact layer.
 `DeployRuntime` field docstrings and the safety-kernel README point here. Both bounds are set
 explicitly by the scene (no default).
 
-| bound | restock deploy-sim scenes | earlier sim evaluation value | real hardware (Safety-WG decision, issue #374) |
+| bound | deploy-sim scenes | earlier sim evaluation value | real hardware (Safety-WG decision, issue #374) |
 |---|---|---|---|
 | `workspace_contact_max_speed_mps` (`v_contact`; schema cap `le=1.0`) | **0.5 m/s** | **0.35 m/s**, derived from the §2 `openral sim run` contact speeds (no kernel in the loop): just above the fastest sustained non-target contact, a finger sliding on the tote at 0.32 m/s | candidate **0.25 m/s**, ISO 10218-1's reduced speed |
-| `workspace_contact_max_lead_m` (schema cap `le=0.10`, mirrored by the kernel's `kMaxWorkspaceContactLeadM`) | **0.10 m** (the cap) | **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac kernel stops measured, plus margin | **open Safety-WG question**: issue #374 names the candidate as "a lead below the sim value" without saying which sim value (0.10 m restock or 0.05 m earlier evaluation); at most 0.10 m either way |
+| `workspace_contact_max_lead_m` (schema cap `le=0.10`, mirrored by the kernel's `kMaxWorkspaceContactLeadM`) | **0.10 m** (the cap) | **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac kernel stops measured, plus margin | **open Safety-WG question**: issue #374 names the candidate as "a lead below the sim value" without saying which sim value (0.10 m deploy-sim or 0.05 m earlier evaluation); at most 0.10 m either way |
 
-The restock values are those of `scenes/deploy/local/restock_mix*.yaml` (gitignored, so not
-in this repo; checked against `restock_mix00`–`07` on 2026-10-14: all set
-`workspace_contact_max_speed_mps: 0.5` and `workspace_contact_max_lead_m: 0.1`). The §6 measurements predate them: the stops
+The deploy-sim values are those of the local (gitignored) deploy scenes the Isaac deploy-sim
+runs use, checked on 2026-10-14: every one sets `workspace_contact_max_speed_mps: 0.5` and
+`workspace_contact_max_lead_m: 0.1`. The §6 measurements predate them: the stops
 quoted there ("against the 0.35 bound"; across 9 place batches, contact at 0.35–0.41 m/s and a
 lead of 80–96 mm) could only fire under a speed bound ≤ 0.35 m/s and a lead bound < 80 mm, which
 is consistent with the earlier 0.35 m/s / 0.05 m values; the exact bounds of each batch were not
-recorded. Under the restock 0.5 m/s / 0.10 m those readings would be tolerated, so §6's stop tails
-do not describe the restock bounds.
+recorded. Under the deploy-sim 0.5 m/s / 0.10 m those readings would be tolerated, so §6's stop
+tails do not describe the deploy-sim bounds.
 
 Other calibration points: the freshness window `kWorkspaceCommandFreshPeriods` (2 periods);
 `WORKSPACE_MIN_COVER` (10 %); the workspace caps (0.50 m half-extent, 0.25 m³).
