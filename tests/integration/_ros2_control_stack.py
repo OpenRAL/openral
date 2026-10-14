@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 #: How long the stack gets to come up. Generous because the first `ros2 run` on a cold host
 #: pays for ament index construction; the steady-state cost is a couple of seconds.
@@ -175,7 +176,19 @@ def bring_up(tmp: Path, *, urdf: Path, config: Path, controllers: Sequence[str])
     processes: list[subprocess.Popen[bytes]] = []
     try:
         # controller_manager takes the description from the /robot_description topic on Jazzy,
-        # so robot_state_publisher is a required participant, not a convenience.
+        # so robot_state_publisher is a required participant, not a convenience. The URDF goes
+        # in a params file: an inline `-p robot_description:=...` is YAML-parsed, so any
+        # `: ` in an XML comment turns the string into a mapping and rcl aborts.
+        rsp_params = tmp / "robot_state_publisher.yaml"
+        rsp_params.write_text(
+            yaml.safe_dump(
+                {
+                    "robot_state_publisher": {
+                        "ros__parameters": {"robot_description": urdf.read_text()}
+                    }
+                }
+            )
+        )
         processes.append(
             spawn(
                 [
@@ -184,8 +197,8 @@ def bring_up(tmp: Path, *, urdf: Path, config: Path, controllers: Sequence[str])
                     "robot_state_publisher",
                     "robot_state_publisher",
                     "--ros-args",
-                    "-p",
-                    f"robot_description:={urdf.read_text()}",
+                    "--params-file",
+                    str(rsp_params),
                 ],
                 tmp / "robot_state_publisher.log",
                 env,
@@ -210,19 +223,25 @@ def bring_up(tmp: Path, *, urdf: Path, config: Path, controllers: Sequence[str])
         for controller in ("joint_state_broadcaster", *controllers):
             remaining = max(1.0, deadline - time.monotonic())
             # The spawner blocks until the controller is configured and active, then exits,
-            # so its return code is the readiness signal — no polling needed.
-            spawned = subprocess.run(
-                ["ros2", "run", "controller_manager", "spawner", controller],
-                capture_output=True,
-                timeout=remaining,
-                env=env,
-                check=False,
+            # so its return code is the readiness signal — no polling needed. It runs in its
+            # own process group: a timeout that killed only `ros2 run` would orphan the
+            # spawner, which holds ~/.ros/locks/ros2-control-controller-spawner.lock forever
+            # and stalls every later spawner on the host.
+            spawner_log = tmp / f"spawner_{controller}.log"
+            spawner = spawn(
+                ["ros2", "run", "controller_manager", "spawner", controller], spawner_log, env
             )
-            if spawned.returncode != 0:
+            try:
+                returncode: int | str = spawner.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                returncode = f"timed out after {remaining:.0f} s"
+            finally:
+                terminate(spawner)
+            if returncode != 0:
                 manager_log = (tmp / "controller_manager.log").read_text(errors="replace")
                 pytest.fail(
-                    f"Could not activate {controller!r} (exit {spawned.returncode}).\n"
-                    f"spawner stderr:\n{spawned.stderr.decode(errors='replace')}\n"
+                    f"Could not activate {controller!r} ({returncode}).\n"
+                    f"spawner log:\n{spawner_log.read_text(errors='replace')}\n"
                     f"controller_manager log:\n{manager_log}"
                 )
         yield

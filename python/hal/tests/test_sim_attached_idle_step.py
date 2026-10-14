@@ -61,7 +61,9 @@ def _build_libero_hal() -> object:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
     env, seed = build_sim_env_from_yaml(
-        "scenes/sim/libero_spatial.yaml", robot_id_fallback="franka_panda"
+        # The 30 Hz deploy scene: the 20 Hz eval scene fails the HAL's time-base guard.
+        "scenes/deploy/libero_pnp.yaml",
+        robot_id_fallback="franka_panda",
     )
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)

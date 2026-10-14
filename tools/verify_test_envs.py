@@ -412,7 +412,9 @@ def _post_provision_blocker(group: str) -> str | None:
     return None
 
 
-def _strict_pytest(group: str, targets: list[str], *, dry_run: bool = False) -> int:
+def _strict_pytest(
+    group: str, targets: list[str], *, dry_run: bool = False, junit_xml: Path | None = None
+) -> int:
     if not targets:
         print(f"skip {group}: no targets")
         return 0
@@ -423,6 +425,10 @@ def _strict_pytest(group: str, targets: list[str], *, dry_run: bool = False) -> 
     else:
         env.setdefault("MUJOCO_GL", "osmesa")
         env.setdefault("PYOPENGL_PLATFORM", "osmesa")
+    if group == "simpler-env":
+        # ManiSkill asks y/n on stdin before fetching the Bridge scene assets, and
+        # pytest's captured stdin turns that into an error: answer it.
+        env.setdefault("MS_SKIP_ASSET_DOWNLOAD_PROMPT", "1")
     if group == "locateanything":
         env.setdefault("OPENRAL_LOCATEANYTHING_SIDECAR_VENV", str(LOCATEANYTHING_VENV))
     if group == "qwen-vlm":
@@ -442,6 +448,8 @@ def _strict_pytest(group: str, targets: list[str], *, dry_run: bool = False) -> 
             group_args.extend(["--group", extra_group])
         cmd[3:3] = group_args
     cmd.extend(["-q", "-rs", "-p", "no:launch_testing", "-p", "no:launch_ros"])
+    if junit_xml is not None:
+        cmd.append(f"--junit-xml={junit_xml}")
     if dry_run:
         return _run(cmd, env=env, dry_run=True)
     proc = subprocess.run(
@@ -454,7 +462,9 @@ def _strict_pytest(group: str, targets: list[str], *, dry_run: bool = False) -> 
         check=False,
     )
     print(proc.stdout)
-    if proc.returncode != 0:
+    if proc.returncode != 0 or junit_xml is not None:
+        # With a junit report the caller (tools/lane_report.py) does the accounting,
+        # attributing each skip to a declared capability gap; pytest's own code stands.
         return proc.returncode
     if not re.search(r"\d+ passed", proc.stdout):
         print(f"{group}: no passing tests", file=sys.stderr)
@@ -471,10 +481,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include-provisioned", action="store_true")
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--junit-xml",
+        type=Path,
+        help="write pytest's junit report here and skip this script's own no-skips rule "
+        "(the heavy-lanes workflow hands the report to tools/lane_report.py); one group only",
+    )
     args = parser.parse_args(argv)
 
     group_targets = _load_group_targets()
     requested = args.groups or sorted(group_targets)
+    if args.junit_xml is not None and len(requested) != 1:
+        print("--junit-xml takes exactly one --groups entry", file=sys.stderr)
+        return 2
     unknown = sorted(set(requested) - set(group_targets))
     if unknown:
         print(f"unknown group(s): {', '.join(unknown)}", file=sys.stderr)
@@ -540,7 +559,9 @@ def main(argv: list[str] | None = None) -> int:
             if export_rc != 0:
                 rc = export_rc
                 continue
-        test_rc = _strict_pytest(group, group_targets[group], dry_run=args.dry_run)
+        test_rc = _strict_pytest(
+            group, group_targets[group], dry_run=args.dry_run, junit_xml=args.junit_xml
+        )
         if cleanup_onnx and ONNX_EXPORT.exists():
             ONNX_EXPORT.unlink()
         if test_rc != 0:

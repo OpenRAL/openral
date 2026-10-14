@@ -62,7 +62,15 @@ def sim(scene_env):
         seed=scene_env.seed,
         n_episodes=scene_env.n_episodes,
     )
-    built = SCENES.get("simpler_env")(env_cfg)
+    try:
+        built = SCENES.get("simpler_env")(env_cfg)
+    except RuntimeError as exc:
+        # Same as the maniskill3 adapter test: SAPIEN raises a bare RuntimeError
+        # ("vk::...: ErrorIncompatibleDriver" on a GPU-less runner,
+        # "ErrorFeatureNotPresent" on an iGPU) when no usable Vulkan device exists.
+        if "vk::" in str(exc) or "vulkan" in str(exc).lower():
+            pytest.skip(f"SAPIEN rendering needs a working Vulkan driver: {exc}")
+        raise
     yield built
     built.close()
 
