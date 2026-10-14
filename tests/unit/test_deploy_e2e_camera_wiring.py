@@ -69,10 +69,7 @@ def test_the_launch_no_longer_hardcodes_either_camera() -> None:
     assert 'reasoner_params["completion_camera_topic"]' in source
     # The lift fallback and octomap share one derivation (openral_core.deploy_cloud_topic).
     assert '"object_depth_points_topic": deploy_cloud_topic(' in source
-    assert (
-        "octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)"
-        in source
-    )
+    assert "octomap_cloud_topic = _octomap_cloud_topic(\n" in source
     assert "/openral/cameras/front_depth/points" not in source
 
 

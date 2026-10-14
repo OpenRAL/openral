@@ -923,12 +923,15 @@ def deploy_cloud_topic(
     *,
     pinned: str | None,
     hal_mode: str,
+    estimated_camera: str | None = None,
 ) -> str:
     """The ``PointCloud2`` topic a deploy's cloud consumers read, or ``""`` when it has none.
 
     ``octomap_server`` (``cloud_in``) and the world-state object lift's depth fallback
-    both read it. A pinned ``DeployRuntime.octomap_cloud_topic`` wins. Otherwise, in
-    sim, the sim sensor bridge back-projects each :attr:`SensorSpec.is_depth_camera`
+    both read it. A pinned ``DeployRuntime.octomap_cloud_topic`` wins. Next, a
+    ``DeployRuntime.estimated_depth_camera``: the depth provider publishes that RGB
+    camera's DA3 cloud on ``camera_topic(<name>, POINTS)``, sim and real alike.
+    Otherwise, in sim, the sim sensor bridge back-projects each :attr:`SensorSpec.is_depth_camera`
     onto ``camera_topic(<name>, POINTS)``, so exactly one such camera names the cloud.
     On a real deploy nothing in-tree publishes a cloud (the sensor leg publishes depth
     *images*), so the answer is ``""`` until the driver's own topic is pinned. The one
@@ -947,9 +950,13 @@ def deploy_cloud_topic(
         ''
         >>> deploy_cloud_topic(desc.sensors, pinned="/camera/depth/color/points", hal_mode="real")
         '/camera/depth/color/points'
+        >>> deploy_cloud_topic(desc.sensors, pinned=None, hal_mode="real", estimated_camera="head")
+        '/openral/cameras/head/points'
     """
     if pinned:
         return pinned
+    if estimated_camera:
+        return camera_topic(estimated_camera, CameraTopicKind.POINTS)
     if hal_mode == "real":
         return ""
     depth = [s.name for s in manifest_sensors if s.is_depth_camera]
@@ -10783,6 +10790,34 @@ class DeployRuntime(BaseModel):
     deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
     autostart provisions the sidecar venv, which can take minutes; the depth
     provider retries until it answers."""
+    estimated_depth_camera: str | None = None
+    """An RGB camera (a manifest or scene sensor *name*) whose metric depth Depth
+    Anything V3 estimates, so the world-collision map gets a cloud on a robot with no
+    depth sensor (a ``top`` / context camera), in sim and on real hardware alike. The
+    launch runs the depth provider on that camera with ``DA3METRIC-LARGE`` (its own
+    sidecar, ZMQ port 5772): metric depth from the camera's own ``CameraInfo`` focal,
+    published with that ``CameraInfo`` and back-projected to
+    ``/openral/cameras/<name>/points``, which becomes ``octomap_server``'s input
+    (``deploy_cloud_topic``); the robot self filter always runs on it (DA3 sees the arm).
+
+    An ESTIMATE, not a measurement: it can misplace or miss surfaces (glass, low texture,
+    far range), and it reaches the safety kernel's world voxels. The launch logs that at
+    WARN. Any RGB camera with ``intrinsics`` qualifies (top, context or wrist) once it is
+    tied to the robot by a declared mount: ``parent_frame`` + ``static_transform_xyz_rpy``
+    on it or on the sensor it ``shares_mount_with``; in sim, an ``*_optical_frame``
+    camera the bridge places from the MJCF also does
+    (``openral_core.depth_extrinsic.resolve_estimated_depth_camera``). A camera in
+    ``world`` or on a bare robot link is refused. An estimate never replaces a
+    measurement: the camera is REFUSED whenever the robot or the scene has any measured
+    depth or point-cloud sensor (``SensorSpec.is_cloud_source``), in sim and on real
+    hardware alike, with no override; the refusal names each such sensor and whether it
+    is the robot's or the scene's. Map that sensor's cloud (``octomap_cloud_topic``)
+    instead (Safety-WG, hazard HZ-0382-6). On ``deploy run`` that mount must be
+    calibrated in ``units/<unit>.yaml`` like any cloud source's
+    (``depth_extrinsic_problems``).
+    Mutually exclusive with ``octomap_cloud_topic`` (which cloud is mapped must be one
+    answer) and with ``slam_mono_camera`` naming the same camera (both would publish
+    its depth topics). ``None`` = off. Backward-compatible addition."""
     vision_attachment: VisionAttachmentRuntime | None = None
     """The vision attachment leg (segmenter + the HAL's attachment-evidence bridge).
     ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
@@ -10932,6 +10967,19 @@ class DeployRuntime(BaseModel):
             if left == right:
                 raise ValueError(
                     f"slam_stereo_cameras must name two distinct cameras, got {left!r} twice"
+                )
+        if self.estimated_depth_camera is not None:
+            if not self.estimated_depth_camera:
+                raise ValueError("estimated_depth_camera must be a non-empty camera name")
+            if self.octomap_cloud_topic:
+                raise ValueError(
+                    "estimated_depth_camera and octomap_cloud_topic both name the world "
+                    "map's cloud; set one"
+                )
+            if self.estimated_depth_camera == self.slam_mono_camera:
+                raise ValueError(
+                    f"estimated_depth_camera and slam_mono_camera both run a depth provider "
+                    f"on {self.estimated_depth_camera!r}, publishing its depth topics twice"
                 )
         if self.slam_mono_camera is not None:
             if not self.slam_mono_camera:

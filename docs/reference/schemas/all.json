@@ -13087,6 +13087,18 @@
               "title": "Slam Depth Sidecar Autostart",
               "type": "boolean"
             },
+            "estimated_depth_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Depth Camera"
+            },
             "vision_attachment": {
               "anyOf": [
                 {
@@ -15324,6 +15336,18 @@
               "default": true,
               "title": "Slam Depth Sidecar Autostart",
               "type": "boolean"
+            },
+            "estimated_depth_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Depth Camera"
             },
             "vision_attachment": {
               "anyOf": [
@@ -17701,6 +17725,18 @@
               "default": true,
               "title": "Slam Depth Sidecar Autostart",
               "type": "boolean"
+            },
+            "estimated_depth_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Depth Camera"
             },
             "vision_attachment": {
               "anyOf": [
