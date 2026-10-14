@@ -1247,15 +1247,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if estimated_depth_camera:
         from openral_core.depth_extrinsic import resolve_estimated_depth_camera
 
+        # The scene the launch reads (``deploy_config`` when given), as the launch resolves it.
+        estimated_scene_sensors = launched_scene.sensors if launched_scene is not None else []
         problems = resolve_estimated_depth_camera(
-            merge_deploy_sensors(
-                description.sensors, deploy_scene.sensors if deploy_scene is not None else []
-            ),
+            merge_deploy_sensors(description.sensors, estimated_scene_sensors),
             estimated_depth_camera,
             hal_mode=hal_mode,
-            scene_sensor_names={
-                s.name for s in (deploy_scene.sensors if deploy_scene is not None else [])
-            },
+            scene_sensor_names={s.name for s in estimated_scene_sensors},
         ).problems
         if problems:
             raise ROSConfigError(

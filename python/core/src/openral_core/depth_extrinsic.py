@@ -149,7 +149,10 @@ def resolve_estimated_depth_camera(
     ``world`` (a camera whose pose relative to the robot nobody declared) and a bare
     robot link (``panda_hand``: the camera is not at the link's origin) are refused.
     The camera must also be RGB (a depth sensor publishes its own depth) with
-    ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then).
+    ``intrinsics`` (the real sensor leg publishes ``CameraInfo`` only then). On a real
+    deploy it must also have a ``ros2_image`` ``deploy_binding`` with a ``topic``: DA3's
+    metres scale with the focal, which then comes from the driver's own calibrated
+    ``CameraInfo`` beside that topic, never the manifest's (possibly sim stand-in) K.
     ``sensors`` are the deploy's manifest (unit-overlaid) + scene sensors.
 
     An estimate never replaces a measurement: when any of ``sensors``
@@ -161,7 +164,7 @@ def resolve_estimated_depth_camera(
         >>> from openral_core import RobotDescription
         >>> from openral_core.schemas import SensorSpec
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml").sensors
-        >>> (refusal,) = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems
+        >>> refusal = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems[0]
         >>> refusal.startswith("top: REFUSED"), "robot sensor 'head_zed' (depth)" in refusal
         (True, True)
         >>> k = arm[1].intrinsics  # top's K; an RGB camera riding an RGB sensor's mount:
@@ -173,6 +176,7 @@ def resolve_estimated_depth_camera(
         ...         rate_hz=30.0,
         ...         intrinsics=k,
         ...         shares_mount_with="rig",
+        ...         deploy_binding={"backend": "ros2_image", "backend_params": {"topic": "/c"}},
         ...     ),
         ...     SensorSpec(
         ...         name="rig",
@@ -193,8 +197,8 @@ def resolve_estimated_depth_camera(
         >>> resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="sim")[:3]
         ('shoulder_left_optical_frame', None, 'shoulder_left')
         >>> real = resolve_estimated_depth_camera(rgb_only, "shoulder_left", hal_mode="real")
-        >>> "no mount ties it to the robot" in real.problems[0]
-        True
+        >>> [p.split(": ")[1].split(";")[0] for p in real.problems]  # nor a driver's K
+        ['has no deploy_binding', 'no mount ties it to the robot']
     """
     by_name = {s.name: s for s in sensors}
     spec = by_name.get(camera)
@@ -224,6 +228,23 @@ def resolve_estimated_depth_camera(
         )
     if spec.intrinsics is None:
         problems.append(f"{camera}: no intrinsics, so no CameraInfo gives DA3 its focal")
+    if hal_mode == "real":
+        # DA3's metres scale with the focal. A real camera's manifest intrinsics may be a
+        # sim stand-in, so the focal comes from its driver's own CameraInfo, which only a
+        # ros2_image binding has; without a binding the sensor leg never publishes it.
+        binding = spec.deploy_binding
+        topic = binding.backend_params.get("topic") if binding is not None else None
+        if (
+            binding is None
+            or binding.backend.value != "ros2_image"
+            or not (isinstance(topic, str) and topic)
+        ):
+            has = "no deploy_binding" if binding is None else f"a {binding.backend.value} binding"
+            problems.append(
+                f"{camera}: has {has}; a real deploy takes DA3's focal from the camera "
+                "driver's own calibrated CameraInfo, so it needs a ros2_image deploy_binding "
+                "with backend_params.topic"
+            )
     mount = by_name.get(spec.shares_mount_with or camera, spec)
     if mount.parent_frame is not None and mount.static_transform_xyz_rpy is not None:
         frame = str(mount.frame_id)

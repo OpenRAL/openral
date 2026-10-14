@@ -761,14 +761,21 @@ _ESTIMATED_DEPTH_PORT = 5772
 
 
 def _build_estimated_depth_nodes(
-    camera: str, *, cloud_frame: str, optical_parent: str | None, use_sim_time: bool
+    camera: str,
+    *,
+    rgb_camera_info_topic: str,
+    cloud_frame: str,
+    optical_parent: str | None,
+    use_sim_time: bool,
 ) -> list:  # type: ignore[type-arg]  # reason: launch actions, deferred import
     """The DA3METRIC sidecar + depth provider that give ``camera`` a world-collision cloud.
 
     The provider converts DA3's canonical output to metres through the camera's own
-    ``CameraInfo`` focal and publishes depth, that ``CameraInfo`` and the back-projected
-    cloud on the camera's canonical ``DEPTH_IMAGE`` / ``DEPTH_CAMERA_INFO`` / ``POINTS``
-    topics (``deploy_cloud_topic`` then maps the cloud), all stamped in ``cloud_frame``
+    ``CameraInfo`` focal (``rgb_camera_info_topic``: :func:`_live_camera_info_topic`,
+    the driver's calibration on a real deploy) and publishes depth, that ``CameraInfo``
+    and the back-projected cloud on the camera's canonical ``DEPTH_IMAGE`` /
+    ``DEPTH_CAMERA_INFO`` / ``POINTS`` topics (``deploy_cloud_topic`` then maps the
+    cloud), all stamped in ``cloud_frame``
     (``openral_core.depth_extrinsic.resolve_estimated_depth_camera``). A body-convention
     mount (``optical_parent``) gets ``cloud_frame`` as its REP-103 optical child on
     /tf_static, as the sim bridge does for a depth sensor's mount. The sidecar provisions
@@ -818,7 +825,7 @@ def _build_estimated_depth_nodes(
                 {
                     "use_sim_time": use_sim_time,
                     "image_topic": camera_topic(camera),
-                    "rgb_camera_info_topic": camera_topic(camera, CameraTopicKind.CAMERA_INFO),
+                    "rgb_camera_info_topic": rgb_camera_info_topic,
                     "depth_topic": camera_topic(camera, CameraTopicKind.DEPTH_IMAGE),
                     "camera_info_topic": camera_topic(camera, CameraTopicKind.DEPTH_CAMERA_INFO),
                     "points_topic": camera_topic(camera, CameraTopicKind.POINTS),
@@ -3255,17 +3262,23 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         from openral_core.depth_extrinsic import resolve_estimated_depth_camera
         from openral_core.exceptions import ROSConfigError
 
+        estimated_sensors = merge_deploy_sensors(description.sensors, scene_sensors)
         mount = resolve_estimated_depth_camera(
-            merge_deploy_sensors(description.sensors, scene_sensors),
+            estimated_sensors,
             estimated_depth_camera,
             hal_mode=hal_mode,
             scene_sensor_names={s.name for s in scene_sensors},
         )
         if mount.problems:
             raise ROSConfigError("estimated_depth_camera: " + "; ".join(mount.problems))
+        # The resolver passed, so on a real deploy this is the driver's own CameraInfo.
+        estimated_info_topic = _live_camera_info_topic(
+            next(s for s in estimated_sensors if s.name == estimated_depth_camera), hal_mode
+        )
         extra_nodes.extend(
             _build_estimated_depth_nodes(
                 estimated_depth_camera,
+                rgb_camera_info_topic=estimated_info_topic,
                 cloud_frame=mount.cloud_frame,
                 optical_parent=mount.optical_parent,
                 use_sim_time=use_sim_time,

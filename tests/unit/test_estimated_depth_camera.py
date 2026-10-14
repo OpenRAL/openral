@@ -31,9 +31,15 @@ from openral_core.depth_extrinsic import (
     resolve_estimated_depth_camera,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_core.schemas import SensorSpec, deploy_cloud_topic
+from openral_core.schemas import (
+    SensorDeployBinding,
+    SensorReaderBackend,
+    SensorSpec,
+    deploy_cloud_topic,
+)
 from openral_perception_ros.metric_depth import (
     DA3_CANONICAL_FOCAL_PX,
+    camera_info_problem,
     da3_metric_depth,
     points_from_depth,
     scale_intrinsics,
@@ -88,7 +94,7 @@ class TestCameraMount:
 
     def test_the_same_camera_has_no_mount_on_a_real_deploy(self) -> None:
         mount = resolve_estimated_depth_camera(self._vslam(), "shoulder_right", hal_mode="real")
-        assert "no mount ties it to the robot" in mount.problems[0]
+        assert any("no mount ties it to the robot" in p for p in mount.problems), mount.problems
 
     @pytest.mark.parametrize(
         ("robot", "camera", "measured"),
@@ -130,13 +136,42 @@ class TestCameraMount:
     def test_a_camera_sharing_a_non_cloud_mount_is_placed_in_sim_and_real(self) -> None:
         """OpenArm's ``top`` rides ``head_zed``'s mount; with that ZED wired colour-only
         (no depth stream, so no measured cloud) the estimate is placed on its mount."""
+        robot = str(_REPO / "robots/openarm/robot.yaml")
+        # Real: Thor's unit overlay gives `top` its ros2_image binding (the driver's K).
+        thor = apply_sensor_overlays(
+            RobotDescription.from_yaml(robot).sensors, load_robot_unit(robot, "thor").sensors
+        )
+        for mode in ("sim", "real"):
+            arm = [
+                s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s
+                for s in (thor if mode == "real" else RobotDescription.from_yaml(robot).sensors)
+            ]
+            mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
+            assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
+
+    def test_a_real_camera_without_a_driver_calibration_is_refused(self) -> None:
+        """A real deploy takes DA3's focal from the driver's CameraInfo, never the manifest's
+        K (OpenArm's `top` K is a sim stand-in): no ros2_image binding, no estimate."""
         arm = [
             s.model_copy(update={"modality": "rgb"}) if s.name == "head_zed" else s
             for s in RobotDescription.from_yaml(str(_REPO / "robots/openarm/robot.yaml")).sensors
         ]
-        for mode in ("sim", "real"):
-            mount = resolve_estimated_depth_camera(arm, "top", hal_mode=mode)
-            assert mount == ("zed_camera_link_optical_frame", "zed_camera_link", "head_zed", [])
+        assert resolve_estimated_depth_camera(arm, "top", hal_mode="sim").problems == []
+        (problem,) = resolve_estimated_depth_camera(arm, "top", hal_mode="real").problems
+        assert "has no deploy_binding" in problem
+        assert "ros2_image deploy_binding" in problem
+        opencv = [
+            s.model_copy(
+                update={
+                    "deploy_binding": SensorDeployBinding(backend=SensorReaderBackend.OPENCV_THREAD)
+                }
+            )
+            if s.name == "top"
+            else s
+            for s in arm
+        ]
+        (problem,) = resolve_estimated_depth_camera(opencv, "top", hal_mode="real").problems
+        assert "has a opencv_thread binding" in problem
 
     @pytest.mark.parametrize(
         ("robot", "camera", "match"),
@@ -186,6 +221,32 @@ class TestMetricDepth:
         assert depth.tolist() == [[300.0, 0.0, 3000.0]]
         pts = points_from_depth(depth / 100.0, fx=1.0, fy=1.0, cx=0.0, cy=0.0, max_range_m=5.0)
         assert pts[:, 2].tolist() == [3.0]
+
+    @pytest.mark.parametrize(
+        ("k", "info_wh", "image_wh", "match"),
+        [
+            # A driver's full-resolution CameraInfo for a downscaled republish: usable.
+            ((1498.0, 1498.0, 959.5, 539.5), (1920, 1080), (960, 540), None),
+            ((1498.0, 1498.0, 959.5, 539.5), (1920, 1080), (640, 361), None),  # rounding
+            ((500.0, 500.0, 319.5, 239.5), (640, 360), (640, 480), "is not a resize"),
+            ((0.0, 0.0, 0.0, 0.0), (640, 480), (640, 480), "not a positive finite"),
+            ((500.0, 0.0, 319.5, 239.5), (640, 480), (640, 480), "not a positive finite"),
+            ((float("nan"), 500.0, 319.5, 239.5), (640, 480), (640, 480), "not a positive"),
+            ((500.0, 500.0, 319.5, 239.5), (0, 0), (640, 480), "empty size"),
+        ],
+    )
+    def test_a_camera_info_that_cannot_scale_the_image_is_named(
+        self,
+        k: tuple[float, float, float, float],
+        info_wh: tuple[int, int],
+        image_wh: tuple[int, int],
+        match: str | None,
+    ) -> None:
+        problem = camera_info_problem(k, info_wh, image_wh)
+        if match is None:
+            assert problem is None
+        else:
+            assert problem is not None and match in problem
 
 
 class TestDeployResolution:
