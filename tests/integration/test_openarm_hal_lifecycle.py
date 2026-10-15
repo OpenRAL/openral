@@ -286,7 +286,14 @@ def test_on_safe_action_emits_hal_send_action_span(
         chunk.flat = [float(v) + 0.1 for v in baseline]
         chunk.rskill_id = "openral/test-openarm-spans"
         pub.publish(chunk)
-        _spin_for(executor, 0.5)
+        # Wait on the span, not a fixed spin: the head_zed depth cast (~0.45 s per
+        # 1920x1080/4 frame on a dev host) shares this single-threaded executor,
+        # so one tick can outlast a 0.5 s window before the callback runs.
+        span_deadline = time.monotonic() + 3.0
+        while time.monotonic() < span_deadline and not any(
+            s.name == "hal.send_action" for s in captured_spans.get_finished_spans()
+        ):
+            executor.spin_once(timeout_sec=0.02)
 
     spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.send_action"]
     assert spans, "no hal.send_action span emitted after /openral/safe_action publish"
