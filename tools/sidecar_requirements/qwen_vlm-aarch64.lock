@@ -1111,13 +1111,13 @@ torch==2.9.1+cu130 \
     #   bitsandbytes
     #   torchvision
 torchvision==0.24.1 \
-    --hash=sha256:3836ae7b5ecceb195dcf62ea17858deb912f90cfc7b0e5c383e451e5834ff9ba \
-    --hash=sha256:61a2d857a2be441cbd5a80b807b70b5d3b580c95166b3a19d4e433e7a85aeb76 \
-    --hash=sha256:68c8c884e7730146b7915d863526e8f32194532629ecc64da865242d35f417c0 \
-    --hash=sha256:7695d95e4e4c25fe1af3b880ffcd2dbcaa43cce7fd7edbe0157305b837c1dcf8 \
-    --hash=sha256:932dcfe6718f1306b6844477939d18c9102e678cdaffc13da9c3a1841d57ddde \
-    --hash=sha256:9db0306f8eec7dc11745044c78dc49a80b84cc0935e36575677cdc2bce9be23c \
-    --hash=sha256:bd33a7cc32122bc92919f95ea0e7bf73588e71be0ca2c5cad8fb7eebd333e8dd
+    --hash=sha256:083b9361e677a51e3e5632c80d7a1fdee200ecabf787a14cad9f9ebe1bb523d5 \
+    --hash=sha256:2681f8ddf7ccd89b94906e2e303adee498d1641452ce07b0dd1cc928475b970f \
+    --hash=sha256:27b7593f236e8cb264b12a1166e59d744af76fdb347b598a9c2665118bc27533 \
+    --hash=sha256:7bf2cb6167244750e905fbada15b9b25b9487883cc212b9586eee74c455af02a \
+    --hash=sha256:89743dcee13e943f58b37c7647aff14b5bb24c11c84826376d457acf97586fec \
+    --hash=sha256:bfd03db06f624a7e921f9cc5bb03d4b6afa13b5f9e225610a672dba09e5d0dca \
+    --hash=sha256:d4ba2532440a93c23a99c41423a765a0cdd47556afa3acf7c318dd1d3d6793e9
     # via -r tools/sidecar_requirements/qwen_vlm.in
 tqdm==4.67.3 \
     --hash=sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb \
