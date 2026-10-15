@@ -94,11 +94,22 @@ def test_look_at_rskill_aims_wrist_camera_at_target(
             assert first.control_mode is ControlMode.JOINT_POSITION
             assert len(first.joint_targets[0]) == len(description.joints)
 
+            # No HAL here: the measured joints echo each commanded waypoint (a
+            # perfectly tracking arm), ticked at 30 Hz so the paced replay runs
+            # its planned duration before reporting the final waypoint reached.
+            from openral_core import JointState, WorldState
+
+            names = [j.name for j in description.joints]
             final_waypoint = list(first.joint_targets[0])
             satisfied = False
             for _ in range(10_000):
+                time.sleep(1.0 / 30.0)
+                measured = WorldState(
+                    stamp_ns=0,
+                    joint_state=JointState(name=names, position=final_waypoint, stamp_ns=0),
+                )
                 try:
-                    nxt = skill.step(world_state=None)  # type: ignore[arg-type]
+                    nxt = skill.step(measured)
                 except ROSRskillGoalSatisfied:
                     satisfied = True
                     break

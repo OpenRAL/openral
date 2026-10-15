@@ -11,9 +11,12 @@ modes selected by ``RosIntegration.result_trajectory_field``:
   blocks on the result, extracts a
   ``trajectory_msgs.msg.JointTrajectory`` from the result, reorders
   its joints into the host ``RobotDescription``'s joint order, and
-  emits one waypoint per subsequent ``step()`` as an
-  ``Action`` chunk. After the last waypoint
-  raises ``ROSRskillGoalSatisfied``.
+  emits on each subsequent ``step()`` the waypoint whose planned
+  ``time_from_start`` is due on the host node's clock as an ``Action``
+  chunk. Raises ``ROSRskillGoalSatisfied`` once the measured joints
+  have reached the last waypoint (not once it has been sent), or
+  ``ROSDeadlineMissed`` if they do not settle within
+  ``_REPLAY_SETTLE_TIMEOUT_S`` of the plan's end.
 * **Result-only mode** (``result_trajectory_field is None``, e.g. Nav2):
   the wrapped action server drives actuators itself (Nav2 publishes
   ``/cmd_vel`` via its behaviour tree). The adapter just awaits the
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import json
 import time
+from bisect import bisect_right
 from collections.abc import Sequence
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
@@ -53,7 +57,7 @@ from openral_core.schemas import (
 )
 
 from openral_rskill.base import rSkillBase
-from openral_rskill.execution_budget import BudgetMiss, node_execution_budget
+from openral_rskill.execution_budget import BudgetMiss, ExecutionBudget, node_execution_budget
 
 if TYPE_CHECKING:
     # `rclpy` and the wrapped IDL package are not importable on every host
@@ -87,6 +91,30 @@ _MIN_RESULT_DEADLINE_S = 2.0
 # Cadence at which we poll rclpy futures while the wrapped server runs.
 # Matches the runner's bounded polling cadence.
 _FUTURE_POLL_INTERVAL_S = 0.02
+
+# Trajectory replay. The runner ticks ``step()`` at its control rate and sends each
+# returned waypoint as one JOINT_POSITION chunk. The replay used to advance one
+# waypoint per call and report success one call after the last waypoint was *sent*,
+# so a multi-second MoveIt plan streamed out in a fraction of its planned time and
+# the goal was reported satisfied with the arm still far from it (the tool 0.6 m off
+# in DsslRobot/openral 1d5b739a7). It now emits the waypoint whose ``time_from_start``
+# is due (on the host node's clock: sim time under ``use_sim_time``) and holds the
+# last one until the measured joints reach it.
+#
+# Worst per-joint error (rad, or m for a prismatic joint) between the measured planned
+# joints and the final waypoint that counts as "reached". 0.05 rad (~2.9 deg) sits far
+# above the steady-state error of a stiff position-controlled arm (ros2_control and
+# vendor servo loops settle around 1e-3 rad) yet far below a plan still in motion. It is
+# an engine default, not tuned for any one arm: a compliant / low-stiffness drive can
+# settle outside it (the fork above needed 0.15 rad on a simulated RM-75 with
+# 600 N.m/rad joints), which then surfaces as the typed ROSDeadlineMissed below rather
+# than a false success.
+_FINAL_WAYPOINT_TOL_RAD = 0.05
+# How long past the plan's last ``time_from_start`` (same clock) the drives get to come
+# within ``_FINAL_WAYPOINT_TOL_RAD``. Generous against MoveIt's own execution monitor
+# (planned duration x 1.2 + 0.5 s) so a slow-settling arm is not cut off, bounded so an
+# arm that never arrives fails the goal instead of hanging it.
+_REPLAY_SETTLE_TIMEOUT_S = 10.0
 
 # Time we wait for the wrapped server to come up at configure time
 # and to accept the goal. MoveIt's cold-start path includes a planning-
@@ -379,6 +407,14 @@ class ROSActionRskill(rSkillBase):
         # trajectory mode; empty in result-only mode.
         self._waypoints: list[list[float]] = []
         self._waypoint_index: int = 0
+        # Planned ``time_from_start`` (s) per waypoint; empty when the plan carries
+        # no timing, in which case the replay advances one waypoint per call.
+        self._waypoint_times: list[float] = []
+        # (robot-order index, joint name) of every joint the wrapped planner moves:
+        # the joints whose measured position decides "final waypoint reached".
+        self._planned_joints: list[tuple[int, str]] = []
+        # Started on the first replay tick: times the plan + settle on the node's clock.
+        self._replay_budget: ExecutionBudget | None = None
         # Set once the wrapped action's result has been awaited.
         self._result_consumed: bool = False
         # Per-slot values used to populate joints the wrapped planner
@@ -516,7 +552,12 @@ class ROSActionRskill(rSkillBase):
     def _step_impl(self, world_state: WorldState) -> Action:
         """Return one ``Action`` chunk per call until ``ROSRskillGoalSatisfied``.
 
-        Trajectory mode emits one cached waypoint per call; result-only
+        Trajectory mode emits the cached waypoint that is due by the plan's
+        ``time_from_start`` (one per call for an untimed plan) and raises
+        ``ROSRskillGoalSatisfied`` only once the measured joints in
+        ``world_state`` are within ``_FINAL_WAYPOINT_TOL_RAD`` of the last
+        waypoint; ``ROSDeadlineMissed`` when that does not happen within
+        ``_REPLAY_SETTLE_TIMEOUT_S`` of the plan's end. Result-only
         mode raises ``ROSRskillGoalSatisfied`` on the first call (after
         awaiting the wrapped action's result), since no joint targets
         flow through OpenRAL's actuation path in that case.
@@ -543,18 +584,58 @@ class ROSActionRskill(rSkillBase):
                     f"{self.name}: wrapped result-only action completed (no trajectory)."
                 )
 
-        if self._waypoint_index >= len(self._waypoints):
-            raise ROSRskillGoalSatisfied(
-                f"{self.name}: emitted all {len(self._waypoints)} waypoints."
+        last = len(self._waypoints) - 1
+        if self._replay_budget is None:
+            # First replay tick: waypoint 0 goes out and the plan's clock starts.
+            planned_s = self._waypoint_times[-1] if self._waypoint_times else 0.0
+            self._replay_budget = node_execution_budget(
+                self._node, planned_s + _REPLAY_SETTLE_TIMEOUT_S
             )
+        else:
+            error = self._final_waypoint_error(world_state)
+            if (
+                self._waypoint_index == last
+                and error is not None
+                and error <= _FINAL_WAYPOINT_TOL_RAD
+            ):
+                raise ROSRskillGoalSatisfied(
+                    f"{self.name}: reached the final of {len(self._waypoints)} waypoints "
+                    f"(worst joint error {error:.3f} rad <= {_FINAL_WAYPOINT_TOL_RAD})."
+                )
+            miss = self._replay_budget.check()
+            if miss is not None:
+                measured = "unmeasured" if error is None else f"{error:.3f} rad"
+                raise ROSDeadlineMissed(
+                    f"{self.name}: final waypoint not reached (worst joint error "
+                    f"{measured}, tolerance {_FINAL_WAYPOINT_TOL_RAD} rad, settle bound "
+                    f"{_REPLAY_SETTLE_TIMEOUT_S:.1f}s past the plan; {miss.kind}: {miss.detail})."
+                )
+            if self._waypoint_times:
+                due = bisect_right(self._waypoint_times, self._replay_budget.elapsed_s()) - 1
+                self._waypoint_index = max(self._waypoint_index, min(due, last))
+            else:  # untimed plan: one waypoint per call
+                self._waypoint_index = min(self._waypoint_index + 1, last)
 
-        waypoint = self._waypoints[self._waypoint_index]
-        self._waypoint_index += 1
         return Action(
             control_mode=ControlMode.JOINT_POSITION,
             horizon=1,
-            joint_targets=[waypoint],
+            joint_targets=[self._waypoints[self._waypoint_index]],
         )
+
+    def _final_waypoint_error(self, world_state: Any) -> float | None:  # noqa: ANN401  # reason: WorldState or None on test paths
+        """Worst ``|measured - final|`` over the planned joints; ``None`` when unmeasurable.
+
+        Reads ``world_state.joint_state`` by joint name. A missing snapshot or a
+        planned joint absent from it is unmeasurable, which never counts as reached.
+        """
+        joint_state = getattr(world_state, "joint_state", None)
+        if joint_state is None or not self._planned_joints:
+            return None
+        measured = dict(zip(joint_state.name, joint_state.position, strict=False))
+        final = self._waypoints[-1]
+        if any(name not in measured for _, name in self._planned_joints):
+            return None
+        return max(abs(float(measured[name]) - final[i]) for i, name in self._planned_joints)
 
     # ── Internals ────────────────────────────────────────────────────────────
 
@@ -654,6 +735,7 @@ class ROSActionRskill(rSkillBase):
                     if j >= 0:
                         wp[i] = float(p.positions[j])
                 self._waypoints.append(wp)
+            self._planned_joints = [(i, target_names[i]) for i, j in enumerate(perm) if j >= 0]
             if unmoved_indices:
                 log.info(
                     "ros_action_rskill.unmoved_joints",
@@ -668,12 +750,22 @@ class ROSActionRskill(rSkillBase):
             # supplies a description; this branch exists only for unit
             # tests that exercise the adapter without a host description.
             self._waypoints = [[float(v) for v in p.positions] for p in points]
+            self._planned_joints = list(enumerate(source_names))
+
+        # ``JointTrajectoryPoint.time_from_start`` (builtin_interfaces/Duration) paces the
+        # replay; a plan without it (all zero) falls back to one waypoint per call.
+        times = []
+        for p in points:
+            tfs = getattr(p, "time_from_start", None)
+            times.append(float(getattr(tfs, "sec", 0)) + float(getattr(tfs, "nanosec", 0)) * 1e-9)
+        self._waypoint_times = times if any(t > 0.0 for t in times) else []
 
         log.info(
             "ros_action_rskill.trajectory_cached",
             name=self.name,
             n_waypoints=len(self._waypoints),
             n_joints=len(self._waypoints[0]) if self._waypoints else 0,
+            planned_duration_s=self._waypoint_times[-1] if self._waypoint_times else None,
         )
 
     def _send_action_goal_and_await_result(self) -> Any:  # noqa: ANN401  # reason: arbitrary IDL result type

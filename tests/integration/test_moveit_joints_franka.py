@@ -5,8 +5,8 @@ Brings up the upstream ``moveit_resources_panda_moveit_config`` demo launch as a
 drives the ``JointGoalRskill`` adapter selected by ``ros_integration.goal_builder: "joint"``
 from the in-tree ``rskills/rskill-moveit-joints/`` manifest. Asserts the planner returns a
 non-empty trajectory the adapter caches, reorders into the host ``RobotDescription`` joint
-order, and emits one waypoint per ``rSkillBase.step`` call until ``ROSRskillGoalSatisfied``
-fires.
+order, and emits waypoints paced by ``time_from_start`` until ``ROSRskillGoalSatisfied``
+fires once the measured joints reach the last one.
 
 Gates per CLAUDE.md §1.11 / §1.12: ``ROS_DISTRO`` env set (sourced ROS 2 workspace); ``rclpy``
 importable; ``moveit_resources_panda_moveit_config`` available as an ament package (apt:
@@ -55,8 +55,8 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
     ``ActionClient`` on ``/move_action`` and parses the manifest's ``default_goal_json``;
     (4) call ``step()`` — the first call sends the goal, waits for the real planner, caches
     the returned ``JointTrajectory`` reordered into ``RobotDescription.joints`` order;
-    (5) subsequent ``step()`` calls each return one waypoint as a 1-row ``Action``; (6) after
-    the last waypoint, ``step()`` raises ``ROSRskillGoalSatisfied``.
+    (5) subsequent ``step()`` calls each return the due waypoint as a 1-row ``Action``; (6) once
+    the measured joints reach the last waypoint, ``step()`` raises ``ROSRskillGoalSatisfied``.
 
     No mocks (CLAUDE.md §1.11): real rclpy, real ``move_group``, real rSkill manifest, real
     ``RobotDescription``.
@@ -123,17 +123,34 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
                 f"len(description.joints)={len(description.joints)}"
             )
 
-            # Drive every remaining waypoint plus one more so we hit the
-            # termination signal. Bound the loop to avoid infinite spin
-            # on a regression where the adapter forgets to raise.
+            # Tick at 30 Hz until the termination signal. There is no HAL in this
+            # test, so the measured joint state echoes each commanded waypoint (an
+            # arm that tracks perfectly) — the adapter only reports success once
+            # the measured joints reach the final waypoint. Bounded so a
+            # regression where the adapter forgets to raise cannot hang.
+            import time
+
+            from openral_core import JointState, WorldState
+
+            names = [j.name for j in description.joints]
+
+            def _measured(targets: list[float]) -> WorldState:
+                return WorldState(
+                    stamp_ns=0,
+                    joint_state=JointState(name=names, position=targets, stamp_ns=0),
+                )
+
+            measured = _measured(first.joint_targets[0])
             waypoint_count = 1
             satisfied = False
             for _ in range(10_000):
+                time.sleep(1.0 / 30.0)
                 try:
-                    nxt = skill.step(world_state=None)  # type: ignore[arg-type]
+                    nxt = skill.step(measured)
                 except ROSRskillGoalSatisfied:
                     satisfied = True
                     break
+                measured = _measured(nxt.joint_targets[0])
                 waypoint_count += 1
                 assert nxt.control_mode is ControlMode.JOINT_POSITION
                 assert nxt.horizon == 1
@@ -145,8 +162,8 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
             # MoveIt result (it means the current state is already
             # close enough to the goal that the planner returned a
             # single-point trajectory). The contract the adapter
-            # implements is "emit every waypoint then signal
-            # completion" — that holds for waypoint_count >= 1.
+            # implements is "emit every waypoint, then signal
+            # completion once reached" — that holds for waypoint_count >= 1.
             assert waypoint_count >= 1, "expected MoveIt to return at least one waypoint"
         finally:
             executor.shutdown()
