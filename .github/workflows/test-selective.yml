@@ -204,6 +204,10 @@ jobs:
       # Pick this shard's slice first, so a shard with nothing to run (a
       # narrow selection, or no isolated targets) exits in seconds instead of
       # paying the ~3 min setup.
+      # The expansion below runs `find` over the selected dirs, so it needs
+      # the tree; checkout is cheap next to setup.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
       - name: Pick shard ${{ matrix.shard }} targets
         id: shard
         env:
@@ -213,16 +217,29 @@ jobs:
           if [ "${{ matrix.shard }}" = "isolated" ]; then
             mine="$ISOLATED_TARGETS"
           else
+            # Expand directory targets into their test files first: the
+            # selector can emit a whole `tests/unit`, and round-robin over
+            # targets would hand that one shard the entire unit suite (it
+            # timed out at 15 min while the others finished in ~6). Isolated
+            # files the expansion picks up are dropped; they have their own
+            # shard. Duplicates (a dir plus a file inside it) collapse in
+            # `sort -u`.
             # shellcheck disable=SC2086
-            mine=$(printf '%s\n' $TARGETS | sort | awk -v k="${{ matrix.shard }}" 'NF && NR % 4 == k')
+            mine=$(for t in $TARGETS; do
+                     if [ -d "$t" ]; then
+                       find "$t" \( -name 'test_*.py' -o -name '*_test.py' \) -type f
+                     else
+                       printf '%s\n' "$t"
+                     fi
+                   done | sort -u \
+                   | { grep -vxF -f <(printf '%s\n' $ISOLATED_TARGETS | grep .) || true; } \
+                   | awk -v k="${{ matrix.shard }}" 'NF && NR % 4 == k')
           fi
           # shellcheck disable=SC2086
           mine=$(echo $mine)  # collapse newlines/whitespace; empty stays empty
           echo "targets=$mine" >> "$GITHUB_OUTPUT"
           [ -n "$mine" ] || echo "::notice::shard ${{ matrix.shard }} has no targets."
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: steps.shard.outputs.targets != ''
       - uses: ./.github/actions/setup-test-env
         if: steps.shard.outputs.targets != ''
 
