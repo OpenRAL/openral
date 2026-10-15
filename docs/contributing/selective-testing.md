@@ -20,8 +20,8 @@ covered by `tests/unit/test_select_tests.py` and `tests/unit/test_audit_tests.py
 
 The cheap, high-signal workflows run on every PR (`quality` — ruff + mypy +
 schema drift + `mkdocs --strict`; `test-selective`; `dco`), while the expensive
-full-matrix suites (`test-python`, `hal`) stay `workflow_dispatch`-only ("out of
-GitHub Actions credits" — see the headers in `.github/workflows/`). Running 2.9k
+suites (`test-ros2`) stay `workflow_dispatch`-only ("out of GitHub Actions
+credits" — see the headers in `.github/workflows/`). Running 2.9k
 tests on every push is the difference between affordable and not. Selective
 execution maps a
 git diff to the **minimal** set of pytest targets that can see the change, so a

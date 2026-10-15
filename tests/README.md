@@ -43,8 +43,8 @@ push to the PR):
 | `quality.yml` | PR (`branches: [master]`), `workflow_dispatch` | ruff + `mypy --strict` (core/cli/hal + `tools/`) + schema-drift + rSkill README drift + manifest validation + `mkdocs build --strict`. | **Required check** (`quality`). No test execution. |
 | `dco.yml` | PR (`opened`, `synchronize`, `reopened`) | (no tests) | **Required check** (`Verify Signed-off-by`). Greps every commit in the PR for `Signed-off-by:`. |
 
-The four remaining test workflows are `workflow_dispatch`-only — **not** run
-automatically on a PR or a push, per the header comment in each ("Auto-triggers
+The remaining test workflow is `workflow_dispatch`-only — **not** run
+automatically on a PR or a push, per its header comment ("Auto-triggers
 disabled: out of GitHub Actions credits. Re-enable PR/push triggers once
 billing is restored."). This does not apply to the non-test workflows below
 the table — `docker-build.yml`, `pages.yml`, `release-please.yml`, and
@@ -53,10 +53,7 @@ on a PR:
 
 | Workflow | Suites it runs | Notes |
 | --- | --- | --- |
-| `test-python.yml` | `tests/unit/` (`pytest -q --cov=python --cov-branch`) | Matrix: `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-24.04-arm` × Python 3.12 (`continue-on-error` on the arm row). Coverage uploaded to Codecov from the `ubuntu-24.04` cell. |
 | `test-ros2.yml` | `colcon build` + `colcon test` (not pytest) | Runs inside `ros:jazzy-ros-base`; `packages` input defaults to `openral_safety_kernel openral_octomap_bridge`. |
-| `hal.yml` | `tests/unit/test_hal.py` | Single-row matrix (`ubuntu-24.04`, Python 3.12, Jazzy). |
-| `docs.yml` | (no tests) | `mkdocs build --strict` — redundant with the step already folded into `quality.yml`; kept for on-demand parity. |
 
 `docker-build.yml`, `pages.yml`, `release-please.yml`, and `release-pypi.yml`
 trigger on `push` to `master` (or a `v*.*.*` tag) rather than on a PR; see
