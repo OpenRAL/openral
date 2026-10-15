@@ -53,7 +53,7 @@ scenes:
   - "household"
 
 # Provenance citation (a playbook has no weights / upstream model repo, so a
-# citation is still required for publish-readiness — CLAUDE.md §6.4). The
+# citation is still required for publish-readiness — CLAUDE.md §3 rSkill packaging). The
 # The authoring decision record is private (OpenRAL/management); this points at
 # the public stub that explains where it lives.
 paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/decisions.md"

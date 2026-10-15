@@ -1,7 +1,7 @@
 ---
 name: rtdetr-coco-r18
 description: >-
-  S1 object detector. Capabilities: detect on person, cup, bottle, bowl, chair, table. RT-DETR-L (Real-Time DEtection TRansformer, large variant) trained on COCO and exported to ONNX. Runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0 weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector rSkill kind contract. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 object detector. Capabilities: detect on person, cup, bottle, bowl, chair, table. RT-DETR (Real-Time DEtection TRansformer) with a ResNet-18vd backbone (r18vd), trained on COCO and exported to ONNX. Runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0 weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector rSkill kind contract. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -35,7 +35,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **object detector** (`role: s1`, `kind: detector`). RT-DETR-L (Real-Time DEtection TRansformer, large variant) trained on COCO and exported to ONNX. Runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0 weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector rSkill kind contract.
+An OpenRAL **object detector** (`role: s1`, `kind: detector`). RT-DETR (Real-Time DEtection TRansformer) with a ResNet-18vd backbone (r18vd), trained on COCO and exported to ONNX. Runs on the camera tee and publishes ObjectsMetadata to /openral/perception/objects. 80 COCO categories. Apache-2.0 weights. Reference latency ~20 ms on GPU, ~45 ms on CPU. This is the detector rSkill kind contract.
 
 ## Capabilities
 

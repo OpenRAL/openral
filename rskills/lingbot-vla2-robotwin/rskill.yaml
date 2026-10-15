@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: OpenRAL/lingbot-vla-v2-6b-nf4 (NF4 pre-quantized mirror of
 #        robbyant/lingbot-vla-v2-6b, Apache-2.0 code + weights)
 # Source: github.com/robbyant/lingbot-vla-v2 @ 69729b4

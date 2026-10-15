@@ -46,7 +46,7 @@ _VLA_ID = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     """A VLA whose pair (VLA + reward) exceeds GPU VRAM is refused before dispatch.
 
-    smolvla (1.2 GB bf16) + robometer (3.6 GB int4) = 4.8 GB; with a 4.0 GB budget
+    smolvla (1.2 GB bf16) + robometer (5.5 GB int4) = 6.7 GB; with a 4.0 GB budget
     the pair does not fit, so ``_refuse_unfittable_vla`` must:
 
     1. publish a ``KIND_CONTROLLER`` / ``vram_insufficient`` ``FailureTrigger`` for

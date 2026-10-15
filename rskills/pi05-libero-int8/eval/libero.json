@@ -11,7 +11,7 @@
     "reproduction_planned": "Pending \u2014 requires checkpoint inspection for camera/state spec before running lerobot-eval.",
     "reproduction_cli": {
       "description": "Re-run this benchmark inside the OpenRAL repo. openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
-      "command": "openral benchmark run --suite libero_spatial --rskill pi05-libero",
+      "command": "openral benchmark run --suite libero_spatial --rskill pi05-libero-int8",
       "status": "in-tree (libero_spatial); pi05 is ~8 h per LIBERO suite on A100 so paper numbers stay until a full repro run lands",
       "notes": [
         "The 'results' block on this file is still the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",

@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 #
 # Wraps: OpenRAL/rskill-molmoact2-multi-so101-nf4 (NF4-quantized from
 #        allenai/MolmoAct2-SO100_101 via tools/quantize_rskill.py)
@@ -29,7 +29,7 @@
 # alone doesn't fix the zero reference; full fidelity needs the dataset's
 # calibration offsets. See scenes/sim/so101_tube_insertion.yaml.
 #
-# LICENSE (CLAUDE.md §7.4): Apache-2.0, code + weights, fully open Ai2
+# LICENSE (CLAUDE.md §3 VLA license matrix): Apache-2.0, code + weights, fully open Ai2
 # release. Commercial use permitted.
 
 # ── Identity ───────────────────────────────────────────────────────────────

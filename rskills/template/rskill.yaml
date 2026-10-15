@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 #
 # Scaffold template consumed by `openral rskill new <id>` and
 # `tools/rskill_scaffolder.py`. Real, schema-valid manifest:

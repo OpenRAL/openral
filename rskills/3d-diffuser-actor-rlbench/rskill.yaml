@@ -1,4 +1,4 @@
-# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: katefgroup/3d_diffuser_actor  (diffuser_actor_peract.pth)
 # Paper: Ke et al., 2024 — "3D Diffuser Actor: Policy Diffusion with 3D Scene
 #        Representations" (arXiv:2402.10885). RLBench PerAct 18-task setup.

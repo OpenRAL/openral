@@ -7,7 +7,7 @@
     "evaluated_by": "OpenRAL:openral benchmark run",
     "reproduced_locally": true,
     "reproduction_planned": null,
-    "reproduction_cli": "openral benchmark run --suite aloha_transfer_cube --rskill act-aloha",
+    "reproduction_cli": "openral benchmark run --suite aloha --rskill act-aloha --out rskills/act-aloha/eval/aloha_transfer_cube.json",
     "table": null,
     "status": "reproduced"
   },

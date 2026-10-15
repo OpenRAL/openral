@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 #
 # Wraps: OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4
 #        (NF4-quantized from allenai/MolmoAct2-LIBERO via tools/quantize_rskill.py)
@@ -15,7 +15,7 @@
 # NOT trust_remote_code. `source_repo` supplies only config + processor +
 # norm_stats.json.
 #
-# LICENSE (CLAUDE.md §7.4): Apache-2.0, code + weights, fully open Ai2
+# LICENSE (CLAUDE.md §3 VLA license matrix): Apache-2.0, code + weights, fully open Ai2
 # release. Commercial use permitted.
 
 # ── Identity ───────────────────────────────────────────────────────────────

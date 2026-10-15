@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/smolvla_robotwin            (Apache-2.0)
 # Base:  lerobot/smolvla_base                (arxiv:2506.01844)
 # Dataset: lerobot/robotwin_unified (== pepijn223/robotwin_unified_v3, renamed)

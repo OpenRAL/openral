@@ -1,8 +1,8 @@
-# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: RLWRLD/RLDX-1-FT-LIBERO  — LIBERO-finetuned RLDX-1
 # Base:  RLWRLD/RLDX-1-PT          (Qwen3-VL-8B + Multi-Stream Action Transformer)
 #
-# LICENSE WARNING (CLAUDE.md §7.4):
+# LICENSE WARNING (CLAUDE.md §3 VLA license matrix):
 #   Code: Apache-2.0 (https://github.com/RLWRLD/RLDX-1)
 #   Weights: RLWRLD Model License v1.0 — NON-COMMERCIAL, attribution required,
 #   no military / weapons / non-consensual surveillance use. Mirrors our GR00T
@@ -64,16 +64,17 @@ actuators_required:
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
 # `int4` is the openral `QuantizationDtype` for the NF4 weight-only
-# scheme that the sidecar applies to the Qwen3-VL backbone. The MSAT
-# diffusion head is intentionally left at bf16 — quantizing the flow
-# matcher would corrupt action quality.
+# scheme. The sidecar (tools/rldx_sidecar.py) applies it to every AutoModel
+# load, skipping only lm_head + embed_tokens — so the MSAT diffusion head
+# (flow matcher) is quantized too, which may degrade action quality. On a
+# >=12 GiB GPU prefer `--quantization none` to keep the head at bf16.
 quantization:
   dtype: "int4"
   backend: "pytorch"
 # Informational VRAM ceilings (ral skill check / bh doctor).
 min_vram_gb:
   bf16: 18.0   # full-precision weights + 4-frame video activations.
-  int4: 7.0    # NF4 backbone + bf16 head + activations on an 8 GiB GPU.
+  int4: 7.0    # NF4 backbone + NF4 head + activations on an 8 GiB GPU.
 weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
@@ -131,7 +132,7 @@ description: >
   Action Transformer flow-matching head producing 16-step LIBERO action
   chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial).
   Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization
-  on the Qwen3-VL backbone is required to fit on 8 GiB GPUs.
+  (Qwen3-VL backbone and MSAT head) is required to fit on 8 GiB GPUs.
 
 # Action vocabulary surfaced to the reasoner LLM tool
 # palette so it can pick this skill by what it does (action verb +

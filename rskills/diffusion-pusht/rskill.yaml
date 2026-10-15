@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/diffusion_pusht (Apache-2.0)
 # Paper: Chi et al., 2023 — Diffusion Policy.
 
@@ -74,9 +74,10 @@ latency_budget:
   per_chunk_ms: 1250.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
-# Headline success rate from skills/diffusion-pusht/eval/pusht.json.
+# Headline success rate from rskills/diffusion-pusht/eval/pusht.json (50 episodes;
+# eval/scene_pusht.json is the 1-episode demo run).
 benchmarks:
-  pusht: 1.0
+  pusht: 0.6
 
 paper_url: "https://arxiv.org/abs/2303.04137"
 source_repo: "hf://lerobot/diffusion_pusht"

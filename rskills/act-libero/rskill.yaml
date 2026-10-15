@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4).
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging).
 # Wraps Deepkar/libero-test-act (ACT, Zhao et al. 2023; Apache-2.0)
 # trained on HuggingFaceVLA/libero. See README.md for the full
 # description and run instructions.

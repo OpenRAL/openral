@@ -1,7 +1,7 @@
 ---
 name: rskill-internvla_n1-mobile_base-vln-nf4
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: navigate, reach on room, hallway, door, kitchen, landmark. InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes egocentric RGB-D plus a natural-language navigation instruction and drives a mobile base with body-twist velocity commands, emitting STOP on arrival. Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: navigate, reach on room, hallway, door, kitchen, landmark. InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes a single forward egocentric RGB camera (metric depth derived monocularly via the DA3 sidecar, not a robot sensor) plus a natural-language navigation instruction and drives a mobile base with body-twist velocity commands, emitting STOP on arrival. Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -38,7 +38,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes egocentric RGB-D plus a natural-language navigation instruction and drives a mobile base with body-twist velocity commands, emitting STOP on arrival. Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes a single forward egocentric RGB camera (metric depth derived monocularly via the DA3 sidecar, not a robot sensor) plus a natural-language navigation instruction and drives a mobile base with body-twist velocity commands, emitting STOP on arrival. Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).
 
 ## Capabilities
 
