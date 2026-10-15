@@ -172,6 +172,18 @@ intermittent SIGSEGV after the suite passes. The suite itself runs
 uninstrumented (`gdb` and `PYTHONFAULTHANDLER=1` both hid the crash), and its
 exit code is never masked.
 
+The cause of #381 was a DDS participant still alive at process exit: a test
+leaked an rclpy node or context, and Cyclone's `tev` / `recv` threads ran on
+while libc `exit()` tore down torch's static state. In `pytest_unconfigure`, the
+repo-root `conftest.py` drops pytest's `sys.last_*` failure references (they pin
+the failed test's executor, whose suspended wait generator keeps every node
+handle in use), collects garbage and calls `rclpy.try_shutdown()`. It also clears
+`.source` on every recorded warning: an rclpy "`ActionServer._execute_goal` was
+never awaited" warning holds the coroutine, and with it the node, in pytest's
+session-long warning history. If a participant survives all that, it prints
+`DDS threads still alive at session end`. Seeing that line means a test leaks a
+node; fix the test's teardown.
+
 To add a live-ROS test, add its file to `TARGETS` in that script (the one place
 that decides what runs) and to the `paths:` filter in
 `.github/workflows/docker-build.yml`, so a diff touching only that test still
