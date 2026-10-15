@@ -31,12 +31,15 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 - `points_in_convex_polygon(points_xy, polygon, *, margin_m=0.0)` (payload_scan_filter_node.py L140) — Half-plane containment test that *verifies* CCW convexity rather than assuming it (a concave or CW outline raises, so the node then removes nothing).
 - `filter_scan_ranges(ranges, *, angle_min, angle_increment, range_min, range_max, placements, margin_m=0.0, self_polygon=None, base_from_scan=None, self_margin_m=0.0)` (payload_scan_filter_node.py L208) — Sets removed beams to `inf` (Nav2 discards those: `inf_is_valid` defaults to `False`) and leaves readings already outside `[range_min, range_max]` alone.
 - `main(args=None) -> None` (payload_scan_filter_node.py L309) — ROS 2 entry point; defines `PayloadScanFilterNode` lazily inside so the module stays importable without the colcon overlay.
+- `twist_to_action_relay_node.py` — Opt-in (`nav2.launch.py cmd_vel_relay:=true`) relay of Nav2's `/cmd_vel` onto `/openral/candidate_action` as horizon-1 `BODY_TWIST` chunks via `ROSPublishingHAL`, so the safety kernel bounds base speed. Refuses (`ROSConfigError`) a manifest declaring `base_joints` (`MobileBaseBridge` owns that `/cmd_vel`, ADR-0040/0099) or lacking `body_twist`; after `cmd_vel_timeout_s` (default 0.5 s, wall clock) of silence following a non-zero command it publishes one zero twist.
+- `twist_to_body_twist_row(msg) -> tuple[float, ...]` (twist_to_action_relay_node.py L44) — `Twist` → `[linear.x, linear.y, 0, 0, 0, angular.z]`, the same mapping as `MobileBaseBridge._on_cmd_vel`.
+- `main(args=None) -> None` (twist_to_action_relay_node.py L56) — ROS 2 entry point; defines `TwistToActionRelayNode` lazily inside.
 
 ### `packages/openral_nav2_bringup/launch/nav2.launch.py`
 
 - `generate_launch_description() -> LaunchDescription` (L81) — Stand-alone bring-up of the upstream Nav2 `navigation_launch.py` include; `robot_yaml` rewrites `robot_radius`/`inflation_radius`/`motion_model` over the shared base params file (lidar or, for `slam_backend=visual`, the visual variant).
 - `BOND_TIMEOUT_S` (L57) — `30.0`; how long a Nav2 lifecycle manager waits on a bond heartbeat before treating a descheduled server as dead. Not disabled (`0.0`), so a server that really dies is still caught.
-- `DEFAULT_PARAMS_PATH` (L279) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
+- `DEFAULT_PARAMS_PATH` (L304) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
 
 ### `packages/openral_perception_ros/openral_perception_ros/`
 

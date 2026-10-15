@@ -152,6 +152,17 @@ def generate_launch_description() -> LaunchDescription:
                 "its polygon statically from the manifest (see the README)."
             ),
         ),
+        DeclareLaunchArgument(
+            "cmd_vel_relay",
+            default_value="false",
+            description=(
+                "Opt-in: run `twist_to_action_relay_node.py`, which republishes Nav2's "
+                "`/cmd_vel` as BODY_TWIST chunks on `/openral/candidate_action` so the safety "
+                "kernel bounds them. Only for a manifest WITHOUT `base_joints` that supports "
+                "`body_twist` (the node refuses otherwise; `MobileBaseBridge` owns `/cmd_vel` "
+                "for base_joints robots, ADR-0040/0099). Requires `robot_yaml`."
+            ),
+        ),
     ]
 
     # ``OpaqueFunction`` (upstream ``launch.actions``) defers the callback
@@ -269,6 +280,20 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
                 robot_yaml=robot_yaml,
                 slam_backend=slam_backend,
                 use_sim_time=use_sim_time.strip().lower() in ("true", "1", "yes"),
+            )
+        )
+    cmd_vel_relay = LaunchConfiguration("cmd_vel_relay").perform(context)  # type: ignore[attr-defined]
+    if cmd_vel_relay.strip().lower() in ("true", "1", "yes"):
+        from launch_ros.actions import Node  # reason: launch-time only
+
+        # Wall clock on purpose: its staleness timer is a transport watchdog.
+        actions.append(
+            Node(
+                package="openral_nav2_bringup",
+                executable="twist_to_action_relay_node.py",
+                name="openral_nav2_twist_to_action_relay",
+                output="screen",
+                parameters=[{"robot_yaml": robot_yaml}],
             )
         )
     return actions

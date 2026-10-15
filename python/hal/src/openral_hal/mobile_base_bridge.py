@@ -262,9 +262,12 @@ class MobileBaseBridge:
         Maps the message into the canonical 6-vec ``[vx, vy, vz, wx, wy, wz]`` —
         only ``linear.x`` / ``linear.y`` / ``angular.z`` carry signal on a planar
         holonomic base. This path intentionally bypasses the OpenRAL safety supervisor
-        (Nav2's ``velocity_smoother`` enforces caps); run an external
-        ``twist_to_action`` relay onto ``/openral/candidate_action`` for the
-        supervised path.
+        (ADR-0040/0099; Nav2's ``velocity_smoother`` enforces caps). The supervised
+        relay onto ``/openral/candidate_action``,
+        ``openral_nav2_bringup/twist_to_action_relay_node.py`` (opt-in,
+        ``nav2.launch.py cmd_vel_relay:=true``), serves only manifests WITHOUT
+        ``base_joints`` — it refuses this bridge's robots so ``/cmd_vel`` is never
+        actuated twice.
         """
         from openral_core.schemas import Action, ControlMode
 

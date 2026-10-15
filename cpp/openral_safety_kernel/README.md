@@ -1278,7 +1278,10 @@ recorded decision, and the two models are deliberately separate:
 `BODY_TWIST` action and applies it through the HAL directly, so this kernel
 neither bounds nor vetoes Nav2's base velocity; Nav2's `velocity_smoother` caps
 it. (A `BODY_TWIST` chunk a policy publishes on `/openral/candidate_action` *is*
-bounded — see "Per-control-mode magnitude bounds".)
+bounded — see "Per-control-mode magnitude bounds". So is Nav2's `/cmd_vel` for a
+robot without `base_joints` when the opt-in
+`openral_nav2_bringup/twist_to_action_relay_node.py` relays it here; see that
+package's README.)
 The single authority this kernel retains over base motion is the **E-stop
 latch** — the bridge drops every `/cmd_vel` while the HAL node is latched, so
 an E-stop raised here does stop the base. There is no per-command bound.

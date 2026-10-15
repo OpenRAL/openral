@@ -119,6 +119,19 @@ now does). Nav2 publishes `geometry_msgs/Twist`;
 Velocity caps on this path are Nav2's own `velocity_smoother`. Also stated in
 the bridge's module docstring.
 
+**Opt-in supervised relay, for bases without `base_joints`.** A robot that
+advertises `body_twist` but declares no `base_joints` (today `g1`, `r1pro`) gets
+no `MobileBaseBridge`, so nothing in-tree consumes its `/cmd_vel`.
+`nav2.launch.py cmd_vel_relay:=true robot_yaml:=<manifest>` starts
+`twist_to_action_relay_node.py`, which republishes each `Twist` as a horizon-1
+`BODY_TWIST` chunk on `/openral/candidate_action`; the kernel bounds `‖v‖` /
+`‖ω‖` by the manifest's `max_base_*_speed` (veto + E-stop) and forwards on
+`/openral/safe_action`. After `cmd_vel_timeout_s` (0.5 s, wall clock) of silence
+following motion it publishes one zero twist. It refuses a `base_joints`
+manifest — the bypass above is unchanged — and adds only a speed bound and the
+E-stop latch, not path checking: Nav2's costmap is still the base's only
+collision avoidance. Off by default; `deploy_e2e.launch.py` does not set it.
+
 **The one thing that does cross.** `_on_cmd_vel` returns early while the HAL
 node is latched E-stopped, so an E-stop — the kernel's included — does stop the
 Nav2 path, at the HAL rather than in the kernel. Stopping is the only kernel

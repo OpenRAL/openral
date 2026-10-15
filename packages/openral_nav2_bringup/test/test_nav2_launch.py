@@ -375,3 +375,23 @@ def test_the_scan_filter_leg_can_be_turned_off() -> None:
     assert "payload_footprint" not in arg_names, (
         "the footprint publisher was removed — Nav2 is base-only"
     )
+
+
+def test_cmd_vel_relay_is_opt_in() -> None:
+    """The kernel-supervised `/cmd_vel` relay never starts unless asked (ADR-0040/0099)."""
+    mod = _import_launch_module()
+    from ament_index_python.packages import PackageNotFoundError
+    from launch.actions import DeclareLaunchArgument
+
+    try:
+        desc = mod.generate_launch_description()
+    except PackageNotFoundError as exc:
+        pytest.skip(f"ament package missing (overlay not sourced?): {exc}")
+    defaults = {
+        a.name: a.default_value
+        for a in desc.describe_sub_entities()
+        if isinstance(a, DeclareLaunchArgument)
+    }
+    assert "cmd_vel_relay" in defaults, defaults
+    (default,) = defaults["cmd_vel_relay"]
+    assert default.text == "false"

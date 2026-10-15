@@ -136,6 +136,10 @@ TARGETS=(
     # upstream binary applies the cut TWICE, from two differently-scoped
     # parameters.
     tests/integration/test_nav2_global_costmap_height_live.py
+    # Opt-in /cmd_vel relay for body_twist robots without base_joints: real
+    # relay + real kernel booted from r1pro -- chunk content, one stale zero,
+    # over-speed veto, and refusal of a base_joints manifest.
+    tests/integration/test_twist_to_action_relay_live.py
     # Under tests/unit/ -- pure constant contract, no graph -- but reads
     # numbers off the colcon-generated openral_msgs, so it importorskips
     # everywhere but this image. Pins the SafetyStatus/FailureTrigger KIND_*
