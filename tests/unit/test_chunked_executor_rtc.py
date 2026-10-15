@@ -418,6 +418,31 @@ def test_relative_prefix_is_reanchored_to_the_new_state() -> None:
     ex.stop()
 
 
+def test_prefix_fn_error_reaches_the_foreground() -> None:
+    """A failing re-anchor surfaces as ROSRuntimeError on the tick, never a hung executor."""
+    pre, post = _relative_processors()
+
+    def broken_prefix(rows: Any) -> Any:
+        raise ROSRuntimeError("reanchor exploded")
+
+    ex = ChunkedExecutor(
+        chunk_fn=_RelativeProducer(),
+        chunk_size=CHUNK,
+        prefetch_at=CHUNK - 1,
+        rtc_config=_rtc_config(execution_horizon=4),
+        postprocess_action=post,
+        rtc_prefix_fn=broken_prefix,
+    )
+    ex.start()
+    batches = _state_batches(pre, [1.0, -1.0, 0.3], [1.5, -0.5, 0.3])
+    ex.select_action(batches)  # cold start; launches the prefetch whose hook raises
+    _join_bg(ex)
+    with pytest.raises(ROSRuntimeError, match="reanchor exploded"):
+        for _ in range(CHUNK + 1):
+            ex.select_action(batches)
+    ex.stop()
+
+
 def test_absolute_policy_prefix_is_the_raw_rows() -> None:
     """Regression: without rtc_prefix_fn the prefix is the raw leftover, postprocess or not."""
     producer = Producer()

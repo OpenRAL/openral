@@ -273,15 +273,55 @@ def test_build_chunk_executor_rtc_refuses_relative_policy_without_prefix_fn() ->
     assert policy.rtc_processor is None
 
 
+def _action_normalizer() -> Any:
+    import torch
+    from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
+    from lerobot.processor import NormalizerProcessorStep
+
+    return NormalizerProcessorStep(
+        features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(3,))},
+        norm_map={FeatureType.ACTION: NormalizationMode.MEAN_STD},
+        stats={"action": {"mean": torch.zeros(3), "std": torch.ones(3)}},
+    )
+
+
 def test_relative_rtc_prefix_fn_only_for_enabled_relative_step() -> None:
     import torch
     from lerobot.processor import PolicyProcessorPipeline, RelativeActionsProcessorStep
     from openral_core.exceptions import ROSRuntimeError
 
     absolute = PolicyProcessorPipeline(steps=[RelativeActionsProcessorStep(enabled=False)])
-    relative = PolicyProcessorPipeline(steps=[RelativeActionsProcessorStep(enabled=True)])
+    relative = PolicyProcessorPipeline(
+        steps=[RelativeActionsProcessorStep(enabled=True), _action_normalizer()]
+    )
     assert relative_rtc_prefix_fn(absolute, device="cpu") is None
     hook = relative_rtc_prefix_fn(relative, device="cpu")
     assert hook is not None
     with pytest.raises(ROSRuntimeError, match="no observation\\.state cached"):
         hook(torch.zeros(2, 3))  # the preprocessor never ran: nothing to anchor to
+
+
+@pytest.mark.parametrize("with_normalizer", [False, True])
+def test_relative_rtc_prefix_fn_refuses_unnormalized_prefix(with_normalizer: bool) -> None:
+    # No normalizer, or one without action stats: the prefix would reach the model in
+    # raw units. Refused at build, not silently fed (PR #397 review).
+    import torch
+    from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
+    from lerobot.processor import (
+        NormalizerProcessorStep,
+        PolicyProcessorPipeline,
+        RelativeActionsProcessorStep,
+    )
+    from openral_core.exceptions import ROSConfigError
+
+    steps: list[Any] = [RelativeActionsProcessorStep(enabled=True)]
+    if with_normalizer:
+        steps.append(
+            NormalizerProcessorStep(
+                features={"observation.state": PolicyFeature(type=FeatureType.STATE, shape=(3,))},
+                norm_map={FeatureType.STATE: NormalizationMode.MEAN_STD},
+                stats={"observation.state": {"mean": torch.zeros(3), "std": torch.ones(3)}},
+            )
+        )
+    with pytest.raises(ROSConfigError, match="no normalizer with action stats"):
+        relative_rtc_prefix_fn(PolicyProcessorPipeline(steps=steps), device="cpu")

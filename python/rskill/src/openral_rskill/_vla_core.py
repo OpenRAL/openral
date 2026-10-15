@@ -22,7 +22,6 @@ post-processor pipelines stay where they are.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import gc
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -746,12 +745,17 @@ _RTC_KEYS = frozenset(
 )
 
 
-def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
+def _parse_rtc_config(
+    spec_extra: dict[str, Any], *, adapter_name: str, default_horizon: int = 10
+) -> Any:
     """Parse ``policy_extras.rtc`` into a lerobot ``RTCConfig`` (or ``None``).
 
     Args:
         spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
         adapter_name: Adapter label; RTC is refused outside ``_RTC_ADAPTERS``.
+        default_horizon: ``execution_horizon`` when the block omits it.
+            ``build_chunk_executor`` passes the prefetch lead, so the guidance
+            covers the whole overlap; validation-only callers keep 10.
 
     Returns:
         A ``lerobot.policies.rtc.RTCConfig``, or ``None`` when no ``rtc`` block.
@@ -787,7 +791,7 @@ def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
             f"{adapter_name}: unknown rtc.prefix_attention_schedule {schedule_raw!r} "
             f"(expected one of {[s.name.lower() for s in RTCAttentionSchedule]})"
         ) from exc
-    horizon_raw = raw.get("execution_horizon", 10)
+    horizon_raw = raw.get("execution_horizon", default_horizon)
     if isinstance(horizon_raw, bool) or not isinstance(horizon_raw, int) or horizon_raw < 1:
         raise ROSConfigError(f"{adapter_name}: rtc.execution_horizon must be a positive integer")
     # Flags are checked, never coerced: `bool("false")` is True, so a quoted
@@ -973,7 +977,26 @@ def build_chunk_executor(
     )
     if n < 1:
         raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
-    rtc_cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    prefetch = spec_extra.get("chunk_prefetch", False)
+    if not isinstance(prefetch, bool):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
+    prefetch_at = 0
+    if prefetch and n > 1:
+        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 20)
+        if isinstance(raw_prefetch_at, bool) or not isinstance(raw_prefetch_at, int):
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be an integer"
+            )
+        if raw_prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
+            )
+        prefetch_at = min(raw_prefetch_at, n - 1)
+    # No explicit horizon: guide across the whole overlap. The prefetched chunk's
+    # leftover is prefetch_at rows; a shorter horizon wastes it (#397).
+    rtc_cfg = _parse_rtc_config(
+        spec_extra, adapter_name=adapter_name, default_horizon=prefetch_at or 10
+    )
     rtc_on = rtc_cfg is not None and bool(rtc_cfg.enabled)
     blend_steps, blend_dims = _parse_chunk_boundary_blend(spec_extra, adapter_name=adapter_name)
     blend_key = f"{adapter_name}: policy_extras.chunk_boundary_blend"
@@ -1002,21 +1025,6 @@ def build_chunk_executor(
         check_blend(0)  # any block is refused: one-action chunks have no row K
         if chunk_fn is None:
             return None
-    prefetch = spec_extra.get("chunk_prefetch", False)
-    if not isinstance(prefetch, bool):
-        raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
-    prefetch_at = 0
-    if prefetch and n > 1:
-        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 20)
-        if isinstance(raw_prefetch_at, bool) or not isinstance(raw_prefetch_at, int):
-            raise ROSConfigError(
-                f"{adapter_name}: policy_extras.chunk_prefetch_at must be an integer"
-            )
-        if raw_prefetch_at < 1:
-            raise ROSConfigError(
-                f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
-            )
-        prefetch_at = min(raw_prefetch_at, n - 1)
     check_blend(prefetch_at)
     if rtc_on:
         # Before init_rtc_processor below, so a refused config never mutates the policy.
@@ -1042,13 +1050,6 @@ def build_chunk_executor(
                 f"{adapter_name}: RTC guidance backpropagates through the denoiser each "
                 "step; bitsandbytes-quantized weights (nf4/int8) are not supported"
             )
-        # No explicit horizon: guide across the whole overlap. The prefetched
-        # chunk's leftover is prefetch_at rows; a shorter horizon wastes it (#397).
-        rtc_cfg = (
-            rtc_cfg
-            if "execution_horizon" in spec_extra["rtc"]
-            else dataclasses.replace(rtc_cfg, execution_horizon=prefetch_at)
-        )
         policy.config.rtc_config = rtc_cfg
         policy.init_rtc_processor()
     executor = ChunkedExecutor(
@@ -1098,6 +1099,8 @@ def relative_rtc_prefix_fn(preprocessor: Any, *, device: str) -> Callable[[Any],
         relative-actions step (absolute-action policy: raw rows are already right).
 
     Raises:
+        ROSConfigError: A relative-actions step without a normalizer carrying
+            action stats — the prefix could not be put in model space.
         ROSRuntimeError: (from the hook) no state was cached yet — the
             preprocessor has not run, so there is nothing to anchor to.
 
@@ -1110,6 +1113,7 @@ def relative_rtc_prefix_fn(preprocessor: Any, *, device: str) -> Callable[[Any],
         return None
     from lerobot.policies.rtc import reanchor_relative_rtc_prefix
     from lerobot.processor import NormalizerProcessorStep, RelativeActionsProcessorStep
+    from lerobot.utils.constants import ACTION
 
     relative = next(
         (s for s in steps if isinstance(s, RelativeActionsProcessorStep) and s.enabled), None
@@ -1117,6 +1121,13 @@ def relative_rtc_prefix_fn(preprocessor: Any, *, device: str) -> Callable[[Any],
     if relative is None:
         return None
     normalizer = next((s for s in steps if isinstance(s, NormalizerProcessorStep)), None)
+    if normalizer is None or ACTION not in (getattr(normalizer, "stats", None) or {}):
+        # Without action stats the re-anchored deltas reach the model in raw units and
+        # guide every chunk toward a target on the wrong scale, silently.
+        raise ROSConfigError(
+            "relative_rtc_prefix_fn: relative-action preprocessor has no normalizer with "
+            "action stats; cannot express the RTC prefix in model space"
+        )
 
     def prefix(absolute_rows: Any) -> Any:
         state = relative.get_cached_state()
