@@ -12,7 +12,8 @@ Conventions
   ``openral_rskill.loader``.
 - Each backend gets its own subdirectory (``<cache_home>/robocasa/``).
 - A readiness sentinel file (``.openral-ready``) marks "assets
-  fully unpacked"; the helper short-circuits on subsequent runs.
+  fully unpacked" for the install path it records; the helper
+  short-circuits on subsequent runs against that same install.
 - A Rich license banner surfaces the upstream license + URL + target
   path + size *before* asking the user to confirm.
 - An env-var bypass (``OPENRAL_ALLOW_ROBOCASA_ASSETS=1`` for
@@ -154,7 +155,15 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     variant = _detect_robocasa_variant()
     target = _cache_home() / f"robocasa_{variant}"
     sentinel = target / _READY_SENTINEL
-    if sentinel.is_file():
+    # The assets land inside the robocasa install (`models/assets/`), not under
+    # `target`, so the sentinel records WHICH install it vouches for. A bare
+    # host-global sentinel masked a fresh clone (another venv/worktree, a
+    # re-cloned /tmp fork) with no assets on disk.
+    try:
+        install = str(_robocasa_dir())
+    except ImportError:
+        install = ""
+    if install and sentinel.is_file() and sentinel.read_text() == install:
         return target
 
     # GR1 fork: the user runs the upstream
@@ -174,7 +183,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
                 (objects_dir / registry).is_dir() for registry in required_registries
             ):
                 target.mkdir(parents=True, exist_ok=True)
-                sentinel.touch()
+                sentinel.write_text(install)
                 return target
         except ImportError:
             # fall through; the deps path will reinstall robocasa and
@@ -223,7 +232,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
             ) from exc
 
         target.mkdir(parents=True, exist_ok=True)
-        sentinel.touch()
+        sentinel.write_text(install)
         return target
 
     # Kitchen variant: short-circuit ONLY when every downloaded bundle is
@@ -269,7 +278,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
             and all(_populated(p) for p in downloaded_bundles)
         ):
             target.mkdir(parents=True, exist_ok=True)
-            sentinel.touch()
+            sentinel.write_text(install)
             return target
     except ImportError:
         pass
@@ -330,5 +339,5 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
             f"`uv run python -m {script_hint}` manually and re-run the sim."
         ) from exc
 
-    sentinel.touch()
+    sentinel.write_text(install)
     return target

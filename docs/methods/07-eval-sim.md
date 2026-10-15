@@ -173,11 +173,11 @@ _Clean single-view world MP4 helper for website hero clips (overlays rendered by
 ### `python/sim/src/openral_sim/_assets.py`
 _Lazy asset-fetch helpers for sim backends with large CC-BY downloads (today only the RoboCasa adapter, named generically for a future MuJoCo backend with its own multi-GB bundle). Asset caches live under `$OPENRAL_CACHE_HOME` (default `~/.cache/openral/`), one subdirectory per backend, gated by a readiness sentinel + a Rich license banner + an env-var CI bypass. Sibling of `openral_sim._deps`, which handles the install-chain half of first-run provisioning._
 
-- `const _DEFAULT_CACHE_HOME = Path.home() / '.cache' / 'openral'` (L41)
-- `const _READY_SENTINEL = '.openral-ready'` — Marks "assets fully unpacked" so a re-run short-circuits. (L42)
-- `const _ROBOCASA_ALLOW_ENV = 'OPENRAL_ALLOW_ROBOCASA_ASSETS'` — CI bypass for the download-confirmation prompt. (L44)
-- `const _ROBOCASA_ASSETS_SIZE_GB = 11` (L45)
-- `ensure_robocasa_assets() -> Path` — Make sure the RoboCasa assets are on disk; download if needed. (L126)
+- `const _DEFAULT_CACHE_HOME = Path.home() / '.cache' / 'openral'` (L42)
+- `const _READY_SENTINEL = '.openral-ready'` — Marks "assets fully unpacked" so a re-run short-circuits. (L43)
+- `const _ROBOCASA_ALLOW_ENV = 'OPENRAL_ALLOW_ROBOCASA_ASSETS'` — CI bypass for the download-confirmation prompt. (L45)
+- `const _ROBOCASA_ASSETS_SIZE_GB = 11` (L46)
+- `ensure_robocasa_assets() -> Path` — Make sure the RoboCasa assets are on disk; download if needed. (L127)
 
 ### `python/sim/src/openral_sim/_deps.py`
 _Lazy auto-install helpers for sim backends with bespoke install chains that go beyond `uv sync --group <name>` (editable git clones, `--no-deps` robosuite pins, compiler env overrides). `BackendInstallPlan` declares a sequence of subprocess steps + probe imports; `ensure_backend_deps` short-circuits when the probes already pass, else prints a Rich banner and auto-installs (`OPENRAL_AUTO_INSTALL_DEPS=0` prompts instead). Sibling of `openral_sim._assets`, which handles the asset-download half._
