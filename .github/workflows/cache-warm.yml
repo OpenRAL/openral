@@ -1,0 +1,32 @@
+name: cache-warm
+# Fills the uv + robot-asset caches on master, the one scope every PR run
+# (refs/pull/N/merge) and every heavy-lanes dispatch (refs/heads/<branch>) can
+# restore from. setup-test-env saves its uv cache only on master, so this is
+# the job that writes it. It runs when an input of either cache key changes
+# (uv.lock; robots/**) or the setup itself does; workflow_dispatch seeds it
+# by hand, e.g. after GitHub evicts the entry.
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - uv.lock
+      - "robots/**"
+      - ".github/actions/setup-test-env/**"
+      - ".github/workflows/cache-warm.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-warm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup-test-env
