@@ -1936,6 +1936,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # kernel reload, not by mounting a different envelope at boot.
     description = RobotDescription.from_yaml(robot_yaml)
     description.validate_for_e2e_pipeline()  # loud failure on missing fields
+    manifest_rate_hz = description.control_rate_hz
     # The deploy scene's sensors and drivers, loaded once: the reasoner's completion camera,
     # the detector's camera, WorldState's subscriptions and the vendor driver includes all
     # need to know which cameras exist (and, on a real deploy, which are bound).
@@ -1955,6 +1956,23 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             joint_states_override = _scene.runtime.joint_states_topic
         if _scene.scene is not None:
             scene_backend = str(getattr(_scene.scene.backend, "value", _scene.scene.backend))
+            if hal_mode == "sim":
+                # The robot as the sim scene runs it: its control rate (kernel rates,
+                # the runner's tick, recorder fps) and simulated sensors (the octomap
+                # cloud). The scene-attached HAL applies the same (`build_hal`).
+                from openral_core import sim_scene_description
+
+                description = sim_scene_description(description, _scene.scene.backend_options)
+    # A rate the scene set, forwarded as the runner's `rate_hz` (0 = the manifest's).
+    scene_rate_hz = (
+        description.control_rate_hz if description.control_rate_hz != manifest_rate_hz else None
+    ) or 0.0
+    if scene_rate_hz:
+        print(
+            f"[deploy_e2e] sim scene control rate {scene_rate_hz:g} Hz overrides robot "
+            f"{description.name!r}'s {manifest_rate_hz} Hz (backend_options.control_freq_hz)",
+            flush=True,
+        )
     from openral_hal.resolver import hal_joint_states_topic
 
     # The Python nodes' JointState topic: the scene's override, else the HAL's
@@ -2650,6 +2668,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     hal_mode,
                     republished=runtime_joint_states_topic == f"/{hal_node_name}/joint_states",
                 ),
+                # The runner's tick (and the recorder's fps): a sim scene's
+                # backend_options.control_freq_hz, else 0 = the manifest's rate.
+                "rate_hz": scene_rate_hz,
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s

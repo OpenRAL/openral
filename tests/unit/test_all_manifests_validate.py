@@ -104,6 +104,7 @@ _DEPLOY_STEMS: list[str] = [
     "g1_vln",
     "galaxea_a1_bench",
     "isaac_franka_urdf",
+    "isaac_leisaac_pick_orange",
     "isaac_panda_mobile_urdf",
     "isaac_openarm_warehouse",
     "isaac_panda_mobile_warehouse",

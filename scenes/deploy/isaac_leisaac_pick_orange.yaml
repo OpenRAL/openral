@@ -1,0 +1,117 @@
+# SO-101 in LeIsaac's PickOrange kitchen (LightwheelAI/leisaac v0.1.0, Apache-2.0) on
+# OpenRAL's Isaac Sim 6.x backend — the deploy twin of
+# scenes/sim/isaac_leisaac_pick_orange.yaml: same stage archive, in-stage oranges +
+# plate, dome light, collider strip, spawn, LeIsaac drive gains, cameras and graded
+# placement (see that file for where each value comes from). Env-only, as every
+# DeployScene: the operator or reasoner supplies the goal.
+#
+# Time base: LeIsaac records and evaluates one action per 1/60 s physics step, and
+# rskills/smolvla-so101-leisaac-pick-orange declares action_contract.control_freq_hz
+# 60. `backend_options.control_freq_hz: 60` below is the ONE place this deploy's rate
+# lives (`openral_core.sim_scene_description`): the CLI, the launch (kernel rates, the
+# runner's `rate_hz`, recorder fps), the HAL (`build_hal` -> SimAttachedHAL time-base
+# check, proprio publish rate) and the Isaac scene all read it from here. It is
+# reported by `deploy sim` ("sim scene overrides robot ..."), the launch, the Isaac
+# scene (`isaac_control_rate_overridden`) and the HAL (`sim.time_base`), and the
+# runner's goal span records `control.rate_hz` 60 / `control.rate_source`
+# rate_hz_param. The runner still refuses a skill whose trained rate is not 60 Hz.
+#
+# World collision: the SO-101 has no depth sensor (its real `top` / `wrist` are RGB),
+# so this scene adds a SIMULATED depth camera, `top_depth` (`sim_sensors`), rendered
+# by Isaac (distance_to_image_plane) from the same pose and field of view as `top`.
+# The HAL publishes its cloud on /openral/cameras/top_depth/points, octomap maps it and
+# the safety kernel checks every chunk against the voxels. It exists in this scene
+# only — the robot manifest, and so a real SO-101 deploy, is unchanged. Self-collision
+# is the manifest's OBB model with its documented negative margin
+# (robots/so101_follower/robot.yaml, `self_collision_margin_m`).
+#
+# Requirements: NVIDIA RTX GPU, Isaac Sim 6.x, network access to github.com on first use.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_leisaac_pick_orange.yaml \
+#       --initial-task "Grab orange and place into plate" \
+#       --enable-octomap --enable-octomap-kernel-check
+
+robot_id: "so101_follower"
+
+base_pose:
+  xyz: [2.2, -0.61, 0.89]
+  quat_xyzw: [0.0, 0.0, 1.0, 0.0]  # LeIsaac rot wxyz (0, 0, 0, 1): yaw 180 deg
+  frame_id: world
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist"]
+  backend_options:
+    # First boot also downloads + extracts the 73 MB stage.
+    boot_timeout_s: 1200
+    environment_archive:
+      url: "https://github.com/LightwheelAI/leisaac/releases/download/v0.1.0/kitchen_with_orange.zip"
+      sha256: "d314c54b63a17e91402bfaddf26e21ff614adf2430fa092b78897f15b8adea34"
+      usd: "kitchen_with_orange/scene.usd"
+    strip_xform_colliders: true
+    control_freq_hz: 60.0
+    joint_drive_gains:
+      ".*": [17.8, 0.6]
+    dome_light:
+      intensity: 3000.0
+      color: [0.75, 0.75, 0.75]
+    stage_objects:
+      - {name: orange_1, prim: Orange001/Orange001}
+      - {name: orange_2, prim: Orange002/Orange002}
+      - {name: orange_3, prim: Orange003/Orange003}
+      - {name: plate, prim: Plate/Plate}
+    # Simulated-only depth for the world map: LeIsaac's `front` view as metric depth.
+    # fx = fy = 320 / tan(67.163 deg / 2) = 482.0, the `top` mount's field of view.
+    sim_sensors:
+      - name: top_depth
+        modality: depth
+        frame_id: top_depth_optical_frame
+        rate_hz: 10.0
+        range_max_m: 2.0
+        intrinsics: {width: 640, height: 480, fx: 482.0, fy: 482.0, cx: 320.0, cy: 240.0}
+        encoding: "32FC1"
+        vendor: "sim"
+        model: "isaac_distance_to_image_plane"
+    camera_mounts:
+      top: &leisaac_front  # LeIsaac `front`
+        link: base
+        xyz: [0.0, -0.5, 0.6]
+        quat_wxyz: [0.1650476, -0.9862856, 0.0, 0.0]
+        axes: ros
+        hfov_deg: 67.163
+      top_depth: *leisaac_front
+      wrist:
+        link: gripper
+        xyz: [-0.001, 0.1, -0.04]
+        quat_wxyz: [-0.404379, -0.912179, -0.0451242, 0.0486914]
+        axes: ros
+        hfov_deg: 53.544
+    placement_success:
+      regions:
+        on_plate:
+          min_xyz: [-0.10, -0.10, -0.07]
+          max_xyz: [0.10, 0.10, 0.07]
+          relative_to: plate
+      grades:
+        - {name: complete, score: 1.0, region: target}
+      settle_s: 0.5
+      tasks:
+        "Pick three oranges and put them into the plate": &three_oranges
+          - {object: orange_1, target: on_plate}
+          - {object: orange_2, target: on_plate}
+          - {object: orange_3, target: on_plate}
+        # The training string of LightwheelAI/leisaac-pick-orange.
+        "Grab orange and place into plate": *three_oranges
+
+# Committed posture: world collision on (octomap over top_depth + the kernel's voxel
+# check), no SLAM / Nav2 (a fixed-base arm on a counter).
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: true
+  enable_octomap_kernel_check: true

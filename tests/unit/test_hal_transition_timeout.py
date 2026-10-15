@@ -91,6 +91,7 @@ def test_the_sidecar_scenes_are_the_ones_that_exceed_the_floor() -> None:
     assert raised == {
         "behavior_r1pro.yaml",
         "isaac_franka_urdf.yaml",
+        "isaac_leisaac_pick_orange.yaml",
         "isaac_panda_mobile_urdf.yaml",
         "isaac_openarm_warehouse.yaml",
         "isaac_panda_mobile_warehouse.yaml",

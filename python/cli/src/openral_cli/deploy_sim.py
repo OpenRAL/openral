@@ -964,6 +964,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         merge_deploy_sensors,
         publishing_sensors,
         resolve_sensor_overlays,
+        sim_scene_description,
     )
 
     if hal_mode not in ("sim", "real"):
@@ -1149,6 +1150,26 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)
+    if hal_mode == "sim" and launched_scene is not None:
+        # The robot as the scene runs it (`sim_scene_description`): the launch and the
+        # scene-attached HAL apply the same backend_options, so every decision below
+        # (the octomap cloud, the kernel's rates) sees what the graph will run.
+        scene_description = sim_scene_description(description, launched_scene.scene.backend_options)
+        if scene_description is not description:
+            if hal.bare_twin_sim:
+                raise ROSConfigError(
+                    "backend_options.control_freq_hz / sim_sensors are honoured only by a "
+                    "scene-attached sim (SimAttachedHAL); this scene builds the bare MuJoCo "
+                    "twin, which derives its time base and cameras from the robot manifest."
+                )
+            manifest_names = {s.name for s in description.sensors}
+            _console.print(
+                f"[yellow]sim scene overrides robot {description.name!r}:[/yellow] "
+                f"control rate {description.control_rate_hz} -> "
+                f"{scene_description.control_rate_hz} Hz; simulated sensors "
+                f"{[s.name for s in scene_description.sensors if s.name not in manifest_names]}"
+            )
+            description = scene_description
     if (
         hal_mode == "sim"
         and hal.bare_twin_sim

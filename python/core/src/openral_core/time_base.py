@@ -11,6 +11,7 @@ the robot's rate here, so the rule lives in exactly one place.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 from openral_core.exceptions import ROSConfigError
 
@@ -94,3 +95,39 @@ def check_time_base(
             "step must be one control period, or the rehearsal runs at the wrong speed; fix "
             "the backend's physics steps per tick, not the robot's rate."
         )
+
+
+def scene_control_rate_hz(
+    backend_options: Mapping[str, object] | None, robot_hz: float | None
+) -> float | None:
+    """The rate a sim scene steps: ``backend_options.control_freq_hz`` when set, else the robot's.
+
+    A scene sets it for a checkpoint trained in a simulator that stepped at another
+    rate than the real robot (LeIsaac: one action per 1/60 s physics step, the SO-101
+    manifest's 30 Hz). The one rule ``sim run`` and ``deploy sim``
+    (:func:`openral_core.sim_scene_description`) share.
+
+    Args:
+        backend_options: ``SceneSpec.backend_options`` (``None`` = none).
+        robot_hz: ``RobotDescription.control_rate_hz``.
+
+    Returns:
+        The scene's rate, else ``robot_hz`` (``None`` when neither declares one).
+
+    Raises:
+        ROSConfigError: ``control_freq_hz`` is not a finite positive number.
+
+    Example:
+        >>> scene_control_rate_hz({"control_freq_hz": 60}, 30.0)
+        60.0
+        >>> scene_control_rate_hz({}, 30.0)
+        30.0
+    """
+    raw = (backend_options or {}).get("control_freq_hz")
+    if raw is None:
+        return robot_hz
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise ROSConfigError(f"backend_options.control_freq_hz must be a number, got {raw!r}")
+    if not (math.isfinite(raw) and raw > 0):
+        raise ROSConfigError(f"backend_options.control_freq_hz must be finite and > 0, got {raw!r}")
+    return float(raw)

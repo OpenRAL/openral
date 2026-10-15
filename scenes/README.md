@@ -266,7 +266,14 @@ default 60 Hz (60 Hz for a 30 Hz robot, 100 Hz for 50 Hz, 75 Hz for 25 Hz) and
 `physics_substeps = physics_hz / control_freq_hz` PhysX steps per action
 (2 for a 30 Hz robot), rendering only the last so cameras stay at the control
 rate; the kinematic base integrates the same tick. The robot's rate is never
-changed to suit the simulator. The
+changed to suit the simulator; a scene that must run at another rate (a checkpoint
+trained in a simulator that stepped faster) says so with
+`backend_options.control_freq_hz`, and then `deploy sim` runs the whole graph at it:
+`openral_core.sim_scene_description` re-times the robot once, and the CLI, the launch
+(the runner's `rate_hz`, the kernel's control period, the recorder's fps) and the
+scene-attached HAL (`build_hal`) all apply it, so `SimAttachedHAL.connect` holds the
+scene to that rate and the runner still refuses a skill trained at any other one.
+A bare MuJoCo twin derives its time base from the manifest and refuses the key. The
 sidecar reports the resulting `sim_dt_per_tick_s` in its `ping`, and
 `SimAttachedHAL.connect` refuses the scene if it is not one control period, so
 a `deploy sim` rehearsal on Isaac traverses a trajectory at the commanded speed
@@ -351,6 +358,15 @@ manifest joint vector, so `sim run` applies the rSkill's `PolicyIOCodec` (here
 LeIsaac's per-joint motor-unit `joint_calibration`) exactly as the deploy runner
 does. Not reproduced: LeIsaac's per-episode object and camera randomization, its
 dynamic gripper effort limit, and the arm-at-rest term of its success check.
+Its deploy twin, [`deploy/isaac_leisaac_pick_orange.yaml`](deploy/isaac_leisaac_pick_orange.yaml),
+runs the same kitchen under `openral deploy sim` at 60 Hz with the safety kernel's
+self-collision and world-voxel checks on. The SO-101's cameras are RGB, so the scene
+adds a simulated depth camera at LeIsaac's front view through
+`backend_options.sim_sensors`: depth `SensorSpec`s with intrinsics and no
+`deploy_binding`, under names the manifest does not use, appended to the robot's
+sensors for this scene only (`sim_scene_description`), mounted by `camera_mounts`.
+The HAL publishes its cloud, octomap maps it, and the kernel checks every chunk
+against the voxels; the robot manifest, and so a real deploy, is unchanged.
 
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
 1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at

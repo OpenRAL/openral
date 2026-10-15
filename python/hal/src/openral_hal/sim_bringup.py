@@ -120,6 +120,46 @@ def _load_scene_for_hal(path: str) -> SimScene:
     )
 
 
+def _resolve_scene_yaml(sim_env_yaml: str) -> Path:
+    """``sim_env_yaml`` as a file: as given, else relative to a parent of this source file.
+
+    ROS parameter values are cwd-naive, so a relative path is looked up by walking
+    this file's parents.
+    """
+    yaml_path = Path(sim_env_yaml)
+    if not yaml_path.is_absolute():
+        cursor = Path(__file__).resolve()
+        for parent in cursor.parents:
+            candidate = parent / sim_env_yaml
+            if candidate.is_file():
+                yaml_path = candidate
+                break
+    if not yaml_path.is_file():
+        raise ROSConfigError(
+            f"build_sim_env_from_yaml: sim_env_yaml={sim_env_yaml!r} not found "
+            f"(resolved to {yaml_path})."
+        )
+    return yaml_path
+
+
+def sim_scene_backend_options(sim_env_yaml: str) -> dict[str, object]:
+    """``scene.backend_options`` of the YAML :func:`build_sim_env_from_yaml` attaches.
+
+    ``build_hal`` hands them to ``openral_core.sim_scene_description`` so the
+    scene-attached HAL holds the scene's control rate and simulated sensors.
+
+    Raises:
+        ROSConfigError: As :func:`build_sim_env_from_yaml` for a missing or invalid YAML.
+
+    Example:
+        >>> sim_scene_backend_options("scenes/deploy/isaac_leisaac_pick_orange.yaml")[
+        ...     "control_freq_hz"
+        ... ]
+        60.0
+    """
+    return dict(_load_scene_for_hal(str(_resolve_scene_yaml(sim_env_yaml))).scene.backend_options)
+
+
 def build_sim_env_from_yaml(
     sim_env_yaml: str,
     *,
@@ -156,20 +196,7 @@ def build_sim_env_from_yaml(
             YAML's ``robot_id`` is not one the scene can instantiate, or the
             schema validators reject the loaded fields.
     """
-    yaml_path = Path(sim_env_yaml)
-    if not yaml_path.is_absolute():
-        cursor = Path(__file__).resolve()
-        for parent in cursor.parents:
-            candidate = parent / sim_env_yaml
-            if candidate.is_file():
-                yaml_path = candidate
-                break
-    if not yaml_path.is_file():
-        raise ROSConfigError(
-            f"build_sim_env_from_yaml: sim_env_yaml={sim_env_yaml!r} not found "
-            f"(resolved to {yaml_path})."
-        )
-    scene_env = _load_scene_for_hal(str(yaml_path))
+    scene_env = _load_scene_for_hal(str(_resolve_scene_yaml(sim_env_yaml)))
 
     from openral_sim.registry import SCENES  # noqa: PLC0415  # reason: optional dep
 

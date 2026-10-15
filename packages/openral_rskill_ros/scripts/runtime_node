@@ -152,6 +152,10 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     bootstrap.declare_parameter("dataset_out", "")
     bootstrap.declare_parameter("dataset_repo_id", "")
     bootstrap.declare_parameter("dataset_license", "CC-BY-4.0")
+    # The composed runner's tick (its own `rate_hz` param, same launch value): a sim
+    # scene's backend_options.control_freq_hz, else 0 = the manifest's rate. Read here
+    # too so the recorder stamps the rate the session actually ran at.
+    bootstrap.declare_parameter("rate_hz", 0.0)
     # Real deploys only (`openral deploy run --config …`): path to the
     # DeployScene YAML. When set, the runtime opens one SensorReader per
     # deploy-bound SensorSpec (robot manifest ∪ scene `sensors:`) and
@@ -209,6 +213,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         bootstrap.get_parameter("dataset_license").get_parameter_value().string_value
     )
     deploy_config: str = bootstrap.get_parameter("deploy_config").get_parameter_value().string_value
+    rate_hz: float = bootstrap.get_parameter("rate_hz").get_parameter_value().double_value
 
     def _tristate(name: str) -> bool | None:
         raw = bootstrap.get_parameter(name).get_parameter_value().string_value.strip().lower()
@@ -304,6 +309,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             dataset_out=dataset_out or None,
             dataset_repo_id=dataset_repo_id or None,
             dataset_license=dataset_license or "CC-BY-4.0",
+            dataset_fps=rate_hz or None,
             image_staleness_limit_s=image_staleness_limit_s,
         )
     except Exception as exc:  # surface as exit code, not stack trace
