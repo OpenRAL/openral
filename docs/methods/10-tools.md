@@ -832,3 +832,9 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 - `main(argv=None) -> int` (L257) — CLI: `uv run python tools/joint_state_staleness_probe.py --robot robots/<id>/robot.yaml --rate <joint_states Hz> [--duration 60] [--read-hz N] [--load]`. Needs a sourced ROS 2 overlay; uses `ROS_DOMAIN_ID` 77 unless set, so it never touches a live graph.
 
 Backs `safety.joint_state_staleness_limit_s` in a real manifest — the age past which `read_state` (and the runner's waits) refuse to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods). The other real manifests are unmeasured and marked provisional (Franka / Sawyer 0.2 s, the real HALs' former constructor default).
+
+### `tools/force_observer_probe.py`
+_Offline momentum-observer feasibility probe for the #373 force/contact layer, on the MuJoCo OpenArm v2 right arm. Analysis only — not on any control path. `uv run python tools/force_observer_probe.py --force-n 10`._
+
+- `run(force_n, *, hw, seed=0) -> NDArray` (L30) — Simulates free sinusoidal motion with a known EE push over `[3.0, 3.5)` s; the observer sees q, q-dot and `qfrc_actuator` (what `/joint_states.effort` carries) and returns `(t, |F_est|)` rows. `hw=True` injects unmodelled Coulomb + viscous friction, noise, bias drift, 12-bit quantisation and a +10 % model mass error.
+- `main(argv=None) -> int` (L94) — Prints the free-motion floor, the 1.2x-floor threshold and the detection latency for the ideal and hw-like cases. Measured 2026-10-15: ideal floor 1.5 N; hw-like floor 11.6 N (10 N detected in 38 ms, 5 N missed).
