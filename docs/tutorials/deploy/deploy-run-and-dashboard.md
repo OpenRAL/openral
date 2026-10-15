@@ -474,7 +474,7 @@ groups](../../contributing/toolchain.md#managing-the-python-environment-dependen
 `openral deploy sim --foxglove` starts a read-only Foxglove bridge next to the graph. Its 3D
 panel shows the same world the safety kernel checks: the voxel map, the declared fixtures and
 the boxes the grasp leg measures. The frames below come from a bimanual OpenArm pick-and-place
-run with the [manipulation-workspace contact](../../reference/manipulation-workspace-contact.md)
+run in Isaac Sim with the [manipulation-workspace contact](../../reference/manipulation-workspace-contact.md)
 rule on. The camera tiles along the top, the sim-time header and the event text were added by
 the recording tool. In a live session the event text appears as kernel log lines in the deploy log
 instead (see the carry phase below).
@@ -490,8 +490,8 @@ carton from head depth, before any finger touches it.
 depth points, black-outlined static geometry and the green grasp region, each numbered and
 tagged detected or from simulator](images/collision-view-grasp.webp)
 
-1. **Camera tiles** (from simulator): left wrist, head ZED and right wrist, rendered by the
-   simulator. These are the frames the policy acts on.
+1. **Camera tiles** (from simulator): left wrist, head ZED and right wrist, rendered by Isaac
+   Sim. These are the frames the policy acts on.
 2. **Voxels, coloured by height** (detected): the kernel's occupancy map, built from head depth
    by octomap at 15 mm. Collision checks run against this map. Cells inside a declared box
    fixture are occupied in the kernel but left out of the drawing (`hide_static_voxels`), so
