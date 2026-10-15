@@ -76,8 +76,8 @@ silent — a skip, not a failure. **No position commands by construction:** the
 powered tier never calls `send_action()` or `reset_to_pose()`. Its terminal
 E-stop assertion disconnects the motor bus, so run it attended with the
 physical power switch within reach. `connect()` can re-enable torque, so a
-stale servo goal can still cause a twitch. Driven by `just hil-so101` and by
-`.github/workflows/hil-so101.yml` on a `[self-hosted, lab-so101]` runner.
+stale servo goal can still cause a twitch. Driven by `just hil-so101`, run by
+hand on the bench host (no CI workflow; no self-hosted runner is registered).
 
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
