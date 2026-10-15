@@ -43,6 +43,7 @@ from openral_core import (
     SimScene,
     VLASpec,
     load_scene_strict,
+    scene_control_rate_hz,
 )
 from openral_core.exceptions import ROSConfigError, ROSError
 
@@ -849,10 +850,11 @@ def _scene_control_rate_hz(env_cfg: SimEnvironment, robot_hz: float | None = Non
     A scene may re-time the robot (the Isaac LeIsaac scene runs the SO-101 at 60 Hz,
     ``IsaacSimOptions.control_freq_hz``); videos and datasets then play at that rate.
     """
-    override = (env_cfg.scene.backend_options or {}).get("control_freq_hz")
-    if isinstance(override, int | float) and override > 0:
-        return float(override)
-    return robot_hz if robot_hz is not None else _robot_control_rate_hz(env_cfg.robot_id)
+    rate = scene_control_rate_hz(
+        env_cfg.scene.backend_options,
+        robot_hz if robot_hz is not None else _robot_control_rate_hz(env_cfg.robot_id),
+    )
+    return 30.0 if rate is None else rate
 
 
 def _write_videos(

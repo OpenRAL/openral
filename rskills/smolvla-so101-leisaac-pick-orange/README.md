@@ -53,6 +53,12 @@ uv run openral sim run --config scenes/sim/isaac_leisaac_pick_orange.yaml \
     --rskill rskills/smolvla-so101-leisaac-pick-orange \
     --instruction "Grab orange and place into plate" \
     --n-episodes 10 --save-video outputs/leisaac_pick_orange
+
+# The full deploy graph (runner, HAL, safety kernel with world collision) at 60 Hz.
+OPENRAL_ISAAC_SIDECAR_PYTHON=/opt/isaac-sim/python.sh OMNI_KIT_ACCEPT_EULA=YES \
+uv run openral deploy sim --config scenes/deploy/isaac_leisaac_pick_orange.yaml \
+    --initial-task "Grab orange and place into plate" \
+    --enable-octomap --enable-octomap-kernel-check
 ```
 
 ## How it works
@@ -105,7 +111,10 @@ pose = LeIsaac's init), so no sign or zero correction is folded in. The jaw's
 LeIsaac steps its env once per Isaac Lab physics dt (1/60 s, decimation 1) and
 records and evaluates one action per step; the dataset's `fps: 30` label does not
 change that. The manifest declares `action_contract.control_freq_hz: 60` and the
-scene runs the SO-101 at 60 Hz (`backend_options.control_freq_hz`).
+scene runs the SO-101 at 60 Hz (`backend_options.control_freq_hz`). Under
+`openral deploy sim` (`scenes/deploy/isaac_leisaac_pick_orange.yaml`) the same key
+re-times the whole graph (`openral_core.sim_scene_description`): the runner ticks,
+the HAL steps and the kernel measures at 60 Hz.
 
 ## Upstream model and training
 
@@ -122,7 +131,7 @@ scene runs the SO-101 at 60 Hz (`backend_options.control_freq_hz`).
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| SO-101 follower | `so101_follower` | ⚡ experimental | Simulation only (`scenes/sim/isaac_leisaac_pick_orange.yaml`). A real 30 Hz SO-101 is refused by the runner's trained-rate check (`control_freq_hz: 60`). |
+| SO-101 follower | `so101_follower` | ⚡ experimental | Simulation only (`scenes/sim/isaac_leisaac_pick_orange.yaml`, `scenes/deploy/isaac_leisaac_pick_orange.yaml`). A real 30 Hz SO-101 is refused by the runner's trained-rate check (`control_freq_hz: 60`). |
 
 ## Sensors required
 

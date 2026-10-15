@@ -34,6 +34,8 @@ from pydantic import (
     Field,
     PositiveFloat,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -44,6 +46,7 @@ from pydantic import (
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError
+from openral_core.time_base import scene_control_rate_hz
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -752,6 +755,70 @@ def merge_deploy_sensors(
     scene = list(scene_sensors)
     check_scene_sensor_overrides(manifest, scene)
     return [*manifest, *scene]
+
+
+def sim_scene_description(
+    description: RobotDescription, backend_options: Mapping[str, object] | None
+) -> RobotDescription:
+    """The robot as a sim scene runs it: the scene's control rate and its simulated sensors.
+
+    Two ``SceneSpec.backend_options`` keys change the robot a sim scene drives. Every
+    ``deploy sim`` consumer (the CLI, the launch's kernel / runner / recorder rates,
+    ``build_hal``'s scene-attached HAL) and the Isaac scene apply them here, so all of
+    them read one description:
+
+    * ``control_freq_hz`` replaces ``action_spec.control_freq_hz``
+      (:func:`openral_core.time_base.scene_control_rate_hz`): the runner ticks, the
+      HAL publishes proprio and the sim steps at the scene's rate.
+    * ``sim_sensors``: ``SensorSpec`` entries the scene simulates for this robot only,
+      appended to its sensors. Depth cameras only (the world map's input on a robot
+      whose real cameras are RGB), with intrinsics and no ``deploy_binding`` (nothing
+      real publishes them); a name the manifest uses is refused.
+
+    Pure (``openral_core`` has no logging dependency): each caller reports the result
+    (``deploy sim`` prints it, ``SimAttachedHAL`` logs ``sim.time_base``, the runner's
+    goal span records ``control.rate_hz``). A real deploy never calls this: the
+    hardware's rate and sensors are the manifest's.
+
+    Raises:
+        ROSConfigError: A bad ``control_freq_hz``, a rate override on a manifest
+            without ``action_spec``, or a ``sim_sensors`` entry that is invalid, not a
+            depth camera with intrinsics, bound to hardware, or reuses a manifest name.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> sim_scene_description(desc, {"control_freq_hz": 60}).control_rate_hz
+        60.0
+        >>> sim_scene_description(desc, {}) is desc
+        True
+    """
+    options = backend_options or {}
+    update: dict[str, object] = {}
+    manifest_hz = description.control_rate_hz
+    scene_hz = scene_control_rate_hz(options, manifest_hz)
+    if scene_hz is not None and scene_hz != manifest_hz:
+        if description.action_spec is None:
+            raise ROSConfigError(
+                f"backend_options.control_freq_hz={scene_hz:g} overrides the control rate of "
+                f"robot {description.name!r}, which declares no action_spec."
+            )
+        update["action_spec"] = description.action_spec.model_copy(
+            update={"control_freq_hz": scene_hz}
+        )
+    raw_sensors = options.get("sim_sensors")
+    if raw_sensors:
+        try:
+            added = TypeAdapter(list[SensorSpec]).validate_python(raw_sensors)
+        except ValidationError as exc:
+            raise ROSConfigError(f"backend_options.sim_sensors is invalid: {exc}") from exc
+        bad = [s.name for s in added if not s.is_depth_camera or s.deploy_binding is not None]
+        if bad:
+            raise ROSConfigError(
+                f"backend_options.sim_sensors {bad}: a simulated sensor must be a depth "
+                "camera with intrinsics and no deploy_binding."
+            )
+        update["sensors"] = merge_deploy_sensors(description.sensors, added)
+    return description.model_copy(update=update) if update else description
 
 
 ROBOT_UNIT_ENV = "OPENRAL_ROBOT_UNIT"

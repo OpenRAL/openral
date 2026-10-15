@@ -83,7 +83,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole, TaskSpec, scale_intrinsics_to
+from openral_core import (
+    IntrinsicsPinhole,
+    SensorSpec,
+    TaskSpec,
+    scale_intrinsics_to,
+    sim_scene_description,
+)
 from openral_core.exceptions import ROSConfigError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1196,6 +1202,11 @@ class IsaacSimOptions(BaseModel):
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
     # Simulation-only image models, e.g. a raw training stream alongside rectified depth.
     camera_intrinsics: dict[str, IntrinsicsPinhole] = Field(default_factory=dict)
+    # Depth cameras this scene simulates for the robot, appended to its manifest sensors
+    # (openral_core.sim_scene_description: depth + intrinsics, no deploy_binding, no
+    # manifest name), e.g. a world-collision depth view for an RGB-only arm. Mounted by
+    # camera_mounts like any manifest camera.
+    sim_sensors: list[SensorSpec] = Field(default_factory=list)
     # USD assets do not carry these process-level RTX settings.
     translucent_materials: bool = False
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
@@ -1880,7 +1891,10 @@ def _build_robot_spec(
             robot=robot_id,
             manifest_hz=desc.control_rate_hz,
             scene_hz=control_freq_hz,
-            hint="one env.step spans 1/scene_hz of sim time; deploy sim keeps the robot's rate",
+            hint=(
+                "one env.step spans 1/scene_hz of sim time; deploy sim runs the robot at "
+                "scene_hz too (openral_core.sim_scene_description)"
+            ),
         )
     control_freq_hz = control_freq_hz or desc.control_rate_hz
     if control_freq_hz is None:
@@ -2206,6 +2220,21 @@ def _resolve_placement_rubric(
     }
 
 
+def _with_sim_sensors(desc: RobotDescription, backend_options: dict[str, Any]) -> RobotDescription:
+    """``desc`` plus the scene's simulated sensors (``backend_options.sim_sensors``).
+
+    Validated and merged by ``openral_core.sim_scene_description``, exactly as the deploy
+    graph sees them. The scene's ``control_freq_hz`` is not applied here:
+    ``_build_robot_spec`` applies and logs it (``isaac_control_rate_overridden``).
+    """
+    sensors = sim_scene_description(desc, backend_options).sensors
+    added = [s.name for s in sensors[len(desc.sensors) :]]
+    if not added:
+        return desc
+    print(f"[isaac-sim] simulated sensors: {added}", flush=True)
+    return desc.model_copy(update={"sensors": sensors})
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
@@ -2236,7 +2265,8 @@ def _write_robot_spec(
 
     robot_id = env_cfg.robot_id or "franka_panda"
     try:
-        desc = ROBOTS.get(robot_id)()
+        # Plus the scene's simulated sensors, which the camera mounts below may name.
+        desc = _with_sim_sensors(ROBOTS.get(robot_id)(), env_cfg.scene.backend_options)
     except KeyError as exc:
         raise ROSConfigError(
             f"unknown robot_id {robot_id!r} for the Isaac manifest scene; "

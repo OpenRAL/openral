@@ -266,9 +266,15 @@ from openral_core.schemas import (
     scene_family,
     scene_task_space_compatible,
     sensor_name_to_slot,
+    sim_scene_description,
     task_space_compatible,
 )
-from openral_core.time_base import TIME_BASE_TOL, check_time_base, physics_steps_per_tick
+from openral_core.time_base import (
+    TIME_BASE_TOL,
+    check_time_base,
+    physics_steps_per_tick,
+    scene_control_rate_hz,
+)
 
 __all__ = [
     "ANTHROPIC_BASE_URL",
@@ -534,9 +540,11 @@ __all__ = [
     "required_vla_camera_slots",
     "resolve_sensor_overlays",
     "scale_intrinsics_to",
+    "scene_control_rate_hz",
     "scene_family",
     "scene_task_space_compatible",
     "sensor_name_to_slot",
+    "sim_scene_description",
     "task_space_compatible",
 ]
 __version__ = _pkg_version("openral-core")

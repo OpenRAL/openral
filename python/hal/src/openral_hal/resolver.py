@@ -25,7 +25,7 @@ import importlib
 import inspect
 from typing import Literal, cast
 
-from openral_core import RobotDescription
+from openral_core import RobotDescription, sim_scene_description
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -104,10 +104,15 @@ def build_hal(
             # bare twin / hal.sim class. openral_sim imported lazily so
             # openral_hal stays import-safe without the sim group.
             from openral_hal.sim_attached import SimAttachedHAL
-            from openral_hal.sim_bringup import build_sim_env_from_yaml
+            from openral_hal.sim_bringup import build_sim_env_from_yaml, sim_scene_backend_options
 
             env, seed = build_sim_env_from_yaml(sim_env_yaml, robot_id_fallback=description.name)
-            return SimAttachedHAL(env, description, env_reset_seed=seed)
+            # The robot as the scene runs it: its control rate (the time base
+            # SimAttachedHAL.connect checks, the proprio rate) and its simulated sensors.
+            scene_description = sim_scene_description(
+                description, sim_scene_backend_options(sim_env_yaml)
+            )
+            return SimAttachedHAL(env, scene_description, env_reset_seed=seed)
         entry = description.hal.sim
         if entry is None:
             if description.sim is None:
