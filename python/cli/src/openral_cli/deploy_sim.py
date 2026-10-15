@@ -968,6 +968,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
+    # The skip exists for parallel sim harnesses. On real hardware an abnormal
+    # exit would leave a live HAL behind with no kernel, watchdog or E-stop
+    # wiring. Safety-WG HZ-0390-5 option (b): refuse, no override.
+    if hal_mode == "real" and os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") == "1":
+        raise ROSConfigError(
+            "OPENRAL_SKIP_ORPHAN_REAP=1 is refused on a real deploy: an abnormal exit "
+            "would leave the real HAL running unsupervised. Unset it; it is for "
+            "parallel `openral deploy sim` harnesses only."
+        )
 
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None

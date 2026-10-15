@@ -2034,6 +2034,41 @@ def test_reap_is_skipped_when_parallel_workers_share_the_host(
     assert called == ["reap"], "the default is still to reap"
 
 
+def test_real_deploy_refuses_skip_orphan_reap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HZ-0390-5 option (b): ``deploy run`` refuses the skip; ``deploy sim`` keeps it.
+
+    On real hardware a skipped sweep can leave a live HAL with no kernel,
+    watchdog or E-stop behind it. The refusal is raised by the resolver, before
+    any launch argv exists, so ``deploy run`` never reaches ``_run_launch``.
+    """
+    monkeypatch.setenv("OPENRAL_SKIP_ORPHAN_REAP", "1")
+    with pytest.raises(ROSConfigError, match="OPENRAL_SKIP_ORPHAN_REAP"):
+        resolve_launch_invocation(
+            config=None,
+            robot_override="ur5e",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+            hal_mode="real",
+        )
+
+    invocation = resolve_launch_invocation(
+        config=None,
+        robot_override="ur5e",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="sim",
+    )
+    assert invocation.hal_mode == "sim"
+    reaped: list[str] = []
+    monkeypatch.setattr(
+        deploy_sim, "_kill_orphan_openral_graph_processes", lambda *_a, **_kw: reaped.append("r")
+    )
+    deploy_sim._reap_orphans_with_log()
+    assert reaped == [], "deploy sim still honours the skip"
+
+
 def test_exit_sweep_spares_a_concurrent_siblings_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
