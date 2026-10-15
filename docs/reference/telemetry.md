@@ -89,7 +89,7 @@ have `semconv.py` constants; the RTC attribute below rides the helper's generic
 
 | Attribute | Recorded at | Meaning |
 |---|---|---|
-| `inference.rtc_delay` | `rskill/_vla_core.py::run_inference` | Real-Time Chunking only: how many actions the consumer popped out of the `ActionQueue` while the *previous* inference ran — the prefix length the guidance freezes. It is the queue's **index delta**, not a latency estimate, so it stays correct in fast-forward sim as well as wall-clock deploy. `0` on the cold-start chunk (no previous tail). The executor also logs each merge as `chunked_executor.rtc_merge` at DEBUG (`chunk_index`, `merge_tick` = actions served before the merge, measured `rtc_delay`), so switch points can be lined up with a bag of served actions (`OPENRAL_LOG_LEVEL=DEBUG`). |
+| `inference.rtc_delay` | `rskill/_vla_core.py::run_inference` | Real-Time Chunking only: how many actions the consumer popped out of the `ActionQueue` while the *previous* inference ran — the prefix length the guidance freezes. It is the queue's **index delta**, not a latency estimate, so it stays correct in fast-forward sim as well as wall-clock deploy. `0` on the cold-start chunk (no previous tail). The executor also logs each merge as `chunked_executor.rtc_merge` at DEBUG (`chunk_index`, `merge_tick` = actions served before the merge, measured `rtc_delay`), so switch points can be lined up with a bag of served actions (enable DEBUG on just that stdlib logger, `logging.getLogger("openral_rskill.executor").setLevel(logging.DEBUG)`, e.g. from a `sitecustomize.py`; a deploy's root logger stays at WARNING). |
 
 The attribute is written only when the executor threads an `inference_delay`
 into `run_inference(call_kwargs=…)`, so its presence in a trace is also the
