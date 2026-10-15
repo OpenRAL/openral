@@ -77,13 +77,14 @@ isolate_globs = [
   # env dies at reset with "<...RethinkMount> is not a MujocoXML instance" — even
   # on the correct robosuite 1.4 (issue #24 class, NOT a 1.4-vs-1.5 conflict).
   # Each file passes cleanly run alone, so isolate them per-process. The libero
-  # lane is a no-ROS host, so idle_step's one rclpy-gated test legitimately skips
-  # there — the isolated runner tolerates that (see test-selective.yml run_lane).
+  # lane is a no-ROS host, so idle_step's one rclpy-gated test skips there; that
+  # passes only because the skip matches the declared `[capability_gaps.ros]`
+  # pattern — an isolated run in a lane still goes through `report_lane`, which
+  # fails an undeclared skip (heavy-lanes.yml run_lane; selective-testing.md rule 9).
   # NB: these are LIBERO (robosuite==1.4) files. The OpenArm tabletop test that
   # used to sit in action_dim.py needs robosuite>=1.5 and now lives in
   # `test_sim_attached_openarm_action_dim.py` on the `robocasa` lane — see the
-  # note there. It is deliberately NOT listed here: an isolated slot tolerates
-  # skips, and this lane's whole job is to reject them.
+  # note there. It is not listed here because it needs no isolation on that lane.
   "python/hal/tests/test_sim_attached_action_dim.py",
   "python/hal/tests/test_sim_attached_idle_step.py",
   # Mixed CPU/GPU sidecar files: the hosted selective runner exercises the
@@ -293,8 +294,8 @@ robocasa = [
   # Batched (not isolated) on purpose: they coexist with
   # test_so100_robosuite_lift.py in one interpreter — this lane installs no
   # LIBERO, so there is no 1.4-vs-1.5 seam and no cross-file EGL teardown
-  # problem — and the batched path is the one that REJECTS a skip. An isolated
-  # slot tolerates skips, which is exactly how these stopped running.
+  # problem. Either path rejects an undeclared skip: batched and isolated junit
+  # reports both go through `report_lane` (heavy-lanes.yml run_lane).
   "tests/sim/test_openarm_scene_pnp.py",
   "python/hal/tests/test_sim_attached_openarm_action_dim.py",
 ]

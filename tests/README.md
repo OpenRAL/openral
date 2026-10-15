@@ -19,7 +19,7 @@ change), §1.11 (real components, no mocks) and §2 ("Tests").
 | `just test-changed` / `just test-changed-run` | the targets a diff can affect | See [Selective testing](../docs/contributing/selective-testing.md). |
 | `just test-integration` | `tests/integration/` | Needs `source /opt/ros/jazzy/setup.bash`. |
 | `just test-ros-live` | the live-ROS targets in `scripts/ros_live_tests.sh` | Needs `just ros2-build && source install/setup.bash`; see [development.md](../docs/contributing/development.md). |
-| `just test-sim` | `tests/sim/ -m sim` | Only files carrying the `sim` marker; real weights / simulators, opt-in. |
+| `just test-sim` | `tests/sim/ -m sim` | Every test under `tests/sim/` (the marker is applied there); real weights / simulators, opt-in. |
 | `just hal-twin-sweep` | `tests/sim/` HAL twins + `test_all_hals_via_runner.py` | Every HAL against its MuJoCo twin. |
 | `just test-robocasa-sim` | the RoboCasa targets in `scripts/robocasa_sim_tests.sh` | Manual only; no CI lane (see [development.md](../docs/contributing/development.md)). |
 | `just hil <name>` | `tests/hil/test_<name>.py` | Nothing collected (exit 4/5) prints `SKIPPED` and exits 0. Also `just hil-so101`, `just hil-openarm-deploy`. |
@@ -43,6 +43,8 @@ change), §1.11 (real components, no mocks) and §2 ("Tests").
 
 `pyproject.toml` declares two markers under `--strict-markers`: `sim` (real
 weights and/or a simulated robot) and `slow` (>5 s on the reference host).
+`tests/sim/conftest.py` applies `sim` to every test collected under `tests/sim/`,
+so a file there never needs its own `pytestmark` to be selected by `-m sim`.
 `asyncio_mode = "strict"`.
 
 Optional dependencies are gated with `pytest.importorskip(...)` or `skipif`,
