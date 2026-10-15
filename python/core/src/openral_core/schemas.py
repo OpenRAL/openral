@@ -3173,8 +3173,9 @@ class RobotDescription(BaseModel):
         the costmap ``footprint`` polygon (see
         ``nav2_footprint_param``), and ``base_kinematics`` →
         the MPPI ``motion_model``. Returns an empty dict for fixed-base
-        arms (no mobile base → no Nav2). Velocity bounds remain Nav2
-        tuning in the base param file, not robot identity.
+        arms (no mobile base → no Nav2). Velocity limits remain Nav2
+        tuning in the base param file; ``nav2.launch.py`` clamps them to
+        ``safety.max_base_*`` separately (it needs the base file's values).
         """
         overrides: dict[str, str] = {}
         if self.footprint_radius is not None or self.footprint_polygon:
