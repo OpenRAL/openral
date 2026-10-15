@@ -365,7 +365,7 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     """A JOINT_POSITION slot target past a joint limit is pulled strictly inside it.
 
     Real fixture: the OpenArm v2 manifest and its 16-D bimanual slot contract.
-    On the lab Orin (2026-09-22) the restock π0.5's first tick proposed left_joint5 at
+    On the lab Orin (2026-09-22) the pick-and-place π0.5's first tick proposed left_joint5 at
     -1.58973 rad against a -1.5708 limit; the kernel E-stopped. The
     single-surface path already clamps with a 1e-3 epsilon (the kernel checks
     open intervals); slot dispatch now does the same for named joints.
@@ -479,7 +479,7 @@ def test_gripper_position_slots_are_clamped_inside_the_end_effectors_command_ran
 
     Real fixtures: the OpenArm v2 manifest (``raw_joint_rad``: right gripper
     ``[-0.7854, 0]``) and panda_mobile (``normalized_close_symmetric``: ``[-1, 1]``).
-    In Isaac on 2026-10-05 the restock π0.5 de-normalised its right gripper to
+    In Isaac on 2026-10-05 the pick-and-place π0.5 de-normalised its right gripper to
     -0.785627 rad, 0.2 mrad past the limit; the kernel refused it (``gripper_range``)
     and E-stopped after 361 ticks. The codec now clamps gripper channels the way it
     clamps JOINT_POSITION ones.

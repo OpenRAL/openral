@@ -93,7 +93,7 @@ def test_declaration_retraction_after_shutdown_is_quiet_and_keeps_the_in_force_r
     from openral_core import GraspDeclaration
 
     declaration = GraspDeclaration(
-        target_id="cell:restock_box",
+        target_id="cell:pick_box",
         contact_links=("openarm_left_finger_pair",),
         timeout_s=70.0,
         stamp_ns=0,

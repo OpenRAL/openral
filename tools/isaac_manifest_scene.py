@@ -2810,7 +2810,7 @@ class IsaacManifestScene(IsaacSceneBase):
         any other collider as its USD bound (``kind: box``, ``BBoxCache``, every purpose — a
         superset of the collision geometry, the fail-closed direction). Both are expressed in
         ``base_frame`` through PhysX's measured robot pose (``_world_from_base``).
-        The sidecar ``static_colliders`` endpoint; ``tools/isaac_static_geometry.py`` writes
+        The sidecar ``static_colliders`` endpoint; ``tools/derive_scene_inputs.py`` writes
         them into a deploy scene's declared static geometry.
         """
         from isaacsim.core.utils.stage import get_current_stage
@@ -2889,6 +2889,61 @@ class IsaacManifestScene(IsaacSceneBase):
                 )
             boxes.append(entry)
         return {"frame": "base_frame", "boxes": boxes}
+
+    def scene_ground_truth(self) -> dict[str, Any]:
+        """The declared objects and the active prompt's destinations as base-frame boxes.
+
+        ``objects``: each declared object's USD bound as it lies now (``BBoxCache``,
+        every purpose, a superset of its collider). ``placements``: the active rubric's
+        (``set_task``) object, its target region (``target``, the axis-aligned world
+        box, expressed in ``base_frame``) and the regions the rubric grades as adjacent
+        (``adjacent``: where the hand works beside the target). The sidecar ``scene_ground_truth`` endpoint;
+        ``tools/derive_scene_inputs.py`` derives a deploy scene's grasp ``search_box`` /
+        ``workspace_box`` from it. Sim ground truth: a real cell grounds the same boxes
+        from perception (``openral_reasoner.grounding``).
+        """
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import Usd, UsdGeom
+
+        stage = get_current_stage()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), ["default", "render", "proxy", "guide"], useExtentsHint=False
+        )
+        base_from_world = np.asarray(np.linalg.inv(self._world_from_base()), dtype=np.float64)
+        objects = {}
+        for name, prim in self._object_prims.items():
+            usd = stage.GetPrimAtPath(prim.prim_path)
+            bound = cache.ComputeUntransformedBound(usd)
+            rng = bound.GetRange()
+            if rng.IsEmpty():
+                continue
+            # Pose from PhysX (USD may lag the simulation), scale from USD (static).
+            usd_world = np.asarray(
+                UsdGeom.Xformable(usd).ComputeLocalToWorldTransform(Usd.TimeCode.Default()),
+                dtype=np.float64,
+            ).T  # USD rows
+            scale = np.eye(4)
+            scale[:3, :3] = np.diag(np.linalg.norm(usd_world[:3, :3], axis=0))
+            pos, quat_wxyz = prim.get_world_pose()
+            world_from_local = (
+                pose_matrix(pos, quat_wxyz)
+                @ scale
+                @ (np.asarray(bound.GetMatrix(), dtype=np.float64).T)
+            )
+            objects[name] = oriented_box(
+                base_from_world @ world_from_local, rng.GetMin(), rng.GetMax()
+            )
+        placements = [
+            {
+                "object": str(p["object"]),
+                "target": oriented_box(base_from_world, p["target"]["min"], p["target"]["max"]),
+                "adjacent": [
+                    oriented_box(base_from_world, a["min"], a["max"]) for a in p.get("adjacent", [])
+                ],
+            }
+            for p in (self._placement_success or {}).get("placements", [])
+        ]
+        return {"frame": "base_frame", "objects": objects, "placements": placements}
 
     def _contact_points(self) -> list[dict[str, Any]]:
         """Every PhysX contact point of the last physics step, as plain dicts.

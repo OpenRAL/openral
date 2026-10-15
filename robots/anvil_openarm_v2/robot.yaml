@@ -37,6 +37,9 @@ base_frame: "world"
 assets:
   mjcf: "openarm:anvil_v2_bimanual"
 
+# Arm joints declare has_torque_sensor: false. OpenArm's joint torque is a
+# current-derived estimate from the motor driver, not a joint torque sensor;
+# declaring a sensor would let force decisions over-trust the estimate (#375).
 joints:
   # ── Left arm (7 revolute) — J1/J6 carry the Anvil 2.0 ranges ──────
   - name: "left_joint1"
@@ -49,7 +52,7 @@ joints:
     position_limits: [-2.3562, 2.3562]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint1"
   - name: "left_joint2"
@@ -62,7 +65,7 @@ joints:
     position_limits: [-3.31613, 0.174533]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint2"
   - name: "left_joint3"
@@ -75,7 +78,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint3"
   - name: "left_joint4"
@@ -88,7 +91,7 @@ joints:
     position_limits: [0.0, 2.44346]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint4"
   - name: "left_joint5"
@@ -101,7 +104,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint5"
   # J6 — radial/ulnar deviation (the OpenARM 2.0 wrist swap); the
@@ -116,7 +119,7 @@ joints:
     position_limits: [-0.7854, 1.2217]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint6"
   # J7 — flexion/extension; coincident with J6 (gimbal wrist).
@@ -130,7 +133,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint7"
   # ── Left gripper (1 revolute) — drives finger_joint1; the outer
@@ -160,7 +163,7 @@ joints:
     position_limits: [-2.3562, 2.3562]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint1"
   - name: "right_joint2"
@@ -173,7 +176,7 @@ joints:
     position_limits: [-0.174533, 3.31613]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint2"
   - name: "right_joint3"
@@ -186,7 +189,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint3"
   - name: "right_joint4"
@@ -199,7 +202,7 @@ joints:
     position_limits: [0.0, 2.44346]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint4"
   - name: "right_joint5"
@@ -212,7 +215,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint5"
   - name: "right_joint6"
@@ -225,7 +228,7 @@ joints:
     position_limits: [-0.7854, 1.2217]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint6"
   - name: "right_joint7"
@@ -238,7 +241,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint7"
   # ── Right gripper (1 revolute) — mirrored negative range vs left ──

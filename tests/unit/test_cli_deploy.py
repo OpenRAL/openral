@@ -86,7 +86,7 @@ def test_real_mode_forwards_foxglove_and_initial_task(
             "--foxglove-port",
             "9876",
             "--initial-task",
-            "restock-shelf-from-front-box",
+            "place-box-on-shelf",
         ],
     )
 
@@ -94,7 +94,7 @@ def test_real_mode_forwards_foxglove_and_initial_task(
     inv = captured["inv"]
     assert inv.enable_foxglove is True
     assert inv.foxglove_port == 9876
-    assert inv.initial_task_prompt == "restock-shelf-from-front-box"
+    assert inv.initial_task_prompt == "place-box-on-shelf"
 
 
 def test_real_mode_dry_run_prints_launch_without_shelling(

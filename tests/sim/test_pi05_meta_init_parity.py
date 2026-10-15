@@ -7,7 +7,7 @@ Both failure classes are silent: PR #289's garbage ``embed_scale`` matched all
 813 state_dict tensors and still gave forward cosine 0.03. So parameters AND
 buffers are compared bit-exact (``remove_duplicate=False``, dtype included), and
 the bf16 path also a forward with fixed inputs and noise — on a checkpoint other
-than the OpenArm restock one it was validated on: the LIBERO / Franka
+than the OpenArm pick-and-place one it was validated on: the LIBERO / Franka
 ``lerobot/pi05_libero_finetuned_v044`` behind ``rskills/pi05-libero-int8``.
 
 The reference is what ``PI05Policy.from_pretrained`` produces, derived without

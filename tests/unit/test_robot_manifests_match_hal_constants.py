@@ -9,7 +9,7 @@ The ``*_DESCRIPTION`` constants in ``python/hal/src/openral_hal/`` survive
 only as in-code **mirrors** of the manifests (tests and direct
 ``FrankaPandaHAL()``-style construction use them). The parametrised test
 below checks each mirror against its manifest, so a joint-limit/payload/
-safety-envelope bump in the YAML fails loudly until the mirror follows
+torque-sensor/safety-envelope bump in the YAML fails loudly until the mirror follows
 (issues #54-58). The manifest wins; fix the constant, never the YAML.
 
 UR5e/UR10e/Franka/Sawyer/ALOHA mirror their ``*_REAL_DESCRIPTION`` (derived
@@ -66,6 +66,7 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
             j.effort_limit,
             j.sim_joint_name,
             j.closure_calibration,
+            j.has_torque_sensor,
         )
         for j in yaml_desc.joints
     ]
@@ -78,6 +79,7 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
             j.effort_limit,
             j.sim_joint_name,
             j.closure_calibration,
+            j.has_torque_sensor,
         )
         for j in hal_desc.joints
     ]

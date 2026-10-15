@@ -543,7 +543,7 @@ def test_initial_joint_positions_reach_the_sidecar_within_limits(
 ) -> None:
     """The scene's start pose is checked against the manifest, then handed to the sidecar.
 
-    The OpenArm restock policy starts with both jaws at its training opening, 0.6 rad
+    The OpenArm pick-and-place policy starts with both jaws at its training opening, 0.6 rad
     (the right jaw on the mirrored axis); the arms keep the URDF's zero (hanging).
     """
     from openral_core import ROBOT_UNIT_ENV

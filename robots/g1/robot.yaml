@@ -41,7 +41,7 @@ joints:
     position_limits: [-2.5307, 2.8798]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_hip_roll_joint"
     origin_xyz: [0, 0.052, -0.030465]
@@ -53,7 +53,7 @@ joints:
     position_limits: [-0.5236, 2.9671]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_hip_yaw_joint"
     origin_xyz: [0.025001, 0, -0.12412]
@@ -65,7 +65,7 @@ joints:
     position_limits: [-2.7576, 2.7576]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_knee_joint"
     origin_xyz: [-0.078273, 0.0021489, -0.17734]
@@ -77,7 +77,7 @@ joints:
     position_limits: [-0.087267, 2.8798]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_ankle_pitch_joint"
     origin_xyz: [0, -9.4445e-05, -0.30001]
@@ -89,7 +89,7 @@ joints:
     position_limits: [-0.87267, 0.5236]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_ankle_roll_joint"
     origin_xyz: [0, 0, -0.017558]
@@ -101,7 +101,7 @@ joints:
     position_limits: [-0.2618, 0.2618]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Right leg ─────────────────────────────────────────────────────
   - name: "right_hip_pitch_joint"
@@ -114,7 +114,7 @@ joints:
     position_limits: [-2.5307, 2.8798]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_hip_roll_joint"
     origin_xyz: [0, -0.052, -0.030465]
@@ -126,7 +126,7 @@ joints:
     position_limits: [-2.9671, 0.5236]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_hip_yaw_joint"
     origin_xyz: [0.025001, 0, -0.12412]
@@ -138,7 +138,7 @@ joints:
     position_limits: [-2.7576, 2.7576]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_knee_joint"
     origin_xyz: [-0.078273, -0.0021489, -0.17734]
@@ -150,7 +150,7 @@ joints:
     position_limits: [-0.087267, 2.8798]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_ankle_pitch_joint"
     origin_xyz: [0, 9.4445e-05, -0.30001]
@@ -162,7 +162,7 @@ joints:
     position_limits: [-0.87267, 0.5236]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_ankle_roll_joint"
     origin_xyz: [0, 0, -0.017558]
@@ -174,7 +174,7 @@ joints:
     position_limits: [-0.2618, 0.2618]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Waist (3) ─────────────────────────────────────────────────────
   - name: "waist_yaw_joint"
@@ -187,7 +187,7 @@ joints:
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "waist_roll_joint"
     origin_xyz: [-0.0039635, 0, 0.035]
@@ -199,7 +199,7 @@ joints:
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   # child_link is "torso_link", NOT a "waist_pitch_link" — the G1 has no such
   # link, in this manifest's URDF or in any other model file in the tree. The
@@ -218,7 +218,7 @@ joints:
     position_limits: [-0.52, 0.52]
     velocity_limit: 6.0
     effort_limit: 88.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Left arm (7) ─────────────────────────────────────────────────
   - name: "left_shoulder_pitch_joint"
@@ -231,7 +231,7 @@ joints:
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_roll_joint"
     origin_xyz: [0, 0.038, -0.013831]
@@ -243,7 +243,7 @@ joints:
     position_limits: [-1.5882, 2.2515]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_shoulder_yaw_joint"
     origin_xyz: [0, 0.00624, -0.1032]
@@ -255,7 +255,7 @@ joints:
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_elbow_joint"
     origin_xyz: [0.015783, 0, -0.080518]
@@ -267,7 +267,7 @@ joints:
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_roll_joint"
     origin_xyz: [0.1, 0.00188791, -0.01]
@@ -279,7 +279,7 @@ joints:
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_pitch_joint"
     origin_xyz: [0.038, 0, 0]
@@ -291,7 +291,7 @@ joints:
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "left_wrist_yaw_joint"
     origin_xyz: [0.046, 0, 0]
@@ -303,7 +303,7 @@ joints:
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   # ── Right arm (7) ────────────────────────────────────────────────
   - name: "right_shoulder_pitch_joint"
@@ -316,7 +316,7 @@ joints:
     position_limits: [-3.0892, 2.6704]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_roll_joint"
     origin_xyz: [0, -0.038, -0.013831]
@@ -328,7 +328,7 @@ joints:
     position_limits: [-2.2515, 1.5882]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_shoulder_yaw_joint"
     origin_xyz: [0, -0.00624, -0.1032]
@@ -340,7 +340,7 @@ joints:
     position_limits: [-2.618, 2.618]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_elbow_joint"
     origin_xyz: [0.015783, 0, -0.080518]
@@ -352,7 +352,7 @@ joints:
     position_limits: [-1.0472, 2.0944]
     velocity_limit: 6.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_roll_joint"
     origin_xyz: [0.1, -0.00188791, -0.01]
@@ -364,7 +364,7 @@ joints:
     position_limits: [-1.97222, 1.97222]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_pitch_joint"
     origin_xyz: [0.038, 0, 0]
@@ -376,7 +376,7 @@ joints:
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
   - name: "right_wrist_yaw_joint"
     origin_xyz: [0.046, 0, 0]
@@ -388,7 +388,7 @@ joints:
     position_limits: [-1.61443, 1.61443]
     velocity_limit: 10.0
     effort_limit: 30.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
 
 # No end-effector in this menagerie variant — wrist endpoints are

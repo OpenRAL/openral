@@ -36,6 +36,7 @@ __all__ = [
     "gripper_hands",
     "ground_grasp_target",
     "ground_place_target",
+    "ground_workspace",
 ]
 
 #: Seconds a declaration outlives its goal's own patience ceiling before the
@@ -332,4 +333,73 @@ def ground_place_target(
         timeout_s=min(patience_s + DECLARATION_TIMEOUT_MARGIN_S, PlaceDeclaration.MAX_TIMEOUT_S),
         stamp_ns=0,
         search_box=seed,
+    )
+
+
+Bbox = tuple[float, float, float, float, float, float]
+
+
+def ground_workspace(
+    source: Bbox,
+    destination: Bbox | None,
+    *,
+    anchor_xyz: tuple[float, float, float],
+    base_frame: str,
+    pad_m: float,
+    headroom_m: float,
+    evidence_ref: str,
+) -> PlaceRegion:
+    """The manipulation workspace a pick-and-place works in, as a ``workspace_box``.
+
+    The gravity-aligned hull of the ``source`` fixture the target lies in (a tote's
+    walls and floor, a counter top) and the ``destination`` it goes to (a shelf slot,
+    a cabinet), padded by ``pad_m`` on every side plus ``headroom_m`` on top (the hand
+    rides above what it carries). Each box is ``(x0, y0, z0, x1, y1, z1)`` in
+    ``base_frame`` — from sim ground truth, or from the scene graph's surface boxes on
+    a real cell. It is a declaration like ``search_box``: it arms nothing until the
+    producer confirms it against the voxel map (``workspace_region``).
+
+    Never wider than ``GraspDeclaration``'s workspace caps: an axis longer than twice
+    ``MAX_WORKSPACE_HALF_EXTENT_M`` is cut to that window centred on ``anchor_xyz``
+    (the target object), keeping the pick side and as much of the destination as fits.
+
+    Raises:
+        ROSReasonerInvalidPlan: the clipped box still exceeds the volume cap.
+
+    Example:
+        >>> ws = ground_workspace(
+        ...     (0.0, -0.2, -0.6, 0.3, 0.2, -0.45),
+        ...     (0.3, 0.0, -0.45, 0.7, 0.15, -0.3),
+        ...     anchor_xyz=(0.15, 0.0, -0.55),
+        ...     base_frame="openarm_base",
+        ...     pad_m=0.02,
+        ...     headroom_m=0.05,
+        ...     evidence_ref="sim:tote+slot",
+        ... )
+        >>> [round(v, 3) for v in ws.pose.xyz], [round(v, 3) for v in ws.half_extents]
+        ([0.35, 0.0, -0.425], [0.37, 0.22, 0.195])
+    """
+    cap = GraspDeclaration.MAX_WORKSPACE_HALF_EXTENT_M
+    boxes = [source] if destination is None else [source, destination]
+    lo = [min(b[i] for b in boxes) - pad_m for i in range(3)]
+    hi = [max(b[i + 3] for b in boxes) + pad_m for i in range(3)]
+    hi[2] += headroom_m
+    for i in range(3):
+        if hi[i] - lo[i] > 2.0 * cap:
+            lo[i], hi[i] = max(lo[i], anchor_xyz[i] - cap), min(hi[i], anchor_xyz[i] + cap)
+    half = ((hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0, (hi[2] - lo[2]) / 2.0)
+    if 8.0 * half[0] * half[1] * half[2] > GraspDeclaration.MAX_WORKSPACE_VOLUME_M3:
+        raise ROSReasonerInvalidPlan(
+            f"workspace {[round(2 * h, 3) for h in half]} m exceeds the "
+            f"{GraspDeclaration.MAX_WORKSPACE_VOLUME_M3} m^3 cap; declare a tighter one."
+        )
+    return PlaceRegion(
+        frame_id=base_frame,
+        pose=Pose6D(
+            xyz=((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id=base_frame,
+        ),
+        half_extents=half,
+        evidence_ref=evidence_ref,
     )

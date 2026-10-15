@@ -54,6 +54,9 @@ TARGETS=(
     tests/integration/test_safety_kernel_openarm_torso.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     tests/integration/test_sim_depth_registered_colour_live.py
+    # DeployRuntime.estimated_depth_camera: the real depth provider in metric
+    # mode against a fake DA3 sidecar at its ZMQ boundary (no GPU).
+    tests/integration/test_estimated_depth_provider_live.py
     tests/integration/test_hal_sigint_teardown_live.py
     # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
     # HALs with attach mechanics (kernel fails closed on an unstamped set).

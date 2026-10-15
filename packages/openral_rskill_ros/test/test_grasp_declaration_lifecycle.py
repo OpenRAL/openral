@@ -36,7 +36,7 @@ from test_place_declaration_lifecycle import (
     _spin_for,
 )
 
-_TARGET = "cell:restock_box"
+_TARGET = "cell:pick_box"
 _FINGERS = ("openarm_left_finger_pair", "openarm_right_finger_pair")
 
 
@@ -258,7 +258,7 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
 
 def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:
     """Active with no contact_links: refused, the goal runs with no declaration."""
-    bad = '{"target_id": "cell:restock_box", "timeout_s": 70.0, "stamp_ns": 0}'
+    bad = '{"target_id": "cell:pick_box", "timeout_s": 70.0, "stamp_ns": 0}'
     with _harness(bad) as (executor, runtime, seen):
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)

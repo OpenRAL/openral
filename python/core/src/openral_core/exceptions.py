@@ -84,7 +84,12 @@ class ROSWorkspaceViolation(ROSSafetyViolation):
 
 
 class ROSForceLimitExceeded(ROSSafetyViolation):
-    """Measured or predicted contact force exceeds the configured limit."""
+    """Measured or predicted contact force exceeds the configured limit.
+
+    Not raised anywhere yet: no check currently compares a force against
+    ``SafetyEnvelope.max_force_n``. The class is exported so the force/current
+    contact layer (issue #373) can raise it without an API change.
+    """
 
 
 class ROSCollisionImminent(ROSSafetyViolation):

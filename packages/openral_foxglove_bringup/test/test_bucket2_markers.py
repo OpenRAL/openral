@@ -251,7 +251,7 @@ def _region(xyz: tuple[float, float, float], half: tuple[float, float, float]) -
     region.frame_id = _BASE
     region.pose = _pose(xyz)
     region.half_extents = gm.Vector3(x=half[0], y=half[1], z=half[2])  # type: ignore[attr-defined]
-    region.evidence_ref = "head_seg+voxels:cell:restock_box"
+    region.evidence_ref = "head_seg+voxels:cell:pick_box"
     return region
 
 
@@ -283,7 +283,7 @@ class TestAttachmentMarkers:
         mk = vm.Marker  # type: ignore[attr-defined]
         quarter_z = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))  # +90° yaw
         obj = _object(
-            object_id="cell:restock_box",
+            object_id="cell:pick_box",
             attach_link="openarm_right_link7",
             pose_in_link=_pose((0.0, 0.0, 0.1), quarter_z),
             primitives=[
@@ -292,7 +292,7 @@ class TestAttachmentMarkers:
                 )  # type: ignore[attr-defined]
             ],
             evidence_kind="grasp_target_region",
-            evidence_ref="grasp_target_region:cell:restock_box:seg@1",
+            evidence_ref="grasp_target_region:cell:pick_box:seg@1",
         )
         array = attachment_markers(_state([obj]), _TF_FRAMES)
 
@@ -312,7 +312,7 @@ class TestAttachmentMarkers:
         assert 0.0 < cube.color.a < 1.0
         (label,) = _adds(array, "attached_label")
         assert label.type == mk.TEXT_VIEW_FACING
-        assert label.text == "restock_box · grasp_target_region"
+        assert label.text == "pick_box · grasp_target_region"
         assert label.header.frame_id == "openarm_right_ee_base_link"
 
     def test_a_released_record_frozen_on_the_base_frame_is_labelled(self) -> None:
@@ -320,7 +320,7 @@ class TestAttachmentMarkers:
         support attested — drawn where it was let go, tagged so."""
         om, _, vm = _msgs()
         obj = _object(
-            object_id="cell:restock_box",
+            object_id="cell:pick_box",
             attach_link=_BASE,
             pose_in_link=_pose((0.45, -0.2, 0.3)),
             primitives=[_primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03, 0.03, 0.03])],  # type: ignore[attr-defined]
@@ -335,7 +335,7 @@ class TestAttachmentMarkers:
         assert (p.x, p.y, p.z) == pytest.approx((0.45, -0.2, 0.3))
         assert (cube.color.r, cube.color.g, cube.color.b) == pytest.approx((0.0, 0.8, 1.0))
         (label,) = _adds(array, "attached_label")
-        assert label.text == "restock_box · vision_segmentation · support · released"
+        assert label.text == "pick_box · vision_segmentation · support · released"
         assert array.markers[0].action == vm.Marker.DELETEALL  # type: ignore[attr-defined]
 
     def test_capsule_and_sphere_primitives(self) -> None:
@@ -374,7 +374,7 @@ class TestAttachmentMarkers:
         state = _state()
         state.grasp_declaration_valid = True  # type: ignore[attr-defined]
         g = state.grasp_declaration  # type: ignore[attr-defined]
-        g.target_id, g.active, g.region_valid = "cell:restock_box", True, True
+        g.target_id, g.active, g.region_valid = "cell:pick_box", True, True
         g.region = _region((0.5, -0.2, 0.1), (0.04, 0.03, 0.05))
         state.place_declaration_valid = True  # type: ignore[attr-defined]
         pl = state.place_declaration  # type: ignore[attr-defined]
@@ -383,7 +383,7 @@ class TestAttachmentMarkers:
 
         array = attachment_markers(state, _TF_FRAMES)
         for name, rgb, target in (
-            ("grasp", (0.1, 0.9, 0.2), "grasp: cell:restock_box"),
+            ("grasp", (0.1, 0.9, 0.2), "grasp: cell:pick_box"),
             ("place", (0.6, 0.6, 0.6), "place: surface:shelf_2 (inactive)"),
         ):
             box, edges = _adds(array, f"{name}_region")
@@ -408,7 +408,7 @@ class TestAttachmentMarkers:
         """Dispatch's own declaration carries no region; nothing is invented for it."""
         state = _state()
         state.grasp_declaration_valid = True  # type: ignore[attr-defined]
-        state.grasp_declaration.target_id = "cell:restock_box"  # type: ignore[attr-defined]
+        state.grasp_declaration.target_id = "cell:pick_box"  # type: ignore[attr-defined]
         state.grasp_declaration.active = True  # type: ignore[attr-defined]
         assert len(attachment_markers(state, _TF_FRAMES).markers) == 1
 

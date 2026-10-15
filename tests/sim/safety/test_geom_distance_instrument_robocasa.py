@@ -82,6 +82,11 @@ def kitchen() -> tuple[Any, Any]:
         **(deploy.scene.backend_options or {}),
         "ignore_done": True,
         "layout_ids": [_LAYOUT],
+        # The state was characterised at robosuite's native 20 Hz / 0.002 s time base.
+        # The scene's 30 Hz pin (#362) shrinks the physics dt, the reset settles to a
+        # different pose, and the degenerate configuration is gone (+0.024 mm, which
+        # mj_geomDistance gets right). Pinning the time base keeps the point.
+        "control_freq_hz": None,
     }
     scene = deploy.scene.model_copy(update={"backend_options": options})
     sim = SCENES.get(scene.id)(
