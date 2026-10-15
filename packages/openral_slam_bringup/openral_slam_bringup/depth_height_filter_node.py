@@ -66,6 +66,21 @@ def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> tuple[tuple[float, 
     )
 
 
+def _axis_angle_to_matrix(
+    axis: tuple[float, float, float], angle: float
+) -> tuple[tuple[float, float, float], ...]:
+    """Rodrigues rotation by ``angle`` about ``axis`` (normalised here)."""
+    n = math.sqrt(axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2)
+    x, y, z = axis[0] / n, axis[1] / n, axis[2] / n
+    c, s = math.cos(angle), math.sin(angle)
+    t = 1.0 - c
+    return (
+        (t * x * x + c, t * x * y - s * z, t * x * z + s * y),
+        (t * x * y + s * z, t * y * y + c, t * y * z - s * x),
+        (t * x * z - s * y, t * y * z + s * x, t * z * z + c),
+    )
+
+
 def _mat_vec(
     r: tuple[tuple[float, float, float], ...],
     v: tuple[float, float, float],
@@ -140,7 +155,13 @@ def _link_transforms_at_zero(
     # is the same union the safety kernel's collision tree is built from
     # (``openral_safety.envelope_loader``), which is what keeps the height band
     # measuring the same robot the kernel checks.
-    pending = [*description.joints, *(getattr(description, "fixed_attachments", None) or ())]
+    # ``mimic_joints`` (a follower finger posed by its gripper joint) completes
+    # that union; at the zero configuration its value is ``offset``.
+    pending = [
+        *description.joints,
+        *(getattr(description, "fixed_attachments", None) or ()),
+        *(getattr(description, "mimic_joints", None) or ()),
+    ]
     # The chain stays normative: seed the URDF-root bridge only for a root the
     # chain does not place itself, so a manifest that articulates its root can
     # never be overridden by the static transform.
@@ -160,6 +181,13 @@ def _link_transforms_at_zero(
                 continue
             jr = _rpy_to_matrix(*[float(v) for v in joint.origin_rpy])
             jt = tuple(float(v) for v in joint.origin_xyz)
+            q = float(getattr(joint, "offset", 0.0))
+            if q != 0.0:
+                ax, ay, az = (float(v) for v in joint.axis_xyz)
+                if joint.joint_type == "prismatic":
+                    jt = _vec_add(jt, _mat_vec(jr, (ax * q, ay * q, az * q)))  # type: ignore[arg-type] # reason: JointSpec origin_xyz is a fixed 3-tuple.
+                else:
+                    jr = _mat_mul(jr, _axis_angle_to_matrix((ax, ay, az), q))
             transforms[str(joint.child_link)] = _compose(parent[0], parent[1], jr, jt)  # type: ignore[arg-type] # reason: JointSpec origin_xyz is a fixed 3-tuple.
             progressed = True
         pending = rest
