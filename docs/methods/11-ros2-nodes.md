@@ -39,7 +39,7 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 
 - `generate_launch_description() -> LaunchDescription` (L81) — Stand-alone bring-up of the upstream Nav2 `navigation_launch.py` include; `robot_yaml` rewrites `robot_radius`/`inflation_radius`/`motion_model` over the shared base params file (lidar or, for `slam_backend=visual`, the visual variant).
 - `BOND_TIMEOUT_S` (L57) — `30.0`; how long a Nav2 lifecycle manager waits on a bond heartbeat before treating a descheduled server as dead. Not disabled (`0.0`), so a server that really dies is still caught.
-- `DEFAULT_PARAMS_PATH` (L304) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
+- `DEFAULT_PARAMS_PATH` (L323) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
 
 ### `packages/openral_perception_ros/openral_perception_ros/`
 

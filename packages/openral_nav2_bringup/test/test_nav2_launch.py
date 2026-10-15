@@ -395,3 +395,14 @@ def test_cmd_vel_relay_is_opt_in() -> None:
     assert "cmd_vel_relay" in defaults, defaults
     (default,) = defaults["cmd_vel_relay"]
     assert default.text == "false"
+
+
+def test_cmd_vel_relay_without_a_manifest_fails_the_launch() -> None:
+    """Asking for the relay without `robot_yaml` fails at launch, not silently in the node."""
+    mod = _import_launch_module()
+    from openral_core.exceptions import ROSConfigError
+
+    with pytest.raises(ROSConfigError, match="robot_yaml"):
+        mod._cmd_vel_relay_nodes(robot_yaml="")
+    (node,) = mod._cmd_vel_relay_nodes(robot_yaml="robots/r1pro/robot.yaml")
+    assert node.node_executable == "twist_to_action_relay_node.py"
