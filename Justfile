@@ -136,6 +136,14 @@ sync *args:
         *) uv sync --all-packages {{args}} ;; \
     esac
     @uv run --no-sync python scripts/repair_hf_libero_install.py
+    @# opencv-python and opencv-python-headless (openral-cli) both own cv2/; a
+    @# group switch that uninstalls opencv-python deletes it while headless still
+    @# reads as installed, so `import cv2` fails. Reinstall headless when that happens.
+    @if v=$(uv run --no-sync python -c 'import importlib.metadata as m; print(m.version("opencv-python-headless"))' 2>/dev/null) \
+        && ! uv run --no-sync python -c 'import cv2' 2>/dev/null; then \
+        echo "repairing cv2: reinstalling opencv-python-headless==$v"; \
+        uv pip install --reinstall --no-deps "opencv-python-headless==$v"; \
+    fi
 
 # Lint everything
 lint:
