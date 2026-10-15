@@ -38,6 +38,8 @@ _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 pytestmark = pytest.mark.skipif(
     not _LIVE_ROS, reason="live rclpy node — set OPENRAL_TEST_ROS_LIVE=1 with ROS sourced."
 )
+# The fake sidecar and the provider node both speak ZMQ: the opt-in `sidecar-wire` group.
+pytest.importorskip("zmq")
 
 _REPO = Path(__file__).resolve().parents[2]
 _NODE = _REPO / "packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py"
