@@ -16,6 +16,13 @@ runs:
       with:
         enable-cache: true
         cache-dependency-glob: uv.lock
+        # Save only on master (cache-warm.yml). A cache saved from a PR is
+        # scoped to refs/pull/N/merge, which the heavy-lanes dispatch on the
+        # PR branch cannot read, so every lane ran cold and then spent ~45 s
+        # tarring 3.7 GB for a save that all but one lane lost to "another
+        # job may be creating this cache". Master's entry is readable by
+        # every PR and branch run.
+        save-cache: ${{ github.ref == 'refs/heads/master' }}
 
     - run: uv python install 3.12
       shell: bash

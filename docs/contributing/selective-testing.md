@@ -269,8 +269,8 @@ workflow, started automatically once the PR is ready (item 6 below).
 
 ```
 test-selective.yml (every push):
-select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
-         └── core_selected ────────────────────────────────┴── select-and-test
+select ──┬── core_full     (matrix: 4 file-shards + isolated) ──┐
+         └── core_selected (matrix: 4 target-shards + isolated) ┴── select-and-test
                                                                (required check)
 
 heavy-lanes-trigger.yml (workflow_run of the PR workflows + every 10 min):
@@ -297,11 +297,14 @@ composite action.
 2. **Everything downstream is conditional.** `core_full`, `core_selected`, and
    `lane` are skipped entirely when nothing is selected (docs-only diffs, pure
    markdown changes, etc.): no FFmpeg install, no workspace sync, no pytest.
-3. **The full `tests/unit/` suite runs as a 4-way file-based matrix** (plus one
-   dedicated shard for `isolated_targets`) instead of serially in one job.
-4. **Test-root partitions within `core_selected` run in parallel.** The bash
-   loop in "Run selected targets" launches each group as a background job
-   (`&`), collects exit codes after all finish, and streams the logs in
+3. **Both core jobs run as a 4-way matrix** plus one dedicated shard for
+   `isolated_targets`, instead of serially in one job. `core_full` splits the
+   `tests/unit/` files; `core_selected` round-robins the selected targets by
+   sorted position. A shard with nothing to run exits before setup. Unsharded,
+   a wide selection's `tests/` partition took 16.5 min on its own.
+4. **Test-root partitions within each `core_selected` shard run in parallel.**
+   The bash loop in "Run selected targets" launches each group as a background
+   job (`&`), collects exit codes after all finish, and streams the logs in
    collapsible GitHub groups.
 5. **Every opt-in dependency lane is its own matrix job.** Each pays its own
    ~2 min setup, but 19 lanes running in parallel finish close to the
@@ -326,9 +329,14 @@ composite action.
    `heavy-lanes` commit status on the PR is pending with the reasons it is
    waiting, and it blocks the merge.
    `select-and-test` never waits on the lanes.
-7. **`robot_descriptions` / openarm asset clones are cached** across runs
-   (`.github/actions/setup-test-env`), instead of re-cloned by every job that
-   needs them.
+7. **The uv cache and the `robot_descriptions` / openarm asset clones are
+   cached on master** (`.github/actions/setup-test-env`), instead of
+   re-downloaded by every job. Only master saves the uv cache:
+   [`cache-warm.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/cache-warm.yml)
+   refills both caches when `uv.lock`, `robots/**` or the setup changes. A
+   PR-scoped save is invisible to the heavy-lanes dispatch on the PR branch,
+   so before this every lane ran cold and then spent ~45 s on a save that all
+   but one lane lost.
 8. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
    true` stops any in-progress run on the same branch the moment a new push
    arrives.
