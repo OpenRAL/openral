@@ -214,7 +214,8 @@ def _provision_rlbench(dry_run: bool = False) -> int:  # noqa: PLR0911
         "torch==2.4.1",
         "torchvision==0.19.1",
         "einops",
-        "diffusers",
+        # 0.41 calls torch.accelerator unguarded at import; torch 2.4.1 lacks it.
+        "diffusers<0.41",
         "dgl==1.1.3",
         "torchdata==0.8.0",
         "git+https://github.com/openai/CLIP.git",
