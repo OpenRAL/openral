@@ -11,9 +11,11 @@ path — so a degrees value can never reach the safety kernel as radians.
 Conversion order:
 
 * state (robot -> policy): permute robot order -> policy order, then per channel
-  ``gripper * gripper_scale`` or ``degrees(joint)`` (degrees checkpoints only).
-* action, joint path (policy -> robot): per channel ``gripper / gripper_scale`` or
-  ``radians(joint)``, written back in robot order; ``clamp`` then pulls each joint
+  ``scale * value + offset`` for a joint ``action_contract.joint_calibration`` names,
+  else ``gripper * gripper_scale`` or ``degrees(joint)`` (degrees checkpoints only).
+* action, joint path (policy -> robot): per channel ``(value - offset) / scale`` for a
+  calibrated joint, else ``gripper / gripper_scale`` or ``radians(joint)``, written back
+  in robot order; ``clamp`` then pulls each joint
   strictly inside ``RobotDescription`` ``position_limits``.
 * action, slot path: the SAME per-channel unit conversion, in policy order, per slot
   (JOINT_POSITION / JOINT_VELOCITY channels deg->rad, gripper channels and
@@ -112,6 +114,9 @@ class PolicyIOCodec(BaseModel):
         robot_joint_names: ``RobotDescription.joints`` names (slot-path gripper lookup).
         robot_is_gripper: Per robot joint, whether it is a gripper.
         joint_limits: Per robot joint ``(lo, hi)`` position limits, ``None`` if undeclared.
+        calibration: Per policy channel, the ``(scale, offset)`` of its
+            ``action_contract.joint_calibration`` entry (``policy = scale * robot +
+            offset``), ``None`` for a channel the manifest does not calibrate.
         gripper_ranges: Per actuated end effector, the ``(lo, hi)`` command range the
             kernel bounds its GRIPPER_POSITION channel to (``EndEffectorSpec.
             resolved_command_range``); a GRIPPER_POSITION slot's ``ee`` channel is
@@ -124,6 +129,9 @@ class PolicyIOCodec(BaseModel):
         ... )
         >>> codec.to_robot_action(np.array([180.0, 50.0])).round(4).tolist()
         [3.1416, 0.5]
+        >>> cal = PolicyIOCodec(calibration=[(57.29578, 0.0), (90.909, 9.091)])
+        >>> cal.to_robot_action(np.array([90.0, 54.5455])).round(4).tolist()
+        [1.5708, 0.5]
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -136,6 +144,7 @@ class PolicyIOCodec(BaseModel):
     robot_joint_names: list[str] = Field(default_factory=list)
     robot_is_gripper: list[bool] = Field(default_factory=list)
     joint_limits: list[tuple[float, float] | None] = Field(default_factory=list)
+    calibration: list[tuple[float, float] | None] = Field(default_factory=list)
     gripper_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
     # End effectors already reported for a clamp wider than the epsilon (once each).
     _clamp_warned: set[str] = PrivateAttr(default_factory=set)
@@ -156,19 +165,45 @@ class PolicyIOCodec(BaseModel):
         mismatch logs ``policy_io.feature_names_unmatched`` and falls back to identity)
         > identity.
 
+        ``action_contract.joint_calibration`` is resolved by robot joint name into
+        policy channel order and logged once (``policy_io.joint_calibration``).
+
         Raises:
             ROSConfigError: joint-position contract without ``joint_units``; a
-                ``joint_names`` entry not on the robot; a legacy
+                ``joint_names`` or ``joint_calibration`` entry not on the robot (or a
+                calibration without a robot description to resolve it); a legacy
                 ``policy_extras.gripper_scale`` contradicting ``action_contract``.
         """
         ac = manifest.action_contract if manifest is not None else None
         name = manifest.name if manifest is not None else "?"
         degrees = cls._resolve_degrees(ac, name)
         gripper_scale = cls._resolve_gripper_scale(manifest, name)
+        declared_cal = ac.joint_calibration if ac is not None else None
         if description is None:
+            if declared_cal:
+                raise ROSConfigError(
+                    f"rSkill {name!r}: action_contract.joint_calibration is keyed by robot "
+                    "joint name and needs the robot description to resolve"
+                )
             return cls(joint_units_are_degrees=degrees, gripper_scale=gripper_scale)
 
         robot_names = [j.name for j in description.joints]
+        unknown_cal = sorted(set(declared_cal or {}) - set(robot_names))
+        if unknown_cal:
+            raise ROSConfigError(
+                f"rSkill {name!r}: action_contract.joint_calibration names joints "
+                f"{unknown_cal} that robot {description.name!r} does not have ({robot_names})"
+            )
+        robot_cal: list[tuple[float, float] | None] = [
+            (c.scale, c.offset) if (c := (declared_cal or {}).get(n)) is not None else None
+            for n in robot_names
+        ]
+        if declared_cal:
+            _log.info(
+                "policy_io.joint_calibration",
+                skill=name,
+                calibration={n: robot_cal[i] for i, n in enumerate(robot_names)},
+            )
         robot_grip = [_is_gripper_joint(j) for j in description.joints]
         limits: list[tuple[float, float] | None] = [
             (float(j.position_limits[0]), float(j.position_limits[1]))
@@ -211,9 +246,16 @@ class PolicyIOCodec(BaseModel):
                 action_dim = len(normalized)
                 normalized = []
             if not normalized:
+                if declared_cal and action_dim != len(robot_names):
+                    raise ROSConfigError(
+                        f"rSkill {name!r}: action_contract.joint_calibration needs the "
+                        f"policy's {action_dim} channels to be the robot's "
+                        f"{len(robot_names)} joints (or action_contract.joint_names)"
+                    )
                 return cls(
                     joint_units_are_degrees=degrees,
                     gripper_scale=gripper_scale,
+                    calibration=robot_cal if declared_cal else [],
                     policy_is_gripper=robot_grip if action_dim == len(robot_names) else [],
                     robot_joint_names=robot_names,
                     robot_is_gripper=robot_grip,
@@ -223,11 +265,14 @@ class PolicyIOCodec(BaseModel):
             policy_names = normalized
         perm = [policy_names.index(n) for n in robot_names]
         policy_is_gripper = [False] * len(perm)
+        policy_cal: list[tuple[float, float] | None] = [None] * len(perm)
         for i, j in enumerate(perm):
             policy_is_gripper[j] = robot_grip[i]
+            policy_cal[j] = robot_cal[i]
         return cls(
             joint_units_are_degrees=degrees,
             gripper_scale=gripper_scale,
+            calibration=policy_cal if declared_cal else [],
             robot_to_policy=perm,
             policy_is_gripper=policy_is_gripper,
             policy_joint_names=policy_names,
@@ -294,11 +339,15 @@ class PolicyIOCodec(BaseModel):
         return (
             not self.joint_units_are_degrees
             and self.gripper_scale == 1.0
+            and not any(c is not None for c in self.calibration)
             and (perm is None or perm == list(range(len(perm))))
         )
 
     def _is_policy_gripper(self, j: int) -> bool:
         return j < len(self.policy_is_gripper) and self.policy_is_gripper[j]
+
+    def _calibration(self, j: int) -> tuple[float, float] | None:
+        return self.calibration[j] if j < len(self.calibration) else None
 
     def to_policy_state(self, robot_state: NDArray[Any]) -> NDArray[Any]:
         """Robot-order radians state -> policy-order, policy-unit state."""
@@ -306,7 +355,9 @@ class PolicyIOCodec(BaseModel):
         out = robot_state.copy()
         for i, j in enumerate(_effective_perm(self.robot_to_policy, n)):
             val = float(robot_state[i])
-            if self._is_policy_gripper(j):
+            if (cal := self._calibration(j)) is not None:
+                val = cal[0] * val + cal[1]
+            elif self._is_policy_gripper(j):
                 val *= self.gripper_scale
             elif self.joint_units_are_degrees:
                 val = math.degrees(val)
@@ -330,7 +381,9 @@ class PolicyIOCodec(BaseModel):
         out = policy_action.copy()
         for i, j in enumerate(_effective_perm(self.robot_to_policy, n)):
             val = float(policy_action[j])
-            if self._is_policy_gripper(j):
+            if (cal := self._calibration(j)) is not None:
+                val = (val - cal[1]) / cal[0]
+            elif self._is_policy_gripper(j):
                 val /= self.gripper_scale
             elif self.joint_units_are_degrees:
                 val = math.radians(val)

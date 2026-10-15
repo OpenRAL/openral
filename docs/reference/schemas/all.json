@@ -5802,7 +5802,7 @@
       "$defs": {
         "ActionContract": {
           "additionalProperties": false,
-          "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).\n    joint_names: The checkpoint's joint order on the whole-vector joint\n        path, spelled as ``RobotDescription.joints`` names (matched BY NAME\n        by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the\n        codec derives the order from the checkpoint's own feature names, or\n        identity. Forbidden together with ``slots`` (each JOINT_* slot\n        carries its own ``joint_names``).\n    gripper_scale: Policy-unit gripper value per robot-unit value. The HAL\n        gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot\n        SO-ARM checkpoint's gripper channel is ``[0, 100]`` \u2192 ``100.0``.\n        Applied by the codec on BOTH the joint and the slot path.\n    control_freq_hz: The rate (Hz) the checkpoint was trained to be\n        executed at \u2014 one action-chunk row per control period. ``None`` =\n        undeclared (the runner uses the robot's\n        ``action_spec.control_freq_hz`` unchecked). When declared, the skill\n        runner refuses a goal whose tick rate differs: there is no temporal\n        resampler, and executing a 15 Hz policy at 30 Hz doubles its\n        commanded speed.",
+          "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).\n    joint_names: The checkpoint's joint order on the whole-vector joint\n        path, spelled as ``RobotDescription.joints`` names (matched BY NAME\n        by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the\n        codec derives the order from the checkpoint's own feature names, or\n        identity. Forbidden together with ``slots`` (each JOINT_* slot\n        carries its own ``joint_names``).\n    gripper_scale: Policy-unit gripper value per robot-unit value. The HAL\n        gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot\n        SO-ARM checkpoint's gripper channel is ``[0, 100]`` \u2192 ``100.0``.\n        Applied by the codec on BOTH the joint and the slot path.\n    joint_calibration: Per robot joint name, the ``JointCalibration`` affine\n        (``policy = scale * robot + offset``) the checkpoint's state and action\n        are in. Joints it names bypass ``joint_units`` / ``gripper_scale``\n        (unnamed joints keep them). Forbidden with ``slots`` and with a\n        ``gripper_scale`` other than 1.0 (two gripper maps would contradict).\n    control_freq_hz: The rate (Hz) the checkpoint was trained to be\n        executed at \u2014 one action-chunk row per control period. ``None`` =\n        undeclared (the runner uses the robot's\n        ``action_spec.control_freq_hz`` unchecked). When declared, the skill\n        runner refuses a goal whose tick rate differs: there is no temporal\n        resampler, and executing a 15 Hz policy at 30 Hz doubles its\n        commanded speed.",
           "properties": {
             "dim": {
               "exclusiveMinimum": 0,
@@ -5894,6 +5894,21 @@
                 }
               ],
               "default": null
+            },
+            "joint_calibration": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "$ref": "#/$defs/JointCalibration"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint Calibration"
             }
           },
           "required": [
@@ -6336,6 +6351,26 @@
             }
           },
           "title": "ImagePreprocessing",
+          "type": "object"
+        },
+        "JointCalibration": {
+          "additionalProperties": false,
+          "description": "Per-joint affine from robot units to a checkpoint's policy units.\n\n``policy = scale * robot + offset``, where ``robot`` is the openral unit of\nthe joint (radians for an arm joint, the manifest's normalized ``[0, 1]``\njaw fraction for a gripper). It is a property of the TRAINING DATA, so it\nlives on the rSkill manifest (``ActionContract.joint_calibration``) and is\nhonored by ``openral_rskill._policy_io.PolicyIOCodec`` on both the state fed\nin and the action out. LeIsaac's SO-101 recordings, for example, store\n``lerobot = (deg - jl0) / (jl1 - jl0) * (ml1 - ml0) + ml0`` per joint.\n\nExample:\n    >>> JointCalibration(scale=57.29578).offset\n    0.0",
+          "properties": {
+            "scale": {
+              "title": "Scale",
+              "type": "number"
+            },
+            "offset": {
+              "default": 0.0,
+              "title": "Offset",
+              "type": "number"
+            }
+          },
+          "required": [
+            "scale"
+          ],
+          "title": "JointCalibration",
           "type": "object"
         },
         "JointUnits": {

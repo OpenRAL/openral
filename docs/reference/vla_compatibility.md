@@ -127,7 +127,7 @@ checkpoint-native preprocessing until a manifest provides evidence otherwise.
 |---|---|---|---|---|---|---|---|---|
 | `chamborgir/smolvla_pickplace_20k` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | 20k steps pick-and-place fine-tune |
 | `TakuyaHiraoka/act_so101_pick_diverse_objects` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | ACT policy; diverse object pick task |
-| `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
+| `edge-inference/smolvla-so101-pick-orange` | Isaac Sim (LeIsaac PickOrange) | `so101_follower` | 6 | `front` + `wrist` | ✅ (processor safetensors) | `rskills/smolvla-so101-leisaac-pick-orange/` | Apache-2.0 | prompt "Grab orange and place into plate"; LeIsaac motor units via `action_contract.joint_calibration`; 60 Hz (one action per LeIsaac physics step); runs on `scenes/sim/isaac_leisaac_pick_orange.yaml` (Isaac Sim 6.x) |
 | `makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54` | SO-101 real | `so101_follower` | 6 | `front` + `wrist` | ✅ (processor safetensors) | `rskills/rskill-smolvla-so101-eraser_place-bf16/` | Apache-2.0 | "place the erase on the blue square" (prompt verbatim, upstream typo); `joint_units: degrees`; 50-step chunk reproduces the training teleop to ≤1.4 MAE/joint; training envelope overshoots the so101 elbow/wrist_flex limits |
 | MolmoAct2 NF4 SO-101 | SO-101 real / sim | `so100_follower`, `so101_follower` | TBD | wrist + overhead | NF4 | `rskills/molmoact2-so101-nf4/` | Apache-2.0 | `trust_remote_code` (`OPENRAL_ALLOW_REMOTE_CODE=1`); NF4 fits 8 GB |
 

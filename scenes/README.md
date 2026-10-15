@@ -340,8 +340,17 @@ pinned sha256, extracted; never committed. Shipped:
 at LeIsaac's spawn, its oranges and plate graded in place, and LeIsaac's front and
 wrist cameras as `camera_mounts` (Isaac Lab ROS-convention offsets, `axes: ros`; the
 field of view `hfov_deg = 2·atan(horizontal_aperture / (2·focal_length))` of its
-`PinholeCameraCfg`). Not reproduced: LeIsaac's per-episode object and camera
-randomization, and the arm-at-rest term of its success check.
+`PinholeCameraCfg`), LeIsaac's STS3215 drive gains (`joint_drive_gains`) and its
+time base: LeIsaac records and evaluates one action per 1/60 s physics step, so the
+scene sets `control_freq_hz: 60` (an `IsaacSimOptions` override of the robot's
+`action_spec.control_freq_hz`, logged at build). Run it with
+[`rskills/smolvla-so101-leisaac-pick-orange`](../rskills/smolvla-so101-leisaac-pick-orange/)
+and `--instruction "Grab orange and place into plate"` (the dataset's string; the
+rubric grades it too). `isaac_sim` is a `robot_unit_io` scene: its state is the
+manifest joint vector, so `sim run` applies the rSkill's `PolicyIOCodec` (here
+LeIsaac's per-joint motor-unit `joint_calibration`) exactly as the deploy runner
+does. Not reproduced: LeIsaac's per-episode object and camera randomization, its
+dynamic gripper effort limit, and the arm-at-rest term of its success check.
 
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
 1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at

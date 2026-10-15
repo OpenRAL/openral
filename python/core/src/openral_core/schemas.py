@@ -6062,6 +6062,37 @@ _GRIPPER_MODES: frozenset[ControlMode] = frozenset(
 )
 
 
+class JointCalibration(BaseModel):
+    """Per-joint affine from robot units to a checkpoint's policy units.
+
+    ``policy = scale * robot + offset``, where ``robot`` is the openral unit of
+    the joint (radians for an arm joint, the manifest's normalized ``[0, 1]``
+    jaw fraction for a gripper). It is a property of the TRAINING DATA, so it
+    lives on the rSkill manifest (``ActionContract.joint_calibration``) and is
+    honored by ``openral_rskill._policy_io.PolicyIOCodec`` on both the state fed
+    in and the action out. LeIsaac's SO-101 recordings, for example, store
+    ``lerobot = (deg - jl0) / (jl1 - jl0) * (ml1 - ml0) + ml0`` per joint.
+
+    Example:
+        >>> JointCalibration(scale=57.29578).offset
+        0.0
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scale: float
+    offset: float = 0.0
+
+    @model_validator(mode="after")
+    def _finite_nonzero(self) -> JointCalibration:
+        if not (math.isfinite(self.scale) and math.isfinite(self.offset)) or self.scale == 0.0:
+            raise ValueError(
+                f"JointCalibration needs a finite non-zero scale and a finite offset; "
+                f"got scale={self.scale}, offset={self.offset}"
+            )
+        return self
+
+
 class ActionContract(BaseModel):
     """Per-rSkill action-vector contract.
 
@@ -6107,6 +6138,11 @@ class ActionContract(BaseModel):
             gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot
             SO-ARM checkpoint's gripper channel is ``[0, 100]`` → ``100.0``.
             Applied by the codec on BOTH the joint and the slot path.
+        joint_calibration: Per robot joint name, the ``JointCalibration`` affine
+            (``policy = scale * robot + offset``) the checkpoint's state and action
+            are in. Joints it names bypass ``joint_units`` / ``gripper_scale``
+            (unnamed joints keep them). Forbidden with ``slots`` and with a
+            ``gripper_scale`` other than 1.0 (two gripper maps would contradict).
         control_freq_hz: The rate (Hz) the checkpoint was trained to be
             executed at — one action-chunk row per control period. ``None`` =
             undeclared (the runner uses the robot's
@@ -6132,6 +6168,25 @@ class ActionContract(BaseModel):
     # for joint-position checkpoints (a wrong guess sends ~57x commands and the
     # arm slams its limits). Governs BOTH the state fed in and the action out.
     joint_units: JointUnits | None = None
+    joint_calibration: dict[str, JointCalibration] | None = None
+
+    @model_validator(mode="after")
+    def _validate_joint_calibration(self) -> ActionContract:
+        if self.joint_calibration is None:
+            return self
+        if not self.joint_calibration:
+            raise ValueError("ActionContract.joint_calibration must be omitted or non-empty")
+        if self.slots is not None:
+            raise ValueError(
+                "ActionContract.joint_calibration applies to the whole-vector joint path; "
+                "it is not supported together with slots"
+            )
+        if self.gripper_scale != 1.0:
+            raise ValueError(
+                "ActionContract.joint_calibration and gripper_scale both map the gripper; "
+                "calibrate the gripper joint in joint_calibration and drop gripper_scale"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_joint_names(self) -> ActionContract:

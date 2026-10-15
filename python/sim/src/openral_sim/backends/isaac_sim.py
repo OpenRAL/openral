@@ -81,6 +81,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core import IntrinsicsPinhole, TaskSpec, scale_intrinsics_to
 from openral_core.exceptions import ROSConfigError
@@ -96,6 +97,8 @@ if TYPE_CHECKING:
 
     from openral_sim.rollout import Observation
 
+
+_log = structlog.get_logger(__name__)
 
 _ISAAC_SCENE_ID = "isaac_sim"
 _AUTO_SPAWN_ENV = "OPENRAL_ISAAC_AUTO_SPAWN"
@@ -1207,8 +1210,15 @@ class IsaacSimOptions(BaseModel):
     # the URDF import: upstream meshes carry their own colours (OpenArm's "matte_black"
     # renders mid-grey). Simulation appearance only; collision/physics untouched.
     robot_material_colors: dict[str, tuple[float, float, float]] = Field(default_factory=dict)
+    # Control rate (Hz) of this scene's env.step, overriding the robot's
+    # action_spec.control_freq_hz (logged as isaac_control_rate_overridden). For a
+    # checkpoint trained in a simulator that stepped at another rate than the real
+    # robot: LeIsaac records and evaluates one action per 1/60 s physics step
+    # (decimation 1), not per 1/30 s. Physics substeps still follow this rate.
+    # None = the robot's own rate.
+    control_freq_hz: float | None = Field(default=None, gt=0.0)
     # Speed knobs (sim cost, not the scene's look). Physics substeps are no knob: the
-    # scene derives them from action_spec.control_freq_hz (one step = one tick, #355).
+    # scene derives them from the control rate (one step = one tick, #355).
     # RGB sensor name -> render raster height (px). The width, focal lengths and principal
     # point scale with it (same field of view and lens), and so does the blur sigma: a
     # policy that resizes to 224 px needs no larger render.
@@ -1781,7 +1791,9 @@ def _root_to_base(desc: RobotDescription) -> NDArray[np.float64]:
     return np.asarray(np.linalg.inv(base_to_root), dtype=np.float64)
 
 
-def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
+def _build_robot_spec(
+    desc: RobotDescription, robot_id: str, *, control_freq_hz: float | None = None
+) -> dict[str, Any]:
     """Marshal a ``RobotDescription`` to the JSON isaac robot spec.
 
     Resolves the manifest ``assets.urdf.ref`` to an on-disk file, maps every
@@ -1861,7 +1873,16 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
             }
         )
     has_base = layout.has_base
-    control_freq_hz = desc.control_rate_hz
+    if control_freq_hz is not None and control_freq_hz != desc.control_rate_hz:
+        # A scene override (IsaacSimOptions.control_freq_hz) — explicit, never silent.
+        _log.warning(
+            "isaac_control_rate_overridden",
+            robot=robot_id,
+            manifest_hz=desc.control_rate_hz,
+            scene_hz=control_freq_hz,
+            hint="one env.step spans 1/scene_hz of sim time; deploy sim keeps the robot's rate",
+        )
+    control_freq_hz = control_freq_hz or desc.control_rate_hz
     if control_freq_hz is None:
         raise ROSConfigError(
             f"robot {robot_id!r} declares no action_spec.control_freq_hz; the Isaac scene "
@@ -2202,6 +2223,7 @@ def _write_robot_spec(
     gripper_finger_coupling_rad: float | None = None,
     placement_success: dict[str, Any] | None = None,
     environment_spec: dict[str, Any] | None = None,
+    control_freq_hz: float | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -2256,7 +2278,7 @@ def _write_robot_spec(
             }
         )
     render_desc, render_scale = _render_desc(desc, camera_render_height or {}, depth_cameras)
-    spec = _build_robot_spec(render_desc, robot_id)
+    spec = _build_robot_spec(render_desc, robot_id, control_freq_hz=control_freq_hz)
     spec.update(
         camera_render_scale=render_scale,
         translucent_materials=translucent_materials,
@@ -2493,6 +2515,9 @@ def _placement(
     provision=provision_isaac_sim,
     sim_clock=True,
     base_pose=True,
+    # obs["state"] is the manifest joint vector (arm rad, normalized grippers) and the
+    # action the absolute manifest targets: `sim run` applies the deploy codec itself.
+    robot_unit_io=True,
     options_model=IsaacSimOptions,
 )
 def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
@@ -2592,6 +2617,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.gripper_finger_coupling_rad,
         placement_success=_placement_success_robot_spec(opts.placement_success, env_cfg.task),
         environment_spec=_environment_spec(opts),
+        control_freq_hz=opts.control_freq_hz,
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

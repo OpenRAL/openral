@@ -15,7 +15,12 @@
 # * Robot: robots/so101_follower imported from its URDF (the same so101_new_calib
 #   kinematics as LeIsaac's so101_follower.usd), fixed base, spawned at LeIsaac's
 #   init_state pos (2.2, -0.61, 0.89), rot wxyz (0, 0, 0, 1) = a 180 deg yaw; all
-#   joints at the URDF zero, as LeIsaac's joint_pos.
+#   joints at the URDF zero, as LeIsaac's joint_pos. Drives use LeIsaac's STS3215
+#   ImplicitActuatorCfg gains (stiffness 17.8 Nm/rad, damping 0.6 Nm*s/rad; the
+#   URDF's effort / velocity limits are its 10 / 10).
+# * Time base: LeIsaac steps its env once per Isaac Lab physics dt (1/60 s,
+#   decimation 1) and records / evaluates one action per step, so this scene
+#   runs the SO-101 at 60 Hz (`control_freq_hz`), not its manifest 30 Hz.
 # * Cameras: LeIsaac's `front` (child of `base`) and `wrist` (child of `gripper`)
 #   at their Isaac Lab ROS-convention offsets, 640x480; the field of view is the
 #   PinholeCameraCfg's 2*atan(horizontal_aperture / (2 * focal_length)):
@@ -27,6 +32,7 @@
 #
 # Not reproduced: LeIsaac's per-episode randomization (objects +-3 cm x/y, the
 # front camera +-2.5 cm / +-2.5 deg); every episode starts from the authored layout.
+# Nor its dynamic gripper effort limit (nearest object's mass / 0.15 N*m).
 #
 # Requirements: NVIDIA RTX GPU, Isaac Sim 6.x (a binary install such as
 # /opt/isaac-sim, or the sidecar venv), network access to github.com on first use.
@@ -34,7 +40,8 @@
 # Run::
 #
 #     openral sim run --config scenes/sim/isaac_leisaac_pick_orange.yaml \
-#       --rskill <an SO-101 rSkill>
+#       --rskill rskills/smolvla-so101-leisaac-pick-orange \
+#       --instruction "Grab orange and place into plate"
 
 robot_id: "so101_follower"
 
@@ -57,6 +64,9 @@ scene:
       sha256: "d314c54b63a17e91402bfaddf26e21ff614adf2430fa092b78897f15b8adea34"
       usd: "kitchen_with_orange/scene.usd"
     strip_xform_colliders: true
+    control_freq_hz: 60.0
+    joint_drive_gains:
+      ".*": [17.8, 0.6]
     dome_light:
       intensity: 3000.0
       color: [0.75, 0.75, 0.75]
@@ -90,16 +100,18 @@ scene:
         - {name: complete, score: 1.0, region: target}
       settle_s: 0.5
       tasks:
-        "Pick three oranges and put them into the plate":
+        "Pick three oranges and put them into the plate": &three_oranges
           - {object: orange_1, target: on_plate}
           - {object: orange_2, target: on_plate}
           - {object: orange_3, target: on_plate}
+        # The training string of LightwheelAI/leisaac-pick-orange.
+        "Grab orange and place into plate": *three_oranges
 
 task:
   id: isaac_sim/leisaac_pick_orange
   scene_id: isaac_sim
   instruction: "Pick three oranges and put them into the plate"
-  max_steps: 750  # LeIsaac episode_length_s 25 s at the SO-101's 30 Hz
+  max_steps: 3600  # 60 s at 60 Hz: LeIsaac policy_inference's default episode_length_s
 
 seed: 0
 n_episodes: 1
