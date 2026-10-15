@@ -620,8 +620,9 @@ column slab), so its X / M were re-found by the same search with the torso in th
 
 **The foot plate against the surface the robot stands on** (world-voxel check). The foot-plate
 slab reaches 1 mm below that surface; the self-filter removes returns within 2 cm of the hulls;
-the kernel trips a 2 cm cell within 2 cm. Modelled with a one-off harness (branch
-`tool/world-voxel-rest-verdict`, `tools/world_voxel_rest_verdict.py`, kept out of the tree): a
+the kernel trips a 2 cm cell within 2 cm. Modelled with a one-off harness
+(`tools/world_voxel_rest_verdict.py`, never merged; its branch was deleted 2026-10-15, last
+commit `18496ba4f`): a
 flat surface at `z = -0.698` on the octree lattice, self-filtered exactly against the three
 hulls, replayed into the real kernel at the parameters `deploy run` composes for
 `openarm_real_world_voxels.yaml`, one hold row at q = 0:
