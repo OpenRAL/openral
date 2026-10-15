@@ -321,7 +321,7 @@ def _unified_memory_vram_fallback(warnings: list[str], *, subject: str) -> tuple
 
 def _probe_nvidia_pynvml(warnings: list[str]) -> list[NvidiaGpuInfo]:
     try:
-        import pynvml  # noqa: PLC0415  # reason: optional extra
+        import pynvml  # type: ignore[import-untyped]  # noqa: PLC0415  # reason: no py.typed
     except ImportError:
         return []
     try:
@@ -500,7 +500,7 @@ def _probe_jetson(
         try:
             from jtop import jtop  # noqa: PLC0415  # reason: optional extra
         except ImportError:
-            jtop = None  # type: ignore[assignment]  # reason: optional path
+            jtop = None
         if jtop is not None:
             try:
                 with jtop() as j:

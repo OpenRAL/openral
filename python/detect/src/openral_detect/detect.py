@@ -77,7 +77,7 @@ def detect_hardware(
     except ImportError:  # pragma: no cover  # reason: observability is a hard dep
         from contextlib import nullcontext  # noqa: PLC0415
 
-        def safety_span(name: str, **_: object) -> object:  # type: ignore[no-redef]
+        def safety_span(name: str, **_: object) -> object:  # type: ignore[misc]  # reason: stub sig
             return nullcontext()
 
     report_kwargs: dict[str, object] = {}
@@ -119,5 +119,5 @@ def detect_hardware(
         host_os=f"{platform.system()} {platform.release()}",
         python_version=platform.python_version(),
         warnings=warnings,
-        **report_kwargs,  # type: ignore[arg-type]  # reason: keys match optional fields
+        **report_kwargs,
     )

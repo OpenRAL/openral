@@ -142,7 +142,7 @@ def run() -> int:
             ),
         )
         reasoner = ReasonerNode(
-            client=client,  # type: ignore[arg-type]  # reason: structural match (Protocol)
+            client=client,
             palette=ToolPalette(execute_rskill_ids=frozenset()),
             tick_hz=10.0,
         )

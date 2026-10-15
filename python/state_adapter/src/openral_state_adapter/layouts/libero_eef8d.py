@@ -119,7 +119,7 @@ def assemble_libero_eef8d(
     # (SLAM root) but LIBERO is fixed-base with no SLAM — manifest MUST
     # set ``world_frame`` to the HAL-published sim root (e.g. ``"world"``);
     # ``"map"`` would be unavailable or meters-off on a fresh boot.
-    world_to_eef = tf_lookup(bindings.world_frame, bindings.eef_frame)
+    world_to_eef = tf_lookup(bindings.world_frame or "map", bindings.eef_frame)
 
     out = np.empty(_DIM, dtype=np.float32)
     out[0:3] = np.asarray(world_to_eef.position, dtype=np.float32)

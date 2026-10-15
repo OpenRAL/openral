@@ -60,7 +60,7 @@ def read_frame_trace(*, root: Path | str, episode_idx: int, frame_idx: int) -> t
         )
 
     for parquet_path in files:
-        table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]  # reason: no stubs
+        table = pq.read_table(parquet_path)
         columns = set(table.column_names)
         if "trace_id" not in columns or "span_id" not in columns:
             raise ROSConfigError(

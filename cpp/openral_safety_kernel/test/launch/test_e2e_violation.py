@@ -101,7 +101,7 @@ def _activate(node_name: str, helper: Any) -> bool:
         deadline = time.time() + 5.0
         while time.time() < deadline and not fut.done():
             rclpy.spin_once(helper, timeout_sec=0.05)
-        if not fut.done() or not fut.result().success:  # type: ignore[union-attr]
+        if not fut.done() or not fut.result().success:
             return False
     return True
 
@@ -118,7 +118,7 @@ def _spin_until(executor: Any, predicate: Any, timeout_s: float = 3.0) -> bool:
 def test_envelope_violation_fires_failure_and_estop() -> None:
     """Workspace-violating chunk → KIND_WORKSPACE + estop, no safe_action."""
     import rclpy
-    from openral_core import FailureEvidence  # type: ignore[attr-defined]
+    from openral_core import FailureEvidence
     from openral_msgs.msg import ActionChunk, FailureTrigger
     from pydantic import TypeAdapter
     from rclpy.executors import SingleThreadedExecutor
@@ -193,7 +193,7 @@ def test_envelope_violation_fires_failure_and_estop() -> None:
                 # the reasoner relies on this contract.
                 evidence_obj = json.loads(ft.evidence_json)
                 assert evidence_obj["kind"] == "workspace"
-                adapter = TypeAdapter(FailureEvidence)
+                adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
                 parsed = adapter.validate_python(evidence_obj)
                 assert parsed.kind == "workspace"
             finally:

@@ -11,6 +11,11 @@ import os
 import pathlib
 import resource
 import time
+from typing import TYPE_CHECKING, Any  # Any: robometer/transformers objects are untyped
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
 
 # Deterministic cuBLAS so the reward ramp is byte-stable across process launches:
 # without it, cuBLAS heuristic algo selection depends on process warmup history
@@ -215,7 +220,7 @@ def main() -> int:
     return 0
 
 
-def _meta_reload_series(exp_config, base_id):
+def _meta_reload_series(exp_config: Any, base_id: str) -> NDArray[np.float32]:
     """Build via meta + install_prequantized from OUT, return the progress series."""
     import bitsandbytes as bnb
     from robometer.models.rbm import RBM
@@ -239,7 +244,7 @@ def _meta_reload_series(exp_config, base_id):
         )
 
     # Linear4bit shells for numel>=MIN_PARAMS (same rule as the build quantizer).
-    def _shells(m):
+    def _shells(m: torch.nn.Module) -> None:
         for name, child in list(m.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
                 setattr(
@@ -302,7 +307,9 @@ def _meta_reload_series(exp_config, base_id):
     return _forward_series(model, tokenizer, processor, exp_config)
 
 
-def _forward_series(model, tokenizer, processor, exp_config):
+def _forward_series(
+    model: Any, tokenizer: Any, processor: Any, exp_config: Any
+) -> NDArray[np.float32]:
     """Run the discrete-mode progress forward on a fixed 10-frame clip."""
     import decord
     import numpy as np
