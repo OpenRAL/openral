@@ -10,8 +10,8 @@ name: test-selective
 # See tools/select_tests.py and tools/test_selection.toml for selection logic.
 #
 # Job graph:
-#   select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
-#            └── core_selected ────────────────────────────────┴── select-and-test
+#   select ──┬── core_full     (matrix: 4 file-shards + isolated) ──┐
+#            └── core_selected (matrix: 4 target-shards + isolated) ┴── select-and-test
 #                                                                  (required check,
 #                                                                   every push)
 #
@@ -22,9 +22,10 @@ name: test-selective
 #      seconds without a workspace sync.
 #   2. `core_full` / `core_selected` are skipped entirely when nothing is
 #      selected (docs-only diffs, pure markdown changes, etc.).
-#   3. The full `tests/unit/` suite (on a blast-radius diff) is split across
-#      a 4-way file-based matrix plus one isolated-targets shard, instead of
-#      running serially in one job.
+#   3. Both the full `tests/unit/` suite (on a blast-radius diff) and the
+#      selected targets (every other diff) are split across a 4-way matrix
+#      plus one isolated-targets shard, instead of running serially in one
+#      job. An empty shard exits before setup.
 #   4. robot_descriptions / openarm asset clones are cached
 #      (.github/actions/setup-test-env) instead of re-cloned every run.
 #   5. A concurrency group cancels stale in-progress runs on the same branch
@@ -179,9 +180,10 @@ jobs:
     needs: select
     if: needs.select.outputs.full_run != 'true' && needs.select.outputs.any == 'true'
     runs-on: ubuntu-24.04
-    # A wide selection's main pytest block alone takes ~13 min (7358 tests),
-    # plus setup and the isolated files.
-    timeout-minutes: 25
+    # Unsharded, a wide selection's `tests/` partition alone took 16.5 min
+    # (7882 tests, 580 targets — run 38779912727); a quarter of it plus ~3 min
+    # setup fits well inside 15.
+    timeout-minutes: 15
     env:
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -192,13 +194,62 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       MUJOCO_GL: "osmesa"
       PYOPENGL_PLATFORM: "osmesa"
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same split as core_full: the selected targets round-robin over 4
+        # shards by sorted position, plus one shard for `isolated_targets`.
+        shard: ["0", "1", "2", "3", "isolated"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: ./.github/actions/setup-test-env
-
-      - name: Run selected targets
+      # Pick this shard's slice first, so a shard with nothing to run (a
+      # narrow selection, or no isolated targets) exits in seconds instead of
+      # paying the ~3 min setup.
+      - name: Pick shard ${{ matrix.shard }} targets
+        id: shard
         env:
           TARGETS: ${{ needs.select.outputs.targets }}
+          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
+        run: |
+          if [ "${{ matrix.shard }}" = "isolated" ]; then
+            mine="$ISOLATED_TARGETS"
+          else
+            # shellcheck disable=SC2086
+            mine=$(printf '%s\n' $TARGETS | sort | awk -v k="${{ matrix.shard }}" 'NF && NR % 4 == k')
+          fi
+          # shellcheck disable=SC2086
+          mine=$(echo $mine)  # collapse newlines/whitespace; empty stays empty
+          echo "targets=$mine" >> "$GITHUB_OUTPUT"
+          [ -n "$mine" ] || echo "::notice::shard ${{ matrix.shard }} has no targets."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.shard.outputs.targets != ''
+      - uses: ./.github/actions/setup-test-env
+        if: steps.shard.outputs.targets != ''
+
+      - name: Run isolated targets
+        if: matrix.shard == 'isolated' && steps.shard.outputs.targets != ''
+        env:
+          ISOLATED_TARGETS: ${{ steps.shard.outputs.targets }}
+        run: |
+          # isolated_targets run one-per-process (issue #24/#25): running
+          # each forker ALONE, in a fresh not-yet-threaded interpreter, is
+          # what actually prevents the finalization crash. Thread-pinning
+          # (job-level `env:`) is only defense-in-depth, so no inline env
+          # prefix is needed here.
+          rc=0
+          for t in $ISOLATED_TARGETS; do
+            echo "::group::pytest (isolated) ${t}"
+            iso_rc=0
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
+            echo "::endgroup::"
+            if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
+          done
+          exit $rc
+
+      - name: Run selected targets
+        if: matrix.shard != 'isolated' && steps.shard.outputs.targets != ''
+        env:
+          TARGETS: ${{ steps.shard.outputs.targets }}
           ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
         run: |
           # Partition targets by their nearest `test`/`tests` directory and
@@ -255,19 +306,6 @@ jobs:
             # whose every test is module-level importorskip'd is
             # all-skipped, not failed.
             if [ "$group_rc" -ne 0 ] && [ "$group_rc" -ne 5 ]; then rc=1; fi
-          done
-
-          # isolated_targets run one-per-process (issue #24/#25): running
-          # each forker ALONE, in a fresh not-yet-threaded interpreter, is
-          # what actually prevents the finalization crash. Thread-pinning
-          # (job-level `env:`) is only defense-in-depth, so no inline env
-          # prefix is needed here.
-          for t in $ISOLATED_TARGETS; do
-            echo "::group::pytest (isolated) ${t}"
-            iso_rc=0
-            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
-            echo "::endgroup::"
-            if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
           done
           exit $rc
 
