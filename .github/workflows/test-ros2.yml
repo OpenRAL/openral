@@ -88,7 +88,9 @@ jobs:
       # The colcon build points -DPython3_EXECUTABLE at this venv, so it has to
       # exist before the build, not just before the tests.
       - name: Sync the Python environment
-        run: uv sync --frozen --all-packages || uv sync --all-packages
+        run: |
+          uv lock --check
+          uv sync --frozen --all-packages
 
       - name: Declared-dependency check
         run: bash scripts/check_ros_build_deps.sh
