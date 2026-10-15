@@ -44,6 +44,9 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "camera_mounts": {sensor_name: {"link", "xyz", "quat_wxyz", "look_at", "axes"}},
                                        # optional; openral_sim...isaac_sim.IsaacCameraMount
       "initial_joint_positions": {manifest_joint: value},  # optional start pose
+      "stage_objects": [{"name", "prim"}],  # rigid bodies inside the environment USD
+      "strip_xform_colliders": bool,     # drop CollisionAPI from Xform prims of the stage
+      "dome_light": {"intensity", "color"} | null,  # for a stage that ships no lights
     }
 """
 
@@ -257,6 +260,38 @@ def object_up_axis(roll: float, pitch: float) -> NDArray[np.float64]:
 
 def _in_box(p: NDArray[np.float64], box: dict[str, Any]) -> bool:
     return all(lo <= v <= hi for v, lo, hi in zip(p, box["min"], box["max"], strict=True))
+
+
+def placement_boxes_at(
+    placement: dict[str, Any], positions: Mapping[str, Sequence[float]]
+) -> dict[str, Any]:
+    """``placement`` with each ``relative_to`` box moved to its reference object's centre.
+
+    A box carrying ``relative_to`` (``IsaacPlacementRegion.relative_to``) holds offsets
+    from that object; ``positions`` maps object names to their world centres now. World
+    boxes pass through. Pure.
+
+    Example:
+        >>> on_plate = {"min": [-0.1, -0.1, -0.07], "max": [0.1, 0.1, 0.07], "relative_to": "plate"}
+        >>> placement_boxes_at({"target": on_plate}, {"plate": [2.0, 1.0, 0.9]})["target"]["max"]
+        [2.1, 1.1, 0.97]
+    """
+
+    def at(box: dict[str, Any]) -> dict[str, Any]:
+        ref = box.get("relative_to")
+        if not ref:
+            return box
+        c = [float(v) for v in positions[ref]]
+        return {
+            "min": [round(o + lo, 12) for o, lo in zip(c, box["min"], strict=True)],
+            "max": [round(o + hi, 12) for o, hi in zip(c, box["max"], strict=True)],
+        }
+
+    return {
+        **placement,
+        "target": at(placement["target"]),
+        "adjacent": [at(b) for b in placement.get("adjacent", [])],
+    }
 
 
 def _quat_angle(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
@@ -1699,6 +1734,7 @@ class IsaacManifestScene(IsaacSceneBase):
             self._add_environment(self._environment_usd)
         else:
             self._world.scene.add_default_ground_plane()
+        self._add_dome_light()
 
         self._euler_to_quat = rot_utils.euler_angles_to_quats
 
@@ -1813,6 +1849,7 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._lidar is not None and not self._environment_usd:
             self._add_obstacles()
         self._add_objects()
+        self._add_stage_objects()
 
         # One Camera per planned sensor. A bare deploy scene with no RGB sensor
         # still gets a default camera1 so the obs always carries a frame.
@@ -1920,6 +1957,72 @@ class IsaacManifestScene(IsaacSceneBase):
         usd = self._resolve_usd(usd)
         print(f"[isaac_manifest_scene] environment: {usd}", flush=True)
         add_reference_to_stage(usd_path=usd, prim_path="/World/environment")
+        if self._spec.get("strip_xform_colliders"):
+            from isaacsim.core.utils.stage import get_current_stage
+            from pxr import Usd, UsdPhysics
+
+            stage = get_current_stage()
+            stripped = [
+                p
+                for p in Usd.PrimRange(stage.GetPrimAtPath("/World/environment"))
+                if p.GetTypeName() == "Xform" and p.HasAPI(UsdPhysics.CollisionAPI)
+            ]
+            for p in stripped:
+                p.RemoveAPI(UsdPhysics.CollisionAPI)
+            print(
+                f"[isaac_manifest_scene] strip_xform_colliders: removed CollisionAPI from "
+                f"{len(stripped)} Xform prim(s) of the environment",
+                flush=True,
+            )
+
+    def _add_dome_light(self) -> None:
+        """Add the spec's ``dome_light`` (for a stage that ships no lights), if any."""
+        light = self._spec.get("dome_light")
+        if not light:
+            return
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import Gf, UsdLux
+
+        dome = UsdLux.DomeLight.Define(get_current_stage(), "/World/dome_light")
+        dome.CreateIntensityAttr(float(light["intensity"]))
+        dome.CreateColorAttr(Gf.Vec3f(*(float(c) for c in light["color"])))
+        print(f"[isaac_manifest_scene] dome light {light}", flush=True)
+
+    def _add_stage_objects(self) -> None:
+        """Register the environment's own rigid bodies (``stage_objects``) as scene objects.
+
+        Each ``{"name", "prim"}`` names a prim below the environment's default prim;
+        registered with the World, so ``world.reset()`` returns it to its authored pose.
+
+        Raises:
+            RuntimeError: the prim is missing or carries no rigid body.
+        """
+        objs = list(self._spec.get("stage_objects") or [])
+        if not objs:
+            return
+        from isaacsim.core.prims import SingleRigidPrim
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import UsdPhysics
+
+        stage = get_current_stage()
+        for obj in objs:
+            path = f"/World/environment/{obj['prim']}"
+            prim = stage.GetPrimAtPath(path)
+            if not prim.IsValid() or not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                raise RuntimeError(
+                    f"stage object {obj['name']!r}: {path} "
+                    + ("carries no rigid body" if prim.IsValid() else "is not in the stage")
+                )
+            name = str(obj["name"])
+            self._object_prims[name] = self._world.scene.add(
+                SingleRigidPrim(prim_path=path, name=name)
+            )
+            pos = self._object_prims[name].get_world_pose()[0]
+            print(
+                f"[isaac_manifest_scene] stage object {name} = {path} at "
+                f"{[round(float(v), 4) for v in pos]}",
+                flush=True,
+            )
 
     @staticmethod
     def _resolve_usd(usd: str) -> str:
@@ -2662,10 +2765,11 @@ class IsaacManifestScene(IsaacSceneBase):
         self._grades: list[dict[str, Any]] = list((spec or {}).get("grades", []))
         self._grade_scores = grade_scores(self._grades)
         declared = {str(o["name"]): o for o in self._objects}
+        # A stage object (no declared pose) keeps its authored orientation: up is +z.
         self._up_axis = {
             str(p["object"]): object_up_axis(
-                float(declared[str(p["object"])].get("roll", 0.0)),
-                float(declared[str(p["object"])].get("pitch", 0.0)),
+                float(declared.get(str(p["object"]), {}).get("roll", 0.0)),
+                float(declared.get(str(p["object"]), {}).get("pitch", 0.0)),
             )
             for p in (spec or {}).get("placements", [])
         }
@@ -2693,7 +2797,7 @@ class IsaacManifestScene(IsaacSceneBase):
         dt = float(self.sim_dt_per_tick_s or 0.0)
         turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
-        for placement in ps["placements"]:
+        for placement in map(self._placement_now, ps["placements"]):
             name = str(placement["object"])
             pos_raw, quat_raw = self._object_prims[name].get_world_pose()
             pos = np.asarray(pos_raw, dtype=np.float64)
@@ -2726,6 +2830,32 @@ class IsaacManifestScene(IsaacSceneBase):
                 )
             )
         return worst_grade(grades, self._grade_scores)
+
+    def set_object_position(self, name: str, xyz: list[float]) -> dict[str, Any]:
+        """Teleport scene object ``name`` to world ``xyz``, orientation kept, at rest.
+
+        The ``set_object_position`` endpoint, for scripted scenarios; the move takes
+        effect on the next physics step.
+        """
+        if name not in self._object_prims:
+            raise KeyError(f"no scene object {name!r}; objects: {sorted(self._object_prims)}")
+        prim = self._object_prims[name]
+        _pos, quat = prim.get_world_pose()
+        prim.set_world_pose(position=np.asarray(xyz, dtype=np.float64), orientation=quat)
+        if hasattr(prim, "set_linear_velocity"):  # a static prop is an XForm prim
+            prim.set_linear_velocity(np.zeros(3))
+            prim.set_angular_velocity(np.zeros(3))
+        return {"position": [float(v) for v in prim.get_world_pose()[0]]}
+
+    def _placement_now(self, placement: dict[str, Any]) -> dict[str, Any]:
+        """``placement`` with its ``relative_to`` boxes at their reference objects' poses now."""
+        refs = {
+            str(b["relative_to"])
+            for b in (placement["target"], *placement.get("adjacent", []))
+            if b.get("relative_to")
+        }
+        positions = {r: self._object_prims[r].get_world_pose()[0] for r in refs}
+        return placement_boxes_at(placement, positions)
 
     def _reward_terminated(self) -> tuple[float, bool]:
         """Graded placement success (``placement_success``), else no task reward.
@@ -2941,7 +3071,7 @@ class IsaacManifestScene(IsaacSceneBase):
                     oriented_box(base_from_world, a["min"], a["max"]) for a in p.get("adjacent", [])
                 ],
             }
-            for p in (self._placement_success or {}).get("placements", [])
+            for p in map(self._placement_now, (self._placement_success or {}).get("placements", []))
         ]
         return {"frame": "base_frame", "objects": objects, "placements": placements}
 

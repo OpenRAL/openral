@@ -310,6 +310,8 @@ def _serve(
                 reply = scene.scene_ground_truth()
             elif endpoint == "set_task":
                 reply = scene.set_task(str(data.get("instruction", "")))
+            elif endpoint == "set_object_position":
+                reply = scene.set_object_position(str(data["name"]), list(data["xyz"]))
             elif endpoint == "close":
                 reply = {"ok": True}
                 running = False
