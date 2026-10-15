@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 import yaml
@@ -432,11 +433,13 @@ def test_nav2_never_commands_a_twist_the_kernel_would_estop(robot: str, config: 
     out = yaml.safe_load(Path(capped).read_text())
     Path(capped).unlink()
 
-    def mppi(d: dict) -> dict:  # type: ignore[type-arg]
-        return d["controller_server"]["ros__parameters"]["FollowPath"]
+    def mppi(d: dict[str, Any]) -> dict[str, Any]:
+        section: dict[str, Any] = d["controller_server"]["ros__parameters"]["FollowPath"]
+        return section
 
-    def smoother(d: dict) -> dict:  # type: ignore[type-arg]
-        return d["velocity_smoother"]["ros__parameters"]
+    def smoother(d: dict[str, Any]) -> dict[str, Any]:
+        section: dict[str, Any] = d["velocity_smoother"]["ros__parameters"]
+        return section
 
     assert mppi(out)["vx_max"] == pytest.approx(min(mppi(base)["vx_max"], linear))
     assert mppi(out)["wz_max"] == pytest.approx(min(mppi(base)["wz_max"], angular))
@@ -460,7 +463,7 @@ def test_speed_cap_bounds_every_corner_of_an_asymmetric_smoother_box() -> None:
     import math
 
     mod = _import_launch_module()
-    params = {
+    params: dict[str, Any] = {
         "controller_server": {"ros__parameters": {"FollowPath": {"vx_max": 1.0, "wz_max": 2.0}}},
         "velocity_smoother": {
             "ros__parameters": {
@@ -483,6 +486,6 @@ def test_speed_cap_refuses_a_params_file_without_the_limits_it_must_cap() -> Non
     mod = _import_launch_module()
     from openral_core.exceptions import ROSConfigError
 
-    params = {"controller_server": {"ros__parameters": {"FollowPath": {}}}}
+    params: dict[str, Any] = {"controller_server": {"ros__parameters": {"FollowPath": {}}}}
     with pytest.raises(ROSConfigError, match="vx_max"):
         mod._cap_speeds(params, 0.5, 1.0)
