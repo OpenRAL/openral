@@ -371,12 +371,12 @@ lowering = [
   # packages/openral_safety/test/test_lowering_regression.py -- it compares the
   # re-lowered geometry byte for byte, and qhull's hulls differ at ~1e-9 across
   # hosted-runner CPUs (franka_panda, g1, h1, openarm drifted on one runner and
-  # matched on another), so it only holds on the reference host.
+  # matched on another), so it only holds on the reference host. Same for
+  # tests/unit/test_collision_lowering_fleet.py, which makes the same comparison.
   "tests/unit/test_collision_contact_sweep.py",
   "tests/unit/test_collision_finger_mimic.py",
   "tests/unit/test_collision_geometry_enclosure_urdf.py",
   "tests/unit/test_collision_geometry_no_loosening.py",
-  "tests/unit/test_collision_lowering_fleet.py",
   "tests/unit/test_collision_static_links.py",
   "tests/unit/test_collision_tight_lowering.py",
 ]
