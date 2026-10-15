@@ -110,6 +110,16 @@ Two habits keep this rare: prefer several focused PRs over one very large
 squash, and keep code snippets out of commit bodies (describe the fix in
 prose, or fence the snippet in a PR comment instead).
 
+## When release-please hits a GitHub 5xx
+
+Each run pages every commit since the last tag through GitHub's GraphQL API —
+dozens of requests once a few hundred commits are unreleased — and a single
+5xx (an HTML "Unicorn!" page in the log, after `release-please failed:`) fails
+the run. The workflow retries the action once after 60 s, with a `::warning::`
+saying so; a second failure fails the job. If it still fails, re-run it from
+the Actions tab, or push anything to master. Cutting a release shortens the
+walk, which makes this rarer.
+
 ## When a release stalls between merge and tag
 
 release-please can find a merged release PR it cannot build a release from, and

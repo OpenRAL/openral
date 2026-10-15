@@ -75,12 +75,52 @@ jobs:
             echo "::warning::RELEASE_PLEASE_TOKEN is unset; falling back to GITHUB_TOKEN. The v*.*.* tag will NOT trigger release-pypi.yml — dispatch it manually (target=pypi, confirm=YES) after merging the release PR."
           fi
 
+      # release-please pages every commit since the last tag through GitHub's
+      # GraphQL API (~50 requests with ~600 unreleased commits). One 5xx on any
+      # page fails the whole run — run 38738727537 died on a "Unicorn!" 502 at
+      # page 15 while the run before it passed. The action is idempotent (it
+      # rewrites the release branch and PR from scratch, and a PR it already
+      # tagged is labelled `autorelease: tagged`, so a retry cannot release
+      # twice), so retry exactly once, after a pause, and say so in the log.
+      # A second failure fails the job as before.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
-        id: release
+        id: release_first
+        continue-on-error: true
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: wait before retrying release-please
+        if: steps.release_first.outcome == 'failure'
+        run: |
+          echo "::warning::release-please failed (see the step above); retrying once in 60 s."
+          sleep 60
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
+        id: release_retry
+        if: steps.release_first.outcome == 'failure'
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Collapse the two attempts into one set of outputs for the steps below.
+      - name: pick release-please outputs
+        id: release
+        env:
+          PR: ${{ steps.release_retry.outputs.pr || steps.release_first.outputs.pr }}
+          RELEASED: ${{ steps.release_retry.outputs.releases_created || steps.release_first.outputs.releases_created || steps.release_retry.outputs.release_created || steps.release_first.outputs.release_created }}
+          TAG: ${{ steps.release_retry.outputs.tag_name || steps.release_first.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "released=$RELEASED"
+            echo "tag_name=$TAG"
+            echo "pr<<__PR_EOF__"
+            echo "$PR"
+            echo "__PR_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       # release-please rewrites the 15 pyprojects and knows nothing about
       # uv.lock — which records every workspace member's version too. Left
@@ -119,7 +159,7 @@ jobs:
       - name: summarise
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          RELEASED: ${{ steps.release.outputs.releases_created || steps.release.outputs.release_created }}
+          RELEASED: ${{ steps.release.outputs.released }}
           TAG: ${{ steps.release.outputs.tag_name }}
           PR: ${{ steps.release.outputs.pr }}
         run: |
