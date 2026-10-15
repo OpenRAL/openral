@@ -32,7 +32,7 @@ name: heavy-lanes-trigger
 
 on:
   workflow_run:
-    workflows: [test-selective, quality, DCO]
+    workflows: [test-selective, quality, DCO, test-ros2]
     types: [completed]
   schedule:
     - cron: "*/10 * * * *"
