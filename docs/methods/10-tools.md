@@ -838,3 +838,10 @@ _Offline momentum-observer feasibility probe for the #373 force/contact layer, o
 
 - `run(force_n, *, hw, seed=0) -> NDArray` (L30) — Simulates free sinusoidal motion with a known EE push over `[3.0, 3.5)` s; the observer sees q, q-dot and `qfrc_actuator` (what `/joint_states.effort` carries) and returns `(t, |F_est|)` rows. `hw=True` injects unmodelled Coulomb + viscous friction, noise, bias drift, 12-bit quantisation and a +10 % model mass error.
 - `main(argv=None) -> int` (L94) — Prints the free-motion floor, the 1.2x-floor threshold and the detection latency for the ideal and hw-like cases. Measured 2026-10-15: ideal floor 1.5 N; hw-like floor 11.6 N (10 N detected in 38 ms, 5 N missed).
+
+### `tools/sim_load_cell_sweep.py`
+_Simulated load-cell sweep in the OpenArm v2 cell (`cell.xml`), the sim stand-in for the #373 step-3 real-cell sweep. Presses the right hand 0-60 mm into the cell table and compares the true arm-on-table contact force with the static estimate `pinv(J_tcp^T)(tau - g(q))` from `qfrc_actuator`; ideal and hardware-like (friction band, noise, quantisation, +10 % model mass). `uv run python tools/sim_load_cell_sweep.py --xy 0.40 -0.20`._
+
+- `class _Cell` (L31) — The cell scene with the right arm's DOFs, actuators, TCP body and table geom resolved; `ik`, `table_contact`, `hold`, `estimate`, `cond` helpers.
+- `sweep(x, y) -> int` (L141) — Finds the table contact height at `(x, y)`, fixes the TCP on the hand, and prints `depth, cond(J), load cell N, ideal N, hw N` per commanded depth.
+- `main(argv=None) -> int` (L175) — CLI entry, `--xy X Y`. Measured 2026-10-15: at well-conditioned sites (cond(J) 4-6) the hw-like estimate tracks the load cell within ~1-3 N from 2 N to 45 N (resting floor ~3 N); with the elbow on its limit near a singularity (cond(J) 31-112) it reads 27-40 N with no contact, so the estimate must be gated on conditioning and joint-limit margin.
