@@ -102,6 +102,12 @@ def test_megabyte_clouds_cross_the_real_self_filter(hz: float, tmp_path: pathlib
     )
     if prefix.returncode != 0:
         pytest.skip("openral_octomap_bridge is not built in the sourced overlay")
+    fastrtps = subprocess.run(
+        ["ros2", "pkg", "prefix", "rmw_fastrtps_cpp"], capture_output=True, check=False
+    )
+    if fastrtps.returncode != 0:
+        # The open deploy image ships Cyclone only; this test pins Fast DDS's large-data path.
+        pytest.skip("rmw_fastrtps_cpp is not installed (the openral:x86 image is Cyclone-only)")
     if shutil.disk_usage("/dev/shm").free < _SHM_NEEDED_BYTES:
         pytest.skip("/dev/shm too small for three Fast DDS participants with 16 MiB segments")
 
