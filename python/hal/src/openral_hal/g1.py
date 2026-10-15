@@ -348,6 +348,9 @@ G1_DESCRIPTION = RobotDescription(
         max_force_n=100.0,
         max_torque_nm=88.0,
         deadman_required=True,
+        # Walking-policy trained command box; see robots/g1/robot.yaml.
+        max_base_linear_speed_m_s=0.5,
+        max_base_angular_speed_rad_s=1.0,
     ),
     sdk_kind="open",
     # The G1 sim HAL is the only execution path today; a future

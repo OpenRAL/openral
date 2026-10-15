@@ -503,16 +503,16 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 ### `python/hal/src/openral_hal/g1.py`
 _MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L376)
-  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L415)
-  - `connect() -> None` (L489) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
-  - `disconnect() -> None` (L509) — Release the walking controller, then the MuJoCo model.
-  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L477)
-  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L485)
-  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L514)
-  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L561)
-  - `reset_to_pose(pose: list[float]) -> None` (L573) — Reset the joint pose plus the base pin and (when walking) the gait state.
-  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin: `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L601)
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL; takes `description=` (loaded manifest; `None` → `G1_DESCRIPTION`). Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L379)
+  - `__init__(*, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L418)
+  - `connect() -> None` (L492) — Connect and re-arm the base pin from the fresh qpos; in walking mode, resets to the `knees_bent` keyframe and constructs/initializes the `G1WalkingController`. Raises `ROSConfigError` (and disconnects) if the walking MJCF lacks that keyframe.
+  - `disconnect() -> None` (L512) — Release the walking controller, then the MuJoCo model.
+  - `base_pose -> tuple[float, float, float]` (property) — Current glide pin or live walking base pose. (L480)
+  - `base_twist -> tuple[float, ...]` (property) — Last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action. (L488)
+  - `send_action(action)` — Routes `BODY_TWIST` to the glide or walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L517)
+  - `idle_step(wall_dt_s=None) -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. Opts out of the bare-arm `_step_while_active` path since an active BODY_TWIST must not be overridden by HOLD. (L564)
+  - `reset_to_pose(pose: list[float]) -> None` (L576) — Reset the joint pose plus the base pin and (when walking) the gait state.
+  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — The upright pin: `qpos[0:7]` fixed to the glide pose (roll/pitch clamped to 0), `qvel[0:6]` zeroed. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L604)
 - module const `_PLANAR_TWIST_EPS` (L80) — tolerance for detecting a non-planar `BODY_TWIST` component (`send_action`'s validation).
 - module const `_G1_LEFT_LEG_JOINTS: tuple[str, ...]` (L92) — left-leg joint names.
 - module const `_G1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L100) — right-leg joint names.
