@@ -109,3 +109,32 @@ def test_body_twist_advances_sim_clock_exactly_once_per_command(hal: Any) -> Non
         "A double advance makes /clock outrun the motion it is timing, and "
         "Nav2 judges progress against that clock."
     )
+
+
+def test_base_twist_reads_zero_once_twist_commands_stop(hal: Any) -> None:
+    """After the twist stream ends, the idle HOLD step leaves the base still and /odom at zero.
+
+    Before the fix ``base_twist`` (the /odom twist source) latched the last command
+    until a non-twist action arrived, so a stationary base reported 0.5 m/s.
+    """
+    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    model, data = hal.mujoco_handles()
+    for _ in range(_N_COMMANDS):
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.BODY_TWIST,
+                horizon=1,
+                body_twist=[(_VX_M_S, 0.0, 0.0, 0.0, 0.0, 0.0)],
+            )
+        )
+    assert hal.base_twist[0] == pytest.approx(_VX_M_S)
+
+    x0, y0, yaw0 = _base_xy_yaw(model, data, desc)
+    for _ in range(10):
+        assert hal.idle_step() is True
+    x1, y1, yaw1 = _base_xy_yaw(model, data, desc)
+    # The HOLD settles the base by ~1 mm over 10 steps (robosuite's base regulator);
+    # a base still moving at the latched 0.5 m/s would cover ~0.25 m.
+    assert ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5 < 1e-2, "idle HOLD drove the base"
+    assert abs(yaw1 - yaw0) < 1e-2
+    assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

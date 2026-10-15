@@ -1590,8 +1590,10 @@ class SimAttachedHAL:
         exclusion is the actual safety guarantee, not "zero is harmless": a
         zero vector is a HOLD for the sim's velocity/OSC-delta controllers but
         would command "drive every joint to 0 rad" on a real absolute-position
-        arm. Does not touch ``_last_env_action`` / ``_last_body_twist`` — an
-        idle HOLD is orthogonal to the last skill command.
+        arm. Does not touch ``_last_env_action`` — an idle HOLD is orthogonal
+        to the last skill command — but zeroes ``_last_body_twist``: the HOLD
+        step leaves the base still, so ``/odom`` must stop reporting the last
+        commanded twist.
 
         Caveat: zero is a true HOLD only for velocity/OSC-delta/composite
         controllers. A position-controlled native backend (``so101_box``)
@@ -1657,7 +1659,10 @@ class SimAttachedHAL:
                 f"SimAttachedHAL.idle_step: backend idle_action width "
                 f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
             )
-        return self._step_and_cache(idle_action, source="idle_step")
+        stepped = self._step_and_cache(idle_action, source="idle_step")
+        if stepped:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        return stepped
 
     # ── Per-mode → composite-controller slot mapping ──────────
     def _composite_controller(self) -> Any:  # noqa: ANN401  # reason: robosuite composite controller is an untyped third-party object
@@ -2342,7 +2347,7 @@ class SimAttachedHAL:
         In the ``base_link`` frame. The base advances by exact Euler
         integration of this command, so it is the base's velocity — the
         panda_mobile lifecycle node publishes it as the ``/odom`` twist.
-        Zeroed once a non-BODY_TWIST action is sent.
+        Zeroed once a non-BODY_TWIST action is sent or an idle HOLD step runs.
         """
         return self._last_body_twist
 
