@@ -158,7 +158,7 @@ def _provision_rlbench(dry_run: bool = False) -> int:  # noqa: PLR0911
         if rc != 0:
             return rc
     if not RLBENCH_PYTHON.is_file():
-        rc = _run(["uv", "venv", "--python", "3.10", str(RLBENCH_VENV)], dry_run=dry_run)
+        rc = _run(["uv", "venv", "--seed", "--python", "3.10", str(RLBENCH_VENV)], dry_run=dry_run)
         if rc != 0:
             return rc
     POLICY_SRC.mkdir(parents=True, exist_ok=True)
