@@ -7,7 +7,7 @@
 **The open harness for physical AI.** OpenRAL is the open-source **Robot Agentic Layer** (harness) for embodied AI — it unifies fast policies, slow reasoning, reward signals, perception AI and classical control into one typed, traceable, safety-first runtime for deployable robot agents. One fixed harness, swappable **rSkills**.
 
 [![Website](https://img.shields.io/badge/openral.com-white?logo=googlechrome&logoColor=black)](https://openral.com)
-[![CI](https://img.shields.io/badge/CI%2FCD-passing-4CAF50?logo=github&logoColor=white)](https://github.com/OpenRAL/openral/actions)
+[![docker-build](https://github.com/OpenRAL/openral/actions/workflows/docker-build.yml/badge.svg?branch=master&event=push)](https://github.com/OpenRAL/openral/actions/workflows/docker-build.yml?query=branch%3Amaster)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
