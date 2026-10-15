@@ -18,6 +18,13 @@
 name: "g1"
 embodiment_kind: "humanoid"
 base_frame: "pelvis"
+# Floor-projected outline of the whole body (feet + arms) at the menagerie
+# `stand` keyframe, measured from mujoco_menagerie unitree_g1 @ feadf76d mesh
+# vertices; see docs/reference/g1-r1pro-base-footprints.md. Pose-dependent:
+# elbows at zero reach x = 0.373, and no walking outline is published.
+footprint_radius: 0.28
+footprint_polygon: [[0.15, 0.15], [0.06, 0.27], [-0.05, 0.27], [-0.08, 0.18],
+                    [-0.08, -0.18], [-0.05, -0.27], [0.06, -0.27], [0.15, -0.15]]
 
 # robot_state_publisher wiring. The g1 URDF has a ``world →
 # pelvis`` virtual root; ``pelvis`` matches our base_frame so no static
