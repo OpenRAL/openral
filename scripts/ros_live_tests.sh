@@ -178,10 +178,151 @@ TARGETS=(
     # topics are NOT reachable through the Bucket-1 record patterns.
     packages/openral_foxglove_bringup/test/test_record_launch.py
 )
+
+# Files that need rclpy, the colcon overlay, or the live gate and ran on NO CI
+# surface until the 2026-10-15 sweep -- the safety-kernel twin and
+# synthetic-collision suites, the ROS-gated integration tests, the
+# packages/*/test node suites that test-ros2 runs only on dispatch, and the
+# tests/unit files that skip without ROS. Each runs in its OWN pytest process:
+# the packages/*/test suites own rclpy init/shutdown per module, and sharing
+# one interpreter with the block above cascades into failures. MUJOCO_GL=egl:
+# the camera-rendering twins need a GL context, and Mesa's EGL gives one with
+# no display or GPU. Left out until fixed: test_manifest_hal_reset_to_pose and
+# test_openarm_hal_lifecycle -- both abort at teardown, the exit 139 / 134
+# family #384 tracks -- and test_franka_scene_attach.launch, whose process
+# dies mid-test in this image.
+ISOLATED_TARGETS=(
+    packages/openral_foxglove_bringup/test/test_bucket2_markers.py
+    packages/openral_foxglove_bringup/test/test_foxglove_launch.py
+    packages/openral_foxglove_bringup/test/test_layout.py
+    packages/openral_hal_node/test/test_lifecycle_estop_real_adapters.py
+    packages/openral_hal_node/test/test_lifecycle_estop_safety.py
+    packages/openral_hal_node/test/test_lifecycle_node.py
+    packages/openral_hal_node/test/test_lifecycle_slot_group_stop_boundary.py
+    packages/openral_hal_node/test/test_mobile_base_helpers.py
+    packages/openral_hal_node/test/test_real_hal_spans.py
+    packages/openral_human_estop/test/test_forwarder_node.py
+    packages/openral_human_estop/test/test_forwarder_node_sigint_shape.py
+    packages/openral_nav2_bringup/test/test_nav2_launch.py
+    packages/openral_nav2_bringup/test/test_payload_scan_filter.py
+    packages/openral_perception_ros/test/test_ros_image_detector_node_sigint_shape.py
+    packages/openral_prompt_router/test/test_prompt_router_node.py
+    packages/openral_prompt_router/test/test_prompt_router_node_sigint_shape.py
+    packages/openral_reasoner_ros/test/test_reasoner_node.py
+    packages/openral_reasoner_ros/test/test_reasoner_node_sigint_shape.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_autostart.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_clock_domain.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_detector_available.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_estop_sources.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_joint_states_topic.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_octomap_frames.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_prompt_router_autostart.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_scene_sensor_mounts.py
+    packages/openral_rskill_ros/test/test_deploy_e2e_visual_slam.py
+    packages/openral_rskill_ros/test/test_deploy_rig_values_reach_nodes.py
+    packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py
+    packages/openral_rskill_ros/test/test_kernel_params_no_empty_lists.py
+    packages/openral_rskill_ros/test/test_no_dashboard_otlp_env.py
+    packages/openral_rskill_ros/test/test_openarm_real_world_voxels_scene.py
+    packages/openral_rskill_ros/test/test_rskill_runner_node_sigint_shape.py
+    packages/openral_rskill_ros/test/test_rskill_runner_shutdown_publish.py
+    packages/openral_rskill_ros/test/test_runtime_node_prewarm_shape.py
+    packages/openral_rskill_ros/test/test_runtime_node_sigint_shape.py
+    packages/openral_rskill_ros/test/test_starting_pose_dispatch.py
+    packages/openral_rskill_ros/test/test_world_state_executor.py
+    packages/openral_safety/test/test_lowering_regression.py
+    packages/openral_safety/test/test_supervisor_node.py
+    packages/openral_safety/test/test_supervisor_node_sigint_shape.py
+    packages/openral_safety/test/test_urdf_lowering_always_colliding.py
+    packages/openral_safety/test/test_urdf_lowering_fk.py
+    packages/openral_safety/test/test_urdf_lowering_geometry.py
+    packages/openral_safety/test/test_urdf_lowering_lower_robot.py
+    packages/openral_safety/test/test_urdf_lowering_sampling.py
+    packages/openral_safety_watchdog/test/test_deadman_watchdog.py
+    packages/openral_safety_watchdog/test/test_deadman_watchdog_node_sigint_shape.py
+    packages/openral_safety_watchdog/test/test_hardware_estop_node.py
+    packages/openral_safety_watchdog/test/test_hardware_estop_node_sigint_shape.py
+    packages/openral_slam_bringup/test/test_cuvslam_launch.py
+    packages/openral_slam_bringup/test/test_depth_height_filter.py
+    packages/openral_slam_bringup/test/test_nvblox_launch.py
+    packages/openral_slam_bringup/test/test_pycuvslam_launch.py
+    packages/openral_slam_bringup/test/test_pycuvslam_node.py
+    packages/openral_slam_bringup/test/test_slam_toolbox_launch.py
+    packages/world_state/test/test_lifecycle_node_image_qos.py
+    packages/world_state/test/test_lifecycle_node_sigint_shape.py
+    tests/integration/test_act_onnx.py
+    tests/integration/test_autodetect_dds.py
+    tests/integration/test_compose_deploy_sensors.py
+    tests/integration/test_dashboard_attach_root_span.py
+    tests/integration/test_dashboard_end_to_end.py
+    tests/integration/test_dataset_recorder_bridge.py
+    tests/integration/test_detect_ros2_topology.py
+    tests/integration/test_doctor_ros.py
+    tests/integration/test_failure_bus.py
+    tests/integration/test_fastrtps_shm_purge_live.py
+    tests/integration/test_hil_transport_publishes_and_caches_state.py
+    tests/integration/test_manifest_hal_lifecycle_live.py
+    tests/integration/test_nav2_global_costmap_height_live.py
+    tests/integration/test_nav2_scan_filter_live.py
+    tests/integration/test_object_lift_real_camera_live.py
+    tests/integration/test_object_lift_world_state.py
+    tests/integration/test_panda_mobile_hal_lifecycle.py
+    tests/integration/test_real_hal_estop_ros2_control_live.py
+    tests/integration/test_record_profile_full_live.py
+    tests/integration/test_sim_idle_stepper_wiring.py
+    tests/integration/test_smolvla_eraser_place_rskill.py
+    tests/integration/test_so100_digital_twin_e2e.py
+    tests/integration/test_world_state_events_executor.py
+    tests/integration/test_world_state_integration.py
+    tests/integration/test_world_state_stamped_objects.py
+    tests/sim/safety/test_kernel_graded_scaling_approach.py
+    tests/sim/safety/test_kernel_h1_self_collision.py
+    tests/sim/safety/test_kernel_latency_soak.py
+    tests/sim/safety/test_kernel_mjcf_lowered_self_collision.py
+    tests/sim/safety/test_kernel_mobile_base_collision.py
+    tests/sim/safety/test_kernel_per_mode_envelopes.py
+    tests/sim/safety/test_kernel_self_collision_synthetic.py
+    tests/sim/safety/test_kernel_voxel_bridge_staleness.py
+    tests/sim/safety/test_kernel_voxel_collision_synthetic.py
+    tests/sim/safety/test_kernel_with_gpu_policy_inference.py
+    tests/sim/safety/test_kernel_with_h1_humanoid_twin.py
+    tests/sim/safety/test_kernel_with_openarm_twin.py
+    tests/sim/safety/test_kernel_with_rizon4_twin.py
+    tests/sim/safety/test_kernel_with_so100_digital_twin.py
+    tests/unit/test_deploy_e2e_camera_wiring.py
+    tests/unit/test_deploy_e2e_coverage_ball.py
+    tests/unit/test_deploy_e2e_voxel_resolution.py
+    tests/unit/test_depth_convert.py
+    tests/unit/test_execution_budget.py
+    tests/unit/test_hal_lifecycle_error_logging.py
+    tests/unit/test_hal_lifecycle_manifest.py
+    tests/unit/test_hal_lifecycle_shutdown_verdict.py
+    tests/unit/test_lifecycle_autostart.py
+    tests/unit/test_lifecycle_error_logging.py
+    tests/unit/test_real_bringup_include.py
+    tests/unit/test_reasoner_execute_prompt.py
+    tests/unit/test_reasoner_gpu_probe.py
+    tests/unit/test_reasoner_palette_action_gate.py
+    tests/unit/test_reasoner_scene_objects_gate.py
+    tests/unit/test_reasoner_search_cascade.py
+    tests/unit/test_reasoner_subdivision.py
+    tests/unit/test_resolution_ab_pairing.py
+    tests/unit/test_ros2_image_sensor_reader.py
+    tests/unit/test_safety_supervisor_per_mode.py
+    tests/unit/test_skill_runner_deadline.py
+    tests/unit/test_skill_runner_import_errors.py
+    tests/unit/test_skill_runner_representation_dispatch.py
+)
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this
 # list runs on NO CI surface.
 
 export OPENRAL_TEST_ROS_LIVE=1
 
-exec python -m pytest "${TARGETS[@]}" "$@"
+rc=0
+python -m pytest "${TARGETS[@]}" "$@" || rc=$?
+for t in "${ISOLATED_TARGETS[@]}"; do
+    # Exit 5 is "nothing collected" -- a `-k` that matches nothing in this file.
+    MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@" || { r=$?; [ "$r" -eq 5 ] || rc=$r; }
+done
+exit "$rc"

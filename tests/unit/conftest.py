@@ -249,15 +249,20 @@ def _renderer_with_prompt() -> Any:
 
 
 def _script_targets(script: Path) -> set[str]:
-    """The repo-relative paths inside *script*'s ``TARGETS=( … )`` block."""
+    """The repo-relative paths inside *script*'s ``TARGETS=( … )`` blocks.
+
+    Every ``*TARGETS=( … )`` array counts, so ``ISOLATED_TARGETS`` (one pytest
+    process per file) is covered too.
+    """
     body = script.read_text(encoding="utf-8")
     # Anchor the closing paren to its own line so a parenthesis inside an
     # array comment can never truncate the parse.
-    block = re.search(r"TARGETS=\((.*?)^\)$", body, flags=re.DOTALL | re.MULTILINE)
-    assert block is not None, f"no TARGETS=() block in {script}"
+    blocks = re.findall(r"TARGETS=\((.*?)^\)$", body, flags=re.DOTALL | re.MULTILINE)
+    assert blocks, f"no TARGETS=() block in {script}"
     return {
         stripped
-        for line in block.group(1).splitlines()
+        for block in blocks
+        for line in block.splitlines()
         if (stripped := line.strip()) and not stripped.startswith("#")
     }
 
