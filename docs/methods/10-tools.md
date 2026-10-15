@@ -363,11 +363,11 @@ _Starts the required `heavy-lanes` check on a PR (fork PRs included) automatical
   - `GitHub.paginate(path, key=None) -> list` (L217) — Every page of a list endpoint.
   - `GitHub.unresolved_threads(number) -> int` (L230) — Unresolved review threads, via GraphQL.
   - `GitHub.fetch(pr) -> PullRequestState` (L259) — Gather one PR's state.
-  - `GitHub.dispatch(pr) -> None` (L282) — `workflow_dispatch` `heavy-lanes.yml` with `sha` = the PR head: on the PR branch, or on `fork_branch(pr)` for a fork PR.
-  - `GitHub.fork_branch(pr) -> str` (L299) — Point `heavy-lanes/fork-<pr>` at a new commit with the base branch's tree; returns the branch name.
-  - `GitHub.delete_stale_fork_branches(open_prs) -> None` (L334) — Delete `heavy-lanes/fork-<n>` branches whose PR closed.
-  - `GitHub.set_status(sha, state, description) -> None` (L341) — Post the `heavy-lanes` commit status.
-- `main(argv=None) -> int` (L390) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Posts the waiting status (only when its text changed; backfills a status from a pre-status run), re-reads the head SHA right before dispatch and defers if it moved, and prunes fork branches on a full sweep. One PR's API trouble is a `::warning::`, never a failed sweep.
+  - `GitHub.dispatch(pr) -> None` (L287) — `workflow_dispatch` `heavy-lanes.yml` with `sha` = the PR head: on the PR branch, or on `fork_branch(pr)` for a fork PR.
+  - `GitHub.fork_branch(pr) -> str` (L304) — Point `heavy-lanes/fork-<pr>` at a new commit with the base branch's tree; returns the branch name.
+  - `GitHub.delete_stale_fork_branches(open_prs) -> None` (L339) — Delete `heavy-lanes/fork-<n>` branches whose PR closed.
+  - `GitHub.set_status(sha, state, description) -> None` (L346) — Post the `heavy-lanes` commit status.
+- `main(argv=None) -> int` (L395) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Posts the waiting status (only when its text changed; backfills a status from a pre-status run), re-reads the head SHA right before dispatch and defers if it moved, and prunes fork branches on a full sweep. One PR's API trouble is a `::warning::`, never a failed sweep.
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._

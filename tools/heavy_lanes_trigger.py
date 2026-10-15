@@ -263,7 +263,12 @@ class GitHub:
         compare = self.get(f"compare/{urllib.parse.quote(base, safe='')}...{sha}")
         checks = self.paginate(f"commits/{sha}/check-runs?filter=latest", key="check_runs")
         combined = self.get(f"commits/{sha}/status")
-        runs = self.get(f"actions/workflows/{LANES_WORKFLOW}/runs?head_sha={sha}")
+        # Only dispatched runs: a fork can add `on: pull_request` to its own copy
+        # of heavy-lanes.yml, and such a run must neither block dispatch nor be
+        # backfilled into the `heavy-lanes` status.
+        runs = self.get(
+            f"actions/workflows/{LANES_WORKFLOW}/runs?head_sha={sha}&event=workflow_dispatch"
+        )
         head_repo = pr["head"]["repo"]
         return PullRequestState(
             number=pr["number"],
