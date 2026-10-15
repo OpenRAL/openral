@@ -227,7 +227,38 @@ jobs:
                     *) batched="$batched $t" ;;
                   esac
                 done
-                if [ -n "$batched" ]; then
+                if [ -n "$batched" ] && [ "$group" = "lowering" ]; then
+                  # `lowering` is pure CPU (hull fitting, FK sampling; no GPU,
+                  # EGL or forking pools) and ran as one 9 min process on a
+                  # 4-vCPU runner. Split its files round-robin over 4
+                  # concurrent pytest processes, each with its own junit XML
+                  # for lane_report. Sync once first so the four `uv run`s
+                  # find the env already satisfied.
+                  uv sync --frozen --all-packages --group lowering --inexact
+                  pids=()
+                  plogs=()
+                  for k in 0 1 2 3; do
+                    # shellcheck disable=SC2086
+                    part=$(printf '%s\n' $batched | awk -v k="$k" 'NF && (NR - 1) % 4 == k')
+                    [ -z "$part" ] && continue
+                    part_xml="$RUNNER_TEMP/lane-${group}-batched-${k}.xml"
+                    plog=$(mktemp)
+                    # shellcheck disable=SC2086
+                    uv run --no-sync pytest $part \
+                      -q -rs -p no:launch_testing -p no:launch_ros \
+                      --junit-xml="$part_xml" >"$plog" 2>&1 &
+                    pids+=("$!")
+                    plogs+=("$plog")
+                    xml_args+=(--junit-xml "$part_xml")
+                  done
+                  for i in "${!pids[@]}"; do
+                    part_rc=0
+                    wait "${pids[$i]}" || part_rc=$?
+                    tee -a "$log" < "${plogs[$i]}"
+                    # exit 5 == nothing collected; judged from the report.
+                    if [ "$part_rc" -ne 0 ] && [ "$part_rc" -ne 5 ]; then rc=1; fi
+                  done
+                elif [ -n "$batched" ]; then
                   # selector-emitted space-separated list
                   # shellcheck disable=SC2086
                   env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest $batched \

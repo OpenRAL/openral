@@ -315,6 +315,10 @@ composite action.
    --group sim ...` and requires passing tests, with no skip beyond the
    declared capability gaps (see
    [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean)).
+   The `lowering` lane is the one exception to one pytest process per lane:
+   its files are pure CPU and took 9 min serially, so they run round-robin
+   over 4 concurrent processes (about 7 GB peak in total, well inside a
+   hosted runner's 16 GB).
 6. **Lanes start by themselves once the PR is ready.** `lane` and its
    required `heavy-lanes` gate live in `heavy-lanes.yml`, which runs only via
    `workflow_dispatch`. `heavy-lanes-trigger.yml` runs
