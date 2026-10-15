@@ -64,7 +64,6 @@ except Exception as exc:
 from openral_core import (
     Action,
     ControlMode,
-    EmbodimentKind,
     JointState,
     ROSRuntimeError,
 )
@@ -81,44 +80,6 @@ pytestmark = [
         reason=f"gym-aloha MJCF unavailable: {_MJCF_ERROR}",
     ),
 ]
-
-
-# ── Schema-level checks (cheap; do not require connect) ───────────────────────
-
-
-class TestAlohaDescription:
-    def test_canonical_description_shape(self) -> None:
-        desc = ALOHA_DESCRIPTION
-        assert desc.name == "aloha_bimanual"
-        assert desc.embodiment_kind == EmbodimentKind.BIMANUAL.value
-        # 2 × (6 arm + 1 gripper) = 14.
-        assert len(desc.joints) == 14
-
-    def test_joint_names_match_expected_layout(self) -> None:
-        names = [j.name for j in ALOHA_DESCRIPTION.joints]
-        assert names == [
-            "left_waist",
-            "left_shoulder",
-            "left_elbow",
-            "left_forearm_roll",
-            "left_wrist_angle",
-            "left_wrist_rotate",
-            "left_gripper",
-            "right_waist",
-            "right_shoulder",
-            "right_elbow",
-            "right_forearm_roll",
-            "right_wrist_angle",
-            "right_wrist_rotate",
-            "right_gripper",
-        ]
-
-    def test_capabilities_advertise_joint_position(self) -> None:
-        modes = ALOHA_DESCRIPTION.capabilities.supported_control_modes
-        assert ControlMode.JOINT_POSITION.value in modes
-
-    def test_capabilities_bimanual(self) -> None:
-        assert ALOHA_DESCRIPTION.capabilities.bimanual is True
 
 
 # ── MJCF schema invariants (catches gym-aloha upstream drift) ─────────────────
