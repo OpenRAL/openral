@@ -249,9 +249,6 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("estop_reset_cooldown_s", kDefaultEstopResetCooldownSec);
   this->declare_parameter<std::int64_t>("chunk_validation_deadline_us",
                                         kDefaultChunkValidationDeadlineUs);
-  // Realtime hints — best-effort; we log on failure rather than aborting.
-  this->declare_parameter<bool>("request_sched_fifo", false);
-  this->declare_parameter<std::vector<std::int64_t>>("cpu_affinity", std::vector<std::int64_t>{});
 
   // Parameter-based envelope source (2026-05-24). The
   // Python `deploy_e2e.launch.py` unpacks `robots/<id>/robot.yaml` via
