@@ -192,6 +192,7 @@ def main(args: Any = None) -> None:
                     throttle_duration_sec=5.0,
                 )
                 return None
+            coeffs: tuple[float, ...]
             if self._image_rectified:
                 k = rectified_stream_k(info.p)
                 model, coeffs = "none", ()

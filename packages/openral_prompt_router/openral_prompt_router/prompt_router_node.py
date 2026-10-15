@@ -50,7 +50,7 @@ from rclpy.qos import (
 try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
 except ImportError:  # pragma: no cover
-    IDLPromptStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
+    IDLPromptStamped = None
 
 
 __all__ = ["DEFAULT_SOURCES", "PromptRouterNode"]
@@ -80,7 +80,7 @@ DEFAULT_SOURCES: dict[str, int] = {
 }
 
 
-class PromptRouterNode(LifecycleNode):
+class PromptRouterNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """ROS 2 lifecycle prompt-fan-in node.
 
     Each registered source listens on ``/openral/prompt_in/<source>``

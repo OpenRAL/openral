@@ -175,10 +175,10 @@ try:  # pragma: no cover — gated by colcon-built artifact
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
     from openral_msgs.msg import WorldStateStamped as IDLWorldStateStamped
 except ImportError:  # pragma: no cover — only firing when openral_msgs absent
-    IDLExecuteRskill = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
-    IDLFailureTrigger = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
-    IDLPromptStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
-    IDLWorldStateStamped = None  # type: ignore[assignment, misc]  # reason: colcon IDL missing
+    IDLExecuteRskill = None
+    IDLFailureTrigger = None
+    IDLPromptStamped = None
+    IDLWorldStateStamped = None
 
 # lifecycle_msgs ships with ROS 2; the LifecycleTransitionTool dispatcher
 # uses srv/ChangeState + Transition.TRANSITION_* constants.
@@ -186,8 +186,8 @@ try:  # pragma: no cover — gated by sourced ROS install
     from lifecycle_msgs.msg import Transition as IDLTransition
     from lifecycle_msgs.srv import ChangeState as IDLChangeState
 except ImportError:  # pragma: no cover
-    IDLChangeState = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
-    IDLTransition = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
+    IDLChangeState = None
+    IDLTransition = None
 
 # std_msgs ships with ROS 2 Jazzy; this is the empty payload the
 # ``ral skill install`` / ``ral skill remove`` CLI fires on
@@ -197,7 +197,7 @@ except ImportError:  # pragma: no cover
 try:  # pragma: no cover — gated by sourced ROS install
     from std_msgs.msg import Empty as IDLEmpty
 except ImportError:  # pragma: no cover
-    IDLEmpty = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
+    IDLEmpty = None
 
 # std_msgs/String — the reward monitor's active-task signal (2026-06-29). The
 # reasoner publishes the EXACT instruction the VLA is running (the active subtask)
@@ -207,7 +207,7 @@ except ImportError:  # pragma: no cover
 try:  # pragma: no cover — gated by sourced ROS install
     from std_msgs.msg import String as IDLString
 except ImportError:  # pragma: no cover
-    IDLString = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
+    IDLString = None
 
 
 __all__ = ["ReasonerNode"]
@@ -613,7 +613,7 @@ def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
 # ``scene_objects`` context and decomposed into one grounded subtask per object.
 
 
-class ReasonerNode(LifecycleNode):
+class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
     """ROS 2 lifecycle wrapper around ``ReasonerCore`` (reasoner + supervisor graph F4).
 
     Args:
@@ -1471,6 +1471,7 @@ class ReasonerNode(LifecycleNode):
             except Exception as exc:  # reason: pre-warm is an optimisation, never a gate
                 self.get_logger().warning(f"on_configure: LLM sidecar pre-warm failed: {exc!s}")
 
+        assert self._llm_pool is not None  # built just before, in on_configure
         self._llm_pool.submit(_run)
 
     @log_lifecycle_errors
@@ -1936,7 +1937,8 @@ class ReasonerNode(LifecycleNode):
                 self._renderer.clear_located()
                 self._persist_ladder_state()
                 self.get_logger().info(
-                    f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
+                    f"mission: {len(mission)} task(s) — "
+                    f"active={getattr(mission.active(), 'text', '')[:80]!r}",
                 )
         # A fresh *operator* prompt is a new situation — reset the retry-cap
         # call streak and the active-search bounds. The reasoner's own cascade
@@ -2467,7 +2469,7 @@ class ReasonerNode(LifecycleNode):
         # are rare).
         topic_names_and_types = self.get_topic_names_and_types()
         graph_topics = {name for name, _ in topic_names_and_types}
-        ros_server_available: list = []
+        ros_server_available: list[RSkillManifest] = []
         for m in capability_matched:
             if m.kind not in {"ros_action", "ros_service"}:
                 ros_server_available.append(m)
@@ -4102,7 +4104,7 @@ class ReasonerNode(LifecycleNode):
             self._persist_ladder_state()
             self.get_logger().info(
                 f"decompose_mission: populated mission with {len(new_mission)} task(s) — "
-                f"active={new_mission.active().text[:60]!r}",
+                f"active={getattr(new_mission.active(), 'text', '')[:60]!r}",
             )
         if self._core is not None:
             self._core.reset_kind_streak()

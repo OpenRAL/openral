@@ -55,7 +55,7 @@ from rclpy.qos import (
 )
 
 
-class CriticProducerNode(Node):
+class CriticProducerNode(Node):  # type: ignore[misc]  # reason: rclpy.node.Node is untyped
     """Watch ``/openral/critic/score`` and emit a Tier-C FailureTrigger on a stall or success."""
 
     def __init__(self) -> None:

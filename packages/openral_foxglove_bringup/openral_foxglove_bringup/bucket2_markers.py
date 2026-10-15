@@ -32,11 +32,14 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from openral_msgs.msg import OccupancyVoxels
 
 __all__ = [
     "ATTACHMENT_MARKERS_TOPIC",
@@ -66,7 +69,7 @@ def occupied_voxel_centers(
     origin: tuple[float, float, float],
     resolution: float,
     size: tuple[int, int, int],
-    occupancy: Sequence[int],
+    occupancy: Sequence[int] | NDArray[np.generic],
     orientation_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
 ) -> list[tuple[float, float, float]]:
     """Return the centre positions of all occupied voxels.
@@ -688,36 +691,36 @@ class Bucket2MarkersNode:
     # Subscription callbacks
     # ------------------------------------------------------------------
 
-    def _on_world_voxels(self, msg: object) -> None:
+    def _on_world_voxels(self, msg: OccupancyVoxels) -> None:
         """Convert OccupancyVoxels → PointCloud2 and publish."""
         from sensor_msgs.msg import PointCloud2, PointField
 
-        origin = (msg.origin.x, msg.origin.y, msg.origin.z)  # type: ignore[union-attr]
-        size = (int(msg.size_x), int(msg.size_y), int(msg.size_z))  # type: ignore[union-attr]
-        occupancy = np.asarray(msg.occupancy)  # type: ignore[attr-defined]
-        resolution = float(msg.resolution)  # type: ignore[union-attr]
+        origin = (msg.origin.x, msg.origin.y, msg.origin.z)
+        size = (int(msg.size_x), int(msg.size_y), int(msg.size_z))
+        occupancy = np.asarray(msg.occupancy)
+        resolution = float(msg.resolution)
         # The grid's lattice is the OctoMap's; without its rotation every voxel
         # is drawn somewhere the obstacle is not.
         orientation = (
-            float(msg.orientation.x),  # type: ignore[union-attr]
-            float(msg.orientation.y),  # type: ignore[union-attr]
-            float(msg.orientation.z),  # type: ignore[union-attr]
-            float(msg.orientation.w),  # type: ignore[union-attr]
+            float(msg.orientation.x),
+            float(msg.orientation.y),
+            float(msg.orientation.z),
+            float(msg.orientation.w),
         )
 
-        self._grids.append((str(msg.header.frame_id), origin, resolution, size, orientation))  # type: ignore[union-attr]
+        self._grids.append((str(msg.header.frame_id), origin, resolution, size, orientation))
         try:
             centers = occupied_voxel_centers(origin, resolution, size, occupancy, orientation)
         except ValueError:
             log.exception("bucket2: malformed OccupancyVoxels message — skipping")
             return
 
-        points = np.asarray(centers, dtype=np.float64).reshape(-1, 3)
+        points: NDArray[np.float64] = np.asarray(centers, dtype=np.float64).reshape(-1, 3)
         if self._hidden_boxes and len(points):
             points = points[outside_boxes(points, self._hidden_boxes, resolution)]
 
         cloud = PointCloud2()
-        cloud.header = msg.header  # type: ignore[union-attr]
+        cloud.header = msg.header
         cloud.height = 1
         cloud.width = len(points)
         cloud.is_dense = True

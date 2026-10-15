@@ -706,8 +706,8 @@ def open_deploy_sensor_readers(
         # SensorLeg.start() runs only after the composed lifecycle nodes have
         # also finished creating their publishers, subscriptions, and action
         # servers.
-        for publisher in leg.publishers:
-            prepare = getattr(publisher, "prepare", None)
+        for leg_publisher in leg.publishers:
+            prepare = getattr(leg_publisher, "prepare", None)
             if prepare is not None:
                 prepare()
     except Exception:

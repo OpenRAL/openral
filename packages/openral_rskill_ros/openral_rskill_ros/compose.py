@@ -324,6 +324,8 @@ def compose_runtime(
     # /joint_states + /openral/estop subscriptions without a second rclpy spin.
     from openral_runner.slam_bridge import SlamMapBridge
 
+    # Empty keeps SlamMapBridge's own source_node_name default (slam_toolbox).
+    slam_extra: dict[str, Any] = {"source_node_name": slam_source_node} if slam_source_node else {}
     slam_bridge: object = SlamMapBridge(
         skill_runner_node,
         base_frame=description.base_frame,
@@ -331,7 +333,7 @@ def compose_runtime(
         footprint_polygon=description.footprint_polygon,
         # Label the dashboard card with the node that actually built /map
         # (nvblox on the visual backend); empty keeps the slam_toolbox default.
-        **({"source_node_name": slam_source_node} if slam_source_node else {}),
+        **slam_extra,
     )
     world_cloud_bridge: object | None = None
     if enable_world_cloud_bridge:

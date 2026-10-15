@@ -21,7 +21,11 @@ operator-installed, never bundled. Import failure raises ``ROSConfigError``.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
 
 __all__ = [
     "compose_pose",
@@ -176,7 +180,7 @@ def depth_to_uint16_mm(msg: Any, width: int, height: int, scale: float) -> Any:
 
     if msg.encoding != "32FC1":
         raise ValueError(f"depth must be 32FC1 metres, got encoding {msg.encoding!r}")
-    depth = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(
+    depth: NDArray[np.float32] = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(
         int(msg.height), int(msg.width)
     )
     if (int(msg.height), int(msg.width)) != (height, width):
@@ -185,7 +189,9 @@ def depth_to_uint16_mm(msg: Any, width: int, height: int, scale: float) -> Any:
         from PIL import Image as _PILImage
 
         depth = np.asarray(
-            _PILImage.fromarray(depth, mode="F").resize((width, height), _PILImage.BILINEAR),
+            _PILImage.fromarray(depth, mode="F").resize(
+                (width, height), _PILImage.Resampling.BILINEAR
+            ),
             dtype=np.float32,
         )
     return np.clip(depth * scale, 0, 65535).astype(np.uint16)

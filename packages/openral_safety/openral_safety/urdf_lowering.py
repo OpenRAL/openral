@@ -688,7 +688,7 @@ def _slab_hull_points(mesh: Any, axis: _Arr, grid: _Arr) -> tuple[list[_Arr], li
     import numpy as np
 
     # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
-    from scipy.spatial import ConvexHull, QhullError  # type: ignore[import-untyped]
+    from scipy.spatial import ConvexHull, QhullError
 
     verts = np.asarray(mesh.vertices, dtype=np.float64)
     t = verts @ axis

@@ -46,7 +46,7 @@ if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
 from launch import LaunchContext, LaunchDescription
@@ -66,11 +66,14 @@ from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.events.matchers import matches_node_name as _matches_node_name
+from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     # openral_core stays a DEFERRED import at runtime (see the note above):
     # this file must import on a host without the OpenRAL workspace sourced.
     # `from __future__ import annotations` keeps the annotation a string.
+    from launch import LaunchDescriptionEntity
+    from launch.actions import IncludeLaunchDescription
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
 from openral_core import (
@@ -505,7 +508,7 @@ class _CoverageBall(NamedTuple):
     clip_hi: tuple[float, float, float]
 
 
-def _xyzrpy_to_matrices(xyzrpy: np.ndarray) -> np.ndarray:
+def _xyzrpy_to_matrices(xyzrpy: NDArray[np.float64]) -> NDArray[np.float64]:
     """``(K, 6)`` xyz + URDF rpy (``Rz Ry Rx``, as the kernel composes it) -> ``(K, 4, 4)``."""
     x = np.asarray(xyzrpy, dtype=np.float64).reshape(-1, 6)
     cr, sr = np.cos(x[:, 3]), np.sin(x[:, 3])
@@ -535,13 +538,13 @@ class _ReachModel:
     def __init__(
         self,
         params: dict[str, object],
-        position_limits: list[tuple[float, float]],
+        position_limits: list[tuple[float, float] | None],
         base_dofs: list[int],
     ) -> None:
         def ints(key: str) -> list[int]:
             return [int(v) for v in params.get(key, [])]
 
-        def floats(key: str, width: int) -> np.ndarray:
+        def floats(key: str, width: int) -> NDArray[np.float64]:
             return np.asarray(params.get(key, []), dtype=np.float64).reshape(-1, width)
 
         self.parent, self.kind, self.dof = (
@@ -567,7 +570,7 @@ class _ReachModel:
             moving[i] = driven or (self.parent[i] >= 0 and moving[self.parent[i]])
         corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
         # (link, local 4x4 of the primitive, local points (k, 3), radius) per moving primitive
-        self.prims: list[tuple[int, np.ndarray, np.ndarray, float]] = []
+        self.prims: list[tuple[int, NDArray[np.float64], NDArray[np.float64], float]] = []
         cap_xf = _xyzrpy_to_matrices(floats("collision_capsule_origin_xyzrpy", 6))
         half = floats("collision_capsule_half_length", 1)[:, 0]
         rad = floats("collision_capsule_radius", 1)[:, 0]
@@ -585,12 +588,12 @@ class _ReachModel:
             j for j in range(len(self.limits)) if j not in self.base and j in set(self.dof)
         ]
 
-    def extremes(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def extremes(self, q: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """``(points (N, K, 3), radii (K,))``: every moving primitive's bounding points."""
         q = np.array(q, dtype=np.float64)
         q[:, sorted(self.base)] = 0.0
         count = len(q)
-        world: list[np.ndarray] = []
+        world: list[NDArray[np.float64]] = []
         for i in range(len(self.parent)):
             motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
             if self.dof[i] >= 0 and self.kind[i] in (1, 2, 3, 4):
@@ -609,7 +612,7 @@ class _ReachModel:
                     motion[:, :3, 3] = qi[:, None] * a
             local = self.origin[i] @ motion
             world.append(local if self.parent[i] < 0 else world[self.parent[i]] @ local)
-        points: list[np.ndarray] = []
+        points: list[NDArray[np.float64]] = []
         radii: list[float] = []
         for li, xf, local_pts, r in self.prims:
             frame = world[li] @ xf
@@ -621,7 +624,10 @@ class _ReachModel:
         return np.concatenate(points, axis=1), np.asarray(radii)
 
     def maximise(
-        self, score: Callable[[np.ndarray, np.ndarray], np.ndarray], *, seed: int
+        self,
+        score: Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]],
+        *,
+        seed: int,
     ) -> float:
         """The largest ``score(points, radii)`` (per config) over the joint limits.
 
@@ -651,7 +657,7 @@ class _ReachModel:
 
 def _coverage_ball(
     collision_params: dict[str, object],
-    position_limits: list[tuple[float, float]],
+    position_limits: list[tuple[float, float] | None],
     base_dofs: list[int],
     resolution_m: float,
 ) -> _CoverageBall:
@@ -675,7 +681,7 @@ def _coverage_ball(
     """
     from openral_core.exceptions import ROSConfigError
 
-    if int(collision_params.get("collision_n_links", 0)) <= 0:
+    if int(cast("int", collision_params.get("collision_n_links", 0))) <= 0:
         (cx, cy, cz), r = _UNCHECKED_COVERAGE
         print(
             f"[deploy_e2e] no collision model: world map covers the default ball "
@@ -686,7 +692,9 @@ def _coverage_ball(
     else:
         reach = _ReachModel(collision_params, position_limits, base_dofs)
 
-        def along(d: np.ndarray) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+        def along(
+            d: NDArray[np.float64],
+        ) -> Callable[[NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]:
             return lambda p, r: (p @ d + r).max(axis=1)
 
         axes = np.eye(3)
@@ -891,7 +899,7 @@ def _hal_file_params(path: str, node_name: str) -> dict[str, object]:
     return params
 
 
-def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
+def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list[LaunchDescriptionEntity]:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
     The activate handler is scoped to the **configure** transition
@@ -1347,7 +1355,7 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
     }
 
 
-def _build_real_bringup_include(real_bringup: str | None) -> object | None:
+def _build_real_bringup_include(real_bringup: str | None) -> IncludeLaunchDescription | None:
     """Include the robot's vendor ros2_control bringup, if its manifest declares one.
 
     ``real_bringup`` is the manifest's ``hal.real_bringup``
@@ -1662,7 +1670,9 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
     return None if path is None else str(path)
 
 
-def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: object) -> list:  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
+def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
+    context: LaunchContext, *_args: object, **_kwargs: object
+) -> list[LaunchDescriptionEntity]:
     """Resolve every launch arg, load ``robot.yaml``, build the graph.
 
     Bound to an ``OpaqueFunction`` in
@@ -2013,11 +2023,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 flush=True,
             )
     if workcell is not None and workcell.extra_allowed_collision_pairs:
-        before = list(collision_params.get("collision_allowed_pairs", []))
+        before = list(cast("list[object]", collision_params.get("collision_allowed_pairs", [])))
         collision_params = merge_extra_allowed_pairs(
             collision_params, workcell.extra_allowed_collision_pairs
         )
-        after = list(collision_params.get("collision_allowed_pairs", []))
+        after = list(cast("list[object]", collision_params.get("collision_allowed_pairs", [])))
         if len(after) > len(before):
             for a, b in workcell.extra_allowed_collision_pairs:
                 print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
@@ -2096,7 +2106,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # (e.g. panda_mobile) still get the map produced (octomap_server + bridge launch below for
     # observability), but the kernel voxel check stays off so the kernel configures cleanly on
     # its scalar envelope.
-    has_collision_capsules = int(collision_params.get("collision_n_links", 0)) > 0
+    has_collision_capsules = int(cast("int", collision_params.get("collision_n_links", 0))) > 0
     if vision_attachment_enabled and not has_collision_capsules:
         from openral_core.exceptions import ROSConfigError
 
@@ -2639,7 +2649,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # goal, only when the exemption is on AND the HAL's grasp-target
                 # leg measures around an approaching hand.
                 "grasp_approach_enabled": grasp_allowance_enabled
-                and float(hal_file_params.get("vision_attachment_grasp_target_approach_m") or 0.0)
+                and float(
+                    cast("float", hal_file_params.get("vision_attachment_grasp_target_approach_m"))
+                    or 0.0
+                )
                 > 0.0,
                 # Place mirror (§2.3): a goal-scope place declaration per goal, only when
                 # the HAL's place-target leg runs — it attaches its measured region to
@@ -2708,7 +2721,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         output="screen",
     )
 
-    autostart: list = []
+    autostart: list[LaunchDescriptionEntity] = []
     # The safety_kernel MUST reliably reach ACTIVE: if it stays INACTIVE it
     # publishes neither /openral/safe_action (so the HAL never steps the sim →
     # the runner feeds the policy a FROZEN observation.state → blind open-loop
@@ -2766,7 +2779,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     def _shutdown_unless_clean(what: str) -> object:
         """OnProcessExit callback: a non-zero exit of ``what`` ends the graph."""
 
-        def _on_exit(event: object, _context: object) -> list:
+        def _on_exit(event: object, _context: object) -> list[LaunchDescriptionEntity]:
             returncode = getattr(event, "returncode", None)
             if returncode == 0:
                 return []
@@ -2946,7 +2959,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # * ``ros2://robot_description`` — declared by the detection assembler when the robot
     #   publishes its own URDF on ``/robot_description``. ``resolve_asset`` returns ``None`` for
     #   it, so RSP is skipped (the URDF is already on the bus).
-    extra_nodes: list = []
+    extra_nodes: list[LaunchDescriptionEntity] = []
 
     # Vendor ros2_control bringup, on the real path only — see
     # ``_build_real_bringup_include``. This is what keeps ``deploy run`` a
@@ -3517,7 +3530,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # backs up: the VLM sidecar (LocateAnything) is slow (~1-2 s / frame),
             # the in-process OmDet-Turbo zero-shot backend is ~hundreds of ms, and
             # the RT-DETR ONNX path is fast. See the manifest's DetectorEngine.
-            engine = (man.get("detector") or {}).get("engine")
+            engine: str = (man.get("detector") or {}).get("engine") or ""
             max_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(engine, 5.0)
             det_params = {
                 "image_topic": det_image_topic,
@@ -3797,7 +3810,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         extra_nodes.append(map_server)
         autostart += _autostart_lifecycle(map_server, "openral_map_server")
 
-    nodes: list = [
+    nodes: list[LaunchDescriptionEntity] = [
         safety_kernel,
         # Independent E-stop producers; never conditional on an opt-in flag,
         # on hal_mode, or on the dashboard being up (CLAUDE.md section 3).
