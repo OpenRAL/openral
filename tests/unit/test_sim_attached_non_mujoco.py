@@ -147,6 +147,18 @@ def test_read_state_uses_obs_joint_efforts() -> None:
         hal.disconnect()
 
 
+def test_read_state_effort_empty_for_a_short_joint_efforts_vector() -> None:
+    """Efforts for only some joints → none published, not zero-padded rows."""
+    description = _franka_description()
+    n = len(description.joints)
+    hal = SimAttachedHAL(_FakeSim([0.0] * n, joint_efforts=[1.0] * (n - 1)), description)
+    hal.connect()
+    try:
+        assert hal.read_state().effort == []
+    finally:
+        hal.disconnect()
+
+
 def test_read_state_effort_empty_without_joint_efforts() -> None:
     """No measured effort → none published; zeros would read as a free, unloaded arm."""
     description = _franka_description()

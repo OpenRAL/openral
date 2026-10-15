@@ -92,7 +92,9 @@ def test_measured_efforts_carry_the_drive_holding_torque(env: Any) -> None:
     bent_cmd = np.zeros(env.action_dim, dtype=np.float32)
     bent_cmd[right_elbow] = np.pi / 2
     bent = _steps(env, bent_cmd, 120).observation
-    _steps(env, np.zeros(env.action_dim, dtype=np.float32), 60)  # leave the arm as found
+    back = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 120).observation
+    # The env is module-scoped: leave the arm as the later tests expect to find it.
+    assert np.max(np.abs(back["joint_positions"])) < 0.02, back["joint_positions"]
     for obs in (hang, bent):
         assert obs["joint_efforts"].shape == (16,)
         assert np.isfinite(obs["joint_efforts"]).all()

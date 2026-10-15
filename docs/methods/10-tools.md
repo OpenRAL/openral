@@ -833,15 +833,16 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 
 Backs `safety.joint_state_staleness_limit_s` in a real manifest — the age past which `read_state` (and the runner's waits) refuse to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods). The other real manifests are unmeasured and marked provisional (Franka / Sawyer 0.2 s, the real HALs' former constructor default).
 
-### `tools/force_observer_probe.py`
-_Offline momentum-observer feasibility probe for the #373 force/contact layer, on the MuJoCo OpenArm v2 right arm. Analysis only — not on any control path. `uv run python tools/force_observer_probe.py --force-n 10`._
+### `tools/force_layer_feasibility.py`
+_Force/contact layer (#373) feasibility tools on the MuJoCo OpenArm v2 right arm, fed only what `/joint_states.effort` carries (`joint_actuator_effort`). Analysis only — not on any control path. `uv run python tools/force_layer_feasibility.py probe --force-n 10` / `load-cell --xy 0.40 -0.20`._
 
-- `run(force_n, *, hw, seed=0) -> NDArray` (L30) — Simulates free sinusoidal motion with a known EE push over `[3.0, 3.5)` s; the observer sees q, q-dot and `qfrc_actuator` (what `/joint_states.effort` carries) and returns `(t, |F_est|)` rows. `hw=True` injects unmodelled Coulomb + viscous friction, noise, bias drift, 12-bit quantisation and a +10 % model mass error.
-- `main(argv=None) -> int` (L94) — Prints the free-motion floor, the 1.2x-floor threshold and the detection latency for the ideal and hw-like cases. Measured 2026-10-15: ideal floor 1.5 N; hw-like floor 11.6 N (10 N detected in 38 ms, 5 N missed).
-
-### `tools/sim_load_cell_sweep.py`
-_Simulated load-cell sweep in the OpenArm v2 cell (`cell.xml`), the sim stand-in for the #373 step-3 real-cell sweep. Presses the right hand 0-60 mm into the cell table and compares the true arm-on-table contact force with the static estimate `pinv(J_tcp^T)(tau - g(q))` from `qfrc_actuator`; ideal and hardware-like (friction band, noise, quantisation, +10 % model mass). `uv run python tools/sim_load_cell_sweep.py --xy 0.40 -0.20`._
-
-- `class _Cell` (L31) — The cell scene with the right arm's DOFs, actuators, TCP body and table geom resolved; `ik`, `table_contact`, `hold`, `estimate`, `cond` helpers.
-- `sweep(x, y) -> int` (L141) — Finds the table contact height at `(x, y)`, fixes the TCP on the hand, and prints `depth, cond(J), load cell N, ideal N, hw N` per commanded depth.
-- `main(argv=None) -> int` (L175) — CLI entry, `--xy X Y`. Measured 2026-10-15: at well-conditioned sites (cond(J) 4-6) the hw-like estimate tracks the load cell within ~1-3 N from 2 N to 45 N (resting floor ~3 N); with the elbow on its limit near a singularity (cond(J) 31-112) it reads 27-40 N with no contact, so the estimate must be gated on conditioning and joint-limit margin.
+- `rated_nm() -> NDArray` (L48) — Right-arm joint 1-7 ratings from `robots/openarm/robot.yaml` `effort_limit`.
+- `class RightArm` (L59) — The right arm's DOFs, qpos addresses, actuators, hand body and joint limits in one model.
+  - `resolve(m) -> RightArm` (L70) — Resolves them by name; raises if any is missing.
+- `heavy_model(path) -> MjModel` (L93) — The estimator's model: +10 % mass and inertia.
+- `hw_effort(tau, rated, rng, qd=None) -> NDArray` (L101) — Current-sensed drive corruption: Coulomb (+ viscous when moving; drawn in its band at rest), white noise, 12-bit quantisation.
+- `run(force_n, *, hw, seed=0) -> NDArray` (L127) — Momentum-observer episode over free sinusoidal motion with a known push at the hand's CoM over `[3.0, 3.5)` s; `(t, |F_est|)` rows.
+- `probe(force_n) -> int` (L182) — Free-motion floor, 1.2x threshold and detection latency, ideal vs hw-like. Measured 2026-10-15: ideal floor 1.7 N; hw-like 8.5 N (10 N detected in 42 ms, 5 N missed).
+- `class _Cell` (L204) — The cell scene (`cell.xml`) with IK, arm-on-table contact force, hold/average, static TCP estimate and `cond(J)` helpers.
+- `sweep(x, y) -> int` (L300) — The simulated load-cell sweep at table site `(x, y)`; returns 1 if no contact is found or the arm is already in contact before descending. Measured 2026-10-15: at well-conditioned sites (cond(J) 4-6) the hw-like estimate tracks the load cell within ~1-3 N from 2 N to 45 N (resting floor ~3 N); with the elbow on its limit near a singularity (cond(J) 31-112) it reads 27-40 N with no contact.
+- `main(argv=None) -> int` (L341) — CLI: `probe [--force-n N]` or `load-cell [--xy X Y]`.

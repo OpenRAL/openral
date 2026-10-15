@@ -573,13 +573,33 @@ def test_sim_attached_hal_read_state_without_handles_returns_zeros() -> None:
     assert all(p == 0.0 for p in state.position)
 
 
-_GRAVITY_ARM_MJCF = """
+def _gravity_arm_mjcf(*, drop: str | None = None) -> str:
+    """Every ``_two_dof_description`` joint as a hinge/slide; a 2 kg link on a geared motor.
+
+    The base joints and the other arm joints are present but unactuated (their effort is a
+    real 0.0); ``drop`` leaves one joint out of the MJCF.
+    """
+    names = [
+        "mobilebase0_joint_mobile_forward",
+        "mobilebase0_joint_mobile_side",
+        "mobilebase0_joint_mobile_yaw",
+        *[f"robot0_joint{i}" for i in range(1, 8) if i != 2],
+    ]
+    spare = "".join(
+        f'<body name="b_{n}"><joint name="{n}" type="slide" axis="0 0 1"/>'
+        f'<geom type="sphere" size="0.01" mass="0.1"/></body>'
+        for n in names
+        if n != drop
+    )
+    return f"""
 <mujoco>
+  <option gravity="0 0 0"/>
   <worldbody>
     <body name="link">
       <joint name="robot0_joint2" type="hinge" axis="0 1 0"/>
       <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" mass="2"/>
     </body>
+    {spare}
   </worldbody>
   <actuator>
     <motor joint="robot0_joint2" gear="3"/>
@@ -591,15 +611,14 @@ _GRAVITY_ARM_MJCF = """
 def test_sim_attached_hal_read_state_effort_is_the_actuator_force() -> None:
     """``effort`` is MuJoCo's per-DOF actuator force (gear applied), not zeros (#373).
 
-    Real MuJoCo: a 2 kg horizontal link held by a geared motor. The torque the
-    motor applies — what a current-sensing drive reports — reaches ``effort``
-    on the joint's row; joints absent from the MJCF stay 0.0 so widths match.
+    Real MuJoCo: a geared motor applies a known torque on ``robot0_joint2``; the
+    generalized force it puts on the joint — what a current-sensing drive reports —
+    reaches ``effort`` on that row, and unactuated joints read a real 0.0.
     """
     mujoco = pytest.importorskip("mujoco")
-    model = mujoco.MjModel.from_xml_string(_GRAVITY_ARM_MJCF)
+    model = mujoco.MjModel.from_xml_string(_gravity_arm_mjcf())
     data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    data.ctrl[0] = float(data.qfrc_bias[0]) / 3.0  # hold the link against gravity
+    data.ctrl[0] = 1.5
     mujoco.mj_forward(model, data)
     desc = _two_dof_description()
     hal = SimAttachedHAL(FakeSimEnv(handles=(model, data)), desc)
@@ -607,10 +626,21 @@ def test_sim_attached_hal_read_state_effort_is_the_actuator_force() -> None:
     state = hal.read_state()
     assert len(state.effort) == len(desc.joints)
     j2 = state.name.index("panda_joint2")
-    # 2 kg at a 0.25 m lever under 9.81 m/s^2 ~= 4.9 N*m, sign per the joint axis.
-    assert abs(state.effort[j2]) == pytest.approx(2 * 9.81 * 0.25, rel=1e-3)
-    assert state.effort[j2] == pytest.approx(float(data.qfrc_bias[0]), rel=1e-9)
+    assert state.effort[j2] == pytest.approx(4.5)  # ctrl 1.5 x gear 3
     assert [e for i, e in enumerate(state.effort) if i != j2] == [0.0] * (len(desc.joints) - 1)
+
+
+def test_sim_attached_hal_effort_is_empty_when_a_joint_is_unmeasured() -> None:
+    """A manifest joint missing from the MJCF makes ``effort`` empty, never a zero row."""
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_gravity_arm_mjcf(drop="robot0_joint5"))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    hal = SimAttachedHAL(FakeSimEnv(handles=(model, data)), _two_dof_description())
+    hal.connect()
+    state = hal.read_state()
+    assert len(state.position) == 10
+    assert state.effort == []
 
 
 def test_sim_attached_hal_read_state_before_connect_raises() -> None:

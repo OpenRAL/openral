@@ -3375,7 +3375,9 @@ class JointState(BaseModel):
         name: Ordered list of joint names.
         position: Joint positions (rad or m).
         velocity: Joint velocities (rad/s or m/s).
-        effort: Joint efforts (Nm or N).
+        effort: Joint efforts (Nm or N), all joints or none. Empty means not
+            measured; a producer never zero-fills an unmeasured joint, since a
+            torque observer reads 0.0 as an unloaded joint (#373).
         stamp_ns: ROS 2 timestamp in nanoseconds.
     """
 

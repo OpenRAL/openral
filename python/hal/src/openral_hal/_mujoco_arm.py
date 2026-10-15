@@ -138,6 +138,17 @@ def _kinematic_group(joint_name: str, groups: Sequence[str], *, robot: str) -> s
 # render, a GC pause) the next tick must not fast-forward the world by seconds.
 _IDLE_STEP_CAP = 200
 
+
+def joint_actuator_effort(data: Any, dof: int) -> float:  # noqa: ANN401  # reason: mujoco.MjData
+    """The sim's ``/joint_states.effort`` for one joint: MuJoCo ``qfrc_actuator`` at its DOF.
+
+    The generalized actuator force on the joint (gear and transmission applied, every
+    actuator on the DOF summed), gravity load included — what a current-sensing drive
+    reports. The one definition every MuJoCo-backed HAL publishes (#373).
+    """
+    return float(data.qfrc_actuator[dof])
+
+
 log = structlog.get_logger(__name__)
 # Shared with ``SimAttachedHAL``: one logger / event per time base (telemetry.md).
 _TIME_BASE_LOGGER = "openral.sim.time_base"
@@ -654,21 +665,13 @@ class MujocoArmHAL(HALBase):
                     velocities.append(float(self._data.qvel[gripper.qpos_addrs[0]]))
                 else:
                     velocities.append(0.0)
-                eff_idx = self._effective_actuator_index_for(gripper, name)
-                if eff_idx is not None:
-                    efforts.append(float(self._data.actuator_force[eff_idx]))
-                else:
-                    efforts.append(0.0)
+                efforts.append(joint_actuator_effort(self._data, gripper.qpos_addrs[0]))
             else:
                 qpos_addr = self._joint_qpos_addr[name]
                 qvel_addr = self._joint_qvel_addr[name]
                 positions.append(float(self._data.qpos[qpos_addr]))
                 velocities.append(float(self._data.qvel[qvel_addr]))
-                act_idx = self._actuator_index.get(name)
-                if act_idx is not None:
-                    efforts.append(float(self._data.actuator_force[act_idx]))
-                else:
-                    efforts.append(0.0)
+                efforts.append(joint_actuator_effort(self._data, qvel_addr))
 
         self._last_state_time = time.monotonic()
         return JointState(

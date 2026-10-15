@@ -540,7 +540,7 @@ class WorldStateAggregator:
                     name=joint_names,
                     position=[0.0] * joint_count,
                     velocity=[0.0] * joint_count,
-                    effort=[0.0] * joint_count,
+                    effort=[],  # not measured: zeros would read as an unloaded arm
                     stamp_ns=now_ns,
                 )
                 diag["joint_state"] = "stale"
