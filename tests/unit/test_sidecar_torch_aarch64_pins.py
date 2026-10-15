@@ -51,6 +51,10 @@ _NO_AARCH64_WHEEL = {
 #: wheel, so V1 is x86_64-only until it moves off that lerobot.
 _PIN_REQUIREMENT_FILES = ("qwen_vlm.in", "locateanything.in")
 _PIN_LOCK_FILES = ("qwen_vlm.lock", "locateanything.lock")
+#: The aarch64 locks the same two sidecars install from (``torch_backend()`` is
+#: ``cu130`` there). Kept out of ``_PIN_LOCK_FILES``: they are single-platform,
+#: so they carry no nvrtc marker branches.
+_AARCH64_LOCK_FILES = ("qwen_vlm-aarch64.lock", "locateanything-aarch64.lock")
 
 
 def _load(name: str):  # type: ignore[no-untyped-def] # reason: importlib returns ModuleType via a dynamic spec, same idiom as test_cosmos3_sidecar.py
@@ -124,7 +128,7 @@ def test_internvla_n1_torch_pins_have_aarch64_wheels() -> None:
     assert ("diffusers", "0.32.2") in pins, "diffusers 0.33 breaks the DualVLN NextDiT load"
 
 
-@pytest.mark.parametrize("filename", _PIN_REQUIREMENT_FILES + _PIN_LOCK_FILES)
+@pytest.mark.parametrize("filename", _PIN_REQUIREMENT_FILES + _PIN_LOCK_FILES + _AARCH64_LOCK_FILES)
 def test_sidecar_requirement_files_have_aarch64_wheels(filename: str) -> None:
     path = _REQS / filename
     _assert_installable_on_aarch64(_pins(path.read_text(encoding="utf-8")), str(path))
@@ -216,7 +220,7 @@ def test_every_internvla_n1_install_pass_carries_the_cuda_flags(
 
     This sidecar installs in four passes (pins, ``diffusion_policy``, the
     editable ``internnav``, bitsandbytes). uv re-resolves on each one, so a pass
-    missing ``--torch-backend=cu128`` can swap the CUDA torch back for PyPI's
+    missing ``--torch-backend`` can swap the CUDA torch back for PyPI's
     aarch64 CPU build, and a pass missing the override lets torch's exact
     ``nvidia-cuda-nvrtc-cu12==12.8.93`` pin downgrade the sm_121-aware shim.
     """
@@ -230,13 +234,14 @@ def test_every_internvla_n1_install_pass_carries_the_cuda_flags(
     installs = [c for c in calls if "install" in c]
     assert len(installs) == 4, f"expected pins/diffusion_policy/editable/bnb, got {len(installs)}"
     for cmd in installs:
-        assert "--torch-backend=cu128" in cmd, f"uv pass without the CUDA index: {' '.join(cmd)}"
+        backend = f"--torch-backend={ivn.torch_backend()}"
+        assert backend in cmd, f"uv pass without the CUDA index: {' '.join(cmd)}"
         assert str(ivn._NVRTC_OVERRIDE) in cmd, (
             f"uv pass without the nvrtc override: {' '.join(cmd)}"
         )
 
 
-@pytest.mark.parametrize("filename", _PIN_LOCK_FILES)
+@pytest.mark.parametrize("filename", _PIN_LOCK_FILES + _AARCH64_LOCK_FILES)
 def test_locks_match_their_source_torch_pin(filename: str) -> None:
     """A regenerated lock must carry the ``.in`` file's torch version.
 
@@ -244,9 +249,24 @@ def test_locks_match_their_source_torch_pin(filename: str) -> None:
     — which is what actually gets installed — is left behind.
     """
     lock = (_REQS / filename).read_text(encoding="utf-8")
-    source = (_REQS / filename.replace(".lock", ".in")).read_text(encoding="utf-8")
+    source = (_REQS / filename.replace("-aarch64", "").replace(".lock", ".in")).read_text(
+        encoding="utf-8"
+    )
     (wanted,) = [v for name, v in _pins(source) if name == "torch"]
     assert re.search(rf"^torch=={re.escape(wanted)}\+cu\d+", lock, re.MULTILINE), (
         f"{filename} does not pin torch=={wanted}; regenerate it with the "
         "`uv pip compile` command in the .in file's header."
     )
+
+
+@pytest.mark.parametrize("filename", _AARCH64_LOCK_FILES)
+def test_aarch64_locks_use_cu130(filename: str) -> None:
+    """The aarch64 locks must pin the ``+cu130`` torch, never ``+cu128``.
+
+    Jetson Thor is ``sm_110``; the ``cu128`` wheels ship neither ``sm_110`` SASS
+    nor a ``compute_*`` entry to JIT from, so every CUDA op fails there with "no
+    kernel image is available". See docs/reference/aarch64-support.md.
+    """
+    lock = (_REQS / filename).read_text(encoding="utf-8")
+    assert re.search(r"^torch==[\d.]+\+cu130 ", lock, re.MULTILINE), filename
+    assert "+cu128" not in lock, f"{filename} still carries a cu128 wheel"

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 import pytest
-from openral_sim._sidecar_common import sidecar_port_for_key
+from openral_sim._sidecar_common import sidecar_port_for_key, torch_backend
 
 
 def test_isaac_sim_port_matches_original_implementation() -> None:
@@ -138,3 +138,10 @@ def test_default_expandable_segments_keeps_an_operator_value() -> None:
     child = {"PYTORCH_ALLOC_CONF": "max_split_size_mb:128"}
     default_expandable_segments(child, var="PYTORCH_ALLOC_CONF")
     assert child == {"PYTORCH_ALLOC_CONF": "max_split_size_mb:128"}
+
+
+def test_torch_backend_routes_aarch64_to_cu130() -> None:
+    # Thor (sm_110) has no kernels in the cu128 wheels; x86_64 stays on the validated cu128.
+    assert torch_backend("aarch64") == "cu130"
+    assert torch_backend("x86_64") == "cu128"
+    assert torch_backend() in {"cu128", "cu130"}

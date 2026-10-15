@@ -34,7 +34,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from openral_sim._sidecar_common import build_parser, run_cmd, run_sidecar
+from openral_sim._sidecar_common import build_parser, run_cmd, run_sidecar, torch_backend
 
 _LABEL = "internvla-n1-sidecar"
 _REPO_URL = "https://github.com/InternRobotics/InternNav.git"
@@ -44,10 +44,11 @@ _PYTHON = "3.11"
 # Inference-only pin set, mirroring upstream requirements/internvla_n1.txt
 # (transformers/diffusers/accelerate) minus flash-attn (sdpa instead) and
 # depth-camera-filtering (only used by their Go2 ROS scripts).
-# torch 2.9.1 on the cu128 index, matching every other sidecar: none of
-# transformers 4.51.0 / diffusers 0.32.2 / accelerate 1.4.0 cap torch, and
-# PyPI's aarch64 torch wheel is CPU-only, so without --torch-backend=cu128
-# the 8.3B model would silently run on CPU. See
+# torch 2.9.1 on the CUDA index ``torch_backend()`` picks (cu128 on x86_64,
+# cu130 on aarch64 for Jetson Thor's sm_110), matching the other sidecars:
+# none of transformers 4.51.0 / diffusers 0.32.2 / accelerate 1.4.0 cap torch,
+# and PyPI's aarch64 torch wheel is CPU-only, so without --torch-backend the
+# 8.3B model would silently run on CPU. See
 # ``docs/reference/aarch64-support.md``.
 _PINNED_DEPS = [
     "torch==2.9.1",
@@ -116,7 +117,7 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
         "install",
         "--python",
         str(py),
-        "--torch-backend=cu128",
+        f"--torch-backend={torch_backend()}",
         "--overrides",
         str(_NVRTC_OVERRIDE),
     ]

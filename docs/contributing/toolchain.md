@@ -46,7 +46,8 @@ which aborts the resolve and leaves the venv half-broken (missing `h5py`,
 
 **On aarch64 Linux, `just sync` needs `download.pytorch.org` reachable.** PyPI's
 aarch64 torch wheel is CPU-only, so the root `pyproject.toml` pins torch +
-torchvision to the `cu128` index (and raises `nvidia-cuda-nvrtc-cu12`) under a
+torchvision to the `cu130` index (Jetson Thor is `sm_110`; see
+[`aarch64-support.md`](../reference/aarch64-support.md)) under a
 `platform_machine == 'aarch64'` marker; without it every in-process policy runs
 on CPU on a DGX Spark / Jetson. x86_64 resolution is untouched and never
 contacts that host.

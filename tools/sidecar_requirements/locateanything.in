@@ -6,6 +6,12 @@
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
 #     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/locateanything.lock
+# and the aarch64 lock (cu130: Jetson Thor is sm_110, which cu128 has no kernels
+# for; seed it with a copy of locateanything.lock first so only the CUDA stack moves):
+#   uv pip compile tools/sidecar_requirements/locateanything.in --no-config \
+#     --python-platform aarch64-manylinux_2_28 --torch-backend=cu130 --generate-hashes \
+#     --python-version 3.12 --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
+#     -o tools/sidecar_requirements/locateanything-aarch64.lock
 # The --overrides file raises nvrtc past the sm_121 cliff on aarch64 (GB10 /
 # Jetson Thor). This detector's own code path happens not to hit a jiterator
 # op today, but the ceiling is a property of the wheel, not of the model —

@@ -50,10 +50,12 @@ override-dependencies = [
     # coupling does not exist on aarch64: torchcodec's own marker is
     # x86_64/AMD64-only, so it is never installed here.
     #
-    # The cap has to go on aarch64 because of the cu130 move above. torch
-    # 2.9.1+cu130 does exist for aarch64 — but torchvision 0.24.1, its ABI
-    # partner, does **not**: that index carries aarch64 torchvision only from
-    # 0.27.0. torchvision is ABI-locked to a torch minor and does not float
+    # The cap is lifted on aarch64 together with the cu130 move above. torch
+    # 2.9.1+cu130 exists for aarch64, but that index's `+cu130`-tagged aarch64
+    # torchvision builds start at 0.25.0; for 0.24.x it carries only untagged
+    # wheels (0.24.0 / 0.24.1 — CUDA builds, ~7.8 MB against PyPI's 2.4 MB
+    # CPU-only wheel, yet with the same version string, so nothing in the
+    # version tells them apart). torchvision is ABI-locked to a torch minor and does not float
     # with it, so leaving it alone resolves 0.24.1 against a newer torch and
     # every import dies on `operator torchvision::nms does not exist`. Move
     # both or neither. 2.13/0.28 is the pair `openral-pro` already runs on a

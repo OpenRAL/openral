@@ -71,6 +71,10 @@ def _ensure_venv(home: Path) -> Path:
         # an earlier pass's shim (same failure the LingBot sidecar hit).
         # Invariant: every uv pass that can re-resolve carries the override.
         pip = [uv, "pip", "install", "--python", str(py), "--overrides", str(_NVRTC_OVERRIDE)]
+        # Deliberately cu128 on every arch, not ``torch_backend()``: flash-attn 2.8.3's only
+        # aarch64 prebuilts are cu12torch2.9 / cu13torch2.10, so torch 2.9.1+cu130 would
+        # force an hour-plus nvcc source build. So XR-1 does not run on Jetson Thor (sm_110)
+        # until torch moves to 2.10 on cu130. See docs/reference/aarch64-support.md.
         run_cmd(_LABEL, [*pip, "--torch-backend=cu128", *_XR1_TORCH_DEPS])
         run_cmd(_LABEL, [*pip, *_XR1_RUNTIME_DEPS])
         run_cmd(_LABEL, [*pip, "--no-build-isolation", *_XR1_ATTN_DEPS])

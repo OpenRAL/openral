@@ -22,15 +22,15 @@ the flattened view **breaks** it (Jetson AGX Thor, vLLM 0.28.0:
 there (3 shards, 4.66 GiB, 5.71 s). ``vllm_has_native_edge_model`` asks the
 venv's ``ModelRegistry`` rather than comparing version strings.
 
-Lock resolves differently per platform: x86_64 pins vLLM 0.24.0, whose
-Transformers fallback loads Edge but crashes in
+The lock pins vLLM 0.28.0 on every platform. It used to resolve 0.24.0 on
+x86_64, whose Transformers fallback loads Edge but crashes in
 ``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids``; the model itself
-is sound at ~46 tok/s under plain ``transformers.generate``). aarch64
-resolves vLLM 0.28.0, which already carries #48291 and loads natively
-(validated live tool call on RTX 4070, 1.5-2 s/tick warm, ``--kv-cache-dtype
-fp8`` for the 8192 window). Retire ``materialize_reasoner_view`` once every
-platform resolves a vLLM with #48291. Full findings:
-``docs/reference/cosmos3-edge-reasoner.md``.
+is sound at ~46 tok/s under plain ``transformers.generate``). 0.28.0 already
+carries #48291 and loads natively (validated live tool calls on an RTX 4070
+8 GB, 1.5-2 s/tick warm, ``--kv-cache-dtype fp8`` for the 8192 window, and on
+Jetson AGX Thor). ``materialize_reasoner_view`` now only serves a vLLM
+without #48291 (e.g. an operator-supplied venv); retire it once none is
+expected. Full findings: ``docs/reference/cosmos3-edge-reasoner.md``.
 
 Usage::
 
@@ -218,8 +218,8 @@ def vllm_has_native_edge_model(py: Path) -> bool:
 
     ``Cosmos3EdgeForConditionalGeneration`` arrived upstream in
     `vllm#48291 <https://github.com/vllm-project/vllm/pull/48291>`_, after the
-    0.24.0 release the x86 branch pins but before the 0.28.0 the aarch64
-    branch resolves (see module docstring); decides how weights are served
+    0.24.0 release x86_64 once resolved but before the 0.28.0 the lock now
+    pins everywhere (see module docstring); decides how weights are served
     in ``resolve_served_model``. Asks vLLM's registry rather than
     comparing version strings.
 
