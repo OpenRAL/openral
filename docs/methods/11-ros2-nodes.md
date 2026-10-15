@@ -39,9 +39,9 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 
 - `generate_launch_description() -> LaunchDescription` (L84) — Stand-alone bring-up of the upstream Nav2 `navigation_launch.py` include; `robot_yaml` rewrites `robot_radius`/`inflation_radius`/`motion_model` over the shared base params file (lidar or, for `slam_backend=visual`, the visual variant) and clamps its velocity limits to the manifest's `max_base_*` bounds.
 - `_cap_speeds(params, max_linear_m_s, max_angular_rad_s) -> None` (L245) — Lowers `velocity_smoother.max_velocity`/`min_velocity` (the `(vx, vy)` corner scaled onto the `‖v‖` disk) and MPPI `vx_max`/`wz_max` in place to the kernel `BODY_TWIST` bounds; never raises a limit.
-- `_speed_capped_params_file(params_file, max_linear_m_s, max_angular_rad_s) -> str` (L275) — `params_file` unchanged when neither bound is set, else a temp copy with `_cap_speeds` applied (Jazzy `RewrittenYaml` cannot set a list element).
+- `_speed_capped_params_file(params_file, max_linear_m_s, max_angular_rad_s) -> str` (L292) — `params_file` unchanged when neither bound is set, else a temp copy with `_cap_speeds` applied (Jazzy `RewrittenYaml` cannot set a list element).
 - `BOND_TIMEOUT_S` (L60) — `30.0`; how long a Nav2 lifecycle manager waits on a bond heartbeat before treating a descheduled server as dead. Not disabled (`0.0`), so a server that really dies is still caught.
-- `DEFAULT_PARAMS_PATH` (L385) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
+- `DEFAULT_PARAMS_PATH` (L402) — Default `config/nav2_panda_mobile.yaml` path; used by `test/test_nav2_launch.py` for hermetic argument validation without spawning a real ROS 2 graph.
 
 ### `packages/openral_perception_ros/openral_perception_ros/`
 
