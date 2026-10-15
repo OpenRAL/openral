@@ -18,7 +18,7 @@ Public API:
 
 Example:
     >>> from openral_observability import configure_observability, rskill_span
-    >>> configure_observability(service_name="ral")
+    >>> _ = configure_observability(service_name="openral")  # False with no endpoint
     >>> with rskill_span("rskill.configure", rskill_id="hello"):
     ...     pass
 """

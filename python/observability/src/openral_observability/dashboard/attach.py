@@ -67,11 +67,7 @@ def spawn_dashboard(
     # Entry point is ``openral`` (bare ``ral`` was renamed). If PATH lacks
     # ``.venv/bin`` (e.g. under ``ros2 launch``, env built from
     # ``/opt/ros/jazzy/setup.bash``), look next to ``sys.executable`` —
-    # where ``uv sync`` installs the console script. Do NOT fall back to
-    # ``python -m openral_cli.main``: it re-imports the CLI in a child
-    # interpreter and trips a pre-existing ``if __name__ == "__main__":``
-    # early-return that skips registration of subcommands defined later
-    # in the file.
+    # where ``uv sync`` installs the console script.
     exe_path = shutil.which("openral")
     if exe_path is None:
         candidate = os.path.join(os.path.dirname(sys.executable), "openral")
@@ -191,7 +187,7 @@ def attached_dashboard(
         if attached is None:
             yield False
             return
-        configure_observability(service_name="ral")
+        configure_observability(service_name="openral")
         try:
             with ExitStack() as stack:
                 if subcommand is not None:
