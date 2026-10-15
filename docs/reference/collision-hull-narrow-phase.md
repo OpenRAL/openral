@@ -288,17 +288,15 @@ link geometry clears it:
 
 *(23 live stops across four scenes.)* Within the world-side residue, **11
 stops — 48 % of all stops — are held by the octree→grid bridge's rasterisation
-dilation**: `rasterize_octree_to_grid` marks a base-frame cell whenever its cube
-*shares volume* with an occupied leaf's cube, and the two lattices have an
-arbitrary relative phase (and yaw, on a mobile base), so one leaf generically
-lights up to eight cells — [issue #173][i173], the single largest term in the
-apportionment. The other world-side mechanism, non-collidable geometry being real
-to the depth camera, is [issue #174][i174].
+dilation** ([mechanism](world-map-fidelity.md#2-the-octreegrid-bridge-dilates-by-up-to-one-cell-by-design);
+[issue #173][i173]), the single largest term in the apportionment. The other
+world-side mechanism, non-collidable geometry being real to the depth camera, is
+[issue #174][i174].
 
 [i173]: https://github.com/OpenRAL/openral/issues/173
 [i174]: https://github.com/OpenRAL/openral/issues/174
 
-**So this change is necessary and correct, and it is not sufficient.** It fixes
+**So this change is necessary and correct, but not sufficient.** It fixes
 the link-side term exactly; the majority term is elsewhere and now has an owner.
 The link-side excess #171 removes is large (median **28.72 mm**, up to 42.56 mm
 on `panda_link2`), and it is real clearance the robot has today and is not being
@@ -322,9 +320,9 @@ the approach direction is `E_OBB(u*) = 21.95 mm` and the DOP clears iff
 | `E_OBB(u) ≥ 20.01 mm` (a strictly larger, more adverse set) | 155 529 | 25.70 mm | 4.95 mm | not guaranteed |
 | all directions | 200 000 | 25.70 mm | 4.40 mm | not guaranteed |
 
-The first row is conditioned on what was actually measured; the rows below it
-are the honest sensitivity. **Three caveats keep this a strong expectation rather
-than a proof**: the 1.97 mm of spare is a *geometry* term and the DOP's own
+The first row is conditioned on what was measured; the rows below it are the
+sensitivity. **Three caveats keep this a strong expectation rather than a
+proof**: the 1.97 mm of spare is a *geometry* term and the DOP's own
 separating-axis deficit eats into it (#161 §6.2 measures mean 0.159 mm near
 contact, exact 80.2 % of the time, with a 22.5 mm tail); the decomposition
 assumes the approach direction is the same for both representations; and #171's
@@ -335,7 +333,7 @@ back in and the reported distance is never worse than today's −1.94 mm.
 
 ### 5.4 What this does **not** buy
 
-#161 §7.3 is the honest ceiling and it has not moved: **perfect link geometry
+#161 §7.3's ceiling has not moved: **perfect link geometry
 recovers 27 of the census's 72 stopping states; 45 are held by the world grid.**
 The recommended configuration (exact hull on link1 *and* link2) scores 25/72;
 what shipped here is less, because `link1` gets the DOP rather than its hull.

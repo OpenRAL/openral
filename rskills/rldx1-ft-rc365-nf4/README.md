@@ -32,15 +32,14 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 <!-- openral:rskill-readme-delegates-to: ../rldx1-ft-libero-nf4 -->
 
-This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4);
-that README owns the canonical architecture, license, auto-managed
-sidecar lifecycle, and NF4 quantization documentation for every member
-of the RLDX-1 family. Read it first. The sections below cover only
-this checkpoint's RC365-specific contract.
+Sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4),
+whose README is canonical for the RLDX-1 family's architecture, license,
+auto-managed sidecar lifecycle, and NF4 quantization. Read it first. Below: only this checkpoint's
+RC365-specific contract.
 
 ## Run
 
-The `rldx` adapter auto-spawns the sidecar with `--embodiment-tag GENERAL_EMBODIMENT` (the model card's own inference example) on first observation — single command:
+The `rldx` adapter auto-spawns the sidecar with `--embodiment-tag GENERAL_EMBODIMENT` (the model card's own inference example) on first observation:
 
 ```bash
 openral sim run \

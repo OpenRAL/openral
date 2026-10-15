@@ -42,7 +42,7 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 Expect: real base navigation + arm reach under safety-gated control.
 
 ### 1b. Autonomous + open-vocab perception (LocateAnything-3B)   [VRAM eviction — code-complete, live-verify pending]
-Real open-vocab perception of the baguette, then the autonomous grab — fits 8 GB via the
+Real open-vocab perception of the baguette, then the autonomous grab; fits 8 GB via
 single-resident-skill eviction (the detector's VRAM is freed before pi05 loads).
 ```bash
 source tools/_demo_env.sh
@@ -55,8 +55,8 @@ openral deploy sim --config scenes/deploy/robocasa_baguette.yaml --no-enable-oct
 # If the LLM doesn't free the detector itself before the grab, do it manually:
 ros2 lifecycle set /openral_ros_image_detector deactivate   # frees the detector's VRAM
 ```
-**8 GB co-residency:** the detector (~5.3 GB) and pi05 (~4.3 GB) do not co-reside — the deactivate
-above is what makes the autonomous loop fit. Watch `nvidia-smi`. Known live-verify risks: the
+**8 GB co-residency:** the detector (~5.3 GB) and pi05 (~4.3 GB) do not co-reside; the deactivate
+above makes the autonomous loop fit. Watch `nvidia-smi`. Known live-verify risks: the
 detector's `image_topic` default (`agentview_left`) may not match the robocasa camera names
 (no `--object-detector-image-topic` override exists yet); the LLM may need a nudge to deactivate
 the detector before grabbing.

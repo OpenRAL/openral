@@ -1,10 +1,9 @@
 # Scene YAMLs (`scenes/`)
 
-This directory holds the three scene tiers.
-Each tier is a Pydantic schema in `openral_core`; the directory layout matches
-the schema, the CLI matches the directory, and every YAML is loaded through a
-strict per-tier loader (`load_scene_strict(..., expect=<Tier>)`) that rejects
-wrong-tier YAMLs at parse time.
+Three scene tiers, each a Pydantic schema in `openral_core`. Directory layout
+matches the schema, the CLI matches the directory, and every YAML loads through
+the strict per-tier loader `load_scene_strict(..., expect=<Tier>)`, which
+rejects a wrong-tier YAML at parse time.
 
 ```
 DeployScene  ⊆  SimScene  ⊆  BenchmarkScene
@@ -19,10 +18,9 @@ DeployScene  ⊆  SimScene  ⊆  BenchmarkScene
 
 Sibling resources:
 
-- [`benchmarks/`](../benchmarks/) — suite-style benchmark YAMLs (bare
-  `list[BenchmarkScene]` at the YAML root) that aggregate multiple
-  `BenchmarkScene`s under uniform invariants.
-  Consumed by `openral benchmark run --suite <id> --rskill <name>`.
+- [`benchmarks/`](../benchmarks/) — suite YAMLs: a bare `list[BenchmarkScene]`
+  at the root, aggregating scenes under uniform invariants. Consumed by
+  `openral benchmark run --suite <id> --rskill <name>`.
 - [`deployments/`](../deployments/) — retired; real deploys use
   `scenes/deploy/*.yaml` through `DeployScene`.
 
@@ -35,10 +33,9 @@ Sibling resources:
 | "Reproduce a paper number for this rSkill" (one scene)                    | `BenchmarkScene`  | Writes a citable `RSkillEvalResult` JSON.          |
 | "Reproduce a paper number for this rSkill" (suite of N scenes)            | `list[BenchmarkScene]` | Lives in [`benchmarks/`](../benchmarks/). |
 
-A scene can have a sibling YAML at multiple tiers — e.g. `scenes/benchmark/libero_spatial.yaml`
+A scene can have a YAML at several tiers, e.g. `scenes/benchmark/libero_spatial.yaml`
 (paper protocol) and `scenes/sim/libero_spatial.yaml` (ad-hoc smoke). The sim-tier
-sibling is **not** valid for paper claims; the loader-strictness gate
-(`load_scene_strict`) prevents accidental tier confusion.
+one is **not** valid for paper claims; `load_scene_strict` prevents tier confusion.
 
 ## Run any of them
 
@@ -73,8 +70,7 @@ MUJOCO_GL=egl uv run --group libero \
 
 ## Swap any axis
 
-The CLI accepts override flags on every tier (the YAML pins defaults; the flag
-wins). Most useful:
+Every tier accepts override flags; the YAML pins defaults and the flag wins:
 
 ```bash
 # Pick a different task in the same scene/suite.
@@ -127,11 +123,9 @@ bindings, octomap topic, TF and USB-hub pitfalls) is worked through in
 [the deploy tutorial](../docs/tutorials/deploy/deploy-run-and-dashboard.md#cameras-whose-stream-only-exists-as-a-ros-topic-ros2_image);
 `scenes/deploy/openarm_bench.yaml` is the verified instance.
 
-See [Create a sim environment](../docs/tutorials/sim/create-a-sim-environment.md)
-for the long-form tutorial covering YAML authoring, adding a new robot
-manifest, and writing custom scene / policy adapters.
-
-Quick reference:
+[Create a sim environment](../docs/tutorials/sim/create-a-sim-environment.md)
+covers YAML authoring, adding a robot manifest, and custom scene / policy
+adapters. Quick reference:
 
 - A `DeployScene` is `scene:` only (+ optional `robot_id`, `base_pose`).
 - A `SimScene` is a `DeployScene` + required `task:` block (+ optional `seed`,
@@ -139,10 +133,9 @@ Quick reference:
 - A `BenchmarkScene` is a `SimScene` + required `metadata: BenchmarkMetadata`
   (paper URL + honest_scope string) + non-`None` `seed` and `n_episodes`.
 
-The loader (`load_scene_strict(path, expect=<Tier>)`) refuses to load a
-wrong-tier YAML and tells you which tier the file actually fits. A YAML that
-still carries a `vla:` block raises `ROSConfigError` — policy is always
-supplied at the CLI via `--rskill <name>`.
+On a wrong-tier YAML the loader names the tier the file actually fits. A YAML
+that still carries a `vla:` block raises `ROSConfigError`; the policy is always
+supplied via `--rskill <name>`.
 
 `scene.backend_options` is an opaque dict to the tier schemas; each backend
 owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
@@ -172,9 +165,9 @@ owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
 | VLABench (lerobot envs) | `vlabench` (scene-fixed Franka Panda; task selected via `backend_options`, e.g. `select_fruit`)                                                                                                                                                                                        | `python/sim/.../backends/vlabench.py`     |
 | Isaac Sim (sidecar) | `isaac_sim` (free-axis; any manifest robot imported from its URDF with `layout: manifest`, inside any environment USD named by `scene.assets_uri` — see [below](#isaac-sim-any-stage-any-robot)) | `python/sim/.../backends/isaac_sim.py` |
 
-`openral sim list` walks every subdirectory here and prints each scene YAML
-path — paste one straight into `--config`. The `--rskill` half comes from
-`openral rskill list`.
+`openral sim list` prints every scene YAML path here, ready for `--config`;
+`openral rskill list` gives the `--rskill` half (see
+[below](#discovering-paste-able---rskill-strings)).
 
 ## Scene-fixed robots
 
@@ -206,10 +199,11 @@ Free-axis scenes (`tabletop_push`, `isaac_sim`, `mock`) require a robot.
 
 ## Placing robots with `base_pose:`
 
-Scenes registered with `base_pose=True` (free-axis `tabletop_push` and `isaac_sim`; scene-fixed `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
-in the scene's world frame. Adapters write the `world → base_frame` transform
-(from the robot manifest's `RobotDescription.base_frame`) into the scene's
-MJCF at load. Example:
+Scenes registered with `base_pose=True` (free-axis `tabletop_push` and
+`isaac_sim`; scene-fixed `openarm_tabletop_pnp`) accept an optional `base_pose:`
+block anchoring the robot in the scene's world frame. Adapters write the
+`world → base_frame` transform (`RobotDescription.base_frame`) into the scene's
+MJCF at load:
 
 ```yaml
 robot_id: so100_follower
@@ -230,9 +224,8 @@ base_pose:
 ```
 
 Setting `base_pose:` on a scene not registered with `base_pose=True` is a
-`ROSConfigError` — those scenes ship their own MJCF and the field has no
-physical meaning there. See
-the mandatory-mounting-pose design note for the rationale.
+`ROSConfigError`: those scenes ship their own MJCF, so the field has no
+physical meaning there (rationale: the mandatory-mounting-pose design note).
 
 ### Isaac Sim: any stage, any robot
 
@@ -422,7 +415,10 @@ right gripper) commits as one simulator step.
 
 **Isaac install**: a host-wide binary install (`/opt/isaac-sim`, `~/isaacsim`)
 is picked up automatically after the pip venv; `OPENRAL_ISAAC_SIDECAR_PYTHON`
-overrides. Verified on Isaac Sim 6.1.
+overrides. Verified on Isaac Sim 6.1. Isaac 6 manifest imports use the world
+fixed joint as the articulation root, so a fixed arm stays at its declared spawn
+rather than settling against a floating-base constraint. Scene initial joint
+positions are seeded before physics initialization and retained on reset.
 
 ## rSkill compatibility check
 
@@ -432,17 +428,14 @@ and `sensors_required` intersect the robot's capabilities and sensor catalogue
 **before** policy load. The check fires inside
 `openral_sim.runner._check_rskill_compatibility` and raises `ROSConfigError`
 (missing manifest / unregistered robot) or `ROSCapabilityMismatch`
-(incompatible) — there is no warn-and-proceed path.
-
-See the original scene-schema design and the later
-three-tier-split design that owns the loader strictness for further detail.
+(incompatible); there is no warn-and-proceed path. Background: the original
+scene-schema design and the later three-tier-split design (loader strictness).
 
 ## Live MuJoCo viewer
 
 `openral sim run` and `openral benchmark scene` open a passive `mujoco.viewer`
 window by default and stream the rollout in real time. Toggle with
-`--view / --no-view`. The viewer is auto-disabled (single WARNING line, no
-error) when:
+`--view / --no-view`. It is auto-disabled (one WARNING line, no error) when:
 
 - `MUJOCO_GL=egl` is set, or
 - on Linux with `DISPLAY` unset, or
@@ -472,8 +465,8 @@ Per-adapter viewer support:
 
 ## Performance knobs (rSkill `policy_extras`)
 
-Lerobot-style families (`smolvla`, `act`, `pi05`) honour two `policy_extras`
-fields on their rSkill manifest that gate inference speed:
+Lerobot-style families (`smolvla`, `act`, `pi05`) honour these rSkill-manifest
+`policy_extras` fields, which gate inference speed:
 
 | Key                                | Default                                                                                  | What it does |
 |------------------------------------|------------------------------------------------------------------------------------------|--------------|
@@ -484,7 +477,7 @@ fields on their rSkill manifest that gate inference speed:
 
 ### When to enable `compile`
 
-It is **off by default** because it requires:
+Off by default because it requires:
 
 - A working system C compiler on `$PATH` for Triton (compile fails if Triton
   picks up an incompatible compiler — common with conda envs that shadow `cc`).
@@ -511,12 +504,7 @@ win. For evaluations (`--n-episodes >= 2`, or long episodes) it is pure win.
 
 ## Discovering paste-able `--rskill` strings
 
-`openral rskill list` prints every rSkill — in-tree (`rskills/<dir>/rskill.yaml`)
-and HF-Hub-installed — with a `source` column so you can tell which are
-paste-able right now. Copy any name straight into `--rskill` (e.g.
-`--rskill pi05-libero-int8`). Add `--json` for a machine-readable form.
-
-(`openral sim list` is the other half: it prints scene config paths for
-`--config`, not rSkills.)
-
-Isaac 6 manifest imports use the world fixed joint as the articulation root, so a fixed arm stays at its declared spawn rather than settling against a floating-base constraint. Scene initial joint positions are seeded before physics initialization and retained on reset.
+`openral rskill list` prints every rSkill, in-tree (`rskills/<dir>/rskill.yaml`)
+and HF-Hub-installed, with a `source` column showing which are paste-able now.
+Copy any name into `--rskill` (e.g. `--rskill pi05-libero-int8`); `--json` gives
+a machine-readable form.

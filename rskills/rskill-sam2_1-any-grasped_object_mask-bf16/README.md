@@ -81,10 +81,9 @@ raw `mono8` `sensor_msgs/Image[]` — see the `.srv` header for why raw and not
 run-length encoded.
 
 `multimask: true` returns SAM 2's three nested hypotheses (subpart / part /
-whole), and **all** of them cross the service boundary. This skill deliberately
-does **not** pick between them: it has no depth, and only geometry — containment
-between the jaws, payload extent, depth validity — can say which hypothesis is
-the payload. The backend orders them by **area ascending** and the HAL producer,
+whole), and **all** cross the service boundary. This skill does **not** pick
+between them: it has no depth, and only geometry (containment between the jaws,
+payload extent, depth validity) can say which hypothesis is the payload. The backend orders them by **area ascending** and the HAL producer,
 which holds the wrist depth frame, selects among them.
 
 ### Observation → mask contract
@@ -114,11 +113,10 @@ Latency is **flat across input resolution** (46–52 ms from 224² to 1024²)
 because `Sam2Processor` always resizes to 1024² internally. Wrist camera
 resolution is not a lever for this model.
 
-At 297 MiB the segmenter co-resides trivially with a ~3.5 GiB VLA and a
-simulator on an 8 GB card, so it is held resident and warmed at node activate
-rather than loaded on demand — the 742 ms first call would not fit inside the
-HAL's ~100 ms deferred-ack barrier, but the 53 ms warm call fits with room to
-spare.
+At 297 MiB the segmenter co-resides easily with a ~3.5 GiB VLA and a simulator
+on an 8 GB card, so it is held resident and warmed at node activate: the 742 ms
+first call would not fit inside the HAL's ~100 ms deferred-ack barrier; the
+53 ms warm call does.
 
 ### Quality probe — and the result that drives the safety design
 
@@ -130,10 +128,9 @@ for the projected TCP):
 | SO-101 wrist, holding an eraser (320×240) | 0.842 | 5.4% of frame | cleanly isolates the eraser, **excludes the jaws** |
 | SO-101 third-person, fruit scene (640×480) | **0.978** | **59.8% of frame** | essentially the entire tablecloth |
 
-The second row is the load-bearing finding for this whole package. A mis-aimed
-or out-of-context point prompt returned a mask covering most of the image at the
-model's **highest** confidence. The model's own score cannot detect that it is
-wrong.
+The second row drives this package's design: a mis-aimed or out-of-context
+point prompt returned a mask covering most of the image at the model's
+**highest** confidence. The score cannot detect that it is wrong.
 
 **Therefore every fail-closed gate in the consumer is geometric** — containment
 between the jaws, a payload extent cap, a depth-validity fraction — and **never**
@@ -222,8 +219,8 @@ uv run pytest tests/unit/test_sam2_segmenter.py tests/unit/test_vision_attachmen
 
 ## Evaluation
 
-No benchmarks shipped — packaging-only wrapper; a promptable segmenter has no
-task success rate. The quality probe above is the honest substitute.
+No benchmarks shipped: a promptable segmenter has no task success rate. The
+quality probe above stands in for one.
 
 ## Known limitations
 

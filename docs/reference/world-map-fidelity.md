@@ -7,8 +7,8 @@ world-side terms apportion once the real map is in the loop.
 Companion to the [start-state census](robocasa-start-state-census.md) (which
 limb stops a kitchen) and to [tight link geometry](collision-tight-geometry.md)
 (what better link primitives could recover). Both score against a grid built
-from true surfaces and both flag that as unmeasured against the live octomap.
-**This page measures the live octomap.**
+from true surfaces and flag it as unmeasured against the live octomap; this page
+measures it.
 
 > **Superseded in part (2026-08-25).** The largest world-side term this page
 > isolated — the octree→grid cube-overlap dilation, [issue #173](https://github.com/OpenRAL/openral/issues/173),
@@ -71,16 +71,14 @@ start-state measurement applies zero actions.
 The C++ safety kernel could **not** be built on this host at the time — the
 vendored `opentelemetry_cpp_vendor` failed at its `find_package(Protobuf)`.
 
-> **Corrected 2026-08-26.** That was never a conflict "against the system
-> protobuf": protobuf's *dev* files were simply not installed. With
-> `libprotobuf-dev` + `protobuf-compiler` present the vendor package configures
-> and the whole 27-package graph builds, kernel included. (A second, self-
-> inflicted variant of the same symptom: putting `.venv/bin` on `PATH` shadows
-> system cmake 3.28 with the venv's pip-installed cmake 4.1, whose
-> `FindProtobuf` then misses it too.) Nothing on this page depended on the
-> kernel being unbuildable — the numpy port was validated against the shipped
-> C++ either way — but the diagnosis should not be carried forward as a known
-> breakage, because it is not one.
+> **Corrected 2026-08-26.** Not a conflict "against the system protobuf":
+> protobuf's *dev* files were not installed. With `libprotobuf-dev` +
+> `protobuf-compiler` present the vendor package configures and the whole
+> 27-package graph builds, kernel included. (A second, self-inflicted variant of
+> the same symptom: putting `.venv/bin` on `PATH` shadows system cmake 3.28 with
+> the venv's pip-installed cmake 4.1, whose `FindProtobuf` then misses it too.)
+> Nothing here depended on it — the numpy port was validated against the shipped
+> C++ either way — and it is not a known breakage.
 
 Kernel verdicts are therefore a numpy port of
 `box_box_distance` (`collision.cpp:327`) treating each occupied cell as a
@@ -97,10 +95,9 @@ surface gap with error bounded by the step.
 > **An exact alternative now exists** (2026-08-25, after this page was
 > measured): `openral_hal.convex_distance` returns a *certified* signed distance
 > — GJK with a separating-axis optimality proof, exact SAT for penetration —
-> rather than a sampled upper bound. Nothing on this page needs redoing: a
-> sampled upper bound is conservative in the safe direction, and the two agree
-> wherever they have been compared. It is the better instrument for any future
-> pass, and it removes the step-size caveat above. The two studies converge:
+> rather than a sampled upper bound. Nothing here needs redoing: a sampled upper
+> bound errs in the safe direction, and the two agree wherever compared. Use it
+> for any future pass; it removes the step-size caveat. The two studies converge:
 > this page names the *mechanism* behind the displaced cells, and
 > [the validation-evidence ledger](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves)
 > eliminates the competing explanation for them by certifying the distances —
@@ -109,8 +106,7 @@ surface gap with error bounded by the step.
 
 ### Two instrument bugs, and one retraction
 
-Both silently invert results, and both are worth naming because any future
-reconstruction will hit them:
+Both silently invert results; any future reconstruction will hit them:
 
 1. **`robot_self_body_ids` needs the manifest's `sim_joint_name`s.** The
    rollout exposes no such attribute; passing an empty sequence returns an
@@ -161,8 +157,7 @@ at both revisions:
 None of [#164](https://github.com/OpenRAL/openral/pull/164) (CI only),
 [#165](https://github.com/OpenRAL/openral/pull/165) (`CollisionShape` as a
 discriminated union) or [#169](https://github.com/OpenRAL/openral/pull/169)
-(ACM exemptions; zero manifest pairs added or removed) moves them — which is
-what one would expect, and is why it was checked rather than assumed.
+(ACM exemptions; zero manifest pairs added or removed) moves them.
 
 ### A natural replicate: map size moves, the verdict does not
 
@@ -176,9 +171,8 @@ depth frames:
 | B | 8 239 | `panda_link2` −23.47 mm |
 
 The map's **size** varies by 52 % with observation time; the **verdict** does not
-move at all. The surface that trips the kernel is seen early and stays. This is
-the check that a live measurement of this kind is worth making: it is not a
-sample of a noisy process.
+move at all. The surface that trips the kernel is seen early and stays, so a live
+measurement is not a sample of a noisy process.
 
 ## The live map is *more* conservative than the ideal grid, not less
 
@@ -229,9 +223,8 @@ asked for a live round before acting. This is that round:
 
 **Layouts 18 and 21 are the trap.** They are exactly the two the census
 recommended, and the live map refutes both. Pinning either would have repeated
-#154's mistake in a new form — a pin verified against a criterion that does not
-hold where the robot actually runs. That is the concrete reason a live round was
-worth the cost.
+#154's mistake — a pin verified against a criterion that does not hold where the
+robot actually runs.
 
 **Layout 47 is pinned.** It is the only candidate that clears on all three
 criteria and does not move when the map changes:
@@ -257,8 +250,8 @@ Two consequences that travel with the pin, both handled in the same commit:
   named no body. The HAL fails closed on that, which means the symptom of
   forgetting is a silently unarmed place phase, not an error.
 - Pinning changes the RNG **draw order**, so layout 47 pinned is not the kitchen
-  an unpinned run that drew 47 would produce. Both scene files already say so;
-  it is repeated here because it governs how the table above may be read.
+  an unpinned run that drew 47 would produce (both scene files say so); read the
+  table above with that in mind.
 
 ### The utensil scene
 
@@ -326,7 +319,7 @@ geometry filtered:
 | fridge | 1 798 | 689 (38 %) | 45.1 % | 0 | 0.0 mm | 814.9 mm | **0** |
 | utensil | 1 472 | 586 (40 %) | 19.8 % | 0 | 0.6 mm | 367.6 mm | **0** |
 
-Three things this settles.
+Three things this settles:
 
 **The direction is safe by construction, and measured to be.** Filtering
 removes candidates from `mj_ray`'s nearest-hit search, so a return can only
@@ -352,7 +345,7 @@ That is the intended effect: the interior really is open, and it is the volume
 the arm has to enter. Elsewhere the median push-back is under 2 mm — well
 inside the 21.65 mm voxel half-diagonal, so most cells do not move at all.
 
-Two consequences worth carrying forward. The two `test_depth_camera_synth.py`
+Two consequences. The two `test_depth_camera_synth.py`
 tests that asserted a visual-only countertop *must* be the reported surface
 were inverted deliberately, and say so; their scene is kept because it is the
 adversarial one. And since the `mj_multiRay` body cull only ever mis-skipped
@@ -385,7 +378,7 @@ Re-measured 2026-10-14 at the scenes' deployed 30 Hz time base (#362 pins
 slightly): baguette went from 3 815 to 3 816 disagreeing rays; every other cell
 is unchanged.
 
-Four things this settles.
+Four things this settles:
 
 **The skipped geoms are the ones a robot hits.** On the baguette scene the
 batched cast walks through `counter_1_left_group_top_left_0` and `_1` —
@@ -444,9 +437,8 @@ worse than a late one — is asserted separately at zero.
 
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
-Tracked as [#173](https://github.com/OpenRAL/openral/issues/173) — it holds
-48 % of the live stops measured below, which is why it gets its own
-issue rather than a line in this page.
+Tracked as [#173](https://github.com/OpenRAL/openral/issues/173): it holds
+48 % of the live stops measured below.
 
 `rasterize_octree_to_grid` (`octree_to_grid.cpp`) marks a base-frame cell when
 its cube **shares volume** with an occupied octree leaf's cube. The two lattices
@@ -577,7 +569,7 @@ a phase, so a leaf holding a real surface also marks cells up to one full cell
 away from it. A cell whose centre is inside no leaf can only have come from that
 rule — and 12 of 12 are exactly that.
 
-The single exception is worth its own line. On `robocasa_fridge_drawer` layout
+The single exception: on `robocasa_fridge_drawer` layout
 7 the tripping cell contains nothing but `robot0_link3`/`link4`, has an occupied
 octree leaf 17.25 mm away, and has **no collidable surface within 299 mm** — and
 the 243-ray fan finds no non-collidable geom in it either. That one is a genuine
@@ -657,11 +649,9 @@ in the map).
 - **Real hardware.** Mechanism 1 above is a simulation artefact and does not
   transfer; how much of the apportionment survives on a real depth sensor is
   unmeasured.
-- **The lattice-phase term in isolation.** The 20.3 mm figure is #161's, carried
-  forward unchanged. This page measures the map at the one phase the bridge
-  actually publishes (`base_link`, origin −0.8/−0.8/−0.3) rather than sweeping
-  it, so quantisation and lattice phase are reported together as one
-  "grid is right but coarse" share.
+- **The lattice-phase term in isolation** (see "What this says about the three
+  terms" above). The one phase measured is the bridge's published one
+  (`base_link`, origin −0.8/−0.8/−0.3).
 - **Whether a cleared start state is a solvable task.** Layout 47 starts legal.
   No rollout has been run on it.
 
@@ -685,10 +675,9 @@ geometry simultaneous.
 scene, then restore the recorded `qpos`/`qvel` and `mj_forward` — the idle
 stepper advances the sim, so the pose must be restored rather than re-derived.
 
-**Two things to get right or the results invert** (both cost this
-investigation a retracted conclusion):
-`scene_build.self_body_ids` must come from the manifest's `sim_joint_name`s, and
-the grid frame body must be `resolve_base_frame_body_name(model,
+**Get the two instrument bugs right or the results invert** (see "Two instrument
+bugs, and one retraction" above): `scene_build.self_body_ids` from the manifest's
+`sim_joint_name`s, and the grid frame body from `resolve_base_frame_body_name(model,
 description=...)` — `mobilebase0_support`, not `mobilebase0_base`.
 
 **Octree decoding.** `octomap_msgs/Octomap.data` is the raw

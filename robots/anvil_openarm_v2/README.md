@@ -1,15 +1,14 @@
 # `anvil_openarm_v2` — Robot description
 
-Canonical `RobotDescription` manifest for the **Anvil OpenARM 2.0** —
-Anvil Robotics' manufactured variant of the OpenArm v2 bimanual arm
+Canonical `RobotDescription` manifest for the **Anvil OpenARM 2.0**, Anvil
+Robotics' manufactured variant of the OpenArm v2 bimanual arm
 ([docs.anvil.bot/introduction/openarm-2.0](https://docs.anvil.bot/introduction/openarm-2.0);
-each side: 7 revolute arm + 1 hinge-jaw gripper).
+per side: 7 revolute arm joints + 1 hinge-jaw gripper).
 
-The 2.0 generation carries the OpenARM 2.0 **wrist swap** (J6 =
-radial/ulnar deviation, J7 = flexion/extension — flipped relative to
-OpenArm 1.0, mirroring human wrist anatomy), and the Anvil variant
-differs from the standard v2 in exactly two documented joint ranges
-plus one part, per the docs' comparison table:
+The 2.0 generation carries the OpenARM 2.0 **wrist swap** (J6 = radial/ulnar
+deviation, J7 = flexion/extension, flipped relative to OpenArm 1.0 to mirror
+human wrist anatomy). Per the docs' comparison table, the Anvil variant differs
+from the standard v2 in exactly two joint ranges plus one part:
 
 | Joint | Standard OpenARM 2.0 | **Anvil OpenARM 2.0** |
 |---|---|---|
@@ -18,16 +17,15 @@ plus one part, per the docs' comparison table:
 | everything else | identical | identical |
 
 The extra +25° of radial deviation comes from Anvil's **wrist support
-bracket** (it clamps the J6 rotor hub and lands on a plate bolted to
-the J7 motor end cap) — represented in the fetched MJCF by visual-only
-STL meshes from the hardware CAD (`anvil_wrist_bracket_{left,right}`)
-on the `link5` forearm bodies, since the bracket does not rotate with
-J6.
+bracket**, which clamps the J6 rotor hub and lands on a plate bolted to the J7
+motor end cap. The fetched MJCF carries it as visual-only CAD STL meshes
+(`anvil_wrist_bracket_{left,right}`) on the `link5` forearm bodies, since the
+bracket does not rotate with J6.
 
 ## Enactic v2 vs Anvil 2.0 — pick the right manifest
 
-Both OpenARM manifests are pure data-driven manifests over the shared
-`MujocoArmHAL` (ADR-0023); neither needs bespoke control code:
+Both are data-driven manifests over the shared `MujocoArmHAL` (ADR-0023);
+neither needs bespoke control code:
 
 | | [`robots/openarm/`](../openarm/) | `robots/anvil_openarm_v2/` (this) |
 | --- | --- | --- |
@@ -38,10 +36,9 @@ Both OpenARM manifests are pure data-driven manifests over the shared
 | Wrist bracket | — | visual-only CAD meshes on `link5` |
 | HAL | `OpenArmMujocoHAL` (thin, manifest-only) | `AnvilOpenArmV2MujocoHAL` (thin, manifest-only) |
 
-Same 16-DoF action layout, same motors, same meshes otherwise — a
-Skill written against one transfers, but J1/J6 targets valid on the
-Anvil arm can be out of range on the stock v2 arm (and vice versa for
-J1's -200..-135 region).
+Otherwise the 16-DoF action layout, motors and meshes are the same, so a Skill
+transfers, but J1/J6 targets valid on the Anvil arm can be out of range on the
+stock v2 arm (and vice versa for J1's -200..-135 region).
 
 ## At a glance
 
@@ -114,8 +111,8 @@ v2 mirrored asymmetry.
 
 ## Tests
 
-`tests/sim/test_anvil_openarm_v2_hal_mujoco.py` exercises
-`AnvilOpenArmV2MujocoHAL` end-to-end against real MuJoCo physics on the
+`tests/sim/test_anvil_openarm_v2_hal_mujoco.py` runs
+`AnvilOpenArmV2MujocoHAL` against real MuJoCo physics on the
 pinned Anvil 2.0 MJCF: full lifecycle, pinned-asset drift guards
 (18-joint/16-actuator layout, all-`<position>` actuators, the J1/J6
 Anvil ranges, the bracket geoms, the wrist cameras), exact

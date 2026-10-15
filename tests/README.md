@@ -1,10 +1,9 @@
 # `tests/` — Test Suite Audit & Coverage Map
 
-This file is the single source of truth for what `OpenRAL` tests, what it
-deliberately doesn't yet, and what's flagged for follow-up. It is hand-curated
-in the spirit of `docs/architecture/repo-state-map.html` (CLAUDE.md §7.10): a
-PR that adds, renames, removes, or changes the relevance of a test should
-update this README in the same change.
+What OpenRAL tests, what it deliberately does not yet, and what is flagged for
+follow-up. Hand-curated like `docs/architecture/repo-state-map.html`
+(CLAUDE.md §7.10): a PR that adds, renames, removes, or changes the relevance of
+a test updates this README in the same change.
 
 - Last audit: 2026-05-08 against commit `0d09004`.
 - Last updated: 2026-07-09 — SO-100 / SO-101 / RealSense HIL tests were removed until matching lab hardware exists; SO-100 coverage remains in unit/integration/sim tests.
@@ -29,11 +28,10 @@ update this README in the same change.
 
 ### CI workflows (`.github/workflows/`)
 
-Only three workflows auto-trigger on a pull request, and all three carry a
-required check that fires on every push to an open PR, at no per-PR cost
-regardless of the diff (`dco.yml` fires on `opened`/`synchronize`/`reopened`
-rather than the `pull_request` event the other two use — same effect, every
-push to the PR):
+Three workflows auto-trigger on a pull request, each carrying a required check
+that fires on every push to an open PR regardless of the diff (`dco.yml` uses
+`opened`/`synchronize`/`reopened` rather than the plain `pull_request` event;
+same effect). The heavy-lanes pair below is dispatched, not PR-triggered:
 
 | Workflow | Triggers | Suites it runs | Notes |
 | --- | --- | --- | --- |
@@ -43,21 +41,17 @@ push to the PR):
 | `quality.yml` | PR (`branches: [master]`), `workflow_dispatch` | ruff + `mypy --strict` (core/cli/hal + `tools/`) + schema-drift + rSkill README drift + manifest validation + `mkdocs build --strict`. | **Required check** (`quality`). No test execution. |
 | `dco.yml` | PR (`opened`, `synchronize`, `reopened`) | (no tests) | **Required check** (`Verify Signed-off-by`). Greps every commit in the PR for `Signed-off-by:`. |
 
-The remaining test workflow is `workflow_dispatch`-only — **not** run
-automatically on a PR or a push, per its header comment ("Auto-triggers
-disabled: out of GitHub Actions credits. Re-enable PR/push triggers once
-billing is restored."). This does not apply to the non-test workflows below
-the table — `docker-build.yml`, `pages.yml`, `release-please.yml`, and
-`release-pypi.yml` all still trigger automatically, on `push`/tag rather than
-on a PR:
+The remaining test workflow is `workflow_dispatch`-only, **not** run on a PR or
+push, per its header comment ("Auto-triggers disabled: out of GitHub Actions
+credits. Re-enable PR/push triggers once billing is restored."):
 
 | Workflow | Suites it runs | Notes |
 | --- | --- | --- |
 | `test-ros2.yml` | `colcon build` + `colcon test` (not pytest) | Runs inside `ros:jazzy-ros-base`; `packages` input defaults to `openral_safety_kernel openral_octomap_bridge`. |
 
-`docker-build.yml`, `pages.yml`, `release-please.yml`, and `release-pypi.yml`
-trigger on `push` to `master` (or a `v*.*.*` tag) rather than on a PR; see
-their own headers for what each builds.
+The non-test workflows `docker-build.yml`, `pages.yml`, `release-please.yml`
+and `release-pypi.yml` still trigger automatically, on `push` to `master` (or a
+`v*.*.*` tag) rather than on a PR; see their headers for what each builds.
 
 ### Markers (`pyproject.toml`)
 
@@ -80,8 +74,8 @@ guards on `os.path.exists(SO100_PORT)`.
 
 - `tests/conftest.py` pins `NO_COLOR=1`, `TERM=dumb`, and patches
   `rich.console.Console.__init__` so ANSI escapes never leak into
-  `CliRunner.output`. Without this, every Typer-based test is flaky across
-  machines.
+  `CliRunner.output` (otherwise every Typer-based test is flaky across
+  machines).
 - `tests/sim/conftest.py` pre-imports `openral_rskill._lerobot_compat` so the
   broken `lerobot.policies.groot.modeling_groot` module is stubbed before any
   sim test imports `lerobot.policies`.
@@ -159,14 +153,12 @@ match the keys in `openral_sim.SCENES` / `POLICIES`.
 | `test_ur10e_hal_mujoco.py` | 187 | Mirrors UR5e; pins UR10e-specific datasheet (12.5 kg payload, 1.30 m reach, ≤3.142 rad/s). | Keep |
 | `test_franka_panda_hal_mujoco.py` | 258 | `FrankaPandaHAL` on MuJoCo Panda MJCF; tendon-coupled gripper; arm torque limits. | Keep |
 
-> **Note (2026-05-09).** `test_smolvla_so100.py`, `test_pi05_so100.py`,
-> and `test_act_aloha.py` (kinematic-only sibling of the full ALOHA
-> test) were removed when the eval refactor (commit
-> `8679b33` *refactor(eval): decouple rSkill from sim; route every
-> rollout through SimRunner*) consolidated the per-skill loops.
-> The retained sim tests now drive their rollouts through
-> `openral_sim.SimRunner` instead of bespoke per-test loops;
-> SO-100 + skill coverage is provided by the unit/integration HAL tests.
+> **Note (2026-05-09).** `test_smolvla_so100.py`, `test_pi05_so100.py` and
+> `test_act_aloha.py` (kinematic-only sibling of the full ALOHA test) were
+> removed when the eval refactor (commit `8679b33` *refactor(eval): decouple
+> rSkill from sim; route every rollout through SimRunner*) consolidated the
+> per-skill loops. The retained sim tests drive rollouts through
+> `openral_sim.SimRunner`; the unit/integration HAL tests cover SO-100 + skill.
 
 ### 2.4 `tests/hil/` — 12 test files + 3 transport bridges
 
@@ -214,23 +206,9 @@ For each layer (per repo state map) and cross-cutting surface:
 | Cross — Doctest runner (CLAUDE.md §5.4) | ✓ (`test_doctest_runner.py`) | ✓ (`just test-doctest` + curated `DOCTEST_TARGETS`, 21 paths, ≥70 examples) | n/a | n/a | n/a | n/a | n/a |
 | Cross — Schema fuzz (CLAUDE.md §5.4) | ✓ (`test_schemas_fuzz.py`, 21 strategies covering core + RSkill + Sim + Quant + Device) | n/a | n/a | n/a | n/a | n/a | n/a |
 
-**Reading the matrix.** Every L0–L3 row is now ✓ or ✓-with-asterisk. The
-third follow-up wave landed: parametrized `Skill` ABC contract test,
-`_mujoco_arm` direct unit test, `runtime_onnx.py` lazified and re-added
-to `DOCTEST_TARGETS`, `assert_within_budget` wired into
-`test_franka_panda_smolvla_libero.py` as the canonical example, and `hal.yml` now
-runs `colcon build` before pytest so `test_lifecycle_node_launch` is no
-longer filtered out.
+**Reading the matrix.** Every L0–L3 row is ✓ or ✓-with-asterisk (the third
+follow-up wave in §4.B closed the rest). Remaining gaps are in §4.
 
-Remaining gaps (see §4):
-- ~~**ROS 2 lifecycle smokes** for the `franka` / `ur5e` / `ur10e` packages.~~
-  Resolved 2026-05-09 (issue #26) with per-package colcon smokes; those
-  packages have since collapsed into the one generic `packages/openral_hal_node`,
-  whose `test/test_lifecycle_node.py` drives the full managed-lifecycle path
-  (`configure → activate → deactivate → cleanup → shutdown`) through the real
-  `ManifestHALLifecycleNode` once per sim-twin robot manifest and asserts
-  joint-state publication while `active`. Wired into `test-ros2.yml` via the
-  existing `colcon test --merge-install` step.
 ---
 
 ## 4. Flagged backlog
@@ -241,14 +219,10 @@ the policy clause that motivates it.
 ### 4.A — Tests to **update** or **consolidate**
 
 1. ~~**P1 · `tests/integration/test_world_state_integration.py` (scenarios
-   1–4)** — the multi-threaded in-process aggregator simulation predated
-   `packages/world_state/lifecycle_node.py`.~~ Resolved 2026-05-09
-   (issue #27): scenarios 1–4 now drive the real `_WorldStateLifecycleNode`
-   via `rclpy` (the `launch_testing`-equivalent in-process pattern that
-   `test_lifecycle_node_launch` established) and exercise the QoS
-   profiles + lifecycle transitions + `/joint_states` → `/world_state`
-   round-trip.  The aggregator-only paths remain covered by
-   `tests/unit/test_world_state.py` (494 lines).
+   1–4)**: the multi-threaded in-process aggregator simulation predated
+   `packages/world_state/lifecycle_node.py`.~~ Resolved 2026-05-09 (issue #27;
+   see §2.2), using the `launch_testing`-equivalent in-process pattern that
+   `test_lifecycle_node_launch` established.
 
 3. ~~**P1 · Wire `assert_within_budget` into the remaining sim tests.**~~
    Resolved 2026-05-08 (issue #28): manifests for `smolvla-base`,
@@ -263,8 +237,7 @@ the policy clause that motivates it.
 
 #### Resolved (changelog)
 
-The following items from the original audit are now closed.  Kept here so
-future contributors can audit the closure.
+Closed items from the original audit, kept so the closure can be audited.
 
 **2026-05-08 (initial follow-up):**
 - ~~Doctest runner — wired via `tests/unit/test_doctest_runner.py` +
@@ -332,23 +305,24 @@ future contributors can audit the closure.
 #### P1 — remaining
 
 1. ~~**ROS 2 lifecycle node tests for franka / ur5e / ur10e packages.**~~
-   Resolved 2026-05-09 (issue #26); now one manifest-parametrised
-   `packages/openral_hal_node/test/test_lifecycle_node.py` covering every
-   sim-twin robot, driving `configure → activate → deactivate → cleanup →
-   shutdown` through the real `ManifestHALLifecycleNode` and asserting
-   joint-state publication while `active`.  Picked up
-   by the existing `colcon test --merge-install` step in
-   `.github/workflows/test-ros2.yml` (now activates the uv venv so the
-   workspace `openral_hal` / `openral_core` packages are importable).
+   Resolved 2026-05-09 (issue #26) with per-package colcon smokes; those
+   packages have since collapsed into the one generic `packages/openral_hal_node`,
+   whose manifest-parametrised `test/test_lifecycle_node.py` drives
+   `configure → activate → deactivate → cleanup → shutdown` through the real
+   `ManifestHALLifecycleNode` once per sim-twin robot manifest and asserts
+   joint-state publication while `active`. Run by the existing
+   `colcon test --merge-install` step in `.github/workflows/test-ros2.yml`
+   (which activates the uv venv so the workspace `openral_hal` /
+   `openral_core` packages are importable).
 
 2. **Wider sim-test budget enforcement** — see §4-A.3.
 
 ### 4.C — Tests to **remove**
 
-None recommended. Every skip / `importorskip` in the suite is intentional
-gating documented in CLAUDE.md §5.4 (HIL on lab runner, sim on CUDA,
-integration on ROS 2). Removing files would be premature; consolidation
-(§4-A.6) and updates (§4-A.1, §4-A.2) are the appropriate levers.
+None recommended. Every skip / `importorskip` is intentional gating documented
+in CLAUDE.md §5.4 (HIL on lab runner, sim on CUDA, integration on ROS 2).
+Consolidation (§4-A.6) and updates (§4-A.1, §4-A.2) are the levers, not
+removal.
 
 ---
 
@@ -373,8 +347,7 @@ category. "Blue modules" are explicitly out of scope until the layer ships.
 
 ## 6. Maintenance contract
 
-This README is the test-side counterpart to
-`docs/architecture/repo-state-map.html`. Three rules:
+Three rules:
 
 1. **Promotion to `green` is a paired commit.** Per CLAUDE.md §7.10, flipping
    a module to `green` in the repo state map requires both source *and* tests
@@ -382,21 +355,17 @@ This README is the test-side counterpart to
    update the §3 matrix. A `green` module not listed here is a status-mismatch
    bug.
 
-2. **No "tests in a follow-up PR".** Per CLAUDE.md §9 anti-patterns. Every PR
-   that touches a `green` module's behaviour either updates the relevant test
-   in §2 or adds a new row.
+2. **No "tests in a follow-up PR"** (CLAUDE.md §9 anti-patterns). Every PR
+   that touches a `green` module's behaviour updates the relevant test in §2
+   or adds a new row.
 
 3. **A new top-level test file or directory updates the §2 inventory in the
-   same PR.** Same discipline as the repo state map: a stale row here is
-   itself a bug worth filing.
-
-When in doubt, run `just test && just lint` locally; the suite is fast enough
-that the audit and the code stay in sync.
+   same PR.** A stale row here is itself a bug worth filing.
 
 ## See also
 
-- [`docs/contributing/development.md`](../docs/contributing/development.md) —
-  the canonical "how do I run these locally" guide.
+- [`docs/contributing/development.md`](../docs/contributing/development.md):
+  how to run these locally.
 - [`docs/architecture/repo-state-map.html`](../docs/architecture/repo-state-map.html) —
   per-module status canvas; this README is its test-side counterpart.
 - Per-package `README.md` files under `python/<pkg>/`,

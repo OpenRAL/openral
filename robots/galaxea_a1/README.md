@@ -133,10 +133,9 @@ and deploy container before any later motion test.
 Do not start a policy on the first pass. Stop both commands and investigate if
 feedback/status becomes stale, a motor code other than the manifest's explicit
 idle/gripper masks appears, joint order differs, the sidecar exits, or the arm
-moves before an approved safe action. Motion validation then proceeds with a
-current-pose hold and a single <=0.01 rad joint increment through OpenRAL's
-standard candidate-action → C++ kernel → safe-action path, then return-to-start;
-only afterwards run an A1-specific rSkill.
+moves before an approved safe action. Run an A1-specific rSkill only after the
+current-pose hold and the single <=0.01 rad joint increment (candidate-action →
+C++ kernel → safe-action, then return-to-start) above have passed.
 
 ## LingBot-VA rSkill through the complete OpenRAL path
 
@@ -160,10 +159,10 @@ setting and reads the independent `max_target_step_rad` ceiling from the same
 that exceeds either the HAL's live target-step ceiling or locked-relay
 alignment tolerance. The policy bound is 0.045 rad, below the 0.05 rad
 locked-relay alignment threshold; the independent HAL/sidecar live limit is
-0.08 rad. The gateway constructs Runtime's IK implementation with the active
-OpenRAL `RobotDescription`'s ordered command limits after verifying they are no
-wider than Runtime's envelope. Runtime calibration margins therefore cannot
-widen the typed OpenRAL, safety-kernel, or official sidecar command envelope.
+0.08 rad. The gateway builds Runtime's IK with the active `RobotDescription`'s ordered
+command limits after verifying they are no wider than Runtime's envelope, so
+Runtime calibration margins cannot widen the OpenRAL, safety-kernel, or
+sidecar command envelope.
 
 The gateway emits one bounded target per 30 Hz control tick. When its IK
 solution is farther than 0.045 rad from fresh feedback, it keeps advancing

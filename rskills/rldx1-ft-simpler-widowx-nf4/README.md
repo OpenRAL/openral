@@ -28,12 +28,11 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 <!-- openral:rskill-readme-delegates-to: ../rldx1-ft-libero-nf4 -->
 
-This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4);
-that README owns the canonical architecture, license, auto-managed
-sidecar lifecycle, and NF4 quantization documentation for every member
-of the RLDX-1 family. Read it first.
+Sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4),
+whose README is canonical for the RLDX-1 family's architecture, license,
+auto-managed sidecar lifecycle, and NF4 quantization. Read it first.
 
-The skill-specific differences from the canonical sibling:
+Differences from the canonical sibling:
 
 - Upstream weights: `hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX`.
 - Benchmark target: SIMPLER WidowX (real-to-sim correlation for the

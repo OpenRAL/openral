@@ -8,14 +8,13 @@ plus the kernel's custom voxel grid re-published as a standard point cloud
 world state, diagnostics, node logs, episode/mission transitions, reward
 scores, detected objects.
 
-This is the live-scene half of a **hybrid** — Foxglove owns the live 3D/2D
-scene; the `openral dashboard` OTel receiver keeps traces, metrics,
-system health, and the reasoner/safety cards. Foxglove is a visualization tool,
-not an observability backend, so the OTel plane does **not** port here.
+Foxglove owns the live 3D/2D scene; the `openral dashboard` OTel receiver keeps
+traces, metrics, system health, and the reasoner/safety cards. Foxglove is a
+visualization tool, not an observability backend, so the OTel plane does **not**
+port here.
 
-**Nothing has been removed from the dashboard.** The telemetry mirrored into
-Foxglove is read from ROS topics; the dashboard keeps rendering its own
-OTel-derived copy. Where the two disagree, the dashboard is the one wired to
+Nothing was removed from the dashboard: Foxglove reads the mirrored telemetry
+from ROS topics, and the dashboard keeps rendering its own OTel-derived copy. Where the two disagree, the dashboard is the one wired to
 the latched `/openral/safety_status` subscriber and to the trace index.
 
 The surface is **read-only and cannot actuate the robot**. Any path that
@@ -24,8 +23,7 @@ of scope and requires safety-WG sign-off (CLAUDE.md §3).
 
 ## What it does
 
-Wraps upstream `foxglove_bridge` with an OpenRAL-specific, safety-conscious
-default:
+Wraps upstream `foxglove_bridge` with safety-conscious defaults:
 
 | Choice | This package | Upstream default | Why |
 |---|---|---|---|
@@ -34,7 +32,7 @@ default:
 | Topics | explicit Bucket-1 allowlist | `['.*']` (everything) | Safety/e-stop/action topics are never exposed |
 
 The allowlist lives in `openral_foxglove_bringup/topics.py` as four named
-groups, so it is reviewable a group at a time:
+groups, reviewable one at a time:
 
 | Group | What it carries |
 |---|---|
@@ -57,16 +55,15 @@ Vendor driver namespaces are **not** on any list either. `zed_wrapper`'s
 `/zed/zed_node/point_cloud/cloud_registered` is the raw stereo cloud the
 OpenArm cell feeds to `octomap_server`; what reaches Foxglove is the world
 model built from it — `/octomap_point_cloud_centers` and
-`/openral/world_voxels_cloud` — not the driver's own output. That is the
-allowlist working as designed (the bridge speaks OpenRAL's topic contract, not
-a per-vendor one), but it does mean "I can see no cloud from my camera" is the
-expected result and not a fault. Add the vendor topic to `SCENE_TOPICS` only
-if you want the dense cloud on the wire, and mind the bandwidth.
+`/openral/world_voxels_cloud`, not the driver's own output. The bridge speaks
+OpenRAL's topic contract, not a per-vendor one, so "no cloud from my camera" is
+expected, not a fault. Add the vendor topic to `SCENE_TOPICS` only if you want
+the dense cloud on the wire, and mind the bandwidth.
 
 > **Bag size:** `record.launch.py` records exactly what the bridge exposes
 > (one source of truth), so a scene publishing depth images and point clouds
-> now produces a substantially larger MCAP than before the depth group
-> existed. Narrow the `--regex` by hand for a long capture.
+> produces a much larger MCAP since the depth group was added. Narrow the
+> `--regex` by hand for a long capture.
 
 ## Install the bridge (one-time)
 
@@ -191,11 +188,10 @@ python -m openral_foxglove_bringup.layout --follow-frame openarm_base
 
 `--follow-frame` defaults to the ROS-conventional `base_link`, and a robot
 that names its root otherwise (OpenArm broadcasts `openarm_base`) needs it
-passed. Getting it wrong is not a partial failure: Foxglove renders **nothing**
-in a 3D panel whose follow frame is absent from TF — no robot model, no point
-clouds, no voxels — while every topic underneath keeps publishing.
-The generated layout takes this from `RobotDescription.base_frame`, so it is
-only the hand-run generator above that needs the flag.
+passed. Getting it wrong is total: Foxglove renders **nothing** in a 3D panel
+whose follow frame is absent from TF (no robot model, point clouds or voxels)
+while every topic keeps publishing. The deploy-generated layout takes it from
+`RobotDescription.base_frame`; only the hand-run generator needs the flag.
 
 The shipped `config/openral_layout.json` is this generator's output for
 `DEFAULT_CAMERAS` (`top` / `wrist_left` / `wrist_right`); regenerate it in place
@@ -204,8 +200,8 @@ match.
 
 **Prefer the layout the deploy generates.** Camera slots are sensor names from
 the robot manifest ∪ the deploy scene, and only a sensor carrying a
-`deploy_binding` gets a reader — so a panel aimed at a declared-but-unbound slot
-reads "Image topic does not exist", which looks exactly like a dead camera.
+`deploy_binding` gets a reader, so a panel aimed at a declared-but-unbound slot
+reads "Image topic does not exist", which looks like a dead camera.
 `openral deploy sim/run --foxglove` writes a layout for the slots *that deploy
 actually publishes* and logs the path:
 
@@ -324,8 +320,7 @@ robot-connected run.
 
 ## Not covered (by design)
 
-The dashboard stays the surface for everything below; none of it is being
-retired.
+The dashboard stays the surface for everything below.
 
 | Dashboard capability | Why it does not port |
 |---|---|

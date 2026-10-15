@@ -23,20 +23,20 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   evidence producer, carried on the `AttachmentState -> WorldStateStamped` envelope beside
   `PlaceDeclaration`. Dispatch never supplies a region (stripped in the runner, refused by the
   producer).
-- While it is live, cells whose centre lies in the producer-measured oriented region box are
-  exempt **for the declared gripper's contact links only** — the intersection of a launch-derived
-  manifest allowlist (the `role: gripper` joints' `child_link`s) and the declaration's
-  `contact_links`. An exempt (link, cell) pair never trips and never supplies the reported
-  identity; it reaches `sweep_min` at its own (negative) depth, and the kernel's velocity band
-  clamps an untripped check's slack to 0, so a finger inside its target reads as the band's
-  slowest rate and can never hide the graded slowdown every non-exempt pair still earns (the same
-  clamp covers the support-witness and embedded-residue exemptions on the attached path). An exempt pair never spends
+- While it is live, cells whose centre lies in the producer-measured oriented region box are exempt
+  **for the declared gripper's contact links only** — the intersection of a launch-derived manifest
+  allowlist (the `role: gripper` joints' `child_link`s) and the declaration's `contact_links`. An
+  exempt (link, cell) pair never trips and never supplies the reported identity; it reaches
+  `sweep_min` at its own (negative) depth, and the kernel's velocity band clamps an untripped
+  check's slack to 0, so a finger inside its target reads as the band's slowest rate and can never
+  hide the graded slowdown every non-exempt pair still earns (the same clamp covers the
+  support-witness and embedded-residue exemptions on the attached path). An exempt pair never spends
   the check's shared stage-2 refinement budget (it cannot trip, so stage 1 suffices), so a finger
-  buried in its target cannot starve a non-exempt link of the exact hull distance and false-stop
-  it. Net invariant: the region never adds a stop, never removes one for a non-exempt pair that
-  exact geometry upholds, and never raises the band slack of a sweep that would have passed
-  without it — it may only slow. It may lower `sweep_min` (an exempt hull link reports stage 1's
-  bound rather than the refined distance), which errs slower.
+  buried in its target cannot starve a non-exempt link of the exact hull distance and false-stop it.
+  Net invariant: the region never adds a stop, never removes one for a non-exempt pair that exact
+  geometry upholds, and never raises the band slack of a sweep that would have passed without it —
+  it may only slow. It may lower `sweep_min` (an exempt hull link reports stage 1's bound rather
+  than the refined distance), which errs slower.
 - All other links, all cells outside the region, self-collision, attached checks and the force
   gate are unchanged. The support surface under the target is outside the region (producer
   obligation: the region's lower face sits above the support plane).
@@ -64,18 +64,18 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   the latched box, the stream deadline and `timeout_s`; requiring a fresh measurement would
   retire a valid handover with the fingers closed on the target. The latched box itself must
   have been fresh at the handover edge.
-- **No named target required (approach-armed).** The policy decides what to grasp. With the
-  HAL's `grasp_target_approach_m` set (default off), the runner arms a region-less goal-scope
-  declaration naming every hand and no target; the producer narrows it to the ONE hand whose
-  TCP comes within the approach distance of occupied voxels (`target_id="approach:<link>:<n>"`,
-  one identity per pick, that hand's links only; several picks per goal, one at a time), searches a box around its jaws, and measures exactly as for a named
-  target (measured support, `not_on_support`, ambiguity refusal, SAM point prompt, map cover,
-  tracking, freeze TTL); the hand leaving retracts it at once. The reasoner's named
-  `grasp_target` stays an optional hint that wins (search box) or narrows (hand). Arming is
-  proximity-only — the exemption is needed while the open jaws straddle the target, before
-  any close command — and the kernel now enforces one hand per declaration
-  (`reason=links_span_hands`). It still never trusts a region it did not get from the
-  producer's measured envelope; it never required the dispatch relay.
+- **No named target required (approach-armed).** The policy decides what to grasp. With the HAL's
+  `grasp_target_approach_m` set (default off), the runner arms a region-less goal-scope declaration
+  naming every hand and no target; the producer narrows it to the ONE hand whose TCP comes within
+  the approach distance of occupied voxels (`target_id="approach:<link>:<n>"`, one identity per
+  pick, that hand's links only; several picks per goal, one at a time), searches a box around its
+  jaws, and measures exactly as for a named target (measured support, `not_on_support`, ambiguity
+  refusal, SAM point prompt, map cover, tracking, freeze TTL); the hand leaving retracts it at once.
+  The reasoner's named `grasp_target` stays an optional hint that wins (search box) or narrows
+  (hand). Arming is proximity-only — the exemption is needed while the open jaws straddle the
+  target, before any close command — and the kernel now enforces one hand per declaration
+  (`reason=links_span_hands`). It still never trusts a region it did not get from the producer's
+  measured envelope; it never required the dispatch relay.
 - Feature parameter `grasp_allowance_enabled` defaults off.
 - **This amends ADR-0097's "arm-vs-world unchanged" invariant for the declared contact links
   only.**
@@ -89,44 +89,43 @@ HZ-0115. Follow-up (not a precondition): per-finger collision geometry
 (`collision-geometry-review.md` §8.3) would let the exemption be replaced by zero-clearance
 adjudication against the target body, as ADR-0098 does for places.
 
-**Judgement calls for the WG.** (1) Full per-cell exemption now vs waiting for per-finger
-geometry. (2) The caps. (3) Measure-once vs continuously re-measured region, given the gripper
-occludes the target at close-in. (4) Handover retirement rule and whether a failed grasp may
-re-arm within one goal — *implemented:* several approach-armed picks per goal (the user's
-decision, 2026-10-03), one at a time, each under its own identity; the kernel retires each at
-its release and never re-arms a retired one (HZ-0115-3); a hand does not re-arm on the payload
-it just released (HZ-0115-11). The retired-set capacity (16) is a WG placeholder. *Fault
-liveness (WG call, chosen conservatively):* a pre-handover declaration the kernel retires for a
-genuine fault (`grid_frame_changed`, `attachment_rejected`) stays retired, and the producer —
-which cannot see a retirement, nor the kernel's rejection of its attachment model — keeps the
-pick's identity on every re-arm. Its one way out is to approach afresh: a hand whose arming
-ended by leaving the approach distance and that was then *seen* away on every sample for a
-continuous freeze window (`freeze_s`) — located, its approach box off the column over its last
-target; an unlocated (tf2 gap), holding or back-over-the-target sample restarts the window, and
-mere absence from the approaching set (a `min_cells` dip) is not away — arms under a fresh
-identity, measured from scratch against the current grid and model. The alternative (advance on
-any re-arm, or on a timer) would let a producer re-exempt a retired pick by wiggling in place;
-never advancing kills the pick for the goal on one transient fault. Residual: a fault that
-recurs each approach retires each fresh identity (bounded by the retired set and `timeout_s`).
-*Detach liveness (revised after review, 2026-10-03):* the kernel retires an armed declaration at
-**every** detach edge (the attachment set emptying at a new revision), before its handover too.
-A briefly-tried relaxation — dropping, not retiring, a pre-handover declaration when the detach
-was "elsewhere" — was reverted as less conservative: "elsewhere" was judged from the last
+**Judgement calls for the WG.** (1) Full per-cell exemption now vs waiting for per-finger geometry.
+(2) The caps. (3) Measure-once vs continuously re-measured region, given the gripper occludes the
+target at close-in. (4) Handover retirement rule and whether a failed grasp may re-arm within one
+goal — *implemented:* several approach-armed picks per goal (the user's decision, 2026-10-03), one
+at a time, each under its own identity; the kernel retires each at its release and never re-arms a
+retired one (HZ-0115-3); a hand does not re-arm on the payload it just released (HZ-0115-11). The
+retired-set capacity (16) is a WG placeholder. *Fault liveness (WG call, chosen conservatively):* a
+pre-handover declaration the kernel retires for a genuine fault (`grid_frame_changed`,
+`attachment_rejected`) stays retired, and the producer — which cannot see a retirement, nor the
+kernel's rejection of its attachment model — keeps the pick's identity on every re-arm. Its one way
+out is to approach afresh: a hand whose arming ended by leaving the approach distance and that was
+then *seen* away on every sample for a continuous freeze window (`freeze_s`) — located, its approach
+box off the column over its last target; an unlocated (tf2 gap), holding or back-over-the-target
+sample restarts the window, and mere absence from the approaching set (a `min_cells` dip) is not
+away — arms under a fresh identity, measured from scratch against the current grid and model. The
+alternative (advance on any re-arm, or on a timer) would let a producer re-exempt a retired pick by
+wiggling in place; never advancing kills the pick for the goal on one transient fault. Residual: a
+fault that recurs each approach retires each fresh identity (bounded by the retired set and
+`timeout_s`). *Detach liveness (revised after review, 2026-10-03):* the kernel retires an armed
+declaration at **every** detach edge (the attachment set emptying at a new revision), before its
+handover too. A briefly-tried relaxation — dropping, not retiring, a pre-handover declaration when
+the detach was "elsewhere" — was reverted as less conservative: "elsewhere" was judged from the last
 snapshot the kernel saw (with KeepLast(1) a missed ATTACH makes the declaring hand's own release
 look like another hand's), and the drop re-armed the identical pre-detach region in the same
 callback, so newly un-cleared payload cells inside the box were exempt for up to the age bound
-without anything being re-checked. Liveness is the producer's instead, which owns the
-attachment set and sees every change: at each publish whose set lost or replaced an object, or
-is empty, the other hand's pre-handover arming drops its region at once, advances to a fresh
-identity, and re-arms only from a measurement whose depth frame and grid `source_stamp` both
-post-date the change; its pre-detach region is never re-used. The kernel ends at least as
-conservative as before the relaxation (detach-edge code identical; gtest
-`AnotherHandsDetachRetiresAPreHandoverDeclaration`, which fails on the relaxed kernel). (5) Whether `link7` (the hand body) is a contact link — check the fitter
-output first. (6) The producer's prompt source (scene-named + search box recommended).
+without anything being re-checked. Liveness is the producer's instead, which owns the attachment set
+and sees every change: at each publish whose set lost or replaced an object, or is empty, the other
+hand's pre-handover arming drops its region at once, advances to a fresh identity, and re-arms only
+from a measurement whose depth frame and grid `source_stamp` both post-date the change; its
+pre-detach region is never re-used. The kernel ends at least as conservative as before the
+relaxation (detach-edge code identical; gtest `AnotherHandsDetachRetiresAPreHandoverDeclaration`,
+which fails on the relaxed kernel). (5) Whether `link7` (the hand body) is a contact link — check
+the fitter output first. (6) The producer's prompt source (scene-named + search box recommended).
 ~~(7) Whether ADR-0100's force gate should arm during close as additive conservatism.~~ *Struck
 2026-10-03:* there is no force signal to gate on — the real OpenArm gripper's effort is hard-coded
-0.0 by the vendor driver (design note §1.6) and no joint declares a torque sensor. The grasp
-event is a position stall (HZ-0115-8/9 below), not a sensed contact force.
+0.0 by the vendor driver (design note §1.6) and no joint declares a torque sensor. The grasp event
+is a position stall (HZ-0115-8/9 below), not a sensed contact force.
 
 ## HZ-0115 — Grasp-target exemption misapplied
 
@@ -164,30 +163,29 @@ named place target. Where to set the payload down is the policy's job; the produ
 whether the spot under the carried payload is a surface (`openral_hal._place_target_leg`,
 default off).
 
-1. **ADR-0097 amendment — producer-measured place region under a goal-scope declaration.**
-   ADR-0097 makes dispatch's declaration the only source of "arrived at the declared
-   destination", and it stays so: the producer never declares on its own. Amend: on real hardware
-   dispatch may declare a goal-scope place phase naming no surface (the runner's
-   `place_approach_enabled`: `target_id = surface`, no object, stamped at goal start, the goal
-   deadline as backstop, retracted on every goal exit), and the place-target producer attaches to
-   it the surface it **measured directly under the carried payload** in the live voxel map
-   (scoped to that payload) as the region — the first occupied layer below the payload, within a bounded search depth
-   [0.20 m], covering the payload's footprint grown by one voxel + the extrinsic bound with no
-   hole, with headroom for the payload's measured height above it; the region is that one-voxel
-   slab of support cells only. It lives only while the patch is held: re-verified on every grid,
-   retracted at once on new occupancy above it, frozen at most [2 × the voxel deadline] (the
-   kernel's `place_region_max_age_s`, aged on the voxel data's `source_stamp`) on a lost view,
-   dropped with the payload, and with the goal (retraction or expiry; nothing re-arms until a new
-   declaration). A named dispatch declaration wins over the goal-scope one, and its optional
-   `search_box` only narrows where the patch may be (re-checked on every new declaration). Dispatch still never supplies a region; the kernel is unchanged. A
+1. **ADR-0097 amendment — producer-measured place region under a goal-scope declaration.** ADR-0097
+   makes dispatch's declaration the only source of "arrived at the declared destination", and it
+   stays so: the producer never declares on its own. Amend: on real hardware dispatch may declare a
+   goal-scope place phase naming no surface (the runner's `place_approach_enabled`: `target_id =
+   surface`, no object, stamped at goal start, the goal deadline as backstop, retracted on every
+   goal exit), and the place-target producer attaches to it the surface it **measured directly under
+   the carried payload** in the live voxel map (scoped to that payload) as the region — the first
+   occupied layer below the payload, within a bounded search depth [0.20 m], covering the payload's
+   footprint grown by one voxel + the extrinsic bound with no hole, with headroom for the payload's
+   measured height above it; the region is that one-voxel slab of support cells only. It lives only
+   while the patch is held: re-verified on every grid, retracted at once on new occupancy above it,
+   frozen at most [2 × the voxel deadline] (the kernel's `place_region_max_age_s`, aged on the voxel
+   data's `source_stamp`) on a lost view, dropped with the payload, and with the goal (retraction or
+   expiry; nothing re-arms until a new declaration). A named dispatch declaration wins over the
+   goal-scope one, and its optional `search_box` only narrows where the patch may be (re-checked on
+   every new declaration). Dispatch still never supplies a region; the kernel is unchanged. A
    map-measured region needs no separate "producer-measured" amendment — it is one.
 2. **ADR-0092 D6 amendment:** a proximity-based `MAP_SUPPORT_PROXIMITY` witness (payload's lowest
    primitive within max(1 voxel, extrinsic accuracy bound) of a plane the producer measured in the
-   voxel map, its centre over the measured patch, gripper still loaded) is not sensed contact and
-   is labelled so; it dies with the region (freeze TTL = the kernel's region age bound,
-   contradiction, goal retraction or expiry, payload change), so it never outlives a measurement the kernel
-   would accept. Review Entry 012's co-planar
-   headroom at 20 mm cells (41 mm exempt height).
+   voxel map, its centre over the measured patch, gripper still loaded) is not sensed contact and is
+   labelled so; it dies with the region (freeze TTL = the kernel's region age bound, contradiction,
+   goal retraction or expiry, payload change), so it never outlives a measurement the kernel would
+   accept. Review Entry 012's co-planar headroom at 20 mm cells (41 mm exempt height).
 3. **ADR-0098 offset for joint play** (ship the measured slab lowered by the extrinsic bound + FK
    play bound), if adopted: a deliberate loss of conservatism versus truth, bounded by the blanket
    allowance.

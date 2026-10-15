@@ -74,17 +74,15 @@ authority over the robot.
 
 ## Live camera video (MJPEG stream)
 
-The camera cards in the dashboard now show live video instead of a static
-thumbnail. Each camera is served at:
+Each dashboard camera card shows live video, served at:
 
 ```
 GET /api/camera/{source}/stream
 ```
 
-This endpoint re-serves the per-camera OTLP thumbnail JPEG as a continuous
-`multipart/x-mixed-replace` MJPEG stream — the same thumbnails that already
-flow in via the `sensors.read_latest` span attribute `thumbnail_jpeg_b64`. No
-extra camera pipeline is needed. The frame rate is bounded by how often the
+It re-serves the per-camera OTLP thumbnail JPEG (the `sensors.read_latest`
+span attribute `thumbnail_jpeg_b64`) as a `multipart/x-mixed-replace` MJPEG
+stream, so no extra camera pipeline is needed. The frame rate is bounded by how often the
 workload exports spans (configured via `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS`,
 default 30 ms ≈ 33 Hz). The endpoint returns 404 only when the source name is
 entirely unknown to the store; a known camera that has not yet emitted a frame
@@ -106,12 +104,12 @@ subscriber would never match it) and decodes the `metadata_json` payload as an
 `TelemetryStore.set_perception_detections`. Each box renders as a coloured rect
 with a `label 0.87` chip.
 
-**Segmenter masks** are not a stream by nature. `openral_msgs/srv/SegmentInView`
-is a *service*: it returns plural full-frame **mono8** `sensor_msgs/Image` masks
+**Segmenter masks** are not a stream by nature: `openral_msgs/srv/SegmentInView`
+is a *service* returning plural full-frame **mono8** `sensor_msgs/Image` masks
 (255 = in mask), ordered area-ascending, with a parallel
-`mask_scores_advisory`, one shot per attach/detach/regrasp event. So the
-producer is a **diagnostic** re-publication of that reply, and it lives next to
-the producer rather than as unreachable code here:
+`mask_scores_advisory`, one shot per attach/detach/regrasp event. The overlay
+source is therefore a **diagnostic** re-publication of that reply, living next
+to the producer:
 `openral_perception_ros.segmenter_node` publishes `openral_msgs/SegmentMasks`
 on `/openral/perception/masks` when its `publish_debug_masks` parameter is set
 (**default false** — off, no publisher exists at all). `PerceptionOverlaySubscriber`
@@ -129,7 +127,7 @@ service documents why: a mis-aimed prompt was measured returning a
 59.8%-of-frame mask at that model's *top* score of 0.977. Masks render in the
 producer's area-ascending order.
 
-Three properties worth knowing:
+Rendering:
 
 * **Coordinates are source-image pixels**, and the tile shows an
   aspect-preserving 320×240 thumbnail under `object-fit: cover`. The renderer
@@ -154,8 +152,8 @@ instead of repainting when the detection count changes — and every mark is als
 directly labelled, so identity is never colour-alone.
 
 Without rclpy or the `openral_msgs` overlay the subscriber stays inert and the
-tiles render exactly as they did before. Read-only and advisory: it decides
-only what an operator *sees*, never what the robot does.
+tiles render without overlays. Read-only and advisory: it decides only what an
+operator *sees*, never what the robot does.
 
 ## mDNS discovery (`mdns` extra)
 
@@ -176,11 +174,10 @@ When `zeroconf` is importable, `run_dashboard` starts a `Discovery` instance
 that:
 
 - **Browses** for `_openral-otlp._tcp.local.` services on the LAN (always).
-- **Advertises** the dashboard's own OTLP endpoint on the LAN — but **only
-  when the bind address is a non-loopback, non-wildcard IPv4 address**. A
-  loopback (`127.0.0.1`) or wildcard (`0.0.0.0`) bind is browse-only and never
-  advertised (advertising a loopback address to the LAN is meaningless, and
-  advertising a wildcard address is ambiguous).
+- **Advertises** the dashboard's own OTLP endpoint on the LAN **only when the
+  bind address is a non-loopback, non-wildcard IPv4 address**. A loopback
+  (`127.0.0.1`) bind is meaningless to advertise and a wildcard (`0.0.0.0`)
+  one ambiguous, so both are browse-only.
 
 Discovered services are surfaced in the "Add Robot" panel via a read-only
 endpoint:
@@ -191,8 +188,8 @@ GET /api/robots
 ```
 
 When the `mdns` extra is absent or `zeroconf` fails to start, the endpoint
-returns `{"enabled": false, "robots": []}` — the dashboard runs exactly as
-before; discovery is additive, never load-bearing.
+returns `{"enabled": false, "robots": []}`; discovery is additive, never
+load-bearing.
 
 ## Write-controls (`OPENRAL_DASHBOARD_WRITE_CONTROLS`)
 
@@ -207,13 +204,13 @@ POST /api/skill/execute   # dispatch an ExecuteRskill action goal (returns 202 o
 POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
 ```
 
-`POST /api/skill/execute` returns **HTTP 202** as soon as the action server
-accepts the goal — it does **not** block on skill completion. The response body
-includes `goal_id` for telemetry correlation. Execution progress is tracked via
-the dashboard SSE stream and OTLP telemetry. The acceptance timeout is
-configurable via `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S` (default `12` s).
+`POST /api/skill/execute` returns **HTTP 202** with a `goal_id` (for
+telemetry correlation) as soon as the action server accepts the goal; it does
+**not** block on completion. Progress arrives via the dashboard SSE stream and
+OTLP telemetry. Acceptance timeout: `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S`
+(default `12` s).
 
-Enable them by starting the dashboard with the environment variable set:
+Enable them with:
 
 ```bash
 OPENRAL_DASHBOARD_WRITE_CONTROLS=1 openral dashboard

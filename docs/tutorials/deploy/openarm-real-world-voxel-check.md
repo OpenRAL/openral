@@ -3,10 +3,10 @@
 This runbook turns on the safety kernel's **world-voxel check** on the real OpenArm cell and
 measures what it does. The ZED Mini cloud goes through `octomap_server` and
 `openral_octomap_bridge` to `/openral/world_voxels`, and from there to the kernel's
-`world_voxel_enabled` phase. It is the plan the draft decision record *ADR-0109, "One kernel
-world representation"* calls the *attended Thor + OpenArm evaluation*. Until now no shipped
-real-hardware scene enabled this check. `scenes/deploy/openarm_zed_octomap.yaml` feeds the
-real ZED into the map, but it drives a MuJoCo twin and keeps the kernel check off.
+`world_voxel_enabled` phase. It is the *attended Thor + OpenArm evaluation* of the draft
+decision record *ADR-0109, "One kernel world representation"*. No other shipped real-hardware
+scene enables this check: `scenes/deploy/openarm_zed_octomap.yaml` feeds the real ZED into the
+map but drives a MuJoCo twin and keeps the kernel check off.
 
 !!! danger "This drives real motors"
     Bringing the OpenArm graph up **moves the arms**: the vendor hardware's `on_activate`
@@ -20,8 +20,7 @@ checkout, or **[human, rig]**, meaning a person at the cell.
 
 ## What to expect: two known gaps on current master
 
-The evaluation exists to measure these gaps, so expect each one to show up rather than
-expecting a clean pass:
+The evaluation exists to measure these gaps; expect each to show up, not a clean pass:
 
 1. **The arm sees itself — now filtered, with a blind shell to accept.** The sim HAL's
    depth synthesis makes the robot transparent (`exclude_body_ids`); a real camera cannot.
@@ -50,7 +49,7 @@ expecting a clean pass:
    **Vision attachment leg (off by default).** `runtime.vision_attachment` in this scene
    wires the leg — the SAM 2.1 segmenter lifecycle node (`openral_segmenter`) plus the HAL's
    attachment-evidence bridge, fed by the ZED's RGB, depth and their `camera_info` topics —
-   but commits it **off**: its grasp trigger is the gripper *position* stalling short of a close
+   but ships it **off**: its grasp trigger is the gripper *position* stalling short of a close
    command (the OpenArm driver reports effort as a constant 0.0). Its calibration
    (`closure_calibration`: rest offset, stall gap, settle tolerance) is a set of robot-type
    constants of the gripper mechanism in `robots/openarm/robot.yaml`, derived from teleop
@@ -103,16 +102,16 @@ the kernel as `world_voxel_deadline_ms`; both are `DeployRuntime` fields), and
 the kernel's deadline then turns the silence into `DROP_VOXEL_UNAVAILABLE`, at most ~2.0 s
 after the last cloud. Verified on Thor with the ZED stopped (bridge half).
 
-The exit criteria in step 5 cannot all be met until gap 1 is fixed. Record the
-numbers anyway: they are the evidence those fixes need.
+The exit criteria in step 5 cannot all be met until gap 1 is fixed. Record the numbers
+anyway: they are the evidence the fix needs.
 
 ## Hosts
 
 The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to
 **Thor**. The ZED leg of this pipeline has been verified only on the lab **Orin**
 (2026-09-07: ZED SDK 5.4.1, `/octomap_point_cloud_centers` at about 5 Hz,
-`/openral/world_voxels` at about 10 Hz). On Thor, confirm each of these before step 1:
-nothing here has been proven there.
+`/openral/world_voxels` at about 10 Hz). Nothing here is proven on Thor; confirm each of these
+there before step 1:
 
 - ZED SDK and `zed_wrapper` are built for Thor's JetPack, and their overlay is sourced.
 - `ros-jazzy-octomap-server` is installed.
@@ -137,14 +136,13 @@ nothing here has been proven there.
 ## 1. ZED intrinsics: use the SDK's [human, rig]
 
 The ZED SDK computes depth and the point cloud from the camera's **factory calibration**.
-`openral calibrate camera` wraps `camera_calibration cameracalibrator`, a monocular
-checkerboard fit of intrinsics. It does not feed the SDK's cloud and cannot correct the
-pose, so do not use it for this camera. Its default topic, `/<sensor>/image_raw`, does not
-exist on a ZED anyway. The manifest's `head_zed` intrinsics (fx = 960, derived from the
+Do not use `openral calibrate camera` for this camera: it wraps `camera_calibration
+cameracalibrator`, a monocular checkerboard fit of intrinsics that does not feed the SDK's
+cloud and cannot correct the pose, and its default topic, `/<sensor>/image_raw`, does not
+exist on a ZED. The manifest's `head_zed` intrinsics (fx = 960, derived from the
 published field of view) are not used by the voxel check.
 
-Verify that the SDK is serving its calibration. Arms **unpowered**; this step does not
-touch CAN.
+Verify the SDK is serving its calibration. Arms **unpowered**; this step does not touch CAN.
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source <zed_ws>/install/setup.bash
@@ -163,7 +161,7 @@ The `param_overrides` are the same ones the scene's `drivers:` entry passes unde
 depth gave ~2 Hz and gaps of up to 3 s, which the kernel's 1 s voxel deadline turned into
 stops.
 
-`enable_ipc:=false` is not optional either. With the wrapper's default intra-process mode,
+`enable_ipc:=false` is required too. With the wrapper's default intra-process mode,
 it publishes `zed_camera_center -> zed_left_camera_frame` as a **dynamic** `/tf`, stamped
 per grab, so every cloud waits on its own TF in `octomap_server`'s `tf2_ros::MessageFilter`.
 A cloud that arrives before its TF is inserted later, on the TF listener's own thread, and
@@ -181,16 +179,15 @@ The remaining sub-second gaps match gaps in the ZED cloud itself (0.70 s at most
 off the camera TFs are static, so a cloud never waits. Every consumer runs in another
 process, so IPC gains nothing here.
 
-Topic names differ between `zed_wrapper` 4.x and 5.x. Pick from the listing rather than
-assuming. The cloud topic above is the one the scene pins, and it was verified on the Orin.
+Topic names differ between `zed_wrapper` 4.x and 5.x; pick from the listing. The cloud topic
+above is the one the scene pins, verified on the Orin.
 
 ## 2. Extrinsic: calibrate the camera yourself, declare it per unit [human, rig]
 
 The kernel places every obstacle through `openarm_base -> zed_camera_link`, so this one
-transform has to be right to about the kernel's 2 cm world margin. A wrong pose does two
-things. It puts obstacles where there are none (false stops, including the robot "hitting"
-its own leftover returns), and it moves real obstacles away from where they are (missed
-stops). Only the world-voxel check needs it: the policy uses images alone, and the
+transform has to be right to about the kernel's 2 cm world margin. A wrong pose puts
+obstacles where there are none (false stops, including the robot "hitting" its own leftover
+returns) and moves real obstacles away from where they are (missed stops). Only the world-voxel check needs it: the policy uses images alone, and the
 environment itself is never calibrated (octomap senses it live).
 
 **OpenRAL does not measure this transform.** Calibrate it with the tool you trust and
@@ -240,8 +237,7 @@ filter's log line); a mount that is centimetres off shows up there first.
 
 ## 3. Twin pass: real ZED, MuJoCo twin, motors unpowered [human, rig]
 
-The same scene, pose and cloud are used, but the HAL is the MuJoCo twin, so no motor
-command exists. The arms stay unpowered. The twin advances exactly one 30 Hz control
+Same scene, pose and cloud, but the HAL is the MuJoCo twin, so no motor command exists. The arms stay unpowered. The twin advances exactly one 30 Hz control
 period per action (17 physics steps at 1/510 s, derived from `action_spec.control_freq_hz`
 at connect and logged once as `sim.time_base`), so this pass is timing-equivalent to the
 real run: a speed or tracking verdict here is the verdict the real pass would give

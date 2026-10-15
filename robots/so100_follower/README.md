@@ -1,11 +1,10 @@
 # `so100_follower` — Robot description
 
 Canonical `RobotDescription` manifest for the **LeRobot SO-100 follower
-arm** — a 5-DoF + 1-DoF gripper teleop / imitation-learning arm driven
-over a USB serial bus by Feetech servos. The same manifest covers
-three execution paths: real hardware (`SO100FollowerHAL`), the
-in-process kinematic twin (`SO100DigitalTwin`), and the real-physics
-MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
+arm**, a 5-DoF + 1-DoF gripper teleop / imitation-learning arm on Feetech
+servos over a USB serial bus. It covers three execution paths: real hardware
+(`SO100FollowerHAL`), the in-process kinematic twin (`SO100DigitalTwin`), and
+the MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
 
 > **Detection note.** SO-100 and SO-101 share a VID/PID over the Feetech bus;
 > see the detection note in
@@ -75,13 +74,13 @@ state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
 - Unit: `tests/unit/test_so100_follower_hal.py`,
   `tests/unit/test_hal_protocol_conformance.py` (parametrized over the
   HAL × `SimTransport` and `SO100DigitalTwin` combinations).
-- Sim: `tests/sim/test_so100_follower_hal_mujoco.py` exercises
-  `SO100MujocoHAL` end-to-end against real MuJoCo physics on the
-  Menagerie MJCF (lifecycle, schema-drift guard, closed-loop convergence
-  for arm + normalised gripper).
-- Closed-loop sim against a SmolVLA / π0.5 / xVLA finetune is driven via
-  `openral sim run` against `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/<smolvla|pi05|xvla>-libero`) etc.;
-  there is no longer a dedicated `tests/sim/test_smolvla_so100.py`.
+- Sim: `tests/sim/test_so100_follower_hal_mujoco.py` runs `SO100MujocoHAL`
+  against real MuJoCo physics on the Menagerie MJCF (lifecycle, schema-drift
+  guard, closed-loop convergence for arm + normalised gripper).
+- Closed-loop sim against a SmolVLA / π0.5 / xVLA finetune runs via
+  `openral sim run` on `scenes/benchmark/libero_spatial.yaml` (with
+  `--rskill rskills/<smolvla|pi05|xvla>-libero`) etc.; there is no dedicated
+  `tests/sim/test_smolvla_so100.py`.
 
 ## See also
 

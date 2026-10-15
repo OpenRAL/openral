@@ -1,28 +1,24 @@
 # `openral dashboard` — live debugging UI
 
-A single-page, read-only debug pane over the OpenRAL OTel stream.
-Renders the most recent `rskill.execute`, `skill.chunk_inference`,
-and `safety.check` spans, rolling metric histograms, and an event
-log — live, no Jaeger required.
-
-The dashboard runs as an embedded OTLP receiver rather than an in-process
-exporter, so instrumented workloads stay decoupled from the debug UI.
+A single-page, read-only debug pane over the OpenRAL OTel stream: the most
+recent `rskill.execute`, `skill.chunk_inference`, and `safety.check` spans,
+rolling metric histograms, and an event log, live, without Jaeger. It is an
+embedded OTLP receiver, not an in-process exporter, so instrumented workloads
+stay decoupled from it. It does not replace Jaeger for post-hoc analysis.
 
 ## Run it
 
-The dashboard is a `openral` subcommand. The HTTP port serves the UI, the
-SSE event stream, **and** an embedded OTLP/HTTP receiver. The default
-port is **4318** (the OTLP/HTTP standard) — `8000` collided with
-`mkdocs serve` (`just docs`) and most FastAPI demos.
+One HTTP port serves the UI, the SSE event stream, and the OTLP/HTTP
+receiver. The default is **4318** (the OTLP/HTTP standard); `8000` collided
+with `mkdocs serve` (`just docs`) and most FastAPI demos.
 
 ```bash
 openral dashboard            # binds 127.0.0.1:4318 by default
 # → stderr prints: OpenRAL dashboard: http://localhost:4318/ …
 ```
 
-Then point any OpenRAL workload at it. **Sim does not emit OTel by
-default** — you opt in via the env vars below; an unconfigured
-`openral sim run` is silent on the dashboard side:
+Then point a workload at it. **Sim does not emit OTel by default**; an
+`openral sim run` without these env vars shows nothing:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
@@ -30,15 +26,14 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
   openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero
 ```
 
-Open `http://localhost:4318` in a browser. The connection indicator
-in the top right turns green within a few hundred ms.
+Open `http://localhost:4318`. The connection indicator (top right) turns
+green within a few hundred ms.
 
 ## One-keystroke demo — two options
 
 ### Dashboard → sim (`--inprocess`)
-The dashboard spawns the workload as a child with the OTLP env vars
-already configured. Pass the whole command as **one shell-quoted
-string** (shlex-tokenised):
+The dashboard spawns the workload as a child with the OTLP env vars set.
+Pass the whole command as **one shell-quoted string** (shlex-tokenised):
 
 ```bash
 openral dashboard \
@@ -46,10 +41,9 @@ openral dashboard \
 ```
 
 ### Workload → dashboard (`--dashboard` on sim / deploy / benchmark)
-Inverse path: the workload spawns the dashboard as a child on `4318`
-(override with `--dashboard-port`) and shuts it down on exit. Best
-when you already have the workload command memorised. All three
-entry points carry the same flag:
+The workload spawns the dashboard as a child on `4318` (override with
+`--dashboard-port`) and shuts it down on exit. All three entry points take
+the flag:
 
 ```bash
 openral sim run --dashboard \
@@ -80,8 +74,8 @@ draining (no `Connection refused` retries on the way down).
   ambiguous band, red below the check floor / unverified), the per-task
   verdict text (the *why* behind done/abandoned, e.g.
   `unverified after 3 attempt(s) (success=0.42)`), and the attempts/cap
-  ladder. **Failed (abandoned) tasks are called out loudly** — a red wash,
-  strikethrough, and bold ✗ rather than dimmed — and the header tallies
+  ladder. Failed (abandoned) tasks get a red wash, strikethrough, and bold
+  ✗ rather than being dimmed, and the header tallies
   them (`5 tasks · 1 done · 1 failed · on 3/5`). A mission that finishes
   with ≥1 abandoned task gets a red **mission failed** banner above the
   checklist. Subdivided children from a replan (`#123`: a blocked task
@@ -94,18 +88,15 @@ draining (no `Connection refused` retries on the way down).
   (headline), role, action-applied, tick idx, and a `step Xms · forward Yms`
   latency line. `step` is the full `rskill.execute` call; `forward` is the model
   forward pass inside it (`rskill.chunk_inference`) — the gap between them is the
-  pre/post-processing cost. The former separate `Inference` card was folded in
-  here (its engine is already in Identity, its only unique datum was the
-  forward-pass latency); the redundant one-line `Safety` live-signal card was
-  removed (Safety has its own zone above). Card border turns red on
-  `Status.ERROR`.
+  pre/post-processing cost. (The engine is shown in Identity; Safety has its own
+  zone.) Card border turns red on `Status.ERROR`.
 - **Safety** — the **Safety · current state** card, running counters of
   `safety_violation`, `estop_requested`, `deadline_missed`, `sensor_stale`,
   and `skill_failure` span events, and the **Safety check ledger** (per-check
   pass/fail from `safety.check` spans).
 
-  *Safety · current state* (ADR-0096) is the only card on the page that is
-  **not** fed by OTel: it subscribes the latched `/openral/safety_status`
+  *Safety · current state* (ADR-0096) is the only card **not** fed by OTel:
+  it subscribes the latched `/openral/safety_status`
   topic (`openral_msgs/SafetyStatus`, RELIABLE + TRANSIENT_LOCAL +
   KEEP_LAST=1) that the C++ safety kernel and `SafetyPassthroughNode` both
   publish. It shows `latched` / `clear` / `stale`, the typed `drop_reason`
@@ -122,11 +113,9 @@ draining (no `Connection refused` retries on the way down).
   tallies every Reasoner-published `/openral/failure/rskill` event
   (mirrored onto the OTLP `openral.event.skill_failure` span event) and
   shows the latest failure state under it (e.g. `latest: vram_insufficient`).
-- **Embodiment** — robot joints, **World state** (now also carrying the
-  durable scene-object spatial-memory table, merged from the former
-  standalone `World · scene objects` card), and system health. The
-  separate `Commands · next action` card was removed; the commanded joint
-  values still render as the second trace on the joints card.
+- **Embodiment** — robot joints (commanded values are the second trace),
+  **World state** (including the durable scene-object spatial-memory
+  table), and system health.
 - **Metrics** — every histogram, counter, and gauge that comes over
   the wire, with p50/p95 (for histograms) and a sparkline of the
   last ~600 samples. Empty until a workload starts emitting; the runner
@@ -176,8 +165,8 @@ available for operator tooling, but they are not surfaced as dashboard cards.
 
 ## Running alongside Jaeger + Prometheus
 
-The dashboard is fine on its own. For post-hoc trace analysis or
-Prometheus-style metric history, also bring up the dev compose stack:
+For post-hoc trace analysis or Prometheus-style metric history, also bring
+up the dev compose stack:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d otelcol jaeger prometheus
@@ -185,8 +174,8 @@ docker compose -f docker-compose.dev.yml up -d otelcol jaeger prometheus
 
 Point your workload at `http://localhost:4317` (the OTel Collector)
 to fan out: traces → Jaeger UI at `http://localhost:16686`, metrics →
-Prometheus at `http://localhost:9090`. The dashboard can still be
-attached on a different port for the live pane:
+Prometheus at `http://localhost:9090`. Attach the dashboard on a different
+port for the live pane:
 
 ```bash
 openral dashboard --port 4318
@@ -194,18 +183,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
   openral sim run ...   # → otelcol → jaeger + prometheus
 ```
 
-(Pointing at both the dashboard *and* otelcol simultaneously is a
-v2 feature — the OTel SDK supports it via multiple exporters; v1
-of the dashboard expects one endpoint at a time.)
-
-## Why this exists
-
-OpenRAL emits all the right OTel spans and metrics by design — the
-inference runner carries its own tracing contract and metric surface —
-and Jaeger renders them beautifully — **after** the run.
-For on-robot debugging, the operator wants
-a *live* pane that updates as the robot moves. `openral dashboard` is
-that pane; it does not replace Jaeger for post-hoc analysis.
+Pointing at the dashboard *and* otelcol at once is a v2 feature (the OTel
+SDK supports multiple exporters); v1 expects one endpoint at a time.
 
 ## Relationship to the Foxglove surface
 
@@ -216,8 +195,8 @@ panel per camera slot, plus the ROS-side telemetry plane — `/rosout`,
 `/diagnostics`, `WorldStateStamped`, episode transitions, reward scores,
 detected objects.
 
-The two are complementary, not alternatives, and **nothing here has been
-retired in favour of Foxglove**. This dashboard remains the only surface for:
+The two are complementary; nothing here was retired in favour of Foxglove.
+This dashboard is the only surface for:
 
 - traces (the trace chip, `/api/traces`, the Jaeger deep link) and OTLP metric
   histograms — Foxglove has no span or histogram model;

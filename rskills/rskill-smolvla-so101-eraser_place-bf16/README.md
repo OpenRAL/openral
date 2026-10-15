@@ -25,18 +25,17 @@ inference: false
 > **place an eraser on a blue square** with a **real SO-101 follower arm**,
 > packaged for `openral deploy run`.
 
-This package ships an OpenRAL **mirror** of
+This package mirrors
 [`makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`](https://huggingface.co/makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54)
-(Apache-2.0) — byte-identical weights, pinned to a commit SHA — plus an
-`rskill.yaml` manifest that adds capability checking, license surfacing, the
-camera-slot aliasing, the joint-units contract, a training-derived home pose,
-latency budgets, and local registry integration.
+(Apache-2.0; byte-identical weights pinned to a commit SHA) and adds an
+`rskill.yaml` manifest: capability checking, license surfacing, camera-slot
+aliasing, the joint-units contract, a training-derived home pose, latency
+budgets, and local registry integration.
 
 ## Preview
 
-Frames from episode 0 of the training dataset — the fixed `front` view the
-checkpoint conditions on. The eraser starts beside the blue square and ends on
-top of it.
+Episode 0 of the training dataset, fixed `front` view. The eraser starts
+beside the blue square and ends on top of it.
 
 | Start | Middle | End |
 | :---: | :---: | :---: |
@@ -61,10 +60,10 @@ on exactly one instruction and has no other behaviour.
 | Scenes | `tabletop` |
 | Embodiment | `so101_follower` |
 
-> **Prompt it verbatim.** The dataset carries exactly ONE task string —
-> `"place the erase on the blue square"`, upstream typo included. The tokenizer
-> saw only that string; paraphrasing ("place the eraser on the blue square")
-> puts the language conditioning out of distribution.
+> **Prompt it verbatim.** The dataset has exactly one task string,
+> `"place the erase on the blue square"` (upstream typo included). Paraphrasing
+> ("place the eraser on the blue square") puts the language conditioning out of
+> distribution.
 
 ## Quick start
 
@@ -124,23 +123,20 @@ those slots to this checkpoint's own input-feature keys.
 | `top` | `observation.images.camera1` | `observation.images.front` |
 | `wrist` | `observation.images.camera2` | `observation.images.wrist` |
 
-**This mapping is load-bearing and was verified numerically**
+This mapping is load-bearing and verified numerically
 (`tests/integration/test_smolvla_eraser_place_rskill.py`): replaying a real
 training frame through the manifest wiring reproduces the recorded teleop chunk
-to a per-joint MAE of **0.15 – 1.46** over all 50 steps (the flow-matching
-sampler is stochastic, so this varies run to run; the test's ceiling is 5.0).
-Swapping the two aliases on the same frame degrades it to **1.04 – 44.27**.
+to a per-joint MAE of **0.15 – 1.46** over all 50 steps (stochastic sampler, so
+it varies run to run; the test's ceiling is 5.0). Swapping the two aliases
+degrades it to **1.04 – 44.27**.
 
 ### Real-Time Chunking (RTC)
 
 A 50-step chunk covers 1.67 s of a 30 Hz arm, and the arm keeps moving while
-the next chunk is computed — so the plain hand-off from one chunk to the next
-lands a fresh plan on a robot that is no longer where the plan assumed. RTC
-closes that seam: the *prefetched* chunk is guided inside the flow-matching
-denoiser to agree with the executing chunk's unconsumed tail, then replaces
-that tail the moment it lands instead of queueing behind it.
-
-This manifest turns it on:
+the next chunk is computed, so a plain hand-off lands a fresh plan on a robot
+that is no longer where the plan assumed. RTC guides the *prefetched* chunk
+inside the flow-matching denoiser to agree with the executing chunk's unconsumed
+tail, then replaces that tail the moment it lands. This manifest enables it:
 
 ```yaml
 policy_extras:
@@ -152,7 +148,7 @@ policy_extras:
     prefix_attention_schedule: ones  # zeros | ones | linear | exp
 ```
 
-`ones` is measured, not a default. It holds the first executed action of a new
+`ones` was chosen by measurement. It holds the first executed action of a new
 chunk at full weight; `exp` decays it to 0.57–0.78 depending on the inference
 delay, leaving 22–43% of the inter-chunk disagreement in the seam. On a
 calibrated out-of-distribution sweep `ones` gave mean/worst seam discontinuities
@@ -165,24 +161,22 @@ the previous tail, never a clamp.
 `debug: true` is the fifth accepted key (lerobot-side diagnostics). Anything
 else is a `ROSConfigError` at load — a typo cannot silently disable the blend.
 
-**Requires `chunk_prefetch`**: RTC blends the prefetched chunk with the
-executing one, so without an overlapping pre-fetch there is no tail to blend
-and the loader refuses rather than downgrading. The deploy runner
+**Requires `chunk_prefetch`**: without an overlapping prefetch there is no
+tail to blend, so the loader refuses rather than downgrading. The deploy runner
 (`rskill_runner_node.py`) defaults `policy_extras.chunk_prefetch` to true, but
 `openral sim run` and `openral benchmark run` build the extras straight from
-this manifest — so the flag is set here explicitly and the skill loads the same
-way on every entry point. The default `chunk_prefetch_at` (20) leads the
-`execution_horizon` above (10), so that one needs no override. A lead *below*
-the horizon is
-allowed but logs `chunked_executor.rtc_prefetch_below_horizon` — the blend
-then runs over the shorter lead.
+this manifest, so the flag is set here explicitly. The default
+`chunk_prefetch_at` (20) leads the `execution_horizon` (10), so it needs no
+override. A lead *below* the horizon is allowed but logs
+`chunked_executor.rtc_prefetch_below_horizon`, and the blend runs over the
+shorter lead.
 
 Supported on both the **PyTorch** runtime (lerobot's `RTCProcessor`, this
 manifest's `runtime: pytorch`) and the **TensorRT** runtime (`OPENRAL_SMOLVLA_TRT=1`,
 OpenRAL Pro), which serves the guidance from a single engine whose weights are
 fed at runtime. RTC is gated to the flow-matching families (`smolvla`, `pi05`)
-and refuses bitsandbytes-quantized weights, because the guidance backpropagates
-through the denoiser on every step — not a constraint this bf16 skill hits.
+and refuses bitsandbytes-quantized weights (the guidance backpropagates through
+the denoiser every step); this bf16 skill is unaffected.
 
 ### Joint units — degrees
 
@@ -191,25 +185,25 @@ State and action are on the lerobot SO-ARM scale this repo models as
 `action` −103.8 … +103.4 — radians would be ±3.14). OpenRAL's `JointState` /
 `Action` contract is radians, so the skill runner converts deg↔rad at the policy
 boundary. The manifest declares `action_contract.joint_units: degrees`
-explicitly rather than relying on the stats-magnitude heuristic — a wrong guess
-here drives the arm into its joint limits.
+explicitly rather than relying on the stats-magnitude heuristic; a wrong guess
+drives the arm into its joint limits.
 
 ### Home pose
 
-`starting_pose` is a real **home** pose recovered from the training data, not
-an SRDF default and not "wherever episode 0 began". The operator both starts
-and returns to it — per-joint medians over all 25 episodes' first frames and
-last frames agree to two decimals:
+`starting_pose` is the real home pose recovered from the training data (not
+an SRDF default, not episode 0's start). The operator starts and ends there:
+per-joint medians over all 25 episodes' first and last frames agree to two
+decimals:
 
 | | `shoulder_pan` | `shoulder_lift` | `elbow_flex` | `wrist_flex` | `wrist_roll` | `gripper` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | first-frame median | −7.21 | −102.68 | 95.12 | 56.70 | 6.15 | 1.95 |
 | last-frame median | −7.21 | −102.68 | 94.59 | 56.70 | 6.15 | 1.95 |
 
-(lerobot units.) The **median** is used rather than the mean: `wrist_flex` has a
-few long-start outliers reaching 74.46 that drag the mean to 59.02, while the
-median sits at 56.70 — and the last-frame median independently agrees.
-`shoulder_lift` has std 0.09, i.e. a hard mechanical home stop.
+(lerobot units.) The median, not the mean: a few `wrist_flex` long-start
+outliers reach 74.46 and drag the mean to 59.02, while the median (56.70)
+matches the last-frame median. `shoulder_lift` has std 0.09, i.e. a hard
+mechanical home stop.
 
 **Units are mixed**, per the OpenRAL joint-channel contract:
 
@@ -241,10 +235,9 @@ by `robots/so101_follower/robot.yaml`:
 | `elbow_flex` | +97.0° | +90.0° (+1.5708 rad) |
 | `wrist_flex` | +103.4° | +95.0° (+1.6581 rad) |
 
-Those are the tails of a per-arm servo calibration, not a different kinematic
-chain — but the safety kernel clamps or rejects anything past the manifest
-limits, so expect clipping at the very top of the `elbow_flex` / `wrist_flex`
-range. **Do not widen the robot manifest to accommodate this checkpoint:** the
+These are tails of a per-arm servo calibration, not a different kinematic
+chain, but the safety kernel clamps or rejects anything past the manifest
+limits: expect clipping at the top of the `elbow_flex` / `wrist_flex` range. **Do not widen the robot manifest to accommodate this checkpoint:** the
 limits are the mechanical contract, and loosening them is a safety-WG decision
 with a hazard-log entry (CLAUDE.md §3 "Safety"), not a packaging change.
 
@@ -264,23 +257,22 @@ with a hazard-log entry (CLAUDE.md §3 "Safety"), not a packaging change.
 
 ### Why the weights are mirrored
 
-`weights_uri` points at this repo, not at the upstream one, per the catalog
-standard (`rskills/README.md` — *"One rSkill ⇄ one HF repo"*). The
-`model.safetensors` here is **byte-identical** to upstream — sha256
+`weights_uri` points at this repo, not upstream, per the catalog standard
+(`rskills/README.md`, *"One rSkill ⇄ one HF repo"*). `model.safetensors` is
+byte-identical to upstream (sha256
 `58d656e494a3143c00b19261a14f2b312656751cedd98253ab8a5f3fbcc73609`, checked
-against the upstream LFS digest before upload — and the URI is pinned to a
+against the upstream LFS digest before upload) and the URI is pinned to a
 commit SHA so loads are reproducible (CLAUDE.md §1.8).
 
-This isn't ceremony. A since-removed sibling so101 SmolVLA skill pointed at a
-third-party repo that went **gated after packaging** — needing
-`HF_HUB_OFFLINE=1` and a warm cache to deploy at all — and another pointed at
-an upstream repo that was later **deleted outright**, making it unloadable.
-Mirroring removes that failure mode.
+Mirroring prevents a real failure mode: one since-removed sibling so101 SmolVLA
+skill pointed at a third-party repo that went gated after packaging (deploying
+needed `HF_HUB_OFFLINE=1` and a warm cache), and another pointed at an upstream
+repo that was later deleted, making it unloadable.
 
-The mirror carries only the **7 root inference files**, not the 20
-`checkpoints/<step>/` training snapshots (≈ 21 GB with optimizer state) that
-the upstream repo also holds. Every OpenRAL fetch path here is a per-file
-`hf_hub_download`, never a `snapshot_download`.
+The mirror carries only the 7 root inference files, not the 20
+`checkpoints/<step>/` training snapshots (≈ 21 GB with optimizer state) upstream
+also holds. Every OpenRAL fetch path here is a per-file `hf_hub_download`, never
+a `snapshot_download`.
 
 ## Supported robots
 
@@ -330,10 +322,10 @@ uv run pytest tests/integration/test_smolvla_eraser_place_rskill.py -q
 
 ## Evaluation
 
-No benchmarks shipped — there is no simulated twin of this scene, and OpenRAL
-has not run the checkpoint on hardware. The upstream model card reports no
-success rates either. The integration test above is a wiring / fidelity check
-against the training distribution, **not** a task success rate.
+No benchmarks shipped: there is no simulated twin of this scene, OpenRAL has
+not run the checkpoint on hardware, and the upstream model card reports no
+success rates. The integration test above checks wiring / fidelity against the
+training distribution, **not** task success.
 
 ## License
 

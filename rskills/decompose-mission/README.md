@@ -12,9 +12,9 @@ inference: false
 
 # rskill-playbook-decompose_mission
 
-A `kind: playbook` rSkill: a symbolic S2 **decision procedure** the
-Reasoner reads, not a neural policy. It carries no weights — the authored
-[`PLAYBOOK.md`](./PLAYBOOK.md) *is* its runtime.
+A `kind: playbook` rSkill: a symbolic S2 decision procedure the Reasoner
+reads, not a neural policy. It has no weights; the authored
+[`PLAYBOOK.md`](./PLAYBOOK.md) is its runtime.
 
 ## What this skill does
 
@@ -29,7 +29,7 @@ walkthrough: the stack-bowls / drawer / cookie-box example in
 
 ## How it works
 
-This playbook is **content, not code**. When installed, the reasoner injects
+This playbook is content, not code. When installed, the reasoner injects
 `PLAYBOOK.md` into its system prompt and follows the SOP, composing tools it
 already has (`execute_rskill`, `query_scene`, `query_task_progress`,
 `memory_write`, `memory_search`, `emit_prompt`). It is `role: s2` and is **never**
@@ -46,10 +46,9 @@ tool calls the reasoner makes while following the SOP, bounded by
 
 ## How it was authored / Upstream provenance
 
-N/A — a playbook is **hand-authored**, not trained: it has no weights and no
-upstream model. Its provenance is the authoring decision record
-(also linked via `paper_url`). To change behaviour, edit `PLAYBOOK.md` and bump
-`version`.
+N/A: hand-authored, not trained, so no weights and no upstream model.
+Provenance is the authoring decision record (linked via `paper_url`). To change
+behaviour, edit `PLAYBOOK.md` and bump `version`.
 
 ## Supported robots
 
@@ -81,10 +80,9 @@ print(m.playbook.trigger)
 
 ## Reproduction
 
-Packaging-only: the manifest + SOP are validated by
-`tests/unit/test_playbook_rskill_manifest.py`. There is no benchmark number to
-reproduce; the playbook's behaviour is exercised by the reasoner integration
-tests in later phases.
+Packaging-only: `tests/unit/test_playbook_rskill_manifest.py` validates the
+manifest + SOP. No benchmark number to reproduce; reasoner integration tests in
+later phases exercise the behaviour.
 
 ## Evaluation
 

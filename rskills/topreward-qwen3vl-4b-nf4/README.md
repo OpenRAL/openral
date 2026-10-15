@@ -45,10 +45,8 @@ Qwen3-VL-4B backbone (peak **3.13 GB**, RTX 4070 Laptop 8 GB):
 | ![start](media/frame_start.png) | ![mid](media/frame_mid.png) | ![end](media/frame_end.png) |
 | progress **0.07** | progress **0.52** | progress **0.86** |
 
-> HF model cards render images but do not embed HTML5 `<video>`, so the three
-> frames above (start / middle / end) stand in for the clip. The full overlay
-> video is **[`media/progress.mp4`](media/progress.mp4)** in this repo
-> (143 frames, downloadable).
+> HF cards render images but not HTML5 `<video>`; the full overlay is
+> **[`media/progress.mp4`](media/progress.mp4)** (143 frames, downloadable).
 
 ## Quick Start
 
@@ -68,11 +66,11 @@ assert manifest.reward.progress_range == (0.0, 1.0)
 ## What It Does
 
 Runs **parallel** to a VLA policy and scores the rollout so the Reasoner can
-tell whether a skill is making progress or is done — without any hand-written
-success detector. Given the rollout's RGB frames plus the task instruction it
-produces a **per-frame normalized progress signal in [0, 1]**, queried on demand
-by the Reasoner. It never actuates and never gates motors; its output
-is advisory input to the replanning ladder.
+tell whether a skill is progressing or done, without a hand-written success
+detector. From the rollout's RGB frames plus the task instruction it produces a
+**per-frame normalized progress signal in [0, 1]**, queried on demand by the
+Reasoner. It never actuates or gates motors; its output is advisory input to
+the replanning ladder.
 
 | Field | Value |
 | --- | --- |
@@ -83,11 +81,11 @@ is advisory input to the replanning ladder.
 
 ## Why a reward model alongside the VLA
 
-The VLA emits actions but no notion of "am I done / am I stuck". TOPReward fills
-that gap **zero-shot** — no reward head to train, no per-task labels. Because it
-is a frozen general VLM prompted with the instruction, it transfers across
-embodiments and tasks, at the cost of an uncalibrated (per-episode min-max)
-scale rather than a physically-calibrated success bar.
+The VLA emits actions but cannot tell "am I done / am I stuck". TOPReward fills
+that gap **zero-shot** (no reward head to train, no per-task labels). As a frozen
+general VLM prompted with the instruction, it transfers across embodiments and
+tasks, at the cost of an uncalibrated (per-episode min-max) scale rather than a
+calibrated success bar.
 
 ## How it works — architecture and upstream model
 
@@ -174,9 +172,8 @@ See [`rskill.yaml`](rskill.yaml) for the full manifest.
 
 ## License
 
-rSkill **packaging** is **Apache-2.0** (all OpenRAL code is uniformly
-Apache-2.0). The TOPReward **method** is MIT. The wrapped
-**Qwen3-VL-4B-Instruct weights are also Apache-2.0** (`Qwen/Qwen3-VL-4B-Instruct`,
-`license: apache-2.0`), so an NF4-quantized copy is freely redistributable — the
-whole stack is Apache-2.0 / MIT. Cite the
+rSkill **packaging** is **Apache-2.0** (as is all OpenRAL code). The TOPReward
+**method** is MIT. The wrapped **Qwen3-VL-4B-Instruct weights are Apache-2.0**
+(`Qwen/Qwen3-VL-4B-Instruct`, `license: apache-2.0`), so an NF4-quantized copy
+is freely redistributable. Cite the
 [TOPReward paper](https://arxiv.org/abs/2602.19313) (Chen et al., 2026).

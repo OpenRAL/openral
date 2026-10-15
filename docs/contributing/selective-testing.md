@@ -8,9 +8,9 @@ suite fast *and* meaningful:
 | [`tools/select_tests.py`](https://github.com/OpenRAL/openral/blob/master/tools/select_tests.py) | "Given this diff, which tests can actually observe the change?" | `just test-changed` |
 | [`tools/audit_tests.py`](https://github.com/OpenRAL/openral/blob/master/tools/audit_tests.py) | "Which tests are dead, duplicated, or low-signal?" | `just test-audit` → [`test-audit.md`](test-audit.md) |
 
-Both are read-only with respect to the suite (the auditor never deletes; the
-selector never edits). They pass `mypy --strict tools/` and are themselves
-covered by `tests/unit/test_select_tests.py` and `tests/unit/test_audit_tests.py`.
+Both are read-only with respect to the suite (the auditor never deletes, the
+selector never edits). They pass `mypy --strict tools/` and are covered by
+`tests/unit/test_select_tests.py` and `tests/unit/test_audit_tests.py`.
 
 ---
 
@@ -18,15 +18,13 @@ covered by `tests/unit/test_select_tests.py` and `tests/unit/test_audit_tests.py
 
 ### Why
 
-The cheap, high-signal workflows run on every PR (`quality` — ruff + mypy +
+The cheap, high-signal workflows run on every PR (`quality`: ruff + mypy +
 schema drift + `mkdocs --strict`; `test-selective`; `dco`), while the expensive
 suites (`test-ros2`) stay `workflow_dispatch`-only ("out of GitHub Actions
-credits" — see the headers in `.github/workflows/`). Running 2.9k
-tests on every push is the difference between affordable and not. Selective
-execution maps a
+credits"; see the headers in `.github/workflows/`). Running 2.9k tests on every
+push is the difference between affordable and not. Selective execution maps a
 git diff to the **minimal** set of pytest targets that can see the change, so a
-one-line edit to a leaf package runs a handful of tests instead of the whole
-suite.
+one-line edit to a leaf package runs a handful of tests, not the whole suite.
 
 ### How it decides (explicit, never magic — CLAUDE.md §1.4)
 
@@ -34,27 +32,25 @@ suite.
    [`tools/test_selection.toml`](https://github.com/OpenRAL/openral/blob/master/tools/test_selection.toml) — root
    `pyproject.toml`, `uv.lock`, a shared `conftest.py`, the selector's own
    inputs, or `openral_core` source (the root of the dependency graph, whose
-   ~530-target fan-out only the sharded full run finishes in time) — it emits
-   `full_run = true` and the caller runs everything. We never
-   try to be clever about a wide-blast change; a wrong *negative* would silently
-   skip a regression.
+   ~530-target fan-out only the sharded full run finishes in time), it emits
+   `full_run = true` and the caller runs everything. No cleverness about a
+   wide-blast change: a wrong *negative* would silently skip a regression.
 
-   A full run expands **every opt-in dependency lane** as well (rule 6): a
-   root-`pyproject.toml`/`uv.lock` change is a *dependency* change, which is
-   precisely what the lanes exist to check.
+   A full run also expands **every opt-in dependency lane** (rule 6): a
+   root-`pyproject.toml`/`uv.lock` change is a *dependency* change, exactly what
+   the lanes exist to check.
 
-   The one exception is release-please's release PR, and it is handled in the
-   workflow rather than here — precisely so the selector keeps no special
-   cases. `test-selective` short-circuits the `release-please--*` branch before
-   invoking the selector at all; see
-   [Releasing](releasing.md). That PR rewrites all 15 pyprojects, so it would
-   otherwise trip both this rule and the package graph below, for a diff whose
-   every commit already ran on its own PR.
+   The one exception, release-please's release PR, is handled in the workflow so
+   the selector keeps no special cases: `test-selective` short-circuits the
+   `release-please--*` branch before invoking the selector (see
+   [Releasing](releasing.md)). That PR rewrites all 15 pyprojects and would
+   otherwise trip this rule and the package graph, for a diff whose every commit
+   already ran on its own PR.
 2. **Dependency graph, derived not hand-written.** The package graph is read
-   straight from each `python/<pkg>/pyproject.toml` (`openral-*` deps). It can
-   never drift from the real workspace.
+   straight from each `python/<pkg>/pyproject.toml` (`openral-*` deps), so it
+   cannot drift from the real workspace.
 3. **Transitive dependents.** A change to `openral_core` pulls in every package
-   that imports it — directly or through a chain — and therefore their tests.
+   that imports it, directly or through a chain, and therefore their tests.
 4. **Two selection paths.** For each affected package: its own `tests/` dir
    (when present), plus every top-level `tests/**` file whose `import openral_*`
    set intersects the affected packages. (Most of `python/core`, `cli`, `rskill`,
@@ -66,10 +62,9 @@ suite.
    instead of only the broad unit fixture checks. The `robots/**` mapping
    deliberately reaches **outside** `tests/unit` into the `packages/**` test
    files that load a real `robots/<id>/robot.yaml`: those dirs are otherwise
-   selected only by a `packages/<pkg>/**` change, so a manifest edit could —
-   and did — break a ROS package's test with nothing on any lane to see it.
-   Adding a `packages/**` test that reads a real manifest means adding it
-   there too.
+   selected only by a `packages/<pkg>/**` change, so a manifest edit could (and
+   did) break a ROS package's test with nothing on any lane to see it. A new
+   `packages/**` test that reads a real manifest must be added there too.
 6. **Dependency lanes.** Selected targets matching `requirement_globs` in
    `tools/test_selection.toml` are also emitted per opt-in dependency group
    (`sim`, `libero`, `robocasa`, `robocasa-gr1`, `maniskill3`, `simpler-env`,
@@ -79,31 +74,27 @@ suite.
    The default cheap lane may still skip those tests; CI then reruns the matching
    targets with the named group installed and fails if the lane produces no
    passing tests **or any skip that is not a declared capability gap** (see
-   [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean) below). This is
-   what prevents “selected but skipped because `gym_aloha` is absent” from going
-   green. The `sim` lane also installs the `dataset` extra because its
+   [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean) below), so
+   “selected but skipped because `gym_aloha` is absent” cannot go green. The `sim` lane also installs the `dataset` extra because its
    dataset-emission target writes and reloads a real LeRobot dataset. Wire-only
    sidecar tests use the `sidecar-wire` lane; sidecar-backed runtime lanes keep
    separate logical names because their preflight requirements differ.
 
-   A lane declared with an **empty** glob list can never run — `run_lane`
-   returns at its `[ -z "$targets" ]` guard, logging nothing, and looks exactly
-   like a lane that simply was not selected. `tests/unit/test_lane_report.py`
-   now fails any lane declared with no globs.
+   A lane declared with an **empty** glob list can never run: `run_lane`
+   returns at its `[ -z "$targets" ]` guard, logging nothing, indistinguishable
+   from an unselected lane. `tests/unit/test_lane_report.py` fails any lane
+   declared with no globs.
 
    **A selected directory counts as selecting the lane files inside it.**
    `targets` mixes files (from the import scan) with directories (a package's
    whole `tests/` dir, or an `extra_triggers` value like `tests/unit`), and a
-   directory string never `fnmatch`es a file glob. So a lane-owned file only
-   reachable *inside* a directory target used to drop out of its lane while
-   still being "selected": it ran in the cheap partition, skipped for want of
-   the optional stack, and reported green.
-
-   The selector now expands directory targets to the concrete lane files
-   beneath them, so containment is enough. Practical
-   effect: a `robots/**` diff (which selects `tests/unit`) now also reruns the
-   `clip`, `opencv`, `onnx-export` and `sidecar-wire` lanes it always implicitly
-   selected but never actually exercised.
+   directory string never `fnmatch`es a file glob. A lane-owned file reachable
+   only *inside* a directory target used to drop out of its lane while still
+   "selected": it ran in the cheap partition, skipped for want of the optional
+   stack, and reported green. The selector now expands directory targets to the
+   concrete lane files beneath them. Effect: a `robots/**` diff (which selects
+   `tests/unit`) also reruns the `clip`, `opencv`, `onnx-export` and
+   `sidecar-wire` lanes it always implicitly selected but never exercised.
 
    **A lane is assigned per FILE, so one file must not straddle two mutually
    exclusive groups.** LIBERO pins `robosuite==1.4`, RoboCasa/OpenArm need
@@ -112,10 +103,9 @@ suite.
    used to hold both LIBERO tests and the OpenArm tabletop test; run in the
    `libero` lane the LIBERO half imported robosuite 1.4 first, and the OpenArm
    half then hit `openral_sim._deps._assert_no_live_dependency_swap`, which
-   correctly refuses to swap robosuite underneath live objects — so it *failed*
-   rather than ran, on every PR whose diff reached `python/hal/tests`.
-
-   The OpenArm test now lives in its own file
+   correctly refuses to swap robosuite underneath live objects, so it *failed*
+   on every PR whose diff reached `python/hal/tests`. The OpenArm test now lives
+   in its own file
    (`python/hal/tests/test_sim_attached_openarm_action_dim.py`) on the `robocasa`
    lane. When you add a test needing a different optional stack from its file's
    neighbours, give it its own file.
@@ -126,21 +116,21 @@ suite.
    known package is treated conservatively as a full run.
 9. **Fork-isolated tests run in their own process.** A handful of tests
    (`isolate_globs` in the toml) cannot share an interpreter with a sibling test.
-   Two failure modes live here:
+   Two failure modes:
    - **Dataset forkers** drive lerobot's `compute_stats`, which forks a
-     multiprocessing pool. Folded into the broad CLI partition — which has
-     already spun up numpy/pyarrow/torch threadpools — the fork happens in a
-     multi-threaded interpreter and a forked child / C-extension `atexit` handler
-     crashes during Python finalization: the process exits non-zero **after** an
-     all-pass summary, turning green tests into red CI.
+     multiprocessing pool. In the broad CLI partition, which has already spun up
+     numpy/pyarrow/torch threadpools, the fork happens in a multi-threaded
+     interpreter and a forked child / C-extension `atexit` handler crashes during
+     Python finalization: the process exits non-zero **after** an all-pass
+     summary.
    - **EGL/robosuite env creators** (`test_sim_attached_action_dim.py`,
      `test_sim_attached_idle_step.py`) each spin up a real LIBERO /
      robosuite-MJCF `OffScreenRenderEnv`. A robosuite/MuJoCo EGL context does not
      survive a sibling env's teardown in the same process: once one file's env is
      GC'd, the next file's LIBERO env dies at `reset` with
-     `<...RethinkMount> is not a MujocoXML instance` — even on the correct
-     robosuite 1.4 (so it reads like a 1.4-vs-1.5 conflict but is not). Each file
-     passes cleanly run alone.
+     `<...RethinkMount> is not a MujocoXML instance`, even on the correct
+     robosuite 1.4 (it reads like a 1.4-vs-1.5 conflict but is not). Each file
+     passes alone.
 
    `select_tests.py` peels any in-scope match out of `targets` into
    `isolated_targets`; the full-run path `--ignore`s them from every partition
@@ -149,34 +139,31 @@ suite.
    runs them one-per-process (still under that lane's `--group`). An isolated
    file may legitimately `importorskip` an optional dep it does not need in that
    lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
-   exit code — a real failure fails the lane; an all-/partial-skip does not.
+   exit code: a real failure fails the lane; an all-/partial-skip does not.
 
    The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from a git pin
    (no PyPI release). Each opt-in lane is its own CI job with its own runner and
-   venv (`lane` in `test-selective.yml`), so the cross-lane contamination this
-   guard originally targeted — the `libero` lane leaving robosuite 1.4.0
-   behind for a *later* lane sharing the same job/venv — cannot happen any
-   more. It is kept anyway: a bare `uv run --group robocasa` group switch does
-   not reliably land the git-pinned package on its own (uv evicts master for a
-   wheel — see `python/sim/src/openral_sim/_deps.py`), which surfaces as SO100
-   missing from `REGISTERED_ROBOTS` or `NullMount` not being a `MountModel`.
-   `run_lane` guards this with an explicit `uv sync --frozen --all-packages
-   --group robocasa --reinstall-package robosuite` before the lane's `uv
-   run`s, so the env lands on the pinned tree deterministically regardless.
+   venv (`lane` in `test-selective.yml`), so the `libero` lane can no longer
+   leave robosuite 1.4.0 behind for a later lane. The guard stays anyway: a bare
+   `uv run --group robocasa` switch does not reliably land the git-pinned
+   package (uv evicts master for a wheel; see `python/sim/src/openral_sim/_deps.py`),
+   which surfaces as SO100 missing from `REGISTERED_ROBOTS` or `NullMount` not
+   being a `MountModel`. `run_lane` runs an explicit `uv sync --frozen
+   --all-packages --group robocasa --reinstall-package robosuite` before the
+   lane's `uv run`s, so the env lands on the pinned tree deterministically.
 
 Every selected target carries a human-readable reason.
 
 ### Lane policy — what a skip is allowed to mean
 
-Once a full run expands every lane, the lanes have to be *judged* correctly, and
-the old rule ("a lane must have passing tests and must not skip **at all**")
-could not survive that. A GitHub-hosted `ubuntu-24.04` runner has no NVIDIA GPU,
-no Vulkan ICD, and no proprietary simulator sidecars. Tests gated on those skip
-there **forever**, so the blunt rule reddened lanes that had in fact done real
-work — the `sim` lane ran 162 passing tests and was failed anyway by
-13 `requires CUDA` skips.
+Once a full run expands every lane, the old rule ("a lane must have passing
+tests and must not skip **at all**") breaks. A GitHub-hosted `ubuntu-24.04`
+runner has no NVIDIA GPU, no Vulkan ICD and no proprietary simulator sidecars;
+tests gated on those skip there **forever**, so the blunt rule reddened lanes
+that had done real work (the `sim` lane ran 162 passing tests and failed on 13
+`requires CUDA` skips).
 
-Three options were on the table, and only one is honest:
+The options:
 
 | Option | Why not / why |
 | --- | --- |
@@ -190,33 +177,30 @@ The mechanism is a **declared capability allowlist**, not a blanket tolerance:
   runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`), what it is, what
   *would* satisfy it, and the skip-reason patterns that indicate it.
 - A skip matching a declared pattern is **declared-not-run** — allowed,
-  attributed to the gap, counted, and printed in the job summary. It is never
-  called "skipped" and never silently absent.
+  attributed to the gap, counted, and printed in the job summary, never called
+  "skipped" and never silently absent.
 - **Every other skip still fails the lane.** `panda.srdf not installed` is a
   ROS-underlay asset (declared); `mujoco not installed` is a *provisioning bug*
-  and stays red. That distinction is the entire value of an allowlist over
-  "tolerate skips", and it is why the patterns are narrow.
+  and stays red. That distinction is why the patterns are narrow.
 - Matching is **fail-closed**: reword a skip reason out of the declared patterns
   and the lane goes red, not quietly green.
 - A lane whose **every selected test** is explained by a declared gap is
   `declared-not-run`: a pass, but a loudly reported one, named in the summary
   with the capability it needs. A lane that collected **no tests at all** still
-  fails — that is a broken lane, not absent coverage.
+  fails: that is a broken lane, not absent coverage.
 
-  The verdict is deliberately about what the diff *selected*, not a lane's full
-  potential. `sim` yields 162 passing tests when all seven of its files are
-  selected, but a diff touching only `rskills/act-aloha/**` selects just
-  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated.
-  Failing that would punish a PR for
-  touching a GPU-only file — precisely the breakage this policy exists to
-  remove. There is deliberately **no** hand-maintained list of "lanes that
-  cannot run here": that would be a second source of truth that rots, while the
-  per-skip classification derives the verdict from evidence every run.
+  The verdict is about what the diff *selected*, not a lane's full potential.
+  `sim` yields 162 passing tests when all seven of its files are selected, but a
+  diff touching only `rskills/act-aloha/**` selects just
+  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated;
+  failing that would punish a PR for touching a GPU-only file. There is
+  deliberately **no** hand-maintained list of "lanes that cannot run here": it
+  would be a second source of truth that rots, while per-skip classification
+  derives the verdict from evidence every run.
 
-Batched and isolated targets are now judged by the **same** rule — previously
-isolated files were graded on exit code alone, so a skip inside one was
-invisible. Every skip they emit today is explained by a declared gap, so
-closing the hole costs nothing.
+Batched and isolated targets are judged by the **same** rule (isolated files
+used to be graded on exit code alone, hiding their skips). Every skip they emit
+today is explained by a declared gap.
 
 ### Vacuous green is a failure, not a result
 
@@ -232,12 +216,11 @@ own output. It fails when:
   never executed");
 - any lane record is a failure.
 
-The ledger is written to the job summary, naming every declared-not-run lane and
-the capability it needs. So "tested nothing" and "tested everything and passed"
-can no longer report the same thing.
+The ledger goes to the job summary, naming every declared-not-run lane and the
+capability it needs, so "tested nothing" and "tested everything and passed" can
+no longer look the same.
 
-> Two junit details are load-bearing and were verified against real pytest
-> output rather than assumed. A module-level `importorskip` emits
+> Two junit details are load-bearing (verified against real pytest output). A module-level `importorskip` emits
 > `message="collection skipped"` and puts the real reason in the element
 > **text**; reading only `message` would misclassify every such skip as
 > undeclared. `simpler-env` / `robocasa-gr1` run their pytest *inside*
@@ -273,13 +256,13 @@ script does not fake proprietary sidecars.
 In CI, the [`test-selective`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/test-selective.yml)
 workflow's `select` job runs `select_tests.py --github-output` once, then fans
 its outputs out to two downstream jobs: `core_full` (the whole suite,
-`full_run=true`) and `core_selected` (just the emitted targets — `--ignore`ing
+`full_run=true`) and `core_selected` (just the emitted targets, `--ignore`ing
 the `isolated_targets` from those partitions and re-running each in its own
-process, see rule 7 above). The opt-in `lane` jobs (one per dependency group,
+process, see rule 9 above). The opt-in `lane` jobs (one per dependency group,
 built from the `lanes` output) run in the separate
 [`heavy-lanes`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes.yml)
-workflow, started automatically once the PR is ready (rule 6 below). `just test-changed-run` mirrors the
-`core_selected` path locally.
+workflow, started automatically once the PR is ready (item 6 below).
+`just test-changed-run` mirrors the `core_selected` path locally.
 
 ### CI job graph and speed-up design
 
@@ -298,23 +281,21 @@ lanes-select ── lane (matrix: one job per opt-in dependency group) ── he
                                                                        ledger attest)
 ```
 
-Splitting one job into this graph is what makes `test-selective` fast on
-every push instead of ~15 min every time — the 19 opt-in lanes used to run
-one after another in the same job as everything else; now they live in their
-own workflow, run in parallel in their own jobs, and only once the PR is
-otherwise ready to merge (see
+This graph makes `test-selective` fast on every push instead of ~15 min every
+time: the 19 opt-in lanes used to run serially in the same job as everything
+else; now they live in their own workflow, run in parallel, and only once the
+PR is otherwise ready to merge (see
 [Review policy](development.md#review-policy)). Both workflows' `select` jobs
 run the same [`select-tests`](https://github.com/OpenRAL/openral/blob/master/.github/actions/select-tests/action.yml)
 composite action.
 
 1. **Selection runs first, in its own cheap job.** `select_tests.py` only
    needs `pydantic` + stdlib; `select` runs it via `uv run --isolated --with
-   pydantic` — a disposable ephemeral env that resolves in a few seconds. The
-   job doesn't even enable the `uv` cache, since it never touches `uv.lock`.
+   pydantic`, an ephemeral env that resolves in a few seconds. The job does not
+   enable the `uv` cache, since it never touches `uv.lock`.
 2. **Everything downstream is conditional.** `core_full`, `core_selected`, and
-   `lane` are skipped entirely when nothing is selected (docs-only diffs,
-   pure markdown changes, etc.) — no FFmpeg install, no workspace sync, no
-   pytest.
+   `lane` are skipped entirely when nothing is selected (docs-only diffs, pure
+   markdown changes, etc.): no FFmpeg install, no workspace sync, no pytest.
 3. **The full `tests/unit/` suite runs as a 4-way file-based matrix** (plus one
    dedicated shard for `isolated_targets`) instead of serially in one job.
 4. **Test-root partitions within `core_selected` run in parallel.** The bash
@@ -323,8 +304,8 @@ composite action.
    collapsible GitHub groups.
 5. **Every opt-in dependency lane is its own matrix job.** Each pays its own
    ~2 min setup, but 19 lanes running in parallel finish close to the
-   *slowest* lane instead of the *sum* of all of them. A lane only runs when
-   selected, and every skip inside it must be accounted for — if no selected
+   *slowest* lane instead of the *sum*. A lane only runs when selected, and
+   every skip inside it must be accounted for: if no selected
    target needs `gym_aloha`, the `sim` group is never installed; if one does,
    the lane's own job reruns just those targets under `uv run --all-packages
    --group sim ...` and requires passing tests, with no skip beyond the
@@ -338,7 +319,7 @@ composite action.
    lanes on a PR's branch once the head commit is **0 commits behind its base**,
    **every other check is green** (and `select-and-test`, `quality`,
    `Verify Signed-off-by` have reported), **every review thread is resolved**,
-   the PR is not a draft — once per head commit; fork PRs run from a
+   and the PR is not a draft; once per head commit. Fork PRs run from a
    `heavy-lanes/fork-<pr>` base-tree branch (see
    [Review policy](development.md#review-policy)). Until then the
    `heavy-lanes` commit status on the PR is pending with the reasons it is
@@ -388,15 +369,15 @@ classifies:
 
 ### Current state (regenerate with `just test-audit`)
 
-As of the last run the suite is **disciplined**: **0 trivial** and **0 shadowed**
-tests — there is nothing obviously dead to prune. The real redundancy signal is
-the **29 duplicate-body groups**, dominated by per-robot HAL-contract tests that
-are prime candidates for consolidation into a single parametrized contract
-module (a reviewed refactor, since each currently asserts on a distinct robot).
-The **111 no-assertion** entries are flagged for human review.
+Current counts are in [`test-audit.md`](test-audit.md). The suite has **0
+trivial** and **0 shadowed** tests. The real redundancy signal is the
+duplicate-body groups, many of them per-robot HAL-contract tests that are
+candidates for consolidation into one parametrized contract module (a reviewed
+refactor, since each asserts on a distinct robot). No-assertion entries are
+flagged for human review.
 
 > Pruning is never bundled into this tooling. Per CLAUDE.md §1.7/§1.11 tests are
 > part of the contract; per §1.15 any deletion is its own reviewed commit.
 
-A regression guard lives in `tests/unit/test_audit_tests.py::test_repo_has_no_dead_tests`
-— if anyone lands a trivial or shadowed test, that test goes red.
+`tests/unit/test_audit_tests.py::test_repo_has_no_dead_tests` goes red if anyone
+lands a trivial or shadowed test.

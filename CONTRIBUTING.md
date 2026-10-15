@@ -1,13 +1,11 @@
 # Contributing to OpenRAL
 
-Thank you for considering contributing to OpenRAL.
-
 ## Before you start
 
-- Read [CLAUDE.md](CLAUDE.md) — this is the engineering playbook and single source of truth.
+- Read [CLAUDE.md](CLAUDE.md), the engineering playbook and single source of truth.
 - Read the [Architecture overview](docs/architecture/overview.md).
-- Skim the [roadmap](docs/roadmap/index.md) so your work lines up with what's already done, in flight, or planned.
-- Open [`docs/architecture/repo-state-map.html`](docs/architecture/repo-state-map.html) in a browser to see at a glance which modules already exist, which are in flight, and which are still spec-only. PRs that change this set must update the map (CLAUDE.md §4.3).
+- Skim the [roadmap](docs/roadmap/index.md): what is done, in flight, or planned.
+- Open [`docs/architecture/repo-state-map.html`](docs/architecture/repo-state-map.html) in a browser to see which modules exist, are in flight, or are spec-only. PRs that change this set must update the map (CLAUDE.md §4.3).
 - Check open issues for context, especially those labelled `safety`, `vla`, or `hardware`.
 
 ## Development setup
@@ -62,9 +60,9 @@ By contributing, you agree that your contribution will be licensed under Apache-
 
 ## Developer Certificate of Origin (DCO)
 
-We use the [Developer Certificate of Origin](DCO) (DCO 1.1). It is a simple
-statement that you wrote the contribution or otherwise have the right to submit
-it under the project's license. You affirm it by **signing off** each commit:
+We use the [Developer Certificate of Origin](DCO) (DCO 1.1): a statement that
+you wrote the contribution or otherwise have the right to submit it under the
+project's license. Affirm it by **signing off** each commit:
 
 ```bash
 git commit -s -m "feat(skill): add SmolVLA adapter"
@@ -76,24 +74,23 @@ This appends a line to your commit message:
 Signed-off-by: Your Name <you@example.com>
 ```
 
-Use the same name and email as your Git author identity. If you forgot to sign
-off, amend the last commit with `git commit --amend -s`, or rebase to sign off a
-series with `git rebase --signoff <base>`. CI checks that every commit in a PR
-is signed off.
+Use the same name and email as your Git author identity. Forgot? Amend the last
+commit with `git commit --amend -s`, or sign off a series with
+`git rebase --signoff <base>`. CI checks that every commit in a PR is signed off.
 
-**Tip — never think about `-s` again.** `just bootstrap` installs the git hooks
-(`.githooks/`), including a `prepare-commit-msg` hook that auto-appends the
-`Signed-off-by` trailer to any commit missing one, using your Git identity. It
-recognises an existing sign-off by your **email**, so a rebase that replays a
-commit (`reword`, `edit`, `rebase --continue`) never adds a second trailer even
-if the recorded name is spelled differently from your `user.name`; a `---` line
-in the body is treated as prose, not as the end of the message. To
-enable them without a full bootstrap, run `just install-hooks` — it points
-`core.hooksPath` at `.githooks/` and builds the pre-commit environments, so the
-same command also wires up ruff, ruff-format, mypy, codespell, and the
-conventional-commit check (via the committed `.githooks/pre-commit` and
-`.githooks/commit-msg` wrappers, since `pre-commit install` refuses to run with
-`core.hooksPath` set). Installing the hooks is itself your standing DCO affirmation.
+**Tip:** `just bootstrap` installs the git hooks (`.githooks/`), including a
+`prepare-commit-msg` hook that appends the `Signed-off-by` trailer, from your Git
+identity, to any commit missing one. It recognises an existing sign-off by your
+**email**, so a replayed commit (`reword`, `edit`, `rebase --continue`) never
+gets a second trailer even if the recorded name differs from your `user.name`; a
+`---` line in the body is treated as prose, not the end of the message.
+
+Without a full bootstrap, run `just install-hooks`: it points `core.hooksPath` at
+`.githooks/` and builds the pre-commit environments, which also wires up ruff,
+ruff-format, mypy, codespell and the conventional-commit check (through the
+committed `.githooks/pre-commit` and `.githooks/commit-msg` wrappers, since
+`pre-commit install` refuses to run with `core.hooksPath` set). Installing the
+hooks is itself your standing DCO affirmation.
 
 No separate CLA is required. See [GOVERNANCE.md](GOVERNANCE.md) for how the
 project is run.

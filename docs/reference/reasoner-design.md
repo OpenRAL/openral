@@ -1,25 +1,16 @@
 # Reasoner Design & Decisions
 
-How the **reasoner (S2)** actually thinks — the connective narrative behind the
-individual decisions. Where [`reasoner.md`](reasoner.md) is the *reference* (the
-contract, the cadence, the env vars) and each decision is recorded in isolation in
-the private management decision log, this page is organized **by the logic
-problem the reasoner has to solve**. For each problem: what it is, how we solve
-it, and why we chose that.
+Why the reasoner (S2) works the way it does, organized by the logic problem it
+has to solve: the problem, the solution, and why. Mechanism detail (contract,
+cadence, env vars) lives in [`reasoner.md`](reasoner.md) and the
+[`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md);
+each decision is recorded in isolation in the private management decision log.
 
-It deliberately does **not** restate mechanism detail that lives in
-[`reasoner.md`](reasoner.md) or the [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) —
-it links to them.
-
-> **One sentence:** the reasoner is an event-driven LLM supervisor that closes
-> `context → LLM → one typed tool call` at ~0.2 Hz; it decides *what to do next*
-> and **never drives motors** — it proposes, the C++ safety kernel disposes.
-
-A recurring design through-line runs under every section below: **wrap an
-unreliable LLM in deterministic, bounded scaffolding.** The LLM decides *what is
-true* and *what to try*; typed state machines, calibrated signals, and hard caps
-decide *what is recorded* and *when to stop*. Keep that in mind — it explains most
-of the choices.
+The reasoner is an event-driven LLM supervisor that closes
+`context → LLM → one typed tool call` at ~0.2 Hz. It decides what to do next and
+never drives motors: it proposes, the C++ safety kernel disposes. The through-line
+is to wrap an unreliable LLM in deterministic, bounded scaffolding (see
+[Design through-lines](#design-through-lines)).
 
 ---
 
@@ -29,26 +20,12 @@ of the choices.
 tokens doing nothing, and a free-form LLM that emits prose or multiple
 simultaneous actions can't be safely dispatched or replayed.
 
-**Solution.** The reasoner
-is **event-driven with a slow heartbeat**:
-
-- **Heartbeat** at `tick_hz = 0.2` (one tick / 5 s). A heartbeat tick that has
-  seen no new event short-circuits inside `ReasonerCore` with
-  `suppressed_reason="heartbeat_idle"` — no LLM call, no span.
-- **Event preemption** is the real trigger, gated by a hard `min_interval_s =
-  100 ms` so nothing can thrash the LLM. Four tiers:
-
-  | Tier | Source topic | Preempts on |
-  |---|---|---|
-  | **A — safety** | `/openral/failure/safety` | `severity ≥ WARN` |
-  | **B — execution** | `/openral/failure/{hal,sensor,rskill,wam}` | `severity ≥ FAIL` |
-  | **C — progress** | `/openral/failure/critic` | `severity ≥ FAIL` |
-  | **D — operator/world** | `/openral/prompt`, `/openral/perception/*` | new prompt forces; perception is informational |
-
-- Each tick the LLM emits **exactly one** variant of the `ReasonerToolCall`
-  discriminated union (`ExecuteRskillTool`, `LifecycleTransitionTool`, `ReloadGstPipelineTool`,
-  `EmitPromptTool`, plus the read-only query/memory tools below) — Pydantic-validated
-  structured output, never free-form JSON.
+**Solution.** An event-driven loop with a slow heartbeat (`tick_hz = 0.2`; idle
+heartbeat ticks short-circuit with no LLM call), event preemption across four
+tiers (safety, execution, critic/progress, operator) gated by a hard
+`min_interval_s = 100 ms` so nothing can thrash the LLM, and exactly one
+Pydantic-validated `ReasonerToolCall` per tick. The tier table and tool palette are
+in [`reasoner.md`](reasoner.md#cadence-event-model).
 
 **Execution model.** The blocking LLM round-trip (`select_tool`, and the VLM
 gate's `describe_image` — each on its own dedicated worker, so a safety tick
@@ -63,10 +40,8 @@ time. Events that arrive mid-flight were not in the model's context, so
 `finish_tick` marks seen/drains only the prepare-time snapshot — a mid-flight
 operator prompt survives for the next tick.
 
-**Authority boundary.** The reasoner holds **no actuation authority**: it never
-publishes `ActionChunk`. Only `rskill_runner_node` does, and every action passes
-the C++ safety kernel before it
-reaches a motor. *Python proposes; C++ disposes.*
+**Authority boundary.** Only `rskill_runner_node` publishes `ActionChunk`, and
+every action passes the C++ safety kernel before it reaches a motor.
 
 **Why.** Event-driven cuts idle LLM calls ~85% vs a fast timer; the heartbeat is
 the deadlock insurance ("task not progressing"). One typed call per tick is what
@@ -103,8 +78,7 @@ requiring depth:
   persistent `located[<cam>]` line (latest-wins, `_LOCATED_CAP=12`). The prompt
   tells the LLM `located` is authoritative over the noisy `in_view`.
 
-**On-demand localization.** The
-`locate_in_view` tool asks a live detector "is X in camera Y right now?" via the
+**On-demand localization.** The `locate_in_view` tool asks a live detector "is X in camera Y right now?" via the
 `/openral/perception/<detector>/locate_in_view` service. Detectors run
 **node-per-detector** so a continuous detector and one or more on-demand locators
 coexist, and `LocateInViewTool` gets a `detector` selector (fast
@@ -248,19 +222,17 @@ storm).
 
 **Solution.** A fixed ladder:
 **retry → param-tweak → substitute-skill → goal-replan → human-handoff**. The
-shipped gate is `ReasonerCore`'s per-kind retry cap (`retry_cap_per_kind`,
-default 3) — consecutive same-kind selections beyond the cap are suppressed
-(`suppressed_reason="retry_cap"`), and the streak resets on a material context
-shift. At the mission layer, `TaskState.attempts` bounds a task's total tries;
+shipped gate is `ReasonerCore`'s per-kind retry cap
+([`reasoner.md` §Bounded replanning](reasoner.md#bounded-replanning)). At the mission layer, `TaskState.attempts` bounds a task's total tries;
 exhaustion calls `abandon_active`, emits an honest *"could not complete task K"*
 with the `MissionState` snapshot, and advances. The terminal rung is always
 human-handoff.
 
 **Why.** Bounded everything (CLAUDE.md §1.4) — every recovery path has an explicit
 cap and no hidden default, so a wrong reward reading or a stuck skill costs a
-finite number of tries, then surfaces honestly. *(The substitute-skill and
+finite number of tries, then surfaces honestly. The substitute-skill and
 goal-replan rungs are partially realized; the retry cap + attempts cap + handoff
-ship today — see [`reasoner.md` §Bounded replanning](reasoner.md#bounded-replanning).)*
+ship today.
 
 ---
 
@@ -273,12 +245,10 @@ saw its own body or its execution outcomes.
 **Solution** (*proposed/phased*):
 
 - **Playbooks** (`kind: "playbook"`, `role: "s2"`) — Markdown SOPs the LLM
-  *reads and interprets*, never executes. Their `PlaybookContract` (trigger,
+  reads and interprets, never executes. Their `PlaybookContract` (trigger,
   `composes_tools`, `done_predicate`, `max_steps`, fallback) is selection
-  metadata; the `PLAYBOOK.md` body is injected into the `## PLAYBOOKS` prompt
-  block. Six launch playbooks encode the recurring procedures
-  (`find-object`, `decompose-mission`, `verify-outcome`, `preflight-reach`,
-  `stage-for-manipulation`, `clarify-ambiguity`).
+  metadata; the `PLAYBOOK.md` body goes into the `## PLAYBOOKS` prompt block.
+  The six launch playbooks are listed in [`rskills.md`](rskills.md#playbook-rskills-kind-playbook).
 - **Self-maintained `MEMORY.md`** — *semantic/narrative* memory (preferences,
   corrections, lessons, durable home facts), complementary to the *geometric*
   scene graph:
@@ -326,9 +296,6 @@ the [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_rea
 
 ## Design through-lines
 
-The same principles recur across every section — if you internalize these, the
-individual decisions follow:
-
 1. **Deterministic scaffolding around an unreliable LLM.** Typed `MissionState`,
    `GroundedSubtask`, calibrated reward gates, and hard caps do the bookkeeping
    the model can't be trusted to. The LLM decides *what is true* and *what to
@@ -348,7 +315,7 @@ individual decisions follow:
 
 ## See also
 
-- [`reasoner.md`](reasoner.md) — the reasoner **reference** (cadence, tool
+- [`reasoner.md`](reasoner.md) — the reasoner reference (cadence, tool
   contract, palette gating, provider table, observability, how to run it).
 - [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — ROS wrapper contract, provider presets, baseline LLM configs.
 - [Architecture overview](../architecture/overview.md) · [repo state map](../architecture/repo-state-map.html).

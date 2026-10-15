@@ -99,8 +99,8 @@ over 10 episodes (seed 0, 300 steps) — run live on the 8 GB 4070 with the NF4 
 latency. The robot drives both arms to the pot's side handles (correct bimanual
 approach) on every episode and completes the lift on the successful one. Details in
 `eval/scene_robotwin.json` (`reproduced_locally: true`, exact `reproduction_cli`).
-lift_pot is a hard bimanual task; the open-loop MAE above confirms the policy is
-sound, and this is an honest NF4 + eager + laptop-GPU + single-seed rate (not
+lift_pot is a hard bimanual task; the open-loop MAE above shows the policy is
+sound, and this is an NF4 + eager + laptop-GPU + single-seed rate (not
 paper-reported).
 
 ## Upstream model / training

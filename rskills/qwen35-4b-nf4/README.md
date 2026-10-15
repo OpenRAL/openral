@@ -51,10 +51,9 @@ interleaved text, image, and video tokens. Given an RGB image or video clip and
 a natural-language question, it returns a free-form text answer grounded in the
 visual content.
 
-This rSkill declares `kind: vlm` and `role: s2` because it is a pure
-perception component operating at S2 (slow-reasoning) rate (~0.2–1 Hz), not
-an S1 fast policy. It consumes camera frames and natural-language queries,
-emits text answers, and **never drives `ros2_control` joints**.
+It is `kind: vlm`, `role: s2`: a pure perception component at S2
+(slow-reasoning) rate (~0.2–1 Hz), not an S1 fast policy. It emits text answers
+and **never drives `ros2_control` joints**.
 
 Representative queries for robot scene understanding:
 
@@ -76,16 +75,15 @@ Representative queries for robot scene understanding:
 | License | Apache-2.0 | Apache-2.0 |
 
 Qwen3.5-4B beats Qwen2.5-VL-7B on every video benchmark despite being 3B
-smaller. The 3:1 Gated DeltaNet / full-attention hybrid processes long video
-sequences far more efficiently — important for continuous robot camera streams.
-At NF4 it fits well within 8 GB VRAM alongside the S1 skill stack.
+smaller, and its hybrid attention handles long video sequences (continuous robot
+camera streams) far more efficiently. At NF4 it fits within 8 GB VRAM alongside
+the S1 skill stack.
 
 ## Architecture
 
 Qwen3.5 uses a 3:1 hybrid attention stack: three Gated DeltaNet
-(linear-attention, O(n)) layers for every one full-attention layer. This
-reduces cost on long sequences significantly. The vision encoder is shared with
-Qwen3-VL. Key features:
+(linear-attention, O(n)) layers per full-attention layer, cutting cost on long
+sequences. The vision encoder is shared with Qwen3-VL. Key features:
 
 - **Native video support** — temporal patch embedding, second-level event
   localization, up to 256K context (extensible to 1M)
@@ -110,9 +108,9 @@ $OPENRAL_QWEN_VLM_SIDECAR_VENV/bin/python tools/build_qwen_vlm_nf4_checkpoint.py
   --out ~/.cache/openral/qwen35-4b-nf4-ckpt
 ```
 
-It loads the upstream model once (forcing serial materialization so the bf16
-pass fits 8 GB), saves the NF4 weights + processor, then verifies the checkpoint
-reloads directly as 4-bit and answers a smoke query.
+It loads the upstream model once (serial materialization so the bf16 pass fits
+8 GB), saves the NF4 weights + processor, and verifies the checkpoint reloads as
+4-bit and answers a smoke query.
 
 The `kind: vlm` runtime is implemented as a read-only reasoner tool,
 **not** an `ExecuteSkill` (a scene VLM produces text, not actions):
@@ -135,26 +133,26 @@ The `kind: vlm` runtime is implemented as a read-only reasoner tool,
 
 ### Validated live
 
-The sidecar + backend + `query_scene` path was run end-to-end on an **NVIDIA
-RTX 4070 Laptop (8 GB)**: NF4 Qwen3.5-4B loads to **~3.3 GB resident**, and real
-image queries return correct answers — including the task-verification use case
-("Has a robot gripper grasped any object?" → "No", grounded in the frame).
-Covered by the GPU-gated `tests/unit/test_qwen_scene_vlm.py::test_e2e_query_coco_sample`
-(set `OPENRAL_QWEN_VLM_SIDECAR_VENV`), not asserted blind.
+The sidecar + backend + `query_scene` path ran end-to-end on an **NVIDIA RTX
+4070 Laptop (8 GB)**: NF4 Qwen3.5-4B loads to **~3.3 GB resident**, and real
+image queries return correct answers, including task verification ("Has a robot
+gripper grasped any object?" → "No", grounded in the frame). Covered by the
+GPU-gated `tests/unit/test_qwen_scene_vlm.py::test_e2e_query_coco_sample` (set
+`OPENRAL_QWEN_VLM_SIDECAR_VENV`).
 
-**8 GB load note.** Deploying the **pre-quantized** `weights_uri` loads the
-4-bit weights directly (~3.3 GB, ~6 s) with no workaround — the clean 8 GB path.
-The workaround only matters when *quantizing at load* from the raw upstream
-(the build step, or `--model Qwen/Qwen3.5-4B`): transformers 5.x's parallel
-loader materializes weights in bf16 on-GPU *before* bitsandbytes quantizes, and
-the 4-way-concurrent ~7.4 GB transient OOMs an 8 GB card, so the sidecar forces
-**serial materialization** (`core_model_loading.GLOBAL_WORKERS = 1`) + the
+**8 GB load note.** The **pre-quantized** `weights_uri` loads 4-bit weights
+directly (~3.3 GB, ~6 s) with no workaround. The workaround only matters when
+*quantizing at load* from the raw upstream (the build step, or
+`--model Qwen/Qwen3.5-4B`): transformers 5.x's parallel loader materializes
+weights in bf16 on-GPU *before* bitsandbytes quantizes, and the 4-way-concurrent
+~7.4 GB transient OOMs an 8 GB card. The sidecar then forces **serial
+materialization** (`core_model_loading.GLOBAL_WORKERS = 1`) + the
 expandable-segments allocator config (`PYTORCH_ALLOC_CONF` on this sidecar's
-torch 2.9.1; `PYTORCH_CUDA_ALLOC_CONF` was renamed in 2.9). The sidecar
-auto-detects which path applies and sets the correct env var name for you. The Gated-DeltaNet fast kernels (`fla` / `causal-conv1d`)
-are optional — without them transformers uses a slower torch fallback (the model
-still loads and answers). The model loads via `AutoModelForImageTextToText` (it
-registers as `Qwen3_5ForConditionalGeneration`).
+torch 2.9.1; `PYTORCH_CUDA_ALLOC_CONF` was renamed in 2.9); it auto-detects which
+path applies and sets the right env var name. The Gated-DeltaNet fast kernels
+(`fla` / `causal-conv1d`) are optional; without them transformers uses a slower
+torch fallback. The model loads via `AutoModelForImageTextToText` (it registers
+as `Qwen3_5ForConditionalGeneration`).
 
 ## Benchmark Numbers
 
@@ -175,10 +173,9 @@ Benchmarks below are paper-reported (Qwen team, February 2026);
 
 ## Supported robots and embodiments
 
-This scene VLM is **embodiment-agnostic** — it reasons about camera frames and
-emits text, never actuator commands, so it imposes no kinematic requirement.
-The only hardware dependency is an RGB camera stream of at least 336×336. All
-in-tree OpenRAL embodiment tags are therefore listed in `rskill.yaml` (`aloha`,
+**Embodiment-agnostic**: it emits text, never actuator commands, so the only
+hardware dependency is an RGB camera stream of at least 336×336. All in-tree
+OpenRAL embodiment tags are listed in `rskill.yaml` (`aloha`,
 `franka_panda`, `g1`, `google_robot`, `gr1`, `h1`, `mobile_base`, `openarm`,
 `panda_mobile`, `pusht`, `rizon4`, `sawyer`, `so100_follower`, `so101_follower`,
 `ur10e`, `ur5e`, `widowx`) so any robot with a compatible camera can install it

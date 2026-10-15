@@ -1,11 +1,10 @@
 # `pusht_2d` — Robot description
 
-Canonical `RobotDescription` manifest for the **PushT 2-D pseudo-robot**:
-a single free-floating 2-D end-effector that pushes a T-shaped block on
-a `pymunk` rigid-body plane (the embodiment baked into
-[`gym_pusht`](https://github.com/huggingface/gym-pusht)). There is no
-real kinematic chain — the "robot" is the 2-D tip that the policy
-commands. Sim-only.
+Canonical `RobotDescription` manifest for the **PushT 2-D pseudo-robot**: a
+free-floating 2-D end-effector pushing a T-shaped block on a `pymunk`
+rigid-body plane (the embodiment baked into
+[`gym_pusht`](https://github.com/huggingface/gym-pusht)). There is no kinematic
+chain; the "robot" is the 2-D tip the policy commands. Sim-only.
 
 ## At a glance
 
@@ -19,11 +18,10 @@ commands. Sim-only.
 | Supported control modes | 2-D end-effector position |
 | `sdk_kind` | `open` (`gym_pusht`, `pymunk`) |
 
-> **Why prismatic joints for a 2-D tip?** There is no kinematic chain to
-> model, but the schema requires at least one joint. The `tip_x` /
-> `tip_y` prismatics let the manifest validate while documenting the
-> action space. Position limits match the canvas (0 — 512 px); velocity /
-> effort limits are nominal.
+> **Why prismatic joints for a 2-D tip?** The schema requires at least one
+> joint. The `tip_x` / `tip_y` prismatics let the manifest validate while
+> documenting the action space. Position limits match the canvas (0 — 512 px);
+> velocity / effort limits are nominal.
 
 The camera is VLA slot `camera1` (`observation.images.camera1`). The
 Diffusion Policy checkpoint's own key, `observation.image` (PushT predates

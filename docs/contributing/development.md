@@ -1,6 +1,6 @@
 # Development setup
 
-Getting a working OpenRAL development environment from scratch — local Ubuntu, dev container, or GitHub Codespace — plus the day-to-day commands.
+A working OpenRAL development environment from scratch (local Ubuntu, dev container, or GitHub Codespace), plus the day-to-day commands.
 
 ---
 
@@ -45,10 +45,9 @@ uv run openral doctor     # diagnose host environment
 Test inventory (file + LOC counts, gaps, follow-ups):
 [`tests/README.md`](https://github.com/OpenRAL/openral/blob/master/tests/README.md).
 
-`uv run openral doctor` is the canonical environment probe — sample output
-table in the [README's "Quick start" section](https://github.com/OpenRAL/openral/blob/master/README.md#quick-start).
-Each row reads `ok` / `info` / `absent` / `missing` depending on which deps
-are installed.
+`uv run openral doctor` is the canonical environment probe (sample output in the
+[README's "Quick start" section](https://github.com/OpenRAL/openral/blob/master/README.md#quick-start)).
+Each row reads `ok` / `info` / `absent` / `missing` depending on what is installed.
 
 ---
 
@@ -133,24 +132,23 @@ just ros2-test              # colcon test + colcon test-result --verbose
 just test-ros-live          # the live-ROS pytest suite (see below)
 ```
 
-`just ros2-build` first runs `scripts/check_ros_build_deps.sh`, which derives
-the required ament packages from the in-tree `package.xml` files and reports
-any that are not installed under `/opt/ros/$ROS_DISTRO/share`, with a ready
-`apt-get install` line. Without it a single missing apt package (say
-`ros-jazzy-octomap-msgs`) surfaces ~45 s in as a CMake `find_package` error
-that aborts every remaining package, burying the cause. The check is
-advisory — set `OPENRAL_ROS_DEPS_STRICT=1` to make missing deps fatal — and
-no-ops when ROS 2 is not sourced.
+`just ros2-build` first runs `scripts/check_ros_build_deps.sh`: it derives the
+required ament packages from the in-tree `package.xml` files and lists any not
+installed under `/opt/ros/$ROS_DISTRO/share`, with a ready `apt-get install`
+line. Without it, one missing apt package (say `ros-jazzy-octomap-msgs`)
+surfaces ~45 s in as a CMake `find_package` error that aborts every remaining
+package and buries the cause. The check is advisory (`OPENRAL_ROS_DEPS_STRICT=1`
+makes missing deps fatal) and no-ops when ROS 2 is not sourced.
 
 #### The live-ROS suite (`OPENRAL_TEST_ROS_LIVE`)
 
-A set of integration tests — the reasoner node's dispatch, VRAM and async-LLM
-paths, the Tier-C critic producer, and the HAL sim-sensor bridge's
-mobile-base `/tf` guard — needs more than an importable `rclpy`:
-a real DDS graph and the colcon-built `openral_msgs` / `openral_reasoner_ros` /
-`openral_prompt_router` overlay. They are gated behind `OPENRAL_TEST_ROS_LIVE=1`
-so the ordinary `uv run pytest` run (where rclpy + DDS init can clash with a
-glib pulled in transitively by torch/pyarrow) does not trip over them.
+Some integration tests (the reasoner node's dispatch, VRAM and async-LLM paths,
+the Tier-C critic producer, and the HAL sim-sensor bridge's mobile-base `/tf`
+guard) need a real DDS graph and the colcon-built `openral_msgs` /
+`openral_reasoner_ros` / `openral_prompt_router` overlay, not just an importable
+`rclpy`. They are gated behind `OPENRAL_TEST_ROS_LIVE=1` so a plain
+`uv run pytest` (where rclpy + DDS init can clash with a glib pulled in
+transitively by torch/pyarrow) skips them.
 
 `scripts/ros_live_tests.sh` holds the target list and sets the variable. Both
 callers exec it, so they cannot select different tests:
@@ -160,50 +158,50 @@ callers exec it, so they cannot select different tests:
 | `just test-ros-live` | your host, after `just ros2-build && source install/setup.bash` |
 | `docker-build` workflow, "Live ROS tests" step | inside `openral:x86`, which bakes ROS 2 Jazzy + the colcon overlay |
 
-No GPU is required — the free-VRAM readings are pinned at the `nvidia-smi`
+No GPU is required: the free-VRAM readings are pinned at the `nvidia-smi`
 process boundary. Pass extra pytest flags through the recipe, e.g.
 `just test-ros-live -k dispatch_watchdog`.
 
-On CI the step prints the image's `ros-jazzy-*` versions first, and runs the
+On CI the step first prints the image's `ros-jazzy-*` versions, then runs the
 suite with core dumps enabled (`--ulimit core=-1`, host `core_pattern` pointed
-at a bind-mounted `/cores`, files named `core.<exe path, / as !>.<pid>`). If
-the step fails, a follow-up step runs a `gdb` backtrace on any core it finds,
-against the executable named in its filename, and the cores are uploaded as the
-`live-ros-cores-*` artifact (kept 7 days). This is for issue #381, an
-intermittent SIGSEGV after the suite passes. The suite itself runs without
-instrumentation (`gdb` and `PYTHONFAULTHANDLER=1` both hid the crash), and its
+at a bind-mounted `/cores`, files named `core.<exe path, / as !>.<pid>`). If the
+step fails, a follow-up step runs a `gdb` backtrace on each core against the
+executable named in its filename, and uploads the cores as the
+`live-ros-cores-*` artifact (kept 7 days). This chases issue #381, an
+intermittent SIGSEGV after the suite passes. The suite itself runs
+uninstrumented (`gdb` and `PYTHONFAULTHANDLER=1` both hid the crash), and its
 exit code is never masked.
 
-Adding a live-ROS test means adding its file to `TARGETS` in that script — the
-one place that decides what runs — and to the `paths:` filter in
+To add a live-ROS test, add its file to `TARGETS` in that script (the one place
+that decides what runs) and to the `paths:` filter in
 `.github/workflows/docker-build.yml`, so a diff touching only that test still
 triggers the build that runs it. `tests/unit/test_ros_live_targets.py` fails the
 unit suite if a gated file under `tests/integration/` is missing from `TARGETS`.
 
-The `docker-build` workflow is the only CI surface with a real ROS 2 install;
-the `test-selective` runner has none, so anything not listed there silently
-`importorskip`s in CI — and a live test parked under `tests/unit/` runs on no
-lane at all, which is why they live in `tests/integration/`.
+The `docker-build` workflow is the only CI surface with a real ROS 2 install.
+The `test-selective` runner has none, so anything not listed there silently
+`importorskip`s in CI, and a live test under `tests/unit/` would run on no lane
+at all; that is why they live in `tests/integration/`.
 
 That workflow runs on **merge to `master`**, not on pull requests (a full image
-build is ~15-20 min of runner time). Run it yourself with `just test-ros-live`
-while developing, or dispatch the workflow against your branch
+build is ~15-20 min of runner time). While developing, run `just test-ros-live`,
+or dispatch the workflow against your branch
 (`gh workflow run docker-build.yml --ref <branch>`) before merging a change to
 these tests.
 
-One live test — `tests/unit/test_gstreamer_perception_tee.py`'s end-to-end
-publish — is deliberately excluded: it also needs PyGObject, which the open
-deploy image does not ship (the GStreamer media stack is OpenRAL Pro). `just
-test` runs it on a host that has the `gstreamer` extra installed.
+Excluded on purpose: the end-to-end publish in
+`tests/unit/test_gstreamer_perception_tee.py` also needs PyGObject, which the
+open deploy image does not ship (the GStreamer media stack is OpenRAL Pro).
+`just test` runs it on a host with the `gstreamer` extra installed.
 
 #### The RoboCasa sim suite (manual — there is no CI lane, and there cannot be)
 
 Seven tests under `tests/sim/` are gated on `importorskip("robocasa")` and need
-three things at once: the colcon overlay (they spawn the real
-`safety_kernel_node`), MuJoCo, and a provisioned RoboCasa kitchen backend. They
-are the geometry-and-kernel evidence for the layout pins, the certified
-distance instrument, the support-contact witness, the depth synth, and the
-HAL's camera / body-twist paths on a real kitchen.
+the colcon overlay (they spawn the real `safety_kernel_node`), MuJoCo, and a
+provisioned RoboCasa kitchen backend. They are the geometry-and-kernel evidence
+for the layout pins, the certified distance instrument, the support-contact
+witness, the depth synth, and the HAL's camera / body-twist paths on a real
+kitchen.
 
 `scripts/robocasa_sim_tests.sh` holds the target list, and `just
 test-robocasa-sim` is its only caller:
@@ -222,11 +220,10 @@ OPENRAL_AUTO_INSTALL_DEPS=1 uv run --no-sync python -c \
 
 Run the suite before merging anything that touches the kernel, the
 `panda_mobile` manifest, the HAL sim bridge, or a `scenes/deploy/robocasa_*.yaml`
-pin. Narrow it with `-k` on a busy machine — a kitchen compose is memory-hungry
+pin. On a busy machine narrow it with `-k`: a kitchen compose is memory-hungry,
 and the whole suite in one pytest process has OOM-killed a 15 GB host. Extra
-args are appended to the pytest invocation, so naming a path *adds* it to the
-target list rather than selecting it: use `just test-robocasa-sim -k
-geom_distance`.
+args are appended to the pytest invocation, so a path *adds* to the target list
+rather than selecting: use `just test-robocasa-sim -k geom_distance`.
 
 **Why there is no CI lane.** Two independent reasons, both measured.
 
@@ -242,28 +239,13 @@ object bundle, ~8 GB) is past that runner's whole disk. No GPU is needed, so
 the constraint is disk alone.
 
 *Security.* A self-hosted runner was built, registered, and then removed: it is
-not a safe option for this repository. **A runner label is a routing request
-made by a workflow, not an access control enforced by the runner.** A repository-scoped
-self-hosted runner accepts jobs from *any* workflow in that repository naming
-its labels, and for a `pull_request` event GitHub executes the workflow
-definition from the **fork's** ref.
-
-`OpenRAL/openral` is public and has three fork-reachable `pull_request`
-workflows (`dco.yml`, `quality.yml`, `test-selective.yml`), so a fork PR can
-edit one to `runs-on: [self-hosted, <label>]` with arbitrary `run:` steps and
-execute code on the runner host — with that user's SSH keys, `gh` credentials
-and LAN access to the lab robots. Restricting a runner to selected workflows
-requires an organisation runner group, which this org's GitHub Free plan does
-not offer, so no native control makes the label mean anything.
-
-Note what does *not* help: giving the protected workflow safe triggers. The
-exposed asset is the runner, not the workflow. Reasoning about the triggers of
-the file you are adding is the mistake that makes this look safe.
+not a safe option for this public repository. See
+[The blocker](#the-blocker-first) under Lab HIL runners.
 
 **What holds the suite together instead.** `tests/unit/test_robocasa_sim_targets.py`
 fails the unit suite if a RoboCasa-gated file is missing from `TARGETS`. With no
-CI lane, that list is the only definition of what the suite is, and that guard
-is the only thing that notices when a test drifts out of it.
+CI lane, that list is the only definition of the suite, and that guard the only
+thing that notices a test drifting out of it.
 
 The rest of `tests/sim/` is manual by declared policy
 (`.github/workflows/test-selective.yml`).
@@ -292,32 +274,34 @@ just docs-build             # full build (CI parity, strict mode)
 ## Lab HIL runners (`[self-hosted, lab-<robot>]`)
 
 **Status: documented, deliberately NOT registered.** No self-hosted runner is
-registered for this repository and none should be until the blocker below
-clears. The `[self-hosted, lab-<robot>]` labels in `tests/hil/` docstrings
-describe where a gate *would* run, not a lane that exists. Today HIL runs by
-hand on the cell, which is why every HIL file gates on an env var plus a live
-hardware probe and skips — never fails — off-rig.
+registered for this repository, and none should be until the blocker below
+clears. The `[self-hosted, lab-<robot>]` labels in `tests/hil/` docstrings say
+where a gate *would* run, not a lane that exists. HIL runs by hand on the cell,
+so every HIL file gates on an env var plus a live hardware probe and skips (never
+fails) off-rig.
 
 ### The blocker, first
 
-Read *Security* under "Why there is no CI lane" above before doing any of this.
-The short version: **a runner label is a routing request made by a workflow,
-not an access control enforced by the runner.** A repository-scoped runner
-accepts jobs from any workflow naming its labels, and for `pull_request` GitHub
-runs the workflow definition from the **fork's** ref. `OpenRAL/openral` is
-public with three fork-reachable `pull_request` workflows (`dco.yml`,
-`quality.yml`, `test-selective.yml`), so a fork PR can add
-`runs-on: [self-hosted, lab-openarm]` with arbitrary `run:` steps and get code
-execution on the lab host — with that user's SSH keys, `gh` credentials, LAN
-access to the robots, and, for `lab-openarm`, the CAN buses of a powered
-bimanual arm.
+**A runner label is a routing request made by a workflow, not an access control
+enforced by the runner.** A repository-scoped runner accepts jobs from any
+workflow naming its labels, and for `pull_request` GitHub runs the workflow
+definition from the **fork's** ref. `OpenRAL/openral` is public with three
+fork-reachable `pull_request` workflows (`dco.yml`, `quality.yml`,
+`test-selective.yml`), so a fork PR can add `runs-on: [self-hosted, lab-openarm]`
+with arbitrary `run:` steps and get code execution on the lab host, with that
+user's SSH keys, `gh` credentials, LAN access to the robots and, for
+`lab-openarm`, the CAN buses of a powered bimanual arm.
+
+Giving the protected workflow safe triggers does *not* help: the exposed asset
+is the runner, not the workflow. Reasoning about the triggers of the file you
+are adding is the mistake that makes this look safe.
 
 Registering a runner on a lab host is therefore gated on **one** of:
 
 1. an **organisation runner group** restricted to selected repositories and
    selected workflows (the selected-workflows restriction needs GitHub
    Enterprise Cloud or Enterprise Server; Free and Team can create runner
-   groups but cannot pin them to workflows), or
+   groups but cannot pin them to workflows, and this org is on GitHub Free), or
 2. moving HIL to a **private** mirror repository with no fork-reachable
    `pull_request` triggers, dispatched only by `workflow_dispatch` /
    `repository_dispatch`.
@@ -364,9 +348,9 @@ tar xzf runner.tar.gz
 sudo ./svc.sh install "$USER" && sudo ./svc.sh start
 ```
 
-Use `linux-arm64` on a Jetson; `linux-x64` elsewhere. Do **not** run the
-service as root: a HIL job that can write CAN as root can also disable the
-udev rules that keep left and right from swapping.
+Use `linux-arm64` on a Jetson, `linux-x64` elsewhere. Do **not** run the service
+as root: a HIL job that can write CAN as root can also disable the udev rules
+that keep left and right from swapping.
 
 ### Workflow shape
 
@@ -394,8 +378,8 @@ tier's own budget is 10 minutes (CLAUDE.md §2).
 ### What a `lab-openarm` lane may NOT do unattended
 
 `just hil-openarm-deploy` is non-motion and attaches to a graph someone else
-started. It must stay that way. **Starting the OpenArm deploy graph is itself a
-motion event** — `openarm_bringup`'s `OpenArmHW::on_activate` calls
+started; it must stay that way. **Starting the OpenArm deploy graph is itself a
+motion event:** `openarm_bringup`'s `OpenArmHW::on_activate` calls
 `enable_all()` then `return_to_zero()`, an unramped MIT position command to 0.0
 on all seven joints per side. A CI lane must never launch it, and
 `tests/hil/test_openarm_slot_group_motion.py` (the one gate that commands the
@@ -408,23 +392,23 @@ For the maintained directory layout — every `python/*` / `packages/*`
 package, all 21 `robots/`, all 48 `rskills/`, and the test tiers — see
 [`docs/architecture/repo-map.md`](../architecture/repo-map.md).
 
-Most directories carry a per-package `README.md` with usage examples and
-links back to the canonical schemas — start with the package matching
-the layer you're touching.
-
-Full architecture is in [docs/architecture/overview.md](../architecture/overview.md). For a per-module status canvas (working / in-dev / planned / out-of-scope, with inputs, outputs, and schemas), open [docs/architecture/repo-state-map.html](../architecture/repo-state-map.html) — keep it in sync per CLAUDE.md §4.3.
+Most directories carry a `README.md` with usage examples and links to the
+canonical schemas. Full architecture: [docs/architecture/overview.md](../architecture/overview.md).
+Per-module status canvas (working / in-dev / planned / out-of-scope, with
+inputs, outputs and schemas): [docs/architecture/repo-state-map.html](../architecture/repo-state-map.html),
+kept in sync per CLAUDE.md §4.3.
 
 ---
 
 ## Running the SO-101 HIL gate
 
-The SO-101 bench is the one HIL rig with a physical arm behind it. Its gate —
-`openral deploy validate` plus the non-motion serial test
-(`tests/hil/test_so101_serial_live.py`) — runs **by hand** on the host the arm
-is plugged into. There is no CI workflow for it: a workflow needs a
-`[self-hosted, lab-so101]` runner, and no self-hosted runner is registered on
-this public repository (see [Lab HIL runners](#lab-hil-runners-self-hosted-lab-robot)
-for why). The `hil-so101.yml` workflow that used to wait for one was removed.
+The SO-101 bench is the one HIL rig with a physical arm behind it. Its gate
+(`openral deploy validate` plus the non-motion serial test
+`tests/hil/test_so101_serial_live.py`) runs **by hand** on the host the arm is
+plugged into. There is no CI workflow: it would need a `[self-hosted, lab-so101]`
+runner, and none is registered on this public repository (see
+[Lab HIL runners](#lab-hil-runners-self-hosted-lab-robot)). The `hil-so101.yml`
+workflow that waited for one was removed.
 
 On the host with the arm attached:
 
@@ -444,14 +428,13 @@ On the host with the arm attached:
     it mid-run; fixing the scene is the fix.
 
 !!! warning "Keep this lane non-motion — and still keep a hand near the power switch"
-    Everything the SO-101 lane runs today is read-only on the servos — the
-    port opens, the pre-flight ping and `read_state()` run, nothing is
-    commanded via `send_action` or `reset_to_pose`. That is *not* the same as
-    "nobody needs to be near the arm": `connect()` itself cycles servo torque
-    off and back on, and re-enabling torque makes a servo hold its last
-    `Goal_Position` — a stale one from a previous session can make the arm
-    twitch toward it right there, before any command is sent. Whoever
-    runs it should be within reach of the power switch. A
+    Everything the SO-101 lane runs is read-only on the servos: the port
+    opens, the pre-flight ping and `read_state()` run, nothing is commanded via
+    `send_action` or `reset_to_pose`. That does *not* mean nobody needs to be
+    near the arm: `connect()` cycles servo torque off and back on, and
+    re-enabling torque makes a servo hold its last `Goal_Position`. A stale one
+    from a previous session can make the arm twitch toward it before any
+    command is sent. Whoever runs it stays within reach of the power switch. A
     motion test belongs behind an explicit attended-bench gate (see
     `tests/hil/test_openarm_slot_group_motion.py`, which requires two separate
     opt-in env vars), never on unattended dispatch.
@@ -463,83 +446,81 @@ On the host with the arm attached:
 1. Create a branch: `git switch -c feat/your-feature`.
 2. Make your changes. Run `just lint && just test` before pushing.
 3. If you changed a Pydantic schema, run `just schema-export` and commit the updated JSON files.
-4. Open a PR. The title should follow [Conventional Commits](https://www.conventionalcommits.org/) — e.g. `feat(core): add FooSchema`.
-5. PRs from forks run CI on every push, like any other PR. The one exception
-   is a brand-new GitHub account's first PR, which waits for a maintainer to
-   click "Approve and run" (GitHub setting
-   `first_time_contributors_new_to_github`, the lowest GitHub offers).
+4. Open a PR titled per [Conventional Commits](https://www.conventionalcommits.org/), e.g. `feat(core): add FooSchema`.
+5. Fork PRs run CI on every push like any other PR, except a brand-new GitHub
+   account's first PR, which waits for a maintainer to click "Approve and run"
+   (GitHub setting `first_time_contributors_new_to_github`, the lowest GitHub
+   offers).
 6. Every push runs two fast required checks: `quality` (lint/type/schema/docs,
-   <3 min) and `select-and-test` (the pytest targets your diff actually
-   touches — see [Selective testing](selective-testing.md), usually a few
-   minutes). A third required check, `heavy-lanes`, runs the opt-in
-   dependency lanes (LIBERO, RoboCasa, GR00T, …) your diff selected — it
-   starts by itself once the PR is ready, see [Review policy](#review-policy).
-7. All required checks must be green and every review thread resolved before
-   it can merge, and only a maintainer can merge — see
-   [Review policy](#review-policy). See `.github/workflows/` for what each
-   workflow runs.
+   <3 min) and `select-and-test` (the pytest targets your diff touches, see
+   [Selective testing](selective-testing.md); usually a few minutes). The third
+   required check, `heavy-lanes`, runs the opt-in dependency lanes (LIBERO,
+   RoboCasa, GR00T, …) your diff selected; it starts by itself once the PR is
+   ready.
+7. Merging needs all required checks green, every review thread resolved, and a
+   maintainer to press merge; see [Review policy](#review-policy).
+   `.github/workflows/` shows what each workflow runs.
 
-The full PR checklist is in the repo-root `CLAUDE.md` (not linked from docs — open it directly in your editor).
+The full PR checklist is in the repo-root `CLAUDE.md` (not linked from docs; open it in your editor).
 
 ### Review policy
 
-Every change reaches `master` through a PR that the maintainer reviews and
-merges. Anyone can open issues and PRs (from a fork — pushing a branch here
-needs write access, as on any public GitHub repo), but merging also needs
-write access, and today the sole
+Every change reaches `master` through a PR the maintainer reviews and merges.
+Anyone can open issues and PRs (from a fork; pushing a branch here needs write
+access), but merging also needs write access, and today the sole
 [`CODEOWNERS`](https://github.com/OpenRAL/openral/blob/master/.github/CODEOWNERS)
-maintainer is the only account with it. So the maintainer's merge *is* the
-review.
+maintainer is the only account with it. The maintainer's merge *is* the review.
 
-The branch ruleset on `master` therefore requires a PR, the four green checks
-(`quality`, `select-and-test`, `heavy-lanes`, `Verify Signed-off-by`) and
-every review thread resolved, but **0 approving reviews**: GitHub does not
-let a PR author approve their own PR, so a required approval would only force
-the maintainer to bypass the ruleset — checks included — on every merge. With
-0, the maintainer's own PRs merge with the normal button once CI is green.
-Only `OrganizationAdmin` can bypass the ruleset, as an emergency route.
+So the branch ruleset on `master` requires a PR, the four green checks
+(`quality`, `select-and-test`, `heavy-lanes`, `Verify Signed-off-by`) and every
+review thread resolved, but **0 approving reviews**: GitHub does not let a PR
+author approve their own PR, so a required approval would force the maintainer
+to bypass the ruleset (checks included) on every merge. Only
+`OrganizationAdmin` can bypass the ruleset, as an emergency route.
 
 **When a second account gets write access, set the required approvals back to
-1 (with code-owner review) the same day** — otherwise that account could
-merge its own PRs unreviewed.
+1 (with code-owner review) the same day**, or that account could merge its own
+PRs unreviewed.
 
-`heavy-lanes` (the opt-in dependency lanes: LIBERO, RoboCasa, GR00T,
-ManiSkill3, …) starts **automatically**, with no approval or label, once the
-PR's head commit is:
+`heavy-lanes` (LIBERO, RoboCasa, GR00T, ManiSkill3, …; 19 parallel jobs)
+starts **automatically**, with no approval or label, once the PR's head commit
+is:
 
-- up to date with `master` (0 commits behind — rebase or merge `master` in);
+- up to date with `master` (0 commits behind: rebase or merge `master` in);
 - green on every other check;
 - free of unresolved review threads;
 - not a draft (fork PRs included).
+
+This keeps the expensive lanes for otherwise-mergeable PRs instead of every
+push. `select-and-test` never waits on it.
 
 [`heavy-lanes-trigger`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes-trigger.yml)
 re-checks each open PR whenever a PR workflow finishes and every 10 minutes
 (GitHub has no event for "thread resolved" or "`master` moved", so those two
 can take up to ~10 min to be noticed). It starts the lanes once per head
-commit; a new push waits for the conditions again. The PR shows where it is
-as the `heavy-lanes` commit status: pending with what it is waiting for
-("Waiting: 2 commit(s) behind master — rebase first"), pending "Running" once
-dispatched, then passed / failed with a link to the run. A failed lane is
-re-run from its Actions run page.
+commit; a new push waits for the conditions again. Progress shows as the
+`heavy-lanes` commit status: pending with what it waits for ("Waiting: 2
+commit(s) behind master — rebase first"), pending "Running" once dispatched,
+then passed / failed with a link to the run. Re-run a failed lane from its
+Actions run page.
 
-The result is a commit status, not the run's own check: a `workflow_dispatch`
-run's check runs are not linked to any PR, so the PR would otherwise show
-"Expected — waiting" forever, pass or fail.
+It is a commit status rather than the run's own check because a
+`workflow_dispatch` run's check runs are not linked to any PR, so the PR would
+show "Expected — waiting" forever.
 
 **Fork PRs** get the lanes automatically too. `workflow_dispatch` cannot target
 a fork branch, and a fork's copy of `heavy-lanes.yml` is not trusted, so the
 trigger points a `heavy-lanes/fork-<pr>` branch at a copy of `master`'s tree and
-dispatches there with the fork head as the commit to test. The workflow file
-is therefore always `master`'s; the lane jobs run the fork's code with a
-read-only token and no secrets (what a fork `pull_request` run gets); the
-branch is its own cache scope, so fork code cannot plant a cache `master`
-restores; and the only job that can write statuses never checks out fork code.
-The branch is deleted once the PR closes.
+dispatches there with the fork head as the commit to test. So:
 
-This keeps the expensive lanes — 19 parallel jobs — for PRs that are otherwise
-mergeable, instead of paying for them on every push.
-`select-and-test` — test-speed feedback on the code a diff actually
-touches (`quality` is the lint/type/schema/docs check) — never waits on this.
+- the workflow file is always `master`'s;
+- the lane jobs run the fork's code with a read-only token and no secrets (what
+  a fork `pull_request` run gets);
+- the branch is its own cache scope, so fork code cannot plant a cache `master`
+  restores;
+- the only job that can write statuses never checks out fork code.
+
+The branch is deleted once the PR closes.
 
 ---
 
@@ -547,12 +528,12 @@ touches (`quality` is the lint/type/schema/docs check) — never waits on this.
 
 ### `uv sync` fails with "package not found" (or "Unable to uninstall hf-libero")
 
-Run **`just sync`** instead of any bare `uv sync`. The workspace has multiple
-member packages (the root manifest does not list them as direct dependencies),
-so the sync needs `--all-packages` — which `just sync` supplies — and the
-`just sync` wrapper also runs `scripts/repair_hf_libero_install.py` before/after
-to avoid the `hf-libero==0.1.3` distutils-uninstall abort. Add opt-in groups
-with `just sync --group <name>`. See
+Run **`just sync`** instead of any bare `uv sync`. The root manifest does not
+list the workspace member packages as direct dependencies, so the sync needs
+`--all-packages`, which `just sync` supplies; it also runs
+`scripts/repair_hf_libero_install.py` before/after to avoid the
+`hf-libero==0.1.3` distutils-uninstall abort. Add opt-in groups with
+`just sync --group <name>`. See
 [Managing the Python environment & dependency
 groups](toolchain.md#managing-the-python-environment-dependency-groups).
 
@@ -584,11 +565,10 @@ Install the hooks once after cloning:
 just install-hooks
 ```
 
-Then `git commit` runs ruff, ruff-format, mypy, codespell, and the
-conventional-commit check on changed files automatically, plus DCO auto-sign-off.
+Then `git commit` runs ruff, ruff-format, mypy, codespell and the
+conventional-commit check on changed files, plus DCO auto-sign-off.
 
-Use `just install-hooks` rather than `pre-commit install`: the repo pins
+Use `just install-hooks`, not `pre-commit install`: the repo pins
 `core.hooksPath=.githooks` (for DCO sign-off), and `pre-commit install` refuses
-to run while `core.hooksPath` is set. `just install-hooks` instead wires the
-committed `.githooks/` wrappers (which call `pre-commit run`) and pre-builds the
-hook environments.
+to run while it is set. `just install-hooks` wires the committed `.githooks/`
+wrappers (which call `pre-commit run`) and pre-builds the hook environments.

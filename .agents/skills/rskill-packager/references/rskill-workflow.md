@@ -30,8 +30,6 @@ Unknown contract or license facts are blockers. Do not infer them from package n
 | `openral rskill check` | Compatibility check for installed/in-tree rSkills | Use with `--robot` when checking a target robot |
 | `openral sim run` | Produces real sim evidence and summaries | Pair scene config with `--rskill` |
 
-Do not move these project tools into the skill `scripts/` directory. They are canonical repo tooling, referenced by docs and usable outside the agent system.
-
 ## Command Catalog
 
 Scaffold:

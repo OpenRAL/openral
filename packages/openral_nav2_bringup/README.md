@@ -1,11 +1,9 @@
 # openral_nav2_bringup
 
-Bringup wrapper for upstream **Nav2** as a Reasoner-managed
-background service (the second such service, after
-[`openral_slam_bringup`](../openral_slam_bringup/)). We do **not** reimplement
-Nav2 — this package only ships the per-deployment launch + parameter glue so the
-OpenRAL Reasoner can start/stop navigation on demand and route a
-`NavigateToPose` goal.
+Upstream **Nav2** as a Reasoner-managed background service (the second, after
+[`openral_slam_bringup`](../openral_slam_bringup/)). OpenRAL does not
+reimplement Nav2: this package ships only the launch + parameter glue so the
+Reasoner can start/stop navigation on demand and route a `NavigateToPose` goal.
 
 ```
 lidar profile:  /scan ─▶ payload scan filter ─▶ /openral/nav2/scan ─▶ Nav2 (obstacle_layer)
@@ -16,8 +14,8 @@ visual profile: /map ───────────────────�
 
 ## Costmap profiles (backend-agnostic)
 
-Nav2 is selected to match the SLAM backend via the `slam_backend` launch arg, so
-navigation works regardless of how the 2D map is built:
+The `slam_backend` launch arg selects the Nav2 config to match the SLAM
+backend, so navigation works however the 2D map is built:
 
 | `slam_backend` | Config | Costmap obstacle source |
 |---|---|---|
@@ -28,9 +26,9 @@ The **visual** profile lets a lidar-less robot (cuVSLAM + nvblox) navigate:
 costmaps consume `/map` (nvblox's `static_occupancy_grid`, remapped) via
 `static_layer` with `map_subscribe_transient_local: False` (nvblox's `/map` is
 RELIABLE+VOLATILE, not latched), and the collision_monitor's `/scan` source is
-disabled. Everything else mirrors the lidar base — `nav2_visual.yaml` is
-**generated** from it by `tools/gen_nav2_visual.py` (`just gen-nav2-visual`; re-run after editing the
-base).
+disabled. Everything else mirrors the lidar base: `nav2_visual.yaml` is
+**generated** from it by `tools/gen_nav2_visual.py` (`just gen-nav2-visual`;
+re-run after editing the base).
 
 > 3D-lifted detected objects use the `map` **TF frame** (published by both
 > backends), not the `/map` topic, so they map into the world identically on
@@ -38,11 +36,10 @@ base).
 
 ## Run
 
-Normally started by the Reasoner as a background service when the active goal
-needs navigation; the `openral deploy sim` / `deploy run` graph wires
-the leg when the robot declares a lidar (`has_lidar`) **or** vision SLAM
-(`has_vision_slam`) and forwards the resolved `slam_backend`.
-Standalone:
+Normally started by the Reasoner when the active goal needs navigation; the
+`openral deploy sim` / `deploy run` graph wires the leg when the robot declares
+a lidar (`has_lidar`) **or** vision SLAM (`has_vision_slam`) and forwards the
+resolved `slam_backend`. Standalone:
 
 ```bash
 ros2 launch openral_nav2_bringup nav2.launch.py slam_backend:=lidar    # /scan
@@ -50,7 +47,7 @@ ros2 launch openral_nav2_bringup nav2.launch.py slam_backend:=visual   # /map
 ```
 
 Requires upstream `ros-${ROS_DISTRO}-navigation2` / `nav2_bringup` (in the deploy
-images) and a map source — `openral_slam_bringup` (slam_toolbox `/map` for lidar,
+images) and a map source: `openral_slam_bringup` (slam_toolbox `/map` for lidar,
 or cuVSLAM+nvblox `/map` for visual).
 
 ## The bond timeout, and why it is 30 s not 4 s (issue #256)
@@ -59,47 +56,43 @@ or cuVSLAM+nvblox `/map` for visual).
 (`controller_server`, `planner_server`, `smoother_server`, `behavior_server`,
 `collision_monitor`). When one misses its heartbeat for `bond_timeout`, the
 manager declares it dead and **deactivates the entire Nav2 stack**. Nav2's
-default is **4 s**, which on a loaded host is short enough to be missed by a
-scheduling hiccup rather than by a real fault.
+default of **4 s** can be missed by a scheduling hiccup on a loaded host.
 
-The failure is silent and total, which is what makes it dangerous to measure
-against: no traceback, nothing exits non-zero, and the graph stays *up*. It
-simply stops navigating. A validation run then burns its whole deadline doing
-nothing and gets scored as the policy failing — `deadline-no-grasp`. In the
+The failure is silent and total: no traceback, nothing exits non-zero, the
+graph stays *up* and simply stops navigating. A validation run then burns its
+deadline and is scored as the policy failing (`deadline-no-grasp`). In the
 2026-09-06 ceiling battery this killed **31 of 89 valid runs**, 25 of them
-naming `controller_server`, and every one was counted against the policy
+naming `controller_server`, every one counted against the policy
 (`docs/reference/collision-validation-evidence.md`).
 
-`BOND_TIMEOUT_S = 30.0` in `launch/nav2.launch.py` raises it. Two things about
-how, both load-bearing:
+`BOND_TIMEOUT_S = 30.0` in `launch/nav2.launch.py` raises it. Two load-bearing
+details:
 
 - **It cannot go in the params file.** Upstream `navigation_launch.py` passes
-  `lifecycle_manager_navigation` only `{autostart, node_names}` and never the
+  `lifecycle_manager_navigation` only `{autostart, node_names}`, never the
   params file, so a `lifecycle_manager_navigation:` block in
   `config/nav2_*.yaml` is silently ignored. It is applied as a `SetParameter`
-  inside a scoped `GroupAction` around the include instead. Confirm it on a
-  live graph, not by reading the yaml:
+  inside a scoped `GroupAction` around the include. Confirm it on a live graph,
+  not by reading the yaml:
 
   ```bash
   ros2 param get /lifecycle_manager_navigation bond_timeout   # -> 30.0
   ```
 
 - **It is a liveness timeout, not a safety check.** The E-stop path is
-  `openral_safety_kernel` (see the boundary section below) and is untouched by
-  this. Raising it trades a slower reaction to a genuinely hung server against
-  not mistaking a descheduled one for a dead one. It is **raised, not disabled**
-  (`0.0` would turn bond monitoring off entirely), so a server that really dies
-  is still caught.
+  `openral_safety_kernel` (see the boundary section below), untouched by this.
+  The trade is a slower reaction to a genuinely hung server against not
+  mistaking a descheduled one for dead. It is **raised, not disabled** (`0.0`
+  would turn bond monitoring off), so a server that really dies is still caught.
 
-A related trigger was fixed earlier and is documented on `collision_monitor` in
+A related trigger, fixed earlier, is documented on `collision_monitor` in
 `config/nav2_panda_mobile.yaml`: pointing it at a `base_footprint` the
 `panda_mobile` HAL never publishes wedged it in a TF-lookup loop, stopping its
 heartbeat and cascading the same way.
 
 ## The Nav2 ↔ safety-kernel boundary
 
-Two independent world models run side by side here, and conflating them is the
-mistake this section exists to prevent. Neither one covers for the other.
+Two independent world models run side by side. Neither covers for the other.
 
 | | **Nav2** | **C++ safety kernel** |
 |---|---|---|
@@ -114,10 +107,10 @@ avoidance relies entirely on Nav2's costmap; ADR-0099 re-affirms it, correcting
 ADR-0040's stated reason — no in-tree HAL advertised `body_twist`; `panda_mobile`
 now does). Nav2 publishes `geometry_msgs/Twist`;
 `openral_hal.mobile_base_bridge.MobileBaseBridge` maps it to a `BODY_TWIST`
-`Action` via the HAL node's `_send_action_traced` — never reaching
+`Action` via the HAL node's `_send_action_traced`, never reaching
 `/openral/candidate_action`, so the kernel never sees, bounds, or vetoes it.
-Velocity caps on this path are Nav2's own `velocity_smoother`. Also stated in
-the bridge's module docstring.
+Velocity caps on this path are Nav2's own `velocity_smoother`. The bridge's
+module docstring says the same.
 
 **Opt-in supervised relay, for bases without `base_joints`.** A robot that
 advertises `body_twist` but declares no `base_joints` (today `g1`, `r1pro`) gets
@@ -128,35 +121,34 @@ no `MobileBaseBridge`, so nothing in-tree consumes its `/cmd_vel`.
 `‖ω‖` by the manifest's `max_base_*_speed` (veto + E-stop) and forwards on
 `/openral/safe_action`. After `cmd_vel_timeout_s` (0.5 s, wall clock) of silence
 following motion it publishes one zero twist. It refuses a `base_joints`
-manifest — the bypass above is unchanged — and adds only a speed bound and the
+manifest (the bypass above is unchanged) and adds only a speed bound and the
 E-stop latch, not path checking: Nav2's costmap is still the base's only
 collision avoidance. Off by default; `deploy_e2e.launch.py` does not set it.
 
 **The one thing that does cross.** `_on_cmd_vel` returns early while the HAL
-node is latched E-stopped, so an E-stop — the kernel's included — does stop the
-Nav2 path, at the HAL rather than in the kernel. Stopping is the only kernel
+node is latched E-stopped, so an E-stop (the kernel's included) does stop the
+Nav2 path, at the HAL rather than in the kernel. Stopping is the kernel's only
 authority over base motion. There is no per-command bound.
 
-**What this costs.** A carried object is checked in 3-D by the kernel and is
-*not* checked at all by Nav2 — nothing grows the footprint over it, by decision
-(ADR-0099, and "Nav2 is base-only" below). The arm and the payload are protected
-against a 3-D obstacle map while the chassis is free to drive them into a
-counter, and the kernel's only authority over that is to stop. So the payload
-has to appear in **exactly one** place on each side of the boundary, and the two
-sides are deliberately opposite:
+**What this costs.** A carried object is checked in 3-D by the kernel and *not*
+at all by Nav2: nothing grows the footprint over it, by decision (ADR-0099, and
+"Nav2 is base-only" below). The arm and payload are protected against a 3-D
+obstacle map while the chassis is free to drive them into a counter, and the
+kernel can only stop that. So the payload appears in **exactly one** place on
+each side of the boundary, and the two sides are deliberately opposite:
 
 * **Kernel side** — the payload is *robot*: collision-active attached geometry
   the kernel keeps checking, and `openral_octomap_bridge` clears its cells out
   of the voxel grid so the robot is not stopped by itself.
-* **Nav2 side** — the payload is *robot* here too, but only in the sense that it
-  is removed: `payload_scan_filter_node` drops its returns from the scan the
-  costmaps and the collision monitor read, so a carried object never becomes an
-  obstacle that travels with the robot. It does **not** join the footprint.
+* **Nav2 side** — the payload is *robot* only in that it is removed:
+  `payload_scan_filter_node` drops its returns from the scan the costmaps and
+  the collision monitor read, so a carried object never becomes an obstacle
+  that travels with the robot. It does **not** join the footprint.
 
 Both sides read the same attachment set on `/openral/world_state_fast`, so they
 cannot disagree about what is attached.
 
-**How that is proved, and where.**
+**How that is proved.**
 `tests/integration/test_nav2_scan_filter_live.py` sweeps a real
 `nav2_costmap_2d`'s published grid and asserts zero cells are marked inside the
 chassis ∪ payload silhouette, using this package's own `base_footprint_polygon`
@@ -165,7 +157,7 @@ chassis ∪ payload silhouette, using this package's own `base_footprint_polygon
 False` so Nav2's own clearing cannot be what keeps the silhouette clean, and a
 control test with the self-filter unconfigured shows the sweep failing (#183).
 
-The same assertion has also been run on the real scenes:
+The same assertion was run on the real scenes:
 `tools/_nav2_costmap_silhouette_probe.py` attaches to a live `openral deploy sim`
 graph and sweeps every published costmap the same way. Raw output in
 `docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`; one graph launch
@@ -181,20 +173,20 @@ per scene, driven by a direct `NavigateToPose` 2.0 m ahead:
 | **global** costmap samples | 50 | 52 |
 | peak cost anywhere on the global map | **0** | **0** |
 
-The **global** row was vacuous here because of issue #211 (below); re-run after
-the fix it reads **254** on both scenes, silhouette still clean against 164 and
+The **global** row was vacuous because of issue #211 (below); re-run after the
+fix it reads **254** on both scenes, silhouette still clean against 164 and
 254 marked cells elsewhere.
 
 A second independent run reproduced the conclusion (0 `LETHAL` cells inside a
-140/141-cell silhouette on baguette/deliver_straw) though the incidental counts
-differ, as expected for a live scene run.
+140/141-cell silhouette on baguette/deliver_straw); incidental counts differ, as
+expected for a live scene run.
 
 Two coverage limits on this table: sim's `synthesize_laser_scan_2d` re-casts
 through the robot's own MuJoCo kinematic tree, so a self-return never enters
-`/scan` in sim — a clean silhouette there is the end state being right, not
-proof of what this node does. And `attached_objects` stayed 0 on both runs
-(nothing grasped), so the payload half was unmeasured here; both gaps are
-covered by the deterministic sweep above, which has a control.
+`/scan` in sim (a clean silhouette there proves the end state, not this node).
+And `attached_objects` stayed 0 on both runs (nothing grasped), so the payload
+half was unmeasured; both gaps are covered by the deterministic sweep above,
+which has a control.
 
 #### The payload half, measured on a scene (2026-09-05)
 
@@ -208,7 +200,7 @@ covered by the deterministic sweep above, which has a control.
 | 15 | 0.601 m | both costmaps | **0** | clean |
 | 17 | 0.748 m | both costmaps | **0** | clean |
 
-This required a probe fix: `tools/_nav2_costmap_silhouette_probe.py` compared a
+This needed a probe fix: `tools/_nav2_costmap_silhouette_probe.py` compared a
 count of placed *primitives* against a count of *objects*; sim payloads come
 from `extract_body_primitives` over a MuJoCo body subtree (16 primitives on
 this baguette), so `placed == declared` could never hold and every run was
@@ -218,7 +210,7 @@ primitive of that object projected).
 count fails 2 of its 4 tests.
 
 Run 14 flagged 2 global / 4 local cells at x = 0.39–0.44 m in `base_link`,
-4–9 cm past the 0.35 m chassis edge — a probe false positive: both costmaps'
+4–9 cm past the 0.35 m chassis edge: a probe false positive. Both costmaps'
 only source is the planar scan, and the payload rides at z = 1.43 m in `odom`
 against a 0.30 m scan plane (0.59–0.75 m clearance, per the probe's
 `payload_z_span_in_base_m`). These are the counter the robot was parked at,
@@ -226,7 +218,7 @@ seen at scan height, beneath a carried object clearing the lidar by >0.5 m. The
 probe now reports that span in every verdict.
 
 Not yet measured: a completed task. Every run E-stopped or dropped the payload
-before the place phase (grasp held 5–15 s, goal ended `safety_estop`) — this is
+before the place phase (grasp held 5–15 s, goal ended `safety_estop`). This is
 the costmap silhouette during a real carry (#108's payload-half ask), not a
 task-success claim. `docs/reference/collision-validation-evidence.md` records
 2/5 completions on this scene; the E-stops are known open collision-stack work.
@@ -235,9 +227,9 @@ task-success claim. `docs/reference/collision-validation-evidence.md` records
 
 A self-return that reached the cost grid once was permanent. The filter fails
 open by design (no `base_frame <- scan_frame` TF yet, unreadable manifest,
-degenerate polygon → republish untouched) — correct for the payload half, but
-not the self half: the working filter removes exactly the beam whose ray would
-have cleared that cell, so a mark let through once can never be retracted.
+degenerate polygon → republish untouched). That is correct for the payload half
+but not the self half: the working filter removes exactly the beam whose ray
+would have cleared that cell, so a mark let through once can never be retracted.
 
 Measured on a real `nav2_costmap_2d` with this package's topic wiring,
 `footprint_clearing_enabled: False`:
@@ -248,19 +240,17 @@ Measured on a real `nav2_costmap_2d` with this package's topic wiring,
 | 2 | filtered ring — every self beam `inf` — for 20 s | **32** (unchanged) |
 | 3 | real returns at 3.0 m on the same bearings | **0** |
 
-Phase 3 is the control: Nav2's clearing works fine, there simply has to be a
-ray. `collision_monitor` reads the same topic with no costmap-side clearing at
-all.
+Phase 3 is the control: Nav2's clearing works, it just needs a ray.
+`collision_monitor` reads the same topic with no costmap-side clearing at all.
 
 Fix: make phase 1 impossible rather than undo it. While a self-polygon is
 configured and its TF has never resolved, the node publishes nothing, bounded
 by `self_tf_grace_s` (default 5 s); after that it reverts to pass-through and
-logs an error. The gate arms once — a TF gap after the first successful
-resolve still fails open (the one-scan-at-a-time case the payload half already
-covers).
+logs an error. The gate arms once: a TF gap after the first successful resolve
+still fails open (the one-scan-at-a-time case the payload half already covers).
 
 Rejected alternative: write `range_max` instead of `inf` for a dropped beam so
-Nav2 raytraces the bearing clear. Wrong segment — Nav2 clears the ray out to
+Nav2 raytraces the bearing clear. Nav2 clears the ray out to
 `raytrace_max_range` (3.0 m here), an order of magnitude past the chassis, and
 the bearing is permanently occluded, so cells the ray erases were marked from
 other robot poses and nothing will ever re-mark them. Pinned as
@@ -270,13 +260,13 @@ beam.
 
 Residual: a mark that does land inside the chassis is freed by Nav2's own
 `footprint_clearing_enabled` (default `True`, not overridden in
-`config/nav2_panda_mobile.yaml`) — it frees cells whose *centre* falls inside
-the published polygon, so a cell straddling the boundary is not reached; that
+`config/nav2_panda_mobile.yaml`), which frees cells whose *centre* falls inside
+the published polygon; a cell straddling the boundary is not reached, and that
 sub-cell-wide band is covered only by the bounded grace fallback above.
 
 `tests/integration/test_nav2_scan_filter_live.py` still gates its costmap on
-the filter's own output: the gate makes the node's startup safe, the sweep
-asserts the steady state.
+the filter's own output: the gate makes startup safe, the sweep asserts the
+steady state.
 
 ### A second defect this surfaced — fixed here (issue #211)
 
@@ -307,13 +297,13 @@ than printing `clean`.
 
 Fix: turn the height gate off on the global costmap rather than retune it.
 `/openral/nav2/scan` is planar and `obstacle_layer` is a 2-D layer, so every
-point shares one z — the gate can only admit all or none. Set to
+point shares one z and the gate can only admit all or none. Set to
 `min_obstacle_height: -10.0` / `max_obstacle_height: 10.0`, past any offset
-this stack can produce (largest: the 0.700 m pedestal) — inert rather than
+this stack can produce (largest: the 0.700 m pedestal): inert rather than
 tuned, so it cannot break again if a frame's floor moves.
 
 Nav2 applies the cut twice, from two differently-scoped parameters of the same
-name — both had to move:
+name; both had to move:
 
 | where | parameter | upstream default |
 | --- | --- | ---: |
@@ -324,8 +314,8 @@ Rejected alternatives: stopping slam_toolbox injecting z into `map → odom`
 would rewrite a frame contract the octomap bridge and the kernel's voxel grid
 (ADR-0095) also read; moving `base_link` to ground level contradicts ADR-0095
 (the arm mount, deliberately); copying this window to the local costmap would
-be wrong — that layer is a `VoxelLayer` with a real z column (`origin_z` 0.0,
-16 x 0.08 m) where height bounds carry meaning.
+be wrong, since that layer is a `VoxelLayer` with a real z column (`origin_z`
+0.0, 16 x 0.08 m) where height bounds carry meaning.
 
 Evidence: `tests/integration/test_nav2_global_costmap_height_live.py` — a real
 `nav2_costmap_2d` reading the shipped config, under the measured
@@ -349,8 +339,8 @@ was marked anywhere; it now reports `non_vacuous: true` and stays clean against
 164/254 marked cells elsewhere in the same samples. Raw output appended to
 `docs/reference/data/nav2-costmap-silhouette-2026-09-04.jsonl`.
 
-The payload half is still unmeasured on scenes — `attached_objects` stayed `0`
-on every run (nothing grasped); that is #108's own gate, untouched by #211.
+The payload half is still unmeasured on these scenes (`attached_objects` stayed
+`0`, nothing grasped); that is #108's own gate, untouched by #211.
 
 ## Nav2 is base-only
 
@@ -366,7 +356,7 @@ which this boundary existed only in this README are part of what it records.
 
 ### Why the growth was wrong
 
-It projected 3-D geometry onto a 2-D costmap — the two don't describe the same
+It projected 3-D geometry onto a 2-D costmap; the two don't describe the same
 world.
 
 It forbade the poses the tasks require: every RoboCasa place target is a
@@ -385,23 +375,23 @@ And it protected against nothing here. Measured on
 | carried object (`glass_cup`) | **0.981 m** |
 
 The costmap is one horizontal slice; a carried object rides ~0.28 m above it.
-A payload can't collide with an obstacle the costmap knows about unless that
-obstacle is also tall, which the costmap can't represent — so the growth
-traded a real, frequent false block for protection against a case it couldn't
-distinguish anyway.
+A payload can only hit an obstacle the costmap knows about if that obstacle is
+also tall, which the costmap can't represent, so the growth traded a real,
+frequent false block for protection against a case it couldn't distinguish.
 
-What's genuinely given up: a payload sticking forward could clip a tall, thin
-obstacle the base itself clears. The kernel catches that in 3-D — its octomap
-bridge covers the arm's measured reach ball, r = 1.04 m centred at z = 0.432 in
-`base_frame` (z ∈ [−0.61, 1.47], which contains the payload) — but as an E-stop, not an
-avoidance, since `/cmd_vel` never passes through it (ADR-0040/ADR-0099, above).
+What's given up: a payload sticking forward could clip a tall, thin obstacle
+the base itself clears. The kernel catches that in 3-D (its octomap bridge
+covers the arm's measured reach ball, r = 1.04 m centred at z = 0.432 in
+`base_frame`, z ∈ [−0.61, 1.47], which contains the payload), but as an
+E-stop, not an avoidance, since `/cmd_vel` never passes through it
+(ADR-0040/ADR-0099, above).
 
 ### What replaces it
 
 Nothing new: `RobotDescription.nav2_param_overrides()` already substitutes
 `footprint_polygon` into both costmaps' `footprint` at launch, so the polygon
 is static and correct without a publisher. The scan filter (next section) and
-`CostCritic.consider_footprint` (now `true`) remain — with a fixed chassis
+`CostCritic.consider_footprint` (now `true`) remain; with a fixed chassis
 polygon, scoring the real outline instead of the centre cell is strictly more
 accurate, measured at +0.53 ms on the live loop.
 
@@ -409,31 +399,31 @@ accurate, measured at +0.53 ms on the live loop.
 
 `openral_sim.backends.robocasa.synthesize_laser_scan_2d` cast rays at world
 z = 0.30 m (`origin[2] = laser_height_m`, absolute; base body at z = 0.000) but
-published the result in `base_link`, which TF puts at 0.700 m — the sim
-sampled the world at one height and told Nav2 the returns came from another,
-0.40 m higher.
+published the result in `base_link`, which TF puts at 0.700 m: the sim sampled
+the world at one height and told Nav2 the returns came from another, 0.40 m
+higher.
 
 Fixed by giving both the same number: `robots/panda_mobile/robot.yaml` gives
 the lidar its own `base_scan` frame with the mount in
 `static_transform_xyz_rpy` (−0.40 m from `base_link`); `deploy_e2e.launch.py`
 publishes that as the `base_link → base_scan` static TF;
 `SimSensorBridge._scan_world_height_m` adds the same offset to the base's own
-world z when casting — so the ray and the frame can no longer disagree,
-including when the base changes height (a ramp, a lift column).
+world z when casting, so the ray and the frame cannot disagree, including when
+the base changes height (a ramp, a lift column).
 
 ## The robot's own returns
 
 A 2-D lidar on a real mobile base sees the base itself: chassis, mast, arm.
-Unfiltered, those returns mark the costmap and never clear. Sim hides this
-completely — `openral_sim.backends.robocasa.synthesize_laser_scan_2d` compares
-each `mujoco.mj_ray` hit's `body_rootid` against the base body's and re-casts
-past its own tree, so a self-return never enters `/scan` there. That mechanism
-has no real-hardware counterpart, and this repo has no lidar driver, launch
-file, or `SensorSpec` field for a mount pose, blind sector, or angle mask.
-Until #194 the only real knob was `panda_mobile`'s `range_min_m: 0.55`, a
-blunt radial cutoff deleting every real obstacle inside 0.55 m to hide a
-chassis whose circumscribed radius is 0.43 m. #194 lowered it to the sensor
-minimum (0.05 m) on the strength of this node.
+Unfiltered, those returns mark the costmap and never clear. Sim hides this:
+`openral_sim.backends.robocasa.synthesize_laser_scan_2d` compares each
+`mujoco.mj_ray` hit's `body_rootid` against the base body's and re-casts past
+its own tree, so a self-return never enters `/scan` there. That mechanism has no
+real-hardware counterpart, and this repo has no lidar driver, launch file, or
+`SensorSpec` field for a mount pose, blind sector, or angle mask. Until #194 the
+only real knob was `panda_mobile`'s `range_min_m: 0.55`, a blunt radial cutoff
+deleting every real obstacle inside 0.55 m to hide a chassis whose
+circumscribed radius is 0.43 m. #194 lowered it to the sensor minimum (0.05 m)
+on the strength of this node.
 
 `payload_scan_filter_node` filters the robot too, with a shaped test instead
 of a radial one: a beam is dropped when its endpoint, transformed into
@@ -458,7 +448,7 @@ budget, 600 → 601 cycles in 30 s, none dropped.
 
 The conservative direction is opposite the payload's: for the payload, not
 removing is the safe failure (Nav2 gets more cautious); for a self-return,
-removing a real obstacle mistaken for the robot is the dangerous one, so the
+removing a real obstacle mistaken for the robot is the dangerous one. So the
 self half removes only what it can prove and, on a missing manifest, an
 unresolvable `base_frame ← scan_frame` TF, or a degenerate polygon, removes
 nothing.
@@ -466,24 +456,24 @@ nothing.
 Why the chassis polygon is a proof:
 
 * A return inside the chassis outline is the chassis, or an object standing
-  where the chassis already is — not a place an object can be.
+  where the chassis already is, which is not a place an object can be.
 * It's the same polygon this package publishes to Nav2 as the robot:
   `footprint_clearing_enabled` already frees those cells every update and
-  `collision_monitor` reads the same outline — removing these returns takes
+  `collision_monitor` reads the same outline. Removing these returns takes
   away nothing Nav2 could have acted on, but does remove the collision-monitor
   false positive (that node has no costmap clearing in between).
 * It's the bare chassis, never the payload-grown hull: the hull spans free air
   between chassis and payload, and the payload's own primitives already cover
   the payload exactly.
 * The kernel's per-link OBBs in `link_collision` are deliberately conservative
-  over-approximations — right for a collision check, wrong for deleting
-  sensor returns (the air between a link and its box is air a real obstacle
-  can occupy) — so this node does not use them; the arm above the scan plane
-  is out of scope for it.
+  over-approximations: right for a collision check, wrong for deleting sensor
+  returns (the air between a link and its box is air a real obstacle can
+  occupy). This node does not use them; the arm above the scan plane is out of
+  its scope.
 
-`self_margin_m` defaults to `0.0` and should stay there — every millimetre
-past the chassis deletes returns Nav2 would have acted on. Without
-`robot_yaml` the self half does not run and the node warns once.
+`self_margin_m` defaults to `0.0` and should stay there: every millimetre past
+the chassis deletes returns Nav2 would have acted on. Without `robot_yaml` the
+self half does not run and the node warns once.
 
 ## Measured: what `consider_footprint: true` costs, and why it is `true`
 
@@ -502,16 +492,16 @@ brackets):
 | base only | 0.444 m | 149 | 8.3 [8.28–8.32] | **+8.1** | **17 %** |
 | carrying (0.860 m reach) | 0.863 m | 178 | 9.9 [9.87–9.94] | **+9.7** | **20 %** |
 
-The point-only path (`consider_footprint: false`) is 0.15 ms — the flag is
-essentially the whole cost, because `CostCritic::findCircumscribedCost`
-returns `0.0` whenever `inflation_radius` is below the footprint's
-circumscribed radius, and `inCollision`'s guard (`cost >=
-possible_collision_cost_ || possible_collision_cost_ < 1.0f`) then makes the
-full-footprint check unconditional. Both polygons are in that regime against
-the shipped `inflation_radius: 0.40`, so the worst case is the normal case.
-(This also corrects an earlier comment: the ~0.364 m circumscribed radius came
-from `robot_radius`, but the costmaps use the *polygon*, whose padded farthest
-vertex is 0.444 m — independent of the flag.)
+The point-only path (`consider_footprint: false`) is 0.15 ms, so the flag is
+essentially the whole cost: `CostCritic::findCircumscribedCost` returns `0.0`
+whenever `inflation_radius` is below the footprint's circumscribed radius, and
+`inCollision`'s guard (`cost >= possible_collision_cost_ ||
+possible_collision_cost_ < 1.0f`) then makes the full-footprint check
+unconditional. Both polygons are in that regime against the shipped
+`inflation_radius: 0.40`, so the worst case is the normal case. (This also
+corrects an earlier comment: the ~0.364 m circumscribed radius came from
+`robot_radius`, but the costmaps use the *polygon*, whose padded farthest
+vertex is 0.444 m, independent of the flag.)
 
 Raising `inflation_radius` above 0.444 m would restore the cheap gate for the
 bare chassis; nothing restores it while carrying (the payload's circumscribed
@@ -520,8 +510,8 @@ radius is most of the 3 m local costmap), so it is left at 0.40 m.
 ### MEASURED 2026-08-28: the full cycle fits with the flag on
 
 `scenes/deploy/robocasa_deliver_straw.yaml` driven with the full stack (SLAM +
-Nav2 + octomap + kernel gate) on the laptop workstation; `controller_server`'s own CPU per
-published control cycle, all four arms, 2 runs each:
+Nav2 + octomap + kernel gate) on the laptop workstation; `controller_server`'s
+own CPU per published control cycle, all four arms, 2 runs each:
 
 | footprint | `consider_footprint` | CPU / cycle | of 50 ms |
 | --- | --- | ---: | ---: |
@@ -530,14 +520,14 @@ published control cycle, all four arms, 2 runs each:
 | grown (1.23 m) | `false` | 9.79 ms | 20 % |
 | **grown (1.23 m)** | **`true`** | **9.97 ms** | **20 %** |
 
-The loop fits in every arm, ~40 ms of headroom: 500-501 cycles per 25 s window
-(20 Hz, none dropped), one `Control loop missed its desired rate` warning in
-the whole session. Nav2 logged `inflation radius (0.400000) is smaller than
-the circumscribed radius (0.908020)` for the grown polygon, confirming the
-unconditional-check (worst-case) regime.
+The loop fits in every arm with ~40 ms of headroom: 500-501 cycles per 25 s
+window (20 Hz, none dropped), one `Control loop missed its desired rate`
+warning in the whole session. Nav2 logged `inflation radius (0.400000) is
+smaller than the circumscribed radius (0.908020)` for the grown polygon,
+confirming the unconditional-check (worst-case) regime.
 
 The measured delta was +0.53 ms (bare) / +0.18 ms (grown), not the +8.1 / +9.7
-ms the isolated benchmark predicted — likely `CostCritic::inCollision` is
+ms the isolated benchmark predicted, likely because `CostCritic::inCollision` is
 reached less often per iteration than the benchmark's assumed 56 000 calls
 (`CostCritic::score`'s source is not in the Jazzy binary install). Reported as
 a discrepancy, not resolved.
@@ -560,16 +550,16 @@ Flipped together:
   from `test_mppi_does_not_yet_consider_the_footprint`, still pinning the
   value.
 
-The polygon it scores is the bare chassis, for a 0.70 × 0.50 m rectangle that
+The polygon it scores is the bare chassis, a 0.70 × 0.50 m rectangle that
 routinely parks with less clearance than its own 0.444 m circumscribed radius.
 
 `inflation_radius` is deliberately left at 0.40 m: raising it to ≥ 0.444 m
 would restore CostCritic's cheap gate (now well-defined with no payload
-growth), but it is a separate navigation-behaviour decision, not made here.
+growth), but that is a separate navigation-behaviour decision, not made here.
 
 ### What is still open (issue #108)
 
-* A scene now drives the base while carrying — `DeliverStraw`, pinned at seed 3
+* A scene now drives the base while carrying: `DeliverStraw`, pinned at seed 3
   by [`scenes/deploy/robocasa_deliver_straw.yaml`](../../scenes/deploy/robocasa_deliver_straw.yaml),
   upstream RoboCasa, in `composite_seen` (inside the `target50` set XR-1
   RoboCasa365 reports against). Measured at reset: the straw starts 0.50 m
@@ -577,27 +567,27 @@ growth), but it is a separate navigation-behaviour decision, not made here.
   grasped before any base motion); the glass cup it must end up inside sits
   3.795 m away. `GetToastedBread` also qualifies, at up to 3.48 m. (Measured,
   not read off `Kitchen.get_fixture`'s docstring, which describes a tie-break
-  within 0.10 m of the nearest candidate, not a bound — classifying statically
+  within 0.10 m of the nearest candidate, not a bound; classifying statically
   gives the wrong answer. Full measurements:
   [`docs/reference/robocasa-carry-survey.md`](../../docs/reference/robocasa-carry-survey.md).)
 
-  Criteria 1 and 4 are met; criteria 2 and 3 are obsolete — both existed only
-  to exercise a payload-grown footprint, and Nav2 is now base-only:
+  Criteria 1 and 4 are met; criteria 2 and 3 are obsolete, since both existed
+  only to exercise a payload-grown footprint and Nav2 is now base-only:
   * Criterion 2 ("an aperture the bare chassis clears but the payload-grown
     polygon does not") has nothing to decide: there is no grown polygon. The
-    underlying property — a rectangle fits where its circumscribed circle
-    doesn't (measured free-corridor bottlenecks 0.19–0.24 m against 0.444 m) —
+    underlying property (a rectangle fits where its circumscribed circle
+    doesn't; measured free-corridor bottlenecks 0.19–0.24 m against 0.444 m)
     is exactly what `consider_footprint: true` now reads.
   * Criterion 3 ("lidar-visible obstacles at the payload's height") is moot:
     the payload rides at ~0.98 m, scan returns land at ~0.70 m, so it never
-    enters the slice — the desired state under base-only, not a gap.
+    enters the slice, which is the desired state under base-only.
 
   `loading_fridge` is disqualified: none of its eight classes is in
   `target50`, which would put XR-1 out of distribution.
 
-  Remaining before #108 closes: the loop measurement is done and the flag is
-  flipped; the payload half has been measured on a scene (`robocasa_baguette`
-  under a real XR-1 grasp with the base driving, three clean runs — see "The
-  payload half, measured on a scene" above). Still missing: a completed
-  episode — every run so far E-stopped or dropped the payload before the
-  place phase.
+  Remaining before #108 closes: the loop measurement is done, the flag is
+  flipped, and the payload half has been measured on a scene
+  (`robocasa_baguette` under a real XR-1 grasp with the base driving, three
+  clean runs; see "The payload half, measured on a scene" above). Still
+  missing: a completed episode; every run so far E-stopped or dropped the
+  payload before the place phase.

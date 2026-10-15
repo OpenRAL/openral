@@ -1,10 +1,9 @@
 # `rizon4` — Robot description
 
-Canonical `RobotDescription` manifest for the **Flexiv Rizon 4** — a
-7-DoF collaborative arm with whole-body force sensitivity (0.1 N
-resolution), 4 kg payload, and 780 mm reach. The same manifest covers
-the real Rizon 4 (wrapping `flexiv_rdk`, planned follow-up) and the
-real-physics MuJoCo digital twin (`Rizon4MujocoHAL` on the
+Canonical `RobotDescription` manifest for the **Flexiv Rizon 4**, a 7-DoF
+collaborative arm with whole-body force sensitivity (0.1 N resolution), 4 kg
+payload and 780 mm reach. One manifest covers the real Rizon 4 (wrapping
+`flexiv_rdk`, planned) and the MuJoCo digital twin (`Rizon4MujocoHAL` on the
 `mujoco_menagerie` MJCF).
 
 ## At a glance
@@ -46,18 +45,17 @@ real-physics MuJoCo digital twin (`Rizon4MujocoHAL` on the
 | 5 | `joint6` | -1.484, 4.625 | 39 |
 | 6 | `joint7` | ±3.054 | 39 |
 
-Position limits come from the upstream `mujoco_menagerie` MJCF
-verbatim (which pins them to the published Flexiv Rizon 4 spec).
-Velocity (2 rad/s) and effort limits come from the spec sheet.
+Position limits are the upstream `mujoco_menagerie` MJCF's verbatim (pinned
+to the published Flexiv Rizon 4 spec); velocity (2 rad/s) and effort limits
+come from the spec sheet.
 
 ## Tests
 
-- Sim: `tests/sim/test_rizon4_hal_mujoco.py` exercises
-  `Rizon4MujocoHAL` end-to-end against real MuJoCo physics (lifecycle,
-  schema-drift guard including a check that the menagerie actuators
-  stay in **position** mode — H1-style torque actuators would need
-  the PD-loop path the H1 HAL uses), closed-loop convergence including
-  a per-joint-identity wiring test, and a multi-step action chunk.
+- Sim: `tests/sim/test_rizon4_hal_mujoco.py` runs `Rizon4MujocoHAL` against
+  real MuJoCo physics: lifecycle, a schema-drift guard (including that the
+  menagerie actuators stay in **position** mode; H1-style torque actuators
+  would need the H1 HAL's PD-loop path), closed-loop convergence with a
+  per-joint-identity wiring test, and a multi-step action chunk.
 - HIL: planned alongside the real-HW HAL.
 
 ## See also

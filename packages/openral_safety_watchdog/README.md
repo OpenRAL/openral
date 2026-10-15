@@ -1,8 +1,8 @@
 # openral_safety_watchdog
 
-ROS 2 reasoner + supervisor graph spec §5 — **defense-in-depth E-stop sources**, independent of the in-band
-`openral_safety` node and the C++ safety kernel so a crash in either still
-triggers a brake event. Two lifecycle nodes:
+Defense-in-depth E-stop sources (reasoner + supervisor graph spec §5), independent
+of the in-band `openral_safety` node and the C++ safety kernel so a crash in
+either still triggers a brake event. Two lifecycle nodes:
 
 | Node | ADR | What it does |
 |---|---|---|
@@ -20,9 +20,9 @@ recovery path (CLAUDE.md §1.5, §3).
 
 ## Bringup
 
-Both nodes are spawned by `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`,
-the single launch behind `openral deploy sim` and `openral deploy run`, on **both**
-`hal_mode:=sim` and `hal_mode:=real`. Node names on the graph:
+Both nodes are spawned by `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
+(the launch behind `openral deploy sim|run`) in both `hal_mode:=sim` and
+`hal_mode:=real`. Node names on the graph:
 `/openral_deadman_watchdog`, `/openral_hardware_estop`.
 
 The deadman is driven to ACTIVE by `tools/lifecycle_autostart.py --required`,
@@ -30,12 +30,11 @@ and **the graph shuts down if it does not get there — or if the node later
 exits non-zero.** Both the autostart and the node itself carry an
 `OnProcessExit` handler, so a crash after arming ends the deploy rather than
 leaving it running unprotected. The poll-based path is
-the same one the safety kernel uses, because a dropped `ACTIVATE` would leave a
-brake source silently sitting in INACTIVE; `--required` additionally turns "the
-node was never there at all" (an overlay built without this package) into a
-non-zero exit instead of an informational one, and an `OnProcessExit` handler
-turns that into a refusal to run. A deploy that cannot arm its only independent
-watchdog must not come up unprotected.
+the one the safety kernel uses, because a dropped `ACTIVATE` would leave a
+brake source silently in INACTIVE. `--required` turns "the node was never there"
+(an overlay built without this package) into a non-zero exit, which the
+`OnProcessExit` handler turns into a refusal to run: a deploy that cannot arm its
+only independent watchdog must not come up.
 
 The pendant is only autostarted when `hardware_estop_device` is non-empty. With
 no device declared its configure failure is *expected*, and emitting that
@@ -44,10 +43,9 @@ also means "the deadman failed to activate".
 
 ## Deadman: the execution window
 
-`/openral/safe_action` is **bursty**, not a continuous stream — the runner only
-publishes chunks while an `ExecuteRskill` goal is running, and an idle deploy
-publishes none at all. A watchdog armed at activation would therefore E-stop
-every boot and latch, so the node has an explicit gate:
+`/openral/safe_action` is bursty: the runner publishes chunks only while an
+`ExecuteRskill` goal runs, and an idle deploy publishes none. A watchdog armed at
+activation would E-stop and latch on every boot, so the node has an explicit gate:
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -55,7 +53,7 @@ every boot and latch, so the node has an explicit gate:
 | `check_period_s` | `0.05` | Internal deadline-check timer period. |
 | `arm_status_topic` | `""` | Empty = **free-running**: the deadline is armed by `on_activate` and any silence past it fires. Non-empty names an `action_msgs/GoalStatusArray` topic — the deadline is evaluated only while some goal is ACCEPTED / EXECUTING / CANCELING. `deploy_e2e.launch.py` sets `/openral/execute_rskill/_action/status`, the runner's own action-status topic. |
 | `first_chunk_deadline_s` | `60.0` | Bound on goal-accepted → first chunk, covering a cold policy load. `deploy_e2e.launch.py` sets 120 s. Gated mode only. |
-| `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus`. The post-estop latch is released only on the **transition** `latched=True` → `latched=False` observed after this node latched — the kernel confirmed the stop, then the operator's reset cleared it. A bare `latched=False` (the kernel's 1 Hz liveness refresh) does not release it, and a sample older than `SAFETY_STATUS_LIVENESS_S` (3 s, HZ-0096-1) is ignored as unknown. Empty makes the node one-shot per activation. |
+| `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus`. The post-estop latch is released only on a `latched=True` → `latched=False` **transition** observed after this node latched (see below); a sample older than `SAFETY_STATUS_LIVENESS_S` (3 s, HZ-0096-1) is ignored as unknown. Empty makes the node one-shot per activation. |
 
 The window is re-based whenever a goal id that was not live becomes live — not
 only on a closed→open edge — because the status QoS is `KEEP_LAST` depth 1 and
@@ -63,12 +61,11 @@ the no-live-goal sample between two back-to-back goals can coalesce away, so a
 second goal always gets its own first-chunk budget.
 
 A runner killed mid-goal never publishes a terminal goal status, so the window
-stays open with the chunk stream dead — which is exactly the case that fires. An
-idle deploy, and the seconds a policy spends loading before its first chunk, do
-not.
+stays open with the chunk stream dead: exactly the case that fires. An idle
+deploy and a policy still loading before its first chunk do not fire.
 
-**Why the action-status topic and not an advisory task string.** Three
-properties matter, and only the action server's own status topic has all three:
+**Why the action-status topic, not an advisory task string.** Only the action
+server's own status topic has all three properties that matter:
 a dead runner cannot publish a terminal status (so it cannot close its own
 window and hide its death); there is exactly one writer (an advisory
 `/openral/reward/active_task` is published by *both* the runner and the
@@ -78,8 +75,7 @@ headline case); and it is `TRANSIENT_LOCAL`, so a watchdog that joins mid-goal
 inherits the current status instead of waiting for the next transition.
 
 **Every suppressing guard is bounded.** A window that never produces a first
-chunk fires at `first_chunk_deadline_s`, rather than waiting forever for a
-chunk that a dead runner will never send.
+chunk fires at `first_chunk_deadline_s` instead of waiting forever on a dead runner.
 
 The node also **subscribes** `/openral/estop`: an estop from any other source
 latches its internal `_triggered` flag so it never storms the topic behind the
@@ -89,18 +85,17 @@ transition — i.e. the kernel registered the stop, then the operator's
 kernel republishes its *current* status at 1 Hz as a liveness refresh, and a
 refresh landing between this node's estop reaching the wire and the kernel's
 own estop callback would otherwise release the latch before the stop was even
-registered. Without that release the node would be one-shot: the first estop of a
+registered. Without any release the node would be one-shot: the first estop of a
 deploy, from any source including the dashboard stop button, would silence it
-for the life of the process, leaving the graph with exactly the hole this node
-exists to close and no way to notice.
+for the life of the process, unnoticed.
 
 ## Hardware pendant
 
 `hardware_estop_node` is a bridge, not a driver: `HardwareEstopNode._read_pressed`
 is the per-vendor hook, and **no vendor subclass ships in this repository**. The
 base implementation would answer "not pressed" forever, which reads exactly like
-a healthy pendant, so `on_configure` refuses to leave UNCONFIGURED unless a real
-read source exists:
+a healthy pendant, so `on_configure` stays UNCONFIGURED unless a real read
+source exists:
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -137,7 +132,7 @@ other E-stop sources.
   publish through an injected device state source, the fail-closed brake on a
   read that raises, and a button held across activation braking on the first
   active poll.
-* `tests/integration/test_estop_watchdog_graph_live.py` — the whole point: a
+* `tests/integration/test_estop_watchdog_graph_live.py` — a
   real multi-process graph where the in-band safety node is killed and
   `/openral/estop` still fires from this package.
 

@@ -1,8 +1,6 @@
 # Architecture Overview
 
-> **See also:** [`repo-state-map.html`](repo-state-map.html) — a one-page interactive canvas of every module across the seven layers, color-coded by build status (working / in-development / planned / out-of-scope), with click-through inputs, outputs, and schemas. The fastest way to build a mental model of what exists today vs. what is still spec-only.
-
-OpenRAL uses a seven-layer architecture. Each layer has a single responsibility and communicates with adjacent layers through typed contracts. Status pills below match the [repo state map](repo-state-map.html): **✓ shipped** = source + tests on disk, **🟡 partial** = some pieces shipped, **⏳ planned** = not yet on disk.
+OpenRAL has seven layers. Each has one responsibility and talks only to adjacent layers through typed contracts. The [repo state map](repo-state-map.html) is the interactive per-module canvas (status colors, inputs, outputs, schemas); the status marks below match it: **✓ shipped** = source + tests on disk, **🟡 partial** = some pieces shipped, **⏳ planned** = not yet on disk.
 
 ```
 0  HAL                  python/hal/, packages/openral_hal_node/     ✓ shipped (12 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Galaxea A1, Rizon4, H1, G1, panda_mobile)
@@ -16,20 +14,16 @@ OpenRAL uses a seven-layer architecture. Each layer has a single responsibility 
 
 Layers 0–3 and Observability (Layer 6) ship today; the `rSkill` loader's
 policy adapters cover SmolVLA, ACT, Diffusion Policy, π0.5, and xVLA.
-Reasoning (Layer 4) and Safety (Layer 5) have **initial ROS 2
-implementations** — with the certifiable **C++ safety kernel** (Layer 5)
-still planned; the prose below describes their target shape.
+Reasoning (Layer 4) and Safety (Layer 5) have initial ROS 2
+implementations; the certifiable C++ safety kernel (Layer 5) is still
+planned. The prose below describes their target shape.
 
-The cross-cutting eval layer (`python/sim/`) is shipped and drives the
-closed-loop sim today via `openral sim run` against the configs under
-`scenes/`.
+The cross-cutting eval layer (`python/sim/`) ships and drives closed-loop
+sim via `openral sim run` against the configs under `scenes/`.
 
 ## Layer contracts
 
-Every layer interaction is mediated by Pydantic schemas in `python/core/` (module `openral_core`).
-The normative ROS 2 IDL lives in `packages/msgs/` (ROS package `openral_msgs`).
-
-Crossing a layer boundary without an ADR is rejected in review.
+Pydantic schemas in `python/core/` (module `openral_core`) mediate every layer interaction; the normative ROS 2 IDL lives in `packages/msgs/` (ROS package `openral_msgs`). Crossing a layer boundary without an ADR is rejected in review.
 
 ## Dual-system pattern
 
@@ -43,7 +37,6 @@ Every robot agent has:
 
 ## Safety architecture
 
-The safety kernel is a **separate C++ process** with a watchdog. It is deny-by-default.
-Python proposes actions; C++ disposes them. `ROSSafetyViolation` is never silently caught.
+The safety kernel is a separate, deny-by-default C++ process with a watchdog. Python proposes actions; C++ disposes them. `ROSSafetyViolation` is never silently caught.
 
-See [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) (§1 operating principles, §3 architecture discipline) for the full architectural discipline and the operating principles.
+Full discipline: [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §1 (operating principles) and §3 (architecture discipline).

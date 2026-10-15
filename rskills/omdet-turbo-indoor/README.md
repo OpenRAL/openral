@@ -36,10 +36,9 @@ license surfacing, and latency budgets. It does **not** copy model weights.
 
 Detects objects from a fixed curated indoor vocabulary in every RGB camera
 frame and publishes 2D detections (`ObjectsMetadata`) on the perception bus. It
-emits no action chunks, drives no actuators, and has no proprioception
-contract — a pure detector-kind perception producer. Because the class list is fixed
-(not query-driven), it behaves like a large closed-vocabulary detector: the
-reasoner does not retarget it.
+emits no action chunks, drives no actuators, and has no proprioception contract.
+The class list is fixed (not query-driven), so it behaves like a large
+closed-vocabulary detector: the reasoner does not retarget it.
 
 | Field | Value |
 | --- | --- |
@@ -51,11 +50,10 @@ reasoner does not retarget it.
 ## How it works
 
 OmDet-Turbo is a real-time, transformer-based open-vocabulary detector
-(`AutoModelForZeroShotObjectDetection`). Unlike `locateanything-3b-nf4` — a heavy
-VLM pinned to `transformers==4.57.1` that must run out-of-process in a sidecar —
-OmDet-Turbo is a first-class `transformers` architecture that loads under the
-OpenRAL runtime's own `transformers>=5`. It therefore runs **in process**: no
-sidecar venv, no ZMQ.
+(`AutoModelForZeroShotObjectDetection`). Unlike `locateanything-3b-nf4` (a heavy
+VLM pinned to `transformers==4.57.1`, run out-of-process in a sidecar), it is a
+first-class `transformers` architecture that loads under the OpenRAL runtime's
+own `transformers>=5`, so it runs **in process**: no sidecar venv, no ZMQ.
 
 The OpenRAL backend
 ([`OmDetTurboDetector`](../../python/runner/src/openral_runner/backends/gstreamer/omdet_turbo_detector.py))
@@ -76,8 +74,8 @@ system-memory BGR camera-tee branch as the CPU ONNX and VLM-sidecar tiers
 
 ## Upstream model and training
 
-This rSkill is a thin wrapper around the upstream Apache-2.0 OmDet-Turbo
-checkpoint; the weights live upstream and are not copied here.
+A thin wrapper around the upstream Apache-2.0 OmDet-Turbo checkpoint; weights
+live upstream and are not copied here.
 
 | Field | Value |
 | --- | --- |
@@ -90,8 +88,8 @@ checkpoint; the weights live upstream and are not copied here.
 
 ## Supported robots
 
-This detector is embodiment-agnostic — the only requirement is an RGB camera
-stream. All in-tree embodiment tags are declared in `rskill.yaml`.
+Embodiment-agnostic — the only requirement is an RGB camera stream. All in-tree
+embodiment tags are declared in `rskill.yaml`.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
@@ -147,8 +145,8 @@ openral deploy sim \
 
 ## Reproduction
 
-This is a packaging-only wrapper — there are no trained numbers to reproduce.
-To validate the wiring (manifest + in-process dispatch) without a GPU:
+Packaging-only wrapper — no trained numbers to reproduce. Validate the wiring
+(manifest + in-process dispatch) without a GPU:
 
 ```bash
 just bootstrap && uv sync --all-packages

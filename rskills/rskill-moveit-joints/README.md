@@ -28,8 +28,7 @@ inference: false
 > is the entire artefact. Renamed from `openral/rskill-moveit-plan-arm`
 > as part of the `rskill-moveit-*` rename.
 
-This package uses `kind: ros_action` — a discriminator
-on `RSkillManifest.kind` that selects the
+`kind: ros_action` (a discriminator on `RSkillManifest.kind`) selects the
 [`ROSActionRskill`](../../python/rskill/src/openral_rskill/ros_action_rskill.py)
 engine at resolve time, with `ros_integration.goal_builder: joint` selecting
 the [`JointGoalRskill`](../../python/rskill/src/openral_rskill/joint_goal_rskill.py)
@@ -74,19 +73,16 @@ goal:
 2. On the first `_step_impl(world_state)` call the adapter:
    - builds the `MoveGroup.Goal` from the lowered dict (via
      `rosidl_runtime_py.set_message_fields`),
-   - sends it and polls the goal-accept + result futures while the
-     host node's main rclpy spin continues to service callbacks (same
-     pattern as
+   - sends it and polls the goal-accept + result futures while the host
+     node's main rclpy spin keeps servicing callbacks (same pattern as
      `rskill_runner_node._maybe_reset_hal_to_starting_pose`),
-   - extracts `result.planned_trajectory.joint_trajectory`, reorders
-     its `joint_names` into the host `RobotDescription.joints` order
-     (see
+   - extracts `result.planned_trajectory.joint_trajectory`, reorders its
+     `joint_names` into the host `RobotDescription.joints` order (see
      [`build_joint_permutation_from_names`](../../python/rskill/src/openral_rskill/ros_action_rskill.py)),
    - returns waypoint 0 as a 1-row `Action(JOINT_POSITION, …)`.
-3. Each subsequent `_step_impl` returns the next cached waypoint.
-4. After the last waypoint, the adapter raises
-   `ROSRskillGoalSatisfied` — the runner catches it specifically and
-   closes the `ExecuteRskill` goal with `success=True`.
+3. Each subsequent `_step_impl` returns the next cached waypoint; after the
+   last one it raises `ROSRskillGoalSatisfied`, which the runner catches to
+   close the `ExecuteRskill` goal with `success=True`.
 
 The LLM overrides only `joint.positions` (one entry per planning-group joint,
 in the manifest's `joint_names` order); planner and tolerance defaults are
@@ -105,8 +101,7 @@ Why one row per chunk (`chunk_size: 1` is schema-enforced for
 of every `ActionChunk` today
 ([`supervisor_node.py`](../../packages/openral_safety/openral_safety/supervisor_node.py)).
 Packing the full trajectory as one chunk with `horizon=N` would let
-waypoints 1..N actuate unchecked — unacceptable for a planner whose
-job is to thread between joint-limit walls.
+waypoints 1..N actuate unchecked.
 
 ### GPU-accelerated planning (cuMotion)
 
@@ -160,8 +155,8 @@ own subscriptions handle:
 | Planning scene | `/planning_scene` (or `/monitored_planning_scene`) | Self- and environment-collision check |
 | TF | `/tf`, `/tf_static` | Resolve goal pose / link frames |
 
-If your deployment uses a non-default topic remap, surface it on the
-MoveIt node's launch — the wrapped action's contract is intact.
+For a non-default topic remap, set it on the MoveIt node's launch; the wrapped
+action's contract is unchanged.
 
 ## Manifest summary
 
@@ -213,21 +208,19 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
   via `goal_params_json`; planner settings and joint names are inherited from
   `default_goal_json`. Cross-embodiment retargeting is a manifest copy with the
   correct `joint.joint_names` + `request.group_name`.
-- **OpenRAL safety supervisor does not do collision checking.** We
-  trust MoveIt's internal FCL pass. The per-joint envelope check still
-  runs per waypoint. Collision checking inside the OpenRAL kernel is a
-  separate ADR + multi-PR effort.
-- **No velocity / jerk bound at the supervisor.** A planner emitting a
-  rough trajectory would actuate today; the existing supervisor only
-  checks per-joint position envelope. Tracked separately.
+- **OpenRAL safety supervisor does not do collision checking.** It trusts
+  MoveIt's internal FCL pass; the per-joint envelope check still runs per
+  waypoint. Kernel-side collision checking is a separate ADR + multi-PR effort.
+- **No velocity / jerk bound at the supervisor.** A planner emitting a rough
+  trajectory would actuate today; the supervisor only checks the per-joint
+  position envelope. Tracked separately.
 
 ## License
 
-The rSkill package itself (this manifest + README) is **Apache-2.0**.
-The wrapped MoveIt code (`moveit_msgs` IDL, `moveit2` planners) is
-**BSD-3-Clause** and lives outside this repository — installed via
-`ros-${ROS_DISTRO}-moveit`. Both postures
-are commercial-use-permissive.
+The rSkill package itself (this manifest + README) is **Apache-2.0**. The
+wrapped MoveIt code (`moveit_msgs` IDL, `moveit2` planners) is **BSD-3-Clause**
+and lives outside this repository, installed via `ros-${ROS_DISTRO}-moveit`.
+Both are commercial-use-permissive.
 
 ## See also
 

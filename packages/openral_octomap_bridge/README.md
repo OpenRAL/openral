@@ -91,14 +91,14 @@ The bridge re-rasterizes the **last** octree it received on a
 `publish_rate_hz` timer, so between octrees the grid follows the robot
 through TF and the payload clearing follows the payload's live pose.
 `octomap_server` publishes `/octomap_binary` only when it inserts a cloud,
-so a dead camera is a silent octree — and until hazard log Entry 033 the
-timer kept republishing that frozen map, stamped `now()`, forever. The
-kernel times voxel freshness from **receipt**, so its fail-closed
-`DROP_VOXEL_UNAVAILABLE` never fired and anything that entered the
-workspace afterwards was invisible (Thor, 2026-09-24: ZED driver stopped,
-`/octomap_binary` silent, `/openral/world_voxels` still arriving at 7.1 Hz).
+so a dead camera is a silent octree. Until hazard log Entry 033 the timer
+kept republishing that frozen map, stamped `now()`, forever; the kernel times
+voxel freshness from **receipt**, so its fail-closed `DROP_VOXEL_UNAVAILABLE`
+never fired and anything entering the workspace afterwards was invisible
+(Thor, 2026-09-24: ZED driver stopped, `/octomap_binary` silent,
+`/openral/world_voxels` still arriving at 7.1 Hz).
 
-Now the republish is bounded by `max_octree_age_s`, measured from the
+The republish is now bounded by `max_octree_age_s`, measured from the
 octree's **receipt** on this node's clock (the clock the kernel times voxel
 freshness on; the octree's header stamp is the sensor's and may sit on
 another clock domain). Past the bound the node publishes **nothing** — not
@@ -109,33 +109,40 @@ octree resumes publication automatically (one INFO line). Worst case from
 the last inserted cloud to the kernel's drop: `max_octree_age_s +
 world_voxel_deadline_ms` (1.0 s + 1.0 s with the deploy defaults).
 
-The bound has to exceed octomap's normal inter-publish gap with margin
-(0.25–0.31 s measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one
-Thor run at 2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and
-must not exceed the kernel's deadline, so the kernel — not the bridge — is what
-fails closed. Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s`
-(default 1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
-it is refused by the schema and by `deploy_e2e.launch.py`). An earlier half-deadline
-bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a source slower than about
-1 Hz needs both raised in its scene, up to the schema's hard cap of 2.0 s on the
-deadline (2x its pre-2026-09-25 default; above it the scene is refused at load). A bound that is
-too small only costs availability: silence shorter than the kernel's
-deadline is not a drop. A non-finite or non-positive bound publishes
-nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it
-names when the grid was placed in `base_frame` (the TF it was rasterized
-with). Nothing reads it as data age (the kernel and World State time grids
-from receipt), and the HAL's evidence decoder
-(`openral_hal.sim_sensor_bridge`) picks "the grid current at time t" by it,
-which the octree's own stamp would break. The octree's own stamp rides on
-every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
-and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
-from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
-the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
-The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
-configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
-`world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
-0 does not disable the check), so a kernel started with `ros2 run` is held
-to the same limits as a validated scene.
+Sizing the bound:
+
+- It must exceed octomap's normal inter-publish gap with margin (0.25–0.31 s
+  measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one Thor run at
+  2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and must not
+  exceed the kernel's deadline, so the kernel, not the bridge, fails closed.
+- Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s` (default
+  1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
+  it is refused by the schema and by `deploy_e2e.launch.py`). An earlier
+  half-deadline bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a
+  source slower than about 1 Hz needs both raised in its scene, up to the
+  schema's hard cap of 2.0 s on the deadline (2x its pre-2026-09-25 default;
+  above it the scene is refused at load).
+- Too small only costs availability: silence shorter than the kernel's
+  deadline is not a drop. A non-finite or non-positive bound publishes nothing
+  (ERROR at start-up).
+
+Stamps:
+
+- A grid's `header.stamp` is still `now()`: when the grid was placed in
+  `base_frame` (the TF it was rasterized with). Nothing reads it as data age
+  (the kernel and World State time grids from receipt), and the HAL's evidence
+  decoder (`openral_hal.sim_sensor_bridge`) picks "the grid current at time t"
+  by it, which the octree's own stamp would break.
+- The octree's own stamp rides on every grid as `source_stamp` (capture stamp
+  of the newest cloud inserted), and the kernel budgets the world's age from
+  it: `world_voxel_data_age_budget_ms`, from the per-rig
+  `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s, the Thor ZED-M
+  tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
+- The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
+  configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
+  `world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
+  0 does not disable the check), so a kernel started with `ros2 run` is held
+  to the same limits as a validated scene.
 
 `robot_self_filter` (real camera path only) removes the robot's own returns
 before `octomap_server` inserts the cloud: it poses the kernel's collision
@@ -168,10 +175,10 @@ under an unusable bound; plus the `octree_is_fresh` boundaries) and, end to
 end against the real kernel,
 `tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (certifies while
 octrees arrive, `DROP_VOXEL_UNAVAILABLE` with no latch or E-stop once they
-stop, certifies again when they resume). That test was checked to discriminate
-by hand when it was written: rerun with the bridge bound set to 1e9 (the pre-fix
-behaviour), the stale chunk is certified — the fail-open, reproduced. The
-committed suite does not carry that control.
+stop, certifies again when they resume). It was checked by hand to
+discriminate: with the bridge bound set to 1e9 (pre-fix behaviour) the stale
+chunk is certified, reproducing the fail-open. The committed suite does not
+carry that control.
 
 **Not covered:** a camera that keeps publishing garbage, or a frozen image
 re-published by a driver, still reaches `octomap_server` as fresh inserts.
@@ -186,8 +193,8 @@ best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
 subscribes `RELIABLE` and does not. On the Orin OpenArm cell (mock hardware,
 2026-09-26, 240 s) the same run read **10.01 Hz, max gap 0.36 s** on a reliable
 subscriber, 7.0 Hz (max gap 1.1 s) on a best-effort one, and 5.7 Hz on a
-best-effort all-topics probe. A 4.4–6.1 Hz reading of that probe the day
-before was briefly taken for a slow bridge.
+best-effort all-topics probe (a 4.4–6.1 Hz reading of that probe the day
+before was briefly mistaken for a slow bridge).
 
 The per-octree work is small beside the period: the real Orin map (14k leaves,
 ~4.6k occupied cells in the ball, replayed from recorded ZED clouds) costs
@@ -209,12 +216,12 @@ The radius must reach wherever the safety kernel's checked geometry can go —
 a property of the robot manifest, not this node: **unset, the node logs an
 error and publishes nothing.**
 
-History: the old sim box was 1.6 m (fit the kernel's then 262,144-cell cap).
+The old sim box was 1.6 m (fit the kernel's then 262,144-cell cap).
 Measured against `panda_mobile`'s manifest `collision_geometry`, its checked
 arm reach is **1016 mm** from the grid centre — up to **124 mm** outside the
 old grid. `deploy_e2e.launch.py` then covered a fixed 1.05 m about `(0, 0, 0.5)`,
 which left the OpenArm's hanging arms reaching 108 mm below it (its `base_frame`
-is the torso top). It now measures the ball per robot (`_coverage_ball`): over the
+is the torso top). The launch now measures the ball per robot (`_coverage_ball`): over the
 joint limits, against the same collision model the kernel is handed, the centre is
 the middle of the moving links' reach box and the radius the farthest reach from
 it plus 50 mm (OpenArm 0.871 m about `(0.003, 0, 0)`, panda_mobile 1.04 m about

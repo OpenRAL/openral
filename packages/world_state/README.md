@@ -1,7 +1,7 @@
 # `openral_world_state` (ROS 2)
 
 Lifecycle-node wrapper for `openral_world_state.WorldStateAggregator`
-— Layer 2 in the seven-layer architecture. Subscribes to joint and
+(Layer 2). Subscribes to joint and
 sensor topics, ticks the aggregator, and publishes a typed
 `openral_msgs/WorldStateStamped` snapshot at two rates (fast 30 Hz,
 slow 5 Hz) for downstream consumers (Skill, Reasoner, dashboards).
@@ -61,8 +61,7 @@ base pose + twist, parallel arrays of EE names + poses, sensor image
 topic refs, per-component diagnostic status (`DIAG_OK | DIAG_WARN |
 DIAG_STALE | DIAG_ERROR`), per-component staleness in milliseconds,
 battery percentage, and the tf2 `frame_ids[]` consumers should look up
-themselves (per the reasoner/supervisor-graph design). The typed `WorldStateStamped` topics are the
-only wire format — there is no JSON fallback.
+themselves (per the reasoner/supervisor-graph design). There is no JSON fallback.
 
 ## Wiring
 
@@ -72,10 +71,9 @@ HAL (openral_hal_node)       ──► /joint_states ─┐
 sensors/ → ROS topics (planned per-sensor packages) ─┘                  └──► /openral/world_state_slow (5 Hz)
 ```
 
-The HAL provides joints; sensor topics will be wired through additional
-subscriptions as the per-sensor ROS packages land. The aggregator is
-the only place where joint + sensor state are fused into the typed
-snapshot consumed by S1 / S2.
+The HAL provides joints; sensor topics will be wired in as the per-sensor ROS
+packages land. The aggregator is the only place joint + sensor state are fused
+into the snapshot consumed by S1 / S2.
 
 ## Tests
 

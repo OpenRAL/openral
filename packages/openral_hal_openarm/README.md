@@ -1,7 +1,7 @@
 # openral_hal_openarm
 
-Real-hardware bringup for the Enactic **OpenArm v2** 16-DoF bimanual arm —
-bringup only. The OpenArm HAL lifecycle node is the generic
+Real-hardware bringup (only) for the Enactic **OpenArm v2** 16-DoF bimanual arm.
+The OpenArm HAL lifecycle node is the generic
 [`openral_hal_node`](../openral_hal_node/README.md) (sim: `hal.sim: null` →
 `MujocoArmHAL.from_description`; real: `openral_hal.openarm_real:OpenArmRealHAL`),
 spawned by `openral deploy sim|run` under the node name `openral_hal_openarm`.
@@ -21,12 +21,10 @@ controllers.
 ## Real-hardware bringup
 
 `OpenArmRealHAL` only publishes to four already-running `ros2_control`
-controllers — it never starts `controller_manager` itself (same pattern as
-`FrankaPandaRealHAL` and `franka_ros2`). Something still has to start that
-graph on the real CAN bus before the HAL can move anything, and until this
-launch file existed nothing in this repo did.
+controllers; it never starts `controller_manager` itself (same pattern as
+`FrankaPandaRealHAL` and `franka_ros2`).
 
-`launch/real_bringup.launch.py` is that something: a thin include of
+`launch/real_bringup.launch.py` starts that graph on the real CAN bus: a thin include of
 upstream `openarm_bringup`'s `openarm.bimanual.launch.py` with
 `use_fake_hardware:=false` and this HAL's own CAN interface defaults
 (`openarm_left` / `openarm_right`, matching `OpenArmRealHAL`'s

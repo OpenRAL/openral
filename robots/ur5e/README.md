@@ -1,11 +1,11 @@
 # `ur5e` — Robot description
 
-Canonical `RobotDescription` manifest for the **Universal Robots UR5e**
-6-DoF cobot — 5 kg payload, 0.85 m reach, BLDC-driven joints with
-on-board torque feedback. Two HAL paths are supported: a MuJoCo-backed
-simulation adapter and a real-hardware adapter that wraps
+Canonical `RobotDescription` manifest for the **Universal Robots UR5e** 6-DoF
+cobot (5 kg payload, 0.85 m reach, BLDC joints with on-board torque feedback).
+Two HAL paths share the `HAL` Protocol: a MuJoCo sim adapter and a real-hardware
+adapter wrapping
 [`ur_robot_driver`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver)
-(URCap / RTDE) under the same `HAL` Protocol.
+(URCap / RTDE).
 
 ## At a glance
 
@@ -22,25 +22,25 @@ simulation adapter and a real-hardware adapter that wraps
 | `hal.sim` | `openral_hal.ur:UR5eHAL` (`deploy sim` / `sim run`; MuJoCo via `mujoco_menagerie`) |
 | Driver license | BSD-3-Clause (`ur_robot_driver`; CLAUDE.md §7.4 compatible) |
 
-Per-joint velocity = π rad/s (180°/s) for every joint. Effort limits
-match the UR5e datasheet: 150 Nm on shoulder/lift/elbow, 28 Nm on the
-three wrists. Position limits use the `mujoco_menagerie` ranges (the
-elbow is constrained to ±π by mechanical stop on real hardware).
+Velocity is π rad/s (180°/s) on every joint. Effort limits match the UR5e
+datasheet: 150 Nm on shoulder/lift/elbow, 28 Nm on the three wrists. Position
+limits use the `mujoco_menagerie` ranges (the elbow is constrained to ±π by a
+mechanical stop on real hardware).
 
-The production manifest (`robot.yaml`) pins the **real-hardware** entry
-point — the YAML's `sdk_kind: closed` flags that the runtime path needs
-the URCap `external_control` program on the teach pendant, not that the
-adapter or driver carry a restrictive license. The sim entry point
-(`UR5e_DESCRIPTION` / `openral_hal.ur:UR5eHAL`) remains in-code as
-the MuJoCo-backed sibling — kinematics, safety envelope, and capabilities
-are identical between the two; only `sdk_kind` differs (the `hal` block is shared between them, per the HAL entrypoint-resolution convention).
+The production manifest (`robot.yaml`) pins the **real-hardware** entry point.
+Its `sdk_kind: closed` flags that the runtime path needs the URCap
+`external_control` program on the teach pendant, not a restrictive adapter or
+driver license. The sim entry point (`UR5e_DESCRIPTION` /
+`openral_hal.ur:UR5eHAL`) stays in code as the MuJoCo sibling with identical
+kinematics, safety envelope and capabilities; only `sdk_kind` differs (the
+`hal` block is shared, per the HAL entrypoint-resolution convention).
 
 ## Wiring
 
 | Layer | Where |
 | --- | --- |
 | Python HAL adapter (real HW) | `openral_hal.ur_real:UR5eRealHAL` (`python/hal/src/openral_hal/ur_real.py`) |
-| Python HAL adapter (sim) | `openral_hal.ur:UR5eHAL` (`python/hal/src/openral_hal/ur.py:300`) |
+| Python HAL adapter (sim) | `openral_hal.ur:UR5eHAL` (`python/hal/src/openral_hal/ur.py`) |
 | ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Conformance test | `tests/unit/test_hal_protocol_conformance.py::HAL_BUILDERS["UR5eRealHAL+SimTransport"]` |
 | Unit test | `tests/unit/test_ur_real_hal.py` |
@@ -97,5 +97,5 @@ attended `tests/hil/test_ur5e.py::TestUR5eDownstreamEStop`.
 
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.
 - [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
-- `UR5e_DESCRIPTION` constant (sim): `python/hal/src/openral_hal/ur.py:154`.
+- `UR5e_DESCRIPTION` constant (sim): `python/hal/src/openral_hal/ur.py`.
 - `UR5e_REAL_DESCRIPTION` constant (real HW): `python/hal/src/openral_hal/ur_real.py`.

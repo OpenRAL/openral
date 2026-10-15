@@ -1,15 +1,13 @@
 # `rskills/` — OpenRAL rSkill worked examples
 
 This directory holds the **manifests** for a curated set of rSkills OpenRAL
-ships as worked examples and test fixtures — the ones exercised by this
-repo's tests, `openral deploy sim` scenes, and the docs. It is **not** the
-catalog. The catalog is the [`OpenRAL` org on the Hugging Face
-Hub](https://huggingface.co/OpenRAL); nothing needs to be added here to use
-a skill that's published there. Each in-tree subdirectory is one rSkill: a
-`rskill.yaml` manifest plus `README.md`, a discovery-only `SKILL.md`, and an
-`eval/` folder. The subdirectories do **not** contain model weights — the
-manifest's `weights_uri` points at the corresponding Hub repo, and the
-weights are pulled on first load.
+ships as worked examples and test fixtures (exercised by this repo's tests,
+`openral deploy sim` scenes, and the docs). It is **not** the catalog: that is
+the [`OpenRAL` org on the Hugging Face Hub](https://huggingface.co/OpenRAL), and
+nothing needs to be added here to use a skill published there. Each
+subdirectory is one rSkill: a `rskill.yaml` manifest, `README.md`, a
+discovery-only `SKILL.md`, and an `eval/` folder. No model weights: the
+manifest's `weights_uri` points at the Hub repo, pulled on first load.
 
 > **One rSkill ⇄ one HF repo.** Every entry below maps 1:1 to an
 > `OpenRAL/rskill-<name>` repo on the Hub. The in-tree manifest is the
@@ -19,11 +17,10 @@ weights are pulled on first load.
 
 ## Find rSkills on the Hub
 
-`openral rskill search` is how you find an rSkill — it queries the `OpenRAL`
-Hub org (server-side, filtered on the `rskill` model-card tag), fetches each
-hit's manifest concurrently, and matches your query locally and
-case-insensitively against the repo id, manifest name/description, family,
-kind, role, embodiment tags, and Hub tags:
+`openral rskill search` queries the `OpenRAL` Hub org (server-side, filtered on
+the `rskill` model-card tag), fetches each hit's manifest concurrently, and
+matches your query locally and case-insensitively against the repo id,
+manifest name/description, family, kind, role, embodiment tags, and Hub tags:
 
 ```bash
 openral rskill search libero                                   # any field mentioning "libero"
@@ -35,8 +32,8 @@ openral rskill search --family pi05 --json                      # scriptable out
 Each row's `local` column tells you what's already on this machine:
 `in-tree` (a manifest with that name lives under `rskills/`), `installed`
 (present in the local rSkill registry after `openral rskill install`), or
-`—` (Hub-only — install it to use it). Then install and run it like any
-other skill, in-tree or not:
+`—` (Hub-only; install it to use it). Install and run it like any other
+skill:
 
 ```bash
 openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
@@ -45,8 +42,7 @@ openral sim run --config scenes/sim/libero_spatial.yaml \
 ```
 
 `--rskill` accepts a bare in-tree name, an `rskills/<id>` path, or a Hub
-repo id interchangeably — a skill you found on the Hub does not need a
-local manifest to run.
+repo id interchangeably; a Hub skill needs no local manifest.
 
 ## How an rSkill resolves its weights
 
@@ -57,12 +53,11 @@ local manifest to run.
 
 `rtdetr-coco-r18` is the deliberate `local://` exception: the GStreamer
 perception path is ONNX-file-based, and `openral deploy sim` uses
-`rskills/rtdetr-coco-r18/model.onnx` as its offline detector fallback. That
-binary is listed in the repo `.gitignore` (`model.onnx`, `model.onnx.data`)
-— the clone stays small; the file is regenerated locally on demand. The
-heavier `rtdetr-v2-r50vd` variant (`runtime: tensorrt`) moved to the private
-`openral-pro` repo — the commercial-tier split that hosts the TensorRT engine
-runtime it depends on as an OpenRAL Pro plugin.
+`rskills/rtdetr-coco-r18/model.onnx` as its offline detector fallback. The
+binary is gitignored (`model.onnx`, `model.onnx.data`) and regenerated locally
+on demand. The heavier `rtdetr-v2-r50vd` variant (`runtime: tensorrt`) moved to
+the private `openral-pro` repo, which hosts the TensorRT engine runtime it
+depends on as an OpenRAL Pro plugin.
 
 ## Catalog
 
@@ -120,11 +115,11 @@ embodiment-agnostic.**
 
 ### Not on the Hub yet
 
-Four in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so they are
-invisible to `openral rskill search` and cannot be installed by repo id (loading
-them by in-tree name still works wherever their weights resolve). Each needs
-only the wrapper repo published — their weights are third-party public
-checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
+Four in-tree manifests have no `OpenRAL/rskill-*` repo on the Hub, so
+`openral rskill search` cannot see them and they cannot be installed by repo id
+(loading by in-tree name still works wherever their weights resolve). Each needs
+only the wrapper repo published; their weights are third-party public
+checkpoints, as with `act-aloha` and `smolvla-libero`:
 
 | in-tree skill | weights | to publish |
 | --- | --- | --- |
@@ -135,14 +130,13 @@ checkpoints, exactly as `act-aloha` and `smolvla-libero` already work:
 
 Two OpenRAL-hosted NF4 prequant mirrors are also unpublished
 (`lingbot-vla-4b-robotwin-nf4`, `lingbot-vla-v2-6b-nf4`). Both LingBot manifests
-now point at the fp32 upstreams instead and pack NF4 at load, which is the path
-their sidecar falls back to anyway; republishing the mirrors is a download-size
-win and needs only a `weights_uri` repoint.
+point at the fp32 upstreams and pack NF4 at load; republishing the mirrors would
+shrink the download and needs only a `weights_uri` repoint.
 
 ## Add your own rSkill
 
-You don't need to add an entry here to run your own skill — install it from
-any HF repo at load time. To scaffold a new local rSkill from
+You don't need an entry here to run your own skill; install it from any HF
+repo at load time. To scaffold a new local rSkill from
 [`template/`](template/):
 
 ```bash
@@ -156,9 +150,9 @@ Then edit `rskills/my-skill/rskill.yaml`, `README.md`, and `SKILL.md`
 and publish with `tools/rskill_publisher.py`. See
 [`template/README.md`](template/README.md) for the per-field walkthrough.
 
-Publishing to the Hub — and making the repo public — is what makes a skill
+Publishing to the Hub and making the repo public is what makes a skill
 discoverable: the publisher stamps the `OpenRAL` + `rskill` tags into the
-model-card front matter, and `openral rskill search` lists the org filtered
-on that `rskill` tag. There is no separate "list it in the catalog" step;
-adding it to this directory is optional and only worth doing if the skill
-should also serve as an in-tree test fixture or `deploy sim` example.
+model-card front matter, and `openral rskill search` filters the org on the
+`rskill` tag. There is no separate catalog step; adding the skill here is only
+worthwhile if it should also serve as an in-tree test fixture or `deploy sim`
+example.

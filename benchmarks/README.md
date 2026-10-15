@@ -2,21 +2,19 @@
 
 Reproducible benchmark **suites** for `OpenRAL` rSkills.
 
-Each YAML in this directory is a **bare list of `openral_core.BenchmarkScene`s**
-at the YAML root. A suite **aggregates** N scene rollouts under
-uniform protocol invariants; the suite id is the filename stem (e.g.
-`benchmarks/libero_spatial.yaml` → suite id `"libero_spatial"`). The rSkill
-(VLA) is the **only** free axis; supplied at the CLI by
-`openral benchmark run --suite <id> --rskill <name>`.
+Each YAML here is a **bare list of `openral_core.BenchmarkScene`s** at the YAML
+root. A suite **aggregates** N scene rollouts under uniform protocol
+invariants; the suite id is the filename stem (`benchmarks/libero_spatial.yaml`
+→ `"libero_spatial"`). The rSkill (VLA) is the **only** free axis, supplied at
+the CLI: `openral benchmark run --suite <id> --rskill <name>`.
 
-This is intentionally different from the sibling [`scenes/`](../scenes/), which
-holds the three scene tiers (`DeployScene` / `SimScene` / `BenchmarkScene`)
-for single-rollout commands (`openral deploy sim`, `openral sim run`,
-`openral benchmark scene`).
+The sibling [`scenes/`](../scenes/) instead holds the three scene tiers
+(`DeployScene` / `SimScene` / `BenchmarkScene`) for single-rollout commands
+(`openral deploy sim`, `openral sim run`, `openral benchmark scene`).
 
 ## Schema
 
-Suite YAMLs are loaded by `openral_core.load_benchmark_suite(path)` — returns
+`openral_core.load_benchmark_suite(path)` loads a suite YAML and returns
 `list[BenchmarkScene]`. Per-scene Pydantic validation runs at load time;
 suite-level invariants are enforced separately by
 `openral_core.raise_on_invalid_suite(scenes, suite_id=...)` so callers can also
@@ -27,7 +25,7 @@ Suite invariants (`raise_on_invalid_suite`):
 - The scene list is non-empty.
 - Every `scenes[i].robot_id` is the same non-`None` value.
 - Every `scenes[i].n_episodes` and `scenes[i].seed` are uniform across the suite.
-- Every `scenes[i].metadata` (the full `BenchmarkMetadata` block — `paper`,
+- Every `scenes[i].metadata` (the full `BenchmarkMetadata` block: `paper`,
   `honest_scope`, optional `display_name` + `simulator`) is byte-identical.
 - Every `scenes[i].task.id` is unique.
 
@@ -35,11 +33,10 @@ Per-scene `task.success_key` and `task.max_steps` MAY differ (e.g. ManiSkill3
 shares one suite across `PickCube-v1` and `StackCube-v1` with different step
 budgets).
 
-Previously the YAML root was a `{id, tasks, metadata}` wrapper around
-`BenchmarkSpec`; that shape is now rejected with an explicit redirect message
-pointing at the current bare-list format. YAML authors should use anchors (`&scene` / `<<: *scene`) to
-keep the per-scene fields DRY — see [`libero_spatial.yaml`](libero_spatial.yaml)
-for the pattern.
+The old `{id, tasks, metadata}` wrapper around `BenchmarkSpec` is rejected with
+a message pointing at the bare-list format. Use YAML anchors (`&scene` /
+`<<: *scene`) to keep per-scene fields DRY; see
+[`libero_spatial.yaml`](libero_spatial.yaml).
 
 ## Catalogue
 
@@ -66,36 +63,36 @@ table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
 the others. `metaworld_mt50` runs with 5 episodes per scene by default to keep
 the wall-clock under ~4 h on a single GPU; bump per-scene `n_episodes` together
 for a paper-equivalent reproduction. `maniskill3_panda` has per-task `max_steps`
-that differ across its 7 scenes (PickCube-v1=50 … PlugCharger-v1=200) — the suite
+that differ across its 7 scenes (PickCube-v1=50 … PlugCharger-v1=200); the suite
 aggregator uses `max(scene.task.max_steps)` for the suite-level bound (Task 10).
 It is OpenRAL-curated (ManiSkill3 has no single canonical suite); `--rskill`
 auto-filters to the tasks a policy declares, so it stays runnable as task-matched
 MS3 Panda policies land.
 
-The ManiSkill/SimplerEnv SAPIEN rows (`maniskill3_*` and `simpler_env_*`) require
-opt-in extras. Without `uv sync --group maniskill3` (or `simpler-env`)
-`openral benchmark run` will raise a typed `ROSConfigError` at lazy import time
-with the install hint. The simpler-env package has no PyPI release; after
-`uv sync --group simpler-env` users must also run:
+The ManiSkill/SimplerEnv SAPIEN rows (`maniskill3_*` and `simpler_env_*`) need
+opt-in extras. Without `uv sync --group maniskill3` (or `simpler-env`),
+`openral benchmark run` raises a typed `ROSConfigError` at lazy import time with
+the install hint. simpler-env has no PyPI release; after
+`uv sync --group simpler-env` also run:
 
 ```
 uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
 ```
 
-`robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN). It
-runs out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
+`robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN). It runs
+out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
 RoboTwin's SAPIEN/CuRobo/pytorch3d stack is incompatible with the py3.12 workspace;
 `uv sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
 msgpack). The heavy lerobot-main + RoboTwin + asset venv is externally provisioned
 (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual sidecar-provisioning recipe). Task-matched
 rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
-`lerobot/smolvla_robotwin` checkpoint). The shown 5-task slice is a representative
-subset of RoboTwin's 50 tasks; the `smolvla-robotwin` checkpoint is multi-task so it
+`lerobot/smolvla_robotwin` checkpoint). The 5-task slice is a representative
+subset of RoboTwin's 50 tasks; the multi-task `smolvla-robotwin` checkpoint
 covers all of them.
 
-The `rlbench.yaml` row runs RLBench on **CoppeliaSim/PyRep** — a
-proprietary (free-EDU) simulator that is **never vendored** (CLAUDE.md §1.9) and
-the released 3D keyframe policies pin the `MohitShridhar/RLBench@peract` fork.
+`rlbench.yaml` runs RLBench on **CoppeliaSim/PyRep**, a proprietary (free-EDU)
+simulator that is **never vendored** (CLAUDE.md §1.9); the released 3D keyframe
+policies pin the `MohitShridhar/RLBench@peract` fork.
 Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-rlbench`,
 MIT) run in an externally-provisioned py3.10 sidecar venv; the openral side only
 needs `uv sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
@@ -112,9 +109,9 @@ GR00T N1.7 baseline policy (`rskills/gr00t-n17-b1k-turning-on-radio`) runs
 in a second sidecar (`tools/behavior_groot_sidecar.py`, whole-model NF4 to
 co-reside with the simulator on 8 GB). The openral side needs
 `just sync --group behavior-groot`. Like `maniskill3_panda`, `--rskill`
-auto-filters the suite to a policy's `evaluated_tasks` — the only released
-organizer checkpoint covers `turning_on_radio`, so today's runs execute that
-single task; the suite stays runnable as multi-task BEHAVIOR policies land.
+auto-filters the suite to a policy's `evaluated_tasks`; the only released
+organizer checkpoint covers `turning_on_radio`, so runs today execute that
+single task.
 Per-task `max_steps` is the official cap (`int(1.5 x mean human-demo
 length)`) read from the installed challenge stats. One instance, one episode
 per task: closed-loop protocol at ~1 step/s makes an episode ~1–2 h
@@ -123,14 +120,13 @@ averaged over all public instances, which this suite does not reproduce.
 
 ## Adding a new benchmark
 
-1. Pick the published protocol you want to reproduce. Don't invent protocols —
-   the value of `openral benchmark report` is apples-to-apples across papers.
-2. Drop a `<id>.yaml` here whose YAML root is a bare list of `BenchmarkScene`
-   mappings — use the YAML-anchor pattern from
-   `libero_spatial.yaml` to keep per-scene fields DRY.
-3. Add a test under `tests/unit/test_benchmark_schemas.py` that loads the
-   fixture via `load_benchmark_suite` + `raise_on_invalid_suite` — CLAUDE.md
-   §1.11 (real fixtures, no placeholders).
+1. Pick the published protocol to reproduce. Don't invent protocols: the value
+   of `openral benchmark report` is apples-to-apples across papers.
+2. Add a `<id>.yaml` here whose root is a bare list of `BenchmarkScene`
+   mappings, using the YAML-anchor pattern from `libero_spatial.yaml`.
+3. Add a test under `tests/unit/test_benchmark_schemas.py` that loads it via
+   `load_benchmark_suite` + `raise_on_invalid_suite` (CLAUDE.md §1.11: real
+   fixtures, no placeholders).
 4. Single-scene paper claim instead of a suite? Drop a `BenchmarkScene` YAML
    under [`scenes/benchmark/`](../scenes/benchmark/) and run it with
    `openral benchmark scene --config scenes/benchmark/<id>.yaml --rskill <name>`.

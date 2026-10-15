@@ -29,11 +29,11 @@ with a `rskill.yaml` manifest that adds capability checking, license
 surfacing, latency budgets, and local registry integration. It does
 **not** copy model weights.
 
-It is the harder sibling of [`rskill-act-aloha-aloha_transfer_cube-fp32`](../act-aloha) (cube
-transfer) and demonstrates how a single packaging format covers multiple
-task-specific checkpoints from the same paper. The runnable demo lives at
-`scenes/benchmark/aloha_insertion.yaml` and is wired into the
-top-level `just sim-custom` recipe.
+It is the harder sibling of [`rskill-act-aloha-aloha_transfer_cube-fp32`](../act-aloha)
+(cube transfer): one packaging format covering multiple task-specific
+checkpoints from the same paper. The runnable demo is
+`scenes/benchmark/aloha_insertion.yaml`, wired into the top-level
+`just sim-custom` recipe.
 
 ## Upstream model
 
@@ -56,10 +56,9 @@ Locally reproduced on the **ALOHA bimanual peg insertion** benchmark via
 | --- | --- | --- | --- |
 | `aloha_insertion` | 50 | seeds 0–49, `success_key=is_success`, `max_steps=400` | **10/50 success (20%)** |
 
-The paper's headline number for sim ALOHA insertion is markedly lower than
-the cube-transfer figure (the task is harder and the upstream protocol uses
-different camera intrinsics); this reproduction confirms that gap rather
-than a regression.
+The paper's sim ALOHA insertion number is markedly lower than its
+cube-transfer figure (harder task; the upstream protocol uses different camera
+intrinsics); this reproduction shows the same gap, not a regression.
 
 ## Supported robots
 
@@ -67,9 +66,8 @@ than a regression.
 | --- | --- | --- | --- |
 | ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers); MuJoCo MJX `AlohaInsertion-v0`. |
 
-Same physical embodiment as the [`act-aloha`](../act-aloha/) sibling
-(cube transfer); the only difference is the task contact dynamics — peg
-insertion is harder than cube pick-and-place.
+Same physical embodiment as the [`act-aloha`](../act-aloha/) sibling; only the
+task contact dynamics differ (peg insertion is harder than cube pick-and-place).
 
 ## Sensors required
 
@@ -78,8 +76,8 @@ insertion is harder than cube pick-and-place.
 | `observation.images.top` | RGB camera | 640 × 480 | `float32` |
 | `observation.state`      | proprioception | (14,) | `float32` (2 × 7-DoF joint positions) |
 
-Single top-down RGB stream like the cube-transfer sibling — the
-checkpoint does not consume wrist or third-person views.
+Single top-down RGB stream, like the cube-transfer sibling; no wrist or
+third-person views.
 
 ## Manifest summary
 

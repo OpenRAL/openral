@@ -1,14 +1,11 @@
 # Inference deploy image
 
-OpenRAL ships **one** open deploy image, and it is **GStreamer-free**. A
-consolidation decision ("Single-Dockerfile consolidation + CUDA-13 alignment")
-replaced the four-Dockerfile matrix that PR #93 introduced (`Dockerfile.x86`,
-`Dockerfile.x86-ros`, `Dockerfile.x86-deepstream`, `Dockerfile.l4t`) with a
-single source of truth. The OpenRAL Pro split then moved the entire proprietary
-media stack — **GStreamer + the NVMM zero-copy fast path + DeepStream +
-TensorRT** — out of this repo. It is now an OpenRAL Pro plugin
-(`openral-pro`'s `docker/Dockerfile.pro`, which `FROM`s the image built here and
-installs that stack itself).
+OpenRAL ships **one** open deploy image, and it is **GStreamer-free**. The
+"Single-Dockerfile consolidation + CUDA-13 alignment" decision replaced PR #93's
+four-Dockerfile matrix (`Dockerfile.x86`, `Dockerfile.x86-ros`,
+`Dockerfile.x86-deepstream`, `Dockerfile.l4t`) with one. The proprietary media
+stack (**GStreamer + the NVMM zero-copy fast path + DeepStream + TensorRT**) is
+an OpenRAL Pro plugin (details below).
 
 | Image | Built by | Pushed to GHCR? | License | When to use |
 |---|---|---|---|---|
@@ -18,28 +15,25 @@ installs that stack itself).
 Scenes that target `openral:x86` must bind their cameras with
 `backend: opencv_thread` (not `gstreamer`) — see
 [`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml) for the
-reference SO-101 workcell. The GStreamer `SensorReader` + perception-tee remain
-in-repo as the opt-in `gstreamer` extra (PyGObject), but are **not** in this
-image. The L4T / Tegra / Jetson Orin variant and the no-ROS variant from PR #93
-are deliberately out of scope here. See
+reference SO-101 workcell. The L4T / Tegra / Jetson Orin variant and the no-ROS
+variant from PR #93 are deliberately out of scope here. See
 [`docs/decisions.md`](../../docs/decisions.md) for the trade-off rationale.
 
 ## Host driver requirements
 
-The image's base is `nvidia/cuda:13.0.0-runtime-ubuntu24.04`. CUDA 13 needs
-**host NVIDIA driver ≥ 580.65**. On older drivers the image still imports and
-runs (`openral deploy run` works — OpenCV camera capture and the ROS graph are
-CPU-side), but `torch.cuda.is_available()` returns `False` and every
-CUDA-touching op falls back to (or fails on) CPU.
+The base is `nvidia/cuda:13.0.0-runtime-ubuntu24.04`; CUDA 13 needs **host
+NVIDIA driver ≥ 580.65**. On older drivers `openral deploy run` still comes up
+(OpenCV camera capture and the ROS graph are CPU-side), but
+`torch.cuda.is_available()` returns `False` and every CUDA-touching op falls
+back to (or fails on) CPU.
 
 | Host driver | What works | What fails |
 |---|---|---|
 | **≥ 580.65** | Everything: torch CUDA, onnxruntime CUDA EP, GPU-resident VLA + reward + detector models | — |
 | **570 – 579** (e.g. 575.57 — CUDA 12.9-class) | The ROS graph, OpenCV camera capture, CPU inference. `openral deploy run` comes up. | `torch.cuda.is_available()` returns `False`; GPU-resident models (VLA / Robometer / omdet) OOM or refuse at the VRAM preflight |
-| **< 570** | nothing — base image's CUDA 13 stack stops loading entirely | everything |
+| **< 570** | nothing: the base image's CUDA 13 stack stops loading entirely | everything |
 
-The `openral doctor` command surfaces the driver version so users see the
-mismatch up front.
+`openral doctor` reports the driver version, so the mismatch shows up front.
 
 ## What's in the image
 
@@ -105,26 +99,25 @@ mismatch up front.
 
 ## The GStreamer / DeepStream / TensorRT stack moved to OpenRAL Pro
 
-GStreamer's NVMM zero-copy fast path, DeepStream, and TensorRT are the
+GStreamer's NVMM zero-copy fast path, DeepStream and TensorRT are the
 proprietary, EULA-restricted media/inference stack. A 2026-05-12 decision
-(refined 2026-05-14) rejected bundling DeepStream into the default image, and a
+(refined 2026-05-14) rejected bundling DeepStream into the default image; a
 2026-07-08 decision moved the whole opt-in variant into the private `openral-pro`
-repo. `openral-pro`'s `docker/Dockerfile.pro` `FROM`s the gstreamer-free
-`openral:x86` and installs GStreamer + `nvvideoconvert` / NVMM caps / `nvinfer` /
-the TensorRT-accelerated SmolVLA/ACT engines itself. The open-core image built
-from this directory never bundles any of it and stays pure Apache-2.0 + NVIDIA
-CUDA runtime EULA.
+repo, whose `docker/Dockerfile.pro` `FROM`s the gstreamer-free `openral:x86` and
+installs GStreamer + `nvvideoconvert` / NVMM caps / `nvinfer` / the
+TensorRT-accelerated SmolVLA/ACT engines itself. The image built here never
+bundles any of it and stays pure Apache-2.0 + NVIDIA CUDA runtime EULA.
 
 The GStreamer `SensorReader` and perception-tee Python code
 (`python/runner/src/openral_runner/backends/gstreamer/`) still ships in this repo
-as the opt-in `gstreamer` extra — it is import-safe without `gi` (the `gi`/`Gst`
-imports are lazy) and is what OpenRAL Pro builds on. It is simply not installed
-in this image.
+as the opt-in `gstreamer` extra (PyGObject). It is import-safe without `gi` (the
+`gi`/`Gst` imports are lazy) and is what OpenRAL Pro builds on; it is just not
+installed in this image.
 
 ## Build-time and runtime caches
 
-Two settings in `Dockerfile.x86` exist purely to keep cold starts sane, and
-both are easy to drop in a refactor without noticing:
+Two settings in `Dockerfile.x86` exist only to keep cold starts sane, and both
+are easy to drop in a refactor:
 
 - **`ENV UV_COMPILE_BYTECODE=1`** — uv skips `.pyc` generation by default, so
   without it the *first* import of the torch/lerobot/transformers tree inside a
@@ -142,9 +135,8 @@ both are easy to drop in a refactor without noticing:
       openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
   ```
 
-  Without the mount every `--rm` run re-downloads the rSkill's weights —
-  gigabytes and minutes per launch (SmolVLA ~1.4 GB, Robometer-4B ~3.5 GB) —
-  and the cost is invisible in a `phase_timer` breakdown because it lands
+  Without the mount every `--rm` run re-downloads the rSkill's weights
+  (SmolVLA ~1.4 GB, Robometer-4B ~3.5 GB), and the cost is invisible in a `phase_timer` breakdown because it lands
   inside `from_pretrained`.
 
 The `ros-jazzy-*` apt packages are not version-pinned, so two builds of one
@@ -162,8 +154,8 @@ docker run --rm --entrypoint cat openral:x86 /opt/openral/ros-jazzy-versions.txt
 
 The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with
 `RMW_IMPLEMENTATION` unset gets Fast-DDS on Jazzy, so host-side `ros2` tooling
-**cannot see the container's nodes even with `--network host`** — an
-`ros2 action send_goal` just hangs until its timeout against a running action
+**cannot see the container's nodes even with `--network host`**: an
+`ros2 action send_goal` hangs until its timeout against a running action
 server. Either dispatch from inside the container:
 
 ```bash
@@ -186,18 +178,18 @@ onnxruntime / omdet present, `deploy run --dry-run` resolves) plus the live-ROS
 suite, then pushes `openral:x86` to GHCR. The image is ~25 GB, so the workflow
 frees runner disk before building.
 
-It does **not** run on pull requests: a full build is ~15-20 min of runner time
-and it re-ran on every push to a branch. If your PR touches the image or the
-live-ROS tests, run the workflow by hand against your branch
-(`gh workflow run docker-build.yml --ref <branch>`) — a dispatch run builds and
-tests exactly the same way, it just never pushes the image.
+It does **not** run on pull requests (a full build is ~15-20 min of runner time,
+and it used to re-run on every push to a branch). If your PR touches the image or
+the live-ROS tests, dispatch it against your branch
+(`gh workflow run docker-build.yml --ref <branch>`): a dispatch run builds and
+tests the same way but never pushes the image.
 
 ### Build caching
 
 The image is large and its code is baked in, not mounted, so a naive rebuild is
-~30 minutes. Three mechanisms keep an incremental build far below that. If you
-change the Dockerfile's layer order, keep them in mind — they are easy to defeat
-by accident.
+~30 minutes. Three mechanisms keep an incremental build far below that; keep
+them in mind when changing the Dockerfile's layer order, as they are easy to
+defeat by accident.
 
 1. **Containerd image store, `docker` buildx driver.** The build writes straight
    into the store dockerd reads from. Under the older `docker-container` driver,
@@ -215,11 +207,11 @@ by accident.
      stage prunes `python/` to the workspace members' `pyproject.toml` files, and
      `uv sync --no-install-workspace` installs the 215-package third-party
      closure against *that*. The real `python/` is copied afterwards and a second
-     sync adds the 14 local packages in ~2s. Copying `python/` before the sync —
-     the obvious-looking arrangement — makes every one-line source edit
-     re-download ~4.4 GiB of wheels. Note the BuildKit cache mount on
-     `/root/.cache/uv` does **not** save you: cache mounts are not exported by
-     the registry cache exporter, so on a fresh runner it is always cold.
+     sync adds the 14 local packages in ~2s. Copying `python/` before the sync
+     (the obvious-looking arrangement) makes every one-line source edit
+     re-download ~4.4 GiB of wheels. The BuildKit cache mount on
+     `/root/.cache/uv` does **not** help: the registry cache exporter does not
+     export cache mounts, so on a fresh runner it is always cold.
    - **`opentelemetry_cpp_vendor` gets its own layer.** It builds
      opentelemetry-cpp from source and serially gates `openral_safety_kernel`,
      together ~210s of the colcon step. It is copied and built before
@@ -242,19 +234,19 @@ GHCR deduplicates blobs per repository. Because `--cache-to
 type=registry,mode=max` writes every layer into `ghcr.io/openral/openral`, by
 the time `Tag + push to GHCR` runs, all of the image's layers are already there.
 Measured on master run 31253732623, the push is **16 × `Layer already exists`
-and 1 × `Pushed`** — the single new blob is the attestation manifest, which the
-cache export does not carry — so the whole step takes **3.3s**. Before the cache
+and 1 × `Pushed`** (the single new blob is the attestation manifest, which the
+cache export does not carry), so the whole step takes **3.3s**. Before the cache
 and the image shared a repository's dedup domain, that same step took **6m27s**.
 
-Two consequences worth internalising:
+Two consequences:
 
 - **The upload cost did not vanish, it moved.** The master cache export is
   ~426s, against the ~387s the push used to cost. The publish path is roughly a
   wash on its own; the win comes from the tarball round-trip disappearing
   (build + push together: 1705s → 1353s). Do not read the 3.3s push as free.
 - **A separate cache repo breaks the dedup**, and the push reverts to uploading
-  the full image. Nothing will fail — CI stays green — the publish step just
-  quietly gets minutes slower. There is no test that catches this.
+  the full image. Nothing fails and no test catches it; the publish step just
+  quietly gets minutes slower.
 
 ### Where the remaining time goes
 
@@ -267,8 +259,7 @@ anything. Measured:
 | Export / unpack / cache export | ~250s unpacking + 138s blob pull | 810s (60%) |
 
 So the lever for further speedup is **image size**, or decoupling the smoke
-checks from a full local image materialization — not more caching and not
-colcon. A 25.2 GB image is materialized in full to run three short
+checks from a full local image materialization, not more caching or colcon. A 25.2 GB image is materialized in full to run three short
 `docker run` checks.
 
 ## Image sizes

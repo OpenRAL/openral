@@ -59,11 +59,10 @@ camera views (overhead + wrist); 9-D Franka proprio state.
 | Action head | Flow-matching (10 denoising steps per chunk) |
 | Chunk size | 50 |
 
-The training data was collected with a `pd_joint_pos` Franka in
-SAPIEN; the checkpoint therefore outputs 8-D joint commands (7 arm + 1
-gripper). State inputs are the Franka qpos (9 values: 7 arm joints +
-2 finger joints) — the gym observation `agent.qpos` exactly matches
-this layout.
+The training data was collected with a `pd_joint_pos` Franka in SAPIEN, so
+the checkpoint outputs 8-D joint commands (7 arm + 1 gripper). State inputs are
+the Franka qpos (7 arm + 2 finger joints), exactly the gym observation
+`agent.qpos`.
 
 ### Observation → action contract
 
@@ -167,10 +166,9 @@ state, and emits 8-D joint position commands. The end-to-end path:
    truncates the env's `qpos+qvel` state to qpos-only.
 3. **SmolVLA adapter** (`python/sim/src/openral_sim/policies/smolvla.py`)
    detects the upstream model's missing `policy_*processor.json`
-   files and falls back to rebuilding the lerobot processors from
-   `manifest.dataset_uri`'s `meta/episodes_stats.jsonl` — generic
-   path that applies to any community finetune uploaded without
-   processors.
+   files and rebuilds the lerobot processors from
+   `manifest.dataset_uri`'s `meta/episodes_stats.jsonl` (a generic path
+   for any community finetune uploaded without processors).
 4. **`--view`** triggers the SAPIEN `viewer_render()` hook
    (deferred-window, mirroring PR #160's simpler_env). The window
    opens lazily on the first applied step, after the policy is
@@ -184,8 +182,7 @@ The wrapped weights at
 ship without an explicit LICENSE file; the base model
 `lerobot/smolvla_base` is Apache-2.0 and this derivative is treated as
 Apache-2.0 here on the inheritance assumption. If the upstream author
-later publishes a different posture, this manifest's `license:` field
-should be updated to match.
+publishes a different posture, update this manifest's `license:` field.
 
 ## See also
 

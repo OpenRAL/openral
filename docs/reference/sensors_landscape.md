@@ -1,12 +1,9 @@
 # Robot Sensor Landscape & OpenRAL Catalog Roadmap
 
-This document is the canonical reference for **which sensors are common on
-production and research robot platforms in 2024–2026**, and **which of them
-should ship as first-party `SensorBundle` factories under `python/sensors/`**.
-
-It is the input for sequencing work in `python/sensors/` and for any future
-ADR that proposes extending the `SensorModality` enum in
-`openral_core.schemas`.
+Which sensors are common on production and research robots in 2024–2026, and
+which should ship as first-party `SensorBundle` factories under `python/sensors/`.
+Input for sequencing work in `python/sensors/` and for any future ADR extending
+the `SensorModality` enum in `openral_core.schemas`.
 
 Method: a survey of vendor data sheets, model cards from major humanoid /
 quadruped / manipulator vendors (Tesla, Figure, Unitree, Boston Dynamics,
@@ -20,7 +17,7 @@ See also:
   `SensorBundle`, `SensorModality`, `IntrinsicsPinhole`.
 - `python/sensors/src/openral_sensors/realsense.py` — reference
   implementation pattern (RealSense D435 / D455 today).
-- `CLAUDE.md` §6.1 (layer discipline), §7.5 (working with sensors).
+- [`CLAUDE.md`](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §3 (layer discipline).
 
 ---
 
@@ -198,8 +195,7 @@ arrays fit `TACTILE_ARRAY` with `tactile_grid = (rows, cols)`.
 
 ## 3. Schema-compliance audit
 
-For each modality above, the existing `SensorSpec` fields are sufficient
-(green) unless flagged. Summary:
+The existing `SensorSpec` fields are sufficient unless flagged.
 
 | Modality | `SensorModality` enum | Sufficient `SensorSpec` fields? | Notes |
 |---|---|---|---|
@@ -248,9 +244,9 @@ that extends `SensorSpec` in place against the pre-publish baseline
 ## 5. Catalog & factory implementation status
 
 The catalog ships only the sensor entries that are actually wired into a robot
-manifest or HAL adapter today.  Each entry is addressable by stable id (`<vendor>/<model>`)
+manifest or HAL adapter today. Each entry is addressable by stable id (`<vendor>/<model>`)
 through the `SensorCatalog` registry and surfaced via the `openral sensor list /
-show` CLI.  Speculative entries (extra RealSense SKUs, Orbbec, Logitech C922 /
+show` CLI. Speculative entries (extra RealSense SKUs, Orbbec, Logitech C922 /
 Brio, Arducam, every 2D / 3D LiDAR, standalone IMUs, ATI / Bota / OnRobot F/T,
 GelSight DIGIT, XELA, AnySkin) are intentionally excluded; reintroduce
 them only when a robot manifest or HAL factory needs them.
@@ -335,13 +331,9 @@ Every new module follows the conventions used by `realsense.py`,
 
 ## 7. Summary — status & next steps
 
-1. ✅ **Catalog pruned to actually-wired sensors.**  `openral_sensors` now
-   ships 7 catalog entries across 4 vendor modules (`realsense.py`,
-   `usb_uvc.py`, `luxonis.py`, `force_torque.py`), `SensorCatalog` registry, `openral sensor
-   list / show` CLI, full unit-test coverage.  Any speculative entry (extra
-   LiDAR, IMU, tactile, depth-camera SKUs, additional UVC cameras) was removed
-   — reintroduce them on demand when a robot manifest or HAL adapter actually
-   needs them.  No schema change required.
+1. ✅ **Catalog pruned to actually-wired sensors** (§5): 7 entries across 4
+   vendor modules, `SensorCatalog` registry, `openral sensor list / show` CLI,
+   full unit-test coverage. No schema change required.
 2. **Open one ADR** for the §4 schema additions (event, thermal, range_1d,
    barometer, magnetometer, contact, stereo baseline) bundled together as
    `schema v0.3`, with a single migration entry and a regenerated

@@ -1,10 +1,8 @@
 # `openral_perception_ros` (ROS 2)
 
-> **Standalone ROS-Image object-detection producer (no
-> GStreamer) feeding the perception → spatial-memory object lift.**
-
-A single `ament_cmake` ROS 2 package (Python node) that subscribes a
-camera `sensor_msgs/Image`, runs the GStreamer-free
+Standalone ROS-Image object-detection producer (no GStreamer) feeding the
+perception → spatial-memory object lift. An `ament_cmake` package (Python node)
+that subscribes a camera `sensor_msgs/Image`, runs the GStreamer-free
 [`openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`](../../python/runner/src/openral_runner/backends/gstreamer/objects_detector.py)
 (or a manifest-driven backend — see below), and publishes the
 detections on `/openral/perception/objects` — the topic the world-state
@@ -13,10 +11,9 @@ the open-vocabulary `omdet-turbo-indoor` continuous detector (grounds arbitrary
 indoor/kitchen objects); it falls back to the fixed-label RT-DETR COCO ONNX
 (`rtdetr-coco-r18`) when the omdet deps are not installed.
 
-It exists so the perception → spatial-memory object lift can
-run against a plain ROS image topic in `openral deploy sim`, without
-standing up the GStreamer perception bus (the supervisor-graph's F6 leg) that
-the on-robot path uses. It reuses the exact same `ObjectsDetector` and
+It lets the object lift run against a plain ROS image topic in
+`openral deploy sim` without the GStreamer perception bus (the supervisor
+graph's F6 leg) the on-robot path uses. Same `ObjectsDetector` and
 `ObjectsMetadata` schema; only the frame source differs.
 
 ## Node
@@ -61,9 +58,8 @@ so the geometry is consistent (per the object-lift design).
 
 ## Launch
 
-Not invoked directly in practice — it's wired into the generic
-`deploy_e2e.launch.py` graph behind the `enable_object_detector` launch
-argument, driven by the CLI:
+Wired into the generic `deploy_e2e.launch.py` graph behind the
+`enable_object_detector` launch argument, driven by the CLI:
 
 ```bash
 openral deploy sim --config scenes/<SceneEnvironment>.yaml   # detector ON by default
@@ -118,10 +114,10 @@ is the HAL's vision attachment-evidence bridge
 (`openral_hal.vision_attachment_bridge`), at attach / detach / regrasp events.
 One shot per event, never per frame.
 
-It lives here, beside the detector rSkills, because **the HAL is deliberately
-kept torch-free**: the HAL asks over the service rather than importing a model.
+It lives here, beside the detector rSkills, because **the HAL is kept
+torch-free**: it asks over the service rather than importing a model.
 
-Four things about the contract are load-bearing:
+Load-bearing parts of the contract:
 
 - **The prompt is a 3-D point, not a pixel.** The node transforms it from the
   request's `frame_id` into the **cached image's `header.frame_id`** — the
@@ -163,19 +159,16 @@ line reports the total warm-up time.
 
 ### The diagnostic mask topic
 
-Because the contract above is a *service*, there is nothing for an operator to
-watch: `ros2 topic echo` cannot introspect a reply that already happened, and
-the dashboard's camera tiles have been able to render segmentation masks since
-PR #122 with no producer to render.
-
-So `publish_debug_masks` (**default false**) re-publishes each successful reply
+A service reply cannot be watched with `ros2 topic echo`, and the dashboard's
+camera tiles have rendered segmentation masks since PR #122 with no producer.
+`publish_debug_masks` (**default false**) re-publishes each successful reply
 as an `openral_msgs/SegmentMasks` on `debug_masks_topic`
 (`/openral/perception/masks`), at sensor-class QoS — `BEST_EFFORT` / `VOLATILE`
 / `KEEP_LAST=1`, because only the newest mask set is worth drawing. Off means
 *no publisher is created at all*, so it costs nothing when nobody asked for it.
 `openral_observability.dashboard.perception_overlay_subscriber` is the consumer.
 
-It is **strictly diagnostic**, and that is a property to preserve:
+It is **strictly diagnostic**; keep it that way:
 
 - nothing in the safety or attachment path reads it — the HAL producer takes its
   masks from its own service reply and gates them geometrically;
@@ -252,10 +245,13 @@ removes a published payload whatever the kernel flag.
   bytes, incl. 1920x1080 ZED `bgra8`/`rgba8` frames with padded rows, and
   the rejection paths (unknown encoding, short `step`, truncated payload).
 - `tests/unit/test_depth_convert.py` — metric-depth ↔ `32FC1`
-- `tests/unit/test_estimated_depth_camera.py` — `estimated_depth_camera` resolution / refusals and the metric round trip; `tests/integration/test_estimated_depth_provider_live.py` — the node's metric mode against a fake DA3 sidecar (`OPENRAL_TEST_ROS_LIVE=1`)
   Image round-trip (metres preserved, NaN preserved), the `CameraInfo`
   pinhole matrices, and the rejection paths (non-2D, wrong encoding,
   padded stride).
+- `tests/unit/test_estimated_depth_camera.py` — `estimated_depth_camera`
+  resolution / refusals and the metric round trip.
+- `tests/integration/test_estimated_depth_provider_live.py` — the node's metric
+  mode against a fake DA3 sidecar (`OPENRAL_TEST_ROS_LIVE=1`).
 - `tests/unit/test_objects_detector.py` — the reused `ObjectsDetector`
   against a real deterministic `onnx.helper` fixture (no mocks, per
   CLAUDE.md §1.11).

@@ -2,13 +2,13 @@
 
 Canonical `RobotDescription` manifest for the **Rethink Robotics Sawyer**
 7-DoF arm (4 kg payload, 1.26 m reach, joint torque sensors, parallel
-gripper). The MetaWorld MT50 benchmark simulates this same robot through
-`metaworld` / `robosuite` MuJoCo wrappers; the sim-imposed observation /
-action contract (4-D `agent_pos` state, 4-D delta-XYZ-plus-gripper
-action) lives in the matching scene adapter at
+gripper). The MetaWorld MT50 benchmark simulates this robot through
+`metaworld` / `robosuite` MuJoCo wrappers. Per the robot/sim split convention
+(as for `franka_panda`), the manifest describes the physical Sawyer, and the
+sim-imposed contract (4-D `agent_pos` state, 4-D delta-XYZ-plus-gripper action)
+lives in the scene adapter
 [`python/sim/src/openral_sim/backends/metaworld.py`](../../python/sim/src/openral_sim/backends/metaworld.py),
-not in this manifest. This follows the
-robot/sim split convention.
+which translates inside the runner. No Sawyer-specific sim HAL ships in tree.
 
 ## At a glance
 
@@ -23,18 +23,6 @@ robot/sim split convention.
 | `sdk_kind` | `closed_with_api` (Rethink's `intera_sdk`; vendor dissolved in 2018; community forks remain the reference) |
 | `hal.sim` | _none_ — no MuJoCo twin (real-only; `deploy sim` raises `ROSCapabilityMismatch`) |
 | `hal.real` | `openral_hal.sawyer_real:SawyerRealHAL` ([#57](https://github.com/OpenRAL/openral/issues/57)) |
-
-The MetaWorld MuJoCo backend simulates this Sawyer through the
-`openral_sim` MetaWorld scene adapter; no Sawyer-specific HAL
-ships in tree today.
-
-## Why "physical robot only"
-
-Same rationale as `franka_panda` — the
-robot/sim split convention. The manifest
-describes the physical Sawyer; the MetaWorld scene adapter translates
-to/from MetaWorld's 4-D action / observation conventions inside the
-runner.
 
 ## Wiring
 
@@ -73,6 +61,5 @@ Evidence: `tests/unit/test_sawyer_real.py::TestSafety`,
 
 ## See also
 
-- The robot/sim split convention — robot-vs-sim split rationale.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.2 — MetaWorld VLA matrix.
 - [`python/sim/src/openral_sim/backends/metaworld.py`](../../python/sim/src/openral_sim/backends/metaworld.py) — sim-side IO contract.

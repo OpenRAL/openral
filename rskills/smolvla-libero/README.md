@@ -24,9 +24,7 @@ inference: false
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on the [LIBERO](https://libero-project.github.io/) benchmark, packaged for use with the [OpenRAL](https://github.com/OpenRAL/openral) robot agent framework.
 
-This package wraps [`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/HuggingFaceVLA/smolvla_libero) with a `rskill.yaml` manifest that adds capability checking, license surfacing, latency budgets, and local registry integration.  It does **not** copy model weights.
-
----
+This package wraps [`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/HuggingFaceVLA/smolvla_libero) with a `rskill.yaml` manifest that adds capability checking, license surfacing, latency budgets, and local registry integration. It does **not** copy model weights.
 
 ## Quick start
 
@@ -51,8 +49,6 @@ Via CLI:
 openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 ```
 
----
-
 ## Upstream model
 
 | Field | Value |
@@ -65,8 +61,6 @@ openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 | Benchmark | LIBERO (table-top manipulation, 4 suites × 10 tasks) |
 | Training data | [`physical-intelligence/libero`](https://huggingface.co/datasets/physical-intelligence/libero) — 1 693 demos |
 
----
-
 ## Supported robots
 
 | Robot | Embodiment tag | Status | Notes |
@@ -76,8 +70,6 @@ openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 | Any 6–7 DOF manipulator | `manipulator` | ⚡ experimental | Requires obs-format adapter |
 
 To add a new robot: create a `SensorBundle` + obs-format adapter, update `embodiment_tags` in `rskill.yaml`, and open a PR.
-
----
 
 ## Hardware requirements
 
@@ -100,9 +92,7 @@ To add a new robot: create a `SensorBundle` + obs-format adapter, update `embodi
 | PyTorch | 2.10.0+cu128 |
 | Peak VRAM | ~1.1 GiB (bf16 chunk inference, 512 × 512 inputs) |
 
-> **CPU fallback**: possible but expect ~20× slower inference (900 ms chunk → ~18 s).  Set `device="cpu"` in the run script; no code changes required.
-
----
+> **CPU fallback**: ~20× slower inference (900 ms chunk → ~18 s). Set `device="cpu"` in the run script; no code changes required.
 
 ## Sensors
 
@@ -112,11 +102,9 @@ To add a new robot: create a `SensorBundle` + obs-format adapter, update `embodi
 | `observation.images.OBS_IMAGE_2` | RGB camera | 512 × 512 | `float32 [0, 1]` | Wrist / end-effector view |
 | `observation.state` | Proprioception | (7,) | `float32` | Joint positions (rad or deg, model-native) |
 
-Images are resized to 512 × 512 before tokenisation.  The model applies pixel-shuffle (4×) to compress each frame to 64 VLM tokens (no tiling).
+Images are resized to 512 × 512 before tokenisation. The model applies pixel-shuffle (4×) to compress each frame to 64 VLM tokens (no tiling).
 
 **For SO-100 digital twin runs**: images are synthesised as zero tensors (no real camera); state uses 6-DOF twin positions padded to 7-DOF.
-
----
 
 ## Observation → action contract
 
@@ -151,8 +139,6 @@ action = policy.select_action(batch)             # → (1, 8) float32
 | Flow matching steps | 10 |
 | Inference mode | Synchronous (drain chunk, then re-infer) |
 
----
-
 ## Optimizations
 
 | Optimization | Command / config | VRAM impact | Latency impact |
@@ -163,9 +149,7 @@ action = policy.select_action(batch)             # → (1, 8) float32
 | **INT8 / FP8** (planned) | `QuantizationConfig(dtype="int8")` (v0.3) | −50% | −50% |
 | **CPU-only** | pass `device="cpu"` | n/a | ~20× slower |
 
-`torch.compile` requires PyTorch 2.3+.  TRT/INT8 support is tracked in [OpenRAL #milestone-m3](https://github.com/OpenRAL/openral).
-
----
+`torch.compile` requires PyTorch 2.3+. TRT/INT8 support is tracked in [OpenRAL #milestone-m3](https://github.com/OpenRAL/openral).
 
 ## rSkill manifest summary
 
@@ -189,8 +173,6 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 | `commercial_use_allowed` | `true` |
 | `signature` | `null` (sigstore v1.0, planned) |
 
----
-
 ## Evaluation results
 
 ### Upstream benchmark (paper, not locally reproduced)
@@ -210,7 +192,7 @@ Full results with config: [`eval/libero.json`](eval/libero.json) — `reproduced
 
 ### IO contract verification (Day 20, locally measured)
 
-The following properties were verified locally using `tests/sim/test_franka_panda_smolvla_libero.py` and the SO-100 digital twin:
+Verified locally with `tests/sim/test_franka_panda_smolvla_libero.py` and the SO-100 digital twin:
 
 | Property | Expected | Measured | Status |
 |---|---|---|---|
@@ -222,8 +204,6 @@ The following properties were verified locally using `tests/sim/test_franka_pand
 | Cached step latency | ≤ 30 ms | ~4 ms | ✓ |
 | Peak VRAM | ≤ 2.0 GiB | ~1.1 GiB | ✓ |
 | 50-step digital twin rollout | completes | completes | ✓ |
-
----
 
 ## Local reproduction
 
@@ -254,14 +234,12 @@ uv add libero --group sim
 uv run pytest tests/sim/test_franka_panda_smolvla_libero.py::TestSmolVLALiberoPolicy -v -m sim
 ```
 
-Full LIBERO benchmark repro (updating `eval/libero.json` to `reproduced_locally: true`) requires
-the LIBERO gym package and ~8 h on a desktop GPU. This is tracked as a Day 21+ milestone.
-
----
+Full LIBERO repro (updating `eval/libero.json` to `reproduced_locally: true`) needs the LIBERO gym
+package and ~8 h on a desktop GPU; tracked as a Day 21+ milestone.
 
 ## Schema compliance
 
-This rSkill was validated with:
+Validated with:
 
 ```bash
 uv run python tools/schema_export.py           # regenerate JSON Schema
@@ -272,17 +250,13 @@ print(pkg.manifest.model_dump_json(indent=2))
 "
 ```
 
-The manifest validates against `RSkillManifest` (Pydantic v2) without errors.
-
----
+The manifest validates against `RSkillManifest` (Pydantic v2).
 
 ## Changelog
 
 | Version | Date | Notes |
 |---|---|---|
 | 0.1.0 | 2026-05-05 | Initial packaging — manifest + README + paper eval numbers |
-
----
 
 ## License
 

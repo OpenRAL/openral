@@ -563,7 +563,7 @@ Detailed evidence is folded into §4.1, §6.1 and §10; this is the scorecard.
 | G4 | Does CRISP (or any ROS 2 learned-policy stack) ship safety? | **No** — verified from source | `learnsyslab/crisp_controllers`: soft joint-limit repulsion + torque-rate slew only; `setCollisionBehavior` is never called |
 | G5 | Any REP/standard to align with? | **None** | Full REP index read; only REP-2006 (cyber disclosure) is safety-adjacent |
 
-**Coverage honesty:** the ROS Discord has no public archive; Reddit r/ROS and r/robotics had nothing
+**Coverage:** the ROS Discord has no public archive; Reddit r/ROS and r/robotics had nothing
 relevant; the `pwc` catalog 404'd six real arXiv papers found via web search — **an absence claim
 must never rest on `pwc` alone**.
 
@@ -914,7 +914,7 @@ permissively licensed RMPflow exists in 2026.**
 ### 18.5 Pinocchio 3 + coal derivatives, and the zero-distance degeneracy
 
 `pinocchio` is **BSD-2** and the **only** thing in this pass with released ROS 2 Jazzy binaries
-(4.1.0, with `coal`). **An honest correction to a common assumption:** Pinocchio advertises analytic
+(4.1.0, with `coal`). **A correction to a common assumption:** Pinocchio advertises analytic
 derivatives of RNEA/ABA, **not** of collision distance. Everyone — OCS2, pink — builds the distance
 gradient from `nearest_points` plus joint Jacobians, an approximation that **degenerates exactly at
 `min_distance == 0`**; OCS2's source carries the admission `// TODO(perry): is there a way to
@@ -1195,14 +1195,12 @@ caveat 8 of the [validation-evidence ledger](collision-validation-evidence.md)).
 
 **The trap was inferring accuracy from the `nativeccd` default** (GJK/EPA replacing MPR since MuJoCo
 3.3.0), whose docs only say "distances are inaccurate when using the legacy CCD pipeline". #170
-falsified that by measurement: under `mujoco 3.8.0` on the **default native-CCD path** the call
-returns `+0.000000` for `robot0_link7_collision` against `fridge_right_group_freezer_door_main` on
-`robocasa_fridge_drawer` layout 9, where the certified truth is `+0.148512 mm`, writing a 126.264 mm
-witness segment whose endpoints lie 526.6 mm and 432.9 mm outside the two geoms it claims to touch.
-Displacing the link by one picometre returns the right answer, so it is a degenerate *configuration*
-— and a scene's reset pose is where such configurations live. #170 states it flatly: **no `distmax`,
-no "only trust it below N mm" rule and no `ncon` cross-check separates the good answers from the
-bad.** Four checked-in `0.000 m` readings re-measure at +14.8, +82.2, +98.8 and +107.9 mm.
+falsified that by measurement on the **default native-CCD path** under `mujoco 3.8.0`: a false
+`+0.000000` where the certified truth is `+0.148512 mm`, a picometre-sensitive degenerate
+*configuration* of the kind a scene's reset pose produces, and **no `distmax`, no "only trust it
+below N mm" rule and no `ncon` cross-check separates the good answers from the bad.** Four
+checked-in `0.000 m` readings re-measure at +14.8, +82.2, +98.8 and +107.9 mm. Full
+characterisation: [the ledger's 2026-08-25 entry](collision-validation-evidence.md#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves).
 
 **Corrected verdict: do NOT adopt `mj_geomDistance` as the oracle, or as anything else on an
 adjudication or permission path.** The requirement is real — the 26-DOP → hull staging does need an

@@ -69,14 +69,13 @@ in a per-deployment copy for real targets.
 
 **Safety implication.** No `ActionChunk` is published on
 `/openral/candidate_action`, so the OpenRAL safety supervisor does NOT
-see Nav2's velocity commands. Collision avoidance relies entirely on
-Nav2's costmap + behaviour tree. The follow-up that brings velocity
-streams under the supervisor's envelope is tracked as an explicit
-out-of-scope item for the ROS-wrapped rSkills design and depends on
-(a) a mobile-base HAL declaring
-`body_twist` in `supported_control_modes` (none exist in-tree today),
-and (b) a velocity / jerk envelope landing in the supervisor (it
-currently checks per-joint position only).
+see Nav2's velocity commands; collision avoidance relies entirely on
+Nav2's costmap + behaviour tree. Bringing velocity streams under the
+supervisor's envelope is an explicit out-of-scope item for the
+ROS-wrapped rSkills design and depends on (a) a mobile-base HAL declaring
+`body_twist` in `supported_control_modes` (none exist in-tree today) and
+(b) a velocity / jerk envelope in the supervisor (it currently checks
+per-joint position only).
 
 ## How it was trained / Upstream provenance
 
@@ -112,8 +111,8 @@ own subscriptions handle:
 | TF | `/tf`, `/tf_static` | Resolve goal pose in the `map` frame |
 | Map | `/map` (or AMCL initial pose) | Global planner |
 
-If your deployment uses a non-default topic remap, surface it on the
-Nav2 launch — the wrapped action's contract is intact.
+For a non-default topic remap, set it on the Nav2 launch; the wrapped
+action's contract is unchanged.
 
 ## Manifest summary
 
@@ -161,9 +160,8 @@ ros2 action send_goal /openral/execute_skill openral_msgs/action/ExecuteSkill \
 
 ## Limitations / Roadmap
 
-- **Velocity stream bypasses the OpenRAL safety supervisor.** Nav2
-  publishes `/cmd_vel` directly. This is a tracked out-of-scope item
-  for the ROS-wrapped rSkills design.
+- **Velocity stream bypasses the OpenRAL safety supervisor** (see
+  *Safety implication* above).
 - **Goal hard-coded in the manifest.** v1 ships one goal per
   manifest; structured-prompt support is the next ADR.
 - **No mobile-base HAL in-tree.** Until one lands, the skill resolves
@@ -171,11 +169,10 @@ ros2 action send_goal /openral/execute_skill openral_msgs/action/ExecuteSkill \
 
 ## License
 
-The rSkill package itself (this manifest + README) is **Apache-2.0**.
-The wrapped Nav2 code (`nav2_msgs` IDL, `navigation2` planners) is
-**Apache-2.0** and lives outside this repository — installed via
-`ros-${ROS_DISTRO}-nav2-bringup`. Both postures
-are commercial-use-permissive.
+The rSkill package itself (this manifest + README) is **Apache-2.0**. The
+wrapped Nav2 code (`nav2_msgs` IDL, `navigation2` planners) is **Apache-2.0**
+and lives outside this repository, installed via
+`ros-${ROS_DISTRO}-nav2-bringup`. Both are commercial-use-permissive.
 
 ## See also
 

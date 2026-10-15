@@ -9,17 +9,17 @@ dataset and the public RoboTwin checkpoints (e.g.
 
 ## Sim-only manifest
 
-Unlike most robots in `robots/`, this manifest ships **no on-disk URDF/MJCF**. The actual
-robot lives inside the **SAPIEN** environment owned by the RoboTwin sidecar,
-so the openral side
-never instantiates it. The manifest exists only so the eval layer can:
+This manifest ships **no on-disk URDF/MJCF**: the robot lives inside the
+**SAPIEN** environment owned by the RoboTwin sidecar, and OpenRAL never
+instantiates it. The manifest exists only so the eval layer can:
 
 - resolve the **14-D joint-position action/state contract**, and
 - run the embodiment / sensor compatibility gate against an rSkill.
 
-Joint kinematics are therefore **approximate** (sufficient for capability matching and
-`SafetyEnvelope` authoring) — the SAPIEN model is authoritative. Mirrors the same posture as
-`robots/aloha_bimanual/robot.yaml` (gym-aloha ViperX), which also carries no shipped URDF.
+Joint kinematics are therefore **approximate** (sufficient for capability
+matching and `SafetyEnvelope` authoring); the SAPIEN model is authoritative.
+Same posture as `robots/aloha_bimanual/robot.yaml` (gym-aloha ViperX), which
+also ships no URDF.
 
 ## Driving it
 

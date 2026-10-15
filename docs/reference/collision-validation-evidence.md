@@ -16,26 +16,25 @@ The attached-payload collision work (issue #102, PRs
 [#128](https://github.com/OpenRAL/openral/pull/128)–[#135](https://github.com/OpenRAL/openral/pull/135))
 is calibrated against measurements taken on a real host. Those measurements
 are cited all over the tree — `spark:~/openral-runs/2026-08-15-final-battery/`,
-"round-8 r2", "the 2/5 battery" — but the ledger they refer to lived only in
-PR descriptions and a run store on one machine: a reproducibility gap
+"round-8 r2", "the 2/5 battery" — but their ledger lived only in PR
+descriptions and a run store on one machine, a reproducibility gap
 (CLAUDE.md §1.8).
 
-This page is the in-tree ledger: **what each round measured and concluded**,
-with the artifact path, distinguishing a number a file states from an
-inference drawn from several.
+This page is the in-tree ledger: what each round measured and concluded, with
+the artifact path, distinguishing a number a file states from an inference
+drawn from several.
 
-Every round **from 2026-08-22 onward** is produced by the in-tree harness —
-[`just validation-matrix`](../contributing/validation-matrix.md) — which writes
+Every round from 2026-08-22 onward is produced by the in-tree harness,
+[`just validation-matrix`](../contributing/validation-matrix.md), which writes
 a machine-readable `verdicts.json` (`openral_core.ValidationRoundVerdicts`)
-alongside its notes. Entries below that point should cite that file rather than
-prose, and `just validation-matrix-diff` answers "what changed since the last
-round" without anyone re-reading a log. The rounds already listed here predate
-the harness and are recorded as they were found — `just
-validation-matrix-import` makes one of them queryable in place, without moving
-or renaming anything in the run store. The 2026-08-22 and 2026-08-16 `master-1`
-rounds' artifacts are also checked in, trimmed, as the harness's own test
-fixtures (`tests/unit/fixtures/validation_matrix/`), alongside the harness's
-first (failed) live round.
+alongside its notes. Those entries should cite that file rather than prose;
+`just validation-matrix-diff` answers "what changed since the last round"
+without re-reading a log. Earlier rounds are recorded as they were found;
+`just validation-matrix-import` makes one queryable in place without moving or
+renaming anything in the run store. The 2026-08-22 and 2026-08-16 `master-1`
+artifacts are also checked in, trimmed, as harness test fixtures
+(`tests/unit/fixtures/validation_matrix/`), alongside the harness's first
+(failed) live round.
 
 ## Reading the citations
 
@@ -251,10 +250,9 @@ What the raw run logs do record:
   `gt_beyond_distmax: true` at `distmax 0.1 m` over 883 / 821 probed pairs —
   no solid world geometry within 100 mm of the link the kernel stopped on.
 
-**So the honest statement is: at n=15 neither arm completed the task, the
-per-arm latch classes differ but were never compared in writing, and the
-experiment's intended verdict on #135's behavioural effect was never
-recorded.** Anyone re-opening this should re-run the comparison scripts against
+**So: at n=15 neither arm completed the task, the per-arm latch classes differ
+but were never compared in writing, and the intended verdict on #135's
+behavioural effect was never recorded.** Re-run the comparison scripts against
 both arms rather than trusting a remembered result.
 
 `2026-08-16-master-1` is a single baguette run at `2edcf67`: E-stop during
@@ -387,13 +385,11 @@ links themselves *are* correctly carved out — every `panda_link*` origin sits
 in a free cell in the baguette snapshot. **Not proven; under investigation.**
 
 **The 2026-08-23 correction weakens this hypothesis at its source.** It was
-raised to explain the *utensil* stop, and that stop is no longer evidence of
-anything wrong — against a real budget it is the kernel being correctly
-conservative. The observation about where the evidence voxel sits still stands
-as an observation, but it now has no anomaly to explain on that scene. It
-survives, if at all, on baguette alone, whose evidence voxel was never
-characterised this way. Treat it as an open question about baguette, not as a
-two-scene pattern.
+raised to explain the *utensil* stop, which against a real budget is the kernel
+being correctly conservative. The observation about the evidence voxel's
+position stands, but has no anomaly left to explain on that scene. It survives,
+if at all, on baguette alone, whose evidence voxel was never characterised this
+way: an open question about baguette, not a two-scene pattern.
 
 #### 2026-08-23 — self-occupancy settled: **no**, on all four stops
 
@@ -440,13 +436,12 @@ So the earlier refutation (pinned by
 `tests/unit/test_sim_estop_voxel_backing.py::test_self_filter_covers_base_and_mount_including_unprefixed`)
 **still holds**, on the live model and on the actual stops.
 
-**Read `self_occupancy_suspect` carefully.** The fridge result is the
-classification doing what it says and still not meaning what the name suggests:
-`voxel_backing_record` reports *a robot body is in this cell now*, which is
-equally the signature of a correct stop on a link that has reached real
-geometry. It cannot distinguish "the robot wrote this cell" from "the robot has
-since driven into it". Treat a `self_occupancy_suspect` verdict as a prompt to
-check the near-miss pairs, never as a finding on its own.
+**Read `self_occupancy_suspect` carefully.** `voxel_backing_record` reports *a
+robot body is in this cell now*, which is equally the signature of a correct
+stop on a link that has reached real geometry (the fridge result). It cannot
+distinguish "the robot wrote this cell" from "the robot has since driven into
+it". Treat the verdict as a prompt to check the near-miss pairs, never as a
+finding on its own.
 
 **What the baguette 120.9 mm actually is: an unbacked cell, and still
 unexplained.** It is not self-occupancy and it is not a payload. Measured
@@ -462,7 +457,7 @@ no geometry in it at all, and its 26 neighbours contain solid
 mechanism that leaves it there is the open question; "the robot's own base" is
 not the answer.
 
-**Two caveats on the reconstruction, stated rather than buried.**
+**Two caveats on the reconstruction.**
 
 1. `panda_mobile`'s manifest declares `base_x` / `base_y` / `base_yaw` and the
    seven arm joints, but RoboCasa's OmronMobileBase also carries
@@ -479,16 +474,16 @@ not the answer.
    they agree with the round's own finding (nothing within 100 mm), which is the
    cross-check that makes them usable.
 
-**`mj_geomDistance` returned a spurious `0.000000` here too — see PR #159 for
-the characterisation.** Widening the probe window to 0.6 m / 0.3 m made
+**`mj_geomDistance` returned a spurious `0.000000` here too (characterised in
+PR #159).** Widening the probe window to 0.6 m / 0.3 m made
 `mj_geomDistance` report exactly `0.000000` for two mesh↔box pairs that are
 analytically **361 mm** and **239 mm** apart (`robot0_link5_collision` vs
 `wall_front_2_backing_room_g0` and vs `fridge_main_group_fridge_door_main`).
 At every window ≤ 0.2 m both saturate correctly and genuinely-close pairs are
 exact at every window, so nothing in the numbers above rests on it. PR #159
-audits the same failure properly — two distinct modes, the native-CCD path, and
-0 of 4515 pairs affected at the repo's default `distmax = 0.1 m` — and records
-it as a standing caveat. Note only the standing consequence:
+audits the failure — two distinct modes, the native-CCD path, and 0 of 4515
+pairs affected at the repo's default `distmax = 0.1 m` — and records it as a
+standing caveat. The standing consequence:
 `estop_ground_truth_snapshot` **widens** its window to `admissible_gap_m`
 (109.9 mm on `panda_mobile`), the widening is unbounded by construction, and the
 harness promotes a `<= 0 m` pair to `real-contact`.
@@ -547,15 +542,14 @@ and `…/2026-08-22-harness-2/` — the first two rounds driven by
 [`just validation-matrix`](../contributing/validation-matrix.md) rather than by
 the run store's shell scripts. Both carry `metadata.json` + `verdicts.json`.
 
-**`harness-1` is a harness failure, not a stack result.** All four scenes died
-in under a second: the harness pinned `--no-enable-reasoner`, an option
-`openral deploy sim` does not have, so click exited 2 before the ROS graph
-started. It was *reported* as `deadline-no-grasp` with exit 0 — the defect the
-`harness-error` bucket exists to prevent, since click's usage error is itself
-log lines. Both defects are fixed in PR #145, and this round's artifacts are
-checked in as the fixture that pins the fix
-(`tests/unit/fixtures/validation_matrix/2026-08-22-harness-1/`). **Cite it as
-evidence about the harness, never about the collision stack.**
+**`harness-1` is a harness failure, not a stack result; cite it only as
+evidence about the harness.** All four scenes died in under a second: the
+harness pinned `--no-enable-reasoner`, an option `openral deploy sim` does not
+have, so click exited 2 before the ROS graph started. It was *reported* as
+`deadline-no-grasp` with exit 0 — the defect the `harness-error` bucket exists
+to prevent, since click's usage error is itself log lines. Both defects are
+fixed in PR #145; this round's artifacts are the fixture that pins the fix
+(`tests/unit/fixtures/validation_matrix/2026-08-22-harness-1/`).
 
 **`harness-2` ran the matrix and verdicted all four scenes.** Read its
 `PROVENANCE.txt` before citing it: its `executed_sha`
@@ -783,10 +777,9 @@ occupying the same space, one right and one `0.000`. And unlike the `_vis` rows
 this is a **solid↔solid** pair, so #139's collidability filter would not have
 caught it: it is the instrument alone.
 
-**This corrects a diagnosis, not a verdict — and the difference matters.** The
-08-22 and 08-23 fridge `0.000 m` readings were attributed to a *visual shell*
-being ranked first (#139, #149, and standing caveat 5). Be precise about what
-moves:
+**This corrects a diagnosis, not a verdict.** The 08-22 and 08-23 fridge
+`0.000 m` readings were attributed to a *visual shell* being ranked first
+(#139, #149, and standing caveat 5). What moves:
 
 * **The withdrawal stands, unchanged.** #149 withdrew the 08-22 fridge
   `real-contact` because the ranked pair was a non-solid geom, and **a visual
@@ -804,9 +797,9 @@ moves:
   from the ranking, but it would have left a false zero on a **solid** pair
   standing, which is exactly what the 08-23 baguette row above shows happening.
 
-None of this reverses anything. It withdraws a *stated cause*, in the same way
-this page withdraws stated verdicts: the earlier claim is not replaced by its
-opposite, it is replaced by "the evidence did not show that". Any in-tree
+None of this reverses anything. It withdraws a *stated cause* the way this page
+withdraws stated verdicts: the earlier claim is replaced not by its opposite but
+by "the evidence did not show that". Any in-tree
 comment or PR body citing "the visual meshes touch at 0.000 m" as an observed
 fact is citing an unreliable measurement — including the `KNOWN DEFECT` block in
 `scenes/deploy/robocasa_fridge_drawer.yaml`, whose `layout_ids: [30]` pin rests
@@ -844,8 +837,8 @@ by more than it survived the old one.
 
 **Open defect ([#172](https://github.com/OpenRAL/openral/issues/172)): an
 attached-payload stop cannot be reconstructed from its own snapshot.** The
-sink_cup row above is not a gap in this analysis — it is a recording defect in
-the evidence pipeline, and it should be fixed rather than rediscovered. `sim.estop_ground_truth_snapshot` publishes `robot_joint_state`
+sink_cup row above is a recording defect in the evidence pipeline, not a gap in
+this analysis. `sim.estop_ground_truth_snapshot` publishes `robot_joint_state`
 and `base_frame_tf`, which together determine the robot exactly (verified here
 to 0.000–0.863 mm). It publishes **nothing that determines the pose of a carried
 object**: `attached_bodies` carries a name, an id and a world position, but no
@@ -859,11 +852,10 @@ reconstruction**, which is precisely the capability this page was created to
 guarantee (CLAUDE.md §1.8). It also means the payload rows in every recorded
 round are unverifiable in *both* directions: the two 08-22 `sink1`
 payload↔world pairs recorded at `0.000 m` may be false zeros like the four
-above, or may be real contact, and nothing in the artifact can decide. They are
-neither confirmed nor withdrawn here; they are **unverifiable**, which is a
-weaker and more honest statement than either.
+above, or real contact, and nothing in the artifact can decide. They are
+neither confirmed nor withdrawn, only **unverifiable**.
 
-The fix is small, locatable and belongs in the producer, not here:
+The fix is small and belongs in the producer:
 `openral_hal.sim_sensor_bridge._body_record` returns `{id, name, world_xyz}`
 and is the only thing `attached_bodies` carries. Its own docstring calls that
 "world pose at this instant", which is the imprecision that hid this — a
@@ -911,9 +903,7 @@ surfacing, and the baguette row is its signature: an empty cell with solid
 `cab_1_left_group_left_door_main` **exactly one cell away**. The two findings
 converge on the same cells from opposite ends — this page eliminated the
 competing explanation by certifying the distance, that page identified the
-surviving one by reconstructing the map — and neither could have concluded it
-alone. A certified +106.456 mm with a phantom cell of unknown origin is still
-two unknowns; with the origin named it is one finding.
+surviving one by reconstructing the map; neither could have concluded it alone.
 
 Two smaller, independent confirmations (not restatements):
 
@@ -947,10 +937,9 @@ then `cf9bc8d` (after #169 changed the self-collision ACM criterion from sampled
 to proved) and `a0f3d58` (after #164 fixed `select-and-test`) — and came back
 **bit-identical each time**: `+43.256` / `+106.456` / `−1.868 mm`, at the same
 reconstruction residuals (0.000 / 0.863 / 0.006 mm) and the same duality gaps
-(2.1e-17 / 7.4e-16 / 0.0). Both are the expected result — #169 changed which
-pairs the kernel *exempts* rather than where any geometry sits, and #164 touches
-CI only — but "expected" is not "checked", and this page's whole purpose is to
-record which of the two it had. Note in passing that #169's finding —
+(2.1e-17 / 7.4e-16 / 0.0). That was expected — #169 changed which pairs the
+kernel *exempts* rather than where any geometry sits, and #164 touches CI only —
+and is now checked rather than assumed. #169's own finding —
 `panda_link5`↔`panda_link7` genuinely interpenetrates at 914 of 14 641 poses,
 up to 48.3 mm — is a fact about the *robot*, measured on the manifest's own
 collision model, and is untouched by this page: no world probe is involved in
@@ -971,9 +960,6 @@ the OctoMap's own lattice instead of a base-aligned one.
 | sink_cup | **false-positive** | within-quantization | −2.37 mm | **−0.07 mm** | 126 | **366** |
 | fridge | within-quantization | within-quantization | −2.28 mm | **−0.36 mm** | 169 | 182 |
 | utensil | within-quantization | within-quantization | −14.12 mm | **−3.15 mm** | 313 | 316 |
-
-Two things to read carefully, because the headline number misleads on one of
-them.
 
 **baguette's deeper stop is not the same stop getting worse.** The stop *class*
 changed: `party_a` went `panda_link2` → `attached:sim:obj_main`, `horizon_step`
@@ -1005,8 +991,7 @@ proves the published grid equals the octree cell-for-cell at every phase and
 yaw, and the kernel's differential oracle pins identity-grid behaviour to
 2.8 × 10⁻¹⁷ m against master.
 
-**Two harness findings from the same session**, both of which the harness exists
-to catch and both now fixed:
+**Two harness findings from the same session**, both now fixed:
 
 * the first attempt bucketed **all four scenes `harness-error`** — `deploy_e2e.launch.py`
   spawns `octomap_server`, no `package.xml` declared it, and
@@ -1058,17 +1043,17 @@ an allowance to be scoped to and there could not have been. Only the two fridge
 payload stops are the case #176 describes: `place_declaration_seen: true`,
 region armed, contact outside the armed volume.
 
-This is the number that matters for planning: **on this battery, "what the
-declared region has to cover" is the binding constraint for 2 of 15 stops.**
+For planning: **on this battery, "what the declared region has to cover" is the
+binding constraint for 2 of 15 stops.**
 
 **It revises the single-round reading.** The n=1 comment on #176 generalised
 from a round whose only two stops happened to be payload-class and concluded the
 region boundary was what bound. At n=5 that is a minority class of a minority
-class. The battery does not overturn the *mechanism* — a payload contacting the
-world outside the armed region does still latch, twice here — it overturns the
-claim about how much of the observed failure that mechanism accounts for. The
-majority class is link-vs-world at a few millimetres, which is quantisation at
-source (#176 piece 3), not the place contract.
+class. The *mechanism* stands — a payload contacting the world outside the armed
+region does still latch, twice here — but not the claim about how much of the
+failure it accounts for. The majority class is link-vs-world at a few
+millimetres, which is quantisation at source (#176 piece 3), not the place
+contract.
 
 **What this round does NOT establish.** The rollout diverges at the first stop,
 so the five runs of a scene are five independent trajectories, not repeats of
@@ -1220,10 +1205,9 @@ is **off in the default configuration, deliberately**: `collision_scale_proximit
 declares at `0.0` (`lifecycle_kernel.cpp:303`), zero disables the mechanism and
 reproduces the pre-#198 republish exactly, and the header states the reason —
 "this is a WG-gated enforcement surface and the A/B battery is what turns it
-on" (`lifecycle_kernel.hpp:358`). That is a design decision, not an oversight;
-the consequence: **a battery run on master measures Path B alone**, and any
-reading of §10's "A + B" gate from the default arm alone would be measuring
-one path and naming two. The second arm sets the
+on" (`lifecycle_kernel.hpp:358`). A design decision, with a consequence: **a
+battery run on master measures Path B alone**, so reading §10's "A + B" gate
+from the default arm alone would measure one path and name two. The second arm sets the
 band through the `OPENRAL_COLLISION_SCALE_PROXIMITY_M` seam
 (`deploy_e2e.launch.py:126`) at the same `0.05 m / k=20 / min=0.1` the #188 A/B
 used, and `verdicts.json` records `collision_scale` per round so which arm a
@@ -1337,7 +1321,7 @@ harness: nearest_tripping_party_m = 0.212256613   (arm A-on: 0.241554176)
 ```
 
 **Both verdicts are withdrawn to `unadjudicated`, and the kernel is not
-implicated.** Two separate findings, on their own evidence:
+implicated.** Two separate findings:
 
 **The harness measured the wrong pair.** `nearest_tripping_party_m` came from
 `nearest_robot_world_pairs`, filtered to `body_a == robot0_link5`: link5's
@@ -1386,8 +1370,7 @@ conservative than the truth, and the trip decision is unaffected.
 
 ### 2026-09-05 — the fridge layout pin put under a test (#102)
 
-Not a validation round: a regression, and the honest accounting of what it can
-and cannot hold.
+Not a validation round: a regression test, and what it can and cannot hold.
 
 `scenes/deploy/robocasa_fridge_drawer.yaml` has pinned `layout_ids: [47]` since
 2026-08-25, on the strength of the table in its own comment block — layout 30 at
@@ -1480,13 +1463,12 @@ The test asserts the certified depth first and the kernel verdict second, so a
 kitchen or kinematics change that moves the arm out of the door fails on the
 measurement rather than passing on a stale verdict.
 
-**How the pose was found, and why the test does not re-find it.** A sweep of
-`panda_joint1 × panda_joint2` over their full ranges at 15°, one certified
-snapshot per configuration (~460), ranked by deepest certified pair. The two
-angles are pinned in the test instead of re-searched: the search was worth
-running once, and re-running it would spend ~460 probes per session to
-rediscover two constants. `panda_joint1` **alone** reaches nothing over its
-whole 332° range from this start pose, which is why the pose needs both.
+**How the pose was found.** A sweep of `panda_joint1 × panda_joint2` over their
+full ranges at 15°, one certified snapshot per configuration (~460), ranked by
+deepest certified pair. The test pins the two angles rather than re-spending
+~460 probes per session to rediscover them. `panda_joint1` **alone** reaches
+nothing over its whole 332° range from this start pose, which is why the pose
+needs both.
 
 **One thing the sweep corrected on the way past.** A first cut skipped any
 configuration whose nearest link↔link pair was non-positive, meaning to avoid
@@ -1508,7 +1490,6 @@ still the fridge scene: `robocasa_drawer_utensil` at layout 3 — the census's
 `genuinely_clear`-on-every-link state — remains unpinned. Layout 47 already
 holds the nominal-valid side on a real kitchen, so the second scene would cost
 another compose and grid build for a weaker marginal claim.
-
 
 ### 2026-09-05 — how many rounds #217 actually needs, and why stop class does not shortcut it
 
@@ -1546,8 +1527,8 @@ round (mean over the ten post-#200 rounds, range 4.5–15.2):
 drop is not, on this host, and that is worth knowing before anyone promises to
 detect one.
 
-**Stop class does not rescue the comparison, which was the hopeful part of the
-plan.** Aggregating the ten post-#200 rounds by tripping party and comparing
+**Stop class does not rescue the comparison.** Aggregating the ten post-#200
+rounds by tripping party and comparing
 against the 2026-08-26 battery's own stop table (above):
 
 | battery | payload stops | link stops | payload share |
@@ -1589,7 +1570,6 @@ the rSkill; the harness already writes it.
 it will land in the same place as this one. Size it from the table above, or
 accept in advance that it can only report a null.
 
-
 ### 2026-09-07 — the ceiling: what the policy does with the gate off (31.1 % vs 2.3 %)
 
 > **Superseded in part (2026-09-09, issue #256).** The rates below are **lower
@@ -1597,18 +1577,17 @@ accept in advance that it can only report a null.
 > Nav2 bond teardown and scored as `deadline-no-grasp` — a policy failure they
 > were not. The **contrast holds and its significance strengthens**; the
 > absolutes and the 29-point figure do not. See "the ceiling battery's
-> `deadline-no-grasp` bucket was a Nav2 teardown" at the end of this page, and
+> `deadline-no-grasp` bucket was a Nav2 teardown" below, and
 > the re-measurement that followed it: **62.5 % vs 2.7 %, a 59.8-point gap**.
 
-The measurement nobody had taken. After a month of collision work, completion
-had gone from 25 % (2026-08-26) to 5-10 % (2026-09-06), and no round in this
-ledger, the census, or the survey had ever run the policy with the world-voxel
-gate **off** — so nobody knew whether XR-1's ceiling on these four scenes was
-12 % or 60 %. The validation harness *refuses* the flag
-(`_SAFETY_KNOB_PATTERNS`), correctly for a validation round, and that is
-exactly why the number was missing. The survey quotes the external version of
+After a month of collision work, completion had gone from 25 % (2026-08-26) to
+5-10 % (2026-09-06), and no round in this ledger, the census, or the survey had
+ever run the policy with the world-voxel gate **off** — so nobody knew whether
+XR-1's ceiling on these four scenes was 12 % or 60 %. The validation harness
+*refuses* the flag (`_SAFETY_KNOB_PATTERNS`), correctly for a validation round,
+which is why the number was missing. The survey quotes the external version of
 this experiment (PACS, arXiv:2511.06385 Table I — unfiltered 0.70 vs
-binary-filtered 0.04) without ever asking for the in-tree one.
+binary-filtered 0.04) without asking for the in-tree one.
 
 **Not a validation round and not a configuration.** `tools/_ceiling_probe.py`
 deliberately bypasses the harness, reusing its `materialise_scene`, readiness
@@ -1669,8 +1648,8 @@ each geom separately) and the **link envelopes were not** — which is what
 `feat(safety): ship tight geometry for panda_link3, link4 and link6` acts on,
 `panda_link6` alone holding 18 of the 29 link stops.
 
-**Three defects were fixed before this number was trustworthy**, each of which
-would have produced a confidently wrong answer:
+**Three defects were fixed before this number was trustworthy**, each able to
+produce a confidently wrong answer:
 
 1. an uncaught `subprocess.TimeoutExpired` killed whole workers rather than
    single rounds, leaving the arms **scene-confounded** — gate-off had run
@@ -1694,7 +1673,6 @@ tell a sibling from an orphan — so the parallel workers needed
 `OPENRAL_SKIP_ORPHAN_REAP=1`, which is deliberately not a committed default.
 (**Read by nothing until 2026-09-10** — see the entry for that date. The
 workers were being reaped by each other for this entire round.)
-
 
 ### 2026-09-07 — the backing probe was stopping at decoration, and the reconstructed grid was 32 % too sparse
 
@@ -1758,9 +1736,8 @@ grid (the layout-47 pin still clears, layout 30 still trips at the 20 mm
 standoff, the genuinely-colliding pose still trips), and the narrow phase
 measures **p99 1.7 ms on 7 427 cells** against a 33 ms ceiling.
 
-**A correction to an earlier draft of this entry, kept rather than silently
-edited.** It first said the backing record was "present on only 8 of 91 stops".
-That was wrong, and the way it was wrong is worth recording. The record is
+**A correction to an earlier draft of this entry.** It first said the backing
+record was "present on only 8 of 91 stops". The record is
 present on **82** stops — the 8 in `run_gt_snapshot.json` (the in-snapshot path)
 plus 74 more in `run_gt_evidence.json`, which is #177's *late* path. But the
 late path is not usable on this battery:
@@ -1772,8 +1749,8 @@ late path is not usable on this battery:
 | `solid_world` | 1 |
 | `self_occupancy_suspect` | 1 |
 
-That 56 % `unbacked` majority looks like a dramatic finding — the kernel
-stopping on cells nothing backs — and it is **not one**. It is the defect
+That 56 % `unbacked` majority — the kernel stopping on cells nothing backs — is
+**not a finding**. It is the defect
 `fix(hal): the late voxel-backing probe dropped the grid's rotation`
 (`10ff989`) describes exactly: the late path omitted `grid_orientation_xyzw`,
 took the identity default, and decoded a cube metres from the stopping link,
@@ -1786,10 +1763,9 @@ snapshot-path records are the usable set, and the 6-of-8 misattribution above
 stands. A post-`10ff989` round should re-derive the late-path distribution
 before anyone reads a phantom-cell story into it.
 
-
 ### 2026-09-07 — the harness could not see the graph it launched, and had not since #231
 
-Not a result. A **retraction of the harness's ability to produce one**: on
+Not a result: a retraction of the harness's ability to produce one. On
 post-#231 `master`, every scene of every `tools/validation_matrix.py` round
 reported `harness-error` — "action server never appeared" — beside a graph that
 was up and healthy the whole time. Two independent defects, each sufficient on
@@ -1853,7 +1829,6 @@ explanation was the one already on the page (the `octomap_server` `exec_depend`,
 2026-08-22), so the second went looking only when a host known to launch kept
 producing it.
 
-
 ### 2026-09-07 — the first post-fix round, and the cell that stopped it was decoration
 
 `2026-09-07-adr0101-live-1`, one scene (`utensil`, seed 1) on `laptop` at
@@ -1895,7 +1870,7 @@ here it found none *inside the cell*: within that 25 mm cube there is no
 collidable geometry at all. The collision slab is elsewhere — 24.9 mm away, as
 the certified probe independently says.
 
-**Correction, same day: the interpretation first written here was wrong.** This
+**Correction, same day: the first interpretation was wrong.** This
 entry originally read that as the occupancy grid faithfully mapping the *visual*
 surface while the collision body sat behind it — "the map is proud of the
 collision model". Reading RoboCasa's asset code does not support that.
@@ -1922,8 +1897,8 @@ recorded:
 **The collidable chunk's surface is inside the cell.** The certified probe and
 the asset code agree; only the backing probe was wrong.
 
-The mechanism is a residual defect in the decoration fix (`c7bd2c7`), exactly as
-hypothesised. That fix walks the ray *past* a non-collidable strike and casts
+The mechanism is a residual defect in the decoration fix (`c7bd2c7`). That fix
+walks the ray *past* a non-collidable strike and casts
 again, which finds a slab **behind** a shell. It cannot find one **coincident**
 with it: `counter.py` emits the full-span `<name>_top_visual` and the collidable
 chunks on the same plane, so stepping `distance + eps` past the shell's face
@@ -1946,13 +1921,11 @@ What changes is the *backing class* of cells previously read as
 entry and ADR-0101's premise about "cells no real body explains" rest on. Those
 should be re-derived from a post-fix round before either is leaned on further.
 
-
 **n = 1.** The mechanism above is read directly off one record and is not in
 doubt; how *often* a payload stop is backed by decoration alone is unmeasured,
 and a 12-round batch (`utensil` and `fridge`, seeds 2-7) is running to answer it.
 Until that lands, nothing here licenses a revision of the 94 % in either
 direction.
-
 
 ### 2026-09-07 — `adr0101-live-*`, the first battery with a working harness and a working adjudicator
 
@@ -2015,7 +1988,6 @@ the policy failing to pick the object up at all, with no kernel involvement.
 > Check a run's delivered chunk count before reading this bucket as a policy
 > property.
 
-
 ### 2026-09-07 — `link1envelope-*`: eight rounds, no result, and why that is worth recording
 
 The `panda_link1` refined envelope predicts that the two `panda_link1`
@@ -2033,10 +2005,10 @@ while the XR-1 sidecar needs ~3.5 GB alongside the MuJoCo scene's ~2.5 GB.
 The rounds were launched with `--force-shared-gpu`, which is what let them start
 at all; the flag records the choice, it does not create memory.
 
-**This is recorded rather than discarded because the failure is legible and the
-temptation is not.** Every round shows *no stop* — `stop: null` — and a naive
-read of "seeds 2 and 4 no longer produce `estop-initial-configuration`" is
-exactly the confirmation the envelope predicts. It is not evidence of anything:
+**Recorded rather than discarded because it looks like a confirmation.** Every
+round shows *no stop* — `stop: null` — and a naive read of "seeds 2 and 4 no
+longer produce `estop-initial-configuration`" is exactly what the envelope
+predicts. It is not evidence of anything:
 the policy never loaded, so the arm never moved, so no kernel check ran. A
 policy-free run cannot clear a start-state stop, because a start-state stop is
 adjudicated at reset before the policy matters — but it also cannot *report* one
@@ -2047,7 +2019,6 @@ uncontended window on `laptop` or a host with headroom; `spark` (GB10) is the
 latter, with the caveat that XR-1 has never completed an end-to-end rollout
 there (`docs/reference/aarch64-support.md`), so a single smoke round has to
 succeed before a battery is worth running.
-
 
 ### 2026-09-07 — `link1spark-*`: the refined envelope does not move the stops it was built for
 
@@ -2072,7 +2043,7 @@ refuted.** Same seeds, same scene, same stop, one commit apart:
 Tightening link1's envelope from a 25.68 mm worst-case support gap to 0.65 mm
 moved the reported depth by **0.0003 mm**. Both stops stand.
 
-**Where the reasoning went wrong, precisely.** The start-state census's deficit
+**Where the reasoning went wrong.** The start-state census's deficit
 table — "10 mm of recovered clearance clears 14 of 14 `link1` states" — is
 computed with the census's own kernel model, and that model is
 `box_box_distance` against **the manifest OBB** (census §"Kernel side"). The
@@ -2103,7 +2074,6 @@ But its stated benefit did not materialise on the only stops available to test
 it, and a safety-envelope change with no measured benefit is a WG decision, not
 an author's. Hazard-log Entry 026's amendment has been corrected to say so.
 
-
 ### 2026-09-07 — what actually stops the arm at reset: three start-state stops, three causes
 
 `estop-initial-configuration` was three of the seven stops in the `adr0101-live`
@@ -2111,7 +2081,7 @@ battery — the second-largest class after the payload, and the one no lever in
 the Programme status note below (§5) addresses. This is the map-side reading of all three, which had
 never been done.
 
-**First, where the evidence is, because it is not where you would look.** The
+**Where the evidence is.** The
 snapshot for a start-state stop carries `collision_evidence: null` and
 `evidence_voxel_backing: null`. That is not a gap: the E-stop fires at reset,
 before the kernel's `safety.collision` line reaches the bridge, so the freshness
@@ -2145,13 +2115,12 @@ the second reading without eliminating it — the map is built over ~11 s with t
 arm static, so a ray grazing past could have written a cell the arm's surface
 also occupies.
 
-**`utensil-s4` — the same signature, but on weaker evidence, and it is only
-visible at all because of a fix landed hours earlier.** Its cell holds both a
-door and two robot links. The robot geoms were found by the AABB overlap sweep,
-not by rays (0/27) — and that sweep is deliberately conservative, so it can claim
-a geom whose surface misses the cube. Treat this as suspected, not shown. Worth
-recording separately: the *same stop* on `laptop` before the sweep fix read
-`unbacked` — no information at all. The fix turned a blank into a diagnosis.
+**`utensil-s4` — the same signature on weaker evidence, visible only because of
+a fix landed hours earlier.** Its cell holds both a door and two robot links.
+The robot geoms were found by the AABB overlap sweep, not by rays (0/27), and
+that sweep is deliberately conservative, so it can claim a geom whose surface
+misses the cube: suspected, not shown. The *same stop* on `laptop` before the
+sweep fix read `unbacked`, no information at all.
 
 **What this does and does not establish.** One of three start-state stops is
 pure quantisation of correctly-placed world geometry. One has the robot's own
@@ -2175,7 +2144,6 @@ arm parked elsewhere, and see whether the cell at the old pose persists in the
 published grid. That needs a start-pose override the harness does not have. Until
 it exists, `self_occupancy_suspect` on a start-state stop should be read as
 "check this", exactly as its docstring says.
-
 
 ### 2026-09-07 — start-state, resolved: all three are quantisation, and the self-occupancy lead is refuted
 
@@ -2223,11 +2191,124 @@ WG, not a decision, and it does not change the ADR's fail-open concern: the
 suppression step is what needs ruling on either way.
 
 **Method note.** The lead was refuted by the instrument built to test it, in the
-same session it was raised. That is the fourth diagnostic defect found this week
-(#220's `nearest_any`, the coincident-shell probe, the harness DDS scope, and
-this ray-sampling gap), and every one of them made the stack look *worse* than it
-is rather than hiding a real contact.
+session it was raised. This ray-sampling gap is the fourth diagnostic defect
+found this week (after #220's `nearest_any`, the coincident-shell probe and the
+harness DDS scope), and every one of them made the stack look *worse* than it is
+rather than hiding a real contact.
 
+### 2026-09-07 — how this week's work lands, and the one change that does not
+
+The week produced 33 commits: four instrument repairs, two evidence producers, a
+generator routine, a latency surface, three manifest envelopes and one that was
+withdrawn. It lands in three slices rather than one PR: 4 822 lines is over
+CLAUDE.md §4.2.5's ceiling, and the pieces do not share a gate.
+
+**Slice A — `fix/collision-instrument-repairs`, no safety gate.** Everything that
+changes what the programme can *see* and nothing that changes what the kernel
+*does*: the DDS-scope repair to `validation_matrix.py`, the `nearest_any`
+inversion, both backing-probe repairs, the robot-only-cell sweep,
+`adr0101_recovery.py`, `stop_excess.py`, `refine_dop_to_budget`, the ceiling
+probe, the narrow-phase latency surface, and this page. It touches no manifest,
+no `packages/openral_safety/`, no `cpp/` — verified by an empty `git diff --stat`
+against both — so §3 does not apply and §1.4 does.
+
+This slice is urgent. `master` has carried two of those four defects since
+2026-09-05, and both corrupt the programme's primary measurement: a harness that
+cannot discover the action server it launched, and an adjudicator that stamps
+every stop `real-contact` off a permitted adjacent-link overlap. Every round
+taken on `master` since then is unusable, and nothing further can be measured
+until this lands.
+
+**Slice B — `feat/216-tight-geometry-link3-4-6`, safety-WG gated.**
+`tight_geometry` for `panda_link3`, `link4` and `link6` on both Panda manifests.
+These feed the kernel's collision model, so CLAUDE.md §3 applies in full:
+safety-WG reviewer, hazard-log Entry 026, and containment proved rather than
+sampled. The benefit is measured — link-class support excess 33.1 → 3.86 mm, and
+`link6`'s 31.2 mm recovery is almost exactly the excess the #204 battery found.
+
+**Slice C — `panda_link1`'s refined envelope, withdrawn.** The generator routine
+ships in A; the manifest change ships nowhere. Its whole justification was a
+prediction that the battery refuted: three rounds on `spark`, same seeds, same
+scene, one commit apart, moved link1's stops by **0.0003 mm**. Shipping it would
+add 41.989 mm of overhang to the link-link adjudication budget and change the
+certified envelope of a safety-critical link, in exchange for a measured nothing.
+The hazard-log amendment withdrawing the justification stands; what is left in
+the tree is a tool with its refutation written into its own docstring, so the
+next reader cannot re-derive the expectation that failed here.
+
+Four of the five things that moved this week were instruments, and every one had
+been *inflating* apparent severity. Exactly one geometry change is defensible on
+measurement, and it is still waiting on a human.
+
+### 2026-09-07 — the voxel-resolution strike was an estimate, and it was wrong by 32×
+
+The Programme status note below (§5) struck the 25 → 15 mm lever on cost — the
+only lever struck on paper rather than by test, and the paper was wrong.
+
+Measured on `laptop`: the real kernel binary, the real `panda_mobile` manifest
+(all seven links lowering tight geometry), the `layout_ids: [47]` RoboCasa
+kitchen rasterised cell by cell at each resolution over the **same volume**,
+`world_voxel_margin_m = 0.0`, 200 chunks per point, round trip
+`/openral/candidate_action` → `/openral/safe_action`. 200 of 200 chunks returned
+at every resolution.
+
+| resolution | grid cells | occupied | median | **measured p99** | max | *§5 estimate* |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **25 mm (shipped)** | 82 368 | 9 891 | 0.104 ms | **0.517 ms** | 2.607 ms | *5.8 ms* |
+| 20 mm | 158 400 | 17 321 | 0.166 ms | **0.597 ms** | 0.929 ms | *11.3 ms* |
+| **15 mm** | 376 680 | 35 828 | 0.184 ms | **0.825 ms** | 1.104 ms | *26.7 ms* |
+| 12.5 mm | 630 054 | 59 948 | 0.162 ms | **0.838 ms** | 1.301 ms | *46.1 ms* |
+
+Against a 33 ms hard 30 Hz ceiling, the resolution the strike called "marginal"
+runs **40× under** it, and the one it called "over" runs 39× under.
+
+**Why the estimate failed — two errors, compounding.**
+
+1. *The baseline was never the kernel.* 5.8 ms came from the shipped hull
+   microbenchmark (`collision-hull-narrow-phase.md` §3.2), not from a round trip
+   under a real grid — which had no latency surface until one was built the same
+   day the strike was written. The real baseline is 0.517 ms, 11× lower.
+2. *The cubic factor was applied to the wrong term.* The window loop
+   (`cpp/openral_safety_kernel/src/collision.cpp:1541`) opens with
+   `if (grid.occupancy[idx] == 0) { continue; }`. The `O(1/res³)` growth
+   therefore falls on an array load and a branch-not-taken; the support-exemption
+   test and the staged 26-DOP → hull distance run only on **occupied** cells, and
+   occupancy is a *surface*. 25 → 12.5 mm multiplies cells by 7.65× and occupied
+   cells by 6.06×, but p99 by **1.62×**.
+
+**The cap objection fails on its own numbers too.** 15 mm is 376 680 cells,
+under the shipped `world_voxel_max_cells = 614 125` — no cap change. Only 12.5 mm
+exceeds it, and the cap is a `voxel_occupancy_.assign()` at `on_configure`
+(`lifecycle_kernel.cpp:1655`): 0.63 MB of pre-allocated memory, not hot-loop
+cost. §5's "2 803 221 cells at 15 mm" was a whole-kitchen grid; the kernel scans
+an arm-neighbourhood window.
+
+**What it is worth.** The error term is the cell half-diagonal: 21.65 mm today,
+**12.99 mm at 15 mm**, 10.83 mm at 12.5 mm. That is 8.7 mm recovered in *every*
+stop class — the only lever that touches payload, link and start-state alike,
+where `tight_geometry` reaches links only and ADR-0101 reaches modeled fixtures
+only. It is not sufficient alone: the two clear start-state stops sit at
++23.13 mm and +22.01 mm, past what even 12.5 mm recovers.
+
+**What this does not measure.** The kernel *consuming* a grid,
+not the bridge *producing* one. `packages/openral_octomap_bridge`'s octree→grid
+conversion at a finer tree resolution is unmeasured and is the other half of the
+cost; octomap's own tree resolution would have to move with it. It is also one
+pose in one layout — the window is sized by where the links are — and one host.
+**No resolution change should ship on this measurement alone**; the bridge-side
+measurement is the next step.
+
+Reproducible from the shipped test rather than from a probe that duplicates it:
+
+```
+OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
+  tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py \
+  -k narrow_phase_meets_the_chunk_budget
+```
+
+Recorded in full, including the estimate it replaces: this is the fourth time
+this week a number that came from reasoning rather than from the instrument
+turned out to be wrong.
 
 ### 2026-09-08 — the producer half of the resolution lever, and the cell count the un-strike got wrong
 
@@ -2256,7 +2337,7 @@ consumer cheap makes the producer cheap.
 ball. Fail-closed is the right behaviour, but it means 12.5 mm is unreachable
 without raising that guard — a decision, not a manifest edit.
 
-**A correction to the un-strike, which was mine.** It claimed "15 mm needs no
+**A correction to the un-strike.** It claimed "15 mm needs no
 change to `world_voxel_max_cells`; it is 376 680 cells against the shipped
 614 125", and dismissed §5's 2.8 M figure as "a whole-kitchen grid, not the
 arm-neighbourhood window". That was wrong in both halves. The coverage ball is
@@ -2279,7 +2360,6 @@ configurable, before this measurement was taken.
 kernel's own deadline has been measured, and it is now the only unquantified
 term left between here and a 15 mm manifest edit.
 
-
 ### 2026-09-08 — the wire, the third cost on the resolution lever, and the one that binds
 
 Both compute halves of the 25 → 15 mm lever are measured and cheap: the kernel
@@ -2301,8 +2381,7 @@ the shipped 1.05 m coverage radius. Two runs on `laptop`, Fast-DDS:
 
 **Nothing is dropped and the rate holds.** `RELIABLE` delivered every message at
 every size, and the achieved rate is ~8.6–8.9 Hz at all three — the shortfall is
-the probe's own sleep loop, identical across resolutions, not backpressure. The
-naive failure mode this was expected to find is not there.
+the probe's own sleep loop, identical across resolutions, not backpressure.
 
 **What is there is staleness.** That latency is the age of the world when the
 kernel reads it, and it roughly triples at 15 mm: **+15 ms at the median, +50 to
@@ -2321,18 +2400,15 @@ smaller cell saves. Those break-evens sit inside the arm's kinematic range
 (`panda_mobile`'s joint 1 alone is limited at 2.175 rad/s), so this is not a
 corner case.
 
-**This does not re-strike the lever, and it must not be read as doing so.** It
-converts it from a free win into a **trade**, and the trade is settled by one
-number nobody has measured: the actual end-effector speed during the carry phase,
-where 71 % of the stops happen. If the policy creeps at 0.1 m/s the lever is
-still worth pulling; at 0.5 m/s it is not. Measuring that from the battery's
-recorded joint states is the next step, and — given this programme's record —
-it should be measured rather than assumed.
+**This does not re-strike the lever.** It converts it from a free win into a
+**trade**, settled by one unmeasured number: the actual end-effector speed
+during the carry phase, where 71 % of the stops happen. If the policy creeps at
+0.1 m/s the lever is still worth pulling; at 0.5 m/s it is not. The next step is
+to measure that from the battery's recorded joint states rather than assume it.
 
 **Scope.** Fast-DDS on one shared laptop over localhost. Transport-specific and
 host-specific: Cyclone, a real network, or SHM tuning could all move it, and the
 probe reports which RMW it measured for that reason.
-
 
 ### 2026-09-08 — the arm is slow, so the resolution lever's staleness barely costs anything
 
@@ -2368,10 +2444,10 @@ Three of four corners favour the finer grid, and the median case favours it by
 almost the whole 8.66 mm. Only the worst-case combination — the fastest stop
 observed *and* a p99-latency grid — is adverse, and it is adverse by 5.9 mm.
 
-**So the lever is worth pulling, and this is the first time that has been said
-about it on evidence rather than on an estimate.** Every one of the three cost
-terms is now measured: kernel 0.825 ms, rasterize 1.60 ms, wire +15/+55 ms — and
-the arm is slow enough that the last one does not eat the gain.
+**So the lever is worth pulling — the first time that is said on evidence
+rather than an estimate.** All three cost terms are now measured: kernel
+0.825 ms, rasterize 1.60 ms, wire +15/+55 ms — and the arm is slow enough that
+the last one does not eat the gain.
 
 **What would change this.** A faster policy. These speeds are what the XR-1
 checkpoint does on these scenes; a policy that carries at 0.3 m/s or more moves
@@ -2379,7 +2455,6 @@ the p99 corner from marginal to routine. The break-even is 0.16 m/s at p99
 staleness and 0.58 m/s at the median, so the margin is roughly 3× at the median
 stop and gone at the fastest. **n = 5 carry-phase stops**, which is thin — this
 is the measurement to widen before a manifest edit, not the one to skip.
-
 
 ### 2026-09-08 — the battery's carry-phase yield is 18–27 %, which is what every payload measurement really costs
 
@@ -2415,7 +2490,6 @@ Three consequences worth separating:
   that reaches the carry phase most often and is where carry-phase batteries
   should be weighted.
 
-
 ### 2026-09-09 — ADR-0101's 94 % re-derived from the live map: 86 %, and the clearances are half
 
 Thirty-six `utensil` rounds on **`spark`** at `448818c4`, the sha carrying both
@@ -2432,7 +2506,7 @@ round on `laptop` had ever met. Run through `tools/adr0101_recovery.py`:
 
 **The rates agree.** 24/28 against 48/51 is Fisher two-sided **p = 0.237** — no
 evidence they differ. ADR-0101's headline survives its own re-derivation, which
-is what the plan asked and what the ADR needed before implementation leans on it.
+the ADR needed before implementation leans on it.
 
 **The clearances do not, and this is the finding.** The median recovered stop sits
 at **8.56 mm of real air, not 16.2 mm** — half. The mechanism would be
@@ -2490,590 +2564,6 @@ predicted. And **`deadline-no-grasp` should be read as a load symptom first**,
 not as evidence about the policy — which also means the ceiling battery's own
 policy-free exclusions deserve re-reading in that light.
 
-
-### 2026-09-12 — every gate-ON stop of the 2026-09-09 battery, classified by what backed its cell
-
-The 2026-09-09 ceiling battery's 20 gate-ON E-stops, read through their own
-`evidence_voxel_backing` records. **Those records are on the
-`sim.estop_ground_truth_evidence` line, not the snapshot line** — the snapshot
-only carries one when the kernel's evidence was already fresh, and it usually is
-not (`_late_voxel_backing`). 26 of 27 stops carry a record; reading only the
-snapshot line finds `null` on all of them and invites the conclusion that the
-instrument is missing. It is not, and that error was published in #272's first
-draft and retracted.
-
-| verdict | n | true gap span | what it means |
-| --- | ---: | --- | --- |
-| `solid_world` | 12 | −0.12 .. +61.16 mm | real geometry explains the cell |
-| ~~`attached_payload`~~ | ~~6~~ | −0.22 .. +8.48 mm | **RETRACTED — an artefact of this very verdict, see the correction entry below. Do not cite it.** |
-| `unbacked` | 1 | +4.41 mm | a genuine phantom cell |
-| no evidence line | 1 | +14.78 mm | not adjudicable |
-
-The `attached_payload` six are `fridge` r01/r05/r06/r08, `sink_cup` r09 and
-`utensil` r04. Four facts about them:
-
-1. **The exclusion was live at the stop.** `obj_main` is classifiable as
-   `attached_payload` only from `attached_body_ids`, i.e. `read_attached_body_ids()`
-   returned it; the gripper is `self_occupancy_suspect`, so it is in
-   `_depth_self_bodies` (`robot_bodies=21` in the battery's own bridge log).
-2. All five of the placing-phase ones fire **5–6 s after the grasp**:
-   `+5.90, +5.49, +6.05, +5.48, +4.99 s` from the `automatic sim attachment
-   revision` marker.
-3. All four `fridge` runs trip on **the same cell index, 233816**.
-4. Rebuilt at the battery's own `layout_id=47 style_id=32`, that cell centre
-   (`[4.0875, −0.7375, 0.9375]`) is **89 mm** from the payload's start pose
-   (`[4.0237, −0.6771, 0.9209]`), with the payload's own geom bounds reaching
-   within 37 mm of it.
-
-**Not established: authorship.** A single snapshot cannot separate "the payload
-wrote this cell" from "something else wrote it and the payload has since moved
-into it" — the point `voxel_backing_record`'s docstring makes about
-`self_occupancy_suspect`, which applies here too. Settling it needs grid
-*history*, which no artifact in that battery carries; `preattach_verdict` and
-`occupied_cell_keys` (#272) are the instrument that supplies it, by freezing the
-occupied-cell set at the masking attach so a stop can report whether its cell
-predates the grasp.
-
-**Measured 2026-09-12 — the cell predates the grasp.** One `fridge` / gate-ON
-round on `laptop`, real deploy graph, on `master` with #267 and #269 already
-merged:
-
-```
-sim.preattach_occupancy_frozen  cells=7912  resolution_m=0.015  truncated=false  revision=1
-safety.collision  a=attached:sim:obj_main  b=voxel_1033835  min_distance_m=-0.01989
-
-evidence_voxel_backing.verdict   attached_payload
-evidence_voxel_backing.classes   ['attached_payload']      <- no solid_world at all
-evidence_voxel_backing.preattach preexisting: true, within_one_cell: true,
-                                 cell_key [273, -50, 61], preattach_cells 7912
-```
-
-The carried payload stopped on a cell **already occupied at the instant of its
-own grasp**, whose only backing geometry is `obj_main`'s own `obj_g0` / `obj_g3`.
-The authorship question the census above left open is answered for this stop: the
-payload's own pre-grasp footprint.
-
-Two riders. **It reproduces at 15 mm**, so the geometry work does not touch this
-class — as the census predicted, and the reason #272 is now the largest remaining
-one. And this stop's **certified true gap is 0.00 mm** to
-`fridgesidebyside_main_group_1_g25`: the outcome was *correct*, the payload really
-was touching the shelf, while the evidence that produced it was a cell the payload
-authored. Right answer, wrong evidence — which is the case that should worry a
-reader most, because the same mechanism at a different pose has no reason to be
-right.
-
-**The other three rounds of the same battery**, all `fridge` / gate-ON on the
-same build:
-
-| round | kernel | certified true gap | cell verdict | classes |
-| --- | ---: | ---: | --- | --- |
-| r01 | −19.89 mm | **+0.00 mm** | **`attached_payload`** | `['attached_payload']` |
-| r02 | −5.26 mm | +2.62 mm | `solid_world` | `['attached_payload', 'solid_world']` |
-| r03 | −32.82 mm | +3.49 mm | `solid_world` | `['solid_world']` |
-| r04 | — | — | no stop | **task succeeded** |
-
-**One of three stops is payload-authored, not three.** All three report
-`preattach.preexisting: true`, and that number on its own is worthless: a cell
-backed by world geometry is *always* pre-existing, because the fixture was there
-before the grasp. The payload-authored case is the **conjunction** — verdict
-`attached_payload` (no `solid_world` in the cell at all) *and* the cell predates
-the attach. Only r01 is that. Anyone quoting "3 of 3 pre-existing" has measured
-the furniture.
-
-**r04 completed the task with the gate ON.** The 2026-09-09 battery's `fridge`
-gate-ON arm was 0 of 5. This is the first recorded gate-ON `fridge` completion —
-**and n is 4, so it is an observation and not a rate.** Fisher against 0/5 is
-`p ≈ 0.44`; nothing here establishes that the gate's cost has moved.
-
-**r03 does not fit the geometry story.** −32.82 mm reported against a +3.49 mm
-certified gap is **36.3 mm of excess** on a `solid_world` cell, at 15 mm cells,
-with the attached-payload tight hull already in. It is neither #272 nor #266 box
-overhang. Unexplained, n=1, recorded here rather than chased.
-
-**Reading note for the next battery — two traps, both of which caught me first:**
-
-1. The backing record lands on whichever line wins the race —
-   `sim.estop_ground_truth_snapshot` when the kernel's evidence is already fresh,
-   `sim.estop_ground_truth_evidence` when it is late. The 2026-09-09 battery put
-   it on the late line 26 times of 27; r01 above put it on the snapshot line.
-   **Grep both**, or a present record reads as absent.
-2. The certified gap lives **only** on the snapshot line. A stop whose backing
-   arrived late has its backing and its ground truth on two different lines, so
-   the two must be **joined on `stop_seq`** — reading either alone silently drops
-   half of every such stop.
-
-**Two `solid_world` stops are not conservatism artefacts either.** `sink_cup/r04`
-(+44.96 mm) and `baguette/r05` (+48.53 mm) exceed certified truth by **50.87 mm**
-and **56.61 mm**, against #266's measured median payload box term of 50.8 mm.
-They are the plain #266 defect and #267 removes them. An earlier reading of these
-two as phantom occupancy was wrong: it transferred the #268 replay's `box@25`
-clearance threshold, and that sweep moves the payload's **position only, at its
-home orientation** (`replay_poses.py`), while box overhang is
-orientation-dependent and the payload is grasped and tilted at the stop.
-**The #268 thresholds are not transferable across orientations.**
-
-Two leftovers, neither chased: `utensil/r02` is a true `unbacked` phantom 4.4 mm
-from real geometry, and `sink_cup/r08` is a `panda_link7` stop **61.16 mm** clear
-of anything, which no budget on this page explains.
-
-
-### 2026-09-12 (later) — the `attached_payload` verdict was largely an instrument artefact
-
-The census above rests on `voxel_backing_record`'s `attached_payload` verdict.
-**That verdict was wrong on the normal case**, and the correction removes most
-of what the 2026-09-09 census attributed to a payload leak.
-
-`voxel_backing_record` runs a coincident-shell sweep — the second look that
-finds a collidable slab hiding behind a decoration shell, which is every
-RoboCasa counter and shelf. It is consulted only when the ray fans found no
-collidable **world** geometry, and the condition implementing that excluded
-`robot_body_ids` alone. **An attached payload is in neither the world nor the
-robot**, so a collidable payload geom suppressed the sweep exactly as a world
-geom would, while satisfying none of the reasoning that makes suppression safe:
-"a cell whose world backing the rays already found is left alone" is not true of
-a cell whose only collidable hit is the object the robot is holding.
-
-The result is a false `attached_payload` on a payload resting on its support —
-both in one cell, which is the *normal* configuration at a pick or a place.
-
-**Measured**, `fridge` gate-ON, 6 rounds each arm, same build otherwise:
-
-| | stops | `attached_payload` | `solid_world` |
-| --- | ---: | ---: | ---: |
-| before the fix | 6 | **3** | 3 |
-| after the fix | 4 | **0** | 4 |
-
-Two post-fix stops report `['attached_payload', 'solid_world']` — payload and
-shelf both in the cell, real geometry correctly outranking.
-
-**The baseline was self-contradictory on its face**, which is the part that
-should have been caught without a battery: two of its three `attached_payload`
-stops had certified true gaps of **−2.30 mm and −4.27 mm**, i.e. the payload was
-*inside* real geometry while its cell reportedly held only the payload.
-
-Fisher on 3/6 vs 0/4 is `p ≈ 0.2` and these are different stops under policy
-noise — the comparison alone would not carry this. What carries it is the
-mechanism, pinned directly against compiled MuJoCo in
-`test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it`, which
-fails before the change and passes after.
-
-**What this does to #272.** Its premise does not survive. The payload leak is
-not established; `preexisting: true` still holds but means little once the cell
-legitimately contains the support surface — that is an ordinary correct stop
-near a support, not a map defect.
-
-**Three attempts at an offline paired re-adjudication failed**, and the last
-failure is a fact about the record rather than the harness: the cube's world
-axes were not stored, only its centre, and at 25 mm cells a geom centred ~44 mm
-out (`fridge-on/r06`) reaches inside on one orientation and not another. The
-record now carries `cube_rot_world`. Until a replay-style offline adjudicator
-is built on it, **a live battery cannot answer a geometry question at this
-effect size** — 6 rounds an arm cannot separate 3/6 from 0/4, where the #268
-replay separated 154 from 15 on 182 poses.
-
-
-### 2026-09-12 (later still) — #275: the 31–36 mm excess, decomposed on the record, and what it is NOT
-
-Six `fridge` gate-ON rounds on `investigate/275-unexplained-excess` (master +
-the stamp-matched decode, origin trail and payload-slip instruments). **3 stops,
-3 completions.**
-
-| round | kernel | certified | verdict | decode = latest | origins | slip (translation) |
-| --- | ---: | ---: | --- | --- | ---: | ---: |
-| r01 | −34.67 mm | −0.25 mm | `attached_payload` (sweep ran, 14 hits) | yes | — | — |
-| r03 | −33.65 mm | +2.07 mm | `solid_world` | yes | 24 | **6.43 mm** |
-| r05 | −7.54 mm | −5.21 mm | `attached_payload` | yes | 13 | 0.45 mm |
-| r02, r04, r06 | — | — | no stop, **task completed** | | | |
-
-r01 and r03 are the #275 signature (34.4 / 35.7 mm of excess); r05 is an
-ordinary tight stop (2.3 mm).
-
-**Ruled out, with the measurement that rules each out:**
-
-- **The payload model.** Lowering `obj_main` as the bridge does: box overhang
-  median 12.86 / max 23.47 mm, **26-DOP median 1.71 / max 6.40 mm**, hull
-  *0 vertices* — the 1983-vertex RoboCasa mesh is over `_HULL_DEDUP_CEILING`
-  (640), so every RoboCasa payload ships DOP-only and #267's hull never engages
-  in sim. The DOP is what delivered #266's benefit, and it is tight.
-- **A cell inside the payload.** r01's cell is at the payload *surface*: mesh
-  penetrates it 4.73 mm, 1 of 8 cube corners inside. r03's cell the mesh is
-  **9.11 mm clear of**, 0 corners inside — while the kernel reports −33.65 mm
-  into it.
-- **Decoding the index against the wrong grid.** Real as a mechanism
-  (`test_estop_voxel_backing_live` manufactures a one-cell window shift and the
-  old decode is one cell wrong) but **not observed** on any of the three stops:
-  every one decoded against the same grid the bridge held, and the origin trail
-  shows only fractional-cell base wobble (0.05–0.43 cells per 50 ms frame),
-  never the whole-cell jump a remap would leave.
-- **Translation slip of the payload in the gripper.** Measured for the first
-  time: 6.43 mm on r03, 0.45 mm on r05. Real, and far too small.
-
-**What remains, and it is one thing.** For r03, geometry puts the kernel's DOP
-at worst +2.7 mm from the recorded cell (mesh +9.11, DOP overhang ≤ 6.4) and
-translation slip adds 6.4 mm; the kernel reports −33.65. About **30 mm** sits
-between the kernel's model and the real body *at that cell*, and only two
-things can put it there: the pose the kernel holds for the payload, or the
-cell the kernel checked. The translation half of the pose is now measured and
-small; **the rotation half is not yet measured on any stop** — the pivot term
-was added after r06 launched — and a payload that rotates in the gripper
-moves the far end of a 42 mm half-extent object tens of millimetres while its
-origin barely moves. That is the open candidate, and the instrument for it
-(`payload_model_slip.rotation_deg`, `max_point_slip_m`) is in place for the
-next battery.
-
-**The cell half cannot be closed from the bridge.** The graph runs on `/clock`
-(`use_sim_time`), every stamp on every record is a multiple of 50 ms, and grid
-stamps and trigger stamps quantise to the *same tick* — the stamp proxy cannot
-tell two grids apart within one. The trails make a remap look unlikely; only
-the kernel disclosing the grid it checked, by origin, settles it (§3 change,
-not in this branch).
-
-**Corrections carried in this entry:**
-
-- The "MODEL term +40 mm" decomposition posted earlier on #275 was an
-  instrument error: deepest-*vertex* sampling is not a valid penetration
-  measure against a cube (it produced DOP→cube +0.91 mm beside mesh→cube
-  −4.73 mm, impossible under containment). Retracted there; recorded here.
-- "The window moved on 24 of 32 frames" was wrong: `distinct_origins_in_history`
-  counts base motion in the grid's base-frame expression, not window remaps.
-  Withdrawn in code, docs and here.
-- The two 272c stops this issue was opened from are gone — deleted with the
-  worktree that held them (`git worktree remove --force` on a gitignored
-  `outputs/`). Their headline numbers survive on #275; the raw logs do not.
-
-**Not claimed:** that 3/6 completions means anything. This branch is
-diagnostics only and changes no gating; two 6-round arms on the same scene
-earlier today went 0/6 and 2/6. n is far too small and nothing here touched the
-kernel's decisions.
-
-
-### 2026-09-13 — #275 across 27 rounds: the payload-vs-voxel excess is **bimodal**
-
-Three batteries on `fridge` gate-ON, 27 rounds, every payload-vs-voxel stop,
-sorted by excess (certified mesh→world truth minus the kernel's reported depth):
-
-| run | kernel | certified | **excess** | verdict | rotation | max-slip |
-| --- | ---: | ---: | ---: | --- | ---: | ---: |
-| r05′ | −7.54 | −5.21 | 2.32 | `attached_payload` | — | — |
-| r05 | −0.28 | +5.09 | 5.37 | `solid_world` | 3.69° | 4.28 |
-| r22 | −6.34 | −0.54 | 5.80 | `attached_payload` | 0.51° | 1.11 |
-| r10 | −12.42 | +0.47 | 12.89 | `attached_payload` | 0.655° | 2.79 |
-| r20 | −17.58 | +0.53 | 18.11 | `attached_payload` | 0.047° | 1.03 |
-| r11 | −15.99 | +4.32 | 20.31 | `solid_world` | 2.8° | 4.81 |
-| **r24** | −31.22 | +1.06 | **32.28** | `solid_world` | **16.72°** | **26.70** |
-| r01′ | −34.67 | −0.25 | 34.42 | `attached_payload` | — | — |
-| r03′ | −33.65 | +2.07 | 35.72 | `solid_world` | — | — |
-| **r25** | −32.64 | **+12.64** | **45.29** | `solid_world` | 0.79° | 1.59 |
-
-(′ = the earlier battery, which predates the slip instrument.)
-
-**Six stops at 2–20 mm all close** inside the known budget: DOP overhang
-(≤ 6.40 mm, measured by support functions over 4096 directions) + payload slip +
-the 12.99 mm cell half-diagonal. **Four at 32–45 mm do not.** The deep mode is
-**4 of 10 stops**, not an outlier, and it costs ~30 mm of standoff on stops where
-the payload is demonstrably clear.
-
-### Eliminated, each by measurement
-
-- **Payload model.** Box overhang median 12.86 / max 23.47 mm; **26-DOP median
-  1.71 / max 6.40 mm**. The hull ships **0 vertices** for any RoboCasa mesh
-  (1983 verts against `_HULL_DEDUP_CEILING` 640), so #267's benefit in sim is
-  delivered entirely by the DOP and the convex hull never engages.
-- **A cell inside the payload.** r03′'s mesh is **9.11 mm clear** of the cell the
-  kernel reports −33.65 mm into; 0 of 8 cube corners inside the payload hull.
-- **The predicted step.** Every stop is `step=0` (predictive), so the snapshot's
-  measured state is one action-step behind. Re-running the reconstruction with
-  the kernel's **own `joint_positions_rad`** changes nothing on r25.
-- **Rotational slip.** r24 has 16.72° / 26.7 mm, which accounts for essentially
-  its whole 32 mm — but **r25, the deepest at 45.29 mm, has 0.79° / 1.59 mm**.
-  Rotation explains one of the four and no more. *It was declared "confirmed" on
-  r24 alone and refuted by the next round; that claim is withdrawn.*
-
-### What the deepest stop leaves
-
-Decomposing r25, the cleanest deep instance:
-
-| | |
-| --- | --- |
-| kernel reported (DOP→cube) | −32.64 mm |
-| reconstructed at the recorded pose, using the kernel's own joints | **+8.38 mm** |
-| → discrepancy | **41.02 mm** |
-| `payload_model_slip` | translation **0.75 mm**, rotation **0.79°** |
-| certified mesh→world | **+12.64 mm** — the payload is nowhere near anything |
-
-The kernel's model is within 0.75 mm of the body and the configuration is the
-kernel's own, so the *pose* cannot carry a 41 mm error. Searching cells near the
-recorded one, an offset of **(0, +2, +2) cells** reproduces −29.61 mm against the
-kernel's −32.64 mm.
-
-**That indicts the cell, not the geometry.** `decode_is_latest: true` — true on
-every stop in these batteries — was read too strongly: it says the bridge used
-the newest grid it **held**, not that this is the grid the kernel **checked**,
-and inside one `/clock` tick (every stamp in the graph quantises to 50 ms)
-nothing downstream can distinguish them. That is the gap the kernel's grid
-disclosure closes (#281, hazard-log Entry 030), which is therefore **on** #275's
-critical path rather than beside it — a reversal of what this page said earlier.
-
-### Standing caveats on this entry
-
-- The reconstruction is a **separating-axis lower bound** over the cube's axes
-  plus 13 canonical directions — exact only when a face normal separates.
-  Millimetre values carry error bars; the tens-of-millimetres discrepancy does
-  not.
-- The nearby-cell search examined **729 candidates**; one matching by chance is
-  expected. It is corroboration, **not** proof.
-- **#275's cause has been wrongly identified four times** — phantom occupancy,
-  payload leak, rotation, and "the decode is not the problem" — twice on a single
-  data point. The decode hypothesis above is the fifth and is **unconfirmed**.
-  The test that settles it is a battery on master with `decode_source: origin`,
-  which names the cell exactly.
-
-
-## Standing caveats
-
-Eleven things a reader should carry away, all of them stated by the artifacts
-themselves rather than inferred:
-
-1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
-   independent completions on one named scene, at branch tip `e35ed68`, with
-   **nothing exempted in either** — before #134 and #135 landed. It has not
-   been reproduced at `2edcf67`.
-2. **2/5 vs 0/5 at n=5 is not statistically separable** on a scene the run
-   store itself calls behaviourally non-deterministic under XR-1.
-3. **The n=15 A/B that was supposed to settle that never had its outcome
-   written down.** Both arms are 0/15; the comparison was not made.
-4. **As of 2026-08-22 the stack completes no scene.** Carry-phase machinery
-   behaves; **one** link-class false positive is open (baguette; the utensil one
-   is withdrawn — see the correction in that round's section). The place path was unarmed
-   in every shipped scene at the time of this round; #142 and its follow-up
-   correction arm it on the three RoboCasa place scenes, with `robocasa_baguette`
-   the only one observed arming end to end so far (see the update above).
-5. **No `real-contact` verdict recorded before 2026-08-23 is safe to cite.**
-   Every ground-truth probe up to that date filtered non-solid geometry on its
-   world side only, so a visual shell or a region marker on the robot or payload
-   side could be — and was — ranked first at 0.000 m. Those stops re-derive as
-   `unadjudicated`. This withdraws a conclusion; it does not reverse one: no
-   such stop is thereby shown to be a false positive.
-6. **No `false-positive` verdict recorded before #144 is safe to cite either,
-   and it cannot be re-derived from its own round.** `adjudication_budget`
-   landed in #144 (`ea1b7e8`, 2026-08-22); every round before it was judged
-   against the voxel half-diagonal alone (21.7 mm at a 25 mm grid). That term is
-   a strict *lower bound* on the admissible kernel-vs-probe gap — the real gap
-   adds `corner_slop(link)`, which is the larger term on every panda link — so
-   exceeding it establishes nothing, and those rounds recorded no slop from
-   which the real gap could be reconstructed. This is a **second, independent**
-   reason older link-class verdicts are not citable, and it bites in the
-   opposite direction from caveat 5: that one withdraws stops called *real*,
-   this one withdraws stops called *false*. The asymmetry:
-   a discrepancy **within** the voxel term is still sound (within a lower bound
-   implies within the true gap), so `within-quantization` from an old round
-   stands.
-7. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
-   `round7`, `round8`, `defect-ab`). Their findings survive only as constants
-   and comments in this repo. Treat a citation to one of those rounds as a
-   citation to the in-tree comment that carries it, not to a retrievable
-   verdict.
-8. **No verdict from a probe recorded before 2026-08-25 is safe to cite, of any
-   kind.** Under mujoco 3.8.0 `mj_geomDistance` is unreliable for RoboCasa
-   fixture geoms against `panda_mobile` collision meshes, in two distinct silent
-   modes, and **every** ground-truth probe up to that date was built on it. This
-   is not only a reason to distrust `real-contact`: it corrupts the distance
-   every rule reads, so `within-quantization` and the absence-of-a-pair lower
-   bound go with it. Four `0.000 m` readings in the checked-in rounds re-measure
-   at **+14.8, +82.2, +98.8 and +107.9 mm** — the last of them on a *solid↔solid*
-   pair, which no collidability filter would have caught. Unlike caveats 5 and 6
-   this is a defect in the measurement *method* rather than in the filtering or
-   the budget, and it is the reason those rounds now re-derive as
-   `unadjudicated` with `withdrawn from '<verdict>'` naming what was taken.
-
-   **The scope includes the support-contact witness.** Until #190
-   (2026-09-03) the witness producer measured with the same call at a 1 mm
-   window, so every `SupportContactWitness` issued before then — every
-   exemption the kernel granted on one, in every round above — rests on the
-   defective instrument. Its failure direction there is a *false* exemption.
-   The exposure is probably small (#170 measured 1 101 of 1 102 pairs agreeing
-   at the shipped windows, and the witness window is 100× narrower) but #170 is
-   explicit that no window separates the good answers from the bad, so none of
-   those exemptions is re-derivable as correct; they are simply unverified. A
-   witness whose `evidence_ref` begins `mujoco_geom_distance:` is one of them.
-
-   **It is fixed going forward.** `openral_hal.convex_distance` measures with a
-   separating-axis certificate and refuses rather than guess; every probe
-   reports `certified_pairs` / `uncertified_pairs`, the witness producer issues
-   only from certified measurements (`evidence_ref`
-   `openral_hal.convex_distance.convex_geom_distance:<support>`), and
-   `tools/validation_matrix.py::probe_is_distance_certified` is what a future
-   round's verdict rests on. Full characterisation, scope, cost, the
-   re-measured stops and the instrument-vs-map partition are in
-   [the 2026-08-25 correction](#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves)
-   above; the older account is in
-   [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
-
-9. **No verdict on a link-vs-link self stop is safe to cite before 2026-09-04.**
-   The ground-truth probe has never measured one robot link against another —
-   its robot side excludes the whole robot from the far side — so a
-   `kind=self` stop naming two bare links was scored against the tripping
-   link's clearance to the *world*, which answers a different question and is
-   always far larger. Every such stop therefore read `false-positive`. They
-   re-derive as `unadjudicated`. As with caveats 5, 6 and 8 this withdraws a
-   conclusion and reverses none: the one observed instance
-   (`panda_link5`/`panda_link7`, 2026-09-04) replays as a **genuine** overlap
-   of the two links' exact hulls. Closing this properly needs a link-vs-link
-   pair set in `sim.estop_ground_truth_snapshot`, which does not exist yet.
-
-10. **No `validation_matrix` round taken on post-#231 `master` before
-    2026-09-07 is a measurement of the kernel.** The harness polled a DDS scope
-    the launch had confined away from, and its `ros2 action list --no-daemon`
-    poll could not discover an advertised action on *any* scope, so every scene
-    reported `harness-error` beside a healthy graph — see the 2026-09-07 entry.
-    `harness-error` did its job, in that nothing false reached this page; what
-    it does not do is distinguish "this host cannot launch" from "this harness
-    cannot see", which is why the first explanation reached for was the
-    `octomap_server` `exec_depend` of 2026-08-22. Rounds on commits before
-    `9ca834e` are unaffected.
-
-11. **No `real-contact` verdict produced between 2026-09-05 and 2026-09-07 is
-    safe to cite, and the error runs one way: it manufactures them.** #220
-    (`d1d39d7`, on `master` 2026-09-05) gave the HAL a link-vs-link probe so a
-    self stop could be scored against the pair the kernel named — correct, and
-    the reason caveat 9 is closeable. But the new pairs were folded into the
-    adjudicator's `nearest_any`, which drives its first and most decisive rule:
-    *any probed pair at or below 0 m → `real-contact`*. Adjacent robot links
-    overlap permanently, are in the robot's allowed-collision matrix, and are
-    never checked by the kernel — so `nearest_any <= 0` became vacuously true
-    and **every adjudicable stop was stamped `real-contact`**, whatever the
-    tripping party's clearance.
-
-    Measured on `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at
-    −36.3 mm, `link5`/`link6` at −23.0 mm, `link4`/`link5` at −4.6 mm, all
-    certified and all permitted, while the payload the kernel actually stopped
-    for sat **+24.86 mm clear** of the counter. Re-derived with the fix, three
-    of the four stops in that batch move `real-contact → within-quantization`
-    and the one true contact (−2.32 mm) is preserved.
-
-    This inverts the single measurement the collision programme exists to make.
-    It is also self-limiting in one respect worth stating plainly: it can only
-    ever turn a false positive into an apparent real contact, never the reverse,
-    so nothing was ever wrongly *cleared*. Verdicts are re-derivable offline —
-    `validation_matrix.py verdicts <round>` — so affected rounds should be
-    re-adjudicated rather than re-run.
-
-### 2026-09-07 — how this week's work lands, and the one change that does not
-
-The week produced 33 commits: four instrument repairs, two evidence producers, a
-generator routine, a latency surface, three manifest envelopes and one that was
-withdrawn. It lands in three slices rather than one PR, split by what gates each
-piece — 4 822 lines is over CLAUDE.md §4.2.5's ceiling, and more to the point the
-pieces do not share a gate.
-
-**Slice A — `fix/collision-instrument-repairs`, no safety gate.** Everything that
-changes what the programme can *see* and nothing that changes what the kernel
-*does*: the DDS-scope repair to `validation_matrix.py`, the `nearest_any`
-inversion, both backing-probe repairs, the robot-only-cell sweep,
-`adr0101_recovery.py`, `stop_excess.py`, `refine_dop_to_budget`, the ceiling
-probe, the narrow-phase latency surface, and this page. It touches no manifest,
-no `packages/openral_safety/`, no `cpp/` — verified by an empty `git diff --stat`
-against both — so §3 does not apply and §1.4 does.
-
-This is the slice with a deadline attached. `master` has carried two of those
-four defects since 2026-09-05, and both of them corrupt the programme's primary
-measurement: a harness that cannot discover the action server it launched, and an
-adjudicator that stamps every stop `real-contact` off a permitted adjacent-link
-overlap. Every round taken on `master` since then is unusable. Nothing further
-can be measured until this lands.
-
-**Slice B — `feat/216-tight-geometry-link3-4-6`, safety-WG gated.**
-`tight_geometry` for `panda_link3`, `link4` and `link6` on both Panda manifests.
-These feed the kernel's collision model, so CLAUDE.md §3 applies in full:
-safety-WG reviewer, hazard-log Entry 026, and containment proved rather than
-sampled. The benefit is measured — link-class support excess 33.1 → 3.86 mm, and
-`link6`'s 31.2 mm recovery is almost exactly the excess the #204 battery found.
-
-**Slice C — `panda_link1`'s refined envelope, withdrawn.** The generator routine
-ships in A; the manifest change ships nowhere. Its whole justification was a
-prediction that the battery refuted: three rounds on `spark`, same seeds, same
-scene, one commit apart, moved link1's stops by **0.0003 mm**. Shipping it would
-add 41.989 mm of overhang to the link-link adjudication budget and change the
-certified envelope of a safety-critical link, in exchange for a measured nothing.
-The hazard-log amendment withdrawing the justification stands; what is left in
-the tree is a tool with its refutation written into its own docstring, so the
-next reader cannot re-derive the expectation that failed here.
-
-The split is also the honest record of the week's shape. Four of the five things
-that moved were instruments, and every one of them had been *inflating* apparent
-severity. Exactly one geometry change is defensible on measurement, and it is the
-one still waiting on a human.
-
-### 2026-09-07 — the voxel-resolution strike was an estimate, and it was wrong by 32×
-
-The Programme status note below (§5) struck the 25 → 15 mm lever on cost. It was the only lever in the
-programme struck on paper rather than by test, and the paper was wrong.
-
-Measured on `laptop`: the real kernel binary, the real `panda_mobile` manifest
-(all seven links lowering tight geometry), the `layout_ids: [47]` RoboCasa
-kitchen rasterised cell by cell at each resolution over the **same volume**,
-`world_voxel_margin_m = 0.0`, 200 chunks per point, round trip
-`/openral/candidate_action` → `/openral/safe_action`. 200 of 200 chunks returned
-at every resolution.
-
-| resolution | grid cells | occupied | median | **measured p99** | max | *§5 estimate* |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **25 mm (shipped)** | 82 368 | 9 891 | 0.104 ms | **0.517 ms** | 2.607 ms | *5.8 ms* |
-| 20 mm | 158 400 | 17 321 | 0.166 ms | **0.597 ms** | 0.929 ms | *11.3 ms* |
-| **15 mm** | 376 680 | 35 828 | 0.184 ms | **0.825 ms** | 1.104 ms | *26.7 ms* |
-| 12.5 mm | 630 054 | 59 948 | 0.162 ms | **0.838 ms** | 1.301 ms | *46.1 ms* |
-
-Against a 33 ms hard 30 Hz ceiling, the resolution the strike called "marginal"
-runs **40× under** it, and the one it called "over" runs 39× under.
-
-**Why the estimate failed — two errors, compounding.**
-
-1. *The baseline was never the kernel.* 5.8 ms came from the shipped hull
-   microbenchmark (`collision-hull-narrow-phase.md` §3.2), not from a round trip
-   under a real grid — which had no latency surface until one was built the same
-   day the strike was written. The real baseline is 0.517 ms, 11× lower.
-2. *The cubic factor was applied to the wrong term.* The window loop
-   (`cpp/openral_safety_kernel/src/collision.cpp:1541`) opens with
-   `if (grid.occupancy[idx] == 0) { continue; }`. The `O(1/res³)` growth
-   therefore falls on an array load and a branch-not-taken; the support-exemption
-   test and the staged 26-DOP → hull distance run only on **occupied** cells, and
-   occupancy is a *surface*. 25 → 12.5 mm multiplies cells by 7.65× and occupied
-   cells by 6.06×, but p99 by **1.62×**.
-
-**The cap objection fails on its own numbers too.** 15 mm is 376 680 cells,
-under the shipped `world_voxel_max_cells = 614 125` — no cap change. Only 12.5 mm
-exceeds it, and the cap is a `voxel_occupancy_.assign()` at `on_configure`
-(`lifecycle_kernel.cpp:1655`): 0.63 MB of pre-allocated memory, not hot-loop
-cost. §5's "2 803 221 cells at 15 mm" was a whole-kitchen grid; the kernel scans
-an arm-neighbourhood window.
-
-**What it is worth.** The error term is the cell half-diagonal: 21.65 mm today,
-**12.99 mm at 15 mm**, 10.83 mm at 12.5 mm. That is 8.7 mm recovered in *every*
-stop class — the only lever that touches payload, link and start-state alike,
-where `tight_geometry` reaches links only and ADR-0101 reaches modeled fixtures
-only. It is not sufficient alone: the two clear start-state stops sit at
-+23.13 mm and +22.01 mm, past what even 12.5 mm recovers.
-
-**What this does not measure, stated plainly.** The kernel *consuming* a grid,
-not the bridge *producing* one. `packages/openral_octomap_bridge`'s octree→grid
-conversion at a finer tree resolution is unmeasured and is the other half of the
-cost; octomap's own tree resolution would have to move with it. It is also one
-pose in one layout — the window is sized by where the links are — and one host.
-**No resolution change should ship on this measurement alone**; the bridge-side
-measurement is the next step.
-
-Reproducible from the shipped test rather than from a probe that duplicates it:
-
-```
-OPENRAL_FRIDGE_GRID_RES_M=0.015 uv run pytest -m sim \
-  tests/sim/safety/test_kernel_fridge_layout_pin_start_state.py \
-  -k narrow_phase_meets_the_chunk_budget
-```
-
-Recorded here in full, including the estimate it replaces, because this is the
-fourth time this week a number that came from reasoning rather than from the
-instrument turned out to be wrong — and the other three were mine too.
-
 ### 2026-09-09 — the ceiling battery's `deadline-no-grasp` bucket was a Nav2 teardown, not a policy failure
 
 Issue #256 asked whether the ceiling battery's **absolute** rates (31.1 % vs
@@ -3084,7 +2574,7 @@ on `spark` (111 run directories under `openral-217-with204/outputs/ceiling/`)
 and the answer is in them.
 
 **The reconstruction reproduces the published headline**, which is what makes
-the rest of it trustworthy: re-deriving each run's outcome from its
+the rest trustworthy: re-deriving each run's outcome from its
 `run_deploy.log` alone gives 14 completions in the gate-off arm and 1 in the
 gate-on arm, against the published 14/45 and 1/43. Bucketing the
 non-completions is what the original never did:
@@ -3108,10 +2598,9 @@ chunks/s; a 420 s run that delivered 16 chunks ran at 0.04/s. **Those runs
 were never given a trial** — a policy handed 16 action chunks cannot reach a
 grasp whatever its quality.
 
-**The cause is not contention, and not the shared sidecar.** Both were the
-obvious suspects — the battery ran eight workers against one XR-1 sidecar —
-and both are wrong. A serialised ZMQ queue degrades as `1/N`; what is there is
-bimodal. And once concurrency is measured at a *fixed instant* rather than
+**The cause is not contention, and not the shared sidecar**, though the battery
+ran eight workers against one XR-1 sidecar. A serialised ZMQ queue degrades as
+`1/N`; what is there is bimodal. And once concurrency is measured at a *fixed instant* rather than
 over each run's own window (a fast run is a short run, so it overlaps fewer
 others — the naive measure is circular), concurrency stops predicting anything:
 runs with zero or one other worker active are starved 33 % and 100 % of the
@@ -3164,9 +2653,9 @@ Together the two detectors void 43 of the 47 starved runs and **not one healthy
 run**. Four remain unexplained and are left in, which biases the corrected
 figures *down*.
 
-**The corrected numbers, re-adjudicated by the shipped detectors** — no
-threshold, no hand-chosen cutoff, reproducible from committed code against the
-archived artifacts:
+**The corrected numbers, re-adjudicated by the shipped detectors** (no
+hand-chosen cutoff; reproducible from committed code against the archived
+artifacts):
 
 | | valid runs | completed | rate |
 | --- | ---: | ---: | ---: |
@@ -3183,11 +2672,10 @@ place: cutting on delivered chunks/s puts the arms at 63.6 % vs 4.5 % (at 0.20)
 and 70.0 % vs 4.8 % (at 0.50), plateauing from 0.2 upward.
 
 **So #256's reading is confirmed and sharpened.** The contrast was never in
-danger — both arms were hit about equally, which is exactly what the paired
-design was built to absorb. The **absolutes** were badly deflated, and with
-them the headline: **the 29-point figure is a lower bound, and a loose one.**
-Re-adjudicated, the gap is **62.7 points**. The programme's justification is
-*stronger* than the ledger recorded, not weaker. Treat every absolute
+danger — both arms were hit about equally, which the paired design absorbs. The
+**absolutes** were badly deflated, and with them the headline: **the 29-point
+figure is a loose lower bound**; re-adjudicated, the gap is **62.7 points**, so
+the programme's justification is *stronger* than recorded. Treat every absolute
 completion rate in the 2026-09-07 entry as a floor until the re-run lands.
 
 **What shipped with this entry** (all under #256):
@@ -3202,8 +2690,7 @@ completion rate in the 2026-09-07 entry as a floor until the re-run lands.
    a server that really dies is still caught.
 2. `validation_matrix._nav2_bond_teardown` **and
    `_lifecycle_never_came_up`** — a run voided either way is now a
-   `harness-error`, not a policy outcome. Together they catch 43 of the 47
-   starved runs and no healthy one. The threshold sits in a measured
+   `harness-error`, not a policy outcome. The threshold sits in a measured
    99 s empty gap (worst dead run `t0 + 100.8 s`, earliest healthy teardown
    `t0 + 199.6 s`) and is declined outright on a `_deploy_excerpt.log`, which
    begins mid-run: a missed teardown leaves the old behaviour, a false one
@@ -3212,13 +2699,13 @@ completion rate in the 2026-09-07 entry as a floor until the re-run lands.
    against real logs from this battery, including the tightest healthy case.
 3. The ceiling probe records host `loadavg`, delivered chunk count and any
    bond teardown **alongside each round's verdict** — #256's "record per-round
-   load and stop this recurring", and the reason this took a log
-   reconstruction to find rather than a query.
+   load and stop this recurring"; without it this took a log reconstruction
+   rather than a query.
 4. `ceiling_battery.sh` gains `WORKERS` (default **2**, was a hard 8) and
    interleaves its worklist by scene, so the two live lanes are one scene's
    off and on arm and the arms stay paired under identical conditions.
 
-**The lesson, which is the same one as the 2026-09-09 correction below it.**
+**The lesson, the same as the 2026-09-09 correction above:**
 `deadline-no-grasp` is not a policy property. It is the bucket every silent
 instrument failure falls into, because it is defined by absence — no success,
 no stop — and absence is what a dead graph produces. It needs a positive
@@ -3347,11 +2834,11 @@ for the action server, sleeps **5 s**, and dispatches. That is enough on an idle
 host and not under contention. Fixed in #263 by re-dispatching, bounded and
 recorded, while the only thing wrong is that the graph is not assembled yet.
 
-**This is the third time the same mistake has been made on this page**, and it
-was mine each time: a bucket defined by absence read as a policy property. #256
-found it for `deadline-no-grasp`, #257's own entry warned "read `latest_chunk`
-on every record before believing any rate" — and then published a rate without
-doing so. The stop census and the class split are unaffected: **0 of the 22
+**This is the third time this page has made the same mistake**: a bucket
+defined by absence read as a policy property. #256 found it for
+`deadline-no-grasp`, #257's own entry warned "read `latest_chunk` on every
+record before believing any rate" — and then published a rate without doing so.
+The stop census and the class split are unaffected: **0 of the 22
 gate-ON stops occurred in a zero-chunk run**, since a stop requires the arm to
 have moved.
 
@@ -3367,7 +2854,7 @@ is correspondingly weighted toward the strong scenes. **Read the per-scene table
 above, not the pooled rate**, until the top-up lands. The deficit and its
 commands are in `CORRUPTED.md` in the round directory.
 
-Two further asymmetries worth stating: the arms are unbalanced (32 valid OFF
+Two further asymmetries: the arms are unbalanced (32 valid OFF
 against 37 ON, because the gate stops runs early and fewer are lost), and the
 gate-off arm runs longer per scene since nothing stops it.
 
@@ -3380,16 +2867,15 @@ adjudicator against the archived battery, but no real
 `sim.estop_ground_truth_snapshot` had been observed carrying it. Two single
 rounds on `laptop` (RTX 5070 Laptop 8 GB, one round per `ROS_DOMAIN_ID`) close it.
 
-**Host state, stated precisely.** The host was verified idle at launch — no
+**Host state.** The host was verified idle at launch — no
 `octomap` orphans, no live deploy graph, GPU at 15 MiB. Another session's
 resolution A/B battery then started a worker at ~20:27, during the first round;
 its own deploy graphs came up at 20:41, after both rounds here had finished
 (20:32:56 and 20:36:00), so no two live graphs ever overlapped, though its XR-1
-sidecar was loading on the same 8 GB GPU during the second round. Nothing about a
-JSON field's presence is contention-sensitive, and the one timing-flavoured
-observation below (a gate-on round completing) is only *harder* under load, not
-easier — but "otherwise idle" would overstate what was true for the whole
-window.
+sidecar was loading on the same 8 GB GPU during the second round. A JSON field's
+presence is not contention-sensitive, and the one timing-flavoured observation
+below (a gate-on round completing) is only *harder* under load — but "otherwise
+idle" would overstate the whole window.
 
 **The round that stopped.** `utensil`, gate **on**, domain 72 — a kernel stop at
 `sim_time_s = 20.4`, `stop_class: attached_payload`, one snapshot line. Its
@@ -3429,11 +2915,10 @@ replay produced to the digit — two independent routes to the same budget.
 **A gate-on round that completed the task.** The first round attempted was
 `fridge`, gate **on**, domain 71: it ran 470 s, delivered **753** action chunks,
 never tripped the kernel, and reported `ever_succeeded: true`. It therefore
-emitted no snapshot at all, which is why a second round was needed. Worth
-recording on its own: `fridge`-on was **0/10** in the 2026-09-10 ceiling battery,
-so a single gate-on completion is outside that lane's measured rate. One round is
-not a rate — it is a reminder that the battery's per-scene zeroes are small
-samples, not impossibilities.
+emitted no snapshot at all, which is why a second round was needed.
+`fridge`-on was **0/10** in the 2026-09-10 ceiling battery, so a single gate-on
+completion is outside that lane's measured rate. One round is not a rate; the
+battery's per-scene zeroes are small samples, not impossibilities.
 
 **Method note.** The field is nested at
 `adjudication_budget.collision_model_slop`, not at a top-level
@@ -3442,23 +2927,6 @@ wrong key and reported the field absent. Nothing in the tree asserts the nesting
 the producer test checks `collision_model_mesh_slop` directly and the adjudicator
 tests build the budget dict by hand. That plumbing predates #260 and is not
 wrong, but it is unpinned.
-
-## Related
-
-- [RoboCasa start-state collision census](robocasa-start-state-census.md) — every
-  layout of all four matrix scenes, measured at reset: which link stops the
-  kernel, what it is touching, and whether the start pose or the base placement
-  is responsible.
-
-- [The validation matrix](../contributing/validation-matrix.md) — how to run a
-  round, what each verdict means, where the artifacts land, and the Spark
-  etiquette. The harness that feeds this page from 2026-08-22 onward.
-- `cpp/openral_safety_kernel/README.md` — the witness, the partition, the
-  allowance, and the geometry each calibration changed.
-- `packages/openral_octomap_bridge/README.md` — payload clearing, the attach
-  sweep window, and the rasterization change #135 made.
-- [Design decisions](../decisions.md) — how ADR numbers are cited here and
-  where the records live.
 
 ### 2026-09-10 — the world-voxel nodes were the one graph member no reaper matched
 
@@ -3492,7 +2960,7 @@ the same absence-defined bucket that hid the Nav2 bond teardown (2026-09-09).
 A run's own prior round is what poisons it, so a per-worker `ROS_DOMAIN_ID`
 gives no protection at all.
 
-**Demonstrated, not inferred.** One `robocasa_baguette` round at 15 mm,
+**Demonstrated.** One `robocasa_baguette` round at 15 mm,
 launched **alone** on an otherwise quiet host (load 1.2):
 
 | | before the fix | after the fix |
@@ -3546,7 +3014,7 @@ the entries above). This one is clean: **80 rounds, 79 valid, 0 bond teardowns**
 both arms verified against their own observed `resolution_m`, and every round
 paired with its partner at a median separation of **0 s**.
 
-**The prediction is refuted, not merely unconfirmed.** Comparing only rounds
+**The prediction is refuted.** Comparing only rounds
 where both arms produced an adjudicable stop **on the same party** — mixing
 parties compares different collision events, not resolutions:
 
@@ -3582,12 +3050,12 @@ box is 2.3–3.9× the entire quantisation term.** Shrinking the cell removes
 8.66 mm of envelope and leaves ~50 mm untouched beside it, which is precisely
 the null observed. Filed as **#266**.
 
-### Amended 2026-09-12: the null was conditional on the box payload
+#### Amended 2026-09-12: the null was conditional on the box payload
 
 The paragraph above is right about what it measured and **wrong about what it
 implies**. "The voxel term was never the big one" reads as *shrinking the cell
-cannot matter*. It cannot matter **while the payload is a box** — which is a
-different claim, and #266 has since landed.
+cannot matter*; it cannot matter **while the payload is a box**, and #266 has
+since landed.
 
 The two terms **add**. A stop happens when
 
@@ -3624,11 +3092,10 @@ There #266 alone suffices. The two scenes disagree because their poses sit
 differently relative to the thresholds, which is why a single-scene reading of
 either lever is unsafe.
 
-**What this does to the #253 ruling.** The question the WG is being asked is no
-longer "is 8.66 mm of quantisation worth the staleness cost" against a null. On
-the merged tree it is worth 89 % of the remaining false payload stops in the
-field-typical case. The staleness cost is unchanged and still has to be weighed;
-what has changed is that there is now something on the other side of the scale.
+**What this does to the #253 ruling.** The WG's question is no longer "is
+8.66 mm of quantisation worth the staleness cost" against a null: on the merged
+tree it is worth 89 % of the remaining false payload stops in the field-typical
+case. The staleness cost is unchanged and still has to be weighed against that.
 
 **The error has moved almost entirely onto the payload:**
 
@@ -3688,6 +3155,339 @@ no longer the small one.
 
 Data: `outputs/resolution-ab/2026-09-10-serial` on `laptop` (`outputs/` is
 gitignored); per-stop rows in its `report.json`.
+
+### 2026-09-12 — every gate-ON stop of the 2026-09-09 battery, classified by what backed its cell
+
+The 2026-09-09 ceiling battery's 20 gate-ON E-stops, read through their own
+`evidence_voxel_backing` records. **Those records are on the
+`sim.estop_ground_truth_evidence` line, not the snapshot line** — the snapshot
+only carries one when the kernel's evidence was already fresh, and it usually is
+not (`_late_voxel_backing`). 26 of 27 stops carry a record; reading only the
+snapshot line finds `null` on all of them and invites the conclusion that the
+instrument is missing. It is not, and that error was published in #272's first
+draft and retracted.
+
+| verdict | n | true gap span | what it means |
+| --- | ---: | --- | --- |
+| `solid_world` | 12 | −0.12 .. +61.16 mm | real geometry explains the cell |
+| ~~`attached_payload`~~ | ~~6~~ | −0.22 .. +8.48 mm | **RETRACTED — an artefact of this very verdict, see the correction entry below. Do not cite it.** |
+| `unbacked` | 1 | +4.41 mm | a genuine phantom cell |
+| no evidence line | 1 | +14.78 mm | not adjudicable |
+
+The `attached_payload` six are `fridge` r01/r05/r06/r08, `sink_cup` r09 and
+`utensil` r04. Four facts about them:
+
+1. **The exclusion was live at the stop.** `obj_main` is classifiable as
+   `attached_payload` only from `attached_body_ids`, i.e. `read_attached_body_ids()`
+   returned it; the gripper is `self_occupancy_suspect`, so it is in
+   `_depth_self_bodies` (`robot_bodies=21` in the battery's own bridge log).
+2. All five of the placing-phase ones fire **5–6 s after the grasp**:
+   `+5.90, +5.49, +6.05, +5.48, +4.99 s` from the `automatic sim attachment
+   revision` marker.
+3. All four `fridge` runs trip on **the same cell index, 233816**.
+4. Rebuilt at the battery's own `layout_id=47 style_id=32`, that cell centre
+   (`[4.0875, −0.7375, 0.9375]`) is **89 mm** from the payload's start pose
+   (`[4.0237, −0.6771, 0.9209]`), with the payload's own geom bounds reaching
+   within 37 mm of it.
+
+**Not established: authorship.** A single snapshot cannot separate "the payload
+wrote this cell" from "something else wrote it and the payload has since moved
+into it" — the point `voxel_backing_record`'s docstring makes about
+`self_occupancy_suspect`, which applies here too. Settling it needs grid
+*history*, which no artifact in that battery carries; `preattach_verdict` and
+`occupied_cell_keys` (#272) are the instrument that supplies it, by freezing the
+occupied-cell set at the masking attach so a stop can report whether its cell
+predates the grasp.
+
+**Measured 2026-09-12 — the cell predates the grasp.** One `fridge` / gate-ON
+round on `laptop`, real deploy graph, on `master` with #267 and #269 already
+merged:
+
+```
+sim.preattach_occupancy_frozen  cells=7912  resolution_m=0.015  truncated=false  revision=1
+safety.collision  a=attached:sim:obj_main  b=voxel_1033835  min_distance_m=-0.01989
+
+evidence_voxel_backing.verdict   attached_payload
+evidence_voxel_backing.classes   ['attached_payload']      <- no solid_world at all
+evidence_voxel_backing.preattach preexisting: true, within_one_cell: true,
+                                 cell_key [273, -50, 61], preattach_cells 7912
+```
+
+The carried payload stopped on a cell **already occupied at the instant of its
+own grasp**, whose only backing geometry is `obj_main`'s own `obj_g0` / `obj_g3`.
+The authorship question the census above left open is answered for this stop: the
+payload's own pre-grasp footprint.
+
+Two riders. **It reproduces at 15 mm**, so the geometry work does not touch this
+class — as the census predicted, and the reason #272 is now the largest remaining
+one. And this stop's **certified true gap is 0.00 mm** to
+`fridgesidebyside_main_group_1_g25`: the outcome was *correct*, the payload really
+was touching the shelf, while the evidence that produced it was a cell the payload
+authored. Right answer, wrong evidence — the worrying case, because the same
+mechanism at a different pose has no reason to be right.
+
+**The other three rounds of the same battery**, all `fridge` / gate-ON on the
+same build:
+
+| round | kernel | certified true gap | cell verdict | classes |
+| --- | ---: | ---: | --- | --- |
+| r01 | −19.89 mm | **+0.00 mm** | **`attached_payload`** | `['attached_payload']` |
+| r02 | −5.26 mm | +2.62 mm | `solid_world` | `['attached_payload', 'solid_world']` |
+| r03 | −32.82 mm | +3.49 mm | `solid_world` | `['solid_world']` |
+| r04 | — | — | no stop | **task succeeded** |
+
+**One of three stops is payload-authored, not three.** All three report
+`preattach.preexisting: true`, and that number on its own is worthless: a cell
+backed by world geometry is *always* pre-existing, because the fixture was there
+before the grasp. The payload-authored case is the **conjunction** — verdict
+`attached_payload` (no `solid_world` in the cell at all) *and* the cell predates
+the attach. Only r01 is that. Anyone quoting "3 of 3 pre-existing" has measured
+the furniture.
+
+**r04 completed the task with the gate ON.** The 2026-09-09 battery's `fridge`
+gate-ON arm was 0 of 5. This is the first recorded gate-ON `fridge` completion —
+**and n is 4, so it is an observation and not a rate.** Fisher against 0/5 is
+`p ≈ 0.44`; nothing here establishes that the gate's cost has moved.
+
+**r03 does not fit the geometry story.** −32.82 mm reported against a +3.49 mm
+certified gap is **36.3 mm of excess** on a `solid_world` cell, at 15 mm cells,
+with the attached-payload tight hull already in. It is neither #272 nor #266 box
+overhang. Unexplained, n=1, recorded here rather than chased.
+
+**Reading note for the next battery — two traps:**
+
+1. The backing record lands on whichever line wins the race —
+   `sim.estop_ground_truth_snapshot` when the kernel's evidence is already fresh,
+   `sim.estop_ground_truth_evidence` when it is late. The 2026-09-09 battery put
+   it on the late line 26 times of 27; r01 above put it on the snapshot line.
+   **Grep both**, or a present record reads as absent.
+2. The certified gap lives **only** on the snapshot line. A stop whose backing
+   arrived late has its backing and its ground truth on two different lines, so
+   the two must be **joined on `stop_seq`** — reading either alone silently drops
+   half of every such stop.
+
+**Two `solid_world` stops are not conservatism artefacts either.** `sink_cup/r04`
+(+44.96 mm) and `baguette/r05` (+48.53 mm) exceed certified truth by **50.87 mm**
+and **56.61 mm**, against #266's measured median payload box term of 50.8 mm.
+They are the plain #266 defect and #267 removes them. An earlier reading of these
+two as phantom occupancy was wrong: it transferred the #268 replay's `box@25`
+clearance threshold, and that sweep moves the payload's **position only, at its
+home orientation** (`replay_poses.py`), while box overhang is
+orientation-dependent and the payload is grasped and tilted at the stop.
+**The #268 thresholds are not transferable across orientations.**
+
+Two leftovers, neither chased: `utensil/r02` is a true `unbacked` phantom 4.4 mm
+from real geometry, and `sink_cup/r08` is a `panda_link7` stop **61.16 mm** clear
+of anything, which no budget on this page explains.
+
+### 2026-09-12 (later) — the `attached_payload` verdict was largely an instrument artefact
+
+The census above rests on `voxel_backing_record`'s `attached_payload` verdict.
+**That verdict was wrong on the normal case**, and the correction removes most
+of what the 2026-09-09 census attributed to a payload leak.
+
+`voxel_backing_record` runs a coincident-shell sweep — the second look that
+finds a collidable slab hiding behind a decoration shell, which is every
+RoboCasa counter and shelf. It is consulted only when the ray fans found no
+collidable **world** geometry, and the condition implementing that excluded
+`robot_body_ids` alone. **An attached payload is in neither the world nor the
+robot**, so a collidable payload geom suppressed the sweep exactly as a world
+geom would, while satisfying none of the reasoning that makes suppression safe:
+"a cell whose world backing the rays already found is left alone" is not true of
+a cell whose only collidable hit is the object the robot is holding.
+
+The result is a false `attached_payload` on a payload resting on its support —
+both in one cell, which is the *normal* configuration at a pick or a place.
+
+**Measured**, `fridge` gate-ON, 6 rounds each arm, same build otherwise:
+
+| | stops | `attached_payload` | `solid_world` |
+| --- | ---: | ---: | ---: |
+| before the fix | 6 | **3** | 3 |
+| after the fix | 4 | **0** | 4 |
+
+Two post-fix stops report `['attached_payload', 'solid_world']` — payload and
+shelf both in the cell, real geometry correctly outranking.
+
+**The baseline was self-contradictory on its face**, catchable without a
+battery: two of its three `attached_payload`
+stops had certified true gaps of **−2.30 mm and −4.27 mm**, i.e. the payload was
+*inside* real geometry while its cell reportedly held only the payload.
+
+Fisher on 3/6 vs 0/4 is `p ≈ 0.2` and these are different stops under policy
+noise — the comparison alone would not carry this. What carries it is the
+mechanism, pinned directly against compiled MuJoCo in
+`test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it`, which
+fails before the change and passes after.
+
+**What this does to #272.** Its premise does not survive. The payload leak is
+not established; `preexisting: true` still holds but means little once the cell
+legitimately contains the support surface — that is an ordinary correct stop
+near a support, not a map defect.
+
+**Three attempts at an offline paired re-adjudication failed**, and the last
+failure is a fact about the record rather than the harness: the cube's world
+axes were not stored, only its centre, and at 25 mm cells a geom centred ~44 mm
+out (`fridge-on/r06`) reaches inside on one orientation and not another. The
+record now carries `cube_rot_world`. Until a replay-style offline adjudicator
+is built on it, **a live battery cannot answer a geometry question at this
+effect size** — 6 rounds an arm cannot separate 3/6 from 0/4, where the #268
+replay separated 154 from 15 on 182 poses.
+
+### 2026-09-12 (later still) — #275: the 31–36 mm excess, decomposed on the record, and what it is NOT
+
+Six `fridge` gate-ON rounds on `investigate/275-unexplained-excess` (master +
+the stamp-matched decode, origin trail and payload-slip instruments). **3 stops,
+3 completions.**
+
+| round | kernel | certified | verdict | decode = latest | origins | slip (translation) |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| r01 | −34.67 mm | −0.25 mm | `attached_payload` (sweep ran, 14 hits) | yes | — | — |
+| r03 | −33.65 mm | +2.07 mm | `solid_world` | yes | 24 | **6.43 mm** |
+| r05 | −7.54 mm | −5.21 mm | `attached_payload` | yes | 13 | 0.45 mm |
+| r02, r04, r06 | — | — | no stop, **task completed** | | | |
+
+r01 and r03 are the #275 signature (34.4 / 35.7 mm of excess); r05 is an
+ordinary tight stop (2.3 mm).
+
+**Ruled out, with the measurement that rules each out:**
+
+- **The payload model.** Lowering `obj_main` as the bridge does: box overhang
+  median 12.86 / max 23.47 mm, **26-DOP median 1.71 / max 6.40 mm**, hull
+  *0 vertices* — the 1983-vertex RoboCasa mesh is over `_HULL_DEDUP_CEILING`
+  (640), so every RoboCasa payload ships DOP-only and #267's hull never engages
+  in sim. The DOP is what delivered #266's benefit, and it is tight.
+- **A cell inside the payload.** r01's cell is at the payload *surface*: mesh
+  penetrates it 4.73 mm, 1 of 8 cube corners inside. r03's cell the mesh is
+  **9.11 mm clear of**, 0 corners inside — while the kernel reports −33.65 mm
+  into it.
+- **Decoding the index against the wrong grid.** Real as a mechanism
+  (`test_estop_voxel_backing_live` manufactures a one-cell window shift and the
+  old decode is one cell wrong) but **not observed** on any of the three stops:
+  every one decoded against the same grid the bridge held, and the origin trail
+  shows only fractional-cell base wobble (0.05–0.43 cells per 50 ms frame),
+  never the whole-cell jump a remap would leave.
+- **Translation slip of the payload in the gripper.** Measured for the first
+  time: 6.43 mm on r03, 0.45 mm on r05. Real, and far too small.
+
+**What remains, and it is one thing.** For r03, geometry puts the kernel's DOP
+at worst +2.7 mm from the recorded cell (mesh +9.11, DOP overhang ≤ 6.4) and
+translation slip adds 6.4 mm; the kernel reports −33.65. About **30 mm** sits
+between the kernel's model and the real body *at that cell*, and only two
+things can put it there: the pose the kernel holds for the payload, or the
+cell the kernel checked. The translation half of the pose is now measured and
+small; **the rotation half is not yet measured on any stop** — the pivot term
+was added after r06 launched — and a payload that rotates in the gripper
+moves the far end of a 42 mm half-extent object tens of millimetres while its
+origin barely moves. That is the open candidate, and the instrument for it
+(`payload_model_slip.rotation_deg`, `max_point_slip_m`) is in place for the
+next battery.
+
+**The cell half cannot be closed from the bridge.** The graph runs on `/clock`
+(`use_sim_time`), every stamp on every record is a multiple of 50 ms, and grid
+stamps and trigger stamps quantise to the *same tick* — the stamp proxy cannot
+tell two grids apart within one. The trails make a remap look unlikely; only
+the kernel disclosing the grid it checked, by origin, settles it (§3 change,
+not in this branch).
+
+**Corrections carried in this entry:**
+
+- The "MODEL term +40 mm" decomposition posted earlier on #275 was an
+  instrument error: deepest-*vertex* sampling is not a valid penetration
+  measure against a cube (it produced DOP→cube +0.91 mm beside mesh→cube
+  −4.73 mm, impossible under containment). Retracted there; recorded here.
+- "The window moved on 24 of 32 frames" was wrong: `distinct_origins_in_history`
+  counts base motion in the grid's base-frame expression, not window remaps.
+  Withdrawn in code, docs and here.
+- The two 272c stops this issue was opened from are gone — deleted with the
+  worktree that held them (`git worktree remove --force` on a gitignored
+  `outputs/`). Their headline numbers survive on #275; the raw logs do not.
+
+**Not claimed:** that 3/6 completions means anything. This branch is
+diagnostics only and changes no gating; two 6-round arms on the same scene
+earlier today went 0/6 and 2/6. n is far too small and nothing here touched the
+kernel's decisions.
+
+### 2026-09-13 — #275 across 27 rounds: the payload-vs-voxel excess is **bimodal**
+
+Three batteries on `fridge` gate-ON, 27 rounds, every payload-vs-voxel stop,
+sorted by excess (certified mesh→world truth minus the kernel's reported depth):
+
+| run | kernel | certified | **excess** | verdict | rotation | max-slip |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| r05′ | −7.54 | −5.21 | 2.32 | `attached_payload` | — | — |
+| r05 | −0.28 | +5.09 | 5.37 | `solid_world` | 3.69° | 4.28 |
+| r22 | −6.34 | −0.54 | 5.80 | `attached_payload` | 0.51° | 1.11 |
+| r10 | −12.42 | +0.47 | 12.89 | `attached_payload` | 0.655° | 2.79 |
+| r20 | −17.58 | +0.53 | 18.11 | `attached_payload` | 0.047° | 1.03 |
+| r11 | −15.99 | +4.32 | 20.31 | `solid_world` | 2.8° | 4.81 |
+| **r24** | −31.22 | +1.06 | **32.28** | `solid_world` | **16.72°** | **26.70** |
+| r01′ | −34.67 | −0.25 | 34.42 | `attached_payload` | — | — |
+| r03′ | −33.65 | +2.07 | 35.72 | `solid_world` | — | — |
+| **r25** | −32.64 | **+12.64** | **45.29** | `solid_world` | 0.79° | 1.59 |
+
+(′ = the earlier battery, which predates the slip instrument.)
+
+**Six stops at 2–20 mm all close** inside the known budget: DOP overhang
+(≤ 6.40 mm, measured by support functions over 4096 directions) + payload slip +
+the 12.99 mm cell half-diagonal. **Four at 32–45 mm do not.** The deep mode is
+**4 of 10 stops**, not an outlier, and it costs ~30 mm of standoff on stops where
+the payload is demonstrably clear.
+
+#### Eliminated, each by measurement
+
+- **Payload model.** Box overhang median 12.86 / max 23.47 mm; **26-DOP median
+  1.71 / max 6.40 mm**. The hull ships **0 vertices** for any RoboCasa mesh
+  (1983 verts against `_HULL_DEDUP_CEILING` 640), so #267's benefit in sim is
+  delivered entirely by the DOP and the convex hull never engages.
+- **A cell inside the payload.** r03′'s mesh is **9.11 mm clear** of the cell the
+  kernel reports −33.65 mm into; 0 of 8 cube corners inside the payload hull.
+- **The predicted step.** Every stop is `step=0` (predictive), so the snapshot's
+  measured state is one action-step behind. Re-running the reconstruction with
+  the kernel's **own `joint_positions_rad`** changes nothing on r25.
+- **Rotational slip.** r24 has 16.72° / 26.7 mm, which accounts for essentially
+  its whole 32 mm — but **r25, the deepest at 45.29 mm, has 0.79° / 1.59 mm**.
+  Rotation explains one of the four and no more. *It was declared "confirmed" on
+  r24 alone and refuted by the next round; that claim is withdrawn.*
+
+#### What the deepest stop leaves
+
+Decomposing r25, the cleanest deep instance:
+
+| | |
+| --- | --- |
+| kernel reported (DOP→cube) | −32.64 mm |
+| reconstructed at the recorded pose, using the kernel's own joints | **+8.38 mm** |
+| → discrepancy | **41.02 mm** |
+| `payload_model_slip` | translation **0.75 mm**, rotation **0.79°** |
+| certified mesh→world | **+12.64 mm** — the payload is nowhere near anything |
+
+The kernel's model is within 0.75 mm of the body and the configuration is the
+kernel's own, so the *pose* cannot carry a 41 mm error. Searching cells near the
+recorded one, an offset of **(0, +2, +2) cells** reproduces −29.61 mm against the
+kernel's −32.64 mm.
+
+**That indicts the cell, not the geometry.** `decode_is_latest: true` — true on
+every stop in these batteries — was read too strongly: it says the bridge used
+the newest grid it **held**, not that this is the grid the kernel **checked**,
+and inside one `/clock` tick (every stamp in the graph quantises to 50 ms)
+nothing downstream can distinguish them. That is the gap the kernel's grid
+disclosure closes (#281, hazard-log Entry 030), which is therefore **on** #275's
+critical path rather than beside it — a reversal of what this page said earlier.
+
+#### Standing caveats on this entry
+
+- The reconstruction is a **separating-axis lower bound** over the cube's axes
+  plus 13 canonical directions — exact only when a face normal separates.
+  Millimetre values carry error bars; the tens-of-millimetres discrepancy does
+  not.
+- The nearby-cell search examined **729 candidates**; one matching by chance is
+  expected. It is corroboration, **not** proof.
+- **#275's cause has been wrongly identified four times** — phantom occupancy,
+  payload leak, rotation, and "the decode is not the problem" — twice on a single
+  data point. The decode hypothesis above is the fifth and is **unconfirmed**.
+  The test that settles it is a battery on master with `decode_source: origin`,
+  which names the cell exactly.
 
 ### 2026-09-22 — harness rules and the rounds that produced them
 
@@ -3877,21 +3677,142 @@ frozen image. Re-verified on Thor the same day (non-actuated, CAN down): ZED
 stopped → `/openral/world_voxels` silent from ~0.7 s, resumed at 9.8 Hz when the
 camera came back.
 
+## Standing caveats
+
+Eleven things a reader should carry away, all of them stated by the artifacts
+themselves rather than inferred:
+
+1. **The #102 acceptance is real but narrow, and it predates `master`.** Two
+   independent completions on one named scene, at branch tip `e35ed68`, with
+   **nothing exempted in either** — before #134 and #135 landed. It has not
+   been reproduced at `2edcf67`.
+2. **2/5 vs 0/5 at n=5 is not statistically separable** on a scene the run
+   store itself calls behaviourally non-deterministic under XR-1.
+3. **The n=15 A/B that was supposed to settle that never had its outcome
+   written down.** Both arms are 0/15; the comparison was not made.
+4. **As of 2026-08-22 the stack completes no scene.** Carry-phase machinery
+   behaves; **one** link-class false positive is open (baguette; the utensil one
+   is withdrawn — see the correction in that round's section). The place path was unarmed
+   in every shipped scene at the time of this round; #142 and its follow-up
+   correction arm it on the three RoboCasa place scenes, with `robocasa_baguette`
+   the only one observed arming end to end so far (see the update above).
+5. **No `real-contact` verdict recorded before 2026-08-23 is safe to cite.**
+   Every ground-truth probe up to that date filtered non-solid geometry on its
+   world side only, so a visual shell or a region marker on the robot or payload
+   side could be — and was — ranked first at 0.000 m. Those stops re-derive as
+   `unadjudicated`. This withdraws a conclusion; it does not reverse one: no
+   such stop is thereby shown to be a false positive.
+6. **No `false-positive` verdict recorded before #144 is safe to cite either,
+   and it cannot be re-derived from its own round.** `adjudication_budget`
+   landed in #144 (`ea1b7e8`, 2026-08-22); every round before it was judged
+   against the voxel half-diagonal alone (21.7 mm at a 25 mm grid). That term is
+   a strict *lower bound* on the admissible kernel-vs-probe gap — the real gap
+   adds `corner_slop(link)`, which is the larger term on every panda link — so
+   exceeding it establishes nothing, and those rounds recorded no slop from
+   which the real gap could be reconstructed. This is a **second, independent**
+   reason older link-class verdicts are not citable, and it bites in the
+   opposite direction from caveat 5: that one withdraws stops called *real*,
+   this one withdraws stops called *false*. The asymmetry:
+   a discrepancy **within** the voxel term is still sound (within a lower bound
+   implies within the true gap), so `within-quantization` from an old round
+   stands.
+7. **Several rounds have no written summary at all** (all of 08-13 and 08-14,
+   `round7`, `round8`, `defect-ab`). Their findings survive only as constants
+   and comments in this repo. Treat a citation to one of those rounds as a
+   citation to the in-tree comment that carries it, not to a retrievable
+   verdict.
+8. **No verdict from a probe recorded before 2026-08-25 is safe to cite, of any
+   kind.** Under mujoco 3.8.0 `mj_geomDistance` is unreliable for RoboCasa
+   fixture geoms against `panda_mobile` collision meshes, in two distinct silent
+   modes, and **every** ground-truth probe up to that date was built on it. This
+   is not only a reason to distrust `real-contact`: it corrupts the distance
+   every rule reads, so `within-quantization` and the absence-of-a-pair lower
+   bound go with it. Four `0.000 m` readings in the checked-in rounds re-measure
+   at **+14.8, +82.2, +98.8 and +107.9 mm** — the last of them on a *solid↔solid*
+   pair, which no collidability filter would have caught. Unlike caveats 5 and 6
+   this is a defect in the measurement *method* rather than in the filtering or
+   the budget, and it is the reason those rounds now re-derive as
+   `unadjudicated` with `withdrawn from '<verdict>'` naming what was taken.
+
+   **The scope includes the support-contact witness.** Until #190
+   (2026-09-03) the witness producer measured with the same call at a 1 mm
+   window, so every `SupportContactWitness` issued before then — every
+   exemption the kernel granted on one, in every round above — rests on the
+   defective instrument. Its failure direction there is a *false* exemption.
+   The exposure is probably small (#170 measured 1 101 of 1 102 pairs agreeing
+   at the shipped windows, and the witness window is 100× narrower) but #170 is
+   explicit that no window separates the good answers from the bad, so none of
+   those exemptions is re-derivable as correct; they are simply unverified. A
+   witness whose `evidence_ref` begins `mujoco_geom_distance:` is one of them.
+
+   **It is fixed going forward.** `openral_hal.convex_distance` measures with a
+   separating-axis certificate and refuses rather than guess; every probe
+   reports `certified_pairs` / `uncertified_pairs`, the witness producer issues
+   only from certified measurements (`evidence_ref`
+   `openral_hal.convex_distance.convex_geom_distance:<support>`), and
+   `tools/validation_matrix.py::probe_is_distance_certified` is what a future
+   round's verdict rests on. Full characterisation, scope, cost, the
+   re-measured stops and the instrument-vs-map partition are in
+   [the 2026-08-25 correction](#2026-08-25-the-ruler-was-wrong-and-here-is-what-it-moves)
+   above; the older account is in
+   [the start-state census](robocasa-start-state-census.md#mesh-side-mj_geomdistance-is-not-usable-for-these-pairs).
+
+9. **No verdict on a link-vs-link self stop is safe to cite before 2026-09-04.**
+   The ground-truth probe has never measured one robot link against another —
+   its robot side excludes the whole robot from the far side — so a
+   `kind=self` stop naming two bare links was scored against the tripping
+   link's clearance to the *world*, which answers a different question and is
+   always far larger. Every such stop therefore read `false-positive`. They
+   re-derive as `unadjudicated`. As with caveats 5, 6 and 8 this withdraws a
+   conclusion and reverses none: the one observed instance
+   (`panda_link5`/`panda_link7`, 2026-09-04) replays as a **genuine** overlap
+   of the two links' exact hulls. Closing this properly needs a link-vs-link
+   pair set in `sim.estop_ground_truth_snapshot`, which does not exist yet.
+
+10. **No `validation_matrix` round taken on post-#231 `master` before
+    2026-09-07 is a measurement of the kernel.** The harness polled a DDS scope
+    the launch had confined away from, and its `ros2 action list --no-daemon`
+    poll could not discover an advertised action on *any* scope, so every scene
+    reported `harness-error` beside a healthy graph — see the 2026-09-07 entry.
+    `harness-error` did its job, in that nothing false reached this page; what
+    it does not do is distinguish "this host cannot launch" from "this harness
+    cannot see", which is why the first explanation reached for was the
+    `octomap_server` `exec_depend` of 2026-08-22. Rounds on commits before
+    `9ca834e` are unaffected.
+
+11. **No `real-contact` verdict produced between 2026-09-05 and 2026-09-07 is
+    safe to cite, and the error runs one way: it manufactures them.** #220
+    (`d1d39d7`, on `master` 2026-09-05) gave the HAL a link-vs-link probe so a
+    self stop could be scored against the pair the kernel named — correct, and
+    the reason caveat 9 is closeable. But the new pairs were folded into the
+    adjudicator's `nearest_any`, which drives its first and most decisive rule:
+    *any probed pair at or below 0 m → `real-contact`*. Adjacent robot links
+    overlap permanently, are in the robot's allowed-collision matrix, and are
+    never checked by the kernel — so `nearest_any <= 0` became vacuously true
+    and **every adjudicable stop was stamped `real-contact`**, whatever the
+    tripping party's clearance.
+
+    Measured on `2026-09-07-adr0101-live-1`: `robot0_link3`/`link4` at
+    −36.3 mm, `link5`/`link6` at −23.0 mm, `link4`/`link5` at −4.6 mm, all
+    certified and all permitted, while the payload the kernel actually stopped
+    for sat **+24.86 mm clear** of the counter. Re-derived with the fix, three
+    of the four stops in that batch move `real-contact → within-quantization`
+    and the one true contact (−2.32 mm) is preserved.
+
+    This inverts the single measurement the collision programme exists to make.
+    It is also self-limiting in one respect worth stating plainly: it can only
+    ever turn a false positive into an apparent real contact, never the reverse,
+    so nothing was ever wrongly *cleared*. Verdicts are re-derivable offline —
+    `validation_matrix.py verdicts <round>` — so affected rounds should be
+    re-adjudicated rather than re-run.
+
 ## Programme status note
 
 _Moved here from the root `PLAN.md` on 2026-09-22. §4 and §5 are cited by tools and tests; keep the section numbers._
 
 Written 2026-09-06 after the #204 A/B (120 runs, `laptop`); amended through 2026-09-12. Companions: this page's dated ledger above, [`collision-safety-alternatives-survey.md`](collision-safety-alternatives-survey.md) (2026-08-30) and [`robocasa-start-state-census.md`](robocasa-start-state-census.md).
 
-**Landing, 2026-09-07 — three slices, not one** (4 822 lines / 33 commits, over the 800-line ceiling):
-
-| slice | branch | contents | gate |
-| --- | --- | --- | --- |
-| **A** | `fix/collision-instrument-repairs` | four instrument repairs, two evidence producers, `refine_dop_to_budget`, the ceiling probe, the narrow-phase latency surface, this note and the ledger | none — diagnostics only; changes no shipped envelope |
-| **B** | `feat/216-tight-geometry-link3-4-6` | `tight_geometry` on `panda_link3`/`link4`/`link6`, both manifests | safety-WG + hazard-log Entry 026 |
-| **C** | — | `panda_link1` refined envelope | **withdrawn** — tool lands in A, manifest does not: it moved link1's stops by 0.0003 mm |
-
-A was urgent: since 2026-09-05 `master` carried a harness that could not see the graph it launched and an adjudicator that stamped every stop `real-contact` (see the 2026-09-07 entries, `the harness could not see the graph it launched` and `adr0101-live-*`).
+**Landing, 2026-09-07:** three slices, not one (4 822 lines / 33 commits, over the 800-line ceiling) — A instrument repairs (no gate), B `tight_geometry` on `panda_link3`/`link4`/`link6` (safety-WG + hazard-log Entry 026), C `panda_link1` refined envelope (withdrawn). Details in the 2026-09-07 entry, `how this week's work lands`.
 
 ### §1. What actually cost the failures
 
@@ -4018,7 +3939,7 @@ Ceiling run mechanics (2026-09-06, `spark`, `~/workspace/openral-217-with204` @ 
 
 1. `deploy sim` cannot run concurrently with itself: `_kill_orphan_openral_graph_processes()` cannot tell a sibling from an orphan. `OPENRAL_SKIP_ORPHAN_REAP=1` was read by nothing until 2026-09-10; the sweep also missed the `octomap_voxel_bridge`/`octomap_server_node` pair, which leaked one per round (46 alive, oldest 23.7 h) and holds the `fastrtps_port<N>_el` lock that gives the next run on that domain 0 chunks — a per-worker `ROS_DOMAIN_ID` does not protect against it. See the 2026-09-10 entry, `the world-voxel nodes were the one graph member no reaper matched`.
 2. The XR-1 sidecar is stateless (`reset()` is `return`; episode state is client-side) and one serves all workers. Racing to spawn it reproduces "sidecar exited with code 1 during boot"; the first worker gets a 210 s head start. Per-worker rSkill copies 404 against the Hub and yield policy-free runs.
-3. Three defects fixed before the number was trustworthy: uncaught `subprocess.TimeoutExpired` killed whole workers and scene-confounded the arms (interim 4/17 vs 1/20 was composition); `SidecarClient` reaped the shared sidecar on the first crash (fixed with a keeper process); policy-free runs excluded from each run's goal log (14 of 102 dropped).
+3. Three defects were fixed before the number was trustworthy (worker-killing timeouts, the shared sidecar reaped on first crash, 14 of 102 policy-free runs dropped) — see the 2026-09-07 entry, `the ceiling`.
 
 Checklist, final state:
 
@@ -4041,3 +3962,20 @@ Checklist, final state:
 Next, in order (2026-09-10, amended): #260 scoring gap (done, diagnostics-only); #259 answered (not a bug; lever 2 needs a ruling); the 15 mm A/B (done, null, re-ask after #266); widen the carry-speed sample from n=5 with the battery's 8 carrying stops (`openral-256/outputs/ceiling/2026-09-09-fixed`); the `CORRUPTED.md` top-up (11 runs) so `baguette-off` stops resting on 3 rounds. Not on the list: the 43 % of gate-ON runs never stopped at all — a policy limit.
 
 Issues filed 2026-09-09: **#253** (15 mm), **#254** (ADR-0101), **#256** (ceiling rates are floors), **#258** (bimodal excess, merged), **#259** (place allowance scope), **#255** (test-ordering flake: `launch.logging` sets `propagate = False` at import; already fixed on `master` by `855fe1b`, closed same day).
+
+## Related
+
+- [RoboCasa start-state collision census](robocasa-start-state-census.md) — every
+  layout of all four matrix scenes, measured at reset: which link stops the
+  kernel, what it is touching, and whether the start pose or the base placement
+  is responsible.
+
+- [The validation matrix](../contributing/validation-matrix.md) — how to run a
+  round, what each verdict means, where the artifacts land, and the Spark
+  etiquette. The harness that feeds this page from 2026-08-22 onward.
+- `cpp/openral_safety_kernel/README.md` — the witness, the partition, the
+  allowance, and the geometry each calibration changed.
+- `packages/openral_octomap_bridge/README.md` — payload clearing, the attach
+  sweep window, and the rasterization change #135 made.
+- [Design decisions](../decisions.md) — how ADR numbers are cited here and
+  where the records live.

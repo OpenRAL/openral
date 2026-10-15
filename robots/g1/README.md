@@ -1,20 +1,17 @@
 # `g1` — Robot description
 
-Canonical `RobotDescription` manifest for the **Unitree G1** humanoid —
-a 29-DoF bipedal robot (2 × 6 legs + 3 waist + 2 × 7 arms; no
-end-effectors on this menagerie variant). The same manifest covers
-the real Unitree G1 (over `unitree_sdk2`, M2 milestone) and the
-real-physics MuJoCo digital twin (`G1MujocoHAL` on the
-`mujoco_menagerie` MJCF).
+Canonical `RobotDescription` manifest for the **Unitree G1** humanoid, a
+29-DoF biped (2 × 6 legs + 3 waist + 2 × 7 arms; no end-effectors on this
+menagerie variant). One manifest covers the real G1 (over `unitree_sdk2`, M2
+milestone) and the MuJoCo digital twin (`G1MujocoHAL` on the `mujoco_menagerie`
+MJCF).
 
 ## What this is — and what it isn't
 
-The MuJoCo digital twin is a **HAL contract validator**, not a useful
-humanoid sim. The G1 has a floating base and no S0 cerebellar
-controller; left to its own devices it falls over under gravity. The
-closed-loop sim tests therefore run with `gravity_enabled=False`.
-
-The twin is the right tool for verifying:
+The MuJoCo twin is a **HAL contract validator**, not a useful humanoid sim:
+with a floating base and no S0 cerebellar controller it falls over under
+gravity, so the closed-loop sim tests run with `gravity_enabled=False`. It
+verifies:
 
 - 29-DoF joint-position action layout,
 - lifecycle wiring (`connect → read_state → send_action → estop`),
@@ -22,11 +19,10 @@ The twin is the right tool for verifying:
 - `RobotDescription` round-trip,
 - embodiment / VLA tag plumbing.
 
-It is **not** the tool for rolling out a humanoid policy that walks or
-balances. Balance + walking live under CLAUDE.md §6.2 — the C++ S0
-cerebellum tracked under the M2 milestone — and are explicitly out of
-scope here. See `docs/architecture/repo-state-map.html` for the
-"HAL · Unitree G1 (real-HW)" planned block.
+It is **not** for rolling out a policy that walks or balances. Balance and
+walking belong to the C++ S0 cerebellum (CLAUDE.md §6.2, M2 milestone) and are
+out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
+`docs/architecture/repo-state-map.html`.
 
 ## At a glance
 
@@ -99,21 +95,18 @@ published-spec values used for capability matching only — MuJoCo's
 
 ## Tests
 
-- Sim: `tests/sim/test_g1_hal_mujoco.py` exercises `G1MujocoHAL` end-to-end
-  against real MuJoCo physics on the Menagerie MJCF (34 tests):
-  lifecycle, schema-drift guard, per-section convergence on the legs,
-  waist, left arm, and right arm.
+- Sim: `tests/sim/test_g1_hal_mujoco.py` (34 tests) runs `G1MujocoHAL`
+  against real MuJoCo physics on the Menagerie MJCF: lifecycle, schema-drift
+  guard, per-section convergence on legs, waist, left arm and right arm.
 - HIL: planned alongside the real-HW HAL under M2.
 
 ## Asymmetric joint conventions
 
-The G1 mirrors its arm conventions left vs right: e.g.
-`left_shoulder_roll_joint` positive rolls the arm AWAY from the
-torso, while `right_shoulder_roll_joint` positive rolls it INTO the
-torso. This means a "all joints at the same target value" command
-is self-colliding for one side or the other — physical reality, not
-a HAL bug. Tests deliberately validate each section independently
-rather than driving every joint to a uniform target.
+The G1 mirrors its arm conventions left vs right: positive
+`left_shoulder_roll_joint` rolls the arm AWAY from the torso, positive
+`right_shoulder_roll_joint` rolls it INTO the torso. One uniform target for all
+joints is therefore self-colliding on one side: physical reality, not a HAL
+bug. Tests validate each section independently.
 
 ## See also
 

@@ -1,19 +1,18 @@
 # Sim Environments
 
 Scene YAMLs under [`scenes/`](https://github.com/OpenRAL/openral/tree/master/scenes)
-follow a three-tier hierarchy:
-`DeployScene ⊆ SimScene
-⊆ BenchmarkScene`. Each tier has its own directory, its own loader-strictness
+follow a three-tier hierarchy,
+`DeployScene ⊆ SimScene ⊆ BenchmarkScene`. Each tier has its own directory, its own loader-strictness
 gate, and its own CLI consumer. The conceptual overview, decision matrix,
 authoring guide, and per-backend `scene.id` catalogue all live in the in-tree
 [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md);
-this page is the **per-file catalogue** — one row per YAML.
+this page is the per-file catalogue, one row per YAML.
 
 Scene dependencies are auto-installed on first use (auto-install is on by
 default; set `OPENRAL_AUTO_INSTALL_DEPS=0` to be prompted instead, e.g. when
-*not* in CI). Most scenes need an opt-in dependency group first — sync it with
-`just sync --group <name>` (`sim` / `libero` / `robocasa` / `metaworld` /
-`maniskill3`), **never** a bare `uv sync`.
+not in CI). Most scenes need an opt-in dependency group first: `just sync --group
+<name>` (`sim` / `libero` / `robocasa` / `metaworld` / `maniskill3`), never a bare
+`uv sync`.
 
 RoboCasa is a special case: `just sync --group robocasa` provides only
 robosuite + deps, while the RoboCasa fork itself is git-cloned + installed
@@ -22,19 +21,16 @@ LIBERO and RoboCasa pin conflicting robosuite versions, so swap groups per
 task. Full recipe → [Managing the Python environment & dependency
 groups](../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
-An install step's output streams to your terminal as it runs, and the tail of
-it is quoted back inside the `ROSConfigError` if the step fails — so when a
-backend or sidecar won't provision, read the quoted lines rather than the exit
-code. That matters most when the step ran *inside a ROS node*, where the raw
-output is scattered through the launch log: the reasoner reports the failure
-as `goal_rejected`, and the quoted tail is the only place the cause travels
-with it.
+An install step's output streams to your terminal, and its tail is quoted in the
+`ROSConfigError` if the step fails: when a backend or sidecar won't provision,
+read the quoted lines, not the exit code. Inside a ROS node the raw output is
+scattered through the launch log and the reasoner reports only `goal_rejected`, so
+the quoted tail is the only place the cause travels.
 
-A sidecar pinned to wheels that don't exist for your platform (aarch64 is the
-common case) shows up there as a `uv` "no source distribution or wheel for
-the current platform" line naming the offending package — see [aarch64 CUDA
-hosts](aarch64-support.md) for the per-sidecar status on GB10 / DGX Spark and
-Jetson Thor.
+A sidecar pinned to wheels that don't exist for your platform (usually aarch64)
+shows up there as a `uv` "no source distribution or wheel for the current
+platform" line naming the package; see [aarch64 CUDA hosts](aarch64-support.md)
+for the per-sidecar status on GB10 / DGX Spark and Jetson Thor.
 
 ## Quick CLI
 
@@ -87,19 +83,27 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 
 Deploy scenes are timing-faithful: one scene step is one control period of the
 robot (`action_spec.control_freq_hz`), and `SimAttachedHAL.connect` refuses a
-scene whose tick is anything else (`openral_core.check_time_base`, 1 %). Isaac
-derives its physics substeps at boot (non-integer ratios refused) — see
-[Isaac Sim: any stage, any robot](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot).
-RoboCasa and LIBERO deploy scenes pin `backend_options.control_freq_hz` to the
-robot's rate (robosuite's physics time step is shrunk to divide the period);
-without the pin both keep robosuite's native 20 Hz, the benchmark contract the
-eval tier and every published LIBERO number run at. The bare MuJoCo twins
-(`MujocoArmHAL`: OpenArm, SO-100/101, UR, Franka, ...) derive their physics
-steps per action from the same rate at connect (issue #358).
+scene whose tick is anything else (`openral_core.check_time_base`, 1 %).
+
+- **Isaac** derives its physics substeps at boot (non-integer ratios refused); see
+  [Isaac Sim: any stage, any robot](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot).
+- **RoboCasa and LIBERO** deploy scenes pin `backend_options.control_freq_hz` to the
+  robot's rate (robosuite's physics time step is shrunk to divide the period);
+  without the pin both keep robosuite's native 20 Hz, the benchmark contract the
+  eval tier and every published LIBERO number run at.
+- **Bare MuJoCo twins** (`MujocoArmHAL`: OpenArm, SO-100/101, UR, Franka, ...)
+  derive their physics steps per action from the same rate at connect (issue #358).
+
 Isaac camera images trail the physics by 2–4 steps (the RTX pipeline), so each
 observation carries `image_time_ns` and `deploy sim` stamps `/openral/cameras/*`
 with the time each image shows, not the publish time (issue #361).
-Every Isaac step also carries `info["robot_contacts"]` (this step's PhysX robot-vs-world contacts), and `openral sim run` folds them into each episode's `contact_stats` in `summary.json`: which links touched what, for how many steps, how deep (`max_penetration_m`) and how hard (`max_impulse_ns`). That is the evidence for which contacts a successful episode needs, to compare against the safety kernel's stops.
+
+Every Isaac step also carries `info["robot_contacts"]` (that step's PhysX
+robot-vs-world contacts), and `openral sim run` folds them into each episode's
+`contact_stats` in `summary.json`: which links touched what, for how many steps,
+how deep (`max_penetration_m`) and how hard (`max_impulse_ns`). That is the
+evidence for which contacts a successful episode needs, to compare against the
+safety kernel's stops.
 
 Isaac safety-kernel stops carry ground truth too: each `sim.estop_ground_truth_snapshot`
 line (`backend: "isaacsim"`) lists the PhysX robot-vs-world contact pairs of the
@@ -110,8 +114,8 @@ are no near-miss probes beyond the contact-offset band (`contacts_caveat`).
 ## SimScene catalogue (`scenes/sim/`)
 
 `DeployScene` + a single `task:` block. One CLI invocation, one or more
-`EpisodeResult`s; sized for ad-hoc development and smoke tests. The policy is
-supplied at the CLI via `--rskill <name>` — scene YAMLs no longer pin a VLA.
+`EpisodeResult`s; sized for ad-hoc development and smoke tests. The policy comes
+from `--rskill <name>`; scene YAMLs do not pin a VLA.
 Consumed by `openral sim run`.
 
 Isaac SimScenes can grade placement prompts: `backend_options.placement_success`
@@ -174,12 +178,9 @@ scene:
 
 `SimScene` + required `metadata: BenchmarkMetadata` (paper URL +
 `honest_scope`) + non-`None` `seed` and `n_episodes`. The shipped values
-match the canonical paper protocol; running `openral benchmark scene` against
-one of these writes `rskills/<vla>/eval/<scene_id>.json` with
-`reproduced_locally=true`. Consumed by `openral benchmark scene`. Most are
-also aggregated into a multi-scene suite (bare `list[BenchmarkScene]` at the
-YAML root) under
-[`benchmarks/`](https://github.com/OpenRAL/openral/tree/master/benchmarks).
+match the canonical paper protocol; `openral benchmark scene` against one of
+these writes `rskills/<vla>/eval/<scene_id>.json` with `reproduced_locally=true`.
+Most are also aggregated into a multi-scene suite under `benchmarks/` (below).
 
 | Config | Fixed / declared robot | `scene.id` | `task.id` | `n_episodes` | Paper |
 |---|---|---|---|---|---|
@@ -209,15 +210,13 @@ YAML root) under
 | [`robotwin_stack_blocks_two.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_stack_blocks_two.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/stack_blocks_two` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
 | [`vlabench_select_fruit.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/vlabench_select_fruit.yaml) | `franka_panda` *(scene-fixed)* | `vlabench` | `vlabench/select_fruit` | 50 | [VLABench](https://arxiv.org/abs/2412.18194) |
 
-The `n_episodes` and `seed` columns ship in the file at the paper-canonical
-value. Overriding `--n-episodes` on `openral benchmark scene` is allowed
+`n_episodes` and `seed` ship at the paper-canonical value. Overriding `--n-episodes` on `openral benchmark scene` is allowed
 (useful for cheap smoke runs that don't claim paper-reproduction); the
 resulting `RSkillEvalResult` records the lowered count.
 
-Multi-scene aggregations (e.g. all 10 LIBERO-Spatial tasks, the MetaWorld MT10
-and MT50 task sets — `benchmarks/metaworld_mt10.yaml` (10 tasks) and
-`benchmarks/metaworld_mt50.yaml` (50 tasks) — all 4 SimplerEnv WidowX tasks)
-live in
+Multi-scene aggregations (e.g. all 10 LIBERO-Spatial tasks,
+`benchmarks/metaworld_mt10.yaml` (10 tasks) and `benchmarks/metaworld_mt50.yaml`
+(50 tasks), all 4 SimplerEnv WidowX tasks) live in
 [`benchmarks/`](https://github.com/OpenRAL/openral/tree/master/benchmarks).
 A suite YAML is a bare `list[BenchmarkScene]` at the YAML root;
 suite-level invariants (uniform `robot_id`, `seed`, `n_episodes`, and full

@@ -33,7 +33,7 @@ inference: false
 This package wraps `hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` (an
 NF4-quantized mirror of `allenai/MolmoAct2-LIBERO`) with a `rskill.yaml`
 manifest that adds capability checking, license surfacing, latency budgets,
-and local registry integration. It does **not** copy model weights — they
+and local registry integration. It does **not** copy model weights; they
 live on the Hub.
 
 ## What this skill does
@@ -85,11 +85,11 @@ the rollout solves the task (`success=True`, reward 1.0).
 
 ## Upstream model / training
 
-The wrapped weights come from Ai2's `allenai/MolmoAct2-LIBERO` checkpoint —
-the base `allenai/MolmoAct2` foundation model finetuned on the full LIBERO
-training mixture (Spatial + Object + Goal + Long). This rSkill repackages an
-NF4-quantized mirror of those weights; it does **not** retrain or copy the
-full-precision weights.
+The weights come from Ai2's `allenai/MolmoAct2-LIBERO`: the base
+`allenai/MolmoAct2` foundation model finetuned on the full LIBERO training
+mixture (Spatial + Object + Goal + Long). This rSkill repackages an
+NF4-quantized mirror; it does **not** retrain or copy the full-precision
+weights.
 
 | Field | Value |
 | --- | --- |
@@ -168,11 +168,10 @@ HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
 
 ## Evaluation
 
-`eval/libero.json::status` is **pending** — the success rates carried there
-are the paper-cited numbers (`reproduced_locally: false`), not a local
-reproduction. The reproduction command is recorded in
-`eval/libero.json::source.reproduction_cli`. A full local rerun needs a GPU
-and is documented but not yet run.
+`eval/libero.json::status` is **pending**: its success rates are paper-cited
+(`reproduced_locally: false`). The reproduction command is in
+`eval/libero.json::source.reproduction_cli`; a full local rerun needs a GPU and
+has not been run yet.
 
 | Benchmark | Score | `reproduced_locally` | Config |
 | --- | --- | --- | --- |
@@ -183,8 +182,8 @@ and is documented but not yet run.
 This rSkill package (`rskill.yaml`, `README.md`, `eval/libero.json`) is
 **Apache-2.0**. The wrapped weights at
 `hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` (NF4 mirror of
-`allenai/MolmoAct2-LIBERO`) are also released under **Apache-2.0** by Ai2 —
-commercial use is permitted; review the upstream LICENSE before deployment.
+`allenai/MolmoAct2-LIBERO`) are also **Apache-2.0** (Ai2); commercial use
+is permitted. Review the upstream LICENSE before deployment.
 
 ## See also
 
