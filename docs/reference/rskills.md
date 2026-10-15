@@ -9,7 +9,7 @@ openral rskill search aloha                    # discover skills on the OpenRAL 
 openral rskill search --kind detector --license apache-2.0   # facet filters
 openral rskill search --family pi05 --json     # programmatic / scriptable output
 openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
-openral rskill list                # list installed rSkills
+openral rskill list                # list in-tree + installed rSkills
 openral rskill check               # which installed rSkills run on this host?
 ```
 
@@ -80,6 +80,10 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`gr00t-n17-b1k-turning-on-radio`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-b1k-turning-on-radio/) | Official 2026 BEHAVIOR-1K GR00T N1.7 `turning_on_radio` checkpoint | `r1pro` | NVIDIA Open Model License, commercial OK (per the organizers' pinned runtime); evaluator bridge + deploy-sim, pinned Isaac-GR00T Python 3.10 sidecar, 61-D state / atomic 23-D mixed action |
 | [`rskill-smolvla-so101-eraser_place-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-smolvla-so101-eraser_place-bf16/) | SmolVLA SO-101 "place the erase on the blue square" checkpoint (makermods, 25 real teleop episodes) | `so101_follower` | Apache-2.0 — weights stay upstream; chunk verified against the training data |
 | [`smolvla-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-robotwin/) | SmolVLA finetuned on RoboTwin 2.0 (50 bimanual SAPIEN tasks) | `aloha_agilex` | Apache-2.0 — py3.10 SAPIEN sidecar |
+| [`lingbot-vla-4b-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla-4b-robotwin/) | LingBot-VLA 1.0 (4 B, Qwen2.5-VL-3B + flow-matching expert), RoboTwin post-train | `aloha_agilex` | Apache-2.0 |
+| [`lingbot-vla2-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-vla2-robotwin/) | LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B + sparse-MoE expert), RoboTwin | `aloha_agilex` | Apache-2.0 |
+| [`lingbot-va-galaxea-a1-fruit-placement`](https://github.com/OpenRAL/openral/tree/master/rskills/lingbot-va-galaxea-a1-fruit-placement/) | LingBot-VA fruit placement | `galaxea_a1` | Apache-2.0 |
+| [`rskill-internvla_n1-mobile_base-vln-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-internvla_n1-mobile_base-vln-nf4/) | InternVLA-N1 / DualVLN navigation (Qwen2.5-VL-7B NF4 + NavDP) | `mobile_base` | CC-BY-NC-SA-4.0 weights (non-commercial) |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |
 
 `XiaomiRobotics/Xiaomi-Robotics-1-5B` is intentionally absent: its only model
@@ -95,8 +99,10 @@ Object-detection rSkills emit `ObjectsMetadata` (2-D detections lifted to 3-D in
 | [`rtdetr-coco-r18`](https://github.com/OpenRAL/openral/tree/master/rskills/rtdetr-coco-r18/) | RT-DETR R18 (COCO) | lightweight ONNX export |
 | `rtdetr-v2-r50vd` | RT-DETR v2 R50vd | higher-accuracy variant; `runtime: tensorrt` — moved to the private `openral-pro` repo since it depends on the TensorRT engine runtime |
 | [`locateanything-3b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/locateanything-3b-nf4/) | NVIDIA LocateAnything-3B NF4 | open-vocabulary grounding; runs via the `VLM_SIDECAR` detector tier (out-of-process sidecar); dynamic reasoner-driven query via the read-only `locate_in_view` tool |
-| [`omdet-turbo-indoor`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-indoor/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** open-vocabulary detector run **in-process** over a fixed ~266-class curated indoor vocabulary; `engine: zeroshot_hf` → `DetectorTier.ZEROSHOT_HF`; `mode: continuous` background producer, far more than the 80 COCO classes (as of the 2026-06-12 amendment) |
+| [`omdet-turbo-indoor`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-indoor/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** open-vocabulary detector run **in-process** over a fixed ~266-class curated indoor vocabulary; `engine: zeroshot_hf` → `DetectorTier.ZEROSHOT_HF`; `mode: continuous` background producer, far more than the 80 COCO classes |
 | [`omdet-turbo-locator`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-locator/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** on-demand sibling — same weights/engine, `mode: on_demand`; the reasoner prompts it via `locate_in_view`. Lightweight, real-time, in-process alternative to the 3B LocateAnything VLM |
+
+[`rskill-sam2_1-any-grasped_object_mask-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-sam2_1-any-grasped_object_mask-bf16/) (`kind: segmenter`, SAM 2.1 Hiera-small, Apache-2.0) is the one segmenter: it emits a grasped-object mask from a point prompt at the tool center point, not detections.
 
 The RT-DETR rSkills are Apache-2.0 and runnable on any camera-equipped embodiment. They are consumed by `openral_perception_ros` (`RosImageObjectDetectorNode`) in the `openral deploy sim` / `deploy run` graph.
 
@@ -104,7 +110,7 @@ LocateAnything is NVIDIA non-commercial and ships as an NF4 PyTorch/custom-code 
 
 `omdet-turbo-indoor` is the commercially-permissive open-vocabulary alternative. OmDet-Turbo is a first-class `transformers` architecture (`AutoModelForZeroShotObjectDetection`), so it loads under the runtime's own `transformers>=5` and runs in-process (no sidecar, no ZMQ) via the `OmDetTurboDetector` backend.
 
-Unlike LocateAnything it is not query-driven: it has no `set_query`, the detector node does not subscribe it to `/openral/perception/detector_query`, and its fixed vocabulary (manifest `labels`) is evaluated on every frame. `torch` + `transformers` ship in the `omdet` dependency group (`uv sync --group omdet`); without them the in-process backend fails on first `detect()`.
+Unlike LocateAnything it is not query-driven: the backend exposes `set_query`, but a `continuous` detector node does not subscribe it to `/openral/perception/detector_query`, so its fixed vocabulary (manifest `labels`) is evaluated on every frame. `torch` + `transformers` ship in the `omdet` dependency group (`just sync --group omdet`); without them the in-process backend fails on first `detect()`.
 
 ### Invocation mode: continuous vs on-demand
 
@@ -123,7 +129,7 @@ The `locate_in_view` tool description lists the continuous detectors' class coun
 |---|---|---|
 | [`qwen35-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/qwen35-4b-nf4/) | Qwen3.5-4B NF4 (natively-multimodal, hybrid linear attention) | Apache-2.0; pre-quantized NF4 checkpoint (~3.3 GB, fits 8 GB); runs out-of-process via `tools/qwen_vlm_sidecar.py` + the `QwenSceneVlm` backend over ZMQ; served by `openral_perception_ros.scene_vlm_node` on `/openral/perception/query_scene`; drives the reasoner's read-only `query_scene` tool |
 
-Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers>=5.4.0,<5.14.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`uv sync --group qwen-vlm`).
+Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers>=5.4.0,<5.14.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`just sync --group qwen-vlm`).
 
 The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
 
@@ -134,7 +140,7 @@ The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-n
 | rSkill | Backbone | Notes |
 |---|---|---|
 | [`robometer-4b`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer_4b-any-general-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runtime is in-process inside `openral_perception_ros.reward_monitor_node` via `RobometerInProcessReward`; served on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool. |
-| [`topreward-qwen3vl-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/topreward-qwen3vl-4b-nf4/) | TOPReward (arXiv 2602.19313) — **zero-shot** reward on `Qwen/Qwen3-VL-4B-Instruct` via lerobot 0.6.0's first-party `lerobot.rewards.topreward` | **Apache-2.0** packaging (method MIT; Qwen3-VL weights keep the Qwen license). Zero-shot: no fine-tuned checkpoint — the model reads `log P("True" \| video, instruction)`; **per-frame progress (0–1)** comes from lerobot's native prefix sweep + per-episode min-max normalization. NF4 (bitsandbytes) on the base VLM to fit 8 GB — **measured 3.13 GB peak** on RTX 4070 Laptop, live-validated on LIBERO `libero_object` ep0 (first-20% 0.41 → last-20% 0.92). Runtime backend still to land as a follow-up |
+| [`topreward-qwen3vl-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/topreward-qwen3vl-4b-nf4/) | TOPReward (arXiv 2602.19313) — **zero-shot** reward on `Qwen/Qwen3-VL-4B-Instruct` via lerobot 0.6.0's first-party `lerobot.rewards.topreward` | **Apache-2.0** packaging (method MIT; Qwen3-VL weights keep the Qwen license). Zero-shot: no fine-tuned checkpoint — the model reads `log P("True" \| video, instruction)`; **per-frame progress (0–1)** comes from lerobot's native prefix sweep + per-episode min-max normalization. NF4 (bitsandbytes) on the base VLM to fit 8 GB — **measured 3.13 GB peak** on RTX 4070 Laptop, live-validated on LIBERO `libero_object` ep0 (first-20% 0.41 → last-20% 0.92). Runs in-process in `reward_monitor_node` via `TOPRewardMonitor` (`reward.backend: topreward`) |
 
 Robometer runs in-process inside the reward-monitor ROS node: out of the VLA runner, reasoner, and HAL processes used by `deploy-sim` / `deploy-run`, but with no extra ZMQ boundary, since lerobot 0.6.0 ships `lerobot.rewards.robometer.RobometerRewardModel` (Apache-2.0, first-party, so no untrusted third-party package runs). No pinned `robometer` package, no `transformers==4.57.1` force-pin, no dedicated venv.
 
@@ -166,7 +172,7 @@ The reasoner also maintains a self-written **`MEMORY.md`** — a persistent sema
 
 | rSkill | Wraps | Targets | License |
 |---|---|---|---|
-| [`rskill-moveit-eef-pose`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-eef-pose/) | MoveIt `MoveGroup` (Cartesian EEF-pose goal) | `franka_panda`, `ur5e`, `ur10e`, `so100_follower`, `openarm`, `rizon4`, `sawyer` | Apache-2.0 |
+| [`rskill-moveit-eef-pose`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-eef-pose/) | MoveIt `MoveGroup` (Cartesian EEF-pose goal) | `franka_panda`, `ur5e`, `ur10e`, `so100_follower`, `openarm`, `rizon4`, `sawyer`, `widowx` | Apache-2.0 |
 | [`rskill-moveit-joints`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-joints/) | MoveIt `MoveGroup` (joint-space goal) | same arm set as above | Apache-2.0 |
 | [`rskill-moveit-look-at`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-look-at/) | MoveIt `MoveGroup` (aim wrist camera at a point) | same arm set as above | Apache-2.0 |
 | [`rskill-nav2-navigate-to-pose`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-nav2-navigate-to-pose/) | Nav2 `NavigateToPose` (result-only; Nav2 publishes `/cmd_vel` itself) | `mobile_base` | Apache-2.0 |

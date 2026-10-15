@@ -375,8 +375,9 @@ straw inside the arm's reach, the cup beyond 1.0 m.
 
 ## Related
 
-- `packages/openral_nav2_bringup/README.md` — the four criteria, the dynamic
-  footprint, the scan self-filter, and the deferred
-  `CostCritic.consider_footprint` flip this scene is the precondition for.
+- `packages/openral_nav2_bringup/README.md` — the four criteria and the scan
+  self-filter. The dynamic footprint was deleted in PR #186, and the
+  `CostCritic.consider_footprint` flip this scene unblocked has shipped
+  (`config/nav2_panda_mobile.yaml`).
 - [Sim environments](sim-environments.md) — how a `scenes/` entry reaches a
   RoboCasa env.

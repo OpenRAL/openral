@@ -11,6 +11,6 @@ Terms as used in OpenRAL.
 - **Reasoner / S2** — The slow planning loop (LLM → typed tool calls).
 - **Skill / S1** — The fast policy loop (VLA or scripted, action-chunked).
 - **Cerebellum / S0** — The C++ realtime layer below S1, where applicable (humanoids).
-- **Embodiment tag** — A short string (e.g., `g1`, `so100_follower`, `aloha`, `oxe_droid`) that maps a skill to a robot's heads / action layouts.
+- **Embodiment tag** — A short string (e.g., `g1`, `so100_follower`, `aloha`, `widowx`) that maps a skill to a robot's heads / action layouts.
 - **Trace** — An OTel span tree + LeRobotDataset row capturing one execution end-to-end.
 - **Replanning ladder** — The bounded sequence: retry → param-tweak → substitute → goal-replan → human-handoff.

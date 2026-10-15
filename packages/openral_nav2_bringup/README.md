@@ -7,9 +7,9 @@ Reasoner can start/stop navigation on demand and route a `NavigateToPose` goal.
 
 ```
 lidar profile:  /scan ─▶ payload scan filter ─▶ /openral/nav2/scan ─▶ Nav2 (obstacle_layer)
+                /openral/world_state_fast ─┘
 visual profile: /map ───────────────────────────────────────────────▶ Nav2 (static_layer)
                                                           └──/navigate_to_pose──▶ /cmd_vel
-                /openral/world_state_fast ─▶ payload footprint ─▶ */footprint
 ```
 
 ## Costmap profiles (backend-agnostic)
@@ -45,6 +45,15 @@ resolved `slam_backend`. Standalone:
 ros2 launch openral_nav2_bringup nav2.launch.py slam_backend:=lidar    # /scan
 ros2 launch openral_nav2_bringup nav2.launch.py slam_backend:=visual   # /map
 ```
+
+| Launch arg | Default | Meaning |
+|---|---|---|
+| `slam_backend` | `lidar` | `lidar`/`none` → `nav2_panda_mobile.yaml`; `visual` → `nav2_visual.yaml` |
+| `params_file` | `""` | Explicit Nav2 params file; empty selects by `slam_backend` |
+| `robot_yaml` | `""` | Rewrites the params with `RobotDescription.nav2_param_overrides()` (footprint, radius, inflation, motion model) and enables the scan filter's self half |
+| `payload_scan_filter` | `true` | Run `payload_scan_filter_node` (lidar backend only) |
+| `cmd_vel_relay` | `false` | Run `twist_to_action_relay_node.py` (below) |
+| `use_sim_time` / `autostart` / `use_composition` | `true` / `true` / `False` | Passed to Nav2 |
 
 Requires upstream `ros-${ROS_DISTRO}-navigation2` / `nav2_bringup` (in the deploy
 images) and a map source: `openral_slam_bringup` (slam_toolbox `/map` for lidar,
@@ -457,7 +466,7 @@ Why the chassis polygon is a proof:
 
 * A return inside the chassis outline is the chassis, or an object standing
   where the chassis already is, which is not a place an object can be.
-* It's the same polygon this package publishes to Nav2 as the robot:
+* It's the same polygon Nav2 is given as the robot's footprint:
   `footprint_clearing_enabled` already frees those cells every update and
   `collision_monitor` reads the same outline. Removing these returns takes
   away nothing Nav2 could have acted on, but does remove the collision-monitor

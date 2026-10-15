@@ -26,7 +26,7 @@ Unknown contract or license facts are blockers. Do not infer them from package n
 | `openral rskill new` | Preferred scaffold command when CLI is available | Supports HF introspection and family defaults |
 | `tools/rskill_scaffolder.py` | Standalone scaffold wrapper | Use `--out-dir rskills/<id>` explicitly |
 | `tools/quantize_rskill.py` | One-shot quantize + optional upload helper | Use `--skip-upload` first unless upload is intended |
-| `tools/rskill_publisher.py` | Validate and publish local rSkill folders | Dry-run by default; publishes private repos only |
+| `tools/rskill_publisher.py` | Validate and publish local rSkill folders | Dry-run by default; private repos unless `--public` (commercial-OK licenses only) |
 | `openral rskill check` | Compatibility check for installed/in-tree rSkills | Use with `--robot` when checking a target robot |
 | `openral sim run` | Produces real sim evidence and summaries | Pair scene config with `--rskill` |
 
@@ -88,7 +88,7 @@ If a command needs an HF token, the user must type the secret into the terminal 
 - `name` uses the target Hub repo ID, usually `<owner>/rskill-<id>`.
 - `version` matches the package intent.
 - `license` reflects weights posture, not only code license.
-- `commercial_use_allowed` is consistent with `license`.
+- The derived `is_commercial_use_allowed` (true for `apache-2.0` / `mit` / `bsd` / `nvidia_open_model`) matches the intended use.
 - `role` is correct: `s1` for fast VLA policy, `s2` for reasoner-like skill, `s0` only for bounded low-level control.
 - `kind` matches the package behavior, such as VLA or detector.
 - `embodiment_tags` intersect the target robot capabilities.
@@ -96,8 +96,8 @@ If a command needs an HF token, the user must type the secret into the terminal 
 - `actuators_required` and action semantics match the robot/control mode.
 - `state_contract` and `action_contract` are present when dataset bridge or action-contract consumers need them.
 - `weights_uri` points to the intended artifact and is pinned for stable publication.
-- `runtime`, `quantization`, and min VRAM match the load path.
-- `latency_budget` is evidence-backed.
+- `runtime` and `quantization` match the load path.
+- `latency_budget` and `min_vram_gb` are evidence-backed.
 - `schema_version` is `"0.1"` (the current published version). Do not change it unless making a backward-incompatible manifest change, which requires bumping the version AND shipping a migrator (CLAUDE.md §1.6).
 
 ## Quantization Checklist
@@ -120,7 +120,7 @@ Before publication:
 - README passes doc validator and has no template sentinels.
 - Eval artifacts are real or clearly labeled as unreproduced paper values.
 - License and provenance warnings are visible in README/manifest.
-- Repo is private at upload time.
+- Repo is private, unless `--public` and the license allows commercial use.
 - Upstream `weights_uri` is pinned when appropriate.
 - Docs and tests travel with any code/schema changes.
 

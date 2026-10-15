@@ -1,9 +1,9 @@
 # Releasing
 
 OpenRAL ships **one lockstep SemVer version** across the whole workspace: the
-root `pyproject.toml` and all 14 `python/*` packages carry the same number, and
+root `pyproject.toml` and all 13 `python/*` packages carry the same number, and
 every `openral-*` dependency pins it exactly. A release is a single `v*.*.*`
-tag that publishes all 14 distributions to PyPI together. Nobody picks the
+tag that publishes all 13 `python/*` distributions to PyPI together. Nobody picks the
 number by hand: it is derived from the Conventional Commits merged since the
 last tag.
 
@@ -14,7 +14,7 @@ merge PRs to master  →  release-please computes the bump  →  release PR
                                                                  │
                      release-pypi.yml  ←  tag v0.3.0  ←  merge the release PR
                              │
-                             └→ 14 packages on PyPI (Trusted Publishing, OIDC)
+                             └→ 13 packages on PyPI (Trusted Publishing, OIDC)
 ```
 
 1. **Every push to `master`** re-runs [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml).
@@ -43,12 +43,12 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    the lock a release behind and `uv sync --frozen` installs stale metadata.
 
    The step runs `uv lock` on the release branch; without `--upgrade` it
-   rewrites only the 15 version lines and leaves third-party pins alone.
+   rewrites only the 14 workspace version lines and leaves third-party pins alone.
    `test_lockstep_versions.py` fails if the lock and the tree ever disagree
    again.
 
    Its CI is deliberately thin. `test-selective` short-circuits on the
-   `release-please--*` branch and selects nothing: rewriting all 15 pyprojects
+   `release-please--*` branch and selects nothing: rewriting all 14 pyprojects
    matches the `pyproject.toml` full-run glob *and* marks every package changed,
    so the selector would otherwise run the entire suite plus every opt-in
    dependency lane (including `isaacsim` / `robotwin` / `gr00t`, whose sidecars a

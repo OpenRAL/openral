@@ -107,20 +107,20 @@ anyway: they are the evidence the fix needs.
 
 ## Hosts
 
-The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to
-**Thor**. The ZED leg of this pipeline has been verified only on the lab **Orin**
-(2026-09-07: ZED SDK 5.4.1, `/octomap_point_cloud_centers` at about 5 Hz,
-`/openral/world_voxels` at about 10 Hz). Nothing here is proven on Thor; confirm each of these
-there before step 1:
+The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to the
+lab **Orin**: on 2026-10-07 the robot and its cameras moved there from **Thor**
+(`robots/openarm/units/orin.yaml`; `thor.yaml` keeps the Thor cell's overlay). The ZED leg of
+this pipeline was verified on the Orin on 2026-09-07 (ZED SDK 5.4.1,
+`/octomap_point_cloud_centers` at about 5 Hz, `/openral/world_voxels` at about 10 Hz).
+Confirm each of these on the cell host before step 1:
 
-- ZED SDK and `zed_wrapper` are built for Thor's JetPack, and their overlay is sourced.
+- ZED SDK and `zed_wrapper` are built for the host's JetPack, and their overlay is sourced.
 - `ros-jazzy-octomap-server` is installed.
 - `openral_octomap_bridge` is built into the overlay you source (`ros2 pkg prefix openral_octomap_bridge`).
-- The checkout is on this branch. Thor's checkout has diverged from the pushed branches
+- The checkout is on this branch. Lab checkouts have diverged from the pushed branches
   before; reconcile it first.
-- Thor has no `just` and no `uv`. Use the venv's `python` and `openral` directly.
-- Thor's root disk has run near full, and a full disk has killed `ros2_control_node`
-  mid-run. Check `df -h` before recording bags.
+- A full root disk has killed `ros2_control_node` mid-run (on Thor). Check `df -h` before
+  recording bags.
 
 ## 0. Preconditions [human, rig]
 
@@ -301,7 +301,7 @@ the person at the cell:
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source install/setup.bash && source <zed_ws>/install/setup.bash
-export OPENRAL_OPENARM_ALLOW_MOTION=1 OPENRAL_OPENARM_ATTENDED=1 OPENRAL_ROBOT_UNIT=thor  # this cell
+export OPENRAL_OPENARM_ALLOW_MOTION=1 OPENRAL_OPENARM_ATTENDED=1 OPENRAL_ROBOT_UNIT=orin  # this cell
 tools/openarm_world_voxel_run.sh --foxglove
 ```
 
@@ -441,7 +441,7 @@ For the write-up, record:
   link, cell centre, `min_distance_m`, and whether it was an obstacle, self-occupancy, the
   payload or the table;
 - the counts of `SafetyStatus` transitions by `drop_reason`, from the bag;
-- the bags themselves (stored off-host, because Thor's disk runs full).
+- the bags themselves (stored off-host; lab disks have run full).
 
 ## Files
 

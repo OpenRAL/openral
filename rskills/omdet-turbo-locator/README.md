@@ -90,12 +90,12 @@ live upstream and are not copied here.
 
 ## Supported robots
 
-Embodiment-agnostic — the only requirement is an RGB camera stream. All in-tree
-embodiment tags are declared in `rskill.yaml`.
+Embodiment-agnostic — the only requirement is an RGB camera stream.
+`rskill.yaml` declares the explicit `embodiment_tags: ["any"]` wildcard.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| any with an RGB camera | `franka_panda`, `so100_follower`, `aloha`, … | ⚡ experimental | camera-only |
+| any with an RGB camera | `any` | ⚡ experimental | camera-only |
 
 ## Sensors required
 
@@ -117,14 +117,14 @@ Mirrors `rskill.yaml::sensors_required`.
 | `detector.engine` / `detector.mode` | `zeroshot_hf` / `on_demand` |
 | `weights_uri` | `hf://omlab/omdet-turbo-swin-tiny-hf` |
 | `latency_budget.per_chunk_ms` | 200 ms |
-| `commercial_use_allowed` | yes (Apache-2.0 weights) |
+| `is_commercial_use_allowed` (derived from `license`) | `true` (Apache-2.0 weights) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
 ## Quick start
 
 ```bash
-uv sync --group omdet   # torch + transformers for the in-process backend
+just sync --group omdet   # torch + transformers for the in-process backend
 ```
 
 ```python
@@ -134,19 +134,22 @@ manifest = RSkillManifest.from_yaml("rskills/omdet-turbo-locator/rskill.yaml")
 assert manifest.detector.mode is DetectorMode.ON_DEMAND
 ```
 
+`openral deploy sim` brings this locator up by default alongside the continuous
+detector when the `omdet` deps are present (`--object-detector-locator`).
+
 ## Reproduction
 
 Packaging-only wrapper — no trained numbers to reproduce. Validate the wiring
 (manifest + backend query path) without a GPU:
 
 ```bash
-just bootstrap && uv sync --all-packages
+just bootstrap && just sync --group omdet
 uv run pytest tests/unit/test_omdet_turbo_detector.py
 ```
 
 ## Evaluation
 
-No benchmarks shipped — packaging-only wrapper; see CLAUDE.md §6.4.
+No benchmarks shipped — packaging-only wrapper (no `eval/` results).
 
 ## License
 
@@ -160,5 +163,4 @@ locator is fully commercial-safe (CLAUDE.md §1.9).
   background sibling (same weights, `mode: continuous`, fixed 266-class vocab).
 - [`rskills/locateanything-3b-nf4/`](../locateanything-3b-nf4/) — higher-quality
   3B open-vocab locator (NVIDIA non-commercial; `VLM_SIDECAR` tier).
-- continuous vs on-demand detector mode.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

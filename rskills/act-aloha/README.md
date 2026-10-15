@@ -39,9 +39,9 @@ surfacing, latency budgets, and local registry integration. It does
 | Benchmark | ALOHA bimanual cube-transfer (`gym-aloha`) |
 
 > **Note.** The published checkpoint predates lerobot's
-> `PolicyProcessorPipeline` migration and ships **without normalisation
-> buffers**. See `tests/sim/test_aloha_bimanual_act_aloha.py` for the resulting
-> numerical-contract caveats.
+> `PolicyProcessorPipeline` migration: its mean/std normalisation buffers live
+> inside `model.safetensors`, modern lerobot `ACTPolicy` drops them on load, and
+> the adapter re-applies them. See `tests/sim/test_aloha_bimanual_act_aloha.py`.
 
 ## Supported robots
 
@@ -70,9 +70,7 @@ wrist or third-person view.
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/act_aloha_sim_transfer_cube_human` |
 | `latency_budget.per_chunk_ms` | 25 ms (warm; bf16 autocast ≈ 12 ms on RTX 4070 Laptop) |
-| `latency_budget.warmup_ms` | 5 000 ms |
-| `latency_budget.load_ms` | 10 000 ms |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` (derived from `license`) | `true` |
 
 Full schema: `openral_core.RSkillManifest` —
 `python/core/src/openral_core/schemas.py`.
@@ -80,13 +78,17 @@ Full schema: `openral_core.RSkillManifest` —
 ## Reproduction
 
 ```bash
-git clone https://github.com/OpenRAL/openral && cd OpenRAL
-just bootstrap && uv sync --all-packages --group sim
+git clone https://github.com/OpenRAL/openral && cd openral
+just bootstrap && just sync --group sim
 
-# End-to-end via the canonical SimEnvironment config:
+# One-episode BenchmarkScene demo:
 just sim-act-aloha
 # which runs:
-#     openral sim run --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --save-video
+#     openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml \
+#       --rskill rskill://rskills/act-aloha --no-update-manifest --n-episodes 1 --save-dir example_videos
+
+# Full 50-episode protocol (eval/aloha_transfer_cube.json):
+openral benchmark run --suite aloha --rskill act-aloha
 
 # Sim test (real gym-aloha MuJoCo with contact dynamics):
 uv run pytest tests/sim/test_aloha_bimanual_act_aloha.py -v -m sim
@@ -94,9 +96,9 @@ uv run pytest tests/sim/test_aloha_bimanual_act_aloha.py -v -m sim
 
 ## License
 
-This rSkill package (`rskill.yaml`, `README.md`) is **MIT** to match the
-upstream weights. Commercial use is allowed
-(`commercial_use_allowed: true`).
+OpenRAL wrapper files follow the project Apache-2.0 license. The upstream
+weights are **MIT**, so the manifest declares `license: mit` and commercial use
+is allowed (`is_commercial_use_allowed` is `true`).
 
 ## See also
 

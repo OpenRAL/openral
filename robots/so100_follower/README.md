@@ -19,11 +19,11 @@ the MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
 | `embodiment_kind` | `manipulator` |
 | Joints | 6 (5 revolute arm + 1 revolute gripper) |
 | End-effector | parallel gripper (1 DoF, 5 N max grip force, 0.5 kg payload, 0.32 m workspace radius) |
-| Sensors | 2× RGB USB cameras (`front`, `wrist` — 256×256 @ 30 Hz; can be zeroed for sim) |
+| Sensors | 2× RGB USB cameras (`top`, `wrist` — 256×256 @ 30 Hz) |
 | Embodiment tags | `so100_follower`, `lerobot` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | `sdk_kind` | `open` (LeRobot SDK, Apache-2.0) |
-| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; for `deploy sim` the generic HAL camera rig splices the `front` + `wrist` cameras from their `sensors[].sim_placement` (wrist parented to the SO-100 `Fixed_Jaw` body) into the bare MJCF so the twin renders them (issue #88) |
+| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; for `deploy sim` the generic HAL camera rig splices the `top` + `wrist` cameras from their `sensors[].sim_placement` (wrist parented to the SO-100 `Fixed_Jaw` body) into the bare MJCF so the twin renders them (issue #88) |
 | `hal.real` | `openral_hal.so100_follower:SO100FollowerHAL` (`deploy run`) |
 | Action / observation spec | 6-D joint positions @ 30 Hz / `(6,)` joint state |
 
@@ -38,7 +38,7 @@ acceleration ≤ 2.0 m/s². Deadman required (`deadman_required: true`).
 | Python description | `openral_hal.SO100_DESCRIPTION` |
 | Sensor factory | `openral_hal.so100_with_sensors` |
 | ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
-| Compatible rSkills | [`smolvla-libero`](../../rskills/smolvla-libero/README.md) (digital-twin verified) |
+| Compatible rSkills | [`molmoact2-so101-nf4`](../../rskills/molmoact2-so101-nf4/README.md) (lists the `so100_follower` tag) |
 
 ## Joints
 
@@ -63,11 +63,10 @@ against — the jaw's mechanical range lives in `sim.grippers[].ctrl_range`
 
 | Name | Modality | Frame | Resolution | Notes |
 | --- | --- | --- | --- | --- |
-| `front` | RGB | `world` | 256 × 256 @ 30 Hz | Mapped to `observation.images.camera1`. |
-| `wrist` | RGB | `wrist` (parent: `wrist_roll`) | 256 × 256 @ 30 Hz | Mapped to `observation.images.camera2`. |
+| `top` | RGB | `world` | 256 × 256 @ 30 Hz | Mapped to `observation.images.camera1`. |
+| `wrist` | RGB | `wrist_camera` (parent: `gripper`) | 256 × 256 @ 30 Hz | Mapped to `observation.images.camera2`. |
 
-For the smoketest digital twin, images are synthesised as zero tensors;
-state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
+`SO100DigitalTwin` has no cameras: it reports joint positions only.
 
 ## Tests
 
@@ -77,14 +76,9 @@ state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
 - Sim: `tests/sim/test_so100_follower_hal_mujoco.py` runs `SO100MujocoHAL`
   against real MuJoCo physics on the Menagerie MJCF (lifecycle, schema-drift
   guard, closed-loop convergence for arm + normalised gripper).
-- Closed-loop sim against a SmolVLA / π0.5 / xVLA finetune runs via
-  `openral sim run` on `scenes/benchmark/libero_spatial.yaml` (with
-  `--rskill rskills/<smolvla|pi05|xvla>-libero`) etc.; there is no dedicated
-  `tests/sim/test_smolvla_so100.py`.
 
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `SO100FollowerHAL`, `SO100DigitalTwin`, sensor wiring.
 - [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
-- [`rskills/smolvla-libero/README.md`](../../rskills/smolvla-libero/README.md) — example rSkill for this embodiment.
 - [`docs/tutorials/deploy/deploy-run-and-dashboard.md`](../../docs/tutorials/deploy/deploy-run-and-dashboard.md) — sim and hardware quickstart, using SO-100 as the worked example.

@@ -75,9 +75,10 @@ paths**, not registry ids; no command prints the `SCENES` / `POLICIES` /
                              `openral deploy sim` / `openral benchmark scene`).
 --rskill <weights_uri>       rSkill reference: rskills/<id>, bare name,
                              or HF repo id  (REQUIRED).
---robot ID                   robot_id override for free-axis scenes
-                             (rejected on scenes that hard-fix a robot,
-                              and on YAMLs that already set robot_id:).
+--robot ID                   robot_id for the scene. Required on free-axis
+                             scenes unless the YAML sets robot_id:; on scenes
+                             that fix a robot it must be one the scene allows;
+                             contradicting the YAML's robot_id: is an error.
 --task  ID                   Override task.id (e.g. libero_spatial/3).
 --instruction TEXT           Override the natural-language task instruction.
                              Wins over a scene's per-episode language (a
@@ -88,12 +89,14 @@ paths**, not registry ids; no command prints the `SCENES` / `POLICIES` /
 --device     {cpu, cuda:0, mps, auto}
                              Torch device for the policy.
 --save-dir   DIR             Where to write the JSON summary.
---save-video [PATH]          Write a per-episode MP4 (also enables frame capture).
+--save-video PATH            Write a per-episode MP4 (also enables frame capture).
 --video-style {debug,world}  debug (default) = two-band montage; world = clean
                              single-view world render named
                              <scene>_<rskill>_<success|fail>.mp4 + videos.json
                              (for website hero clips; overlays drawn by the page).
 --video-size INT             Square edge (px) for --video-style world (default 1024).
+--video-grid                 With --video-style world: also tile every episode
+                             into <scene>_<rskill>_grid.mp4.
 --n-action-steps N           Override the chunk-replay cadence. Precedence:
                              spec_extra > manifest > checkpoint chunk_size.
 --dataset-out DIR            Write a LeRobotDataset v3.0 as the run proceeds.
@@ -185,8 +188,9 @@ Start from an existing config, e.g.
 # SimScene = scene + task. Policy is supplied at the CLI via
 #   --rskill rskills/<id>
 
-# robot_id: free-axis scenes only (LIBERO/MetaWorld/RoboCasa hard-fix the
-# robot in the registry; setting it here on those scenes is a ROSConfigError).
+# robot_id: required on free-axis scenes (or pass --robot). LIBERO/MetaWorld/
+# RoboCasa fix the robot in the registry; a robot_id there must name an allowed
+# robot, anything else is a ROSConfigError.
 # robot_id: franka_panda
 
 scene:
@@ -215,10 +219,11 @@ To make it **paper-comparable**, add a `metadata: BenchmarkMetadata` block, set
 adds:
 
 ```yaml
-seed: 0                           # required (no default)
-n_episodes: 500                   # required (no default; paper protocol)
+robot_id: franka_panda            # suites need a non-None robot_id
+seed: 42                          # required (no default)
+n_episodes: 50                    # required (no default; OpenVLA protocol)
 metadata:
-  paper: "https://arxiv.org/abs/2309.11500"
+  paper: "https://arxiv.org/abs/2306.03310"
   honest_scope: "..."             # honest scope statement; required
 ```
 
@@ -232,7 +237,7 @@ The per-tier loader (`load_scene_strict`) rejects wrong-tier YAMLs: a
 |---|---|---|
 | `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class SceneSpec`) | `id`; `backend` defaults to `mujoco` |
 | `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (search for `class TaskSpec`) | `id`, `scene_id` (must equal `scene.id`) |
-| `robot_id` | string, key into `ROBOTS` | Only on **free-axis** scenes, to bake the robot into the YAML instead of passing `--robot`. Forbidden on `fixed_robot` scenes (LIBERO/MetaWorld/RoboCasa). |
+| `robot_id` | string, key into `ROBOTS` | On **free-axis** scenes, bakes the robot into the YAML instead of passing `--robot`. On `fixed_robot` scenes (LIBERO/MetaWorld/RoboCasa) optional, and must name a robot the scene allows. |
 
 The policy comes from `--rskill rskills/<id>`, which resolves to an
 `RSkillManifest` (search `schemas.py` for `class RSkillManifest`) composed onto
@@ -472,9 +477,9 @@ The realistic one is `backends/libero.py` (wraps the LIBERO gymnasium env).
 
 ### Skeleton
 
-Place new adapters under `python/sim/src/openral_sim/{policies,backends}/` so
-the package's `__init__.py` imports them (triggering the `@register`
-side-effect):
+Place new adapters under `python/sim/src/openral_sim/{policies,backends}/` and
+add the module to that package's `__init__.py` import list, which triggers the
+`@register` side-effect:
 
 ```python
 # python/sim/src/openral_sim/{policies,backends}/my_scene.py
@@ -685,7 +690,7 @@ Wire it in via the same `policies/__init__.py` import pattern as §5.
 
 The runner enforces that `vla.weights_uri` is a valid skill reference and that
 the rSkill manifest's `embodiment_tags` overlap the robot's
-(`openral_sim.runner._check_rskill_compatibility`). For real weights, create
+(`openral_sim.sim_runner._check_rskill_compatibility`). For real weights, create
 `rskills/<my-skill>/rskill.yaml` declaring the target embodiment(s) and
 reference it as `rskills/<my-skill>`. Layout: `rskills/README.md`; templates:
 existing manifests such as `rskills/smolvla-libero/`.
@@ -740,7 +745,8 @@ rSkills on real MuJoCo physics.
 ### One-time setup (auto-installed on first use)
 
 `openral_sim._deps.ensure_backend_deps` handles the install chain. The
-**first** `openral sim run` against a `robocasa/<task>` scene id shows a Rich
+**first** `openral sim run` against a `robocasa/<task>` scene id runs it
+automatically. With `OPENRAL_AUTO_INSTALL_DEPS=0` it instead shows a Rich
 banner listing every subprocess step and the license posture, then a
 `typer.confirm()` prompt:
 
@@ -752,7 +758,7 @@ openral sim run --config scenes/sim/robocasa_pnp.yaml \
 
 Banner steps (kitchen variant):
 
-1. `uv sync --all-packages --group robocasa`
+1. `uv sync --all-packages --group robocasa --inexact` (`--inexact` keeps packages other groups installed)
 2. `mkdir -p ~/.cache/openral/repos`
 3. `git clone https://github.com/ARISE-Initiative/robosuite.git ~/.cache/openral/repos/robosuite` (idempotent, master branch — kitchen needs the master tip, not the 1.5.2 PyPI wheel. Master adds `make mink optional` so `mink` stays in `extras_require`; without that, `mink==0.0.5`'s `numpy<2` pin would wedge the workspace. The lockfile-honest `[tool.uv.sources] robosuite = { git = "…", rev = "…" }` entry in `pyproject.toml` pins the exact commit `_robocasa_kitchen_plan` reinstalls editable here.)
 4. patch the clone: `touch robosuite/examples/__init__.py`, `touch robosuite/examples/third_party_controller/__init__.py`, `touch robosuite/macros_private.py` (upstream `find_packages()` drops the `examples/` directory + the macros nag is silenced by an empty `macros_private.py`)
@@ -762,14 +768,13 @@ Banner steps (kitchen variant):
 8. `uv pip install --no-deps "mink==0.0.5"` (newer mink relocated `mink.tasks.exceptions.TargetNotSet` away from where robosuite's `mink_controller.py` imports it; `--no-deps` avoids the numpy<2 downgrade)
 9. `uv pip install --no-deps "robocasa @ git+..."`
 
-Confirm with `y`; the install takes ~30 s on fibre. Skip the prompt in CI /
-Dockerfiles with `OPENRAL_AUTO_INSTALL_DEPS=1`.
+The install takes ~30 s on fibre.
 
 Next, the same command fetches the ~11 GB CC-BY-4.0 kitchen asset bundle into
 `~/.cache/openral/robocasa/` behind a second Rich license banner (gated by
-`typer.confirm()` or `OPENRAL_ALLOW_ROBOCASA_ASSETS=1`). The fetch script also
-needs the mujoco-version spoof, which the asset helper does in a subprocess
-`-c` wrapper.
+`typer.confirm()`; `OPENRAL_ALLOW_ROBOCASA_ASSETS=1` or an explicit
+`OPENRAL_AUTO_INSTALL_DEPS=1` skips it). The fetch script also needs the
+mujoco-version spoof, which the asset helper does in a subprocess `-c` wrapper.
 
 The auto-installer also works around upstream bugs: `robocasa/__init__.py`'s hardcoded
 `mujoco==3.3.1` / `numpy==2.2.5` / `robosuite>=1.5.2` assertions (upstream
@@ -794,12 +799,12 @@ OPENRAL_ALLOW_ROBOCASA_ASSETS=1 \
 
 What that config wires:
 
-- `robot_id: panda_mobile` -- the `robots/panda_mobile/robot.yaml`
-  manifest (Franka Panda on a 3-DoF holonomic base).
 - `scene.id: robocasa/PickPlaceCounterToCabinet` -- one of the curated
-  atomic tasks registered with `SCENES.register(...,
-  fixed_robot="panda_mobile")` so an accidental `--robot franka_panda`
-  fails fast with `ROSConfigError`.
+  atomic tasks under the `robocasa` family, registered with
+  `fixed_robot={"panda_mobile", "panda_mobile_vslam"}`. The YAML sets no
+  `robot_id`, so it resolves to `panda_mobile` (`robots/panda_mobile/robot.yaml`,
+  a Franka Panda on a 3-DoF holonomic base); an accidental
+  `--robot franka_panda` fails fast with `ROSConfigError`.
 - `scene.backend_options.mode: prebuilt` -- validated through
   `openral_sim.backends.robocasa.RoboCasaBackendOptions`, the RoboCasa
   backend's registered `options_model` (prebuilt-vs-procedural XOR).
@@ -835,8 +840,9 @@ scene:
 prebuilt-vs-procedural XOR.
 
 "Procedural" is the *kitchen* axis, not the robot axis: the bare `robocasa`
-scene is registered `fixed_robot="panda_mobile"` exactly like the prebuilt
-`robocasa/<Task>` ids, so `--robot` is still rejected here (§2). What varies
+scene shares the prebuilt `robocasa/<Task>` ids' fixed robot set
+(`panda_mobile` / `panda_mobile_vslam`), so any other `--robot` is rejected
+here (§2). What varies
 is the style / layout / fixture / object draw.
 
 ### Known constraints
@@ -903,13 +909,13 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
 This drives a real `robosuite.make(env_name="PnPCupToDrawerClose",
 robots=["GR1ArmsAndWaistFourierHands"])` rollout on the local GPU.
 
-Without the env-var bypasses, the first run prompts:
-
-1. `robocasa_gr1` deps banner → `y` (clones robosuite + the GR1 fork
-   to `~/.cache/openral/repos/`, installs both editable with the
-   `examples/__init__.py` + `macros_private.py` patches dropped in).
-2. `RoboCasa GR1 tabletop assets` license banner → `y` (~750 MB
-   download to the cloned fork's `robocasa/models/assets/`).
+On the first run, the `robocasa_gr1` deps plan clones robosuite + the GR1
+fork to `~/.cache/openral/repos/` and installs both editable with the
+`examples/__init__.py` + `macros_private.py` patches dropped in (automatic;
+`OPENRAL_AUTO_INSTALL_DEPS=0` shows the banner and asks first). Without
+`OPENRAL_ALLOW_ROBOCASA_ASSETS=1`, the `RoboCasa GR1 tabletop assets` license
+banner then asks before the ~750 MB download to the cloned fork's
+`robocasa/models/assets/`.
 
 ### Sweeping to the other 23 tasks
 
@@ -929,8 +935,8 @@ tabletop env class names (see `_GR1_TABLETOP_TASKS` in
 ### Benchmark protocol
 
 `benchmarks/gr1_tabletop.yaml` mirrors the paper's eval protocol
-(scaled to 10 episodes for a ~30 min single-GPU run; bump
-`n_episodes` + `seeds` together for the 50-ep paper reproduction):
+(scaled to 10 episodes for a ~30 min single-GPU run; raise
+`n_episodes` to 50 for the paper reproduction):
 
 ```bash
 openral benchmark run --suite gr1_tabletop --rskill rskills/<gr1-skill>

@@ -69,7 +69,7 @@ Representative queries for robot scene understanding:
 | Parameters | 4B | 7B |
 | VideoMME (w/ subs.) | **83.5%** | ~72% |
 | MLVU | **82.8%** | ~73% |
-| VRAM at NF4 | **~2.5 GB** | ~3.3 GB |
+| VRAM at NF4 | **2.5 GB** declared (`min_vram_gb.int4`), ~3.3 GB measured resident | — |
 | VRAM at BF16 | **~8 GB** | ~13 GB |
 | Architecture | Hybrid linear-attn (3:1) | Full quadratic ViT+LLM |
 | License | Apache-2.0 | Apache-2.0 |
@@ -97,7 +97,7 @@ This rSkill ships a **pre-quantized NF4 checkpoint** as `weights_uri`
 bitsandbytes `quantization_config` (nf4, double-quant, bf16 compute). The
 sidecar loads it **directly as 4-bit** (~3.3 GB resident, no bf16 load spike),
 so it fits an 8 GB GPU with no loader workaround. `source_repo` records the
-SHA-pinned upstream Apache-2.0 model it was quantized from (provenance, §8).
+SHA-pinned upstream Apache-2.0 model it was quantized from (provenance, CLAUDE.md §1.8).
 
 Reproduce the checkpoint with `tools/build_qwen_vlm_nf4_checkpoint.py` (run in
 the sidecar venv):
@@ -113,7 +113,7 @@ It loads the upstream model once (serial materialization so the bf16 pass fits
 4-bit and answers a smoke query.
 
 The `kind: vlm` runtime is implemented as a read-only reasoner tool,
-**not** an `ExecuteSkill` (a scene VLM produces text, not actions):
+**not** an `ExecuteRskill` (a scene VLM produces text, not actions):
 
 - **Sidecar**: `tools/qwen_vlm_sidecar.py` boots the NF4 model in its own venv
   and serves a ZMQ REQ/REP + msgpack protocol. Provision it separately and
@@ -122,7 +122,7 @@ The `kind: vlm` runtime is implemented as a read-only reasoner tool,
 - **Backend**: `openral_runner.backends.gstreamer.qwen_scene_vlm.QwenSceneVlm`
   is the node-side ZMQ client; `build_scene_vlm(manifest)` builds it from this
   manifest. The node-side client deps (pyzmq + msgpack) install with
-  `uv sync --group qwen-vlm`.
+  `just sync --group qwen-vlm`.
 - **Service node**: `openral_perception_ros.scene_vlm_node` subscribes the
   cameras and serves `/openral/perception/query_scene`
   (`openral_msgs/srv/QueryScene`).
@@ -156,8 +156,8 @@ as `Qwen3_5ForConditionalGeneration`).
 
 ## Benchmark Numbers
 
-Benchmarks below are paper-reported (Qwen team, February 2026);
-`reproduced_locally: false` in the eval JSON.
+Benchmarks below are paper-reported (Qwen team, February 2026); not
+reproduced locally, and no `eval/*.json` ships with this rSkill.
 
 | Benchmark | Qwen3.5-4B | Qwen3.5-9B |
 |---|---|---|
@@ -174,12 +174,10 @@ Benchmarks below are paper-reported (Qwen team, February 2026);
 ## Supported robots and embodiments
 
 **Embodiment-agnostic**: it emits text, never actuator commands, so the only
-hardware dependency is an RGB camera stream of at least 336×336. All in-tree
-OpenRAL embodiment tags are listed in `rskill.yaml` (`aloha`,
-`franka_panda`, `g1`, `google_robot`, `gr1`, `h1`, `mobile_base`, `openarm`,
-`panda_mobile`, `pusht`, `rizon4`, `sawyer`, `so100_follower`, `so101_follower`,
-`ur10e`, `ur5e`, `widowx`) so any robot with a compatible camera can install it
-and expose the reasoner's `query_scene` tool. It pairs with any S1 VLA policy:
+hardware dependency is an RGB camera stream of at least 336×336.
+`rskill.yaml` declares the wildcard `embodiment_tags: ["any"]`, so any robot
+with a compatible camera can install it and expose the reasoner's `query_scene`
+tool. It pairs with any S1 VLA policy:
 the VLA acts, this VLM verifies (e.g. "did the grasp succeed?").
 
 ## Sensors and Observation Contract
@@ -188,7 +186,7 @@ the VLA acts, this VLM verifies (e.g. "did the grasp succeed?").
 |---|---|---|---|---|
 | in | any RGB camera | RGB image or video | min 336 × 336 | `vla_feature_key` intentionally omitted |
 | in | query | text | natural language | scene question, grounding query, or task-completion check |
-| out | answer | text | free-form | grounded text response; adapter parses to `SceneQueryResult` |
+| out | answer | text | free-form | grounded text response; returned as `QueryScene.answer` |
 
 The model emits no action chunks and has no proprioception contract.
 

@@ -109,9 +109,10 @@ log-probs per episode**, then interpolate back to one value per frame — a
 buffer the co-active VLA uses.
 
 - **Backbone:** `Qwen/Qwen3-VL-4B-Instruct` (zero-shot; no fine-tuned weights).
-- **Quantization:** NF4 (bitsandbytes, double-quant, bf16 compute). lerobot's
-  `TOPRewardModel` loads bf16 with no quant knob, so the OpenRAL backend
-  subclasses it to inject a `BitsAndBytesConfig`.
+- **Quantization:** NF4 (bitsandbytes, double-quant, bf16 compute), shipped as a
+  pre-quantized checkpoint at `weights_uri`; lerobot's stock `TOPRewardModel`
+  loads it 4-bit directly from its `config.json`
+  ([`topreward_reward.py`](../../python/runner/src/openral_runner/backends/reward/topreward_reward.py)).
 - **transformers:** 5.x works directly — no version downgrade pin.
 
 ## Runtime
@@ -160,12 +161,13 @@ supplied by the Reasoner from the active task.
 | `name` | `OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4` |
 | `kind` | `reward` |
 | `role` | `s2` |
-| `weights_uri` | `hf://Qwen/Qwen3-VL-4B-Instruct` (zero-shot backbone) |
+| `weights_uri` | `hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4` (pre-quantized NF4) |
+| `source_repo` | `hf://Qwen/Qwen3-VL-4B-Instruct` (zero-shot backbone) |
 | `quantization` | NF4 / bitsandbytes (`int4`, bf16 compute) |
 | `min_vram_gb.int4` | 3.2 (measured 3.13 peak) |
 | `reward.progress_range` | `[0.0, 1.0]` |
-| `reward.success_threshold` | `0.8` (advisory; uncalibrated) |
-| `reward.target_fps` | `2.0` |
+| `reward.success_threshold` / `check_floor` | `0.8` / `0.5` (advisory; uncalibrated) |
+| `reward.frame_window_s` / `target_fps` | `40.0` s / `2.0` |
 | `paper_url` | https://arxiv.org/abs/2602.19313 |
 
 See [`rskill.yaml`](rskill.yaml) for the full manifest.

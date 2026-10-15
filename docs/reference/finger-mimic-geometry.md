@@ -1,7 +1,7 @@
 # Gripper fingers at their commanded opening: the follower finger as a rigid mimic-joint link
 
-**Status:** implemented on `feat/349-finger-stroke-geometry`; Safety-WG review, the hazard-log row,
-the ADR and the Isaac deploy-sim validation are owed (§7). Issue #349.
+**Status:** implemented (issue #349, merged in PR #370); Safety-WG review, the hazard-log row,
+the ADR and the Isaac deploy-sim validation are owed (§7).
 
 ## 1. Problem (measured)
 
@@ -109,7 +109,7 @@ where a rigid follower is what MoveIt and cuRobo do.
 
 ## 4. Cost
 
-Per check: one more link (one box + a 276-282-vertex hull per follower) in the broad phase and the
+Per check: one more link (one box + a 195-vertex hull per follower) in the broad phase and the
 staged narrow phase; one affine op in FK. No selection pass, no scratch beyond `link_world`, no
 measured-state dependency. `robots/openarm/robot.yaml` is ~5600 lines shorter than with bins and
 ~400 longer than before #349 (two more hulls).

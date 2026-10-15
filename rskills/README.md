@@ -71,7 +71,7 @@ depends on as an OpenRAL Pro plugin.
 | `diffusion-pusht` | diffusion | pusht |
 | `3d-diffuser-actor-rlbench` | diffuser_actor | franka_panda |
 | `gr00t-n17-libero` | gr00t | franka_panda |
-| `gr00t-n17-b1k-turning-on-radio` | gr00t | r1pro |
+| `gr00t-n17-b1k-turning-on-radio` | gr00t_b1k | r1pro |
 | `rskill-internvla_n1-mobile_base-vln-nf4` | internvla_n1 | mobile_base |
 | `lingbot-va-galaxea-a1-fruit-placement` | lingbot_va_a1 | galaxea_a1 |
 | `lingbot-vla-4b-robotwin` | lingbot_vla | aloha_agilex |
@@ -145,9 +145,10 @@ openral rskill new my-skill --family pi05 --embodiment-tag franka_panda
 openral rskill new my-skill --from-hf <owner>/<repo>
 ```
 
-Then edit `rskills/my-skill/rskill.yaml`, `README.md`, and `SKILL.md`
-(the publish validator rejects leftover `TEMPLATE_ID` / `TODO:` markers),
-and publish with `tools/rskill_publisher.py`. See
+Then edit `rskills/my-skill/rskill.yaml` and `README.md` (the publish
+validator rejects leftover `TEMPLATE_ORG` / `TODO:` markers), regenerate the
+discovery `SKILL.md` with `python tools/generate_rskill_skillmd.py my-skill`
+(never hand-edit it), and publish with `tools/rskill_publisher.py`. See
 [`template/README.md`](template/README.md) for the per-field walkthrough.
 
 Publishing to the Hub and making the repo public is what makes a skill

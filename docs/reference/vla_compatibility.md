@@ -8,7 +8,7 @@ The normative license matrix and the rSkill packaging format are in [`CLAUDE.md`
 
 ## 1. Robots (primary reference embodiments)
 
-The full set of **18** integrated `RobotDescription` manifests, with HAL
+The full set of **21** integrated `RobotDescription` manifests, with HAL
 modules and per-robot status, is in [robots.md](robots.md). The rows below give
 the observation/action control contract for the two most-exercised sim
 embodiments; every other robot follows the same pattern.
@@ -23,11 +23,13 @@ RoboSuite/LIBERO policies use `[0.05, 0.05, 0.05, 0.5, 0.5, 0.5]`: the raw
 `[-1, 1]` command still reaches the native controller, while predictive safety
 multiplies it into metres/radians before Jacobian look-ahead.
 
-Hardware-in-loop tested:
+Hardware-in-loop gates:
 - **UR5e / UR10e / Franka Panda / Sawyer / ALOHA**: `tests/hil/` gates require the
-  matching self-hosted lab runner and vendor controller environment.
-- **SO-100 / SO-101**: real-hardware gates were removed until matching lab hardware
-  is available; SO-100 remains covered by MuJoCo and robosuite simulations.
+  matching self-hosted lab runner and vendor controller environment; none has a
+  recorded run (per-robot status in [robots.md](robots.md)).
+- **SO-101**: `tests/hil/test_so101_serial_live.py` checks bench wiring and the live
+  Feetech servo bus for the `scenes/deploy/so101_bench.yaml` bench (it issues no position
+  commands).
 
 ---
 
@@ -43,7 +45,7 @@ Embodiment tags are short strings that appear in `rskill.yaml` under `embodiment
 | `franka_panda` | Franka Panda (real + sim) | 7 + gripper | Standard industry robot; widespread in BridgeData / Open X | Broader tag; use `libero` when targeting LIBERO-specific checkpoints |
 | `widowx` | WidowX 250s | 6 | [BridgeData V2](https://rail-berkeley.github.io/bridgedata/) | Low-cost research arm; common in Open X-Embodiment |
 | `r1pro` | Galaxea R1 Pro (BEHAVIOR simulation) | 22 articulated joints + holonomic base | [BEHAVIOR-1K 2026](https://behavior.stanford.edu/challenge/) | Sim-only OpenRAL manifest; 61-D policy state and mixed 23-D action |
-| `gr1` | Unitree GR1 humanoid | 23 | [NVIDIA Arena dataset](https://huggingface.co/nvidia) | Full humanoid; requires S0 cerebellar layer |
+| `gr1` | Fourier GR-1 humanoid | 17 joints (3 waist + 2 × 7 arm) + 2 × 6 hand DoF | [NVIDIA Arena dataset](https://huggingface.co/nvidia) | Legs and head disabled in the RoboCasa GR1 composition; eval-only |
 | `aloha` | Aloha bimanual teleoperation setup | 2 × 7 | [ACT paper](https://arxiv.org/abs/2304.13705) (Stanford / Toyota) | Bimanual; two Viperx arms with overhead + wrist cameras |
 | `aloha_agilex` | ALOHA-AgileX dual-arm (RoboTwin 2.0) | 2 × 7 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) | Bimanual SAPIEN benchmark embodiment; targeted by `smolvla-robotwin` |
 | `mobile_base` | Differential/omni mobile base (Nav2) | — | Nav2 stack | Navigation embodiment for `rskill-nav2-navigate-to-pose` (result-only, publishes `/cmd_vel`) |
@@ -72,7 +74,7 @@ stats** = whether normalisation statistics are bundled in the checkpoint;
 |---|---|---|---|---|---|---|---|---|
 | `lerobot/smolvla_libero` | LIBERO | `libero` | **8-D** `eef_pos(3)+axisangle(3)+gripper_qpos(2)` ✓ | `image`→`camera1` + `image2`→`camera2` (256×256, flip 180°) ✓ | Yes — `step_5_normalizer_processor.safetensors` (state=[8], action=[7]) ✓ | `rskills/smolvla-libero/` | Apache-2.0 | Paper: Spatial 90% / Object 96% / Goal 92% / Long 71% (avg 87.3%). `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/smolvla-libero`) |
 | `HuggingFaceVLA/smolvla_libero` | LIBERO | `libero` | 8-D (same as above) | same as above | Yes (assumed same as above) | — | Apache-2.0 | Community mirror. Not locally verified. |
-| `lerobot/pi05_libero_finetuned_v044` | LIBERO | `libero`, `franka_panda` | **8-D** same as smolvla ✓ | `image`+`image2` (256×256, flip 180°) + `empty_camera_0` (224×224 zeros) ✓ | Yes — `step_2_normalizer_processor.safetensors` (state=[8], action=[7]) ✓ | `rskills/pi05-libero-int8/` | **Permissive research** (weights) / Apache-2.0 (code) | π0.5 (PaliGemma 3B backbone); requires ≥8 GB VRAM. `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/pi05-libero-int8`). **Non-commercial weights — see §5** |
+| `lerobot/pi05_libero_finetuned_v044` | LIBERO | `libero`, `franka_panda` | **8-D** same as smolvla ✓ | `image`+`image2` (256×256, flip 180°) + `empty_camera_0` (224×224 zeros) ✓ | Yes — `step_2_normalizer_processor.safetensors` (state=[8], action=[7]) ✓ | `rskills/pi05-libero-int8/` | **Permissive research** (weights) / Apache-2.0 (code) | π0.5 (PaliGemma 3B backbone); requires ≥8 GB VRAM. `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/pi05-libero-int8`). **Permissive-research weights, not cleared for commercial use — see §5** |
 | `lerobot/pi0_libero_finetuned_v044` | LIBERO | `libero`, `franka_panda` | 8-D (same format as pi05 — unverified) | same 3-camera format as pi05 (unverified) | Yes (assumed same format) | — | **Permissive research** (weights) / Apache-2.0 (code) | π0 (same license caveat). Not locally verified. |
 | `lerobot/xvla-libero` | LIBERO | `libero`, `franka_panda` | **8-D** same `eef_pos+axisangle+gripper_qpos`; padded to max_state_dim=20 internally ✓ | `image`+`image2` (**224×224**, flip 180°) + `empty_camera_0` (224×224 zeros) ✓ | IDENTITY norm (no stats file) ✓; action output [20] (first 7 elements = LIBERO 7-D) ✓ | `rskills/xvla-libero/` | Apache-2.0 | xVLA (Florence-2 backbone, flow-matching). `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/xvla-libero`) |
 | `ar0s/groot_libero` | LIBERO | `libero`, `franka_panda` | TBD | TBD | TBD | — | Apache-2.0 (fine-tune) | GR00T on LIBERO; base model is NVIDIA AI Foundation **non-commercial** — guard required |
@@ -102,7 +104,7 @@ stats** = whether normalisation statistics are bundled in the checkpoint;
 |---|---|---|---|---|---|---|---|---|
 | `lerobot/smolvla_metaworld` | MetaWorld MT50 | `franka_panda`, `manipulator` | **4-D** `agent_pos` (XYZ + gripper) ✓ | `observation.image`→`camera1` (256×256, flip+resize from 480×480) ✓ | Yes — `step_5_normalizer_processor.safetensors` (state=[4], action=[4]) ✓ | `rskills/smolvla-metaworld/` | Apache-2.0 | Action: 4-D delta (XYZ + gripper). Sawyer robot in MetaWorld (not Franka despite tag). `scenes/benchmark/metaworld_push.yaml` (with `--rskill rskills/smolvla-metaworld`) |
 
-### 3.4 RoboCasa (Franka Panda, MuJoCo)
+### 3.4 RoboCasa (Panda mobile / GR1, MuJoCo)
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -127,7 +129,7 @@ checkpoint-native preprocessing until a manifest provides evidence otherwise.
 | `TakuyaHiraoka/act_so101_pick_diverse_objects` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | ACT policy; diverse object pick task |
 | `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
 | `makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54` | SO-101 real | `so101_follower` | 6 | `front` + `wrist` | ✅ (processor safetensors) | `rskills/rskill-smolvla-so101-eraser_place-bf16/` | Apache-2.0 | "place the erase on the blue square" (prompt verbatim, upstream typo); `joint_units: degrees`; 50-step chunk reproduces the training teleop to ≤1.4 MAE/joint; training envelope overshoots the so101 elbow/wrist_flex limits |
-| MolmoAct2 NF4 SO-101 | SO-101 real / sim | `so100_follower` | TBD | wrist + overhead | NF4 | `rskills/molmoact2-so101-nf4/` | Apache-2.0 | `trust_remote_code` (`OPENRAL_ALLOW_REMOTE_CODE=1`); NF4 fits 8 GB |
+| MolmoAct2 NF4 SO-101 | SO-101 real / sim | `so100_follower`, `so101_follower` | TBD | wrist + overhead | NF4 | `rskills/molmoact2-so101-nf4/` | Apache-2.0 | `trust_remote_code` (`OPENRAL_ALLOW_REMOTE_CODE=1`); NF4 fits 8 GB |
 
 ### 3.6 SimplerEnv / ManiSkill3 Bridge (WidowX)
 
@@ -140,7 +142,7 @@ checkpoint-native preprocessing until a manifest provides evidence otherwise.
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `nvidia/smolvla-arena-gr1-microwave` | NVIDIA Arena | `gr1` | TBD | TBD | TBD | — | Apache-2.0 | Unitree GR1 humanoid, microwave-opening task |
+| `nvidia/smolvla-arena-gr1-microwave` | NVIDIA Arena | `gr1` | TBD | TBD | TBD | — | Apache-2.0 | Fourier GR-1 humanoid, microwave-opening task |
 | `ISdept/smolvla-piper` | Piper real | `piper` | TBD | TBD | TBD | — | Apache-2.0 | Agilex Piper arm; community fine-tune |
 | `RLWRLD/RLDX-1-FT-GR1` | RoboCasa GR1 | `gr1` | 1-camera layout (`state_contract.layout`) | single RGB stream | Processor sidecars in rSkill | `rskills/rldx1-ft-gr1-nf4/` | RLWRLD non-commercial | Out-of-process ZMQ sidecar; GR1 humanoid bimanual |
 
@@ -168,8 +170,8 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| ACT (transfer cube) | gym-aloha | `aloha_bimanual` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha/` | MIT | Bimanual cube-transfer; `scenes/benchmark/aloha_transfer_cube.yaml` |
-| ACT (insertion) | gym-aloha | `aloha_bimanual` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha-insertion/` | MIT | Custom-example insertion checkpoint; `scenes/benchmark/aloha_insertion.yaml` |
+| ACT (transfer cube) | gym-aloha | `aloha` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha/` | MIT | Bimanual cube-transfer; `scenes/benchmark/aloha_transfer_cube.yaml` |
+| ACT (insertion) | gym-aloha | `aloha` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha-insertion/` | MIT | Custom-example insertion checkpoint; `scenes/benchmark/aloha_insertion.yaml` |
 
 ### 3.11 BEHAVIOR-1K 2026 Challenge (Galaxea R1 Pro)
 
@@ -183,20 +185,20 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 
 | Sim env | Backend | Install | Robot(s) | Task suites | Camera setup |
 |---|---|---|---|---|---|
-| LIBERO | MuJoCo (robosuite) | `CC=/usr/bin/gcc uv sync --group libero` + fix `~/.libero/config.yaml` to point at conda/pip libero data dirs | Franka Panda | libero_spatial, libero_object, libero_goal, libero_10 (= LIBERO-Long) | agentview + wrist 256×256; raw keys `image`/`image2` renamed to `camera1`/`camera2` by stored preprocessor; flip 180° |
-| RLBench | CoppeliaSim/PyRep sidecar | `uv sync --group rlbench` for the openral-side ZMQ wire; CoppeliaSim 4.1.0 + PyRep + RLBench@peract live in an external py3.10 venv | Franka Panda | RLBench PerAct starter subset (`open_drawer`, `meat_off_grill`, `close_jar`) | left/right shoulder + wrist + front RGB-D point clouds at 256×256 |
+| LIBERO | MuJoCo (robosuite) | `CC=/usr/bin/gcc just sync --group libero` + fix `~/.libero/config.yaml` to point at conda/pip libero data dirs | Franka Panda | libero_spatial, libero_object, libero_goal, libero_10 (= LIBERO-Long) | agentview + wrist 256×256; raw keys `image`/`image2` renamed to `camera1`/`camera2` by stored preprocessor; flip 180° |
+| RLBench | CoppeliaSim/PyRep sidecar | `just sync --group rlbench` for the openral-side ZMQ wire; CoppeliaSim 4.1.0 + PyRep + RLBench@peract live in an external py3.10 venv | Franka Panda | RLBench PerAct starter subset (`open_drawer`, `meat_off_grill`, `close_jar`) | left/right shoulder + wrist + front RGB-D point clouds at 256×256 |
 | MetaWorld | MuJoCo | `uv run pip install metaworld==3.0.0 --no-deps` | Sawyer (MT50) | MT50 (50 tasks, v3) | 1 camera `corner2` 480×480 → resize to 256×256; `observation.image` key renamed to `camera1` |
-| RoboCasa | MuJoCo | TBD | Franka Panda | Kitchen manipulation | TBD |
-| SO-100 Digital Twin | MuJoCo (in-process, `python/sim/`) | `uv sync --group sim` | SO-100 | Smoke-test only (no task suite) | None — joint-space smoketest |
-| SO-101 Box (`so101_box`) | MuJoCo (raw, `python/sim/src/openral_sim/backends/so101_box/`) | `uv sync --group sim` | SO-101 | tube-insertion (geometric success: tube vertical + lower tip ≥ 10 mm below the slotted-block hole top) — both block and tube spawn at random (x, y, yaw) on the floor each `reset()` | OAK-D Pro overhead (RGB + depth, default 640×480) + wrist RGB parented to the gripper body |
-| SimplerEnv WidowX | ManiSkill3/SAPIEN via `simpler_env` | `uv sync --group simpler-env` + `uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"` | WidowX 250s | carrot-on-plate (`simpler_env/widowx_carrot_on_plate`) | 3rd-view RGB surfaced as `top` |
+| RoboCasa | MuJoCo (robosuite fork) | `just sync --group robocasa`; the matching `robocasa` fork (editable) and its ~11 GB asset bundle are provisioned on first run | Panda mobile; GR1 (`robocasa/gr1/*`) | Kitchen manipulation (RoboCasa / RoboCasa365); GR1 tabletop | Panda mobile: `robot0_agentview_left` / `_right` + `robot0_eye_in_hand`; GR1: head `egoview` |
+| SO-100 Digital Twin | MuJoCo (in-process, `python/sim/`) | `just sync --group sim` | SO-100 | Smoke-test only (no task suite) | None — joint-space smoketest |
+| SO-101 Box (`so101_box`) | MuJoCo (raw, `python/sim/src/openral_sim/backends/so101_box/`) | `just sync --group sim` | SO-101 | tube-insertion (geometric success: tube vertical + lower tip ≥ 10 mm below the slotted-block hole top) — both block and tube spawn at random (x, y, yaw) on the floor each `reset()` | OAK-D Pro overhead (RGB + depth, default 640×480) + wrist RGB parented to the gripper body |
+| SimplerEnv WidowX | ManiSkill3/SAPIEN via `simpler_env` | `just sync --group simpler-env` + `uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"` | WidowX 250s | carrot-on-plate (`simpler_env/widowx_carrot_on_plate`) | 3rd-view RGB surfaced as `top` |
 | NVIDIA Arena | Isaac Sim | Requires NVIDIA Isaac Sim license | GR1 | microwave | TBD |
 | BEHAVIOR-1K 2026 | OmniGibson / Isaac Sim | Official `behavior` environment plus `just sync --group behavior-groot` for the OpenRAL-side wire | Galaxea R1 Pro | 100 household tasks; packaged starter is `turning_on_radio` | head + dual wrist RGB; official full wrapper also exposes depth |
-| ManiSkill3 | SAPIEN via `mani_skill` | `uv sync --group maniskill3` | Franka Panda | `PickCube-v1` (+ more) | single RGB `camera1` |
+| ManiSkill3 | SAPIEN via `mani_skill` | `just sync --group maniskill3` | Franka Panda | `PickCube-v1` (+ more) | single RGB `camera1` |
 | RoboTwin 2.0 | SAPIEN (py3.10 sidecar) | py3.10 SAPIEN sidecar (auto-provisioned) | ALOHA-AgileX | 50 dual-arm tasks (`robotwin/*`) | dual-arm camera set |
-| VLABench | MuJoCo | `uv sync --group vlabench` | Franka Panda | 97 tasks (`vlabench/*`) | TBD |
-| PushT | gym-pusht (`pymunk`, 2-D) | `uv sync --group sim` | PushT 2-D | `pusht/0` | 2-D top view |
-| gym-aloha | MuJoCo | `uv sync --group sim` | ALOHA bimanual | transfer-cube, insertion | overhead + wrist |
+| VLABench | MuJoCo | auto-installed on first env build (`vlabench` install plan, `OPENRAL_AUTO_INSTALL_DEPS`); the ~12 GB asset bundle is a manual download (`VLABENCH_ROOT`) | Franka Panda | 97 tasks (`vlabench/*`) | TBD |
+| PushT | gym-pusht (`pymunk`, 2-D) | `just sync --group sim` | PushT 2-D | `pusht/0` | 2-D top view |
+| gym-aloha | MuJoCo | `just sync --group sim` | ALOHA bimanual | transfer-cube, insertion | overhead + wrist |
 | Isaac Sim | Omniverse Isaac Sim | Requires NVIDIA Isaac Sim license | any manifest robot with a URDF (Franka Panda, Panda mobile, OpenArm) | `isaac_sim` deploy scenes (e.g. the warehouse) | per-sensor (manifest-defined) |
 
 ### 4.1 LIBERO eval CLI
@@ -237,13 +239,13 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **GR00T weights — license is version-specific**: N1 / N1.5 / N1.6 ship under the NVIDIA OneWay Noncommercial License, and any checkpoint built on them (e.g. `ar0s/groot_libero`) inherits it even if the fine-tune layer is Apache-2.0: the manifest sets `license: nvidia_non_commercial` and the loader requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` for a commercial deployment. N1.7+ ship under the NVIDIA Open Model License (commercial OK): manifests set `license: nvidia_open_model` (e.g. `rskills/gr00t-n17-libero`) and load without the guard. The older Python-3.10 GR00T ZMQ sidecar is deleted (runtime posture in §6). RLDX-1 (a GR00T-N1.5 finetune) still runs on its own ZMQ sidecar.
 
-- **π0 / π0.5 weights are "permissive research", not full Apache-2.0**: The code under `lerobot/` is Apache-2.0; the *weights* for `pi0` and `pi05` checkpoints carry a Physical Intelligence permissive-research license that is not equivalent to Apache-2.0 for commercial deployment. The corresponding rSkill manifests set `commercial_use_allowed: false`.
+- **π0 / π0.5 weights are "permissive research", not full Apache-2.0**: The code under `lerobot/` is Apache-2.0; the *weights* for `pi0` and `pi05` checkpoints carry a Physical Intelligence permissive-research license that is not equivalent to Apache-2.0 for commercial deployment. The corresponding rSkill manifests set `license: permissive_research`, from which the loader derives `is_commercial_use_allowed = False`.
 
 - **Reward monitor (`rskills/robometer-4b`) co-residency on 8 GB**: The Robometer-4B reward monitor (`kind: reward`) runs in parallel with a VLA to score per-frame progress/success. At NF4 it is ~3.33 GB resident / 3.56 GB peak (8-frame window) on the 8 GB reference GPU, leaving ~4.4 GB — enough for a **small NF4 VLA** (e.g. SmolVLA ≈ 1.5–2 GB) but **not** a 3–4 GB π0.5/GR00T checkpoint simultaneously. When the VLA already saturates the card, run the reward monitor on CPU, a second GPU, or a cloud host, or shrink the reward `frame_window_s` / `num_bins` (activation peak scales with both). It is an **S2-cadence** monitor (~0.2–1 Hz over a frame window), not a per-control-step signal, and is **advisory-only** (never gates motors). In `deploy-sim`, the signal is only available on camera-rendering robots (the monitor needs `sensor_msgs/Image` frames). Apache-2.0; commercially usable.
 
-- **MetaWorld, RoboCasa, and most SO-101 community entries are TBD**: RoboCasa and SO-101 community entries have not been locally verified. MetaWorld and the four LIBERO entries (smolvla, pi05, xvla, pi0) are now fully verified — see ✓ markers in §3.
+- **Community RoboCasa and SO-101 entries are TBD**: `lerobot/smolvla_robocasa` and the SO-101 community checkpoints have not been locally verified. See the ✓ markers in §3 for what has.
 
-- **Isaac Sim entries require a separate license**: `edge-inference/smolvla-so101-pick-orange` was trained in NVIDIA Isaac Sim. Reproducing its eval requires an Isaac Sim license and is not covered by the standard `uv sync --group sim` environment.
+- **Isaac Sim entries require a separate license**: `edge-inference/smolvla-so101-pick-orange` was trained in NVIDIA Isaac Sim. Reproducing its eval requires an Isaac Sim license and is not covered by the standard `just sync --group sim` environment.
 
 - **Embodiment tag `libero` implies simulation only**: The `libero` tag is defined for the LIBERO benchmark Franka Panda setup. Do not apply it to real Franka Panda deployments without verifying that action normalisation and camera geometry match your physical setup.
 
@@ -255,7 +257,7 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **GR00T reads a fixed camera set; the RLDX sidecar has no single-camera fallback**: these checkpoints read a fixed number of *distinct* camera streams positionally — LIBERO=2 (agentview+wrist), RC365=3, GR1/Simpler=1 — set by the manifest's `state_contract.layout`. The `rldx` factory (out-of-process sidecar) rejects a scene that declares **fewer** cameras than the layout needs with an upfront `ROSCapabilityMismatch` (before the multi-minute sidecar boot). GR00T N1.7 is now in-process (no sidecar boot); its `_GrootAdapter` reads the state/action width from the rSkill (`state_contract.dim` / `action_contract.dim`) and the GR00T video modality keys from the slot-keyed `image_preprocessing.aliases` (`camera1: image`, `camera2: wrist_image` for `libero_sim`) — the same rename every VLA adapter uses. Both positional cameras must still be supplied.
 
-- **RLBench requires a separately-provisioned CoppeliaSim/PyRep sidecar**: `uv sync --group rlbench` installs only the openral-side ZMQ/msgpack client. CoppeliaSim 4.1.0 (proprietary, free EDU), PyRep, the `MohitShridhar/RLBench@peract` fork, and 3D Diffuser Actor live in `~/.cache/openral/rlbench-policy/.venv` (or `OPENRAL_RLBENCH_SIDECAR_PYTHON`). The adapter raises a typed `ROSConfigError` with the recipe when that venv or `COPPELIASIM_ROOT` is missing.
+- **RLBench requires a separately-provisioned CoppeliaSim/PyRep sidecar**: `just sync --group rlbench` installs only the openral-side ZMQ/msgpack client. CoppeliaSim 4.1.0 (proprietary, free EDU), PyRep, the `MohitShridhar/RLBench@peract` fork, and 3D Diffuser Actor live in `~/.cache/openral/rlbench-policy/.venv` (or `OPENRAL_RLBENCH_SIDECAR_PYTHON`). The adapter raises a typed `ROSConfigError` with the recipe when that venv or `COPPELIASIM_ROOT` is missing.
 
 - **OpenVLA-OFT / RLinf needs a transformers<5 runtime**: `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` loads through OpenVLA's custom `AutoModelForVision2Seq` code path, verified with `transformers==4.40.1` / `accelerate==0.33`. The default OpenRAL VLA workspace pins `transformers>=5.4.0,<5.14.0` for lerobot families, so do not sync OpenVLA into the same venv as LIBERO/π0.5/SmolVLA unless the upstream custom code is ported.
 
@@ -273,4 +275,7 @@ Which families run in the workspace interpreter and which run out-of-process in 
 - **LingBot-VLA**: auto-provisioned Py3.12 ZMQ sidecar, because `lingbotvla` pins torch==2.8.0 + custom kernels. **v2** — 6B Qwen3-VL MoE on `transformers==4.57.3`, torch stack overridden to 2.9.1 / triton 3.5.1 so the sidecar provisions on aarch64. **v1** — 4B Qwen2.5-VL dense expert on `transformers==4.51.3` / `lerobot==0.4.2` (the RoboTwin post-train), same sidecar via `--variant v1`, on torch 2.7.1 / torchvision 0.22.1 (cu128) / torchcodec 0.5 — the newest stack under lerobot 0.4.2's `torch<2.8.0` cap. x86_64-only, because torch 2.7.x needs the x86-only triton 3.3.1.
 - **GR00T N1.7**: standard checkpoints run in-process under the workspace's Python 3.12 via lerobot 0.6.0's native `GrootPolicy` (backbone-only NF4). The official 2026 BEHAVIOR-1K organizer checkpoint is the exception: its pinned `wensi-ai/Isaac-GR00T` runtime stays in an external Python 3.10 sidecar; its `deploy sim` path preserves the official 61-D state and commits the six individually safety-approved action slots atomically as one 23-D OmniGibson step.
 - **RLDX-1**: out-of-process ZMQ sidecar through the `rldx` adapter.
+- **3D Diffuser Actor** (`diffuser_actor`): out-of-process RLBench/CoppeliaSim sidecar (§3.2).
+- **LingBot-VA** (`lingbot_va_a1`, Galaxea A1): driven over a local socket through the Galaxea A1 runtime's policy gateway.
+- **In-process** under the workspace Python 3.12: `smolvla`, `pi05`, `xvla`, `act`, `diffusion`, `molmoact2` and `openvla` (the last two are transformers custom-code models).
 - **InternVLA-N1 / DualVLN** (arXiv:2512.08186): dual-system (Qwen2.5-VL-7B S2 planner + NavDP DiT S1); Py3.11 ZMQ sidecar (upstream pins transformers 4.51) through the `internvla_n1` adapter; consumes RGB-D + instruction, emits `BODY_TWIST`.

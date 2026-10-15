@@ -41,7 +41,7 @@ The effect/actuation variants:
 | Tool | Dispatch target | What's wired today |
 |---|---|---|
 | `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy.action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired). One goal at a time: while a goal is in flight a second dispatch is refused with feedback and the context carries an `in_flight:` line |
-| `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §6 Layer 6) |
+| `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §3) |
 | `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic` (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
 | `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
 | `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
@@ -243,7 +243,6 @@ collective-goal decomposition tests. The default needs
 ```bash
 export OPENRAL_REASONER_MODEL=gpt-5.5  # or gpt-5.6
 export OPENRAL_REASONER_API_KEY=sk-or-...
-uv add openai --package openral-reasoner
 ```
 
 ### Cloud — Claude Opus 4.8
@@ -251,7 +250,6 @@ uv add openai --package openral-reasoner
 ```bash
 export OPENRAL_REASONER_MODEL=claude-opus-4-8
 export OPENRAL_REASONER_API_KEY=sk-ant-...
-uv add anthropic --package openral-reasoner
 ```
 
 ### Managed local — NVIDIA Cosmos 3 Edge
@@ -268,7 +266,6 @@ server auto-starts on the first tick (first boot downloads ~8 GB):
 
 ```bash
 export OPENRAL_REASONER_MODEL=cosmos3-edge
-uv add openai --package openral-reasoner      # one-time (client SDK only)
 ```
 
 Requires an NVIDIA GPU (Ampere+; BF16 is the only officially-tested
@@ -340,11 +337,13 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | Attribute | When set | Meaning |
 |---|---|---|
 | `reasoner.tick.idx` | Always | Monotonic per-`ReasonerCore` tick counter. |
-| `reasoner.model` | When the client has a `model_id` | LLM model identifier (e.g. `claude-opus-4-7`). |
+| `reasoner.model` | When the client has a `model_id` | LLM model identifier (e.g. `claude-opus-4-8`). |
 | `reasoner.force` | Always | `True` when the tick was preempted by `FailureTrigger.severity ≥ FAIL` or a new operator prompt. |
-| `reasoner.tool` | Successful + retry-cap suppressed ticks | Which of the four `ReasonerToolCall` variants the LLM picked. |
-| `reasoner.rskill_id` | When tool=`execute_skill` | Skill id the LLM chose. |
-| `reasoner.suppressed_reason` | Suppressed ticks | One of `palette_empty` / `retry_cap` / `heartbeat_idle`. The `min_interval` and `heartbeat_idle` short-circuits fire BEFORE the span opens (so dashboards don't show noise). |
+| `reasoner.tool` | Successful + retry-cap suppressed ticks | The `tool` discriminator of the `ReasonerToolCall` variant the LLM picked (e.g. `execute_rskill`). |
+| `reasoner.rskill_id` | When the call carries a `rskill_id` (`execute_rskill`) | Skill id the LLM chose. |
+| `reasoner.suppressed_reason` | Suppressed ticks | `palette_empty` or `retry_cap`. The `min_interval`, `retry_cap_hold`, `mission_finished` and `heartbeat_idle` gates fire BEFORE the span opens (so dashboards don't show noise). |
+| `reasoner.llm_s` | Ticks that reached the LLM | Wall-clock of the LLM round-trip alone. |
+| `reasoner.prompt_tokens` | When the client surfaces usage | Provider-reported prompt tokens, cache reads included. |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
 | `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |

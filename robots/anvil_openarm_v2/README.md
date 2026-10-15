@@ -34,7 +34,7 @@ neither needs bespoke control code:
 | J1 | -200°..+80° (mirrored per side) | ±135° (symmetric, both arms) |
 | J6 | ±45° | -45°..+70° (wrist bracket) |
 | Wrist bracket | — | visual-only CAD meshes on `link5` |
-| HAL | `OpenArmMujocoHAL` (thin, manifest-only) | `AnvilOpenArmV2MujocoHAL` (thin, manifest-only) |
+| Sim HAL | `hal.sim: null` → derived `MujocoArmHAL` (class form `OpenArmMujocoHAL`) | `hal.sim: null` → derived `MujocoArmHAL` (class form `AnvilOpenArmV2MujocoHAL`) |
 
 Otherwise the 16-DoF action layout, motors and meshes are the same, so a Skill
 transfers, but J1/J6 targets valid on the Anvil arm can be out of range on the
@@ -50,12 +50,12 @@ stock v2 arm (and vice versa for J1's -200..-135 region).
 | End-effectors | 2 × parallel-jaw grippers (hinge-driven, one per side) |
 | Per-side payload | ~2 kg |
 | Per-side reach | ~0.7 m |
-| Sensors | 2 × wrist RGB cameras (`camera_wrist_{left,right}` in the MJCF, rendered at 640×400) |
+| Sensors | 2 × wrist RGB cameras (`wrist_left` / `wrist_right`; `camera_wrist_{left,right}` in the MJCF, rendered at 640×400) |
 | Embodiment tags | `openarm`, `anvil_openarm_v2`, `anvil`, `bimanual` |
 | Supported VLA embodiments | `anvil_openarm_v2`, `openarm` |
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `open` (upstream MJCF, the anvil-openarm-mujoco generator, and Anvil's driver are all Apache-2.0 / open) |
-| `hal.sim` | `openral_hal.anvil_openarm_v2:AnvilOpenArmV2MujocoHAL` |
+| `hal.sim` | `null`: `build_hal` derives `MujocoArmHAL.from_description` from the manifest's `sim:` block (same wiring as `AnvilOpenArmV2MujocoHAL`) |
 | `hal.real` | _null_ — sim-only until a wrapper around [Anvil's driver stack](https://github.com/anvil-robotics/openarm) lands (`deploy run` raises `ROSCapabilityMismatch`) |
 
 ## MJCF fetch path

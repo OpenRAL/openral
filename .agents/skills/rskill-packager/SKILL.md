@@ -52,8 +52,8 @@ Read only the context needed for the task:
    - Do not invent manifest fields. Search nearby `rskills/*/rskill.yaml` and the Pydantic schema first.
 
 4. Set license and provenance gates honestly.
-   - GR00T-derived weights are non-commercial.
-   - RLDX-1 weights are non-commercial and sidecar-based.
+   - GR00T N1 / N1.5 / N1.6 weights are non-commercial (`nvidia_non_commercial`); GR00T N1.7+ ships under the NVIDIA Open Model License, commercial OK (`nvidia_open_model`). Take the posture from the exact checkpoint, not the family.
+   - RLDX-1 weights are non-commercial (`rlwrld_non_commercial`) and sidecar-based.
    - pi0/pi0.5 weights are permissive research, not full Apache-2.0.
    - `*.pt`/pickle weights require `OPENRAL_ALLOW_UNSAFE_PICKLE=1`; prefer `model.safetensors`.
    - `trust_remote_code` requires `OPENRAL_ALLOW_REMOTE_CODE=1` or a trusted org path.
@@ -75,7 +75,7 @@ Read only the context needed for the task:
    - Dry-run first: `uv run python tools/rskill_publisher.py rskills/<id>/`.
    - Publish only after validation passes: `uv run python tools/rskill_publisher.py rskills/<id>/ --publish`.
    - Use `--bump-revision` to pin upstream `weights_uri` to a commit SHA before upload.
-   - The publisher creates private repos only; do not weaken this gate.
+   - The publisher creates private repos by default; `--public` is refused unless the manifest's license allows commercial use. Do not weaken this gate.
    - A write token is required via `HF_TOKEN`, cached Hugging Face login, or `--token` depending on the tool path.
 
 8. Update docs and tests.

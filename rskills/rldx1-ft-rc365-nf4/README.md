@@ -87,6 +87,6 @@ human300 idx [7:10]  → state.base_position                   (base_pos)
 human300 idx [10:14] → state.base_rotation                   (base_rot)
 ```
 
-Set `scene.backend_options.state_layout: human300_16d` on the SimEnvironment YAML to make sure the RoboCasa scene emits the layout the adapter expects.
+The RoboCasa backend maps this rSkill's `state_contract.layout: rc365` to the `human300_16d` scene layout; `scene.backend_options.state_layout: human300_16d` in the scene YAML pins it explicitly.
 
 Upstream: <https://huggingface.co/RLWRLD/RLDX-1-FT-RC365>

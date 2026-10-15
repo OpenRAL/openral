@@ -20,9 +20,10 @@ inference: false
 
 # XR-1 RoboCasa365
 
-> OpenRAL wrapper for Xiaomi Robotics' XR-1 RoboCasa365 checkpoint. The
-> package references the pinned upstream checkpoint and preserves its temporal
-> three-camera contract.
+> OpenRAL wrapper for Xiaomi Robotics' XR-1 RoboCasa365 checkpoint. `weights_uri`
+> is a SHA-pinned, pre-quantized NF4 pack (`policy_extras.prequantized_nf4: true`)
+> built from the SHA-pinned upstream `source_repo`; the adapter preserves the
+> checkpoint's temporal three-camera contract.
 
 ## Preview
 
@@ -90,7 +91,7 @@ the manifest's `rc365` bindings.
 | `runtime` / dtype | PyTorch sidecar / NF4 |
 | `weights_uri` | `hf://OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4` |
 | `latency_budget.per_chunk_ms` | 120000 |
-| `commercial_use_allowed` | yes |
+| `is_commercial_use_allowed` | yes |
 
 ## Quick start
 

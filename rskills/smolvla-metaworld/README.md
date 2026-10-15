@@ -59,7 +59,7 @@ MetaWorld family, so the manifest gates it with the family entry
 `evaluated_tasks: ["metaworld"]` (covers every `metaworld/<task>-v3` task id
 and the bare `metaworld` scene id). The 4-D proprio state, the single
 `observation.images.camera1` RGB input, and the normalisation statistics are
-verified against the lerobot checkpoint — see `docs/reference/vla_compatibility.md` §3.2.
+verified against the lerobot checkpoint — see `docs/reference/vla_compatibility.md` §3.3.
 
 ## Supported robots
 
@@ -86,7 +86,7 @@ verified against the lerobot checkpoint — see `docs/reference/vla_compatibilit
 | `weights_uri` | `hf://lerobot/smolvla_metaworld` |
 | `latency_budget.per_chunk_ms` | 150 ms |
 | `evaluated_tasks` | `["metaworld"]` (family gate) |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` | `true` |
 
 Full schema: `openral_core.RSkillManifest`.
 
@@ -98,7 +98,7 @@ see [`eval/metaworld_mt50.json`](eval/metaworld_mt50.json)).
 
 | Suite | Tasks | Protocol | Result |
 | --- | --- | --- | --- |
-| MT50 | 50 | 1 episode / seed 0 / `max_steps=200` | **16/50 solved · avg 0.30** |
+| MT50 | 50 | 1 episode / seed 0 / `max_steps=200` | **15/50 solved · avg 0.30** |
 
 The MT50 run also covers all 10 MT10 tasks; a dedicated
 `openral benchmark run --suite metaworld_mt10` reproduction can be written to
@@ -133,4 +133,4 @@ Apache-2.0. Commercial use is allowed.
 
 - [`rskills/smolvla-libero/README.md`](../smolvla-libero/README.md) — gold-standard LIBERO finetune (locally verified).
 - [`robots/sawyer/README.md`](../../robots/sawyer/README.md).
-- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.2.
+- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.3.

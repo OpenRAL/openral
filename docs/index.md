@@ -14,7 +14,7 @@ just test               # run the test suite
 
 ## What does it do?
 
-- Load any VLA (SmolVLA, π0, GR00T N1, OpenVLA) on any robot (SO-100, G1, UR5e).
+- Load any VLA (SmolVLA, π0.5, GR00T N1.7, OpenVLA, …) on any robot (SO-100, G1, UR5e, …).
 - Type-safe, layer-isolated architecture — HAL → Sensors → World State → Skill → Reasoning → Safety → Observability.
 - Skill packaging on HuggingFace Hub with versioned, license-aware manifests (sigstore provenance signing is planned, not yet implemented).
 - Full OpenTelemetry traces per execution.

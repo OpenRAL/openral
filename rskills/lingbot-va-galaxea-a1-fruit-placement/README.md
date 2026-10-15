@@ -110,7 +110,7 @@ enable the vendor AnyGrasp/AnyEffector path.
 | `state_contract.dim` / `action_contract.dim` | `6` / `7` |
 | `chunk_size` / `n_action_steps` | `16` / `8` |
 | `latency_budget.per_chunk_ms` | `6000` |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` (derived from `license`) | `true` |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -125,7 +125,7 @@ uv run --group lingbot openral rskill check \
 ```
 
 For real deployment, follow the owner-separated startup sequence in
-[`docs/methods/01-hal.md`](../../docs/methods/01-hal.md): start the A1 Runtime
+[`robots/galaxea_a1/README.md`](../../robots/galaxea_a1/README.md#lingbot-va-rskill-through-the-complete-openral-path): start the A1 Runtime
 camera owner, LingBot server, and policy gateway; start the isolated OpenRAL
 ROS1 sidecar; then run the OpenRAL deployment scene. Do not start the A1
 Runtime joint execution bridge at the same time.
@@ -152,4 +152,4 @@ references the weights and does not redistribute them.
 
 - [`robots/galaxea_a1/robot.yaml`](../../robots/galaxea_a1/robot.yaml)
 - [`scenes/deploy/galaxea_a1_bench.yaml`](../../scenes/deploy/galaxea_a1_bench.yaml)
-- [`docs/methods/01-hal.md`](../../docs/methods/01-hal.md)
+- [`robots/galaxea_a1/README.md`](../../robots/galaxea_a1/README.md) — hardware bring-up + LingBot-VA deploy runbook

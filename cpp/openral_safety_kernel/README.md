@@ -1,9 +1,9 @@
 # openral_safety_kernel — C++ safety kernel
 
-Layer 6 (Safety). A separate-process, real-time validator on the chunk-rate
+Layer 5 (Safety). A separate-process, real-time validator on the chunk-rate
 boundary, replacing F5's Python pass-through
-(`packages/openral_safety/SafetyPassthroughNode`) behind the same topic
-contract. **Python proposes, C++ disposes** (CLAUDE.md §1.5).
+(`SafetyPassthroughNode` in `packages/openral_safety/openral_safety/supervisor_node.py`) behind the same topic
+contract. **Python proposes, C++ disposes** (CLAUDE.md §1.5, §3 "Safety").
 
 The `spark:~/openral-runs/…` validation rounds cited below are catalogued, with
 what each concluded and what is still open, in
@@ -87,26 +87,27 @@ enforcement decision.
 ## Quickstart
 
 ```bash
-# 1. Build the envelope file from the robot + skill manifests.
-uv run python -m openral_safety.envelope_loader \
-    --robot robots/so100_follower/robot.yaml \
-    --skill rskills/smolvla-libero/rskill.yaml \
-    --out /tmp/openral_safety_envelope.yaml
-
-# 2. Build and launch the C++ kernel.
 colcon build --packages-select openral_safety_kernel
 source install/setup.bash
+# OPENRAL_VENV_SITE (the venv's site-packages) lets the launch import
+# openral_core / openral_safety under the system Python.
 ros2 launch openral_safety_kernel kernel_only.launch.py \
-    envelope_file:=/tmp/openral_safety_envelope.yaml
+    robot_yaml:=robots/so100_follower/robot.yaml
 ```
+
+There is no envelope file. The launch loads the manifest through Pydantic,
+synthesises the envelope with `openral_safety.envelope_loader.compute_intersection`
++ `kernel_params_from_envelope`, and passes every field as a ROS parameter
+(`deploy_e2e.launch.py` does the same in production).
 
 ## Lifecycle
 
 `unconfigured → configure → activate → deactivate → cleanup → shutdown`
 
-- **configure**: reads the envelope YAML; refuses to advance on
-  schema mismatch or unset path. Opens publishers / subscribers /
-  service. Starts the 1 Hz `/diagnostics` timer.
+- **configure**: loads the envelope from ROS parameters; refuses to
+  advance when `n_dof` is 0 (no envelope supplied), a joint array
+  disagrees with `n_dof`, or a bound is NaN/negative. Opens publishers /
+  subscribers / service. Starts the 1 Hz `/diagnostics` timer.
 - **activate**: activates managed lifecycle publishers so messages flow.
 - **deactivate**: stops outbound publication; subscribers keep
   receiving (the fault latch still trips on external estop).
@@ -115,7 +116,8 @@ ros2 launch openral_safety_kernel kernel_only.launch.py \
 
 ## Fault latch + recovery
 
-On envelope violation OR external `/openral/estop`:
+On envelope violation (an external `/openral/estop` runs only steps 4–5,
+with `drop_reason=DROP_EXTERNAL_ESTOP`):
 
 1. Drop the candidate chunk (no republish on `/openral/safe_action`).
 2. Publish `FailureTrigger` on `/openral/failure/safety` with
@@ -132,7 +134,7 @@ Recovery is manual: `ros2 service call /openral/estop_reset
 std_srvs/srv/Trigger`. The service refuses to clear the latch until
 `estop_reset_cooldown_s` (default 500 ms) has passed since the last
 estop publish — `ROSEStopRequested` is never auto-cleared
-(CLAUDE.md §10).
+(CLAUDE.md §3 "Safety").
 
 ## Per-control-mode magnitude bounds
 
@@ -186,7 +188,7 @@ carry:
 | `safety.check_name` | `"envelope"` |
 | `safety.kernel` | `"cpp"` (closed-set; surfaces in Identity card) |
 | `safety.severity` | `"info"` (pass), `"warn"` (latched / unconfigured), `"violation"` |
-| `safety.drop_reason` | `estop_latched`, `envelope_unconfigured`, `force`, `workspace`, or `controller` |
+| `safety.drop_reason` | `estop_latched`, `envelope_unconfigured`, `force`, `workspace`, `controller`, `collision`, `collision_advisory`, or an input-unavailable reason (`state_unavailable`, `slot_joints_unmapped`, `voxel_unavailable`, `voxel_overflow`, `voxel_stale`, `attached_unavailable`, `attached_overflow`) |
 | `safety.violation_{reason,joint,value,limit}` | populated on `violation` |
 | `safety.sweep_min_distance_m` | collision stops only — see below |
 | `rskill.id` | `ActionChunk.rskill_id` (short-prefix form the dashboard latches) |
@@ -205,7 +207,7 @@ Endpoint resolution follows the standard OTel env vars:
 # Point at the dashboard / Jaeger / any OTLP/HTTP collector.
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ros2 launch openral_safety_kernel kernel_only.launch.py \
-    envelope_file:=/tmp/openral_safety_envelope.yaml
+    robot_yaml:=robots/so100_follower/robot.yaml
 ```
 
 When the env var is unset the kernel falls back to
@@ -367,8 +369,8 @@ battery per arm and not a single comparison.
 result holds because velocity is deliberately kept out of the policy's
 observations — slowing the robot is then invisible to the policy and cannot
 push it out of distribution. That is not true of every adapter here:
-`python/sim/src/openral_sim/policies/xvla.py` feeds gripper `qvel` (`:203`)
-**and** arm `joints["vel"]` (`:207`), so a scaled chunk changes what XVLA sees
+`python/sim/src/openral_sim/policies/xvla.py` feeds gripper `qvel` (`:217`)
+**and** arm `joints["vel"]` (`:221`), so a scaled chunk changes what XVLA sees
 next tick.
 
 **This is an operator precondition, not a control the kernel enforces**: the
@@ -1274,11 +1276,13 @@ The single authority this kernel retains over base motion is the **E-stop
 latch** — the bridge drops every `/cmd_vel` while the HAL node is latched, so
 an E-stop raised here does stop the base. There is no per-command bound.
 
-Consequence: a payload this kernel protects in 3-D is invisible to Nav2 unless
-Nav2's footprint says it is there. `packages/openral_nav2_bringup` publishes exactly that footprint from
-the same `/openral/world_state_fast` attachment set this kernel ingests, so the
-two sides can never act on different attachments. Its README carries the full
-boundary table.
+Consequence: a payload this kernel protects in 3-D is not in Nav2's footprint —
+by decision ("Nav2 is base-only", ADR-0099), the costmaps' footprint is the bare
+chassis. `packages/openral_nav2_bringup`'s `payload_scan_filter_node` only drops
+the payload's returns from the scan, reading the same
+`/openral/world_state_fast` attachment set this kernel ingests, so the two sides
+can never act on different attachments. Its README carries the full boundary
+table.
 
 ## Link geometry for the world-voxel check (staged 26-DOP → convex hull)
 
@@ -1483,10 +1487,10 @@ bundled here — see hazard-log Entry 025's open item.
   Pinned in CI by `test_no_alloc.cpp` via a counting global
   `operator new`.
 - C++17 / no exceptions across the kernel boundary — `Result<void,
-  Violation>` propagation (CLAUDE.md §5.2).
-- `SCHED_FIFO` + CPU pinning are opt-in via the `request_sched_fifo` /
-  `cpu_affinity` parameters; the node warns when the privileges are
-  unavailable rather than silently downgrading.
+  Violation>` propagation (CLAUDE.md §2, C++).
+- `SCHED_FIFO` + CPU pinning are **not implemented**: the
+  `request_sched_fifo` / `cpu_affinity` parameters are declared but never
+  read, so setting them changes nothing.
 
 ## Testing & verification
 
@@ -1530,9 +1534,9 @@ Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
 - `cpp/opentelemetry_cpp_vendor` — ROS 2 vendor package this one
   depends on for `opentelemetry-cpp` at colcon-build time.
 - `packages/openral_nav2_bringup/README.md` — the other half of the world:
-  Nav2's base footprint vs its 2-D costmap, the `/cmd_vel` boundary above, and
-  the payload footprint publisher that keeps a carried object visible to both
-  surfaces.
+  Nav2's base-only footprint vs its 2-D costmap, the `/cmd_vel` boundary above,
+  and the payload scan filter that keeps a carried object from becoming a Nav2
+  obstacle.
 - `packages/openral_safety/openral_safety/envelope_loader.py` — Python
   bridge that writes the envelope YAML the kernel reads.
 - `packages/openral_safety/openral_safety/supervisor_node.py` — Day-1

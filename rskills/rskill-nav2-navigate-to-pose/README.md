@@ -16,10 +16,10 @@ inference: false
 
 > **OpenRAL rSkill** — wraps the upstream `nav2_msgs/action/NavigateToPose`
 > action server as an OpenRAL rSkill so the Reasoner can dispatch
-> mobile-base navigation through the same `ExecuteSkill` path used by
+> mobile-base navigation through the same `ExecuteRskill` path used by
 > VLA skills. **Result-only mode** — Nav2's behaviour tree publishes
-> `/cmd_vel` directly to the base controller; no `Action` chunk flows
-> through OpenRAL's safety supervisor.
+> `/cmd_vel`, which the HAL's mobile-base bridge applies directly; no
+> `Action` chunk flows through OpenRAL's safety kernel.
 
 This package uses `kind: ros_action` with
 `ros_integration.result_trajectory_field: null` to put the
@@ -32,17 +32,19 @@ trajectory one waypoint at a time.
 
 ## What this skill does
 
-Navigates the mobile base to a fixed `geometry_msgs/PoseStamped` target
-in the `map` frame via Nav2's `NavigateToPose` action. The default goal
-points at the map origin; override `ros_integration.default_goal_json`
-in a per-deployment copy for real targets.
+Navigates the mobile base to a `geometry_msgs/PoseStamped` target via Nav2's
+`NavigateToPose` action. The Reasoner fills `goal_params_schema` (absolute goal
+in `map`, or a relative turn / drive in `base_link`) and sends it as
+`goal_params_json`, which the adapter deep-merges over
+`ros_integration.default_goal_json`. The default goal is the identity pose in
+`base_link`, so a dispatch without parameters is a no-op.
 
 | Field | Value |
 | --- | --- |
 | Actions | `navigate` |
 | Objects | _none_ |
 | Scenes  | `indoor` |
-| Embodiment | mobile-manipulator and similar mobile-base embodiments |
+| Embodiment | `mobile_base` (any robot with a planar base) |
 
 ## How it works
 
@@ -57,7 +59,7 @@ in a per-deployment copy for real targets.
    main rclpy spin services callbacks, and — because
    `result_trajectory_field is None` — raises
    `ROSRskillGoalSatisfied` immediately on success. The runner catches
-   it specifically and closes the `ExecuteSkill` goal with
+   it specifically and closes the `ExecuteRskill` goal with
    `success=True`.
 
 ### Observation → action contract (result-only mode)
@@ -68,14 +70,15 @@ in a per-deployment copy for real targets.
 | out | _none via OpenRAL_ | — | Nav2's behaviour tree publishes `/cmd_vel` directly to the base controller |
 
 **Safety implication.** No `ActionChunk` is published on
-`/openral/candidate_action`, so the OpenRAL safety supervisor does NOT
-see Nav2's velocity commands; collision avoidance relies entirely on
-Nav2's costmap + behaviour tree. Bringing velocity streams under the
-supervisor's envelope is an explicit out-of-scope item for the
-ROS-wrapped rSkills design and depends on (a) a mobile-base HAL declaring
-`body_twist` in `supported_control_modes` (none exist in-tree today) and
-(b) a velocity / jerk envelope in the supervisor (it currently checks
-per-joint position only).
+`/openral/candidate_action`, so the OpenRAL safety kernel does NOT see
+Nav2's velocity commands: the HAL's
+[`MobileBaseBridge`](../../python/hal/src/openral_hal/mobile_base_bridge.py)
+maps each `/cmd_vel` message to a `BODY_TWIST` action and applies it directly
+(Nav2's `velocity_smoother` caps velocity). Collision avoidance relies on
+Nav2's costmap + behaviour tree. The kernel's `BODY_TWIST` base-speed bound
+applies only to chunks that reach it on `/openral/candidate_action`, and only
+when `robot.yaml` sets `max_base_linear_speed_m_s` / `max_base_angular_speed_rad_s`
+(both default to unbounded).
 
 ## How it was trained / Upstream provenance
 
@@ -92,12 +95,12 @@ Nothing is trained — this rSkill wraps the upstream Nav2 stack.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Panda Mobile | `panda_mobile` | experimental | no HAL accepting `body_twist` ships in-tree yet; resolution depends on the deployment wiring its own mobile-base HAL or running Nav2's controllers against a sim |
-| Generic mobile-manipulator | `mobile_manipulator` | experimental | union tag — palette filter only |
+| Any planar mobile base | `mobile_base` | experimental | class tag; the robot's `robot.yaml` must declare it and a Nav2 stack must serve `/navigate_to_pose` |
 
-A real mobile-base HAL (Turtlebot 4, Clearpath Jackal, etc.) is the
-prerequisite for full end-to-end execution — tracked as a separate
-issue.
+Mobile-base HALs that accept `BODY_TWIST` ship in-tree (for example
+[`PandaMobileHAL`](../../python/hal/src/openral_hal/panda_mobile.py)); any
+manifest-driven HAL whose `robot.yaml` declares `base_joints` gets the
+`/cmd_vel` bridge. No real wheeled-base HAL ships in-tree.
 
 ## Sensors required / Observation contract
 
@@ -130,7 +133,7 @@ action's contract is unchanged.
 | `ros_integration.interface_type` | `NavigateToPose` |
 | `ros_integration.interface_name` | `/navigate_to_pose` |
 | `ros_integration.result_trajectory_field` | _omitted → result-only mode_ |
-| `commercial_use_allowed` | `true` (apache-2.0) |
+| `is_commercial_use_allowed` | `true` (apache-2.0) |
 
 Full schema:
 [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
@@ -143,29 +146,24 @@ pkg = rSkill.from_yaml("rskills/rskill-nav2-navigate-to-pose/rskill.yaml")
 print(pkg.manifest.name, pkg.manifest.kind, pkg.manifest.ros_integration.interface_name)
 ```
 
-End-to-end, with a real Nav2 launch up (e.g. against a Gazebo /
-Turtlebot4 sim):
+End-to-end, against the `panda_mobile` twin:
 
 ```bash
-# 1. Bring up Nav2 for your mobile-base sim or robot
-ros2 launch nav2_bringup tb4_simulation_launch.py
+# 1. Boot the deploy graph against a mobile-base twin; Nav2 comes up by
+#    default for a robot with a lidar (runtime.enable_nav2 overrides)
+openral deploy sim --config scenes/deploy/<deploy-scene>.yaml --robot panda_mobile
 
-# 2. Bring up the OpenRAL runner against that embodiment
-ros2 launch openral_rskill_ros skill_runner.launch.py robot:=panda_mobile
-
-# 3. From the Reasoner (or by hand), dispatch the goal:
-ros2 action send_goal /openral/execute_skill openral_msgs/action/ExecuteSkill \
-    "{rskill_id: 'OpenRAL/rskill-nav2-mobile_base-navigate_to_pose', deadline_s: 120.0, prompt: 'go to map origin'}"
+# 2. From the Reasoner (or by hand), dispatch the goal:
+ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+    "{rskill_id: 'OpenRAL/rskill-nav2-mobile_base-navigate_to_pose', deadline_s: 120.0, prompt: 'go to map origin', goal_params_json: '{\"pose\": {\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": 0.0, \"y\": 0.0}, \"orientation\": {\"z\": 0.0, \"w\": 1.0}}}}'}"
 ```
 
 ## Limitations / Roadmap
 
-- **Velocity stream bypasses the OpenRAL safety supervisor** (see
+- **Velocity stream bypasses the OpenRAL safety kernel** (see
   *Safety implication* above).
-- **Goal hard-coded in the manifest.** v1 ships one goal per
-  manifest; structured-prompt support is the next ADR.
-- **No mobile-base HAL in-tree.** Until one lands, the skill resolves
-  only inside deployments that ship their own mobile-base wiring.
+- **No real wheeled-base HAL in-tree.** On hardware the skill resolves only
+  inside deployments that ship their own mobile-base wiring.
 
 ## License
 
@@ -176,7 +174,7 @@ and lives outside this repository, installed via
 
 ## See also
 
-- ROS-wrapped rSkills
+- [Wrapped-ROS rSkills](../../docs/reference/rskills.md#wrapped-ros-rskills-kind-ros_action)
 - [`openral_rskill.ros_action_rskill`](../../python/rskill/src/openral_rskill/ros_action_rskill.py) — adapter source
 - [`rskills/rskill-moveit-joints/`](../rskill-moveit-joints/) — sibling MoveIt wrapper (trajectory mode)
 - [CLAUDE.md §3 — Architecture Discipline](../../CLAUDE.md)

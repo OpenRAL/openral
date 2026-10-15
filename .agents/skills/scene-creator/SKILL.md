@@ -1,6 +1,6 @@
 ---
 name: scene-creator
-description: 'Use when creating OpenRAL simulation scenes, SceneEnvironment YAML, task configs, BDDL custom LIBERO scenes, MuJoCo adapters, scene registry entries, benchmark configs, openral sim run configs, robot-scene-task tuples, policy/rSkill pairing, or sim validation.'
+description: 'Use when creating OpenRAL simulation scenes, SimScene YAML, task configs, BDDL custom LIBERO scenes, MuJoCo adapters, scene registry entries, benchmark configs, openral sim run configs, robot-scene-task tuples, policy/rSkill pairing, or sim validation.'
 argument-hint: 'Scene goal, robot id, simulator/backend, task, BDDL idea, or config path'
 ---
 
@@ -11,7 +11,7 @@ Create or review OpenRAL simulation scenes and task configs that can run through
 ## When to Use
 
 - Creating `scenes/<...>.yaml` or benchmark configs.
-- Authoring a `SceneEnvironment` for an existing robot, scene, task, and rSkill pairing.
+- Authoring a `SimScene` for an existing robot, scene, task, and rSkill pairing.
 - Creating custom pi0.5/LIBERO BDDL tasks.
 - Adding a new scene adapter or simulator backend.
 - Pairing a scene with a robot manifest and rSkill for eval.
@@ -27,7 +27,7 @@ Read only what matches the scene type:
 4. `benchmarks/README.md` and existing benchmark YAMLs when adding eval suites.
 5. `docs/reference/sim-environments.md` and `docs/reference/vla_compatibility.md`.
 6. `python/sim/src/openral_sim/registry.py`, scene adapters, and policy adapters when adding Python registry entries.
-7. `python/core/src/openral_core/schemas.py` for `SceneEnvironment`, `SceneSpec`, `TaskSpec`, and `SimEnvironment`.
+7. `python/core/src/openral_core/schemas.py` for `SimScene`, `SceneSpec`, `TaskSpec`, and `SimEnvironment`.
 
 ## References
 
@@ -38,13 +38,13 @@ Read only what matches the scene type:
 
 1. Choose the scene path.
    - Existing registry scene plus new YAML is preferred.
-   - For custom Franka/Panda LIBERO tasks, prefer BDDL with `franka_libero_custom_bddl` over a raw MuJoCo adapter.
+   - The registered LIBERO scenes are the upstream suites (`openral sim list`); no custom-BDDL scene (`franka_libero_custom_bddl`) is registered today, so a custom LIBERO task needs a scene adapter that loads its BDDL.
    - Use a new Python adapter only when the task cannot fit an existing backend, BDDL, or parameterized scene.
 
 2. Author the YAML correctly.
    - Include `scene`, `task`, `seed`, `n_episodes`, and optional video/metadata fields according to existing examples.
    - Add `robot_id` only for free-axis scenes; do not set it for fixed-robot scenes that reject overrides.
-   - Do not add a `vla:` block to `SceneEnvironment` YAML. The rSkill is supplied via `--rskill` and composed into `SimEnvironment` at runtime.
+   - Do not add a `vla:` block to `SimScene` YAML. The rSkill is supplied via `--rskill` and composed into `SimEnvironment` at runtime.
    - Set `task.success_key` to a real key produced by the adapter's `info` dict.
 
 3. Pair with an rSkill.
@@ -52,7 +52,7 @@ Read only what matches the scene type:
    - Ensure robot capability tags and scene action semantics match the rSkill.
    - Do not rely on a language instruction that conflicts with the success predicate.
 
-4. For custom LIBERO BDDL scenes.
+4. For custom LIBERO BDDL tasks (once an adapter loads them).
    - Copy from upstream LIBERO BDDL patterns.
    - Keep `:objects`, `:obj_of_interest`, `:init`, `:goal`, and `:language` consistent.
    - Remember that CLI `--instruction` changes only the policy prompt, not the BDDL success goal.

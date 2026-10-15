@@ -1,8 +1,11 @@
 # Collision-primitive study — is the OBB the reason the arm reads as in-collision?
 
-> **Status: analysis only.** Nothing here has landed. It touches no code in
-> `cpp/openral_safety_kernel/` or `packages/openral_safety/`, both safety-WG
-> gated and needing a hazard-log entry before a change. Companion: the
+> **Status: analysis.** The sphere-swept box it costs (§2–§7) never landed.
+> Overtaken since: the manifest lowering now accepts several primitives per link
+> and `lower_link_geometry` no longer emits only a PCA capsule (#324, §3, §8.5);
+> the [staged hull narrow phase](collision-hull-narrow-phase.md) retired §5's
+> `panda_link5`↔`panda_link7` exemption (#191). Kernel and lowering changes are
+> safety-WG gated and need a hazard-log entry. Companion: the
 > [validation evidence](collision-validation-evidence.md) holds the *failure*
 > census; this is the *geometry* half, reproducible by
 > [§9](#9-reproducing-the-numbers).
@@ -38,7 +41,8 @@ is two flat, parallel primitive arrays, each tagged with the link it rides on:
 A sphere is a capsule with `half_length == 0`, which is how
 `envelope_loader.collision_params_from_description` lowers `SphereShape`. No
 mesh path — the kernel is analytic-convex-only so the hot path stays
-allocation-free.
+allocation-free (since #166 a box may also carry a convex-hull refinement,
+`tight_geometry`).
 
 ### 2.2 What the collision routines actually compute
 
@@ -49,7 +53,7 @@ allocation-free.
 | `box_box_distance` | box↔box | separating-axis theorem over 15 axes; returns the **largest** per-axis gap | conservative **lower bound** |
 | `check_voxel_collision` | box↔voxel | each occupied cell is an axis-aligned cube, then `box_box_distance` | conservative |
 
-`fold_pair` / `finish_sweep` (`collision.cpp:480-523`) are pure bookkeeping and
+`fold_pair` / `finish_sweep` (`collision.cpp`) are pure bookkeeping and
 read no geometry, so **neither is affected by a primitive change.**
 
 ### 2.3 Would a radius on the box path be nearly free? Yes — verified, with one trap
@@ -60,30 +64,30 @@ the support radius of `Box(a) ⊕ B(r)` along **any** unit `n` is
 `Σ_k a_k |â_k·n| + r` — the `+ r` is axis-independent, so **the 15-axis SAT set
 stays exactly as conservative as it is today**.
 
-**The trap: the voxel broad phase.** `check_voxel_collision` (`collision.cpp:684-703`)
+**The trap: the voxel broad phase.** `check_voxel_collision` (`collision.cpp`)
 computes the box's world AABB from `half_extents` alone —
 
 ```cpp
-const double ex = |R[0]|*he.x + |R[1]|*he.y + |R[2]|*he.z;   // and ey, ez
-const double reach = margin + half_side;
+const Vec3 ext = obb_extent(box_w, he);   // Σ_j |R_kj|·he_j per grid axis
+const double reach = margin + band_m + half_side;
 ```
 
 — and only visits cells inside that window. With `a = h − r` the extents
 under-report by exactly `r`, so cells that genuinely intersect the swept box are
 **never visited**: not a conservatism loss but a *missed collision*, silently
 returning clear. The fix is one term
-(`reach = margin + half_side + boxes[b].radius`) and it is the single line in
+(`reach = margin + band_m + half_side + boxes[b].radius`) and it is the single line in
 the change that can make the kernel unsafe rather than merely tighter.
 
 ### 2.4 Every site that would move
 
-`struct Obb` (`collision.hpp`) gains `double radius{0.0}`; six sites in
-`collision.cpp` subtract it — `check_self_collision` box↔capsule (570) and
-box↔box (581), `check_world_collision` (617; retired 2026-09-23, ADR-0109), `check_voxel_collision` box↔voxel
-(716), `check_attached_self_collision` payload↔link-box (1369-1374), and the
-voxel **broad phase** (689-697), which *adds* it to `reach` (§2.3);
-`lifecycle_kernel.cpp:169,1364,1426` declare and load a `collision_box_radius`
-array. Everything else — `fold_pair`, `finish_sweep`, `forward_kinematics`,
+`struct Obb` (`collision.hpp`) would gain `double radius{0.0}`; five sites in
+`collision.cpp` would subtract it — `check_self_collision` box↔capsule and
+box↔box, `check_voxel_collision` box↔voxel, `check_attached_self_collision`
+payload↔link-box — and the voxel **broad phase** would *add* it to `reach`
+(§2.3); `lifecycle_kernel.cpp` would declare and load a `collision_box_radius`
+array. (`check_world_collision`, a sixth site when this was written, was retired
+2026-09-23, ADR-0109.) Everything else — `fold_pair`, `finish_sweep`, `forward_kinematics`,
 `jacobian_dls_step`, `support_contact_exempts`,
 `update_support_contact_witnesses`, `place_approach_allowance`,
 `check_attached_voxel_collision` — reads no `model.boxes`.
@@ -91,6 +95,12 @@ array. Everything else — `fold_pair`, `finish_sweep`, `forward_kinematics`,
 ---
 
 ## 3. Multi-primitive links: **the kernel already supports them; the manifest lowering rejects them**
+
+> *Since #324:* the rejection is gone — `envelope_loader._primitives_by_link`
+> lowers every primitive of a link, and `urdf_lowering.lower_link_geometry` fits
+> one capsule, one box or a capsule chain per link, or box + exact hull for a
+> `--tight-link` ([collision-geometry-review.md](collision-geometry-review.md) §0).
+> §3.1–§3.3 record the state this study measured.
 
 ### 3.1 The rejection is real
 
@@ -110,11 +120,11 @@ which raises on the second entry for a link.
 ### 3.2 The kernel is fine with it — and a shipped test proves it
 
 `CollisionModel`'s docstring says a link may carry *"zero, one, or **several**
-capsules"*; `load_collision_model` (`lifecycle_kernel.cpp:1402-1431`) only
+capsules"*; `load_collision_model` (`lifecycle_kernel.cpp`) only
 range-checks the link index; `check_self_collision` skips same-link pairs
 explicitly (`li == lj`, `lb == lb2`, `lb == lc`);
 `mjcf_lowering.lower_collision_params` already emits several capsules per link;
-and `tests/sim/safety/test_kernel_h1_self_collision.py:128` asserts
+and `tests/sim/safety/test_kernel_h1_self_collision.py` asserts
 `len(cap_links) > len(set(cap_links))`, then starts a **live kernel** on it.
 `panda_mobile` cannot use the path only because it comes through the *manifest*
 path (URDF-lowered, hand-committed `collision_geometry`), not the MJCF path.
@@ -125,7 +135,7 @@ path (URDF-lowered, hand-committed `collision_geometry`), not the MJCF path.
 `dict[str, list[LinkCollisionGeometry]]` and the emit loop iterates it; the flat
 arrays are already per-primitive with a link tag, so nothing downstream changes
 shape. `urdf_lowering.lower_link_geometry` unions **all** of a link's
-`<collision>` elements into **one** PCA capsule (`urdf_lowering.py:252-264`) and
+`<collision>` elements into **one** PCA capsule and
 must stop unioning — the real work, but a generator change with no safety
 surface of its own, since the safety property is whatever the emitted primitives
 cover, checked at validation time. The ACM sweep keys on a single shape per link
@@ -187,13 +197,23 @@ Protrusion in **bold**; the containment margin underneath it.
 Per-link `r` for the swept candidates (mm): faces-fixed **23 / 19 / 39 / 41 / 15
 / 7 / 3**; free fit **32.7 / 54.5 / 64.8 / 65.1 / 21.8 / 27.7 / 23.3**.
 
+> **Correction ([picture book §4](collision-primitive-images.md#4-where-this-disagrees-with-pr-157-and-why-the-disagreement-matters)).**
+> The swept-box protrusion rows under-report: this study's boundary sampler
+> under-covered the rounded corner shell. Re-measured exactly, the faces-fixed
+> row is **46.4 / 34.8 / 48.0 / 46.4 / 34.1 / 47.3 / 26.2 mm**, and a proven lower
+> bound (36.4 / 32.8 / 47.4 / 46.1 / 33.7 / 47.1 / 26.0 mm) excludes six of the
+> seven figures above. The free-fit and k-means SSB rows used the same sampler
+> and were not re-measured. The OBB row is low by 0.4–3.2 mm (corners sampled,
+> not evaluated). Containment margins and corner reach (§4.3, §6) are
+> unaffected.
+
 ### 4.3 Reading it
 
 **The sphere-swept box works.** Shrinking to `a = h − r` and sweeping `r` is not
 automatically containing — a point near the box corner is up to `√3·r` from
 `Box(h − r)` — but it holds up to a per-link maximum `r` of 3–41 mm, with
-containment proven over the full vertex set. Protrusion falls **8 % (link7) to
-58 % (link4)**, faces are untouched by construction, volume falls slightly.
+containment proven over the full vertex set. Protrusion falls **7 % (link7) to
+40 % (link4)** (re-measured, picture book §4), faces are untouched by construction, volume falls slightly.
 **A strict improvement: never more conservative anywhere than today, less
 conservative only at the corners.** The free fit reaches 17–21 mm on the mid-arm
 links but grows faces by up to **+11.7 mm on link2**, so it is *more*
@@ -215,9 +235,9 @@ guarantee, and §7 does not recommend it.
 **The capsule is catastrophic here — 96–112 mm on every link but the wrist**,
 because the Panda's links are flanged, tapered blocks, not rods. This vindicates
 the #103 conversion from capsules to boxes, and
-`urdf_lowering.lower_link_geometry` **still emits a PCA capsule for any mesh
-collision**, so re-lowering `panda_mobile` from its URDF today would regress the
-envelope by 1.3–2.1×. A live trap, not a historical note.
+`urdf_lowering.lower_link_geometry` then emitted a PCA capsule for any mesh
+collision, so re-lowering `panda_mobile` from its URDF would have regressed the
+envelope by 1.3–2.1× (§8.5 has what changed).
 
 **Multi-primitive decomposition does not help these links.** Equal-mass slabs
 along the long axis and k-means on triangle centroids, at k = 2 and k = 3:
@@ -253,7 +273,7 @@ different direction, **none was conservative at both edges.**
 |---|---|---|---|
 | the safety kernel's OBB, as an envelope for a rounded, tapered link | *circumscribed*, implicitly — a sharp box reaches `\|h\|` at its corners | **over**-approximates | corners proud of the real link (§4); the kernel reads in-collision while the surface is clear |
 | ~~`urdf_lowering._capsule_segment_radius` (offline ACM sweep)~~ — **deleted, issue [#155](https://github.com/OpenRAL/openral/issues/155) fixed** | was *inscribed*, `min(half_extents_m)` | **under**-approximated | The sweep now uses `kernel_predicates.shape_distance` — the kernel's own predicate on the true primitive. The remaining capsule lowering, `bounding_capsule_segment`, **circumscribes** and feeds only the cuMotion planner, where over-covering is the safe direction. See the note below: #155's conclusion was inverted, and the replacement numbers are grid-exhaustive rather than sampled. |
-| `openral_slam_bringup.depth_height_filter_node._collision_z_span` | neither — it was forced to take the **exact** OBB support projection `Σ_k \|R[2][k]\|·h_k` | — | the node's own docstring records why: the inscribed radius *"shrinks the band and hides obstacles at body height"*, the circumscribed radius *"grows it … and the node re-marks the floor it exists to remove"*, so **"no single scalar is conservative at both edges"** |
+| `openral_slam_bringup.depth_height_filter_node._shape_z_span_m` | neither — it takes the **exact** OBB support projection `Σ_k \|R[2][k]\|·h_k` | — | its docstring records why: *"A box has no radius; the inscribed surrogate hides obstacles (shrinks the band), the circumscribed one drags the lower edge through the floor (grows it) — hence the exact span."* |
 
 The SLAM node got it right by refusing to pick a scalar at all:
 
@@ -265,19 +285,20 @@ The SLAM node got it right by refusing to pick a scalar at all:
 The middle row's original version inferred `panda_link5`↔`panda_link7` was a
 capsule-junction artifact the sweep ought to restore. Wrong: **the pair
 genuinely collides.** Over `(panda_joint6, panda_joint7)`, the only two joints
-that move it, **914 of 14641 poses interpenetrate, up to 48.3 mm deep**, across
-a **39.6° band of `joint6`** spanning the full `joint7` range; MoveIt agrees and
-emits no `Never` row. The committed ACM has been *exempting* a real
+that move it, **967 of 14641 poses (6.60 %) interpenetrate** (the #191
+re-measurement on #169's grid, recorded in `panda_mobile.srdf`); MoveIt agrees
+and emits no `Never` row. The committed ACM was *exempting* a real
 self-collision, and the inscribed-sphere bug produced the correct ACM for the
 wrong reason.
 
-It stays exempt, because the box envelopes cannot express it either way: the box
-check fires on **86.5%** of that space while only 6.9% is real (**79.6% false**),
-including the arm's `ready` home pose at -9.14 mm, and **no margin separates the
-populations** — real collisions reach -9.97 mm, collision-free poses -40.07 mm.
-The exemption is a hand-owned `reason="User"` row in each panda SRDF carrying
-this evidence. **This is the strongest single argument in this document for
-tighter link geometry**, and it argues for a change that **stops substituting**.
+The box envelopes cannot express it either way: the box check fires on
+**86.38 %** of that space (**79.78 % false**), including the arm's `ready` home
+pose (box gap −9.12 mm), and **no margin separates the populations** — the
+deepest real collision sits at a box gap of −8.37 mm, the shallowest false one at
+−36.64 mm. It stayed exempt for that reason until #191 retired the row by
+checking the pair on the exact hulls (§8.4). **This is the strongest single
+argument in this document for tighter link geometry**, and it argues for a
+change that **stops substituting**.
 
 ---
 
@@ -314,7 +335,7 @@ it can be applied to that table when it lands):
 **None of the three recovers.** Even the free-fit variant lifts the link5
 ceiling only to 8.9 mm and the link1 ceiling to 17.0 mm. **On every stop this
 repo has characterised, a tighter primitive does not clear the stop.** §4 proves
-the envelope can be improved by 13–58 %; §6 says that improvement recovers no
+the envelope can be improved by 7–40 % (re-measured, picture book §4); §6 says that improvement recovers no
 layout we know about.
 
 ### 6.3 What that leaves
@@ -359,8 +380,8 @@ way `docs/methods/00-core-schemas.md` and `docs/methods/06-…` need updating.
 |---|---|---|---|
 | multi-primitive lowering | `envelope_loader._capsules_by_link` + emit loop; `urdf_lowering.lower_link_geometry` | ~60 lines Python | **none new** — the kernel path is already exercised by `test_kernel_h1_self_collision` |
 | `Obb::radius` | `collision.hpp`, 6 call sites in `collision.cpp`, 3 in `lifecycle_kernel.cpp` (§2.4) | ~25 lines C++ | one line that can make the kernel *unsafe* — the voxel broad-phase `reach` (§2.3) |
-| downstream box readers | `depth_height_filter_node._collision_z_span`; `tools/viz_collision.py` | ~10 lines | the SLAM height band must add the radius or the band under-covers (`_capsule_segment_radius` is gone — #155) |
-| per-robot refits | the three box-bearing manifests: `panda_mobile` (7 boxes), `panda_mobile_vslam` (7), `so101_follower` (5) | data | each needs its own containment proof re-run |
+| downstream box readers | `depth_height_filter_node._shape_z_span_m`; `tools/viz_collision.py` | ~10 lines | the SLAM height band must add the radius or the band under-covers (`_capsule_segment_radius` is gone — #155) |
+| per-robot refits | every box-bearing manifest (three when this was written; since #324 most arm manifests ship boxes + hulls) | data | each needs its own containment proof re-run |
 
 ### 7.3 What the hazard entry and the safety-WG review would have to assert
 
@@ -397,7 +418,7 @@ box) it would touch both, since `bounding_radius` would under-report the AABB
 span exactly as the voxel broad phase does (§2.3). **Do not extend it to
 payloads.** One in-scope interaction still belongs in the hazard entry:
 `check_attached_self_collision` compares payload primitives against robot link
-boxes (`collision.cpp:1369-1374`), so a link-box radius makes that check less
+boxes, so a link-box radius makes that check less
 conservative too, bounded by the same per-link Δ.
 
 ---
@@ -441,8 +462,8 @@ convex to 1e-4 in volume ratio, so `conv(mesh)` **is** the mesh and the hull's
 verdict is the mesh's. Over the pair's full `(joint6, joint7)` grid the
 false-positive population goes from 11 680 of 14 641 poses to **zero**.
 
-**8.5 Fix `urdf_lowering.lower_link_geometry`'s mesh path regardless.** It still
-emits a PCA capsule for a mesh collision, which §4.2 measures at 96–112 mm of
+**8.5 Fix `urdf_lowering.lower_link_geometry`'s mesh path regardless.** It
+emitted a PCA capsule for a mesh collision, which §4.2 measures at 96–112 mm of
 protrusion against the shipped boxes' 27–76 mm. Re-lowering `panda_mobile` from
 its URDF today would inflate the envelope slop by up to 2.1× and silently undo
 the #103 conversion. Whether or not §8.2 lands, a mesh should lower to a box.
@@ -470,8 +491,14 @@ the #103 conversion. Whether or not §8.2 lands, a mesh should lower to a box.
 > sourcing its collision spheres from `LoweredCollisionModel.collision_geometry`
 > — i.e. from exactly this PCA-capsule path — rather than from the manifest the
 > kernel checks, so "plan-time and kernel-time share one source of truth" was
-> untrue for every hand-authored box manifest. It now prefers the manifest. The
-> lowering path itself is still unfixed.
+> untrue for every hand-authored box manifest. It now prefers the manifest.
+
+> **Since #324 landed:** `lower_link_geometry` keeps whichever of one capsule, one
+> box or a capsule chain has the least mean protrusion, and lowers a
+> `--tight-link` as box + exact hull
+> ([collision-geometry-review.md](collision-geometry-review.md) §0, §3).
+> `test_collision_geometry_no_loosening.py` still guards a re-lower against
+> loosening a shipped envelope.
 
 ---
 

@@ -117,7 +117,7 @@ OmniGibson step.
 | `role` | `s1` |
 | `model_family` | `gr00t_b1k` |
 | `quantization.dtype` | `int4` (NF4 at load; stored `bf16` → `quantization.extra.stored_dtype`) |
-| `runtime` | external Python 3.10 Isaac-GR00T sidecar, whole-model NF4 |
+| `runtime` | `pytorch` (the adapter drives an external Python 3.10 Isaac-GR00T sidecar), whole-model NF4 |
 | `weights_uri` | `local://checkpoints/behavior-groot-turning-on-radio` |
 | `chunk_size` | 16 |
 | `state_contract.dim` / `action_contract.dim` | 61 / 23 |
@@ -169,8 +169,11 @@ and videos unmodified.
 
 ## Evaluation
 
-No OpenRAL-generated score is shipped. The full official-evaluator loop has
-been reproduced locally on an 8 GB RTX 4070 Laptop GPU (NF4 sidecar 2.77 GiB
+[`eval/behavior.json`](eval/behavior.json) records one OpenRAL episode
+(`openral benchmark run --suite behavior --rskill
+rskills/gr00t-n17-b1k-turning-on-radio`, seed 0, max 3224 steps):
+`avg_success_rate` 0.0. The full official-evaluator loop has also been
+reproduced locally on an 8 GB RTX 4070 Laptop GPU (NF4 sidecar 2.77 GiB
 inference peak alongside OmniGibson, ~0.8-1.3 steps/s): public instance 0
 (ID 301), 3225 steps to timeout, `success=false`, `q_score 0.0`. Whether the
 zero q_score reflects NF4 degradation or the checkpoint's zero-shot behavior

@@ -34,16 +34,20 @@ so the geometry is consistent (per the object-lift design).
 
 | Name | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `image_topic` | string | `""` | Camera `sensor_msgs/Image` to detect on — `openral_core.camera_topic(<name>)`, passed by `deploy_e2e`. With no `cameras` entries either, configure raises `ROSConfigError` (ADR-0108). |
+| `cameras` | string[] | `[""]` | `"id=topic"` entries; empty = one camera `primary_camera` on `image_topic`. |
+| `primary_camera` | string | `default` | Id of the continuously-detected camera. |
+| `image_topic` | string | `""` | Single-camera fallback `sensor_msgs/Image` — `openral_core.camera_topic(<name>)`, passed by `deploy_e2e`. With no `cameras` entries either, configure raises `ROSConfigError` (ADR-0108). |
 | `output_topic` | string | `/openral/perception/objects` | Perception topic to publish on. |
 | `sensor_id` | string | `front_depth` | Sensor name stamped on the metadata + `header.frame_id`. |
 | `camera_infos` | string[] | `[""]` | `"id=topic"` driver `CameraInfo` per camera. Once one arrives, every batch for that camera carries its `header.frame_id` + K (`ObjectsMetadata.camera_frame_id` / `camera_intrinsics`), which the world-state lift projects through. Without an entry the node warns at configure and the lift falls back to the manifest `SensorSpec` (logged once). `deploy_e2e` derives it (`_live_camera_info_topic`): the sim bridge's topic, or on real the driver's beside the unit overlay's `ros2_image` binding (Thor `top` → `/zed/zed_node/rgb/color/rect/camera_info`). |
-| `onnx_path` | string | — (required) | RT-DETR ONNX model path. |
+| `manifest_path` | string | `""` | Detector rSkill manifest; when set the backend is manifest-driven, else the legacy RT-DETR ONNX path below. |
+| `onnx_path` | string | `""` | RT-DETR ONNX model path (legacy path, or the ONNX for a manifest backend). |
 | `model_id` | string | `rtdetr-coco-r18` | Id embedded in `ObjectsMetadata`. |
 | `score_threshold` | double | `0.5` | Minimum sigmoid score. |
 | `input_size` | int | `640` | Square model input edge. |
 | `max_rate_hz` | double | `5.0` | Publish-rate cap. |
-| `labels` | string[] | — (required) | COCO-80 class names indexed by class-id. |
+| `labels` | string[] | `[""]` | COCO-80 class names indexed by class-id (legacy ONNX path). |
+| `query` | string | `""` | Initial open-vocab query override (VLM backends only). |
 | `query_topic` | string | `/openral/perception/detector_query` | GStreamer perception-bus open-vocab retarget topic (on-demand). Namespaced per on-demand locator. |
 | `locate_in_view_service` | string | `/openral/perception/locate_in_view` | On-demand-locator service name. The deploy launch sets it to `/openral/perception/<alias>/locate_in_view` per on-demand locator so several locators co-exist. |
 | `detector_id` | string | `""` | This locator's alias, echoed in the `LocateInView` response so the reasoner records which model answered. |
@@ -62,13 +66,13 @@ Wired into the generic `deploy_e2e.launch.py` graph behind the
 `enable_object_detector` launch argument, driven by the CLI:
 
 ```bash
-openral deploy sim --config scenes/<SceneEnvironment>.yaml   # detector ON by default
+openral deploy sim --config scenes/deploy/<scene>.yaml   # detector ON by default
 ```
 
 `openral deploy sim` brings the detector up **by default** (pass
 `--no-object-detector` to turn the leg off). With no explicit override the
 default backend is the open-vocab `omdet-turbo-indoor` manifest, falling back to
-the in-tree RT-DETR COCO ONNX (`rskills/rtdetr-coco-r18/model.onnx`) when the
+the RT-DETR COCO ONNX (`rskills/rtdetr-coco-r18/model.onnx`, gitignored — export it with `tools/export_rtdetr_onnx.py`) when the
 omdet deps are absent; the leg auto-downgrades to off only when neither backend
 is available. Use `--object-detector-manifest PATH` to pick a specific detector
 rSkill or `--object-detector-onnx PATH` to force the fixed-label RT-DETR path.
@@ -98,6 +102,8 @@ can evict it before a co-resident VLA.
 | `openral_perception_ros/depth_provider_node.py` | `depth_provider_node` (`openral_depth_provider`): subscribes a mono RGB stream, calls the DA3 metric-depth sidecar (`tools/da3_depth_sidecar.py`, default `depth-anything/DA3-SMALL` — measured 0.27 GB / ~27 Hz on an 8 GB Ada) over ZMQ, and republishes a `32FC1` depth Image + `CameraInfo` for **nvblox** (`openral_slam_bringup/nvblox.launch.py`). Gives lidar-less robots a Nav2 cost map via cuVSLAM pose + nvblox. Best-effort; a sidecar hiccup skips the frame, never crashes the graph. Live bring-up is operator-run (sidecar venv + GPU). **Metric mode** (`rgb_camera_info_topic` set, launched for `DeployRuntime.estimated_depth_camera`): the world-collision path — a `DA3METRIC-*` sidecar only (checked per reply), metres from the camera's own `CameraInfo` focal at DA3's raster (on a real deploy the driver's calibrated `CameraInfo` beside its `ros2_image` binding, or this unit's calibrated intrinsics; a frame whose `CameraInfo` has an unset focal or another aspect ratio than the image is dropped). Every frame is first **rectified to an exact pinhole** with that `CameraInfo`'s lens model (`lens_rectify`: `plumb_bob`, `rational_polynomial`, `equidistant` fisheye; an unsupported model drops the frame), because DA3's metric scale and the back-projection both assume a pinhole; an already-rectified `image_rect` stream declares `backend_params.rectified: true` and is read through `CameraInfo.p`, depth + `CameraInfo` + `PointCloud2` (`points_topic`, clipped at `max_range_m`) in `depth_frame_id` (the launch's resolved optical frame of the camera's mount), which becomes octomap's input. Any RGB camera — top, context or wrist — qualifies once a declared mount ties it to the robot (`openral_core.depth_extrinsic.resolve_estimated_depth_camera`), and only on a deploy with no measured cloud source: a depth camera or point-cloud sensor in the manifest or scene refuses it (an estimate never replaces a measurement, hazard HZ-0382-6; pin `octomap_cloud_topic` to that sensor's cloud instead). |
 | `openral_perception_ros/lens_rectify.py` | Lens → exact pinhole for metric mode (OpenCV): `build_rectifier` / `PinholeRectifier` (remap built once per calibration; valid pixels only, pixel aspect kept, stays in the optical frame), `distortion_problem`, `rectified_stream_k`. |
 | `openral_perception_ros/metric_depth.py` | Pure numpy half of metric mode: `da3_metric_depth` (`focal * out / 300`, focal at the output raster), `camera_info_problem`, `scale_intrinsics`, `points_from_depth`, `is_metric_model`. |
+| `openral_perception_ros/scene_vlm_node.py` | `scene_vlm_node`: serves `/openral/perception/query_scene` (`openral_msgs/srv/QueryScene`) from a `kind: "vlm"` rSkill in the out-of-process sidecar, answering free-text questions about a cached camera frame. On-demand only; publishes nothing. |
+| `openral_perception_ros/reward_monitor_node.py` | `reward_monitor_node`: buffers recent camera frames and serves `/openral/perception/query_task_progress` (`openral_msgs/srv/QueryTaskProgress`) from a `kind: "reward"` rSkill. Advisory only. |
 | `openral_perception_ros/segmenter_node.py` | `segmenter_node` (`SegmenterNode`, `openral_segmenter`): a managed lifecycle node serving `/openral/perception/segment_in_view` (`openral_msgs/srv/SegmentInView`) from an in-process SAM 2.1 hiera-small (`kind: segmenter` rSkill). See [Segmenter node](#segmenter-node) below. |
 | `openral_perception_ros/camera_topics.py` | `parse_camera_entries(entries)` (the bare `"id=topic"` parse, no fallback) and `resolve_camera_topics(entries, *, primary_camera, image_topic)` — the one implementation of the `"id=topic"` → ordered map resolution every node here takes as parameters. Pure, ROS-free, unit-tested in `tests/unit/test_perception_camera_topics.py`. |
 | `package.xml` / `CMakeLists.txt` | `ament_cmake` manifest (depends on `rclpy`, `sensor_msgs`, `openral_msgs`, plus `geometry_msgs` + `tf2_ros` for the segmenter's prompt transform; exec-depends on `python3-openral-runner` and `python3-openral-hal`, the latter for `intrinsics_from_camera_info`) + `ament_python_install_package` and `install(PROGRAMS … ros_image_detector_node.py)`. Installed as a program (not a setuptools `console_scripts` entry) so its `#!/usr/bin/env python3` shebang survives — a `console_scripts` entry is regenerated by colcon with a system-python shebang that can't see the `openral_runner` workspace package. Launch executable: `ros_image_detector_node.py`. |
@@ -269,4 +275,4 @@ removes a published payload whatever the kernel flag.
 - `openral_runner.backends.gstreamer.objects_detector.ObjectsDetector` /
   `openral_core.ObjectsMetadata` — the detector and metadata schema this
   node reuses.
-- CLAUDE.md §3 (layer discipline) and §5.3 (QoS).
+- CLAUDE.md §3 (layer discipline) and §2 (QoS).

@@ -31,8 +31,9 @@ inference: false
 
 This package wraps [`nvidia/GR00T-N1.7-LIBERO`](https://huggingface.co/nvidia/GR00T-N1.7-LIBERO)
 with a `rskill.yaml` manifest that adds capability checking, license
-surfacing, latency budgets, and local registry integration. It does **not**
-copy model weights.
+surfacing, latency budgets, and local registry integration. Its `weights_uri`
+is an OpenRAL root-level repackage of the upstream `libero_spatial/`
+subfolder checkpoint (the upstream repo has no root `model.safetensors`).
 
 > **Runtime status.** The manifest, license posture, and `model_family: gr00t`
 > are wired and tested. `openral_sim.policies.gr00t` runs GR00T N1.7
@@ -42,7 +43,8 @@ copy model weights.
 > (`tools/behavior_groot_sidecar.py` is unrelated: it drives the external
 > Python 3.10 `wensi-ai/Isaac-GR00T` runtime for the official 2026 BEHAVIOR-1K
 > organizer checkpoint.) `eval/libero_spatial.json` carries
-> `reproduced_locally: true`.
+> `reproduced_locally: true`: 1 episode per task over the 10 LIBERO-Spatial
+> tasks (seed 0, max 280 steps), `avg_success_rate` 0.9.
 
 ## Upstream model, architecture & training
 
@@ -65,10 +67,12 @@ the N1.7 base on the LIBERO Franka embodiment.
 
 | Robot | Embodiment tag | Status | Notes |
 |---|---|---|---|
-| Franka Panda (LIBERO sim) | `franka_panda` | packaged | Native finetune embodiment; live eval in GR00T backend epic PR2 |
+| Franka Panda (LIBERO sim) | `franka_panda` | ✓ sim | Native finetune embodiment; see `eval/libero_spatial.json` |
 
-GR00T exposes a `LIBERO_PANDA` embodiment tag internally; OpenRAL maps it to
-the canonical `franka_panda` embodiment from `robots/`.
+GR00T uses its own embodiment namespace: the manifest pins
+`policy_extras.embodiment_tag: libero_sim` (override with
+`OPENRAL_GR00T_EMBODIMENT_TAG`), while the OpenRAL capability gate matches the
+canonical `franka_panda` tag from `robots/`.
 
 ## Sensors / observation contract
 
@@ -93,22 +97,22 @@ processor pipeline — hence no `processors` block in the manifest.
 | `role` | `s1` |
 | `model_family` | `gr00t` |
 | `embodiment_tags` | `franka_panda` |
-| `runtime` | `pytorch` (out-of-process sidecar) |
+| `runtime` | `pytorch` (in-process lerobot `GrootPolicy`) |
 | `quantization.dtype` | `int4` (NF4 at load; stored bf16 → `quantization.extra.stored_dtype`) |
-| `weights_uri` | `hf://nvidia/GR00T-N1.7-LIBERO` |
+| `weights_uri` | `hf://OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16` |
 | `chunk_size` | 16 |
 | `state_contract.dim` / `action_contract.dim` | 8 / 7 |
-| `latency_budget.per_chunk_ms` | 1500 ms (sidecar round-trip + 3B inference) |
+| `latency_budget.per_chunk_ms` | 1500 ms |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
 ## Hardware
 
-GR00T N1.7-3B (bf16, ~6 GB weights) plus the Cosmos-Reason VLM does not fit
-on an 8 GB GPU without NF4 quantization; the sidecar (GR00T backend epic PR2) follows
-the NF4 isolated-venv recipe used by the RLDX and detector sidecars. A
-≥ 16 GB GPU can skip packing with `OPENRAL_QUANTIZATION_DTYPE=fp32` (the
-unpacked load runs fp32 params; there is no bf16 path).
+GR00T N1.7-3B unpacked (~6 GB) does not co-fit an 8 GB GPU, so the in-process
+adapter NF4-packs the Qwen3-VL backbone at load (~5.2 GiB peak per the
+manifest; the diffusion action head stays bf16). A ≥ 16 GB GPU can skip packing
+with `OPENRAL_QUANTIZATION_DTYPE=fp32` (the unpacked load runs fp32 params;
+the adapter accepts only `nf4` / `fp32` / `none`, so there is no bf16 path).
 
 ## License
 

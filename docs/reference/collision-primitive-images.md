@@ -1,6 +1,9 @@
 # What the kernel's link boxes actually enclose — in pictures
 
-> **Status: measurement only.** No kernel, manifest or schema change. This page
+> **Status: measurement only.** No kernel, manifest or schema change. The boxes
+> measured here are still the shipped `collision_geometry` boxes; since #166 the
+> kernel refines them with `tight_geometry` (26-DOP + exact hull), see
+> [the staged hull narrow phase](collision-hull-narrow-phase.md). This page
 > renders the geometry that
 > [the collision-primitive study](collision-primitive-study.md) (PR #157) argues in
 > prose, and re-derives its fit numbers from the meshes independently.
@@ -94,8 +97,12 @@ link7 −1.9 mm.
 
 This re-measurement reproduces #157's **containment margins exactly** on all
 seven links (0.083 / 0.055 / 0.088 / 0.083 / 0.083 / 0.132 / 0.098 mm), its
-**corner reaches exactly**, and its **sweep radii** to the resolution #157
-reported them. Same meshes, same manifest, same frames.
+**OBB corner reaches exactly**, and its **sweep radii** to the resolution #157
+reported them. Same meshes, same manifest, same frames. The swept-box corner
+reaches differ by up to 0.5 mm (link4 134.4 here vs 134.8; reach removed link1
+−13.0 vs −12.9, link2 −11.0 vs −10.8, link5 −7.8 vs −7.5, link6 −5.1 vs −4.7)
+because `r` is bisected at 0.1 mm here and swept at 1 mm there, so each `r` here
+is slightly larger.
 
 The protrusion columns do not agree:
 

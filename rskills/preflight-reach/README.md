@@ -33,7 +33,7 @@ This playbook is content, not code. When installed, the reasoner injects
 `PLAYBOOK.md` into its system prompt and follows the SOP, composing tools it
 already has (`recall_object`, `resolve_place`, `query_scene`, `execute_rskill`,
 `emit_prompt`). It is `role: s2` and is **never** dispatched through
-`ExecuteSkill`. Every motion it triggers is an `execute_rskill` → Action chunk →
+`ExecuteRskill`. Every motion it triggers is an `execute_rskill` → Action chunk →
 C++ safety kernel — the playbook holds no actuation authority (CLAUDE.md §1.1).
 
 ### Observation → action contract
@@ -80,9 +80,11 @@ print(m.playbook.trigger)
 
 ## Reproduction
 
-Packaging-only: `tests/unit/test_playbook_rskill_manifest.py` validates the
-manifest + SOP. No benchmark number to reproduce; reasoner integration tests in
-later phases exercise the behaviour.
+Packaging-only: `tests/unit/test_rskill_manifest_kinds.py` loads every in-tree
+manifest, this one included; the `kind: playbook` rules and the reasoner's
+playbook injection are tested against `rskills/find-object`
+(`tests/unit/test_playbook_rskill_manifest.py`,
+`tests/unit/test_reasoner_playbooks.py`). No benchmark number to reproduce.
 
 ## Evaluation
 

@@ -56,7 +56,7 @@ Its consumer is the HAL's vision attachment-evidence producer. At a grasp event
 the producer projects the tool center point into the wrist camera, asks this
 skill for the mask, intersects the mask with the same frame's depth channel, and
 fits the ≤16 bounded primitives of an `AttachedCollisionObject` so the safety
-kernel plans around the carried payload. It replaces MuJoCo introspection, which
+kernel collision-checks the carried payload. It replaces MuJoCo introspection, which
 gives perfect answers in simulation and does not exist on real hardware.
 
 | Field | Value |
@@ -187,7 +187,7 @@ Mirrors `rskill.yaml::sensors_required`.
 | `segmenter.multimask` / `max_prompt_points` / `min_mask_area_px` | `true` / `8` / `64` |
 | `weights_uri` | `hf://facebook/sam2.1-hiera-small` |
 | `latency_budget.per_chunk_ms` | 100 ms (measured warm: 53 ms) |
-| `commercial_use_allowed` | yes (Apache-2.0 weights) |
+| `is_commercial_use_allowed` | yes (Apache-2.0 weights) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -256,4 +256,4 @@ segmenter is fully commercial-safe (CLAUDE.md §1.9).
   identical `AttachedCollisionObject` contract.
 - [`rskills/omdet-turbo-locator/`](../omdet-turbo-locator/) — the *semantic*
   perception sibling ("find object X"), for contrast.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

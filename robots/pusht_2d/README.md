@@ -15,7 +15,7 @@ chain; the "robot" is the 2-D tip the policy commands. Sim-only.
 | Joints | 2 synthetic prismatic "joints" representing the (x, y) tip position |
 | Workspace | 512 × 512 px canvas (`gym_pusht/PushT-v0` default) |
 | Sensors | 1× top-down RGB (96 × 96, VLA slot `camera1`) |
-| Supported control modes | 2-D end-effector position |
+| Supported control modes | `joint_position` (the 2-D tip position, as `tip_x` / `tip_y`) |
 | `sdk_kind` | `open` (`gym_pusht`, `pymunk`) |
 
 > **Why prismatic joints for a 2-D tip?** The schema requires at least one
@@ -49,7 +49,8 @@ the multi-cam convention), is the rSkill's `image_preprocessing` rename
 ```bash
 just sim-diffusion-pusht
 # which runs:
-#     openral sim run --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht --save-video
+#     openral benchmark scene --config scenes/benchmark/pusht.yaml \
+#         --rskill rskill://rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos
 ```
 
 CPU-only; no GPU required.

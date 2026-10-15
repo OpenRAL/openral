@@ -34,9 +34,10 @@ base_model_relation: quantized
 > permissive research license).
 
 > ⚠ **License gate** — π0.5 weights are *not* Apache-2.0. The
-> OpenRAL loader pins `commercial_use_allowed: false`; commercial
-> deployment requires a separate agreement with Physical Intelligence
-> (see CLAUDE.md §7.4 / Operating Principle 9). The loader requires
+> manifest's `license: permissive_research` makes
+> `is_commercial_use_allowed` false; commercial deployment requires a separate
+> agreement with Physical Intelligence (see CLAUDE.md §3 "VLA license matrix"
+> and §1.9). The loader requires
 > `OPENRAL_ALLOW_NONCOMMERCIAL=1` (or the `--non-commercial` flag
 > on `openral rskill install`) to activate this skill.
 
@@ -72,9 +73,10 @@ is a bigger hazard than the average.
 int8 buys **1.7 GB**, which is decisive on an 8 GB card: bf16 will not load,
 and 62% beats not running.
 
-**On any host with ≳9 GB of VRAM, use bf16.** The dtype resolves from
-`policy_extras.dtype` first and falls back to `quantization.dtype`, so add the
-override to this manifest:
+**On any host with ≳9 GB of VRAM, use bf16.** For one run, set
+`OPENRAL_QUANTIZATION_DTYPE=bf16` (the per-run override every family honours).
+To make it stick, add the override to this manifest (`openral sim run` passes
+`policy_extras` to the adapter, and `dtype` there beats `quantization.dtype`):
 
 ```yaml
 # rskills/pi05-libero-int8/rskill.yaml
@@ -87,7 +89,7 @@ openral sim run --config scenes/sim/libero_spatial.yaml \
     --rskill rskills/pi05-libero-int8
 ```
 
-There is no per-run CLI override (`--vla-extra` went away with the old
+There is no per-run CLI flag for it (`--vla-extra` went away with the old
 `--scene / --task / --vla` form). Since the dtype is part of the canonical name
 (`…-libero_spatial-int8`), a host that wants bf16 permanently is better served by
 a bf16-named sibling package: this package's `benchmarks:` block and
@@ -98,8 +100,8 @@ per policy call against bf16 eager's 190 ms and scores **49/50, identical to
 bf16**, so FP8 costs no task success. See the `openral-pro` TensorRT
 runtime (`OPENRAL_PI05_TRT=1`, `OPENRAL_PI05_TRT_PRECISION=fp8_bf16_attn`).
 
-Scope: one task of LIBERO-Spatial's ten, so treat 98%/76% as a like-for-like
-*comparison* rather than a suite score. The older "0.5–0.7 across 10-episode
+Scope: three tasks (0/1/2) of LIBERO-Spatial's ten, so treat 95%/62% as a
+like-for-like *comparison* rather than a suite score. The older "0.5–0.7 across 10-episode
 runs" figure is too noisy to use: at n=10 the binomial SD is ~0.16, wide enough
 to cover both arms above.
 
@@ -161,7 +163,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True \
 | `runtime` / `quantization.dtype` | `pytorch` / `int8` |
 | `weights_uri` | `hf://lerobot/pi05_libero_finetuned_v044` |
 | `latency_budget.per_chunk_ms` | 200 ms (3 B model is heavier than SmolVLA) |
-| `commercial_use_allowed` | **`false`** |
+| `is_commercial_use_allowed` (derived from `license`) | **`false`** |
 
 Full schema: `openral_core.RSkillManifest`.
 
@@ -195,4 +197,4 @@ license file before any deployment beyond research.
 
 - [`rskills/smolvla-libero/README.md`](../smolvla-libero/README.md) — Apache-2.0 LIBERO alternative.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.1 — VLA × Robot × Sim matrix.
-- CLAUDE.md §7.4 — VLA license matrix and install-time guard rules.
+- CLAUDE.md §3 ("VLA license matrix") and §1.9 — weight-license posture and install-time guard rules.

@@ -21,16 +21,16 @@ which translates inside the runner. No Sawyer-specific sim HAL ships in tree.
 | Embodiment tags | `sawyer`, `rethink` |
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `closed_with_api` (Rethink's `intera_sdk`; vendor dissolved in 2018; community forks remain the reference) |
-| `hal.sim` | _none_ — no MuJoCo twin (real-only; `deploy sim` raises `ROSCapabilityMismatch`) |
+| `hal.sim` | `null` and no `sim:` block — no MuJoCo twin (`deploy sim` raises `ROSCapabilityMismatch`); sim runs through the `fixed_robot="sawyer"` MetaWorld scene adapter |
 | `hal.real` | `openral_hal.sawyer_real:SawyerRealHAL` ([#57](https://github.com/OpenRAL/openral/issues/57)) |
 
 ## Wiring
 
 | Layer | Where |
 | --- | --- |
-| Python HAL adapter (sim) | _planned_ — currently driven by `openral_sim.backends.metaworld` |
+| Python HAL adapter (sim) | none — sim is the `openral_sim.backends.metaworld` scene adapter |
 | Real-HW adapter | `openral_hal.sawyer_real:SawyerRealHAL` |
-| ROS 2 lifecycle node | _planned_ — covered by PR 7 of the refinement plan |
+| ROS 2 lifecycle node | `ManifestHALLifecycleNode` ([`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md)), `hal_mode:=real` |
 | Sim test | none yet — `scenes/benchmark/metaworld_push.yaml` is referenced only by unit-level guard tests (`tests/unit/test_benchmark_scene_writeback_guard.py`, `tests/unit/test_sim_run_fixed_robot_guard.py`), not a closed-loop sim rollout test |
 | Example configs | [`scenes/benchmark/metaworld_push.yaml`](../../scenes/benchmark/metaworld_push.yaml) (pass `--rskill rskills/smolvla-metaworld`) |
 

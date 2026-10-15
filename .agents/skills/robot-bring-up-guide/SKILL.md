@@ -62,9 +62,9 @@ Read only what matches the target:
    - Verify registration with `openral sim list` and a small `openral deploy sim` or `openral sim run` path.
 
 6. Create deployment config guidance.
-   - Deployment YAMLs under `deployments/` encode lab-specific ports, serials, camera IDs, task, rSkill, and safety overrides.
+   - Real deploys use a `DeployScene` under `scenes/deploy/` (`deployments/` is retired): workspace cameras, the host-specific `hal:` binding (serial port, calibration), and safety tightening. Robot-camera bindings for a host go in `robots/<id>/units/<unit>.yaml`. `openral detect --deployment scenes/deploy/<workcell>.yaml` writes both.
    - Do not commit secrets, private IP assumptions, or lab-specific values unless the repo convention allows that fixture.
-   - Use `openral deploy sim` before `openral deploy run`.
+   - Use `openral deploy validate` and `openral deploy sim` before `openral deploy run`.
 
 7. Check rSkill compatibility.
    - Use `openral rskill check <id> --robot <robot.yaml>` where available.
@@ -82,7 +82,7 @@ Read only what matches the target:
 openral detect
 openral rskill check <rskill-id> --robot robots/<id>/robot.yaml
 openral sim list
-openral deploy sim --config scenes/<scene>.yaml
+openral deploy sim --config scenes/deploy/<scene>.yaml
 openral deploy list
 openral deploy run --config scenes/deploy/<workcell>.yaml
 ```

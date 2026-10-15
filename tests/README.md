@@ -1,373 +1,112 @@
-# `tests/` — Test Suite Audit & Coverage Map
+# `tests/` — how the suite is laid out and run
 
-What OpenRAL tests, what it deliberately does not yet, and what is flagged for
-follow-up. Hand-curated like `docs/architecture/repo-state-map.html`
-(CLAUDE.md §7.10): a PR that adds, renames, removes, or changes the relevance of
-a test updates this README in the same change.
-
-- Last audit: 2026-05-08 against commit `0d09004`.
-- Last updated: 2026-07-09 — SO-100 / SO-101 / RealSense HIL tests were removed until matching lab hardware exists; SO-100 coverage remains in unit/integration/sim tests.
-- Repository milestone: **v0.3.1** — pre-1.0.
-- Suite size: hand-curated in this file; SO-100 / SO-101 / RealSense HIL surfaces are intentionally absent until hardware exists. Doctest runner pins **70+** docstring examples on top of that.
-- Normative test policy: **CLAUDE.md §5.4, §7.10, §8, §9**.
+What lives where, how each tier runs locally and in CI, and the rules for adding
+a test. Current per-tier counts, dead/duplicate tests and no-assertion candidates
+are generated, not hand-kept: [`test-audit.md`](../docs/contributing/test-audit.md)
+(`just test-audit`). Normative policy: CLAUDE.md §1.7 (tests are part of the
+change), §1.11 (real components, no mocks) and §2 ("Tests").
 
 ---
 
-## 1. How the test suite runs
+## 1. How the suite runs
 
 ### Local
 
-| Command | Suite | Time budget (CLAUDE.md §5.4) | Notes |
-| --- | --- | --- | --- |
-| `just test` | `tests/unit/` | <30 s | Always-on; no ROS 2, no GPU, no hardware. Includes the doctest smoke (`tests/unit/test_doctest_runner.py`). |
-| `just test-doctest` | docstring examples on the curated set | <15 s | Runs `pytest --doctest-modules` over `core`, `cli`, `sensors`, and the description-only HAL files. Curated list lives in `tests/unit/test_doctest_runner.py::DOCTEST_TARGETS`. |
-| `just test-sim` | `tests/sim/` (`-m sim`) | <10 min | Real HF weights + GPU + simulated robots; opt-in. |
-| `just test-integration` | `tests/integration/` | <5 min | Requires `source /opt/ros/jazzy/setup.bash`. |
-| `just hil <robot>` | `tests/hil/test_<robot>.py` | <10 min | Requires connected hardware for retained HIL robots. |
-| `just test-k <kw>` | filtered subset | n/a | Ad-hoc filter, runs against the entire test tree. |
+| Command | Runs | Notes |
+| --- | --- | --- |
+| `just test` | `tests/unit/` | No ROS 2, no GPU, no hardware. The three GStreamer files run only when PyGObject is importable. |
+| `just test-doctest` | `pytest --doctest-modules` over a curated path list | The list lives in the recipe and in `tests/unit/test_doctest_runner.py::DOCTEST_TARGETS`; add a path to both. |
+| `just test-changed` / `just test-changed-run` | the targets a diff can affect | See [Selective testing](../docs/contributing/selective-testing.md). |
+| `just test-integration` | `tests/integration/` | Needs `source /opt/ros/jazzy/setup.bash`. |
+| `just test-ros-live` | the live-ROS targets in `scripts/ros_live_tests.sh` | Needs `just ros2-build && source install/setup.bash`; see [development.md](../docs/contributing/development.md). |
+| `just test-sim` | `tests/sim/ -m sim` | Only files carrying the `sim` marker; real weights / simulators, opt-in. |
+| `just hal-twin-sweep` | `tests/sim/` HAL twins + `test_all_hals_via_runner.py` | Every HAL against its MuJoCo twin. |
+| `just test-robocasa-sim` | the RoboCasa targets in `scripts/robocasa_sim_tests.sh` | Manual only; no CI lane (see [development.md](../docs/contributing/development.md)). |
+| `just hil <name>` | `tests/hil/test_<name>.py` | Nothing collected (exit 4/5) prints `SKIPPED` and exits 0. Also `just hil-so101`, `just hil-openarm-deploy`. |
+| `just test-k <kw>` | `pytest -k <kw>` over the whole tree | Ad-hoc filter. |
 
 ### CI workflows (`.github/workflows/`)
 
-Three workflows auto-trigger on a pull request, each carrying a required check
-that fires on every push to an open PR regardless of the diff (`dco.yml` uses
-`opened`/`synchronize`/`reopened` rather than the plain `pull_request` event;
-same effect). The heavy-lanes pair below is dispatched, not PR-triggered:
-
-| Workflow | Triggers | Suites it runs | Notes |
+| Workflow | Triggers | What it runs | Check |
 | --- | --- | --- | --- |
-| `test-selective.yml` | PR (`branches: [master]`), `workflow_dispatch` | Only the pytest targets `tools/select_tests.py` selects for the diff — except a blast-radius diff (root `pyproject.toml`, `uv.lock`, a shared `conftest.py`, …), where `select_tests.py` emits `full_run=true` and `core_full` runs the whole `tests/unit/` suite instead. See [Selective testing](../docs/contributing/selective-testing.md). | **Required check.** Job graph: `select` → `core_full` (blast-radius diffs) / `core_selected` (everything else) → `select-and-test` (required, every push). |
-| `heavy-lanes.yml` | `workflow_dispatch` only — sent by `heavy-lanes-trigger.yml` | The opt-in dependency lanes (`sim`, `libero`, `robocasa`, …) for the targets `tools/select_tests.py` selects, one matrix job per lane. | **Required check**, reported as the `heavy-lanes` commit status (a dispatched run's checks don't show on the PR). `lanes-select` → `lane` → `heavy-lanes` (gate + ledger attest + status). |
-| `heavy-lanes-trigger.yml` | `workflow_run` of `test-selective`/`quality`/`DCO`, every 10 min, `workflow_dispatch` | `tools/heavy_lanes_trigger.py`: dispatches `heavy-lanes.yml` on each open PR whose head is 0 behind its base, green on every other check, with every review thread resolved (not draft; fork PRs from a `heavy-lanes/fork-<pr>` base-tree branch), once per head commit; keeps the pending `heavy-lanes` status saying what it waits for. | Not a PR check. |
-| `quality.yml` | PR (`branches: [master]`), `workflow_dispatch` | ruff + `mypy --strict` (core/cli/hal + `tools/`) + schema-drift + rSkill README drift + manifest validation + `mkdocs build --strict`. | **Required check** (`quality`). No test execution. |
-| `dco.yml` | PR (`opened`, `synchronize`, `reopened`) | (no tests) | **Required check** (`Verify Signed-off-by`). Greps every commit in the PR for `Signed-off-by:`. |
+| `test-selective.yml` | PR to `master`, `workflow_dispatch` | The pytest targets `tools/select_tests.py` selects; a blast-radius diff runs all of `tests/unit/` as 4 shards + an isolated shard. | `select-and-test` (required) |
+| `heavy-lanes.yml` | `workflow_dispatch` only, sent by `heavy-lanes-trigger.yml` | The opt-in dependency lanes (`sim`, `libero`, `robocasa`, …), one matrix job per selected lane, plus the ledger attest. | `heavy-lanes` commit status (required) |
+| `heavy-lanes-trigger.yml` | `workflow_run` of `test-selective` / `quality` / `DCO` / `test-ros2`, every 10 min, `workflow_dispatch` | `tools/heavy_lanes_trigger.py`: dispatches the lanes once a PR is up to date, otherwise green, threads resolved and not a draft. | none |
+| `quality.yml` | PR to `master`, `workflow_dispatch` | `uv lock --check`, ruff, `tools/run_mypy.sh`, schema / ROS-topic-graph / rSkill `SKILL.md` drift, `openral check`, `mkdocs build --strict`. No tests. | `quality` (required) |
+| `dco.yml` | PR (`opened` / `synchronize` / `reopened`) | `Signed-off-by:` on every commit. | `Verify Signed-off-by` (required) |
+| `test-ros2.yml` | PR to `master`, `workflow_dispatch` | `colcon build` + `colcon test` in `ros:jazzy-ros-base`; `packages` defaults to `openral_safety_kernel openral_octomap_bridge`. | `colcon build + ctest — Jazzy` |
+| `docker-build.yml` | push to `master` (path-filtered), `workflow_dispatch` | Builds `openral:x86`, its smoke tests and the live-ROS suite (the only CI surface with ROS 2 and the colcon overlay for pytest). | none |
 
-The remaining test workflow is `workflow_dispatch`-only, **not** run on a PR or
-push, per its header comment ("Auto-triggers disabled: out of GitHub Actions
-credits. Re-enable PR/push triggers once billing is restored."):
+`pages.yml`, `release-please.yml` and `release-pypi.yml` run no tests.
 
-| Workflow | Suites it runs | Notes |
-| --- | --- | --- |
-| `test-ros2.yml` | `colcon build` + `colcon test` (not pytest) | Runs inside `ros:jazzy-ros-base`; `packages` input defaults to `openral_safety_kernel openral_octomap_bridge`. |
+### Markers and skips
 
-The non-test workflows `docker-build.yml`, `pages.yml`, `release-please.yml`
-and `release-pypi.yml` still trigger automatically, on `push` to `master` (or a
-`v*.*.*` tag) rather than on a PR; see their headers for what each builds.
+`pyproject.toml` declares two markers under `--strict-markers`: `sim` (real
+weights and/or a simulated robot) and `slow` (>5 s on the reference host).
+`asyncio_mode = "strict"`.
 
-### Markers (`pyproject.toml`)
+Optional dependencies are gated with `pytest.importorskip(...)` or `skipif`,
+never faked. In a heavy lane a skip must match a declared capability gap
+(`[capability_gaps]` in `tools/test_selection.toml`) or the lane fails; see
+[Lane policy](../docs/contributing/selective-testing.md#lane-policy--what-a-skip-is-allowed-to-mean).
 
-```toml
-[tool.pytest.ini_options]
-asyncio_mode = "strict"
-markers = [
-    "sim:  integration tests that load real HF weights and/or run a simulated robot (slow; opt-in via `pytest -m sim`)",
-    "slow: tests that take >5s on the reference host",
-]
-```
+### Top-level fixtures
 
-Conditional skip vocabulary used across the suite (all intentional, none
-silent): `pytest.importorskip("torch" / "transformers" / "lerobot" / "mujoco" / "gym_aloha" / "gym_pusht")`,
-`pytest.mark.skipif(not _ROS2_AVAILABLE, ...)`,
-`pytest.skip("... requires CUDA", allow_module_level=True)`, and module-level
-guards on `os.path.exists(SO100_PORT)`.
-
-### Top-level fixture behavior
-
-- `tests/conftest.py` pins `NO_COLOR=1`, `TERM=dumb`, and patches
-  `rich.console.Console.__init__` so ANSI escapes never leak into
-  `CliRunner.output` (otherwise every Typer-based test is flaky across
-  machines).
-- `tests/sim/conftest.py` pre-imports `openral_rskill._lerobot_compat` so the
-  broken `lerobot.policies.groot.modeling_groot` module is stubbed before any
+- `tests/conftest.py` pins `NO_COLOR=1` / `TERM=dumb` and patches
+  `rich.console.Console.__init__` so ANSI escapes never reach `CliRunner.output`.
+- `tests/sim/conftest.py` imports `openral_rskill._lerobot_compat` before any
   sim test imports `lerobot.policies`.
+- Process/network-boundary doubles (the only ones allowed, CLAUDE.md §1.11)
+  live in `tests/unit/fakes/` and `tests/integration/fakes/`.
 
 ---
 
-## 2. Suite inventory
+## 2. Tiers
 
-Verdict legend: **Keep** (relevant, working) · **Update** (relevant but
-stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
-**Remove** (dead code — currently zero entries).
+| Directory | Scope | Budget (CLAUDE.md §2) |
+| --- | --- | --- |
+| `tests/unit/` | Schemas, CLI, HAL contracts against digital twins / `SimTransport`, runners, tools. | <30 s |
+| `tests/integration/` | Real `rclpy` lifecycle nodes, real IDL, DDS graphs; the live-ROS subset is gated by `OPENRAL_TEST_ROS_LIVE=1`. | <5 min |
+| `tests/sim/` (+ `tests/sim/safety/`) | Headless rollouts (MuJoCo, LIBERO, RoboCasa, ManiSkill3, Isaac, …) and kernel-in-the-loop safety checks. | <10 min |
+| `tests/hil/` | Real hardware; every file skips off-rig. | <10 min |
+| `python/<pkg>/tests/`, `packages/<pkg>/test/` | Package-local tests (`colcon test` for ROS packages). | per tier |
 
-### 2.1 `tests/unit/` — 379 files, ~89.2 kLOC
+**Sim naming.** `test_<robot>_<vla>_<sim>.py` for end-to-end rollouts
+(`test_franka_panda_smolvla_libero.py`); HAL-only sim tests use `<vla>=hal`
+(`test_ur5e_hal_mujoco.py`).
 
-| File | LOC | Module(s) under test | Verdict |
-| --- | ---: | --- | --- |
-| `test_smoke.py` | 80 | `openral_core` import + `RobotDescription` / `WorldState` / `Action` round-trip. **Docstring (2026-05-08)** documents its role as the canonical pre-flight smoke distinct from `test_schemas_fuzz.py` and `test_rskill_manifest.py`. | Keep |
-| `test_schemas_fuzz.py` | 283 | Hypothesis property tests against core Pydantic models (round-trip + JSON Schema). | **Update** — does not cover `RSkillManifest`, `RSkillLatencyBudget`, `SimEnvironment`, `SceneSpec`, `TaskSpec`, `VLASpec`, `DeviceInfo`, `QuantizationConfig`. |
-| `test_rskill_manifest.py` | 148 | `RSkillManifest` schema, defaults, YAML round-trip. | Keep |
-| `test_sim_environment_schemas.py` | 136 | `SceneSpec`, `TaskSpec`, `VLASpec`, `SimEnvironment` cross-field validation. | Keep |
-| `test_hal.py` | 427 | `RosControlHAL` with `SimTransport` — full lifecycle, action/state path, e-stop, safety. | Keep |
-| `test_so100_follower_hal.py` | 399 | `SO100FollowerHAL` against `SO100DigitalTwin` — closed-loop, joint limits, gripper normalisation, latency. | Keep |
-| `test_world_state.py` | 494 | `WorldStateAggregator` snapshot freshness, staleness latching, 30 Hz clock injection, thread-safety. Comprehensively covers the aggregator API. | Keep |
-| `test_runtime.py` | 621 | `Runtime` Protocol, `NullRuntime`, `PyTorchRuntime`, `OnnxRuntime`, quantization enum/schema pins. | Keep |
-| `test_sim_transport.py` | 230 | `SimTransport` queue + drop semantics + introspection helpers. **Added 2026-05-08.** | Keep |
-| `test_franka_panda.py` | 200 | `FRANKA_PANDA_DESCRIPTION` joint inventory, datasheet limits, capabilities, safety envelope, JSON round-trip. Unit-level (no MuJoCo). **Added 2026-05-08.** | Keep |
-| `test_mujoco_arm.py` | 200 | `MujocoArmHAL` constructor invariants, gripper-config validation, not-connected error paths, optional-parameter wiring. Unit-level (no MuJoCo connect needed). **Added 2026-05-08.** | Keep |
-| `test_chunked_executor.py` | 377 | `ChunkedExecutor` queue/prefetch/error semantics + `build_chunk_executor`, with a numbered-chunk policy stand-in. | Keep |
-| `test_sensors.py` | 399 | RealSense / Hokuyo / IMU / Livox / Orbbec / Ouster / SLAMTEC / tactile / UVC vendor factories + launch-py codegen. | Keep |
-| `test_sensor_catalog.py` | 592 | `SensorCatalog` register/get/filter/build, `openral sensor list` / `show` CLI. | Keep |
-| `test_rskill_loader.py` | 514 | `rSkill.from_yaml` / `from_pretrained`, license guards, capability matching, registry I/O (HF mocked). | Keep |
-| `test_doctor.py` | 283 | `openral doctor` per-check helpers + `CliRunner` end-to-end. | Keep |
-| `test_cli_skill.py` | ~330 | `openral rskill list` / `install` / `search` — real in-tree `rskills/` manifests through the real loader/license-guard/registry paths; only the HF network boundary is faked (`_FakeHub`). | Keep |
-| `test_cli_init_connect.py` | ~110 | `openral connect` (happy + ROSConfigError + ROSRuntimeError + finally-disconnect) via the recording `FakeSO100FollowerHAL` serial-boundary fake (`tests/unit/fakes/`). `calibrate camera` coverage lives in `test_sensors.py`. **Added 2026-05-08; MagicMock HAL replaced with a real boundary fake + calibrate block deduped 2026-07-02.** | Keep |
-| `test_autodetect.py` | 434 | USB VID/PID table, Linux glob enumeration, DDS topic inference, `ral init` Typer flow. | Keep |
-| `test_eval_registry_and_runner.py` | 159 | `SCENES` / `POLICIES` registries, `make_env`, `make_policy`, `SimRunner` mock path. | Keep |
-| `test_eval_adapters_helpers.py` | 427 | LIBERO / MetaWorld / SmolVLA helper functions; lazy-import failure paths. | Keep |
-| `test_eval_factory.py` | 210 | `make_env` / `make_policy` / `make_robot` error paths + Protocol runtime conformance + `EpisodeResult.summary()`. **Added 2026-05-08.** | Keep |
-| `test_doctest_runner.py` | 115 | Implements the CLAUDE.md §5.4 doctest mandate by running `pytest --doctest-modules` against `DOCTEST_TARGETS` (20 paths) as a subprocess; collected-count guard prevents silent regression. **Added 2026-05-08.** | Keep |
-| `test_hal_protocol_conformance.py` | 240 | Parametrized contract test for the `HAL` Protocol — 7 invariants × 10 HAL implementations (`RosControlHAL`, `SO100FollowerHAL+SO100DigitalTwin`, `UR5eHAL`, `UR10eHAL`, `FrankaPandaHAL`, `FrankaPandaRealHAL`, `SawyerRealHAL`, `AlohaHAL`, `UR5eRealHAL+SimTransport`, `UR10eRealHAL+SimTransport`); MuJoCo HALs `pytest.skip` when optional deps absent. **Added 2026-05-08; expanded to 8 HALs 2026-05-10 with the real-HW adapters from issues #56–#58.** | Keep |
-| `test_franka_panda_real.py` | ~210 | `FrankaPandaRealHAL` against `SimTransport` — closed-loop publish/subscribe, manifest pointer (`closed_with_api` → real HAL), e-stop publishes to `/error_recovery/goal`, staleness guard. **Added 2026-05-10 (issue #56).** | Keep |
-| `test_sawyer_real.py` | ~190 | `SAWYER_DESCRIPTION` joint inventory + `SawyerRealHAL` against `SimTransport` — closed-loop publish/subscribe, intera_sdk topic pinning, e-stop publishes to `/robot/set_super_stop`. **Added 2026-05-10 (issue #57).** | Keep |
-| `test_aloha.py` | ~290 | `ALOHA_DESCRIPTION` 14-DoF joint inventory + `AlohaHAL` against `SimTransport` — 4-way action split (left arm, right arm, left gripper, right gripper), bimanual capability flags, e-stop publishes to `/aloha/estop`. **Added 2026-05-10 (issue #58).** | Keep |
-| `test_rskill_testing_helpers.py` | 145 | Unit tests for `openral_rskill.testing.assert_within_budget` (strict, tolerance, optional stages, defensive `ValueError`s, failure-message formatting). **Added 2026-05-08.** | Keep |
-| `test_rskill_publisher.py` | 220 | `tools/rskill_publisher.py` smoke (token resolution, manifest validation, dry-run, exit codes, **privacy-gate regression guard** against accidental public publication of closed weights). **Added 2026-05-08.** | Keep |
-| `test_validation_matrix.py` | ~686 | `tools/validation_matrix.py` — verdict derivation, round-over-round diffing, importing a pre-harness round, the pinned stack (checked against the **live** `openral deploy sim` parser) and every guardrail, run against **recorded artifacts** from three real DGX Spark rounds (`tests/unit/fixtures/validation_matrix/`, provenance in `SOURCE.txt`): the two `master-1` rounds in their original `bag1`/`seed1` layout, plus `2026-08-22-harness-1`, the harness's own first live round, where all four scenes died on a flag that does not exist and must bucket as `harness-error` rather than as a clean deadline. Assertions are pinned to the conclusions published in `docs/reference/collision-validation-evidence.md`, so the suite goes red if the extractor stops reproducing the ledger. **Added 2026-08-22.** | Keep |
+### `tests/hil/`
 
-### 2.2 `tests/integration/` — 42 files, ~14.3 kLOC
+No self-hosted runner is registered, so every HIL gate runs by hand on the cell
+([Lab HIL runners](../docs/contributing/development.md#lab-hil-runners-self-hosted-lab-robot)).
 
-| File | LOC | Behavior under test | Verdict |
-| --- | ---: | --- | --- |
-| `test_doctor_ros.py` | 54 | `_check_ros2()` + `openral doctor` exit 0 with ROS 2 sourced. | Keep |
-| `test_autodetect_dds.py` | 86 | `ros2 topic pub /lowstate` subprocess → `scan_dds_topics` → `infer_robot_from_topics == "unitree_g1"`. | Keep |
-| `test_world_state_integration.py` | ~330 | Five `rclpy`-driven tests against the real `_WorldStateLifecycleNode`: 30 Hz pipeline, joint-state dropout, recovery, high-load snapshot consistency, and the original lifecycle-launch smoke. All gated on `ROS_DISTRO`; CI exercises them in docker-build's live-ROS step (`scripts/ros_live_tests.sh`). | Keep — issue #27 closed: scenarios 1–4 migrated from in-process aggregator simulation to the integration boundary (QoS, lifecycle transitions, `/joint_states` → `/world_state` round-trip). The aggregator-only paths remain covered by `tests/unit/test_world_state.py`. |
-| `test_hil_transport_publishes_and_caches_state.py` | ~225 | Four `rclpy`-driven tests against the HIL transport bridges: `RosControlHILTransport` caches a published `JointState`, publishes a `JointTrajectory`, and `AlohaHILTransport` dispatches arm vs gripper publishes and rejects unknown topics. Gated on `ROS_DISTRO`. | Keep — issue #62: protects the bridge wiring against regressions so the lab HIL fixtures can rely on it. |
+| File | Hardware |
+| --- | --- |
+| `test_ur5e.py`, `test_ur10e.py`, `test_franka_panda.py`, `test_sawyer.py` | Vendor ROS 2 drivers through the `_ros_control_transport.py` bridge. None has met a physical arm. |
+| `test_aloha.py` | Trossen ALOHA through `_aloha_ros_transport.py`. The bridge mirrors `AlohaHAL`'s topics, which a real ALOHA (`xs_sdk`) does not expose. |
+| `test_so101_serial_live.py` | SO-101 on USB serial, non-motion (`just hil-so101`). |
+| `test_openarm_can_live.py`, `test_openarm_deploy.py` | OpenArm v2 over CAN; `test_openarm_deploy.py` attaches to a running graph (`just hil-openarm-deploy`). |
+| `test_openarm_bringup_agreement.py`, `test_openarm_ros_transport.py` | OpenArm HAL/bringup config agreement and the HIL transport, checked without the cell. |
+| `test_openarm_slot_group_motion.py` | Commands the OpenArm; behind a separate attended-bench opt-in. |
+| `test_galaxea_a1.py`, `test_galaxea_a1_deploy.py` | Galaxea A1 through its ROS 1 sidecar. |
+| `test_detect_jetson_live.py` | Jetson auto-provisioning probe. |
 
-### 2.3 `tests/sim/` — 54 files, ~12.0 kLOC
-
-All files carry `pytestmark = [pytest.mark.sim, pytest.mark.slow]` and fall
-through to module-level skips when CUDA / HF / `mujoco` / `gym_*` are absent.
-
-**Naming convention.** `test_<robot>_<vla>_<sim>.py` for full
-end-to-end rollouts (e.g. `test_franka_panda_smolvla_libero.py` =
-`franka_panda` × SmolVLA × LIBERO scene). HAL-only sim tests with no
-VLA use `<vla>=hal` and the simulator's backend name as `<sim>`
-(e.g. `test_ur5e_hal_mujoco.py` = UR5e HAL against MuJoCo). Names
-match the keys in `openral_sim.SCENES` / `POLICIES`.
-
-| File | LOC | Behavior under test | Verdict |
-| --- | ---: | --- | --- |
-| `test_franka_panda_smolvla_libero.py` | 192 | SmolVLA LIBERO via local `rskill.yaml` + `HuggingFaceVLA/smolvla_libero`; routed through `SimRunner`. | Keep |
-| `test_aloha_bimanual_act_aloha.py` | 169 | ACT (52 M) on real `gym_aloha` MuJoCo with contact dynamics; routed through `SimRunner`. | Keep |
-| `test_pusht_2d_diffusion_pusht.py` | 175 | Diffusion Policy (262 M) on `gym_pusht` (`pymunk` 2-D rigid-body); routed through `SimRunner`. | Keep |
-| `test_ur5e_hal_mujoco.py` | 352 | `UR5eHAL` against MuJoCo + `robot_descriptions` MJCF; gravity-off convergence; safety bounds. | Keep |
-| `test_ur10e_hal_mujoco.py` | 187 | Mirrors UR5e; pins UR10e-specific datasheet (12.5 kg payload, 1.30 m reach, ≤3.142 rad/s). | Keep |
-| `test_franka_panda_hal_mujoco.py` | 258 | `FrankaPandaHAL` on MuJoCo Panda MJCF; tendon-coupled gripper; arm torque limits. | Keep |
-
-> **Note (2026-05-09).** `test_smolvla_so100.py`, `test_pi05_so100.py` and
-> `test_act_aloha.py` (kinematic-only sibling of the full ALOHA test) were
-> removed when the eval refactor (commit `8679b33` *refactor(eval): decouple
-> rSkill from sim; route every rollout through SimRunner*) consolidated the
-> per-skill loops. The retained sim tests drive rollouts through
-> `openral_sim.SimRunner`; the unit/integration HAL tests cover SO-100 + skill.
-
-### 2.4 `tests/hil/` — 12 test files + 3 transport bridges
-
-| File | LOC | Behavior under test | Verdict |
-| --- | ---: | --- | --- |
-| `test_ur5e.py` | 173 | UR5e via `ur_robot_driver`: `read_state` <200 ms, hold-in-place ≤1°/joint, idempotent disconnect, deadman topic, e-stop, perception-stale latch. Live `rclpy` bridge via `_ros_control_transport.py`. **Issue #54.** | Keep |
-| `test_ur10e.py` | 131 | UR10e mirror of `test_ur5e.py`; only URDF / payload envelope differ. **Issue #55.** | Keep |
-| `test_franka_panda.py` | 139 | Franka Panda via `franka_ros2`: `connect`/`read_state` <200 ms, hold-in-place ≤1°/joint, idempotent disconnect. Live `rclpy` bridge via `_ros_control_transport.py`. **Issues #56 / #62.** | Keep |
-| `test_sawyer.py` | 125 | Sawyer via `sawyer_robot` (intera_sdk lineage): same shape as Franka, pinned to `/robot/joint_states`. Live `rclpy` bridge via `_ros_control_transport.py`. **Issues #57 / #62.** | Keep |
-| `test_aloha.py` | 140 | ALOHA bimanual via Interbotix XS SDK: 14-DoF read, 4-way action split (left/right arm + grippers), idempotent disconnect. Live `rclpy` bridge via `_aloha_ros_transport.py`. **Issues #58 / #62.** | Keep |
-| `test_detect_jetson_live.py` | 46 | Jetson auto-provisioning probe, gated by live hardware/env. | Keep |
-| `_ros_control_transport.py` | 206 | Single-controller `rclpy` HIL bridge (`RosControlHILTransport` + `make_hil_transport`). Used by UR5e / UR10e / Franka / Sawyer. | Support |
-| `_aloha_ros_transport.py` | 270 | 4-way fan-out `rclpy` HIL bridge (`AlohaHILTransport` + `make_aloha_hil_transport`). Reuses `_make_trajectory_publisher` from `_ros_control_transport.py`. | Support |
+There is no SO-100, G1 or RealSense HIL file.
 
 ---
 
-## 3. Coverage matrix vs CLAUDE.md §5.4
+## 3. Rules for adding a test
 
-For each layer (per repo state map) and cross-cutting surface:
-**✓** = covered · **◐** = partial / indirect · **✗** = missing · **n/a** = layer is `blue` (no source yet).
-
-| Layer / surface | Unit | Integration | Sim | HIL | Schema fuzz | Doctest | Perf budget |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| L0 HAL — `RosControlHAL`, `SO100FollowerHAL`, UR / Franka, `SO100DigitalTwin` | ✓ (Protocol conformance × 10 HALs in `test_hal_protocol_conformance.py`) | ✗ | ✓ | ✓ (so100) | ✓ (descriptions) | ✓ (UR / Panda / so100_sim / so100_follower / ros_control) | n/a |
-| L0 HAL — `protocol.HAL`, `sim_transport`, `_mujoco_arm`, `franka_panda` | ✓ (Protocol contract pinned + `_mujoco_arm` direct test) | ✗ | ◐ | ✗ | n/a | ✓ (`protocol`, `sim_transport`, `franka_panda`) | n/a |
-| L0 HAL — ROS 2 lifecycle node (`openral_hal_node`, one package for every robot) | ✓ (`colcon test` lifecycle cycle parametrised over every in-tree sim-twin manifest; `so100` also covered by unit/integration/sim) | ✓ (colcon + lifecycle smokes drive `unconfigured → … → shutdown` and assert joint-state publication) | ✗ | ✓ (UR / Franka live gates) | n/a | ✗ | n/a |
-| L1 Sensors — vendor adapters + `SensorCatalog` | ✓ | ✗ | ✗ | ◐ (Jetson live probe) | ✓ | ✓ (curated set) | n/a |
-| L2 World State — `WorldStateAggregator` | ✓ (`test_world_state.py`) | ◐ (in-process) | ✗ | ✗ | ✓ | ✓ (root conftest silences structlog) | n/a |
-| L2 World State — ROS 2 lifecycle node | ✗ | ✓ (5 `rclpy`-driven scenarios in `test_world_state_integration.py`) | ✗ | ✗ | n/a | ✗ | n/a |
-| L3 rSkill (S1) — `rSkillBase` ABC | ✓ (`test_skill_contract.py` — 12 invariants × 3 builders) | ✗ | ✓ | ✗ | n/a | ✓ | ◐ |
-| L3 Skill — `Runtime`, `PyTorchRuntime`, `OnnxRuntime` | ✓ | ✗ | ✓ | ✗ | n/a | ✓ (`runtime`, `runtime_pytorch`, `runtime_onnx`) | ◐ |
-| L3 Skill — `rSkill` loader, `RSkillManifest` | ✓ | ✗ | ✓ | ✗ | ✓ (manifest fuzzed) | ✓ | ✓ (`assert_within_budget`) |
-| L3 Skill — `SmolVLASkill` adapter | ✓ | ✗ | ✓ | ✗ | n/a | ✓ | ✓ (sim) |
-| L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_rskill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
-| L4 Reasoner | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| L5 World Action Model | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| L6 Safety — `SafetyEnvelope` schema, `ROSSafetyViolation` hierarchy | ✓ (Protocol conformance pins `ROSEStopRequested`) | ✗ | ◐ | ✗ | ✓ | ✓ (exceptions) | n/a |
-| L6 Safety — supervisor, C++ kernel, deadman/E-stop | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| L7 Observability | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| Cross — `openral` CLI (`doctor`, `skill`, `sensor`) | ✓ | ✓ (`doctor`, `init`) | ✗ | ✗ | n/a | ✓ | n/a |
-| Cross — `openral` CLI (`init`, `connect`, `calibrate camera`) | ✓ (`test_cli_init_connect.py` connect; `test_sensors.py` calibrate) | ◐ | ✗ | ✗ | n/a | ✓ | n/a |
-| Cross — `openral_sim` registry/runner/factory/rollout/adapters | ✓ (registry + factory error paths + Protocol conformance) | ✗ | ✓ | ✗ | ✓ (Sim*/Scene*/Task*/VLA* fuzzed) | ✗ | n/a |
-| Cross — `tools/schema_export.py` (drift) | ✓ (`lint.yml --check`) | n/a | n/a | n/a | n/a | n/a | n/a |
-| Cross — `tools/rskill_publisher.py` | ✓ (`test_rskill_publisher.py`, incl. privacy-gate regression guard) | n/a | n/a | n/a | n/a | n/a | n/a |
-| Cross — Doctest runner (CLAUDE.md §5.4) | ✓ (`test_doctest_runner.py`) | ✓ (`just test-doctest` + curated `DOCTEST_TARGETS`, 21 paths, ≥70 examples) | n/a | n/a | n/a | n/a | n/a |
-| Cross — Schema fuzz (CLAUDE.md §5.4) | ✓ (`test_schemas_fuzz.py`, 21 strategies covering core + RSkill + Sim + Quant + Device) | n/a | n/a | n/a | n/a | n/a | n/a |
-
-**Reading the matrix.** Every L0–L3 row is ✓ or ✓-with-asterisk (the third
-follow-up wave in §4.B closed the rest). Remaining gaps are in §4.
-
----
-
-## 4. Flagged backlog
-
-Three lists, in priority order. Each item is one sentence + concrete files +
-the policy clause that motivates it.
-
-### 4.A — Tests to **update** or **consolidate**
-
-1. ~~**P1 · `tests/integration/test_world_state_integration.py` (scenarios
-   1–4)**: the multi-threaded in-process aggregator simulation predated
-   `packages/world_state/lifecycle_node.py`.~~ Resolved 2026-05-09 (issue #27;
-   see §2.2), using the `launch_testing`-equivalent in-process pattern that
-   `test_lifecycle_node_launch` established.
-
-3. ~~**P1 · Wire `assert_within_budget` into the remaining sim tests.**~~
-   Resolved 2026-05-08 (issue #28): manifests for `smolvla-base`,
-   `act-aloha`, and `diffusion-pusht` shipped under
-   `rskills/`, and `test_smolvla_so100`,
-   `test_act_aloha`, `test_aloha_bimanual_act_aloha`, and `test_pusht_2d_diffusion_pusht`
-   now assert warm-chunk / mean per-step latency against the manifest's
-   `RSkillLatencyBudget` instead of a hardcoded `_*_CEILING_S`. HAL-only
-   `test_hal_*_sim.py` is explicitly out of scope (no skill loaded).
-
-### 4.B — Tests / coverage to **add**
-
-#### Resolved (changelog)
-
-Closed items from the original audit, kept so the closure can be audited.
-
-**2026-05-08 (initial follow-up):**
-- ~~Doctest runner — wired via `tests/unit/test_doctest_runner.py` +
-  `just test-doctest` against a curated, opt-in `DOCTEST_TARGETS` list.~~
-- ~~`openral_rskill.engine_cache` direct test — already covered in
-  `tests/unit/test_runtime.py` lines 354–467 (audit error).~~
-- ~~`openral_rskill.quantization` direct test — already covered in
-  `tests/unit/test_runtime.py` lines 248–351 (audit error).~~
-- ~~`openral_world_state.aggregator` direct test — already covered in
-  `tests/unit/test_world_state.py` (494 lines).~~
-- ~~`openral_hal.sim_transport` — added `tests/unit/test_sim_transport.py`.~~
-- ~~`openral_hal.franka_panda` unit test — added
-  `tests/unit/test_franka_panda.py`.~~
-- ~~`openral_sim.factory` / `make_robot` / Protocol conformance — added
-  `tests/unit/test_eval_factory.py`.~~
-- ~~CLI `ral init` / `connect` / `calibrate camera` — added
-  `tests/unit/test_cli_init_connect.py`.~~
-- ~~Broken `realsense.calibrate_camera_cmd` doctest — fixed.~~
-
-**2026-05-08 (second wave):**
-- ~~**HAL `Protocol` conformance test (P0)** — added
-  `tests/unit/test_hal_protocol_conformance.py`: 7 invariants × 5 HAL
-  implementations (35 parametrized tests).~~
-- ~~**Cross-package schema-fuzz (P2)** — 8 new strategies in
-  `tests/unit/test_schemas_fuzz.py`.~~
-- ~~**Per-skill latency-budget enforcement helper (P1)** — added
-  `openral_rskill.testing.assert_within_budget` +
-  `tests/unit/test_rskill_testing_helpers.py` (14 tests).~~
-- ~~**`tools/rskill_publisher.py` smoke (P2)** — added
-  `tests/unit/test_rskill_publisher.py` (13 tests, incl. privacy-gate
-  regression guard).~~
-- ~~**Doctest blocker on `world_state` / `so100_follower` / `ros_control`
-  (P1)** — repo-root `conftest.py` filters structlog records below
-  `WARNING`.~~
-
-**2026-05-08 (third wave — closes the original audit backlog):**
-- ~~**Skill ABC parametrized contract test (P1)** — added
-  `tests/unit/test_skill_contract.py`: 12 invariants × 3 Skill builders
-  (37 cases) plus an error-state-latching test against a synthetic
-  failing subclass.~~
-- ~~**`_mujoco_arm` direct unit test (P2)** — added
-  `tests/unit/test_mujoco_arm.py`: 16 cases covering constructor
-  invariants, gripper-config validation, not-connected error paths, and
-  optional-parameter wiring.  Unit-level (no MuJoCo connect needed).~~
-- ~~**`runtime_onnx.py` lazified (P1)** — `import onnxruntime` now
-  deferred to construction time via `_import_ort()` helper that raises
-  a helpful `ROSRuntimeError` when the wheel is missing.  Path added
-  to `DOCTEST_TARGETS` and `Justfile::test-doctest`.~~
-- ~~**`assert_within_budget` wired into `test_franka_panda_smolvla_libero.py` (P1)** —
-  the canonical example of replacing a hardcoded 2× ceiling with the
-  helper.  `tolerance_pct=100.0` preserves the previous CI variance
-  margin; the manifest budget is now the single source of truth.~~
-- ~~**`hal.yml` colcon-build wired (P0/CI)** — workflow now runs
-  `colcon build --packages-select openral_msgs openral_world_state`
-  before pytest and sources `install/setup.sh` so
-  `test_lifecycle_node_launch` is no longer excluded by `-k`.  The
-  `test_lifecycle_node_launch` skeleton now runs in CI alongside the
-  other integration tests.~~
-- ~~**`test_smoke.py` docstring (P2)** — clarified its role as the
-  canonical pre-flight smoke distinct from `test_schemas_fuzz.py` /
-  `test_rskill_manifest.py`.~~
-- ~~**`test_aloha_bimanual_act_aloha.py` ↔ `test_aloha_bimanual_act_aloha.py` docstrings (P2)** —
-  the kinematic-vs-full split is now documented in both files.~~
-
-#### P1 — remaining
-
-1. ~~**ROS 2 lifecycle node tests for franka / ur5e / ur10e packages.**~~
-   Resolved 2026-05-09 (issue #26) with per-package colcon smokes; those
-   packages have since collapsed into the one generic `packages/openral_hal_node`,
-   whose manifest-parametrised `test/test_lifecycle_node.py` drives
-   `configure → activate → deactivate → cleanup → shutdown` through the real
-   `ManifestHALLifecycleNode` once per sim-twin robot manifest and asserts
-   joint-state publication while `active`. Run by the existing
-   `colcon test --merge-install` step in `.github/workflows/test-ros2.yml`
-   (which activates the uv venv so the workspace `openral_hal` /
-   `openral_core` packages are importable).
-
-2. **Wider sim-test budget enforcement** — see §4-A.3.
-
-### 4.C — Tests to **remove**
-
-None recommended. Every skip / `importorskip` is intentional gating documented
-in CLAUDE.md §5.4 (HIL on lab runner, sim on CUDA, integration on ROS 2).
-Consolidation (§4-A.6) and updates (§4-A.1, §4-A.2) are the levers, not
-removal.
-
----
-
-## 5. Scoreboard
-
-Counts compare each test category against the modules it should cover, where
-"green modules" are the count of `green` blocks in
-`docs/architecture/repo-state-map.html` whose responsibility falls in that
-category. "Blue modules" are explicitly out of scope until the layer ships.
-
-| CLAUDE.md §5.4 category | Files | Modules covered / green modules | Health |
-| --- | ---: | --- | --- |
-| Unit (`tests/unit/`) | 30 | 34 / 34 | **Good** — every `green` module has either a direct test or parametrized contract coverage. |
-| Integration (`tests/integration/`) | 3 | 4 / 4 | **Good** — `test_world_state_integration.py` scenarios 1–4 migrated to `rclpy`-driven tests against the real lifecycle node (issue #27, 2026-05-09); docker-build's live-ROS step runs them inside the colcon-built image (`scripts/ros_live_tests.sh`). |
-| Sim (`tests/sim/`) | 6 | 4 robots × 4 policies (SmolVLA / ACT / Diffusion / UR-Franka HALs) | **Good** — closed-loop coverage where CUDA + weights are available; rollouts route through `SimRunner`. |
-| HIL (`tests/hil/`) | 6 (+ 2 transport bridges) | 5 arms + 1 sensor | **Good** — UR5e / UR10e / Franka / Sawyer / ALOHA HIL fixtures drive a live `rclpy` bridge (`_ros_control_transport.py` + `_aloha_ros_transport.py`, issue #62, 2026-05-10) when the lab env vars are set, and `pytest.skip` cleanly off-lab. Into real vendor `ros2_control` controllers for the four `RosControlHAL` arms; the ALOHA bridge mirrors `AlohaHAL`'s topics, which a real ALOHA does not expose (issue #250 — bring-up starts `xs_sdk`). None of these five has met a physical arm. SO-100 / SO-101 / RealSense gates were removed until matching lab hardware exists. |
-| Schema fuzz (Hypothesis) | 1 | 21 strategies covering core + RSkill + Sim + Quant + Device | **Good.** |
-| Doctest | 1 (`test_doctest_runner.py`) | 21 paths in `DOCTEST_TARGETS` (≥70 example blocks) | **Good** — every public module with docstring examples is in the list (`runtime_onnx.py` lazified and added 2026-05-08). |
-| Performance budget enforcement | 1 helper + 3 wired sim tests | helper + `test_franka_panda_smolvla_libero.py`, `test_aloha_bimanual_act_aloha.py`, `test_pusht_2d_diffusion_pusht.py` against in-tree rSkill manifests | **Good** — every sim test that exercises an rSkill calls `assert_within_budget` against its manifest's `RSkillLatencyBudget`; HAL-only sim tests (`test_hal_*_sim.py`) remain out of scope (no skill loaded). |
-
----
-
-## 6. Maintenance contract
-
-Three rules:
-
-1. **Promotion to `green` is a paired commit.** Per CLAUDE.md §7.10, flipping
-   a module to `green` in the repo state map requires both source *and* tests
-   on disk. The PR that flips the colour must also add the test row to §2 and
-   update the §3 matrix. A `green` module not listed here is a status-mismatch
-   bug.
-
-2. **No "tests in a follow-up PR"** (CLAUDE.md §9 anti-patterns). Every PR
-   that touches a `green` module's behaviour updates the relevant test in §2
-   or adds a new row.
-
-3. **A new top-level test file or directory updates the §2 inventory in the
-   same PR.** A stale row here is itself a bug worth filing.
-
-## See also
-
-- [`docs/contributing/development.md`](../docs/contributing/development.md):
-  how to run these locally.
-- [`docs/architecture/repo-state-map.html`](../docs/architecture/repo-state-map.html) —
-  per-module status canvas; this README is its test-side counterpart.
-- Per-package `README.md` files under `python/<pkg>/`,
-  `packages/<pkg>/`, `rskills/<pkg>/`, and `robots/<pkg>/` document the
-  unit and integration tests that pin each package's contract.
+1. Tests ship in the same PR as the change (CLAUDE.md §1.7); untested
+   actuation-path code is rejected.
+2. Real manifests from `robots/`, `rskills/`, `scenes/`; no mocks or stubs
+   (CLAUDE.md §1.11). An unavailable dependency is a `pytest.skip(reason=...)`.
+3. A module flipped to `green` in the
+   [repo state map](../docs/architecture/repo-state-map.html) needs source **and**
+   tests on disk (CLAUDE.md §4.3).
+4. A live-ROS test goes in `tests/integration/`, in `scripts/ros_live_tests.sh`
+   `TARGETS` and in `docker-build.yml`'s `paths:`; a RoboCasa-gated sim test goes
+   in `scripts/robocasa_sim_tests.sh`. `test_ros_live_targets.py` and
+   `test_robocasa_sim_targets.py` fail the unit suite otherwise.
+5. A test needing a different optional stack from its file's neighbours gets its
+   own file (lanes are assigned per file).

@@ -49,28 +49,28 @@ quiet until deliberately promoted. Every span is still indexed in full for
 
 | Span | Layer | Emitted at | Frequency | Band | Surfaces in |
 |---|---|---|---|---|---|
-| `cli.command` | CLI | `observability/cli.py:91` | 1 / invocation | **info** | Event Log |
+| `cli.command` | CLI | `observability/cli.py` | 1 / invocation | **info** | Event Log |
 | `deploy.bringup` | all lifecycle nodes | `observability/lifecycle.py` (via `@log_lifecycle_errors`) | 1 / transition | **info** | Event Log |
-| `rskill.execute` | rSkill | `rskill/base.py:266`, `rskill_runner_node.py:608` | 1 / goal | **info** | Event Log, rSkill card |
-| `rskill.configure` | rSkill | `rskill/base.py:159` | per lifecycle | **info** | Event Log, rSkill card |
-| `rskill.activate` | rSkill | `rskill/base.py:183` | per lifecycle | **info** | Event Log, rSkill card |
-| `reasoner.tick` | Reasoning | `reasoner/core.py:392` | per LLM round-trip (~0.2 Hz cap) | **info** | Reasoner card |
-| `world.scene_objects` | World state | `world_state/scene_objects_span.py:94` | on scene change (+60 s keepalive; checked at 0.2 Hz) | **info** | World-state card, SLAM overlay |
-| `sim.run` | Sim | `sim/sim_runner.py:436` | 1 / run (held open) | **info** | Event Log |
-| `detect.probe.*` | Detect | `detect/detect.py:85-108` | 1 / `openral detect` | **info** | Event Log |
-| `hal.read_state` | HAL | `hal/lifecycle.py:837`, `deploy_runner.py:415` | **30 Hz** | debug | Robot-state card |
-| `hal.send_action` | HAL | `hal/lifecycle.py:938`, `deploy_runner.py:518` | **30 Hz** | debug | Robot-state card |
-| `sensors.read_latest` | Sensors | `deploy_runner.py:340`, `world_state_ros/lifecycle_node.py:656`, `sim_sensor_bridge.py:477` | **30 Hz × cameras** | debug | Perception card (thumbnails) |
-| `world_state.snapshot` | World state | `world_state/aggregator.py:434` | **30 Hz** | debug | World-state card |
-| `rskill.tick` | Runner | `runner/base.py:244` | **30 Hz** | debug | rSkill card |
-| `rskill.chunk_inference` | rSkill | `rskill/_vla_core.py:527`, `rskill_runner_node.py:898`, 5 sim adapters | per chunk | debug | rSkill card (latency) |
-| `safety.check` | Safety | `runner/safety.py:121`, `supervisor_node.py:283`, `lifecycle_kernel.cpp:444` | per candidate chunk | debug | Safety ledger |
-| `reward.score` | Perception | `reward_monitor_node.py:314` | `score_period_s` (2 s) | debug | rSkill card reward bar |
-| `slam.occupancy_grid` | SLAM | `runner/slam_bridge.py:394` | 1 Hz (throttled) | debug | SLAM map card |
-| `world.pointcloud` | World state | `runner/world_cloud_bridge.py:375` | throttled | debug | Pointcloud card |
-| `sim.step` / `eval.step` | Sim | `sim/sim_runner.py:626` | per step | debug | — |
-| `physics.step` | Sim | `sim/sim_runner.py:671` | per step | debug | — |
-| `reasoner.skill_failure` | Reasoning | `reasoner_node.py:4890` | per failure | **error** | Event Log, failure counter |
+| `rskill.execute` | rSkill | `rskill/base.py` (`rSkillBase.step`), `rskill_runner_node.py` | 1 / tick (`step`) + 1 / goal (runner node) | debug — not promoted while the per-tick emitter shares the name | rSkill card |
+| `rskill.configure` | rSkill | `rskill/base.py` | per lifecycle | **info** | Event Log, rSkill card |
+| `rskill.activate` | rSkill | `rskill/base.py` | per lifecycle | **info** | Event Log, rSkill card |
+| `reasoner.tick` | Reasoning | `reasoner/core.py` | per LLM round-trip (~0.2 Hz cap) | **info** | Reasoner card |
+| `world.scene_objects` | World state | `world_state/scene_objects_span.py` | on scene change (+60 s keepalive; checked at 0.2 Hz) | **info** | World-state card, SLAM overlay |
+| `sim.run` | Sim | `sim/sim_runner.py` | 1 / run (held open) | **info** | Event Log |
+| `detect.probe.*` | Detect | `detect/detect.py` | 1 / `openral detect` | **info** | Event Log |
+| `hal.read_state` | HAL | `hal/lifecycle.py`, `deploy_runner.py` | **30 Hz** | debug | Robot-state card |
+| `hal.send_action` | HAL | `hal/lifecycle.py`, `deploy_runner.py` | **30 Hz** | debug | Robot-state card |
+| `sensors.read_latest` | Sensors | `deploy_runner.py`, `world_state_ros/lifecycle_node.py`, `sim_sensor_bridge.py` | **30 Hz × cameras** | debug | Perception card (thumbnails) |
+| `world_state.snapshot` | World state | `world_state/aggregator.py` | **30 Hz** | debug | World-state card |
+| `rskill.tick` | Runner | `runner/base.py` | **30 Hz** | debug | rSkill card |
+| `rskill.chunk_inference` | rSkill | `rskill/_vla_core.py`, `rskill_runner_node.py`, 8 sim adapters | per chunk | debug | rSkill card (latency) |
+| `safety.check` | Safety | `runner/safety.py`, `supervisor_node.py`, `lifecycle_kernel.cpp` | per candidate chunk | debug | Safety ledger |
+| `reward.score` | Perception | `reward_monitor_node.py` | `score_period_s` (2 s) | debug | rSkill card reward bar |
+| `slam.occupancy_grid` | SLAM | `runner/slam_bridge.py` | 1 Hz (throttled) | debug | SLAM map card |
+| `world.pointcloud` | World state | `runner/world_cloud_bridge.py` | throttled | debug | Pointcloud card |
+| `sim.step` / `eval.step` | Sim | `sim/sim_runner.py` | per step | debug | — |
+| `physics.step` | Sim | `sim/sim_runner.py` | per step | debug | — |
+| `reasoner.skill_failure` | Reasoning | `reasoner_node.py` | per failure | **error** | Event Log, failure counter |
 
 > **Why the allow-list.** A deny-list missed several 30 Hz spans ticking at
 > the same rate. On one second of a real 30 Hz two-camera deploy, the Event
@@ -126,12 +126,12 @@ where noted.
 
 | Event | Emitted at | Meaning | Band |
 |---|---|---|---|
-| `openral.event.safety_violation` | `runner/base.py:302`, `deploy_runner.py:487`, `lifecycle_kernel.cpp` | Safety check rejected an action | error, counted |
-| `openral.event.deadline_missed` | `runner/base.py:427` | Tick overran its cadence budget | error, counted |
-| `openral.event.skill_failure` | `reasoner_node.py:4887` | Reasoner-published skill failure | error (→ warn while e-stop-latched), counted |
-| `openral.event.sensor_stale` | `deploy_runner.py:387` | Sensor older than its age budget | counted |
+| `openral.event.safety_violation` | `runner/base.py`, `deploy_runner.py`, `lifecycle_kernel.cpp` | Safety check rejected an action | error, counted |
+| `openral.event.deadline_missed` | `runner/base.py` | Tick overran its cadence budget | error, counted |
+| `openral.event.skill_failure` | `reasoner_node.py` | Reasoner-published skill failure | error (→ warn while e-stop-latched), counted |
+| `openral.event.sensor_stale` | `deploy_runner.py` | Sensor older than its age budget | counted |
 | `openral.event.staleness_latched` | `world_state/aggregator.py` | World-state component **went** stale — only for a component that has had data. A never-received one is stale in `diag` and counted in `components_stale`, but has not latched: it never had a fresh state to fall from. Suppressing it removes a WARN that fired on every bringup (`world_state` subscribes before the HAL's first `joint_state`). | — |
-| `openral.event.error_latched` | `world_state/aggregator.py:589` | World-state component latched an error | — |
+| `openral.event.error_latched` | `world_state/aggregator.py` | World-state component latched an error | — |
 | `openral.event.estop_requested` | `hal/lifecycle.py::_emit_estop_telemetry` | E-stop latched at the HAL | error, counted, protected lane |
 | `openral.event.action_dropped` | — | **[not emitted](#declared-but-not-emitted)** | — |
 | `openral.event.chunk_prefetch_hit` | — | **[not emitted](#declared-but-not-emitted)** | — |
@@ -152,19 +152,19 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per inference, **every adapter**; label `kind` ∈ `foreground` \| `prefetch` \| `single` (`InferenceKind`, mypy-enforced) — a timing axis; chunk *shape* rides the span's `inference.chunk_size`, not the label |
 | `openral.hal.read_state.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | 30 Hz, **both paths** |
 | `openral.hal.send_action.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | per chunk, **both paths** |
-| `openral.sensors.age_ms` | Histogram | ms | `deploy_runner.py:377` | 30 Hz × camera |
-| `openral.world_state.staleness_ms` | Histogram | ms | `world_state/aggregator.py:560` | 30 Hz × component |
-| `openral.tick.budget_violations` | Counter | — | `runner/base.py:352` | on breach |
-| `openral.tick.deadline_misses` | Counter | — | `runner/base.py:420` | on breach — **every** miss, unlike the rate-limited log |
-| `openral.safety.violations` | Counter | — | `runner/base.py:302`, `deploy_runner.py:495` | on violation |
-| `openral.sensors.stale_reads` | Counter | — | `deploy_runner.py:394` | on stale read |
-| `openral.sim.episode.count` | Counter | — | `sim/sim_runner.py:840` | per episode |
-| `openral.sim.episode.success` | Counter | — | `sim/sim_runner.py:842` | per successful episode |
-| `openral.world_state.components_stale` | UpDownCounter | — | `world_state/aggregator.py:578` | 30 Hz |
-| `openral.system.cpu.utilization_pct` | UpDownCounter | % | `system_metrics.py:188` | 1 Hz |
-| `openral.system.ram.used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py:189-190` | 1 Hz |
-| `openral.system.gpu.memory_used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py:191-192` | 1 Hz |
-| `openral.system.gpu.utilization_pct` | UpDownCounter | % | `system_metrics.py:193` | 1 Hz |
+| `openral.sensors.age_ms` | Histogram | ms | `deploy_runner.py` | 30 Hz × camera |
+| `openral.world_state.staleness_ms` | Histogram | ms | `world_state/aggregator.py` | 30 Hz × component |
+| `openral.tick.budget_violations` | Counter | — | `runner/base.py` | on breach |
+| `openral.tick.deadline_misses` | Counter | — | `runner/base.py` | on breach — **every** miss, unlike the rate-limited log |
+| `openral.safety.violations` | Counter | — | `runner/base.py`, `deploy_runner.py` | on violation |
+| `openral.sensors.stale_reads` | Counter | — | `deploy_runner.py` | on stale read |
+| `openral.sim.episode.count` | Counter | — | `sim/sim_runner.py` | per episode |
+| `openral.sim.episode.success` | Counter | — | `sim/sim_runner.py` | per successful episode |
+| `openral.world_state.components_stale` | UpDownCounter | — | `world_state/aggregator.py` | 30 Hz |
+| `openral.system.cpu.utilization_pct` | UpDownCounter | % | `system_metrics.py` | 1 Hz |
+| `openral.system.ram.used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py` | 1 Hz |
+| `openral.system.gpu.memory_used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py` | 1 Hz |
+| `openral.system.gpu.utilization_pct` | UpDownCounter | % | `system_metrics.py` | 1 Hz |
 | `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
 | `openral.observability.export_failures` | Counter | — | `_sdk._FailureCountingSpanExporter` | per failed span-export batch (label `signal_kind=trace`) |
 
@@ -206,23 +206,20 @@ The system metrics come from a 1 Hz daemon thread
 All OpenRAL logging is `structlog`, bridged to OTLP. **Records below
 `OPENRAL_LOG_LEVEL` (default `INFO`) are dropped before rendering or export.**
 
-Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
-~73 `debug`, ~41 `error`.
-
 ### Hot-path sites worth knowing
 
 | Site | Level | Fires at | Notes |
 |---|---|---|---|
-| `runner/base.py:439,451` `inference_runner.deadline_missed[.drop]` | warning | up to 30 Hz | **Rate-limited** to one line per 5 s carrying `suppressed_since_last` + `worst_tick_ms`. WARNING is the one band an operator cannot filter away, and a too-slow host misses on every tick. |
-| `world_state/aggregator.py:259-381` `world_state.*.updated` (7 sites) | debug | 30 Hz | Below the default floor. |
-| `rskill/base.py:278` `skill.step` | debug | 30 Hz | Below the default floor. |
-| `runner/safety.py:140` `safety.null_check` | debug | 30 Hz | Below the default floor. |
-| `reward_monitor_node.py:424` reward score | info | 0.5 Hz | Also on the rSkill card's reward bar. |
-| `reasoner/core.py:567` `reasoner.tick.selected` | info | per LLM tick | Rare and high-value — the tool the model chose. |
-| `reasoner_node.py:2424,2454` tick-suppressed reasons | debug | sub-second | Correctly demoted. |
-| `ros_image_detector_node.py:501-545` "continuous leg alive" | info | per frame | Already `throttle_duration_sec=5.0`. |
+| `runner/base.py` `inference_runner.deadline_missed[.drop]` | warning | up to 30 Hz | **Rate-limited** to one line per 5 s carrying `suppressed_since_last` + `worst_tick_ms`. WARNING is the one band an operator cannot filter away, and a too-slow host misses on every tick. |
+| `world_state/aggregator.py` `world_state.*.updated` (8 sites) | debug | 30 Hz | Below the default floor. |
+| `rskill/base.py` `skill.step` | debug | 30 Hz | Below the default floor. |
+| `runner/safety.py` `safety.null_check` | debug | 30 Hz | Below the default floor. |
+| `reward_monitor_node.py` reward score | info | 0.5 Hz | Also on the rSkill card's reward bar. |
+| `reasoner/core.py` `reasoner.tick.selected` | info | per LLM tick | Rare and high-value — the tool the model chose. |
+| `reasoner_node.py` tick-suppressed reasons | debug | sub-second | Correctly demoted. |
+| `ros_image_detector_node.py` "continuous leg alive" | info | per frame | Already `throttle_duration_sec=5.0`. |
 | `dashboard/app.py` write-control audit trail | warning | per operator write | Audit-by-design; keep at WARNING. |
-| `rskill/_diagnostics.py:132,142,166` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
+| `rskill/_diagnostics.py` `phase_timer` | info | start/done + 15 s heartbeat | The model-load progress signal — see below. |
 | `hal/sim_attached.py` `sim.task_success` / `sim.task_success_final` | info | per verdict change / 1 per session | Deploy-sim ground truth — see below. |
 | `hal/sim_attached.py` `sim.placement_grade` / `sim.placement_grade_final` / `sim.placement_grade_unavailable` | info (unavailable: warning when `set_task` raised) | per grade change / 1 per graded goal / 1 per ungraded goal | Deploy-sim placement grade of the dispatched goal — see below. |
 | `hal/sim_attached.py` `sim.time_base` (logger `openral.sim.time_base`) | info | 1 per connect | The deploy-sim time base: `sim_dt_per_tick_s` (sim seconds one `env.step` advances), `control_freq_hz`, `backend`, `robot` — emitted for a backend that declares its tick (the Isaac sidecar, RoboCasa, LIBERO) after `connect` has verified it equals one control period, and by the bare MuJoCo twin (`MujocoArmHAL`, plus `physics_dt_s` / `physics_steps`) once it has derived one control period per action. A trace replayed later knows which clock its velocities were measured on (issues #355, #358). Companions: `hal.time_base.pinned` / `hal.time_base.unresolved` (warning, logger `openral_hal._mujoco_arm`) mark a twin that is **not** timing-faithful (a pinned `settle_steps`, or a manifest without a rate); `hal.time_base.timestep_shrunk` / `robosuite.time_base.timestep_shrunk` (info) record a physics time step shrunk to divide the period. |

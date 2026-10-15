@@ -81,9 +81,8 @@ vendored `opentelemetry_cpp_vendor` failed at its `find_package(Protobuf)`.
 > C++ either way — and it is not a known breakage.
 
 Kernel verdicts are therefore a numpy port of
-`box_box_distance` (`collision.cpp:327`) treating each occupied cell as a
-12.5 mm-half-extent cube exactly as `check_voxel_collision`
-(`collision.cpp:625`) does. **The port was validated against the shipped C++,
+`box_box_distance` (`collision.cpp`) treating each occupied cell as a
+12.5 mm-half-extent cube exactly as `check_voxel_collision` did at the time. **The port was validated against the shipped C++,
 not assumed**: `collision.cpp` was compiled into a bare oracle and fed 4 000
 random OBB↔cell pairs — maximum disagreement **4.4 × 10⁻¹⁶ m**.
 
@@ -437,11 +436,13 @@ worse than a late one — is asserted separately at zero.
 
 ### 2. The octree→grid bridge dilates by up to one cell, by design
 
-Tracked as [#173](https://github.com/OpenRAL/openral/issues/173): it holds
-48 % of the live stops measured below.
+Tracked as [#173](https://github.com/OpenRAL/openral/issues/173): it held
+48 % of the live stops measured below. **Removed 2026-08-25** (see the note at
+the top): `rasterize_octree_to_grid` now publishes on the octree's own lattice,
+so the rule described here is the pre-change bridge.
 
-`rasterize_octree_to_grid` (`octree_to_grid.cpp`) marks a base-frame cell when
-its cube **shares volume** with an occupied octree leaf's cube. The two lattices
+`rasterize_octree_to_grid` (`octree_to_grid.cpp`) marked a base-frame cell when
+its cube **shared volume** with an occupied octree leaf's cube. The two lattices
 have the same resolution but an arbitrary relative phase — and, on a mobile
 base, an arbitrary relative yaw — so a single leaf generically overlaps up to
 eight base cells. The rule is deliberate and it is the safe direction: the
@@ -482,8 +483,8 @@ verdict.
 
 ### What octomap's own thresholds can and cannot explain
 
-Analytic, from the shipped sim parameters — `prob_hit` 0.7, `prob_miss` 0.4,
-`occupancy_thres` 0.8, `sensor_model.max` 0.85:
+Analytic, from the shipped sim parameters — `sensor_model.hit` 0.7 (octomap_server's
+default), `sensor_model.miss` 0.4, `occupancy_thres` 0.8, `sensor_model.max` 0.85:
 
 | event | log-odds | vs threshold 1.386 |
 | --- | ---: | --- |
@@ -511,7 +512,7 @@ geometry were perfect, it **measures both verdicts against the same live map**.
 
 For each start state, two numbers on the same published occupancy array:
 
-- **OBB** — what the kernel computes today: `box_box_distance` between the
+- **OBB** — the shipped box path: `box_box_distance` between the
   manifest's one box per link and each occupied cell cube.
 - **EXACT** — the minimum distance from the link's *own collision surface* to
   each occupied cell cube. MuJoCo convexifies mesh collision geoms, so the
@@ -563,7 +564,7 @@ occupied octree leaf**, and 11 of the 12 sit within two half-diagonals of a real
 surface.
 
 **Those are not sensor phantoms. They are the octree→grid bridge's own
-dilation.** `rasterize_octree_to_grid` marks every base cell whose cube shares
+dilation.** `rasterize_octree_to_grid` marked (until 2026-08-25) every base cell whose cube shares
 volume with an occupied leaf's cube; the two lattices share a resolution but not
 a phase, so a leaf holding a real surface also marks cells up to one full cell
 away from it. A cell whose centre is inside no leaf can only have come from that
@@ -586,8 +587,8 @@ So the world-side residue divides:
 
 ### What this says about the three terms #161 named
 
-- **Quantisation** is real and is the smaller half of the world-side residue
-  here: 2 of 7.
+- **Quantisation** is real and is the smaller part of the world-side residue
+  here: 5 of 17.
 - **Lattice phase** is not separately measured. This page scores the one phase
   the bridge actually publishes rather than sweeping it, so #161's 20.3 mm swing
   is carried forward unchanged and is folded into the "grid right, coarse"
@@ -613,11 +614,12 @@ quality versus grid resolution". Nearly half the live stops in this sample
 few lines of the bridge, adjustable without touching the kernel or the
 resolution. Genuine sensor-side map error accounts for 1 stop in 23.
 
-**Nothing here proposes changing that rule.** Narrowing it is a safety-relevant
+**Nothing here proposed changing that rule** (it was since removed by changing
+the grid's format, not narrowing the rule — see the note at the top). Narrowing it is a safety-relevant
 loosening — it would shrink the obstacle set the kernel sees — and it belongs on
 the safety-WG path with a hazard-log entry, not in a measurement PR. What the
 measurement does establish is that the rule is where the leverage is, and that
-it currently costs about one voxel of reach in every direction, on top of the
+it cost about one voxel of reach in every direction, on top of the
 21.65 mm quantisation term and #161's 20.3 mm lattice swing. The two terms this
 page isolates are tracked as work rather than as prose:
 [#173](https://github.com/OpenRAL/openral/issues/173) (dilation) and
@@ -631,12 +633,13 @@ in the map).
   but the population shares are sample estimates.
 - `exact_mm` bottoms out at 0.00 for a link whose surface reaches inside a cell;
   it says the stop survives, not how deep it is.
-- The nearest-solid distances behind the 16.64–27.35 mm column are sampled at
-  10 mm, so they carry that error. They are used to say "about one cell", not to
+- The nearest-solid distances in the 16.64–299.28 mm column (its 299.28 mm
+  maximum is the one sensor-side phantom) are sampled at 10 mm, so they carry that error. They are used to say "about one cell", not to
   resolve the 21.65 mm half-diagonal boundary.
-- `panda_link5`↔`panda_link7` are now known to genuinely interpenetrate at some
-  configurations while the shipped ACM exempts the pair
-  ([#169](https://github.com/OpenRAL/openral/pull/169)). Every stop here is a
+- `panda_link5`↔`panda_link7` genuinely interpenetrate at some
+  configurations; the ACM exempted the pair when this was measured
+  ([#169](https://github.com/OpenRAL/openral/pull/169)) and has checked it on the
+  exact hulls since [#191](https://github.com/OpenRAL/openral/issues/191). Every stop here is a
   **world**-voxel stop, so none of them is that self-collision — but a future
   round that adjudicates self-collision stops must not attribute them here.
 
@@ -685,8 +688,8 @@ description=...)` — `mobilebase0_support`, not `mobilebase0_base`.
 `octomap::OcTree::readBinaryData` (a ~20-line C++ tool linking `-loctomap
 -loctomath`); synthesising a `.bt` header round-trips to an empty tree.
 
-**Kernel port.** Mirror `box_box_distance` (`collision.cpp:327`) and the
-cell-cube treatment in `check_voxel_collision` (`collision.cpp:625`). Validate
+**Kernel port.** Mirror `box_box_distance` and the cell-cube treatment in
+`check_voxel_collision` (both in `collision.cpp`). Validate
 it by compiling `collision.cpp` into a standalone oracle and comparing on random
 OBB↔cell pairs; anything worse than ~1e-15 m means the rotation convention or
 the axis set is wrong.

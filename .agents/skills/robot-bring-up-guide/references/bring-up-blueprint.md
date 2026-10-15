@@ -59,9 +59,10 @@ Run the narrowest safe check first:
 openral detect
 openral rskill check <rskill-id> --robot robots/<id>/robot.yaml
 openral sim list
-openral deploy sim --config scenes/<scene>.yaml --rskill rskills/<skill>
+openral deploy validate --config scenes/deploy/<workcell>.yaml
+openral deploy sim --config scenes/deploy/<scene>.yaml   # no --rskill: the reasoner picks from rskills/
 openral deploy list
-openral deploy run --config deployments/<robot_task>.yaml
+openral deploy run --config scenes/deploy/<workcell>.yaml
 ```
 
 Only run real-hardware commands when the user explicitly asks, the robot is powered and clear, and E-stop is physically available.
@@ -81,7 +82,7 @@ Only run real-hardware commands when the user explicitly asks, the robot is powe
 - Manifest load test uses the real YAML fixture.
 - HAL lifecycle test uses real interfaces or HIL gating, not mocks.
 - Sim registration test covers new `sim:` or robot registry behavior.
-- HIL tests are under `tests/hil/` and gated by lab labels.
+- HIL tests are under `tests/hil/`, gated on an env var plus a live hardware probe, and skip off-rig.
 - Robot README explains setup, sensors, safety, and compatible rSkills.
 - `docs/reference/robots.md` updated for newly supported robots.
 - the matching `docs/methods/` file updated for public symbols.

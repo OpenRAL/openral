@@ -88,12 +88,12 @@ live upstream and are not copied here.
 
 ## Supported robots
 
-Embodiment-agnostic — the only requirement is an RGB camera stream. All in-tree
-embodiment tags are declared in `rskill.yaml`.
+Embodiment-agnostic — the only requirement is an RGB camera stream.
+`rskill.yaml` declares the explicit `embodiment_tags: ["any"]` wildcard.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| any with an RGB camera | `franka_panda`, `so100_follower`, `aloha`, … | ⚡ experimental | camera-only; see `rskill.yaml::embodiment_tags` for the full list |
+| any with an RGB camera | `any` | ⚡ experimental | camera-only |
 
 ## Sensors required
 
@@ -111,19 +111,19 @@ Mirrors `rskill.yaml::sensors_required`.
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` / `kind` | `s1` / `detector` |
-| `embodiment_tags` | all in-tree embodiments (camera-only) |
+| `embodiment_tags` | `["any"]` (camera-only) |
 | `runtime` / `quantization.dtype` | `pytorch` / `fp16` |
 | `detector.engine` | `zeroshot_hf` (in-process Transformers zero-shot) |
 | `weights_uri` | `hf://omlab/omdet-turbo-swin-tiny-hf` |
 | `latency_budget.per_chunk_ms` | 200 ms |
-| `commercial_use_allowed` | yes (Apache-2.0 weights) |
+| `is_commercial_use_allowed` (derived from `license`) | `true` (Apache-2.0 weights) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
 ## Quick start
 
 ```bash
-uv sync --group omdet   # torch + transformers for the in-process backend
+just sync --group omdet   # torch + transformers for the in-process backend
 ```
 
 ```python
@@ -135,11 +135,12 @@ assert manifest.detector.engine is DetectorEngine.ZEROSHOT_HF
 print(len(manifest.detector.labels), "fixed indoor classes")
 ```
 
-Run it on the camera tee in sim (publishes `ObjectsMetadata` every frame, no
-ONNX file and no prompting):
+Run it in a deploy sim (publishes `ObjectsMetadata` every frame, no ONNX file
+and no prompting). It is already `openral deploy sim`'s default continuous
+detector when the `omdet` deps are installed; the flag makes the choice explicit:
 
 ```bash
-openral deploy sim \
+openral deploy sim --config scenes/deploy/libero_pnp.yaml \
   --object-detector-manifest rskills/omdet-turbo-indoor/rskill.yaml
 ```
 
@@ -149,18 +150,18 @@ Packaging-only wrapper — no trained numbers to reproduce. Validate the wiring
 (manifest + in-process dispatch) without a GPU:
 
 ```bash
-just bootstrap && uv sync --all-packages
+just bootstrap && just sync --group omdet
 uv run pytest tests/unit/test_omdet_turbo_detector.py
 ```
 
 The GPU-gated end-to-end test
 (`test_e2e_detects_indoor_objects_on_coco_sample`) loads the real Apache-2.0
 weights and grounds indoor classes on the `coco_sample.jpg` fixture; it skips on
-GPU-less hosts (the legitimate CI skip path, CLAUDE.md §12).
+GPU-less hosts (the legitimate CI skip path, CLAUDE.md §1.12).
 
 ## Evaluation
 
-No benchmarks shipped — packaging-only wrapper; see CLAUDE.md §6.4.
+No benchmarks shipped — packaging-only wrapper (no `eval/` results).
 
 ## License
 
@@ -175,5 +176,4 @@ unlike the NVIDIA non-commercial `locateanything-3b-nf4` open-vocab detector.
   open-vocab detector (NVIDIA non-commercial; `VLM_SIDECAR` tier).
 - [`rskills/rtdetr-coco-r18/`](../rtdetr-coco-r18/) — fixed 80-class COCO RT-DETR
   detector (ONNX tier).
-- detector kind + tier contract.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

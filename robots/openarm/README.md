@@ -23,9 +23,9 @@ driver) and the MuJoCo digital twin (`OpenArmMujocoHAL` on the
 | Per-side reach | ~0.7 m |
 | Embodiment tags | `openarm`, `openarm_v2`, `enactic`, `bimanual` |
 | Supported VLA embodiments | `openarm_v2`, `openarm` |
-| Supported control modes | `joint_position` |
+| Supported control modes | `joint_position`, `gripper_position` (the gripper only inside an ADR-0102 slot group, staged into one 16-DoF command by both HALs) |
 | `sdk_kind` | `open` (Enactic OpenArm + upstream MJCF) |
-| `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), per the scene-composition / robot-manifest separation convention. |
+| `hal.sim` | `null`: `build_hal` derives `MujocoArmHAL.from_description` from the manifest's `sim:` block (`deploy sim`; same wiring as `OpenArmMujocoHAL`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), per the scene-composition / robot-manifest separation convention. |
 | `hal.real` | `openral_hal.openarm_real:OpenArmRealHAL` (`deploy run`) |
 
 ## What v2 fixes vs the v1 era
@@ -97,10 +97,9 @@ graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
 
 Real deploys use `scenes/deploy/openarm_bench.yaml`, which starts the ZED
 driver and pins `runtime.octomap_cloud_topic` to the topic the ZED SDK actually
-publishes. This is easy to get silently wrong: `head_zed` in `robot.yaml`
-auto-enables the octomap leg, but the topic keeps a sim-only launch default
-unless the scene sets it, giving an empty octree behind a graph where every
-node reports healthy.
+publishes. `head_zed` in `robot.yaml` auto-enables the octomap leg, and on a real
+deploy no in-tree node publishes a cloud for it, so `deploy run` refuses to start
+unless the scene pins that topic (or sets `runtime.enable_octomap: false`).
 
 > **Bringup moves both arms.** `OpenArmHW::on_activate` calls `enable_all()`
 > and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
@@ -295,7 +294,9 @@ the unit overlay, `units/<unit>.yaml`) into the one description every consumer r
 The v2 mechanism mirrors across the centreline, and the MJCF ctrlranges
 reflect it: arm ranges mirror L/R (`left_joint1` ∈ [-3.49, 1.40] vs
 `right_joint1` ∈ [-1.40, 3.49]; LEFT joint1/2 lean negative, RIGHT positive),
-and the LEFT jaw closes via positive rotation, the RIGHT via negative. The same
+and the jaws mirror too: both close at 0.0 rad (`closure_calibration.closed_position`),
+the LEFT jaw opens toward +0.7854 (closes via negative rotation), the RIGHT toward
+-0.7854 (closes via positive rotation). The same
 numeric value on LEFT and RIGHT homologous slots is therefore a mirrored pose,
 not a HAL bug. Tests validate each side independently or use sign-aware
 sentinels.
@@ -359,7 +360,7 @@ branch), and — for the bus itself — `tests/hil/test_openarm_can_live.py`.
 
 - [openarm.dev](https://openarm.dev/) — project landing page.
 - [`python/hal/README.md`](../../python/hal/README.md) — `OpenArmMujocoHAL`, supported robots.
-- [`packages/openral_hal_openarm/README.md`](../../packages/openral_hal_openarm/README.md) — real-hardware bringup (`real_bringup.launch.py`) and why no real-HW scene ships in-tree.
+- [`packages/openral_hal_openarm/README.md`](../../packages/openral_hal_openarm/README.md) — real-hardware bringup (`real_bringup.launch.py`) and the committed real-HW scene.
 - [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream driver (not the path OpenRAL takes).
 - [enactic/openarm_mujoco PR #19](https://github.com/enactic/openarm_mujoco/pull/19) — the v2 introduction.
 - [`robots/anvil_openarm_v2/README.md`](../anvil_openarm_v2/README.md) — the Anvil OpenARM 2.0 (this same v2 design with Anvil's J1/J6 range deltas and the wrist support bracket).

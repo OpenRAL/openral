@@ -31,7 +31,7 @@ inference: false
 RT-DETR r18vd detects 80 COCO-category objects in each camera frame and
 publishes per-frame `ObjectsMetadata` events containing bounding boxes,
 class labels, and confidence scores. The runtime `ObjectsDetector`
-(in `openral_perception`) reads the `detector` manifest block at configure
+(`openral_runner.backends.gstreamer.objects_detector`) reads the `detector` manifest block at configure
 time to initialise the ONNX inference session and bind the class-id →
 label mapping.
 
@@ -113,8 +113,8 @@ under **Weights** above).
 
 ## Supported robots / embodiments
 
-**Embodiment-agnostic**: it consumes any RGB camera stream. All known
-embodiment tags are declared in the manifest; the `sensors_required` entry has
+**Embodiment-agnostic**: it consumes any RGB camera stream. The manifest
+declares the wildcard `embodiment_tags: ["any"]`; the `sensors_required` entry has
 no `vla_feature_key`, so the loader accepts any camera key, not just
 `camera1`.
 
@@ -144,7 +144,8 @@ The detector emits **no** `Action` chunks and has no proprioception
 | `latency_budget.per_chunk_ms` | `50.0` |
 | `detector.labels` | 80 COCO categories |
 | `detector.input_size` | `[640, 640]` |
-| `detector.score_threshold` | `0.5` |
+| `detector.mode` | `continuous` |
+| `detector.score_threshold` | `0.7` |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 

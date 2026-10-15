@@ -19,9 +19,13 @@ verifies:
 - `RobotDescription` round-trip,
 - embodiment / VLA tag plumbing.
 
-It is **not** for rolling out a policy that walks or balances. Balance and
-walking belong to the C++ S0 cerebellum (CLAUDE.md §6.2, M2 milestone) and are
-out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
+- the `body_twist` path: by default ADR-0087's upright kinematic glide (no
+  balance); with `walking_enabled=True`, ADR-0089's pinned MuJoCo Playground
+  ONNX walking controller for gravity-on sim walking — a sim-only learned
+  controller that a real HAL must never reuse.
+
+Real balance and walking belong to the C++ S0 cerebellum (CLAUDE.md §3, M2
+milestone) and are out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
 `docs/architecture/repo-state-map.html`.
 
 ## At a glance
@@ -48,7 +52,7 @@ out of scope here; see the "HAL · Unitree G1 (real-HW)" planned block in
 | Python HAL adapter | `openral_hal.g1.G1MujocoHAL` (MuJoCo digital twin) |
 | Python description | `openral_hal.G1_DESCRIPTION` |
 | Sim test | `tests/sim/test_g1_hal_mujoco.py` |
-| Future real-HW HAL | planned under M2 (CLAUDE.md §6.2), `unitree_sdk2` + C++ S0 cerebellum |
+| Future real-HW HAL | planned under M2 (CLAUDE.md §3, S0), `unitree_sdk2` + C++ S0 cerebellum |
 
 ## Joints
 
@@ -95,9 +99,10 @@ published-spec values used for capability matching only — MuJoCo's
 
 ## Tests
 
-- Sim: `tests/sim/test_g1_hal_mujoco.py` (34 tests) runs `G1MujocoHAL`
+- Sim: `tests/sim/test_g1_hal_mujoco.py` (32 tests) runs `G1MujocoHAL`
   against real MuJoCo physics on the Menagerie MJCF: lifecycle, schema-drift
-  guard, per-section convergence on legs, waist, left arm and right arm.
+  guard, per-section convergence on legs, waist, left arm and right arm, the
+  head camera, and the `body_twist` glide and walking paths.
 - HIL: planned alongside the real-HW HAL under M2.
 
 ## Asymmetric joint conventions
@@ -111,5 +116,5 @@ bug. Tests validate each section independently.
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `G1MujocoHAL`, supported robots.
-- CLAUDE.md §6.1 (8 layers) and §6.2 (dual-system pattern; S0 cerebellum for humanoids).
+- CLAUDE.md §3 (the seven layers; dual-system pattern, S0 cerebellum for humanoids).
 - [`docs/architecture/repo-state-map.html`](../../docs/architecture/repo-state-map.html) — HAL · Unitree G1 (sim, MuJoCo) green block.

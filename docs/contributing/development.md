@@ -42,7 +42,7 @@ just lint            # ruff + mypy --strict; expect no errors
 uv run openral doctor     # diagnose host environment
 ```
 
-Test inventory (file + LOC counts, gaps, follow-ups):
+How the test tiers run locally and in CI:
 [`tests/README.md`](https://github.com/OpenRAL/openral/blob/master/tests/README.md).
 
 `uv run openral doctor` is the canonical environment probe (sample output in the
@@ -85,7 +85,7 @@ The compose file also starts a **Jaeger** container for OpenTelemetry traces at 
 
 ## Option C — GitHub Codespaces (browser / no local install)
 
-1. On the GitHub repo page: **Code → Codespaces → Create codespace on main**.
+1. On the GitHub repo page: **Code → Codespaces → Create codespace on master**.
 2. Wait for the container to build and `uv sync --all-packages` to complete (~5 min).
 3. Open a terminal and run `just test`.
 
@@ -196,7 +196,7 @@ open deploy image does not ship (the GStreamer media stack is OpenRAL Pro).
 
 #### The RoboCasa sim suite (manual — there is no CI lane, and there cannot be)
 
-Seven tests under `tests/sim/` are gated on `importorskip("robocasa")` and need
+The RoboCasa-gated tests under `tests/sim/` (`importorskip("robocasa")`) need
 the colcon overlay (they spawn the real `safety_kernel_node`), MuJoCo, and a
 provisioned RoboCasa kitchen backend. They are the geometry-and-kernel evidence
 for the layout pins, the certified distance instrument, the support-contact
@@ -285,9 +285,9 @@ fails) off-rig.
 **A runner label is a routing request made by a workflow, not an access control
 enforced by the runner.** A repository-scoped runner accepts jobs from any
 workflow naming its labels, and for `pull_request` GitHub runs the workflow
-definition from the **fork's** ref. `OpenRAL/openral` is public with three
+definition from the **fork's** ref. `OpenRAL/openral` is public with four
 fork-reachable `pull_request` workflows (`dco.yml`, `quality.yml`,
-`test-selective.yml`), so a fork PR can add `runs-on: [self-hosted, lab-openarm]`
+`test-ros2.yml`, `test-selective.yml`), so a fork PR can add `runs-on: [self-hosted, lab-openarm]`
 with arbitrary `run:` steps and get code execution on the lab host, with that
 user's SSH keys, `gh` credentials, LAN access to the robots and, for
 `lab-openarm`, the CAN buses of a powered bimanual arm.

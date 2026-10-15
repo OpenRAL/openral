@@ -19,8 +19,8 @@ adapter wrapping
 | Supported control modes | `joint_position` |
 | `sdk_kind` (production) | `closed` — runtime path requires real UR + URCap on the teach pendant |
 | `hal.real` | `openral_hal.ur_real:UR5eRealHAL` (`deploy run`) |
-| `hal.sim` | `openral_hal.ur:UR5eHAL` (`deploy sim` / `sim run`; MuJoCo via `mujoco_menagerie`) |
-| Driver license | BSD-3-Clause (`ur_robot_driver`; CLAUDE.md §7.4 compatible) |
+| `hal.sim` | `null`: `build_hal` derives `MujocoArmHAL.from_description` from the `sim: {}` block (`deploy sim`; MuJoCo via `mujoco_menagerie`) |
+| Driver license | BSD-3-Clause (`ur_robot_driver`; CLAUDE.md §1.9 compatible) |
 
 Velocity is π rad/s (180°/s) on every joint. Effort limits match the UR5e
 datasheet: 150 Nm on shoulder/lift/elbow, 28 Nm on the three wrists. Position
@@ -30,17 +30,17 @@ mechanical stop on real hardware).
 The production manifest (`robot.yaml`) pins the **real-hardware** entry point.
 Its `sdk_kind: closed` flags that the runtime path needs the URCap
 `external_control` program on the teach pendant, not a restrictive adapter or
-driver license. The sim entry point (`UR5e_DESCRIPTION` /
-`openral_hal.ur:UR5eHAL`) stays in code as the MuJoCo sibling with identical
-kinematics, safety envelope and capabilities; only `sdk_kind` differs (the
-`hal` block is shared, per the HAL entrypoint-resolution convention).
+driver license. The same manifest drives the sim twin (`hal.sim: null` +
+`sim:` block); the in-code `UR5e_DESCRIPTION` / `openral_hal.ur:UR5eHAL` is the
+MuJoCo sibling for direct construction, with identical kinematics, safety
+envelope and capabilities; only `sdk_kind` differs.
 
 ## Wiring
 
 | Layer | Where |
 | --- | --- |
 | Python HAL adapter (real HW) | `openral_hal.ur_real:UR5eRealHAL` (`python/hal/src/openral_hal/ur_real.py`) |
-| Python HAL adapter (sim) | `openral_hal.ur:UR5eHAL` (`python/hal/src/openral_hal/ur.py`) |
+| Python HAL adapter (sim) | derived `MujocoArmHAL`; class form `openral_hal.ur:UR5eHAL` (`python/hal/src/openral_hal/ur.py`) |
 | ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Conformance test | `tests/unit/test_hal_protocol_conformance.py::HAL_BUILDERS["UR5eRealHAL+SimTransport"]` |
 | Unit test | `tests/unit/test_ur_real_hal.py` |

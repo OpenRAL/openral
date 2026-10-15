@@ -29,9 +29,11 @@ aarch64 wheel on any index either. Both gaps close at torch 2.9:
 | `open3d` | ❌ no `cp312` aarch64 build exists | 0.19.0 is x86_64/macOS/win; ≤0.18.0 stops at `cp311` |
 
 So torch 2.8.0 is a single-release hole in an otherwise continuous series, and
-it is the version several upstream VLA projects happen to pin. Every sidecar
-this repo controls the pins for now targets **`torch==2.9.1` on the `cu128`
-index** for exactly this reason. Reproduce the gap with:
+it is the version several upstream VLA projects happen to pin. Every policy
+sidecar this repo controls the pins for targets **`torch==2.9.1` on the `cu128`
+index** for exactly this reason (the Cosmos 3 reasoner sidecar instead takes
+vLLM's own PyPI torch stack, and the workspace venv uses `cu130` on aarch64 —
+see below). Reproduce the gap with:
 
 ```bash
 uv venv --python 3.12 /tmp/probe && \
@@ -133,11 +135,12 @@ the CUDA runtime and all of x86_64 byte-identical.
 there is no working SASS to begin with (see above), so no shim helps and
 `cu130` stops being an alternative and becomes the only option.
 
-`openral-pro`'s workspace root already made that move for exactly this
-reason — routing aarch64 `torch`/`torchvision` to `cu130` and overriding this
-repo's `torch<2.10` cap up to `2.13`/`0.28`, since torchvision is ABI-locked
-to a torch minor and does not float with it. This repo has not, so a
-`uv sync` here on a Thor still resolves the unusable `cu128` build.
+So the workspace root routes aarch64 `torch`/`torchvision` to `cu130` and
+lifts the `torch<2.10` cap there to `torch>=2.13,<2.14` /
+`torchvision>=0.28,<0.29` (torchvision is ABI-locked to a torch minor and does
+not float with it); the lock resolves `2.13.0+cu130` / `0.28.0+cu130` on
+linux-aarch64. The sidecars keep their own `--torch-backend=cu128` pins (see
+the table below).
 
 ## Per-sidecar status
 
@@ -405,8 +408,9 @@ reward model — ran on CPU.
 `--torch-backend` is a `uv pip`-only flag; it does not exist on `uv sync` or
 `uv lock`. So the root `pyproject.toml` expresses the same intent two ways:
 
-- an `explicit = true` `[[tool.uv.index]]` for `download.pytorch.org/whl/cu128`,
-  with `[tool.uv.sources]` pinning **torch and torchvision** to it under
+- an `explicit = true` `[[tool.uv.index]]` for `download.pytorch.org/whl/cu130`
+  (originally `cu128`; moved for Thor, see above), with `[tool.uv.sources]`
+  pinning **torch and torchvision** to it under
   `platform_machine == 'aarch64' and sys_platform == 'linux'`. torchvision must
   be pinned too, and must additionally be named as a direct dependency — it is
   otherwise purely transitive (lerobot / timm / open-clip), and
@@ -417,7 +421,7 @@ reward model — ran on CPU.
   the sidecars, so without it an in-process policy dies the moment it touches a
   jitted op.
 
-Verified on the GB10 after `just sync`:
+Verified on the GB10 after `just sync`, on the earlier `cu128` routing:
 
 ```
 torch       2.9.1+cu128
@@ -428,21 +432,19 @@ tv nms cuda [0]        # torchvision CUDA op
 jit prod    24         # the nvrtc jiterator path
 ```
 
-x86_64 resolution is unchanged — still PyPI `torch==2.9.1`, `torchcodec==0.9.1`,
-`torchvision==0.24.1`, `nvidia-cuda-nvrtc-cu12==12.8.93`.
+The current lock resolves `torch 2.13.0+cu130` / `torchvision 0.28.0+cu130` /
+`torchcodec 0.11.1` on linux-aarch64. x86_64 resolution is unchanged — still PyPI
+`torch==2.9.1`, `torchcodec==0.9.1`, `torchvision==0.24.1`,
+`nvidia-cuda-nvrtc-cu12==12.8.93`.
 
-> **Upgrading an existing aarch64 venv needs one extra step.** The CPU and CUDA
-> torchvision wheels share the version string `0.24.1` (the index build carries
-> no `+cu128` local tag), so `uv sync` sees the installed version as satisfying
-> the lock and does **not** swap it — you end up with a CUDA torch and a
-> CPU-only torchvision, and `torchvision.ops.nms` on a CUDA tensor raises
-> `NotImplementedError`. Force it once:
+> **A venv synced under the old `cu128` routing** could hold a CPU-only
+> `torchvision 0.24.1`: the CPU and `cu128` wheels shared that version string,
+> so `uv sync` did not swap it. If `torchvision.ops.nms` on a CUDA tensor raises
+> `NotImplementedError`, force it once:
 >
 > ```bash
-> uv sync --frozen --reinstall-package torchvision
+> just sync --frozen --reinstall-package torchvision
 > ```
->
-> Fresh venvs are unaffected.
 
 ### No `expandable_segments` on Tegra
 

@@ -12,8 +12,8 @@
 
 ```bash
 just bootstrap   # installs uv, ROS 2, system deps
-uv sync          # install Python workspace
-just test        # run all tests
+just sync        # install Python workspace (never bare `uv sync`)
+just test        # unit suite
 ```
 
 ## Workflow

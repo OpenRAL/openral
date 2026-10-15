@@ -11,9 +11,8 @@ seven-layer model in the project docs.
 - **Source:** https://github.com/OpenRAL/openral
 - **License:** Apache-2.0
 
-> All OpenRAL workspace packages move in lockstep at the same SemVer version
-> (currently `0.3.1`); the bump is computed from Conventional Commits by
-> release-please.
+> All OpenRAL workspace packages move in lockstep with the workspace SemVer
+> version; the bump is computed from Conventional Commits by release-please.
 
 ## Voice prompt (local speech-to-text)
 
@@ -162,8 +161,8 @@ on the LAN and browse for other OpenRAL services:
 
 ```
 pip install openral-observability[mdns]
-# or, inside the OpenRAL workspace:
-uv sync --group mdns
+# or, inside the OpenRAL workspace (an extra of openral-observability, not a group):
+just sync --extra mdns
 ```
 
 This pulls in [`zeroconf>=0.131`](https://github.com/python-zeroconf/python-zeroconf)

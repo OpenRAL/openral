@@ -39,11 +39,11 @@ manifest that adds capability checking, license surfacing, latency budgets,
 and local registry integration. It does **not** copy model weights; they
 live on the Hub.
 
-> **Required sim config knob:** this checkpoint's normalization statistics are
-> tagged `"so100_so101_molmoact2"`. Every `SimEnvironment` config driving this
-> rSkill must set `vla.extra.norm_tag: "so100_so101_molmoact2"` (the adapter
-> reads it from there); omitting it silently applies the default `"libero"`
-> norm stats and produces garbage actions.
+> **Norm tag:** this checkpoint's normalization statistics are tagged
+> `"so100_so101_molmoact2"`. The manifest carries it in
+> `image_preprocessing.norm_tag`; the adapter resolves `vla.extra.norm_tag` →
+> manifest → default `"libero"`, and the `"libero"` stats produce garbage
+> actions for this checkpoint. Only set `vla.extra.norm_tag` to override.
 
 ## What this skill does
 
@@ -64,14 +64,15 @@ step at a time.
 
 MolmoAct2 grafts a modern DiT-style flow-matching continuous-action expert
 onto the Molmo2-ER discrete-token VLM via per-layer KV-cache conditioning
-(arXiv:2605.02881). It ships as a transformers **custom-code** model
-(`trust_remote_code`, `auto_map` → `MolmoAct2ForConditionalGeneration`), not a
-lerobot policy. The OpenRAL `molmoact2` adapter
-(`python/sim/src/openral_sim/policies/molmoact2.py`) loads it via
-`AutoModelForImageTextToText.from_pretrained` + `AutoProcessor` from the
-manifest's `source_repo`, NF4-quantizes every Linear with ≥4M weight elements
-via bitsandbytes, overlays the prequantized pack from `weights_uri`, then drives
-it through the checkpoint's own `predict_action(...)` continuous-action API. Two
+(arXiv:2605.02881). Upstream ships it as transformers **custom code**
+(`trust_remote_code`), not a lerobot policy. The OpenRAL `molmoact2` adapter
+(`python/sim/src/openral_sim/policies/molmoact2.py`) instead builds the graph from
+lerobot 0.6.0's vendored in-tree `MolmoAct2ForConditionalGeneration` and
+`MolmoAct2Processor` (config, processor and `norm_stats.json` from the
+manifest's `source_repo`), so no remote code executes and
+`OPENRAL_ALLOW_REMOTE_CODE` is not needed. It NF4-quantizes the model via
+bitsandbytes, overlays the prequantized pack from `weights_uri`, then drives it
+through the checkpoint's own `predict_action(...)` continuous-action API. Two
 RGB camera streams plus a 6-D proprio state go in; a `(chunk_size, 6)` absolute
 joint-position chunk comes out, replayed one step at a time and re-inferred
 when the queue empties.
@@ -85,8 +86,8 @@ when the queue empties.
 | in | `observation.state`           | `(1, 6)` float32                | SO-101 6-D joint positions (rad) |
 | out | action chunk                  | `(10, 6)` float32               | absolute joint-position targets |
 
-**Camera aliases (for `so101_box` scene):** `oak_top → top`, `wrist → side`.
-Override per-scene via `vla.extra` if your scene uses different camera names.
+**Camera aliases:** the manifest maps slot `camera1 → top` and
+`camera2 → side`; in the `so101_box` scene those slots are `oak_top` and `wrist`.
 
 ## Upstream model / training
 
@@ -104,7 +105,7 @@ the full-precision weights.
 | License     | apache-2.0 (code + weights) |
 | Parameters  | ~5.5 B |
 | Training data | SO-100/SO-101 teleop mixture (absolute joint-pose, annotated language) |
-| norm_tag    | `"so100_so101_molmoact2"` — **required** in `vla.extra.norm_tag` |
+| norm_tag    | `"so100_so101_molmoact2"` — set in the manifest's `image_preprocessing` |
 
 ## Supported robots
 
@@ -132,11 +133,11 @@ the full-precision weights.
 | `embodiment_tags` | `["so100_follower", "so101_follower"]` |
 | `runtime` / `quantization.dtype` | `pytorch` / `int4` (NF4) |
 | `weights_uri` | `hf://OpenRAL/rskill-molmoact2-multi-so101-nf4` |
-| `chunk_size` / `n_action_steps` | 10 / 10 (full chunk replay) |
+| `chunk_size` / `n_action_steps` | 10 / unset (the adapter replays the full predicted chunk) |
 | `latency_budget.per_chunk_ms` | 1000 ms |
-| `commercial_use_allowed` | `true` (Apache-2.0) |
+| `is_commercial_use_allowed` (derived from `license`) | `true` (Apache-2.0) |
 | `image_preprocessing.image_max_crops` | `4` (secondary vision lever; processor default is 8 — see Memory note) |
-| **`norm_tag` (vla.extra)** | **`"so100_so101_molmoact2"` — required** |
+| `image_preprocessing.norm_tag` | `"so100_so101_molmoact2"` (override via `vla.extra.norm_tag`) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -162,7 +163,7 @@ vla:
   id: molmoact2
   weights_uri: rskills/molmoact2-so101-nf4
   extra:
-    norm_tag: "so100_so101_molmoact2"   # REQUIRED — default "libero" is wrong for this checkpoint
+    # norm_tag: "so100_so101_molmoact2"  # optional; the manifest already sets it
     # image_max_crops: 6                # optional secondary lever; manifest pins 4 (see note)
 ```
 
@@ -186,19 +187,19 @@ vla:
 ## Reproduction
 
 ```bash
-just bootstrap && uv sync --all-packages
+just bootstrap && just sync
 
 # Closed-loop rollout against the SO-101 box scene (NF4 weights fit an 8 GB GPU):
 openral sim run --config scenes/sim/so101_tube_insertion.yaml \
-                --rskill rskills/molmoact2-so101-nf4 \
-                --vla.extra.norm_tag so100_so101_molmoact2
+                --rskill rskills/molmoact2-so101-nf4
 ```
 
 Producing / refreshing the NF4 weights on the Hub (one-shot, needs a CUDA
 host):
 
 ```bash
-HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
+# allenai is not a trusted remote-code org, so --trust-remote-code needs the ack:
+HF_TOKEN=<write-token> OPENRAL_ALLOW_REMOTE_CODE=1 uv run python tools/quantize_rskill.py \
     --source allenai/MolmoAct2-SO100_101 \
     --target OpenRAL/rskill-molmoact2-multi-so101-nf4 \
     --loader transformers --trust-remote-code
@@ -206,8 +207,9 @@ HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
 
 ## Evaluation
 
-`eval/so101.json::status` is **pending**: no locally-reproduced numbers yet.
-Run `eval/so101.json::source.reproduction_cli` to populate.
+`eval/so101.json::status` is **pending**: no locally-reproduced numbers yet,
+and no SO-101 benchmark suite is registered under `benchmarks/`, so its
+recorded `reproduction_cli` (`--suite so101_tabletop`) cannot run yet.
 
 ## License
 
@@ -223,4 +225,4 @@ is permitted. Review the upstream LICENSE before deployment.
 - [`robots/so100_follower/README.md`](../../robots/so100_follower/README.md) — SO-100 variant.
 - [`scenes/sim/so101_tube_insertion.yaml`](../../scenes/sim/so101_tube_insertion.yaml) — SO-101 sim scene config.
 - [`rskills/molmoact2-libero-nf4/README.md`](../molmoact2-libero-nf4/README.md) — MolmoAct2 LIBERO variant (Franka Panda).
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

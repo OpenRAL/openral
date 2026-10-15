@@ -11,9 +11,8 @@ seven-layer model in the project docs.
 - **Source:** https://github.com/OpenRAL/openral
 - **License:** Apache-2.0
 
-> All OpenRAL workspace packages move in lockstep at the same SemVer version
-> (currently `0.3.1`); the bump is computed from Conventional Commits by
-> release-please.
+> All OpenRAL workspace packages move in lockstep with the workspace SemVer
+> version; the bump is computed from Conventional Commits by release-please.
 
 ## Usage
 
@@ -35,8 +34,8 @@ openral detect \
 openral detect --include usb,can,gpu,cameras_v4l2 --report detect.json --no-write
 ```
 
-`openral detect` probes USB, SocketCAN, DDS, GPU, V4L2, RealSense, Orbbec, and
-network interfaces; resolves a canonical manifest (from DDS/CAN/USB inference
+`openral detect` probes USB, SocketCAN, DDS, GPU, V4L2, RealSense, and
+network interfaces (the report has an Orbbec slot, but no probe fills it yet); resolves a canonical manifest (from DDS/CAN/USB inference
 or `--robot`) as a **template**, never as the output; and records accelerator
 capabilities used by `openral rskill check`.
 
@@ -90,9 +89,9 @@ only way to tell two identical cameras apart on one rig.
 2. Everything except the sensor list is inherited verbatim from the
    canonical manifest: joints, URDF/MJCF, safety envelope, capabilities,
    compute.
-3. A sensor wizard walks every detected camera (V4L2 + RealSense + Orbbec)
+3. A sensor wizard walks every detected camera (V4L2 + RealSense)
    and asks which sensor it is. A thumbnail (opencv) is grabbed only for
-   V4L2 (`/dev/video*`) devices; RealSense and Orbbec entries key on model +
+   V4L2 (`/dev/video*`) devices; RealSense entries key on model +
    serial (no `device_path`) and get no thumbnail:
    - a canonical sensor name (e.g. `top`, `wrist`) reuses that manifest
      `SensorSpec` verbatim (frame, intrinsics, `vla_feature_key`) plus the

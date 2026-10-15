@@ -10,7 +10,7 @@ openral/                      ← THIS monorepo
 │  ├─ core/         (openral_core)        ← Pydantic v2 schemas (normative) ✓
 │  ├─ cli/          (openral_cli)         ← `openral` entry point (bare → REPL, with args → one-shot) ✓
 │  ├─ detect/       (openral_detect)      ← `openral detect` auto-provisioning → robot.yaml ✓
-│  ├─ hal/          (openral_hal)         ← `HAL` Protocol + manifest-driven `MujocoArmHAL` adapters (SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, H1, G1, panda_mobile) ✓
+│  ├─ hal/          (openral_hal)         ← `HAL` Protocol + manifest-driven `MujocoArmHAL` sim adapters (SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, H1, G1, panda_mobile) + real-HW adapters (SO-100/101, Franka, UR, Sawyer, ALOHA, OpenArm, Galaxea A1) ✓
 │  ├─ sensors/      (openral_sensors)     ← Sensor catalog + vendor adapters ✓
 │  ├─ world_state/  (openral_world_state) ← `WorldStateAggregator` (30 Hz snapshot, staleness latching, detected-objects fold-in) ✓
 │  ├─ rskill/       (openral_rskill)      ← `rSkillBase` ABC, `rSkill` loader, runtime adapters (PyTorch/ONNX; TensorRT is an OpenRAL Pro plugin), VLA + detector adapters ✓
@@ -30,7 +30,7 @@ openral/                      ← THIS monorepo
 │  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓
 │  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓
-│  ├─ openral_safety/         ← safety_node (geometric collision checking) ✓
+│  ├─ openral_safety/         ← Python pass-through `SafetyPassthroughNode` + configure-time helpers for the C++ kernel (URDF/MJCF collision lowering, envelope loading) ✓
 │  ├─ openral_safety_watchdog/ · openral_human_estop/ ← deadman watchdog + human E-stop forwarders ✓
 │  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift) + segmenter_node (srv/SegmentInView) ✓
 │  ├─ openral_octomap_bridge/ ← OctoMap → safety-kernel OccupancyVoxels lowering + robot_self_filter (depth-cloud self-filter on the real octomap path) ✓

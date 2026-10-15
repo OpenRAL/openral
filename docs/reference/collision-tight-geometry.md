@@ -4,7 +4,9 @@
 > staged design for `check_voxel_collision`, scoped to `link1` + `link2`, and
 > [issue #191](https://github.com/OpenRAL/openral/issues/191) extended it to
 > `check_self_collision`'s box↔box pass, adding `link5` + `link7` — for a reason
-> this study did not anticipate, because it was scoring the **world** side. The
+> this study did not anticipate, because it was scoring the **world** side.
+> `link3`, `link4` and `link6` followed on 2026-09-07, so all seven `panda_mobile`
+> links now declare `tight_geometry` (`link1` stage 1 only). The
 > change record for both is
 > [the staged hull narrow phase](collision-hull-narrow-phase.md); its §9 is the
 > self-collision half. This document is the evidence and the design argument,
@@ -660,8 +662,13 @@ The one-primitive-per-link limit is `envelope_loader._capsules_by_link`
 collapses** a link's `<collision>` elements into one PCA capsule, measured by
 PR #160 at **1.87–3.67× volume on `panda_mobile`** (and **`so101_follower`, up
 to 4.95×**) before it made `openral collision lower --write` refuse outright
-(exit 3, no override flag). The lowering is still wrong and still blocks any
-re-lowering workflow, but it can no longer loosen a shipped envelope silently.
+(exit 3, no override flag). The lowering was still wrong and blocked any
+re-lowering workflow, but it could no longer loosen a shipped envelope silently.
+*Since #324:* `_capsules_by_link` is `_primitives_by_link` (several primitives per
+link), and `lower_link_geometry` fits one capsule, one box or a capsule chain per
+link, or box + exact hull for a `--tight-link`
+([collision-geometry-review.md](collision-geometry-review.md) §0); `lower --write`
+still refuses to loosen a shipped envelope (exit 3).
 
 ### 10.5 What the hazard entry and the safety-WG review would have to assert
 
@@ -692,9 +699,9 @@ re-lowering workflow, but it can no longer loosen a shipped envelope silently.
    byte-identically. What it found raises this document's stakes:
    `panda_link5`↔`panda_link7` is a **real** self-collision the box envelopes cannot
    separate from an artifact at *any* margin
-   ([primitive study §5](collision-primitive-study.md)). It ships exempt under a
-   residual-risk SRDF row; tightening `link5`/`link6`/`link7` is the only thing that
-   retires it.
+   ([primitive study §5](collision-primitive-study.md)). It shipped exempt under a
+   residual-risk SRDF row until #191 retired the row by checking the pair on the
+   exact hulls ([hull narrow phase §9](collision-hull-narrow-phase.md)).
 
 ---
 
@@ -751,8 +758,9 @@ hull, scoped to `link1` and `link2`.** (Shipped by #166. The scope grew to
 `link5` + `link7` in #191 — not because the world-side ranking moved, but
 because the **self**-collision check needs those two at hull fidelity to retire
 the `panda_link5`↔`panda_link7` ACM exemption, a use this section was not
-scoring. The scoping rule survives intact: an addition needs its own
-measurement, and #191 brought one.) Stage 1 is a 26-DOP SAT (62.8 ns, a
+scoring. `link3`, `link4` and `link6` followed on 2026-09-07, on the #204
+carry-phase battery. The scoping rule survives intact: an addition needs its own
+measurement, and #191 and #204 each brought one.) Stage 1 is a 26-DOP SAT (62.8 ns, a
 conservative lower bound); stage 2 is a warm-started GJK on the exact hull, run
 only on cells stage 1 cannot clear (§9.1). This combination is the only one that
 is simultaneously:
@@ -807,7 +815,7 @@ the broad-phase reach formula open.
 
 **12.5 Do not pursue multi-primitive splits for this problem.** A split chosen for
 the stopping direction gains 0.2–0.3 mm (§8.1). Lifting `_capsules_by_link`
-remains worthwhile on its own merits — ~15 lines of Python, touching no schema, no
+(done since in #324, as `_primitives_by_link`) was worthwhile on its own merits — ~15 lines of Python, touching no schema, no
 wire format and no kernel (§10.3) — but not as a fix for envelope slop.
 
 **12.6 Do not extend anything here to attached payloads.** Entry 012 is not

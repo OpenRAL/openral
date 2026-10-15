@@ -22,7 +22,7 @@ simultaneous actions can't be safely dispatched or replayed.
 
 **Solution.** An event-driven loop with a slow heartbeat (`tick_hz = 0.2`; idle
 heartbeat ticks short-circuit with no LLM call), event preemption across four
-tiers (safety, execution, critic/progress, operator) gated by a hard
+tiers (safety, execution, critic, operator) gated by a hard
 `min_interval_s = 100 ms` so nothing can thrash the LLM, and exactly one
 Pydantic-validated `ReasonerToolCall` per tick. The tier table and tool palette are
 in [`reasoner.md`](reasoner.md#cadence-event-model).
@@ -72,7 +72,7 @@ requiring depth:
   takes — "pick up the boxes" decomposes to one subtask per id, since grounding
   refuses a bare label that matches several detections.
 - **A sticky `located` line**.
-  The continuous detector's fixed ~230-class vocab *mislabels* the goal objects
+  The continuous detector's fixed ~266-class vocab *mislabels* the goal objects
   (a basket read as "box", ketchup as "bottle"). So every successful open-vocab
   `locate_in_view` hit is folded by `ContextRenderer.note_located()` into a
   persistent `located[<cam>]` line (latest-wins, `_LOCATED_CAP=12`). The prompt
@@ -95,10 +95,12 @@ before handoff — policy in the node, not dependent on the LLM picking the tool
 > missed against a frame stored under `"default"`. Both surfaced as the same
 > `found=False` loop.
 
-**Active search** (*proposed*). When an object isn't in memory at all, `recall_object` /
-`resolve_place` plus a bounded `SearchBudget` (max places **and** wall-clock,
-no hidden default) drive a *look → navigate → re-query* loop, opening occluding
-containers first, terminating in human-handoff.
+**Active search.** When an object isn't in memory, the `recall_object` /
+`resolve_place` / `locate_in_view` miss loop is bounded by the node's
+`SearchProgress(SearchBudget())` (`max_candidates` / `max_attempts`, both 5) and
+terminates in human-handoff. `plan_active_search` (a ranked frontier, occluding
+containers first) ships in `openral_reasoner.active_search` but the node does
+not call it yet.
 
 **Why.** The reasoner doesn't need 3D poses to *decide* — it needs labels + a
 stable id to refer. Camera-space enumeration is cheap (it already subscribes to
@@ -242,11 +244,11 @@ ship today.
 procedures lived as bespoke Python, it didn't learn across episodes, and it never
 saw its own body or its execution outcomes.
 
-**Solution** (*proposed/phased*):
+**Solution:**
 
 - **Playbooks** (`kind: "playbook"`, `role: "s2"`) — Markdown SOPs the LLM
-  reads and interprets, never executes. Their `PlaybookContract` (trigger,
-  `composes_tools`, `done_predicate`, `max_steps`, fallback) is selection
+  reads and interprets, never executes. Their `PlaybookContract` (`trigger`,
+  `body_uri`, `composes_tools`, `done_predicate`, `max_steps`) is selection
   metadata; the `PLAYBOOK.md` body goes into the `## PLAYBOOKS` prompt block.
   The six launch playbooks are listed in [`rskills.md`](rskills.md#playbook-rskills-kind-playbook).
 - **Self-maintained `MEMORY.md`** — *semantic/narrative* memory (preferences,
@@ -303,7 +305,7 @@ the [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_rea
 2. **Everything bounded, no hidden defaults** (CLAUDE.md §1.4). Heartbeat,
    min-interval, retry cap, attempts cap, subdivide depth, search budget,
    patience ceiling, locate budget — all explicit.
-3. **Perception is advisory; the kernel disposes** (CLAUDE.md §1.1). Detectors,
+3. **Perception is advisory; the kernel disposes** (CLAUDE.md §3, Safety). Detectors,
    reward models, critics, scene graph, and memory are all read-only inputs to a
    *decision*; none commands a motor. The C++ safety kernel is the only authority.
 4. **Honest degradation.** Missing a reward oracle or a VLM never produces a

@@ -48,7 +48,7 @@ data across 9 configs, then RoboTwin post-training).
 
 The upstream V1 `lingbotvla` package pins `torch==2.8.0` / `transformers==4.51.3` /
 `lerobot==0.4.2` (flat layout), incompatible with the OpenRAL workspace
-(`torch>=2.9` / `transformers>=5`, CLAUDE.md §3). So the model runs **out-of-process**
+(`torch>=2.9` / `transformers>=5`). So the model runs **out-of-process**
 in an auto-provisioned Python 3.12 ZMQ sidecar, driven by the SAME `lingbot_vla2`
 adapter as the v2 model via a `--variant v1` switch:
 
@@ -126,7 +126,7 @@ cameras are aligned positionally onto the model's `cam_high` / `cam_left_wrist` 
 | `min_vram_gb` | fp32 16.8 / bf16 8.4 / **int4 4.5** |
 | `chunk_size` / `n_action_steps` | 50 / 25 |
 | `latency_budget.per_chunk_ms` | 1000 (measured ~570 ms steady) |
-| `weights_uri` | fp32 upstream post-train; NF4 packed at load — see below |
+| `weights_uri` | `hf://robbyant/lingbot-vla-4b-posttrain-robotwin` (fp32 upstream post-train; NF4 packed at load) |
 
 ## Quick start
 
@@ -142,8 +142,12 @@ openral benchmark scene \
 
 ## Reproduction
 
-`eval/scene_robotwin.json` is produced by the command above (`reproduced_locally:
-true`); the exact `reproduction_cli` is recorded in that file. Open-loop numbers come from
+`eval/scene_robotwin.json` (`reproduced_locally: true`, 10 episodes, max 300
+steps) was produced by `openral benchmark scene` with this rSkill on the
+`lift_pot` task; its recorded `reproduction_cli` points at a since-deleted
+scratch copy of the scene YAML, so reproduce with the command above
+(`scenes/benchmark/robotwin_lift_pot.yaml` has the same 300-step budget;
+`--n-episodes 10` overrides its 100-episode protocol). Open-loop numbers come from
 the GT-vs-prediction probe described under *Verified performance*.
 
 ## License
