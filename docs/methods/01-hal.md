@@ -390,7 +390,7 @@ _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fres
 - const `OPENARM_DESCRIPTION = RobotDescription(...)` (L250) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
 
 ### `python/hal/src/openral_hal/openarm_real.py`
-_Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s ros2_control stack (400 Hz) rather than SocketCAN directly: Skill → Action → this adapter → four command topics → controller_manager → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors._
+_Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s ros2_control stack (750 Hz) rather than SocketCAN directly: Skill → Action → this adapter → four command topics → controller_manager → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors._
 
 - module const `_LEFT_ARM_CONTROLLER: str` (L93) — default left-arm `JointTrajectoryController` name.
 - module const `_LEFT_GRIPPER_CONTROLLER: str` (L94) — default left-gripper controller name.

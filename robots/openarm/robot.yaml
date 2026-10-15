@@ -17,21 +17,17 @@
 # Real-hardware path shares this manifest: `hal.real` is `OpenArmRealHAL`,
 # commanding `openarm_bringup`'s four ros2_control controllers (per-side
 # arm+gripper); the C++ `openarm_hardware` SystemInterface below them drives
-# the Damiao CAN FD motor buses at 400 Hz. Python never touches motors
+# the Damiao CAN FD motor buses at 750 Hz. Python never touches motors
 # directly (CLAUDE.md §1.5).
 
 name: "openarm_v2"
 embodiment_kind: "bimanual"
 base_frame: "openarm_base"
 
-# robot_state_publisher: `assets.urdf` deliberately unset.
-# Upstream URDF + xacro live at github.com/enactic/openarm_description
-# (single-arm) and github.com/reazon-research/openarm_ros2
-# (bimanual bringup); both require xacro processing at launch time
-# which deploy_e2e.launch.py does not yet support. The
-# `robot_descriptions` Python package ships only
-# `openarm_v1_mj_description` (MJCF). Wire one of these once a
-# wrapped-task-space VLA targets openarm.
+# robot_state_publisher: `assets.urdf` is the vendored, pre-expanded
+# `openarm.urdf` below (no xacro at launch time). Upstream URDF + xacro
+# live at github.com/enactic/openarm_description (single-arm) and
+# github.com/reazon-research/openarm_ros2 (bimanual bringup).
 
 # Unified asset block. Vendored URDF + bimanual MJCF.
 assets:
@@ -354,10 +350,10 @@ capabilities:
   # stages a tick's four slots (per-side arm+gripper) into one 16-DoF joint
   # vector. A standalone gripper action is refused loudly — never silently
   # dropped, unlike the pre-ADR-0102 `if action.joint_targets is None: return`.
-  # Digital twin does NOT yet do this staging (`OpenArmMujocoHAL` raises on a
-  # gripper slot via `_require_control_mode`); `deploy sim` admits it anyway
-  # (sim gate uses SIM_EXECUTABLE_CONTROL_MODES, not this list) — twin needs
-  # the same staging before it can run the contract. Don't add a mode the HAL
+  # The digital twin stages slot groups the same way (`MujocoArmHAL` holds a
+  # `SlotGroupStager` and composes the tick into one joint-position step
+  # before `_validate_action`); `deploy sim` gates on
+  # SIM_EXECUTABLE_CONTROL_MODES, not this list. Don't add a mode the HAL
   # can't place: tests/unit/test_openarm_real_hal.py pins this list against
   # what `send_action` actually dispatches.
   supported_control_modes:
@@ -410,10 +406,10 @@ sdk_kind: "open"
 #
 # `real` drives the physical arm through `openarm_bringup`'s ros2_control
 # stack, not through Python-side CAN: the OpenArm control loop runs at
-# 400 Hz, and CLAUDE.md §1.5 keeps anything above 100 Hz in C++. The
+# 750 Hz, and CLAUDE.md §1.5 keeps anything above 100 Hz in C++. The
 # actuation chain is
 #   OpenArmRealHAL → four ros2_control command topics
-#                  → controller_manager (400 Hz, C++)
+#                  → controller_manager (750 Hz, C++)
 #                  → openarm_hardware SystemInterface
 #                  → openarm_can → SocketCAN → Damiao motors.
 # The one place this robot's control rate lives. The skill runner ticks at
@@ -434,7 +430,7 @@ hal:
   sim: null
   real: "openral_hal.openarm_real:OpenArmRealHAL"
   # Vendor ros2_control bringup `deploy run` includes beside the real HAL
-  # (controller_manager + openarm_hardware at 400 Hz stay in C++, §1.5).
+  # (controller_manager + openarm_hardware at 750 Hz stay in C++, §1.5).
   real_bringup: "openral_hal_openarm:real_bringup.launch.py"
   # issue #191 Phase 3b — HAL construction kwargs, threaded by build_hal so
   # the manifest-driven node needs no bespoke ROS params.

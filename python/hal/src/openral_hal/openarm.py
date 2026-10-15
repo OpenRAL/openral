@@ -372,7 +372,7 @@ OPENARM_DESCRIPTION = RobotDescription(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,
         # Real hardware goes through `openarm_bringup`'s ros2_control stack,
-        # never through Python-side CAN — the loop runs at 400 Hz and
+        # never through Python-side CAN — the loop runs at 750 Hz and
         # CLAUDE.md §1.5 keeps anything above 100 Hz in C++.
         real="openral_hal.openarm_real:OpenArmRealHAL",
         real_bringup="openral_hal_openarm:real_bringup.launch.py",

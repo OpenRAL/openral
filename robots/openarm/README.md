@@ -93,7 +93,7 @@ so `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` keeps a clone under
 controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
 `connect()` unless both udev-pinned SocketCAN links (`openarm_left`,
 `openarm_right`) are up. It never starts `controller_manager` itself — that
-graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
+graph is C++ at 750 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
 
 Real deploys use `scenes/deploy/openarm_bench.yaml`, which starts the ZED
 driver and pins `runtime.octomap_cloud_topic` to the topic the ZED SDK actually
