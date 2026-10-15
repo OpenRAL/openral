@@ -72,9 +72,15 @@ TARGETS=(
     # The generic scene inputs: the RGB-D frame contract, the kitchen's static
     # fixtures, and the derived search/workspace declarations.
     tests/sim/test_panda_mobile_hal_robocasa_scene_inputs.py
+    # Carried-object attachment across a translating base and across tasks,
+    # and the kernel's FK collision model against the kitchen.
+    tests/sim/test_panda_mobile_hal_robocasa_carry.py
+    tests/sim/test_attached_object_multitask_robocasa.py
+    tests/sim/safety/test_panda_mobile_robocasa_collision_fk.py
 )
 # tests/unit/test_robocasa_sim_targets.py asserts every file gated on
-# `importorskip("robocasa")` appears above — a gated test missing from this
+# robocasa (`importorskip("robocasa")`, `_has_robocasa_kitchen`,
+# `_robocasa_unavailable`) appears above — a gated test missing from this
 # list runs on NO CI surface.
 
 exec python -m pytest "${TARGETS[@]}" "$@"
