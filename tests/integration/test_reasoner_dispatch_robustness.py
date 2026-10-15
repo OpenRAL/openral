@@ -444,6 +444,20 @@ def _isolate_domain(monkeypatch: pytest.MonkeyPatch, slot: int) -> None:
     monkeypatch.setenv("ROS_DOMAIN_ID", str(110 + (os.getpid() % 40) * 3 + slot))
 
 
+def _teardown(executor: Any, nodes: list[Any]) -> None:
+    """Stop the executor, then destroy ``nodes`` before ``rclpy.shutdown()`` (#381).
+
+    ``ReasonerNode.destroy_node`` reaps its LLM/VLM workers and inbox guard; a
+    node left for ``rclpy.shutdown()`` to reap skips that.
+    """
+    if executor is not None:
+        for node in nodes:
+            executor.remove_node(node)
+        executor.shutdown()
+    for node in reversed(nodes):
+        node.destroy_node()
+
+
 def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.MonkeyPatch) -> None:
     """The runner creates /openral/execute_rskill in its own on_configure.
 
@@ -459,8 +473,11 @@ def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.Monk
     _isolate_domain(monkeypatch, 0)
     rclpy.init()
     server = None
+    executor = None
+    nodes: list[Any] = []
     try:
         reasoner, sub_node, failures = _reasoner_with_failure_sub(server_wait_s=20.0)
+        nodes += [reasoner, sub_node]
         executor = rclpy.executors.SingleThreadedExecutor()
         executor.add_node(reasoner)
         executor.add_node(sub_node)
@@ -473,16 +490,26 @@ def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.Monk
         assert not failures, "no failure while the runner is still coming up"
 
         runner_side = rclpy.create_node("openral_test_late_runner")
+        nodes.append(runner_side)
         received: list[Any] = []
         server = execute_rskill_server(runner_side, received)
         executor.add_node(runner_side)
         assert _spin_until(executor, lambda: bool(received), 10.0), "goal never sent"
         assert received[0].rskill_id == _VLA_ID
         assert not [m for m in failures if "unavailable" in m.evidence_json]
+        # ``received`` fills in the goal callback; spin on until the accepted
+        # goal's execute coroutine has run, or teardown strands it unawaited
+        # (``ActionServer._execute_goal was never awaited``, #381).
+        assert _spin_until(executor, lambda: not reasoner._rskill_inflight, 5.0), (
+            "the accepted goal never completed"
+        )
     finally:
-        if server is not None:
-            server.destroy()
-        rclpy.shutdown()
+        try:
+            if server is not None:
+                server.destroy()
+            _teardown(executor, nodes)
+        finally:
+            rclpy.shutdown()
 
 
 def test_dispatch_fails_when_the_runner_never_comes_up(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -492,8 +519,11 @@ def test_dispatch_fails_when_the_runner_never_comes_up(monkeypatch: pytest.Monke
 
     _isolate_domain(monkeypatch, 1)
     rclpy.init()
+    executor = None
+    nodes: list[Any] = []
     try:
         reasoner, sub_node, failures = _reasoner_with_failure_sub(server_wait_s=1.0)
+        nodes += [reasoner, sub_node]
         executor = rclpy.executors.SingleThreadedExecutor()
         executor.add_node(reasoner)
         executor.add_node(sub_node)
@@ -506,7 +536,10 @@ def test_dispatch_fails_when_the_runner_never_comes_up(monkeypatch: pytest.Monke
         assert not reasoner._rskill_inflight, "the busy gate must be released"
         assert reasoner._renderer.inflight_skill is None
     finally:
-        rclpy.shutdown()
+        try:
+            _teardown(executor, nodes)
+        finally:
+            rclpy.shutdown()
 
 
 def test_deactivating_while_waiting_for_the_runner_drops_the_dispatch(
@@ -522,8 +555,11 @@ def test_deactivating_while_waiting_for_the_runner_drops_the_dispatch(
     _isolate_domain(monkeypatch, 2)
     rclpy.init()
     server = None
+    executor = None
+    nodes: list[Any] = []
     try:
         reasoner, sub_node, failures = _reasoner_with_failure_sub(server_wait_s=20.0)
+        nodes += [reasoner, sub_node]
         executor = rclpy.executors.SingleThreadedExecutor()
         executor.add_node(reasoner)
         executor.add_node(sub_node)
@@ -541,6 +577,7 @@ def test_deactivating_while_waiting_for_the_runner_drops_the_dispatch(
 
         # The runner appearing now must not receive the dropped goal.
         runner_side = rclpy.create_node("openral_test_runner_after_deactivate")
+        nodes.append(runner_side)
         received: list[Any] = []
         server = execute_rskill_server(runner_side, received)
         executor.add_node(runner_side)
@@ -548,6 +585,9 @@ def test_deactivating_while_waiting_for_the_runner_drops_the_dispatch(
         assert not received, "a deactivated reasoner sent the waiting goal"
         assert not failures
     finally:
-        if server is not None:
-            server.destroy()
-        rclpy.shutdown()
+        try:
+            if server is not None:
+                server.destroy()
+            _teardown(executor, nodes)
+        finally:
+            rclpy.shutdown()

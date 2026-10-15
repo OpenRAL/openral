@@ -36,6 +36,7 @@ import datetime
 import json
 import pathlib
 import sys
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -992,7 +993,7 @@ class ReasonerNode(LifecycleNode):
         # free for goal results, patience timers, and Tier-A preemptions.
         # One worker = one outstanding LLM call, preserving the trampoline's
         # single-flight semantics. Built in on_configure, torn down in
-        # on_cleanup.
+        # on_cleanup / on_shutdown / destroy_node.
         self._llm_pool: ThreadPoolExecutor | None = None
         # Separate single worker for the VLM completion gate (describe_image)
         # so a Tier-A tick's select_tool is never queued behind an in-flight
@@ -1003,6 +1004,10 @@ class ReasonerNode(LifecycleNode):
         # callback drains the inbox on the next executor spin.
         self._executor_inbox: deque[Callable[[], None]] = deque()
         self._inbox_guard: Any = None
+        # Serializes a worker's read-then-trigger of ``_inbox_guard`` against
+        # teardown dropping it, so a worker can never trigger a guard whose
+        # destruction was already requested (rclpy ``InvalidHandle``, #381).
+        self._inbox_guard_lock = threading.Lock()
         # Bumped on deactivate/cleanup so an LLM round-trip that lands after
         # a lifecycle transition is dropped instead of dispatching onto a
         # stopped node.
@@ -1533,10 +1538,7 @@ class ReasonerNode(LifecycleNode):
         # interruptible (provider SDKs have their own timeouts); shutdown
         # without waiting and let the generation bump drop its completion.
         self._shutdown_worker_pools()
-        if self._inbox_guard is not None:
-            self.destroy_guard_condition(self._inbox_guard)
-            self._inbox_guard = None
-        self._executor_inbox.clear()
+        self._release_inbox_guard()
         self.get_logger().info("on_cleanup: state cleared")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1547,7 +1549,8 @@ class ReasonerNode(LifecycleNode):
         their timeouts), so shut down without waiting and let the generation
         bump drop its completion.
 
-        Called from BOTH ``on_cleanup`` and ``on_shutdown``. ``on_cleanup``
+        Called from ``on_cleanup``, ``on_shutdown`` and ``destroy_node``
+        (idempotent: a dropped pool is ``None``). ``on_cleanup``
         alone is not enough: ``_submit_client_warmup`` starts the managed vLLM
         sidecar early in ``on_configure``, and ``@log_lifecycle_errors`` turns a
         later raise in that same transition into ``FAILURE`` — which leaves the
@@ -1562,6 +1565,38 @@ class ReasonerNode(LifecycleNode):
         if self._vlm_pool is not None:
             self._vlm_pool.shutdown(wait=False, cancel_futures=True)
             self._vlm_pool = None
+
+    def _release_inbox_guard(self) -> None:
+        """Detach and destroy the executor-inbox guard condition. Idempotent.
+
+        The guard is detached under ``_inbox_guard_lock`` before it is
+        destroyed, so a worker completion racing teardown sees ``None`` and is
+        dropped by ``_post_to_executor`` rather than triggering a guard whose
+        destruction was requested. Pending marshaled callables are discarded.
+        """
+        with self._inbox_guard_lock:
+            guard = self._inbox_guard
+            self._inbox_guard = None
+            self._executor_inbox.clear()
+        if guard is not None:
+            self.destroy_guard_condition(guard)
+
+    def destroy_node(self) -> None:
+        """Reap the LLM / VLM workers' hand-back path, then destroy the node.
+
+        ``destroy_node()`` without a prior ``cleanup``/``shutdown`` transition
+        (the usual test and ``main()`` teardown) otherwise leaves the worker
+        pools alive and ``_inbox_guard`` pointing at a guard condition the base
+        class destroys, so a worker finishing later (an LLM call still in
+        flight) would trigger it and raise rclpy's ``cannot use Destroyable
+        because destruction was requested`` (#381). Pools are shut down
+        without waiting (an in-flight provider call is not interruptible);
+        the call that is still running finishes on its own and its completion
+        is dropped at the detached guard.
+        """
+        self._shutdown_worker_pools()
+        self._release_inbox_guard()
+        super().destroy_node()
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Final shutdown.
@@ -2782,12 +2817,20 @@ class ReasonerNode(LifecycleNode):
 
         Appends to the inbox and wakes the executor via the guard
         condition; ``_drain_executor_inbox`` runs ``fn`` on the next
-        spin. After cleanup (guard destroyed) the callable is dropped —
-        the generation check in the callables makes that safe.
+        spin. After cleanup or ``destroy_node`` (guard detached) the
+        callable is dropped and logged at debug — a completion for a torn
+        down node has nowhere to run. The read-then-trigger holds
+        ``_inbox_guard_lock`` so it cannot interleave with teardown.
         """
-        self._executor_inbox.append(fn)
-        guard = self._inbox_guard
-        if guard is not None:
+        with self._inbox_guard_lock:
+            guard = self._inbox_guard
+            if guard is None:
+                self.get_logger().debug(
+                    "post_to_executor: inbox guard released (cleanup/destroy); "
+                    "dropping a late worker completion"
+                )
+                return
+            self._executor_inbox.append(fn)
             guard.trigger()
 
     def _drain_executor_inbox(self) -> None:
@@ -2802,8 +2845,9 @@ class ReasonerNode(LifecycleNode):
             except BaseException:
                 # Preserve crash semantics (an unexpected error still raises
                 # into the executor) but don't strand the remaining inbox.
-                if self._executor_inbox and self._inbox_guard is not None:
-                    self._inbox_guard.trigger()
+                with self._inbox_guard_lock:
+                    if self._executor_inbox and self._inbox_guard is not None:
+                        self._inbox_guard.trigger()
                 raise
 
     def _start_tick(self, *, force: bool, tier: str) -> bool:

@@ -181,8 +181,9 @@ jobs:
           # writes into the daemon's containerd store); it is kept so the
           # command still means the same thing if the driver is ever changed
           # back.
-          # shellcheck disable=SC2086 -- intentional word-splitting of the
-          # $cache_from / $cache_to flag strings.
+          # Intentional word-splitting of the $cache_from / $cache_to flag
+          # strings (a directive line takes no trailing prose, so it goes here).
+          # shellcheck disable=SC2086
           docker buildx build --progress=plain \
             -f docker/inference/Dockerfile.x86 \
             $cache_from \
@@ -230,16 +231,93 @@ jobs:
       # checkout — that also guarantees the commit's version of the tests runs
       # against the commit's image. No GPU on the runner and none needed: the
       # free-VRAM readings are pinned at the nvidia-smi process boundary.
+      #
+      # Issue #381: the suite intermittently passes every test and then the
+      # interpreter dies with exit 139 (SIGSEGV) ~60 s after the summary, with
+      # no trace. gdb / PYTHONFAULTHANDLER=1 hide it (0 of 7 locally), so the
+      # run stays uninstrumented and the kernel writes a core instead:
+      # core_pattern is host-wide (not namespaced), and a plain-path pattern
+      # resolves in the crashing process's mount namespace, i.e. the bind
+      # mount below. %E is the crashing executable's full path with `/`
+      # written as `!`, so the backtrace step can load the right binary for
+      # any core, not just python's. The step's exit code is the suite's --
+      # never masked: the version listing runs in the same container and the
+      # suite is exec'd last.
       - name: Live ROS tests (OPENRAL_TEST_ROS_LIVE)
         run: |
+          mkdir -p "$RUNNER_TEMP/cores"
+          chmod 1777 "$RUNNER_TEMP/cores"
+          sudo sysctl -w kernel.core_pattern=/cores/core.%E.%p
           # --entrypoint /entrypoint.sh drops the image's hardcoded `openral`
           # argument while keeping the ROS + colcon-overlay sourcing the tests
-          # depend on.
+          # depend on. The ros-* listing first: the apt layer is unpinned, so
+          # diff it between a crashing run and a clean one.
           docker run --rm --entrypoint /entrypoint.sh \
+            --ulimit core=-1 \
+            -v "$RUNNER_TEMP/cores:/cores" \
             -v "$PWD/tests:/workspace/tests:ro" \
             -v "$PWD/conftest.py:/workspace/conftest.py:ro" \
             -v "$PWD/scripts:/workspace/scripts:ro" \
-            openral:x86 bash scripts/ros_live_tests.sh -q
+            openral:x86 bash -c '
+              echo "--- runtime ros-*:"; cat /opt/openral/ros-jazzy-versions.txt
+              echo "--- builder ros-* (colcon overlay ABI):"
+              cat /opt/openral/ros-jazzy-versions.builder.txt
+              exec bash scripts/ros_live_tests.sh -q
+            '
+
+      # The kernel writes cores as the crashing (root, in-container) uid with
+      # mode 0600, which the runner user cannot read: open them up for the
+      # backtrace and the artifact upload below.
+      - name: Make live-ROS core dumps readable
+        if: failure()
+        run: |
+          sudo chmod a+rx "$RUNNER_TEMP/cores"
+          sudo chmod -R a+r "$RUNNER_TEMP/cores"
+
+      # Symbolize any core from the step above. The image ships no gdb, so a
+      # throwaway container installs it. Each core is read against the binary
+      # that crashed, recovered from its %E filename (`!` -> `/`) inside the
+      # same image; only a python core whose path does not resolve falls back
+      # to the venv's python, and anything else is read core-only.
+      # Diagnostic only: its own failure must not hide the real one, which
+      # already failed the job.
+      - name: Backtrace live-ROS core dumps
+        if: failure()
+        continue-on-error: true
+        run: |
+          ls -la "$RUNNER_TEMP/cores"
+          if ! compgen -G "$RUNNER_TEMP/cores/core.*" > /dev/null; then
+            echo "No core file written -- the failure was not a crash."
+            exit 0
+          fi
+          docker run --rm --entrypoint /entrypoint.sh \
+            -v "$RUNNER_TEMP/cores:/cores:ro" \
+            openral:x86 bash -c '
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb > /dev/null
+              for core in /cores/core.*; do
+                name="${core#/cores/core.}"
+                exe="${name%.*}"
+                exe="${exe//!//}"
+                if [ ! -x "$exe" ]; then
+                  case "${exe##*/}" in
+                    python*) exe="$(readlink -f /workspace/.venv/bin/python)" ;;
+                    *) exe="" ;;
+                  esac
+                fi
+                echo "=== $core (executable: ${exe:-unresolved, reading core only})"
+                gdb -batch -nx -ex "info threads" -ex "thread apply all bt" \
+                  ${exe:+"$exe"} -c "$core"
+              done
+            '
+
+      - name: Upload live-ROS core dumps
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: live-ros-cores-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cores
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Default-entrypoint smoke: the steps above override --entrypoint, so
       # they never exercise what `docker run openral:x86 …` actually does.

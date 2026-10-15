@@ -27,6 +27,8 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
+from types import TracebackType
 from typing import Any
 
 import pytest
@@ -42,6 +44,11 @@ _LIVE_ROS_REASON = (
 #: short enough to keep the suite tight. The < 1 s acceptance bounds
 #: below are only meaningful because this is ≥ 3×.
 _SLOW_LLM_S = 3.0
+
+#: Bound on joining the executor's callback pool at teardown. Generous: the
+#: slowest callback a test leaves running is the stalling execute body of the
+#: deadline test, which its ``before_teardown`` hook releases within one poll.
+_DRAIN_TIMEOUT_S = 15.0
 
 
 def _prompt_qos() -> Any:
@@ -69,6 +76,124 @@ def _publish_prompt(pub_node: Any, pub: Any, text: str) -> None:
     msg.text = text
     msg.metadata_json = "{}"
     pub.publish(msg)
+
+
+def _shutdown_executor(executor: Any, timeout_s: float = _DRAIN_TIMEOUT_S) -> None:
+    """Join the executor's worker pool, bounded, before any node or the context is destroyed.
+
+    ``MultiThreadedExecutor.spin_once`` hands each callback to a thread pool and
+    returns, so a callback (an ``ExecuteRskill`` execute body, a reasoner result
+    handler) can still be running when the loop above stops spinning. Destroying
+    the nodes and calling ``rclpy.shutdown()`` under it races those threads: the
+    callback then touches a destroyed rcl handle (``cannot use Destroyable because
+    destruction was requested``, stored on an rclpy Task nobody awaits), and the
+    never-shut-down pool and guard conditions linger until interpreter teardown.
+    Issue #381 (CI exit 139 after the summary line) is a suspected consequence of
+    that window -- not yet proven; joining here closes the executor side of it.
+    Nodes are already removed, so no new callbacks can be scheduled while it
+    drains. The reasoner's OWN ``reasoner-llm`` / ``reasoner-vlm`` worker pools
+    are not the executor's and are not joined here: ``ReasonerNode.destroy_node``
+    reaps them and detaches its inbox guard, so an LLM call still sleeping in a
+    worker drops its completion instead of triggering a destroyed guard
+    (``test_destroy_node_mid_llm_call_drops_the_late_completion``).
+
+    ``executor.shutdown(timeout_sec=...)`` cannot enforce the bound itself in
+    Jazzy: ``Executor.shutdown`` sets ``_is_shutdown`` and then only waits on its
+    work tracker ``if not self._is_shutdown``, so it never waits and always
+    returns ``True``; ``MultiThreadedExecutor.shutdown`` then calls
+    ``ThreadPoolExecutor.shutdown(wait=True)``, which has no timeout at all. So
+    the shutdown runs on a daemon thread and the ``join`` is the real bound: a
+    callback still running after ``timeout_s`` fails the test instead of hanging
+    it (the daemon thread is abandoned to interpreter exit).
+    """
+    errors: list[BaseException] = []
+
+    def _drain() -> None:
+        try:
+            executor.shutdown()
+        except BaseException as exc:  # reason: re-raised on the test thread below
+            errors.append(exc)
+
+    drainer = threading.Thread(target=_drain, name="test-executor-drain", daemon=True)
+    drainer.start()
+    drainer.join(timeout_s)
+    if drainer.is_alive():
+        raise AssertionError(
+            f"MultiThreadedExecutor did not drain its callbacks within {timeout_s:.0f} s at "
+            "teardown -- a callback is still running; its nodes are left undestroyed"
+        )
+    if errors:
+        raise errors[0]
+
+
+class _LiveRosSession:
+    """``rclpy.init`` .. ``rclpy.shutdown`` with teardown that runs pass or fail.
+
+    Nodes registered with :meth:`node` and the executor registered with
+    :meth:`use` are torn down on exit, whether the test body passed or raised:
+    ``before_teardown`` callables run first (release a stalling callback), the
+    nodes are removed from the executor, its pool is drained (bounded, see
+    :func:`_shutdown_executor`), then the nodes are destroyed in reverse
+    registration order and ``rclpy.shutdown()`` runs last. A drain timeout skips
+    node destruction (destroying under a running callback is the #381 race).
+
+    A teardown failure never masks the body's own failure: when the body raised,
+    the teardown error is attached to that exception as a note instead of
+    replacing it; when the body passed, it fails the test.
+    """
+
+    def __init__(self, rclpy: Any) -> None:
+        self._rclpy = rclpy
+        self._executor: Any = None
+        self._nodes: list[Any] = []
+        self._before: list[Callable[[], object]] = []
+
+    def __enter__(self) -> _LiveRosSession:
+        self._rclpy.init()
+        return self
+
+    def node(self, node: Any) -> Any:
+        """Register ``node`` for teardown and return it."""
+        self._nodes.append(node)
+        return node
+
+    def release(self, node: Any) -> None:
+        """Unregister ``node``; the test destroys it itself."""
+        self._nodes.remove(node)
+
+    def use(self, executor: Any) -> Any:
+        """Register the (single) executor for a bounded drain and return it."""
+        self._executor = executor
+        return executor
+
+    def before_teardown(self, fn: Callable[[], object]) -> None:
+        """Run ``fn`` at the start of teardown, before the executor drains."""
+        self._before.append(fn)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            self._teardown()
+        except BaseException as teardown_exc:
+            if exc is None:
+                raise
+            exc.add_note(f"live-ROS teardown also failed: {teardown_exc!r}")
+        finally:
+            self._rclpy.shutdown()
+
+    def _teardown(self) -> None:
+        for fn in self._before:
+            fn()
+        if self._executor is not None:
+            for node in self._nodes:
+                self._executor.remove_node(node)
+            _shutdown_executor(self._executor)
+        for node in reversed(self._nodes):
+            node.destroy_node()
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
@@ -105,18 +230,19 @@ def test_goal_result_lands_while_llm_call_is_in_flight() -> None:
         slow_finished.set()
         return WaitTool(rationale="observing the in-flight goal")
 
-    rclpy.init()
-    try:
+    with _LiveRosSession(rclpy) as live:
         client = FakeToolUseClient(selector=_selector)
-        reasoner = ReasonerNode(
-            client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-a"})),
-            tick_hz=5.0,
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-a"})),
+                tick_hz=5.0,
+            )
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
 
-        server_node = rclpy.create_node("openral_test_async_server_a")
+        server_node = live.node(rclpy.create_node("openral_test_async_server_a"))
 
         def _execute(goal_handle: Any) -> Any:
             # Blocks its own (reentrant-group) thread until the slow LLM
@@ -142,10 +268,10 @@ def test_goal_result_lands_while_llm_call_is_in_flight() -> None:
 
         from openral_msgs.msg import PromptStamped
 
-        pub_node = rclpy.create_node("openral_test_async_prompt_a")
+        pub_node = live.node(rclpy.create_node("openral_test_async_prompt_a"))
         prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
 
-        executor = MultiThreadedExecutor(num_threads=4)
+        executor = live.use(MultiThreadedExecutor(num_threads=4))
         executor.add_node(reasoner)
         executor.add_node(server_node)
 
@@ -161,14 +287,6 @@ def test_goal_result_lands_while_llm_call_is_in_flight() -> None:
                 result_processed_at = time.monotonic()
                 llm_still_in_flight_at_result = not slow_finished.is_set()
                 break
-
-        executor.remove_node(reasoner)
-        executor.remove_node(server_node)
-        pub_node.destroy_node()
-        server_node.destroy_node()
-        reasoner.destroy_node()
-    finally:
-        rclpy.shutdown()
 
     assert server_succeeded_at, "action server never reached succeed() — dispatch broke"
     assert result_processed_at is not None, (
@@ -208,6 +326,11 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
     timeout_seen = threading.Event()
     timeout_seen_at: list[float] = []
     dispatched = threading.Event()
+    # Teardown releases the stalling execute callback below. Without it the
+    # callback keeps looping on a pool thread (no one spins, so the cancel
+    # never lands) and calls ``abort()`` after the action server and context
+    # are gone -- issue #381.
+    tearing_down = threading.Event()
 
     def _selector(_context: str, _palette: Any) -> Any:
         if not dispatched.is_set():
@@ -221,23 +344,29 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
         slow_finished.set()
         return WaitTool(rationale="waiting out the stall")
 
-    rclpy.init()
-    try:
+    with _LiveRosSession(rclpy) as live:
+        live.before_teardown(tearing_down.set)
         client = FakeToolUseClient(selector=_selector)
-        reasoner = ReasonerNode(
-            client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-b"})),
-            tick_hz=5.0,
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-b"})),
+                tick_hz=5.0,
+            )
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
 
-        server_node = rclpy.create_node("openral_test_async_server_b")
+        server_node = live.node(rclpy.create_node("openral_test_async_server_b"))
 
         def _execute(goal_handle: Any) -> Any:
             goal_started_at.append(time.monotonic())
             hard_stop = time.monotonic() + _SLOW_LLM_S + 8.0
-            while time.monotonic() < hard_stop and not goal_handle.is_cancel_requested:
+            while (
+                time.monotonic() < hard_stop
+                and not goal_handle.is_cancel_requested
+                and not tearing_down.is_set()
+            ):
                 time.sleep(0.05)
             result = ExecuteRskill.Result()
             result.success = False
@@ -260,7 +389,7 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
             callback_group=ReentrantCallbackGroup(),
         )
 
-        sub_node = rclpy.create_node("openral_test_async_failsub_b")
+        sub_node = live.node(rclpy.create_node("openral_test_async_failsub_b"))
 
         def _on_failure(msg: FailureTrigger) -> None:
             if msg.kind == 0 and not timeout_seen.is_set():  # KIND_TIMEOUT
@@ -273,10 +402,10 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
 
         from openral_msgs.msg import PromptStamped
 
-        pub_node = rclpy.create_node("openral_test_async_prompt_b")
+        pub_node = live.node(rclpy.create_node("openral_test_async_prompt_b"))
         prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
 
-        executor = MultiThreadedExecutor(num_threads=4)
+        executor = live.use(MultiThreadedExecutor(num_threads=4))
         executor.add_node(reasoner)
         executor.add_node(server_node)
         executor.add_node(sub_node)
@@ -287,16 +416,6 @@ def test_deadline_timer_fires_on_time_while_llm_call_is_in_flight() -> None:
         while time.monotonic() < deadline and not timeout_seen.is_set():
             executor.spin_once(timeout_sec=0.05)
         llm_still_in_flight_at_timeout = not slow_finished.is_set()
-
-        executor.remove_node(reasoner)
-        executor.remove_node(server_node)
-        executor.remove_node(sub_node)
-        pub_node.destroy_node()
-        sub_node.destroy_node()
-        server_node.destroy_node()
-        reasoner.destroy_node()
-    finally:
-        rclpy.shutdown()
 
     assert goal_started_at, "action server never started the goal — dispatch broke"
     assert timeout_seen.is_set(), "KIND_TIMEOUT never published — deadline timer starved or lost"
@@ -337,27 +456,28 @@ def test_tier_a_failure_is_ingested_mid_call_and_ticks_right_after() -> None:
         call_finished_at.append(time.monotonic())
         return WaitTool(rationale=f"tick {len(call_started_at)}")
 
-    rclpy.init()
-    try:
+    with _LiveRosSession(rclpy) as live:
         client = FakeToolUseClient(selector=_selector)
-        reasoner = ReasonerNode(
-            client=client,
-            # Non-empty palette so heartbeat ticks are not palette_empty-suppressed.
-            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-c"})),
-            tick_hz=5.0,
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                # Non-empty palette so heartbeat ticks are not palette_empty-suppressed.
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-c"})),
+                tick_hz=5.0,
+            )
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
 
         from openral_msgs.msg import PromptStamped
 
-        pub_node = rclpy.create_node("openral_test_async_pub_c")
+        pub_node = live.node(rclpy.create_node("openral_test_async_pub_c"))
         prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
         failure_pub = pub_node.create_publisher(
             FailureTrigger, "/openral/failure/safety", _prompt_qos()
         )
 
-        executor = MultiThreadedExecutor(num_threads=2)
+        executor = live.use(MultiThreadedExecutor(num_threads=2))
         executor.add_node(reasoner)
 
         _publish_prompt(pub_node, prompt_pub, "start thinking")
@@ -384,12 +504,6 @@ def test_tier_a_failure_is_ingested_mid_call_and_ticks_right_after() -> None:
             # Renderer ingest is the executor-liveness observable.
             if not ingested_mid_call_at and reasoner._renderer.failures:
                 ingested_mid_call_at.append(time.monotonic())
-
-        executor.remove_node(reasoner)
-        pub_node.destroy_node()
-        reasoner.destroy_node()
-    finally:
-        rclpy.shutdown()
 
     assert ingested_mid_call_at, "safety failure never reached the renderer"
     assert len(call_started_at) >= 2, (
@@ -446,18 +560,19 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
             deadline_s=0.0,
         )
 
-    rclpy.init()
-    try:
+    with _LiveRosSession(rclpy) as live:
         client = FakeToolUseClient(selector=_selector, delay_s=0.15)
-        reasoner = ReasonerNode(
-            client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-soak"})),
-            tick_hz=10.0,
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-soak"})),
+                tick_hz=10.0,
+            )
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
 
-        server_node = rclpy.create_node("openral_test_async_server_soak")
+        server_node = live.node(rclpy.create_node("openral_test_async_server_soak"))
 
         def _execute(goal_handle: Any) -> Any:
             result = ExecuteRskill.Result()
@@ -480,10 +595,10 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
 
         from openral_msgs.msg import PromptStamped
 
-        pub_node = rclpy.create_node("openral_test_async_prompt_soak")
+        pub_node = live.node(rclpy.create_node("openral_test_async_prompt_soak"))
         prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
 
-        executor = MultiThreadedExecutor(num_threads=4)
+        executor = live.use(MultiThreadedExecutor(num_threads=4))
         executor.add_node(reasoner)
         executor.add_node(server_node)
 
@@ -508,14 +623,6 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
         tick_released = (
             drained.is_set() and not reasoner._tick_in_flight and not reasoner._rskill_inflight
         )
-
-        executor.remove_node(reasoner)
-        executor.remove_node(server_node)
-        pub_node.destroy_node()
-        server_node.destroy_node()
-        reasoner.destroy_node()
-    finally:
-        rclpy.shutdown()
 
     assert cycles >= 5, (
         f"only {cycles} dispatch/abort cycles in 15 s with a 0.15 s LLM delay — "
@@ -548,13 +655,14 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
         select_started_at.append(time.monotonic())
         return WaitTool(rationale="fast selection")
 
-    rclpy.init()
-    try:
+    with _LiveRosSession(rclpy) as live:
         client = FakeToolUseClient(selector=_selector, describe_delay_s=_SLOW_LLM_S)
-        reasoner = ReasonerNode(
-            client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-d"})),
-            tick_hz=5.0,
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-d"})),
+                tick_hz=5.0,
+            )
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
@@ -571,10 +679,10 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
 
         from openral_msgs.msg import PromptStamped
 
-        pub_node = rclpy.create_node("openral_test_async_pub_d")
+        pub_node = live.node(rclpy.create_node("openral_test_async_pub_d"))
         prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
 
-        executor = MultiThreadedExecutor(num_threads=2)
+        executor = live.use(MultiThreadedExecutor(num_threads=2))
         executor.add_node(reasoner)
 
         _publish_prompt(pub_node, prompt_pub, "safety demands attention now")
@@ -582,12 +690,6 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
         deadline = time.monotonic() + _SLOW_LLM_S + 5.0
         while time.monotonic() < deadline and not (select_started_at and verdicts):
             executor.spin_once(timeout_sec=0.05)
-
-        executor.remove_node(reasoner)
-        pub_node.destroy_node()
-        reasoner.destroy_node()
-    finally:
-        rclpy.shutdown()
 
     assert client.describe_calls == 1, "describe_image never ran — the gate never adjudicated"
     assert select_started_at, "forced tick's select_tool never ran"
@@ -598,4 +700,87 @@ def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
     )
     assert verdicts == [False], (
         f"expected the delayed canned 'no' adjudication to deliver False; got {verdicts!r}"
+    )
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_destroy_node_mid_llm_call_drops_the_late_completion() -> None:
+    """``destroy_node()`` alone (no cleanup transition) reaps the reasoner's LLM worker hand-back.
+
+    The LLM call is still sleeping in the ``reasoner-llm`` worker when the node is
+    destroyed. Before ``ReasonerNode.destroy_node`` existed, that worker later
+    appended its completion to the inbox and triggered the guard condition the base
+    ``destroy_node`` had destroyed -- rclpy's ``cannot use Destroyable because
+    destruction was requested`` (#381), raised on a pool thread and lost on its
+    future. Now the guard is detached first, so the late completion is dropped:
+    the inbox stays empty once the worker has finished.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import WaitTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.executors import MultiThreadedExecutor
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    slow_started = threading.Event()
+    slow_finished = threading.Event()
+
+    def _selector(_context: str, _palette: Any) -> Any:
+        slow_started.set()
+        time.sleep(_SLOW_LLM_S)
+        slow_finished.set()
+        return WaitTool(rationale="finishing after the node is gone")
+
+    with _LiveRosSession(rclpy) as live:
+        client = FakeToolUseClient(selector=_selector)
+        reasoner = live.node(
+            ReasonerNode(
+                client=client,
+                palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-e"})),
+                tick_hz=5.0,
+            )
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        from openral_msgs.msg import PromptStamped
+
+        pub_node = live.node(rclpy.create_node("openral_test_async_pub_e"))
+        prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
+
+        executor = live.use(MultiThreadedExecutor(num_threads=2))
+        executor.add_node(reasoner)
+
+        _publish_prompt(pub_node, prompt_pub, "think slowly")
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not slow_started.is_set():
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        _shutdown_executor(executor)
+        llm_pool = reasoner._llm_pool
+        destroyed_mid_call = slow_started.is_set() and not slow_finished.is_set()
+        live.release(reasoner)  # destroyed by hand, mid-call; not again at teardown
+        reasoner.destroy_node()
+        pools_reaped = reasoner._llm_pool is None and reasoner._vlm_pool is None
+        guard_released = reasoner._inbox_guard is None
+        # Join the abandoned worker (bounded by the selector's sleep) so its
+        # late _post_to_executor has run before the inbox is inspected.
+        if llm_pool is not None:
+            llm_pool.shutdown(wait=True)
+        late_completion_dropped = not reasoner._executor_inbox
+
+    assert destroyed_mid_call, (
+        "the slow LLM call was not in flight at destroy_node -- the test did not "
+        "exercise the late-completion path; raise _SLOW_LLM_S"
+    )
+    assert slow_finished.is_set(), "the abandoned LLM worker never finished its call"
+    assert pools_reaped, "destroy_node left the reasoner-llm / reasoner-vlm pools alive"
+    assert guard_released, "destroy_node left _inbox_guard pointing at a destroyed guard"
+    assert late_completion_dropped, (
+        "the late LLM completion was marshaled onto a destroyed node's inbox "
+        "instead of being dropped at the released guard"
     )

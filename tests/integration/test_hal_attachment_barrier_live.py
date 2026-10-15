@@ -270,11 +270,15 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
         )
         assert bridge.attachment_action_ack_ready()
     finally:
+        # Stop spinning BEFORE the transitions: the HAL node is single-threaded
+        # in production, so its timers never overlap deactivate/cleanup. Run
+        # them under a live spin thread and ``_publish_images`` publishes on a
+        # publisher the bridge teardown just destroyed (``InvalidHandle``, #381).
+        executor.shutdown()
+        spin.join(timeout=5.0)
         with suppress(Exception):
             node.trigger_deactivate()
             node.trigger_cleanup()
-        executor.shutdown()
-        spin.join(timeout=5.0)
         peer.destroy_node()
         node.destroy_node()
         rclpy.shutdown()
@@ -584,11 +588,15 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
         )
         assert vision.attachment_action_ack_ready()
     finally:
+        # Stop spinning BEFORE the transitions: the HAL node is single-threaded
+        # in production, so its timers never overlap deactivate/cleanup. Run
+        # them under a live spin thread and ``_publish_images`` publishes on a
+        # publisher the bridge teardown just destroyed (``InvalidHandle``, #381).
+        executor.shutdown()
+        spin.join(timeout=5.0)
         with suppress(Exception):
             node.trigger_deactivate()
             node.trigger_cleanup()
-        executor.shutdown()
-        spin.join(timeout=5.0)
         unanswered.destroy_node()
         peer.destroy_node()
         node.destroy_node()
