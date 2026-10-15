@@ -106,7 +106,9 @@ def _compose(args: dict[str, str]) -> list[Any]:
     return [ctx, list(module.compose_runtime_graph(ctx))]
 
 
-def _node(entities: list[Any], package: str, executable: str | None = None) -> Any:
+def _node(
+    entities: list[Any], package: str, executable: str | None = None, name: str | None = None
+) -> Any:
     from launch_ros.actions import Node
 
     found = [
@@ -115,6 +117,7 @@ def _node(entities: list[Any], package: str, executable: str | None = None) -> A
         if isinstance(e, Node)
         and getattr(e, "_Node__package", None) == package
         and (executable is None or getattr(e, "_Node__node_executable", None) == executable)
+        and (name is None or getattr(e, "_Node__node_name", None) == name)
     ]
     assert len(found) == 1, f"expected one {package} node, found {len(found)}"
     return found[0]
@@ -209,7 +212,14 @@ def test_the_autonomous_scene_keeps_the_voxel_check_and_adds_the_reasoner_legs()
     assert kernel_params["world_voxel_enabled"] is True
     assert kernel_params["world_voxel_margin_m"] == 0.02
     _node(entities, "openral_reasoner_ros", "reasoner_node.py")
-    _node(entities, "openral_perception_ros", "ros_image_detector_node.py")
+    # The continuous detector by name: deploy also composes an on-demand omdet-turbo
+    # locator from the same executable wherever the omdet runtime is importable.
+    _node(
+        entities,
+        "openral_perception_ros",
+        "ros_image_detector_node.py",
+        name="openral_ros_image_detector",
+    )
 
 
 def test_the_unit_pose_is_the_only_mount_published_for_the_zed() -> None:
