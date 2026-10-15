@@ -142,7 +142,8 @@ sync *args:
     @if v=$(uv run --no-sync python -c 'import importlib.metadata as m; print(m.version("opencv-python-headless"))' 2>/dev/null) \
         && ! uv run --no-sync python -c 'import cv2' 2>/dev/null; then \
         echo "repairing cv2: reinstalling opencv-python-headless==$v"; \
-        uv pip install --reinstall --no-deps "opencv-python-headless==$v"; \
+        uv pip install --python "$(uv run --no-sync python -c 'import sys; print(sys.executable)')" \
+            --reinstall --no-deps "opencv-python-headless==$v"; \
     fi
 
 # Lint everything
