@@ -288,7 +288,10 @@ def test_heavy_lanes_run_only_when_dispatched() -> None:
         "the trigger must run the default branch's code, never a PR's"
     )
     assert trigger["permissions"]["actions"] == "write"
-    assert trigger["permissions"]["contents"] == "read"
+    # contents: write only to point heavy-lanes/fork-* at base-tree copies;
+    # statuses: write for the `heavy-lanes` waiting/running status.
+    assert trigger["permissions"]["contents"] == "write"
+    assert trigger["permissions"]["statuses"] == "write"
 
 
 def test_release_please_reports_a_stalled_release() -> None:

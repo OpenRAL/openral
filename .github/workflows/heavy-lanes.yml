@@ -12,6 +12,21 @@ name: heavy-lanes
 # the lanes have actually run. A maintainer can still dispatch it by hand
 # (Actions → heavy-lanes → "Run workflow"), e.g. to re-run a PR early.
 #
+# The result reaches the PR as a COMMIT STATUS named `heavy-lanes` on the
+# tested commit (`sha` input, else the dispatched commit), posted by the gate
+# job. A workflow_dispatch run's own check runs are not linked to any PR, so
+# without the status the PR would show "Expected — waiting" forever, pass or
+# fail.
+#
+# Fork PRs: workflow_dispatch cannot target a fork branch, so the trigger
+# dispatches on `heavy-lanes/fork-<pr>`, a branch it points at a copy of the
+# base branch's tree, with `sha` = the fork head. This file therefore comes
+# from the base branch (reviewed), never from the fork; the branch is its own
+# cache scope, so fork code cannot plant a cache entry that base-branch runs
+# restore. The lane jobs check out `sha` with the workflow's read-only token
+# and no secrets — what a fork pull_request run gets. The gate job, the only
+# job that can write statuses, checks out the workflow's own ref, never `sha`.
+#
 # Job graph:
 #   lanes-select ── lane (matrix, one job per opt-in dependency group) ── heavy-lanes
 #                                                                         (required
@@ -40,6 +55,10 @@ on:
         description: "diff head ref"
         required: false
         default: "HEAD"
+      sha:
+        description: "commit to test and report `heavy-lanes` on (default: the dispatched ref)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -57,6 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.sha || github.sha }}
           # Full history so `git diff <base>...<head>` (merge-base) resolves.
           fetch-depth: 0
 
@@ -89,6 +109,8 @@ jobs:
         include: ${{ fromJSON(needs.lanes-select.outputs.lanes) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.sha || github.sha }}
       - uses: ./.github/actions/setup-test-env
 
       - name: Run opt-in dependency lane ${{ matrix.lane }}
@@ -260,6 +282,11 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The only job allowed to write statuses; it checks out the workflow's own
+    # ref (never a fork `sha`), so no PR-supplied code runs with this token.
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -313,3 +340,27 @@ jobs:
         run: |
           echo "::error::lanes-select or a lane failed or was cancelled — see above."
           exit 1
+
+      - name: Report heavy-lanes on the tested commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha || github.sha }}
+          JOB_STATUS: ${{ job.status }}
+          SELECT_RESULT: ${{ needs.lanes-select.result }}
+          LANE_RESULT: ${{ needs.lane.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # `error` on cancel: heavy_lanes_trigger.py re-dispatches a
+          # cancelled run, but never a failed one (re-run failed lanes from
+          # the run page; the re-run reaches this step again).
+          if [ "$SELECT_RESULT" = cancelled ] || [ "$LANE_RESULT" = cancelled ]; then
+            state=error; desc="Cancelled — heavy-lanes-trigger starts it again"
+          elif [ "$JOB_STATUS" = success ]; then
+            state=success; desc="Passed"
+          else
+            state=failure; desc="Failed — open Details for the failing lane"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context=heavy-lanes \
+            -f description="$desc" -f target_url="$RUN_URL" > /dev/null

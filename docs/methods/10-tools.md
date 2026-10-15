@@ -336,27 +336,38 @@ _Opt-in lane accounting — decides, records and attests what each dependency la
 - `main(argv=None) -> int` (L351) — CLI; `lane` (account one lane's reports) / `attest` (cross-check the ledger against the selection, write the job summary).
 
 ### `tools/heavy_lanes_trigger.py`
-_Starts the required `heavy-lanes` check on a PR automatically once the PR is ready — no approval, no label. Run by `.github/workflows/heavy-lanes-trigger.yml`. See [`docs/contributing/development.md`](../contributing/development.md#review-policy)._
+_Starts the required `heavy-lanes` check on a PR (fork PRs included) automatically once the PR is ready — no approval, no label — and keeps the `heavy-lanes` commit status on the PR head saying what it waits for. Run by `.github/workflows/heavy-lanes-trigger.yml`. See [`docs/contributing/development.md`](../contributing/development.md#review-policy)._
 
-- `API` (L65) — `"https://api.github.com"`.
-- `LANES_WORKFLOW` (L66) — `"heavy-lanes.yml"`, the workflow it dispatches.
-- `OWN_CHECK_NAMES` (L70) — Check runs `heavy-lanes.yml` posts itself (`lanes-select`, `lane`, `heavy-lanes`) plus the trigger workflow's own job (`heavy-lanes-trigger`, posted on the PR head by a `workflow_run` sweep); never a precondition. Kept equal to both workflows' job names by `tests/unit/test_heavy_lanes_trigger.py`.
-- `OWN_CHECK_PREFIXES` (L71) — `("lane (",)`: matrix legs of the `lane` job.
-- `GREEN_CONCLUSIONS` (L72) — `success`, `skipped`, `neutral`.
-- `DEFAULT_REQUIRED_CHECKS` (L73) — Checks that must have reported green before dispatch: `select-and-test`, `quality`, `Verify Signed-off-by`.
-- `class GitHubAPIError(RuntimeError)` (L76) — A 200 response that is unusable: GraphQL `errors` payload or null `data` (rate limit, missing scope, vanished PR).
-- `class CheckRunState(BaseModel)` (L80) — One check run on the PR head: `name` / `status` / `conclusion`.
-- `class LaneRunState(BaseModel)` (L88) — One `heavy-lanes.yml` run for the PR head: `status` / `conclusion`.
-- `class PullRequestState(BaseModel)` (L95) — Everything the verdict reads: draft, same-repo, `behind_by`, checks, commit statuses, unresolved threads, existing lane runs.
-- `class Verdict(BaseModel)` (L111) — `ready` + the `reasons` it is not.
-- `readiness(pr, required_checks) -> Verdict` (L122) — Pure verdict: not draft, not a fork, 0 behind base, every other check green and the required ones present, statuses `success`, threads resolved, no non-cancelled lane run for this head yet.
-- `class GitHub` (L157) — Minimal REST + GraphQL client over `urllib` (the network boundary).
-  - `GitHub.get(path)` (L174) — GET `/repos/<repo>/<path>`, decoded JSON.
-  - `GitHub.paginate(path, key=None) -> list` (L178) — Every page of a list endpoint.
-  - `GitHub.unresolved_threads(number) -> int` (L191) — Unresolved review threads, via GraphQL.
-  - `GitHub.fetch(pr) -> PullRequestState` (L220) — Gather one PR's state.
-  - `GitHub.dispatch(pr) -> None` (L243) — `workflow_dispatch` `heavy-lanes.yml` on the PR branch.
-- `main(argv=None) -> int` (L258) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Re-reads the head SHA right before dispatch and defers if it moved. One PR's API trouble is a `::warning::`, never a failed sweep.
+- `API` (L75) — `"https://api.github.com"`.
+- `LANES_WORKFLOW` (L76) — `"heavy-lanes.yml"`, the workflow it dispatches.
+- `OWN_CHECK_NAMES` (L80) — Check runs `heavy-lanes.yml` posts itself (`lanes-select`, `lane`, `heavy-lanes`) plus the trigger workflow's own job (`heavy-lanes-trigger`, posted on the PR head by a `workflow_run` sweep); never a precondition. Kept equal to both workflows' job names by `tests/unit/test_heavy_lanes_trigger.py`.
+- `OWN_CHECK_PREFIXES` (L81) — `("lane (",)`: matrix legs of the `lane` job.
+- `GREEN_CONCLUSIONS` (L82) — `success`, `skipped`, `neutral`.
+- `STATUS_CONTEXT` (L85) — `"heavy-lanes"`: the commit status that carries the result onto the PR (named after the required check).
+- `RUNNING` (L86) — `"Running"`: description prefix of the status once dispatched.
+- `WAITING` (L87) — `"Waiting: "`: description prefix while the PR is not ready (followed by the reasons).
+- `STATUS_DESCRIPTION_MAX` (L88) — `140`, GitHub's status-description limit.
+- `FORK_BRANCH_PREFIX` (L89) — `"heavy-lanes/fork-"`: branch a fork PR's lanes run from (a copy of the base tree).
+- `DEFAULT_REQUIRED_CHECKS` (L90) — Checks that must have reported green before dispatch: `select-and-test`, `quality`, `Verify Signed-off-by`.
+- `class GitHubAPIError(RuntimeError)` (L93) — A 200 response that is unusable: GraphQL `errors` payload or null `data` (rate limit, missing scope, vanished PR).
+- `class CheckRunState(BaseModel)` (L97) — One check run on the PR head: `name` / `status` / `conclusion`.
+- `class StatusState(BaseModel)` (L105) — One commit status on the PR head: `context` / `state` / `description`.
+- `class LaneRunState(BaseModel)` (L113) — One `heavy-lanes.yml` run for the PR head: `status` / `conclusion`.
+- `class PullRequestState(BaseModel)` (L120) — Everything the verdict reads: draft, same-repo, `behind_by`, checks, commit statuses, unresolved threads, existing lane runs.
+- `class Verdict(BaseModel)` (L136) — `ready` + the `reasons` it is not.
+- `own_status(pr) -> StatusState | None` (L147) — The `heavy-lanes` status on the PR head.
+- `lanes_started(pr) -> bool` (L152) — A non-cancelled lane run, or a running / passed / failed `heavy-lanes` status, exists for this head.
+- `readiness(pr, required_checks) -> Verdict` (L166) — Pure verdict: not draft, 0 behind base, every other check green and the required ones present, other statuses `success`, threads resolved, lanes not started for this head yet.
+- `class GitHub` (L196) — Minimal REST + GraphQL client over `urllib` (the network boundary).
+  - `GitHub.get(path)` (L213) — GET `/repos/<repo>/<path>`, decoded JSON.
+  - `GitHub.paginate(path, key=None) -> list` (L217) — Every page of a list endpoint.
+  - `GitHub.unresolved_threads(number) -> int` (L230) — Unresolved review threads, via GraphQL.
+  - `GitHub.fetch(pr) -> PullRequestState` (L259) — Gather one PR's state.
+  - `GitHub.dispatch(pr) -> None` (L287) — `workflow_dispatch` `heavy-lanes.yml` with `sha` = the PR head: on the PR branch, or on `fork_branch(pr)` for a fork PR.
+  - `GitHub.fork_branch(pr) -> str` (L304) — Point `heavy-lanes/fork-<pr>` at a new commit with the base branch's tree; returns the branch name.
+  - `GitHub.delete_stale_fork_branches(open_prs) -> None` (L339) — Delete `heavy-lanes/fork-<n>` branches whose PR closed.
+  - `GitHub.set_status(sha, state, description) -> None` (L346) — Post the `heavy-lanes` commit status.
+- `main(argv=None) -> int` (L395) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Posts the waiting status (only when its text changed; backfills a status from a pre-status run), re-reads the head SHA right before dispatch and defers if it moved, and prunes fork branches on a full sweep. One PR's API trouble is a `::warning::`, never a failed sweep.
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._

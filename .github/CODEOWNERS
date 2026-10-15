@@ -3,15 +3,14 @@
 # The paths below still carve out the intended working-group split (schemas,
 # safety, HAL) for when the project has more than one maintainer — restore
 # the `@openral/<wg>` teams once they exist. Until then every path routes to
-# the sole maintainer, and `require_code_owner_review` on the branch ruleset
-# (docs/contributing/development.md, "Review policy") makes this file
-# load-bearing rather than decorative.
+# the sole maintainer.
 #
-# GitHub does not let a PR author approve their own PR, so with a single code
-# owner the sole maintainer's own PRs can never satisfy this rule through a
-# normal review. That is expected, not a gap: the ruleset's
-# `bypass_actors: [OrganizationAdmin]` is how the maintainer merges their own
-# PRs, same as release-please's. A second code owner removes the need for it.
+# With one maintainer the branch ruleset requires 0 approvals (a PR author
+# cannot approve their own PR, so 1 would force a ruleset bypass on every
+# merge); the maintainer's merge is the review, since nobody else has write
+# access. The day a second account gets write access, set the ruleset back to
+# 1 approval + `require_code_owner_review`, which makes this file load-bearing
+# again (docs/contributing/development.md, "Review policy").
 *                                   @AdrianLlopart
 
 # Schemas and IDL — extra care
