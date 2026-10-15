@@ -187,7 +187,9 @@ def test_reads_real_pytest_junit_including_module_level_skip(tmp_path: Path) -> 
     (tmp_path / "test_mixed.py").write_text(
         "import pytest\n"
         "def test_ok(): assert True\n"
-        "def test_gated(): pytest.skip('SmolVLA LIBERO sim test requires CUDA')\n",
+        "def test_gated(): pytest.skip('SmolVLA LIBERO sim test requires CUDA')\n"
+        "@pytest.mark.xfail(strict=True, reason='known drift, human gate')\n"
+        "def test_known_drift(): assert False\n",
         encoding="utf-8",
     )
     xml = tmp_path / "report.xml"
@@ -213,7 +215,9 @@ def test_reads_real_pytest_junit_including_module_level_skip(tmp_path: Path) -> 
         check=False,
     )
     passed, failed, reasons = lane_report.read_junit([xml])
-    assert (passed, failed) == (1, 0)
+    # The strict xfail ran and failed as declared: it counts as ran, not as a skip.
+    assert (passed, failed) == (2, 0)
+    assert not any("known drift" in r for r in reasons)
     assert any("requires CUDA" in r for r in reasons)
     # The module-level skip's real reason, recovered from the element text.
     assert any("rclpy" in r for r in reasons)
