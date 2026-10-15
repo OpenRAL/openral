@@ -469,6 +469,86 @@ swap groups per task: `just sync --group robocasa` for kitchens, `just sync
 --group sim` (or `--group libero`) to go back. See [Managing the Python environment & dependency
 groups](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
+### Reading the collision view in Foxglove
+
+`openral deploy sim --foxglove` starts a read-only Foxglove bridge next to the graph. Its 3D
+panel shows the same world the safety kernel checks: the voxel map, the declared fixtures and
+the boxes the grasp leg measures. The frames below come from a bimanual OpenArm pick-and-place
+run with the [manipulation-workspace contact](../../reference/manipulation-workspace-contact.md)
+rule on. The camera tiles along the top, the sim-time header and the event text were added by
+the recording tool. In a live session the event text appears as kernel log lines in the deploy log
+instead (see the carry phase below).
+
+Each element is tagged with where it comes from. **Detected** means the graph measures it live,
+as it would on a real robot. **From simulator** means the sim supplied it: on a real cell the
+same input has to come from the cell's own scene graph, CAD or a survey.
+
+**Grasp phase.** The robot reaches into the tote. The grasp leg has already measured the target
+carton from head depth, before any finger touches it.
+
+![Foxglove collision view during the grasp phase: camera tiles, height-coloured voxels, colour
+depth points, black-outlined static geometry and the green grasp region, each numbered and
+tagged detected or from simulator](images/collision-view-grasp.webp)
+
+1. **Camera tiles** (from simulator): left wrist, head ZED and right wrist, rendered by the
+   simulator. These are the frames the policy acts on.
+2. **Voxels, coloured by height** (detected): the kernel's occupancy map, built from head depth
+   by octomap at 15 mm. Collision checks run against this map. Cells inside a declared box
+   fixture are occupied in the kernel but left out of the drawing (`hide_static_voxels`), so
+   the fixture is drawn once, by its marker.
+3. **Colour points** (detected): the raw head-camera depth cloud in RGB, with the robot
+   filtered out. It shows what the camera sees; the kernel does not check it directly.
+4. **Black-outlined boxes** (from simulator): the declared static geometry
+   (`runtime.static_geometry_file`): tote walls, rim and floor, rack, decks, staging board and
+   shelf stock. `tools/derive_scene_inputs.py` exports them from the stage's static colliders.
+   They are always occupied, whether the camera has seen them or not.
+5. **Green box, grasp region** (detected): the target carton, measured from head-depth points
+   inside the grasp declaration's `search_box`. The fingers may touch it. The `search_box`
+   itself is a scene input (derived from the sim's object poses) and is drawn too faint to see
+   here.
+
+**Carry phase.** The carton is attached to the left hand and rides with it.
+
+![Foxglove collision view during the carry phase: the orange payload box on the left hand, a
+tolerated-contact line, a brake line with its creep fraction, and the static geometry over the
+shelf](images/collision-view-carry.webp)
+
+1. **Orange box, payload** (detected): the held carton's collision box, taken from the measured
+   grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
+   against the world and the robot as part of the hand.
+2. **Contact tolerated** (kernel log line `safety.workspace_contact`): a hand link or its
+   payload touches an occupied cell inside the declared `workspace_box`, slower than
+   `workspace_contact_max_speed_mps` and within `workspace_contact_max_lead_m`, so the kernel
+   lets it through. The line reports the link, the depth into the cell and the hand speed. Arm
+   links never get this tolerance.
+3. **BRAKE … creep** (kernel log line `safety.workspace_brake`): the chunk failed **only**
+   because the hand was too fast or led its measured pose by too much. Instead of stopping, the
+   kernel scales the chunk toward the measured pose; `creep=0.099` means about 10 % of the
+   commanded step. Any other reason to refuse still stops the robot.
+4. **Black-outlined boxes** (from simulator): the same declared static geometry, here the shelf
+   stock above the target deck.
+
+**A payload from wrist segmentation.** In another run, the right hand holds a carton whose box
+was measured by wrist-camera segmentation instead.
+
+![Foxglove collision view with a cyan payload box measured by wrist-camera segmentation, two
+tolerated-contact lines and the height-coloured voxels](images/collision-view-segmentation.webp)
+
+1. **Cyan box, payload** (detected): a payload measured by wrist-camera segmentation
+   (`evidence_kind: vision_segmentation`).
+2. **Contact tolerated**: two hand links (`link7` and the follower finger) in tolerated contact
+   at the same time.
+3. **Voxels** (detected), as in the grasp phase.
+
+Colours not shown above: blue for an active place region, amber for the map-confirmed workspace
+box, yellow for the jaw-span fallback payload and a red sphere where a kernel stop happened. All
+of them are defined in
+[`bucket2_markers.py`](https://github.com/OpenRAL/openral/blob/master/packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py);
+the topics are listed in the
+[Foxglove bringup README](https://github.com/OpenRAL/openral/blob/master/packages/openral_foxglove_bringup/README.md).
+Workspace contact is default off (`runtime.workspace_contact_enabled`) and sim-only until
+Safety-WG review: `openral deploy run` on a real HAL refuses it.
+
 ## 3. Run on hardware
 
 With the robot powered, connected, and within a clear workspace:
