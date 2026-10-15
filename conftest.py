@@ -25,9 +25,11 @@ in ``tests/conftest.py`` because it only matters when running tests under
 
 from __future__ import annotations
 
+import gc
 import logging
 import pathlib
 import sys
+import warnings
 from collections.abc import Iterator
 
 import pytest
@@ -111,3 +113,62 @@ def _stdlib_logger_class() -> Iterator[None]:
     _restore_stdlib_logging()
     yield
     _restore_stdlib_logging()
+
+
+# ── No DDS participant may outlive the session (#381) ───────────────────────
+# A live-ROS test that leaks an rclpy node/context into a reference cycle keeps
+# its DDS participant alive past the last test. Interpreter finalization does
+# not reliably destroy it, so the Cyclone threads (``tev``, ``recv``, ...) are
+# still running when libc's ``exit()`` runs C++ static destructors (torch,
+# nvjpeg) and unmaps their code: an intermittent SIGSEGV (exit 139) after
+# every test has passed. Reclaim the cycles and shut rclpy down while the
+# interpreter is still whole, and say so if a participant survives anyway.
+#
+# A failed test pins one more: pytest stores the last failure in
+# ``sys.last_exc`` / ``sys.last_traceback``, whose frames hold that test's
+# executor. A suspended ``_wait_for_ready_callbacks`` generator in it keeps
+# every node handle marked in use, so ``destroy_node()`` stays deferred and
+# the participant lives on. Drop that reference before collecting.
+#
+# A recorded warning pins another: rclpy's "coroutine
+# 'ActionServer._execute_goal' was never awaited" ``WarningMessage`` keeps the
+# coroutine as ``.source`` (coroutine -> ActionServer -> node -> context), and
+# pytest reports warnings through a *historic* hook, whose call arguments
+# pluggy keeps for the whole session. ``_drop_warning_source`` releases it.
+_DDS_THREAD_NAMES = frozenset({"tev", "recv", "recvMC", "recvUC", "dq.builtins", "gc", "lease"})
+
+
+def _live_dds_threads() -> list[str]:
+    names = []
+    for task in pathlib.Path("/proc/self/task").glob("*/comm"):
+        try:
+            name = task.read_text().strip()
+        except OSError:  # the thread exited between glob and read
+            continue
+        if name in _DDS_THREAD_NAMES:
+            names.append(name)
+    return names
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_warning_recorded(warning_message: warnings.WarningMessage) -> None:
+    """Drop the warned-about object once every reporter has formatted it."""
+    warning_message.source = None
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Release every leaked DDS participant before the process exits."""
+    rclpy = sys.modules.get("rclpy")  # never import it here: no ROS, nothing to release
+    if rclpy is None:
+        return
+    for name in ("last_exc", "last_type", "last_value", "last_traceback"):
+        if hasattr(sys, name):
+            delattr(sys, name)
+    gc.collect()
+    rclpy.try_shutdown()
+    gc.collect()
+    if leftover := _live_dds_threads():
+        sys.stderr.write(
+            f"conftest: DDS threads still alive at session end {sorted(leftover)}; "
+            "a test leaks an rclpy node or context (#381)\n"
+        )
