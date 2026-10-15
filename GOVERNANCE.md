@@ -27,7 +27,7 @@ reviewer, an update to the safety hazard log (private `OpenRAL/management`
 repo), and tests proving the change is *at least as conservative* are
 required for any safety-touching change (see CLAUDE.md §3).
 Safety reviewers can block a change on safety grounds regardless of other
-approvals. For hazard reports or coordinated safety disclosure, email security@openral.dev
+approvals. For hazard reports or coordinated safety disclosure, email security@openral.com
 with "[safety]" in the subject line.
 
 ### Contributors
@@ -60,13 +60,13 @@ Developer Certificate of Origin (DCO); see [CONTRIBUTING.md](CONTRIBUTING.md#dev
 ## Code of Conduct
 
 All participation is governed by our
-[Code of Conduct](CODE_OF_CONDUCT.md). Reports go to conduct@openral.dev.
+[Code of Conduct](CODE_OF_CONDUCT.md). Reports go to conduct@openral.com.
 
 ## Contact
 
-- General / project enquiries: hello@openral.dev
+- General / project enquiries: hello@openral.com
 - Security vulnerabilities & safety disclosures: see [SECURITY.md](SECURITY.md)
-- Code of Conduct: conduct@openral.dev
+- Code of Conduct: conduct@openral.com
 
 ## Changing this document
 

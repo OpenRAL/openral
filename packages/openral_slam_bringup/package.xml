@@ -11,7 +11,7 @@
     under `/openral/slam_toolbox`; the Reasoner drives its
     INACTIVE → ACTIVE transition via `LifecycleTransitionTool`.
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

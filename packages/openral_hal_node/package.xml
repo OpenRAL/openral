@@ -9,7 +9,7 @@
     picks the sim or real HAL from the manifest. Every robot runs this node
     under the ROS node name openral_hal_&lt;robot_id&gt;.
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

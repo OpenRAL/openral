@@ -10,7 +10,7 @@
     openral_msgs/PromptStamped stream on /openral/prompt. FIFO
     arbitration with source-priority tags; no silent drops.
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

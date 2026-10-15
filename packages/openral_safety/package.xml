@@ -11,7 +11,7 @@
     into. Carries no enforcement logic; PRs that add enforcement require
     safety working group review per CLAUDE.md §7.7.
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

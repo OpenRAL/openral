@@ -19,7 +19,7 @@
     clientPublish/services (e.g. an E-stop button) remains out of scope and
     requires safety-WG review (CLAUDE.md §3).
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
