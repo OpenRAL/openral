@@ -350,10 +350,19 @@ class TestBuildChunkExecutorWiring:
                 {"chunk_boundary_blend": block}, chunk_fn=_JumpingProducer(), chunk_size=CHUNK
             )
 
+    @pytest.mark.parametrize("block", [{"steps": 2}, {"steps": 2, "dims": None}])
+    def test_manifest_block_requires_explicit_dims(self, block: dict[str, Any]) -> None:
+        """No all-dims default in a manifest: a binarized gripper or a delta-action dim
+        would be faded into commands the policy never emitted."""
+        with pytest.raises(ROSConfigError, match=r"chunk_boundary_blend\.dims"):
+            build_chunk_executor(
+                {"chunk_boundary_blend": block}, chunk_fn=_JumpingProducer(), chunk_size=CHUNK
+            )
+
     def test_prefetch_drop_bounds_steps_in_policy_extras(self) -> None:
         extras: dict[str, Any] = {"chunk_prefetch": True, "chunk_prefetch_at": 3}
         ok = build_chunk_executor(
-            {**extras, "chunk_boundary_blend": {"steps": 3}},
+            {**extras, "chunk_boundary_blend": {"steps": 3, "dims": [0]}},
             chunk_fn=_JumpingProducer(),
             chunk_size=CHUNK,
         )
@@ -361,7 +370,7 @@ class TestBuildChunkExecutorWiring:
         ok.stop()
         with pytest.raises(ROSConfigError, match=r"chunk_boundary_blend\.steps.*stale-row drop"):
             build_chunk_executor(
-                {**extras, "chunk_boundary_blend": {"steps": 4}},
+                {**extras, "chunk_boundary_blend": {"steps": 4, "dims": [0]}},
                 chunk_fn=_JumpingProducer(),
                 chunk_size=CHUNK,
             )
@@ -395,7 +404,8 @@ class TestBuildChunkExecutorWiring:
             ex.stop()
             return True
 
-        block: dict[str, Any] = {"steps": steps} | ({} if dims is None else {"dims": dims})
+        # A manifest has no all-dims default: ``dims=None`` is spelled out as every index.
+        block: dict[str, Any] = {"steps": steps, "dims": list(range(DOF)) if dims is None else dims}
         extras: dict[str, Any] = {"chunk_boundary_blend": block}
         if prefetch_at:
             extras |= {"chunk_prefetch": True, "chunk_prefetch_at": prefetch_at}
@@ -422,7 +432,9 @@ class TestBuildChunkExecutorWiring:
                 return torch.zeros(1, 1, DOF)
 
         with pytest.raises(ROSConfigError, match="chunk_boundary_blend"):
-            build_chunk_executor({"chunk_boundary_blend": {"steps": 1}}, policy=_OneStep())
+            build_chunk_executor(
+                {"chunk_boundary_blend": {"steps": 1, "dims": [0]}}, policy=_OneStep()
+            )
 
     def test_rtc_block_and_blend_are_refused_together(self) -> None:
         pytest.importorskip("lerobot.policies.rtc")
@@ -431,7 +443,7 @@ class TestBuildChunkExecutorWiring:
                 {
                     "chunk_prefetch": True,
                     "rtc": {"enabled": True, "execution_horizon": 4},
-                    "chunk_boundary_blend": {"steps": 2},
+                    "chunk_boundary_blend": {"steps": 2, "dims": [0]},
                 },
                 chunk_fn=_JumpingProducer(),
                 chunk_size=CHUNK,

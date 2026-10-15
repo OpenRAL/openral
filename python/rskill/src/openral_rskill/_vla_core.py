@@ -845,24 +845,25 @@ def _parse_chunk_boundary_blend(
 
     The block is ``{steps: K, dims: [i, ...]}``: ``steps`` (required, ``>= 1`` — omit
     the block to disable blending) is how many rows of each new chunk carry the fading
-    offset from the last served action; ``dims`` (optional, default every dim) names
-    the action indices that are blended — list the arm joints and leave out a gripper
-    or any delta-action dim. Only the shape is checked here; the rules (``steps`` below
-    the chunk size and the rows a pre-fetched chunk keeps, distinct non-negative
-    ``dims``, not with RTC) live in ``openral_rskill.executor._check_boundary_blend``,
-    which ``build_chunk_executor`` applies with this block's key in the messages.
+    offset from the last served action; ``dims`` (required) names the action indices
+    that are blended — list the arm joints and leave out a gripper or any delta-action
+    dim. There is no all-dims default in a manifest: fading a binarized gripper or a
+    delta-action channel would serve commands the policy never emitted. Only the shape
+    is checked here; the rules (``steps`` below the chunk size and the rows a
+    pre-fetched chunk keeps, distinct non-negative ``dims``, not with RTC) live in
+    ``openral_rskill.executor._check_boundary_blend``, which ``build_chunk_executor``
+    applies with this block's key in the messages.
 
     Args:
         spec_extra: The ``VLASpec.extra`` dict.
         adapter_name: Adapter label for error messages.
 
     Returns:
-        ``(0, None)`` without a block, else ``(steps, dims)`` with ``dims`` a tuple or
-        ``None``.
+        ``(0, None)`` without a block, else ``(steps, dims)`` with ``dims`` a tuple.
 
     Raises:
         ROSConfigError: The block is not a mapping, has unknown keys, a ``steps``
-            that is not an integer ``>= 1``, or ``dims`` that is not a list.
+            that is not an integer ``>= 1``, or ``dims`` missing or not a list.
     """
     raw = spec_extra.get("chunk_boundary_blend")
     if raw is None:
@@ -880,10 +881,11 @@ def _parse_chunk_boundary_blend(
             f"got {steps!r}"
         )
     dims_raw = raw.get("dims")
-    if dims_raw is None:
-        return steps, None
     if not isinstance(dims_raw, list):
-        raise ROSConfigError(f"{key}.dims must be a list of action indices; got {dims_raw!r}")
+        raise ROSConfigError(
+            f"{key}.dims must list the action indices to blend (the arm joints; leave out "
+            f"a gripper or delta-action dim); got {dims_raw!r}"
+        )
     return steps, tuple(dims_raw)
 
 
@@ -917,7 +919,7 @@ def build_chunk_executor(
     A ``policy_extras.chunk_boundary_blend`` block (see
     ``_parse_chunk_boundary_blend``) stitches non-RTC chunks: the executor fades
     each new chunk's offset from the last served action over its first ``steps``
-    rows, on ``dims`` (default all), so row 0 no longer jumps (openral/openral#378).
+    rows, on ``dims`` (required), so row 0 no longer jumps (openral/openral#378).
     ``steps`` must be below the chunk size and, with ``chunk_prefetch``, below the
     ``chunk_size - chunk_prefetch_at - 1`` rows a merged chunk keeps; the block is
     refused together with an enabled ``rtc`` block and on single-step policies.

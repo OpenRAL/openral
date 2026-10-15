@@ -466,7 +466,9 @@ class ChunkedExecutor:
         """
         action = self._buffer.popleft()
         self._popped += 1
-        if self._blend_steps:
+        if self._blend_steps and not self._buffer:
+            # The tail is only read when a chunk enters, which is only ever on an empty
+            # buffer (a pre-fetch merge or a synchronous re-plan): copy just that action.
             self._last_served = _copy_action(action)
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= len(self._buffer) and self._running and not self._bg_pending:
