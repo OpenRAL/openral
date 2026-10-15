@@ -566,3 +566,36 @@ class TestImageTime:
                 node.destroy_node()
                 rclpy.shutdown()
                 hal.env.close()
+
+
+class TestJointEfforts:
+    """The sidecar's measured joint efforts cross the wire into ``/joint_states.effort``.
+
+    Real OpenArm manifest and real ``SimAttachedHAL``; the sidecar is the ZMQ
+    boundary double. A sidecar without the key publishes no effort, not zeros.
+    """
+
+    def test_efforts_reach_read_state(self) -> None:
+        scene, task = _scene_task()
+        desc = TestHalTimeBaseGuard._openarm()
+        n = len(desc.joints)
+        eff = np.linspace(-6.0, 6.0, n).astype(np.float32)
+        extra = {"joint_positions": np.zeros(n, dtype=np.float32), "joint_efforts": eff}
+        with _FakeSidecar(_free_port(), obs_extra=extra) as s:
+            hal = SimAttachedHAL(_make_rollout(s.port, scene, task), desc)
+            try:
+                hal.connect()
+                np.testing.assert_allclose(hal.read_state().effort, eff, atol=1e-6)
+            finally:
+                hal.env.close()
+
+    def test_a_sidecar_without_efforts_publishes_none(self, sidecar: _FakeSidecar) -> None:
+        scene, task = _scene_task()
+        hal = SimAttachedHAL(
+            _make_rollout(sidecar.port, scene, task), TestHalTimeBaseGuard._openarm()
+        )
+        try:
+            hal.connect()
+            assert hal.read_state().effort == []
+        finally:
+            hal.env.close()

@@ -310,6 +310,10 @@ class IsaacSceneBase:
         """Robot joint velocities in manifest order, or None (→ HAL zeros)."""
         return None
 
+    def _joint_efforts(self) -> NDArray[np.float32] | None:
+        """Measured joint efforts in manifest order, or None (→ HAL publishes none)."""
+        return None
+
     # ── shared helpers ───────────────────────────────────────────────────────
 
     def _observe(self) -> dict[str, Any]:
@@ -330,6 +334,9 @@ class IsaacSceneBase:
         joint_vel = self._joint_velocities()
         if joint_vel is not None:
             obs["joint_velocities"] = np.asarray(joint_vel, dtype=np.float32)
+        joint_eff = self._joint_efforts()
+        if joint_eff is not None:
+            obs["joint_efforts"] = np.asarray(joint_eff, dtype=np.float32)
         return obs
 
     def _grab(self, cam: Any) -> NDArray[np.uint8]:

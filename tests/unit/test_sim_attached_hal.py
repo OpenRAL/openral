@@ -573,6 +573,46 @@ def test_sim_attached_hal_read_state_without_handles_returns_zeros() -> None:
     assert all(p == 0.0 for p in state.position)
 
 
+_GRAVITY_ARM_MJCF = """
+<mujoco>
+  <worldbody>
+    <body name="link">
+      <joint name="robot0_joint2" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" mass="2"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="robot0_joint2" gear="3"/>
+  </actuator>
+</mujoco>
+"""
+
+
+def test_sim_attached_hal_read_state_effort_is_the_actuator_force() -> None:
+    """``effort`` is MuJoCo's per-DOF actuator force (gear applied), not zeros (#373).
+
+    Real MuJoCo: a 2 kg horizontal link held by a geared motor. The torque the
+    motor applies — what a current-sensing drive reports — reaches ``effort``
+    on the joint's row; joints absent from the MJCF stay 0.0 so widths match.
+    """
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_GRAVITY_ARM_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    data.ctrl[0] = float(data.qfrc_bias[0]) / 3.0  # hold the link against gravity
+    mujoco.mj_forward(model, data)
+    desc = _two_dof_description()
+    hal = SimAttachedHAL(FakeSimEnv(handles=(model, data)), desc)
+    hal.connect()
+    state = hal.read_state()
+    assert len(state.effort) == len(desc.joints)
+    j2 = state.name.index("panda_joint2")
+    # 2 kg at a 0.25 m lever under 9.81 m/s^2 ~= 4.9 N*m, sign per the joint axis.
+    assert abs(state.effort[j2]) == pytest.approx(2 * 9.81 * 0.25, rel=1e-3)
+    assert state.effort[j2] == pytest.approx(float(data.qfrc_bias[0]), rel=1e-9)
+    assert [e for i, e in enumerate(state.effort) if i != j2] == [0.0] * (len(desc.joints) - 1)
+
+
 def test_sim_attached_hal_read_state_before_connect_raises() -> None:
     env = FakeSimEnv()
     hal = SimAttachedHAL(env, _two_dof_description())

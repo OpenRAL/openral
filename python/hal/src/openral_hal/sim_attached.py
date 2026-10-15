@@ -793,6 +793,12 @@ class SimAttachedHAL:
         Returns the canonical ``JointState`` the safety supervisor
         + the world_state aggregator consume.
 
+        ``effort`` is the actuator's generalized force on each joint's DOF
+        (MuJoCo ``qfrc_actuator``; N·m or N) — what a current-sensing drive
+        reports, gravity load included. A non-MuJoCo backend fills it from
+        ``obs["joint_efforts"]``; without that key it is empty (not measured),
+        never zeros a torque observer would read as a free arm.
+
         Raises:
             ROSRuntimeError: when called before `connect` or when the
                 env hasn't been reset (no obs cached).
@@ -812,19 +818,19 @@ class SimAttachedHAL:
             names = [j.name for j in self.description.joints]
             njoints = len(names)
 
-            def _from_obs(key: str) -> list[float]:
+            def _from_obs(key: str, missing: list[float]) -> list[float]:
                 """Read a per-joint vector from the cached obs, padded/truncated to njoints."""
                 raw = self._last_obs.get(key) if self._last_obs is not None else None
                 if raw is None:
-                    return [0.0] * njoints
+                    return missing
                 vec = np.asarray(raw, dtype=np.float64).reshape(-1)
                 return [float(vec[i]) if i < vec.shape[0] else 0.0 for i in range(njoints)]
 
             return JointState(
                 name=names,
-                position=_from_obs("joint_positions"),
-                velocity=_from_obs("joint_velocities"),
-                effort=[0.0] * njoints,
+                position=_from_obs("joint_positions", [0.0] * njoints),
+                velocity=_from_obs("joint_velocities", [0.0] * njoints),
+                effort=_from_obs("joint_efforts", []),
                 stamp_ns=time.time_ns(),
             )
         model, data = handles
@@ -832,6 +838,8 @@ class SimAttachedHAL:
 
         qpos = np.asarray(data.qpos, dtype=np.float64)
         qvel = np.asarray(data.qvel, dtype=np.float64)
+        qfrc_actuator = np.asarray(data.qfrc_actuator, dtype=np.float64)
+        efforts: list[float] = []
         if self._joint_index is None:
             names = [
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
@@ -847,15 +855,18 @@ class SimAttachedHAL:
                 # right.
                 positions.append(0.0)
                 velocities.append(0.0)
+                efforts.append(0.0)
                 continue
+            dof = int(model.jnt_dofadr[jid])
             positions.append(float(qpos[int(model.jnt_qposadr[jid])]))
-            velocities.append(float(qvel[int(model.jnt_dofadr[jid])]))
+            velocities.append(float(qvel[dof]))
+            efforts.append(float(qfrc_actuator[dof]))
         self._last_state_ns = time.time_ns()
         return JointState(
             name=[j.name for j in self.description.joints],
             position=positions,
             velocity=velocities,
-            effort=[0.0] * len(self.description.joints),
+            effort=efforts,
             stamp_ns=self._last_state_ns,
         )
 

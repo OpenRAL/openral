@@ -79,6 +79,29 @@ def test_all_joints_hold_and_the_robot_is_at_its_spawn(env: Any) -> None:
         assert 0.21 < oz < 0.36, f"{name} not resting on the pallet: z={oz}"
 
 
+def test_measured_efforts_carry_the_drive_holding_torque(env: Any) -> None:
+    """``obs["joint_efforts"]`` is PhysX's measured joint force, drive included (#373).
+
+    The #373 torque observer reads this as the current-sensed motor torque. Hanging
+    straight, the right elbow carries ~no gravity moment; bent 90 deg, its drive must
+    hold the forearm, so the measured effort there must rise well above the hang.
+    Before #373 the sidecar sent no effort and ``/joint_states.effort`` was zeros.
+    """
+    right_elbow = 11  # manifest order: left 0..7, right_joint1..7 = 8..14
+    hang = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 60).observation
+    bent_cmd = np.zeros(env.action_dim, dtype=np.float32)
+    bent_cmd[right_elbow] = np.pi / 2
+    bent = _steps(env, bent_cmd, 120).observation
+    _steps(env, np.zeros(env.action_dim, dtype=np.float32), 60)  # leave the arm as found
+    for obs in (hang, bent):
+        assert obs["joint_efforts"].shape == (16,)
+        assert np.isfinite(obs["joint_efforts"]).all()
+    hang_e = abs(hang["joint_efforts"][right_elbow])
+    bent_e = abs(bent["joint_efforts"][right_elbow])
+    assert bent_e > 0.3, f"bent elbow holds the forearm with no measured torque: {bent_e}"
+    assert bent_e > 3.0 * hang_e, f"hang {hang_e} vs bent {bent_e}"
+
+
 def test_head_depth_is_a_real_cloud_in_openarm_base(env: Any) -> None:
     """The head depth camera, mounted on openarm_base at the manifest's nominal ZED
     pose, yields finite points expressed in openarm_base: the floor 0.698 m below it.
