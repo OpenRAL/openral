@@ -10,14 +10,14 @@ Owns the chunk-rate safety boundary on the OpenRAL graph:
   external estop latches the node so subsequent candidates are dropped
   until reset.
 * Exposes ``/openral/estop_reset`` (``std_srvs/Trigger``) — explicit recovery
-  only; ``ROSEStopRequested`` is never auto-cleared (CLAUDE.md §10).
+  only; ``ROSEStopRequested`` is never auto-cleared (CLAUDE.md §5).
 * Publishes 1 Hz ``/diagnostics`` via
   ``openral_observability.DiagnosticsHeartbeat``.
 
 Topic-shape lock for the safety boundary's first increment: the topic
 contract is real and tested; envelope checks are deliberately minimal so the
 C++ kernel that lands later can replace internals **behind the same topic
-surface**. Per CLAUDE.md §1.5 ("Python proposes, C++ disposes") and §7.7
+surface**. Per CLAUDE.md §1.5 ("Python proposes, C++ disposes") and §3 Safety
 (safety working-group review), any addition of enforcement beyond this file
 requires safety-WG sign-off.
 
@@ -31,7 +31,10 @@ state until ``/openral/estop_reset`` is called AND
 ``>=estop_reset_cooldown_s`` (default 500 ms) have passed since the last
 estop publish.
 
-Stub for velocity/force/workspace lands when the C++ kernel does.
+Non-joint chunks get per-mode bounds (see ``_envelope_violation``):
+CARTESIAN_DELTA step size, CARTESIAN_TWIST / BODY_TWIST speed, gripper width
+range. Joint velocity / torque limits and the workspace box are enforced by
+the C++ kernel (``cpp/openral_safety_kernel``), not here.
 """
 
 from __future__ import annotations
@@ -48,9 +51,9 @@ from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackRet
 
 # Identity label surfaced as ``safety.kernel`` on every safety.check span.
 # Matches the ``SAFETY_KERNEL_NULL`` semconv constant by spirit — the
-# Day-1 passthrough is functionally a null kernel that only enforces
-# n_dof + per-joint limits, leaving velocity/force/workspace to the C++
-# kernel that lands later.
+# passthrough enforces n_dof + per-joint position limits plus the per-mode
+# cartesian / twist / gripper bounds; joint velocity / torque and workspace
+# checks live in the C++ kernel (``cpp/openral_safety_kernel``).
 _KERNEL_LABEL_PASSTHROUGH = "passthrough"
 
 __all__ = [

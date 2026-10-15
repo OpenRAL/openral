@@ -11,9 +11,12 @@
 # relaxation to "approaching the declared receptacle."
 #
 # PRODUCER-SUPPLIED: sim computes it from the declared body's MuJoCo model
-# subtree; real hardware's perception-stack seam is NOT YET IMPLEMENTED, so no
-# allowance applies on real hardware today. The kernel is producer-agnostic and
-# never derives one itself.
+# subtree; on real hardware the HAL's place-target leg
+# (openral_hal/_place_target_leg.py) measures a one-voxel support slab under the
+# carried payload from the live voxel map. That leg is default OFF
+# (VisionAttachmentConfig.place_target_enabled), so unless it is enabled no
+# allowance applies on real hardware. The kernel is producer-agnostic and never
+# derives one itself.
 #
 # ORIENTED box, not axis-aligned — the axis-aligned hull of a rotated
 # receptacle is strictly larger, i.e. strictly more permissive.
@@ -55,9 +58,9 @@ int64 stamp_ns
 # uses the modelled distance only within the blanket allowance the cell would
 # get anyway, falling back to blanket otherwise.
 #
-# PRODUCER-SUPPLIED, same terms as the box: sim measures the MuJoCo model
-# subtree; real hardware's perception-stack seam is NOT YET IMPLEMENTED. A
-# producer that cannot measure geometry publishes an empty list, never a guess.
+# PRODUCER-SUPPLIED: sim measures the MuJoCo model subtree; the real
+# place-target leg publishes no geometry (empty list, box-only). A producer
+# that cannot measure geometry publishes an empty list, never a guess.
 #
 # The kernel refuses the WHOLE region (not a box-only downgrade) when the list
 # overflows its primitive cap or carries a malformed shape (#142/#146 posture).

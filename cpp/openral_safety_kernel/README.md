@@ -1488,9 +1488,9 @@ bundled here — see hazard-log Entry 025's open item.
   `operator new`.
 - C++17 / no exceptions across the kernel boundary — `Result<void,
   Violation>` propagation (CLAUDE.md §2, C++).
-- `SCHED_FIFO` + CPU pinning are **not implemented**: the
-  `request_sched_fifo` / `cpu_affinity` parameters are declared but never
-  read, so setting them changes nothing.
+- The kernel has **no real-time scheduling knobs**: it does not request
+  `SCHED_FIFO` or pin itself to a CPU, and exposes no parameter for either.
+  Scheduling policy and affinity are whatever the launching process inherits.
 
 ## Testing & verification
 
