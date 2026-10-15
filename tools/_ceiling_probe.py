@@ -48,8 +48,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # `validation_matrix` is a sibling script in tools/, imported by path via the
-# sys.path insert above rather than as an installed package, so mypy has no stub.
-import validation_matrix as vm  # type: ignore[import-not-found]  # reason: see above
+# sys.path insert above rather than as an installed package (mypy.ini skips it).
+import validation_matrix as vm
 
 #: Deadline per scene run. The harness's own default; kept identical so a
 #: gate-off run is not given more time to succeed than a gate-on one.

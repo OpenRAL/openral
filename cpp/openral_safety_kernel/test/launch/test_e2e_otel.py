@@ -205,7 +205,7 @@ def _activate_lifecycle(node_name: str, helper: Any) -> bool:
         deadline = time.time() + 5.0
         while time.time() < deadline and not fut.done():
             rclpy.spin_once(helper, timeout_sec=0.05)
-        if not fut.done() or not fut.result().success:  # type: ignore[union-attr]
+        if not fut.done() or not fut.result().success:
             return False
     return True
 

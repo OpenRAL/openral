@@ -251,7 +251,7 @@ def _check(robot_path: Path) -> int:
             # And the mesh is inside the declared hull -- checked against every
             # facet, so a stale or truncated vertex list cannot pass.
             # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
-            from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
+            from scipy.spatial import ConvexHull
 
             hull = ConvexHull(hull_pts)
             normals = hull.equations[:, :3]

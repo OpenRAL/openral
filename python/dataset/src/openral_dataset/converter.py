@@ -377,7 +377,11 @@ class Rosbag2ToLeRobotConverter:
         # the declared contract.
         obs_spec = robot.observation_spec
         state_shape = tuple(obs_spec.state_shape) if obs_spec is not None else (1,)
-        action_dim = robot.action_spec.dim if robot.action_spec is not None else 1
+        action_dim = (
+            robot.action_spec.dim
+            if robot.action_spec is not None and robot.action_spec.dim is not None
+            else 1
+        )
 
         # Prefer the bag's inline arrays at their NATURAL recorded length —
         # the sink's feature schema was derived from the same data

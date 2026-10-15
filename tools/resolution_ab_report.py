@@ -32,7 +32,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import validation_matrix as vm  # type: ignore[import-not-found]  # reason: sibling script, no stub
+import validation_matrix as vm
 
 #: Cell half-diagonal at each arm's resolution, `res * sqrt(3) / 2`.
 HALF_DIAGONAL_MM = {"0.025": 21.65, "0.015": 12.99}

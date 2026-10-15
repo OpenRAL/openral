@@ -46,7 +46,9 @@ _BNB_META_SUFFIXES = (
 )
 
 
-def _install_prequantized(policy, state, device):
+def _install_prequantized(
+    policy: torch.nn.Module, state: dict[str, torch.Tensor], device: str
+) -> tuple[int, set[str]]:
     """Inlined openral_sim._quantization.install_prequantized_linears."""
     import bitsandbytes as bnb
 
@@ -76,13 +78,13 @@ def _install_prequantized(policy, state, device):
     return count, consumed
 
 
-def _quantize_structure(root, compute_dtype):
+def _quantize_structure(root: torch.nn.Module, compute_dtype: torch.dtype) -> int:
     """Replace large Linears with Linear4bit (empty packed params) — structure only."""
     import bitsandbytes as bnb
 
     n = 0
 
-    def _replace(m):
+    def _replace(m: torch.nn.Module) -> None:
         nonlocal n
         for name, child in list(m.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:

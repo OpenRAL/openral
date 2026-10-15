@@ -135,7 +135,7 @@ def features_from_robot(
     if action_dim_override is not None:
         action_dim = int(action_dim_override)
     elif robot.action_spec is not None and (robot.action_spec.dim or 0) > 0:
-        action_dim = robot.action_spec.dim
+        action_dim = robot.action_spec.dim or 0
     else:
         raise ValueError(
             f"robot {robot.name!r} has no action_spec.dim; "

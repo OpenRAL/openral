@@ -31,7 +31,7 @@ from launch.substitutions import LaunchConfiguration  # noqa: E402
 from launch_ros.actions import LifecycleNode  # noqa: E402
 
 
-def _launch_setup(context: LaunchContext, *_args: object, **_kwargs: object) -> list:
+def _launch_setup(context: LaunchContext, *_args: object, **_kwargs: object) -> list[LifecycleNode]:
     """Resolve args, synthesise envelope params, spawn the kernel node."""
     from openral_core import RobotDescription  # noqa: PLC0415
     from openral_safety.envelope_loader import (  # noqa: PLC0415

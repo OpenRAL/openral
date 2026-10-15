@@ -19,7 +19,7 @@ def probe_network(*, warnings: list[str] | None = None) -> NetworkProbeResult:
     sink = warnings if warnings is not None else []
     hostname = socket.gethostname()
     try:
-        import psutil  # noqa: PLC0415  # reason: optional path with stdlib fallback
+        import psutil  # type: ignore[import-untyped]  # noqa: PLC0415  # reason: no stubs
     except ImportError:
         sink.append("network: psutil not installed — only hostname returned.")
         return NetworkProbeResult(hostname=hostname)
