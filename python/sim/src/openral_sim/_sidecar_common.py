@@ -277,20 +277,21 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     gets it regardless of how ``openral`` was launched; an explicit caller value
     wins, and a Jetson gets none (``default_expandable_segments``).
 
-    Finally, points ``TRITON_PTXAS_PATH`` at a CUDA 12.9 ``ptxas`` when the venv
-    ships one. Triton bundles its own ``ptxas``, and triton 3.5.1's is CUDA
-    12.8, whose newest target is ``sm_120``. On a GB10 / Jetson Thor
-    (``sm_121``) that makes *every* Triton kernel fail to compile — even a
-    three-line ``tl.store`` — with::
+    Finally, points ``TRITON_PTXAS_PATH`` at a pip-installed CUDA ``ptxas``
+    (``venv_ptxas``) when the venv ships one. Triton bundles its own ``ptxas``,
+    and triton 3.5.1's is CUDA 12.8, whose newest target is ``sm_120``. On a
+    GB10 (``sm_121``) or Jetson Thor (``sm_110``) that makes *every* Triton
+    kernel fail to compile — even a three-line ``tl.store`` — with::
 
         ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'
+        ptxas fatal: Value 'sm_110a' is not defined for option 'gpu-name'
 
-    A sidecar that installs ``nvidia-cuda-nvcc-cu12>=12.9`` gets a ``ptxas``
-    that does know ``sm_121a``, and this redirects Triton onto it. Deliberately
-    resolved from inside the venv rather than from ``/usr/local/cuda``: the
-    host toolkit may be absent or a different version, and the venv is the
-    thing we pin. A no-op wherever that wheel isn't installed (all x86_64
-    sidecars today), so it cannot perturb the validated x86_64 path.
+    A sidecar that installs ``nvidia-cuda-nvcc`` 13.x gets a ``ptxas`` that
+    knows both, and this redirects Triton onto it. Deliberately resolved from
+    inside the venv rather than from ``/usr/local/cuda``: the host toolkit may
+    be absent or a different version, and the venv is the thing we pin. A
+    no-op wherever that wheel isn't installed (all x86_64 sidecars today), so
+    it cannot perturb the validated x86_64 path.
     """
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -413,16 +414,22 @@ def torch_backend(machine: str | None = None) -> str:
 
 
 def venv_ptxas(venv: Path) -> Path | None:
-    """Return the ``nvidia-cuda-nvcc-cu12`` ``ptxas`` inside ``venv``, if present.
+    """Return the pip-installed CUDA ``ptxas`` inside ``venv``, if present.
+
+    Knows both wheel layouts: ``nvidia-cuda-nvcc`` 13.x installs
+    ``nvidia/cu13/bin/ptxas``, ``nvidia-cuda-nvcc-cu12`` installs
+    ``nvidia/cuda_nvcc/bin/ptxas``. The CUDA 13 one wins when both are present —
+    it is the only one that targets Jetson Thor (``sm_110``).
 
     Split out of ``make_isolated_env`` so a sidecar that execs by some other
-    route — or a test — can ask the same question. Returns ``None`` when the
-    wheel isn't installed, which is the normal case on x86_64.
+    route — or a test — can ask the same question. Returns ``None`` when no
+    such wheel is installed, which is the normal case on x86_64.
     """
-    for lib in sorted(venv.glob("lib/python3.*/site-packages")):
-        candidate = lib / "nvidia" / "cuda_nvcc" / "bin" / "ptxas"
-        if candidate.is_file():
-            return candidate
+    for rel in ("nvidia/cu13/bin/ptxas", "nvidia/cuda_nvcc/bin/ptxas"):
+        for lib in sorted(venv.glob("lib/python3.*/site-packages")):
+            candidate = lib / rel
+            if candidate.is_file():
+                return candidate
     return None
 
 
