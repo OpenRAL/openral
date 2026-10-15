@@ -256,9 +256,9 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
         RewrittenYaml,  # reason: nav2 dep, launch-time only
     )
 
-    params_file = LaunchConfiguration("params_file").perform(context)  # type: ignore[attr-defined]
-    robot_yaml = LaunchConfiguration("robot_yaml").perform(context)  # type: ignore[attr-defined]
-    slam_backend = LaunchConfiguration("slam_backend").perform(context)  # type: ignore[attr-defined]
+    params_file = LaunchConfiguration("params_file").perform(context)
+    robot_yaml = LaunchConfiguration("robot_yaml").perform(context)
+    slam_backend = LaunchConfiguration("slam_backend").perform(context)
     # An empty params_file selects the base config by SLAM backend
     # (visual → nav2_visual.yaml consuming `/map`; lidar → the /scan base).
     if not params_file:
@@ -302,9 +302,9 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
             ],
         )
     ]
-    payload_scan_filter = LaunchConfiguration("payload_scan_filter").perform(context)  # type: ignore[attr-defined]
+    payload_scan_filter = LaunchConfiguration("payload_scan_filter").perform(context)
     if payload_scan_filter.strip().lower() in ("true", "1", "yes"):
-        use_sim_time = LaunchConfiguration("use_sim_time").perform(context)  # type: ignore[attr-defined]
+        use_sim_time = LaunchConfiguration("use_sim_time").perform(context)
         actions.extend(
             _payload_scan_filter_nodes(
                 robot_yaml=robot_yaml,
@@ -312,7 +312,7 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
                 use_sim_time=use_sim_time.strip().lower() in ("true", "1", "yes"),
             )
         )
-    cmd_vel_relay = LaunchConfiguration("cmd_vel_relay").perform(context)  # type: ignore[attr-defined]
+    cmd_vel_relay = LaunchConfiguration("cmd_vel_relay").perform(context)
     if cmd_vel_relay.strip().lower() in ("true", "1", "yes"):
         actions.extend(_cmd_vel_relay_nodes(robot_yaml=robot_yaml))
     return actions
