@@ -523,6 +523,8 @@ class TestStaticGeometryMarkers:
     def test_a_missing_mesh_is_refused(self, tmp_path: Path) -> None:
         from openral_core import ROSConfigError
 
+        _msgs()  # static_geometry_markers imports the ROS message types up front
+
         path = self._cell(tmp_path)
         (tmp_path / "shelf.npz").unlink()
         with pytest.raises(ROSConfigError, match=r"shelf\.npz"):
