@@ -31,6 +31,7 @@ from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
+    relative_rtc_prefix_fn,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -844,5 +845,6 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         chunk_fn=adapter._chunk_forward,
         adapter_name="pi05",
         postprocess_action=adapter._finished_action,
+        rtc_prefix_fn=relative_rtc_prefix_fn(preprocessor, device=device),
     )
     return adapter

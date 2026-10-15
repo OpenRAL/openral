@@ -177,6 +177,54 @@ def _check_boundary_blend(
     return steps, parsed
 
 
+def _check_rtc_relative(
+    policy: Any,
+    *,
+    rtc_enabled: bool,
+    rtc_prefix_fn: Callable[[Any], Any] | None,
+    has_postprocess: bool,
+    name: str,
+) -> None:
+    """Refuse RTC configs that would guide a relative-action policy with a stale prefix.
+
+    A ``use_relative_actions`` policy emits deltas anchored to the state of the
+    observation it was run on, so the previous chunk's raw leftover rows are relative
+    to an *older* state than the new chunk. Feeding them as the guidance prefix pulls
+    the new chunk off by the arm's motion since then (openral/openral#378). Such a
+    policy needs ``rtc_prefix_fn`` to re-anchor the absolute leftover to the new
+    state, and that leftover is the postprocessed (absolute) copy the queue serves —
+    so the hook also needs ``postprocess_action``. Shared by ``ChunkedExecutor`` and
+    ``build_chunk_executor``, which checks before it mutates the policy for RTC.
+
+    Args:
+        policy: The policy, or ``None`` for a bare ``chunk_fn`` producer.
+        rtc_enabled: Whether an enabled RTC config is in use.
+        rtc_prefix_fn: The re-anchoring hook, if any.
+        has_postprocess: Whether a ``postprocess_action`` is configured.
+        name: Label for error messages.
+
+    Raises:
+        ROSConfigError: RTC is enabled for a relative-action policy without
+            ``rtc_prefix_fn``, or ``rtc_prefix_fn`` is given without
+            ``postprocess_action``.
+    """
+    if not rtc_enabled:
+        return
+    if rtc_prefix_fn is None and getattr(
+        getattr(policy, "config", None), "use_relative_actions", False
+    ):
+        raise ROSConfigError(
+            f"{name}: RTC with a use_relative_actions policy needs rtc_prefix_fn — the "
+            "previous chunk's leftover is relative to an older state and must be "
+            "re-anchored to the new observation (openral_rskill._vla_core.relative_rtc_prefix_fn)"
+        )
+    if rtc_prefix_fn is not None and not has_postprocess:
+        raise ROSConfigError(
+            f"{name}: rtc_prefix_fn re-anchors the postprocessed (absolute) leftover, "
+            "so it needs postprocess_action"
+        )
+
+
 def _copy_action(action: Any) -> Any:
     """Return an independent copy of a NumPy / torch action (no aliasing)."""
     return action.clone() if hasattr(action, "clone") else np.array(action, copy=True)
@@ -207,6 +255,7 @@ class ChunkedExecutor:
         postprocess_action: Callable[[Any], Any] | None = None,
         boundary_blend_steps: int = 0,
         blend_dims: Sequence[int] | None = None,
+        rtc_prefix_fn: Callable[[Any], Any] | None = None,
     ) -> None:
         """Initialise without starting any threads.
 
@@ -271,6 +320,13 @@ class ChunkedExecutor:
                 ``boundary_blend_steps >= 1``. An index past the action width is
                 refused when the first chunk lands, before any action is served
                 (the robot-facing width is only known once postprocessed).
+            rtc_prefix_fn: RTC guidance-prefix builder for relative-action
+                policies (``relative_rtc_prefix_fn``). Given the previous chunk's
+                unexecuted *postprocessed* (absolute) rows, it returns them in
+                model space, re-anchored to the state of the observation the
+                pre-fetch was just built from. ``None`` (default) feeds the raw
+                leftover rows unchanged, which is only right for absolute-action
+                policies. Ignored without RTC.
 
         Raises:
             ROSConfigError: ``prefetch_at`` is negative.
@@ -279,7 +335,8 @@ class ChunkedExecutor:
             ROSConfigError: RTC is enabled without a background pre-fetch, a
                 malformed or too long ``boundary_blend_steps`` / malformed
                 ``blend_dims`` (see ``_check_boundary_blend``), or blending
-                requested together with RTC.
+                requested together with RTC, or RTC for a ``use_relative_actions``
+                policy without ``rtc_prefix_fn`` (see ``_check_rtc_relative``).
         """
         if policy is None and (chunk_fn is None or chunk_size is None):
             raise ValueError("ChunkedExecutor needs a policy, or chunk_fn together with chunk_size")
@@ -314,6 +371,14 @@ class ChunkedExecutor:
         self._rtc_queue: Any = None
         self._rtc_last_delay = 0
         self._rtc_horizon = 0
+        _check_rtc_relative(
+            policy,
+            rtc_enabled=self._rtc_enabled,
+            rtc_prefix_fn=rtc_prefix_fn,
+            has_postprocess=postprocess_action is not None,
+            name="ChunkedExecutor",
+        )
+        self._rtc_prefix_fn = rtc_prefix_fn
         if self._rtc_enabled:
             # The clamped value is the one that actually triggers prefetches.
             if self._prefetch_at < 1:
@@ -580,6 +645,7 @@ class ChunkedExecutor:
                 action = self._rtc_queue.get()
             if action is None:
                 raise ROSRuntimeError("ChunkedExecutor: RTC queue empty after inference")
+        self._popped += 1  # the merge log's tick counter (`_rtc_merge`)
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= self._rtc_queue.qsize() and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
@@ -615,6 +681,15 @@ class ChunkedExecutor:
         real_delay = max(0, self._rtc_queue.get_action_index() - idx_before)
         self._rtc_last_delay = real_delay
         self._rtc_queue.merge(actions, processed, real_delay, idx_before)
+        # Where each chunk took over and how late: the switch points a bag of the
+        # served actions cannot show on its own. Served action `merge_tick + 1`
+        # (1-based since start/reset) is the first one from this chunk.
+        log.debug(
+            "chunked_executor.rtc_merge",
+            chunk_index=self._chunk_index,
+            merge_tick=self._popped,
+            rtc_delay=real_delay,
+        )
 
     def _rtc_processed(self, actions: Any) -> Any:
         """The robot-facing copy of an RTC chunk: raw rows, or host-side postprocessed ones.
@@ -719,12 +794,21 @@ class ChunkedExecutor:
         idx_before = 0
         if self._rtc_enabled:
             idx_before = self._rtc_queue.get_action_index()
-            left_over = self._rtc_queue.get_left_over()
+            # A relative-action policy's raw rows are anchored to the previous chunk's
+            # state: re-anchor the absolute (postprocessed) rows to this batch's instead.
+            # `batch` is materialized, so its preprocessor call cached that state.
+            left_over = (
+                self._rtc_queue.get_left_over()
+                if self._rtc_prefix_fn is None
+                else self._rtc_queue.get_processed_left_over()
+            )
             if left_over is not None and 0 < self._rtc_horizon < len(left_over):
                 # Guidance weights are zero past the execution horizon, so the extra
                 # rows only cost a host->policy copy. Normalizing here also keeps the
                 # tail length independent of how early prefetch_at fires.
                 left_over = left_over[: self._rtc_horizon]
+            if self._rtc_prefix_fn is not None and left_over is not None and len(left_over):
+                left_over = self._rtc_prefix_fn(left_over)
             # The delay fed here is the *previous* merge's measured one, so the
             # first guided prefetch after a cold start or reset bootstraps with
             # 0 (the reset value): no merge has happened yet, so nothing has

@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_observability import InferenceKind as _InferenceKind
 from openral_observability import inference_span, semconv
 
@@ -897,6 +897,7 @@ def build_chunk_executor(
     chunk_size: int | None = None,
     adapter_name: str = "policy",
     postprocess_action: Callable[[Any], Any] | None = None,
+    rtc_prefix_fn: Callable[[Any], Any] | None = None,
 ) -> ChunkedExecutor | None:
     """Build + start a ``ChunkedExecutor`` for a chunked adapter.
 
@@ -936,6 +937,9 @@ def build_chunk_executor(
             which runs it on each chunk in the producing thread (see
             ``ChunkedExecutor``). Adapters that pass it get finished actions
             from ``select_action`` and must not postprocess again.
+        rtc_prefix_fn: RTC prefix re-anchoring hook for relative-action
+            policies (``relative_rtc_prefix_fn``), handed to the executor.
+            Required with RTC when ``policy.config.use_relative_actions``.
 
     Returns:
         A started executor. Returns ``None`` for single-step lerobot policies;
@@ -949,10 +953,15 @@ def build_chunk_executor(
             pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized), or a
             malformed ``chunk_boundary_blend`` block, a ``steps`` that would not
             finish inside the entering chunk, or one combined with RTC or a
-            single-step policy.
+            single-step policy; RTC on a ``use_relative_actions`` policy
+            without ``rtc_prefix_fn``.
     """
     # deferred: avoids import cycle
-    from openral_rskill.executor import ChunkedExecutor, _check_boundary_blend
+    from openral_rskill.executor import (
+        ChunkedExecutor,
+        _check_boundary_blend,
+        _check_rtc_relative,
+    )
 
     n = int(
         chunk_size
@@ -1007,6 +1016,14 @@ def build_chunk_executor(
         prefetch_at = min(raw_prefetch_at, n - 1)
     check_blend(prefetch_at)
     if rtc_on:
+        # Before init_rtc_processor below, so a refused config never mutates the policy.
+        _check_rtc_relative(
+            policy,
+            rtc_enabled=True,
+            rtc_prefix_fn=rtc_prefix_fn,
+            has_postprocess=postprocess_action is not None,
+            name=adapter_name,
+        )
         if prefetch_at < 1:
             raise ROSConfigError(
                 f"{adapter_name}: policy_extras.rtc requires chunk_prefetch: true — RTC "
@@ -1033,6 +1050,7 @@ def build_chunk_executor(
         postprocess_action=postprocess_action,
         boundary_blend_steps=blend_steps,
         blend_dims=blend_dims,
+        rtc_prefix_fn=rtc_prefix_fn,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -1046,6 +1064,67 @@ def build_chunk_executor(
         boundary_blend_steps=blend_steps,
     )
     return executor
+
+
+def relative_rtc_prefix_fn(preprocessor: Any, *, device: str) -> Callable[[Any], Any] | None:
+    """Build the RTC prefix re-anchoring hook for a relative-action policy, if it is one.
+
+    A relative-action checkpoint (``relative_actions_processor`` in its
+    preprocessor) is trained on deltas from the observation's state, so the
+    previous chunk's unexecuted rows must be re-expressed against the state of
+    the observation the *next* chunk is built from before they guide it. The hook
+    mirrors lerobot 0.6.0's RTC rollout (``lerobot/rollout/inference/rtc.py``):
+    absolute leftover rows -> ``lerobot.policies.rtc.reanchor_relative_rtc_prefix``
+    against ``RelativeActionsProcessorStep.get_cached_state()`` (the raw state of
+    the most recent preprocessor call) -> the preprocessor's normalizer.
+
+    Args:
+        preprocessor: The adapter's lerobot preprocessor pipeline (``.steps``).
+        device: The policy's device; the prefix is returned there.
+
+    Returns:
+        ``absolute_rows -> model_space_rows`` for ``ChunkedExecutor``'s
+        ``rtc_prefix_fn``, or ``None`` when the preprocessor has no enabled
+        relative-actions step (absolute-action policy: raw rows are already right).
+
+    Raises:
+        ROSRuntimeError: (from the hook) no state was cached yet — the
+            preprocessor has not run, so there is nothing to anchor to.
+
+    Example:
+        >>> relative_rtc_prefix_fn(None, device="cpu") is None
+        True
+    """
+    steps = getattr(preprocessor, "steps", None)
+    if not steps:
+        return None
+    from lerobot.policies.rtc import reanchor_relative_rtc_prefix
+    from lerobot.processor import NormalizerProcessorStep, RelativeActionsProcessorStep
+
+    relative = next(
+        (s for s in steps if isinstance(s, RelativeActionsProcessorStep) and s.enabled), None
+    )
+    if relative is None:
+        return None
+    normalizer = next((s for s in steps if isinstance(s, NormalizerProcessorStep)), None)
+
+    def prefix(absolute_rows: Any) -> Any:
+        state = relative.get_cached_state()
+        if state is None:
+            # lerobot falls back to the raw rows here; that is the stale-anchor bug.
+            raise ROSRuntimeError(
+                "relative_rtc_prefix_fn: no observation.state cached by the preprocessor; "
+                "cannot re-anchor the RTC prefix"
+            )
+        return reanchor_relative_rtc_prefix(
+            prev_actions_absolute=absolute_rows,
+            current_state=state,
+            relative_step=relative,
+            normalizer_step=normalizer,
+            policy_device=device,
+        )
+
+    return prefix
 
 
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:
@@ -1452,6 +1531,7 @@ __all__ = [
     "materialize_processor_dir",
     "maybe_compile_chunk_forward",
     "parse_hf_file_uri",
+    "relative_rtc_prefix_fn",
     "release_torch_modules",
     "resolve_camera_keys",
     "resolve_device",

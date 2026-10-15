@@ -327,3 +327,163 @@ def test_rtc_off_is_unchanged_append_mode() -> None:
     assert torch.allclose(actions[CHUNK].squeeze(0), torch.full((DOF,), 200.0))
     assert producer.calls == [{}, {}]  # no RTC kwargs leak into non-RTC producers
     ex.stop()
+
+
+# ── Relative-action policies: the RTC prefix is re-anchored (openral#378) ───
+#
+# Real lerobot processor steps, configured like a `use_relative_actions` π0.5
+# checkpoint (relative_actions → normalizer / unnormalizer → absolute_actions,
+# gripper excluded), with stats chosen so every number below is hand-checkable.
+
+
+def _relative_processors() -> tuple[Any, Any]:
+    from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
+    from lerobot.processor import (
+        AbsoluteActionsProcessorStep,
+        NormalizerProcessorStep,
+        PolicyProcessorPipeline,
+        RelativeActionsProcessorStep,
+        UnnormalizerProcessorStep,
+        policy_action_to_transition,
+        transition_to_policy_action,
+    )
+
+    features = {"action": PolicyFeature(type=FeatureType.ACTION, shape=(DOF,))}
+    norm_map = {FeatureType.ACTION: NormalizationMode.MEAN_STD}
+    # joints: x / 2; gripper: x - 0.5
+    stats = {
+        "action": {"mean": torch.tensor([0.0, 0.0, 0.5]), "std": torch.tensor([2.0, 2.0, 1.0])}
+    }
+    relative = RelativeActionsProcessorStep(
+        enabled=True, exclude_joints=["gripper"], action_names=["j1", "j2", "gripper"]
+    )
+    pre = PolicyProcessorPipeline(
+        steps=[relative, NormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats)]
+    )
+    post = PolicyProcessorPipeline(
+        steps=[
+            UnnormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
+            AbsoluteActionsProcessorStep(enabled=True, relative_step=relative),
+        ],
+        to_transition=policy_action_to_transition,
+        to_output=transition_to_policy_action,
+    )
+    return pre, post
+
+
+class _RelativeProducer(Producer):
+    """Model-space chunk: row t = [0.1 t, -0.1 t, 0.2] (normalized deltas + gripper)."""
+
+    def __call__(self, batch: Any, **kwargs: Any) -> torch.Tensor:
+        self.calls.append(dict(kwargs))
+        t = torch.arange(CHUNK, dtype=torch.float32)
+        return torch.stack([0.1 * t, -0.1 * t, torch.full((CHUNK,), 0.2)], dim=-1).unsqueeze(0)
+
+
+def _state_batches(pre: Any, *states: list[float]) -> Any:
+    """Payload factory: each inference preprocesses the next observation state."""
+    pending = [torch.tensor([s]) for s in states]
+    return lambda: pre({"observation.state": pending.pop(0)})
+
+
+def test_relative_prefix_is_reanchored_to_the_new_state() -> None:
+    from openral_rskill._vla_core import relative_rtc_prefix_fn
+
+    pre, post = _relative_processors()
+    producer = _RelativeProducer()
+    ex = ChunkedExecutor(
+        chunk_fn=producer,
+        chunk_size=CHUNK,
+        prefetch_at=CHUNK - 1,
+        rtc_config=_rtc_config(execution_horizon=4),
+        postprocess_action=post,
+        rtc_prefix_fn=relative_rtc_prefix_fn(pre, device="cpu"),
+    )
+    ex.start()
+    # Cold start at state [1, -1, 0.3]; the prefetch reads the arm at [1.5, -0.5, 0.3].
+    batches = _state_batches(pre, [1.0, -1.0, 0.3], [1.5, -0.5, 0.3])
+    served = ex.select_action(batches)
+    _join_bg(ex)
+    # Served absolute row 0: joints 2 * 0 + state, gripper 0.2 + 0.5.
+    assert served == pytest.approx([1.0, -1.0, 0.7])
+    # Leftover rows 1..4 absolute: [1 + 0.2 t, -1 - 0.2 t, 0.7]. Against the NEW state
+    # [1.5, -0.5]: deltas [0.2 t - 0.5, -0.5 - 0.2 t], normalized (/2), and the gripper
+    # (0.7 - 0.5): [0.1 t - 0.25, -0.1 t - 0.25, 0.2]. The raw rows would be
+    # [0.1 t, -0.1 t, 0.2] — off by the 0.5 rad the arm moved, over the std.
+    expected = torch.tensor(
+        [[0.1 * t - 0.25, -0.1 * t - 0.25, 0.2] for t in range(1, 5)], dtype=torch.float32
+    )
+    prefix = producer.calls[1]["prev_chunk_left_over"]
+    assert torch.allclose(prefix, expected, atol=1e-6)
+    ex.stop()
+
+
+def test_absolute_policy_prefix_is_the_raw_rows() -> None:
+    """Regression: without rtc_prefix_fn the prefix is the raw leftover, postprocess or not."""
+    producer = Producer()
+    ex = ChunkedExecutor(
+        chunk_fn=producer,
+        chunk_size=CHUNK,
+        prefetch_at=CHUNK - 1,
+        rtc_config=_rtc_config(execution_horizon=4),
+        postprocess_action=lambda row: row * 2.0 + 1.0,  # robot-facing copy differs
+    )
+    ex.start()
+    served = ex.select_action({})
+    _join_bg(ex)
+    assert served == pytest.approx([201.0] * DOF)  # processed row 0 of chunk1
+    prefix = producer.calls[1]["prev_chunk_left_over"]
+    assert torch.equal(prefix, _chunk(100.0)[0, 1:5])  # raw rows 101..104, untouched
+    ex.stop()
+
+
+def test_relative_policy_without_prefix_fn_is_refused() -> None:
+    from lerobot.policies.pi05 import PI05Config
+
+    class _RelativePolicy:  # the real config is what the guard reads
+        config = PI05Config(use_relative_actions=True)
+
+    with pytest.raises(ROSConfigError, match="use_relative_actions"):
+        ChunkedExecutor(
+            _RelativePolicy(),
+            chunk_fn=Producer(),
+            chunk_size=CHUNK,
+            prefetch_at=CHUNK - 1,
+            rtc_config=_rtc_config(),
+        )
+
+
+def test_prefix_fn_without_postprocess_is_refused() -> None:
+    """The hook reads the postprocessed (absolute) rows — without one there are none."""
+    from openral_rskill._vla_core import relative_rtc_prefix_fn
+
+    pre, _ = _relative_processors()
+    with pytest.raises(ROSConfigError, match="postprocess_action"):
+        ChunkedExecutor(
+            chunk_fn=Producer(),
+            chunk_size=CHUNK,
+            prefetch_at=CHUNK - 1,
+            rtc_config=_rtc_config(),
+            rtc_prefix_fn=relative_rtc_prefix_fn(pre, device="cpu"),
+        )
+
+
+def test_merge_logs_tick_and_delay(cap: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEBUG, so the `cap` fixture (no level filter) rather than capture_logs."""
+    import structlog
+    from openral_rskill import executor
+
+    # An earlier test may have pinned the module logger to a cached pipeline.
+    monkeypatch.setattr(executor, "log", structlog.get_logger(executor.__name__))
+    producer = Producer()
+    producer.blocking = True
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=CHUNK)
+    ex.select_action({})  # cold start merge (tick 0); prefetch launched, blocked
+    for _ in range(3):
+        ex.select_action({})
+    producer.release.set()
+    _join_bg(ex)
+    merges = cap.named("chunked_executor.rtc_merge")
+    # Cold start before any pop; then 4 served (1 at launch + 3 during inference).
+    assert [(e["merge_tick"], e["rtc_delay"]) for e in merges] == [(0, 0), (4, 3)]
+    ex.stop()
