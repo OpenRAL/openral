@@ -3102,11 +3102,15 @@ class IsaacManifestScene(IsaacSceneBase):
         # PhysX's per-DOF joint force (drive + constraint), the analogue of a
         # current-sensing motor. Grippers report their leader finger DOF raw
         # (grippers=[]: a force has no meaning on the normalised manifest range).
+        # All or nothing: a kinematic base or an unmapped joint has no measured
+        # effort, and a 0.0 there would read as a free joint — send none instead.
+        if self._base_joints or any(
+            str(j.get("urdf_name")) not in self._dof_index for j in self._manifest_joints
+        ):
+            return None
         return map_dof_to_manifest(
             np.asarray(self._robot.get_measured_joint_efforts(), dtype=np.float32),
             dof_index=self._dof_index,
             manifest_joints=self._manifest_joints,
             grippers=[],
-            base_values=[0.0 for _ in self._base_joints],
-            base_joints=self._base_joints,
         )

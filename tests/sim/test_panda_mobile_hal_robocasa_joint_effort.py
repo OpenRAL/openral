@@ -36,19 +36,16 @@ def test_held_arm_effort_balances_gravity() -> None:
         state = hal.read_state()
         model, data = hal.mujoco_handles()
         arm = [i for i, j in enumerate(desc.joints) if j.name.startswith("panda_joint")]
-        dofs = [
-            int(
-                model.jnt_dofadr[
-                    mujoco.mj_name2id(
-                        model, mujoco.mjtObj.mjOBJ_JOINT, desc.joints[i].sim_joint_name
-                    )
-                ]
-            )
+        jids = {
+            i: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, desc.joints[i].sim_joint_name)
             for i in arm
-        ]
+        }
+        assert all(jid >= 0 for jid in jids.values()), f"unresolved arm joints: {jids}"
+        dofs = [int(model.jnt_dofadr[jids[i]]) for i in arm]
         effort = np.asarray(state.effort)[arm]
         np.testing.assert_allclose(effort, data.qfrc_bias[dofs], atol=0.1)
         # Not trivially zero: the elbow (joint 4) carries the forearm (~17 N*m here).
         assert np.max(np.abs(effort)) > 5.0
+        hal.disconnect()
     finally:
         env.close()

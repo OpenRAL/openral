@@ -205,7 +205,7 @@ class PandaMobileHAL:
             name=list(self._joint_names),
             position=list(self._qpos),
             velocity=[0.0] * len(self._joint_names),
-            effort=[0.0] * len(self._joint_names),
+            effort=[],  # in-memory kinematic stub: no effort is measured
             stamp_ns=time.time_ns(),
         )
 

@@ -53,6 +53,7 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
+from openral_hal._mujoco_arm import joint_actuator_effort
 from openral_hal._slot_group import (
     TickWatermark,
     compose_slot_group_action,
@@ -793,11 +794,12 @@ class SimAttachedHAL:
         Returns the canonical ``JointState`` the safety supervisor
         + the world_state aggregator consume.
 
-        ``effort`` is the actuator's generalized force on each joint's DOF
-        (MuJoCo ``qfrc_actuator``; N·m or N) — what a current-sensing drive
-        reports, gravity load included. A non-MuJoCo backend fills it from
-        ``obs["joint_efforts"]``; without that key it is empty (not measured),
-        never zeros a torque observer would read as a free arm.
+        ``effort`` is ``joint_actuator_effort`` per joint (MuJoCo
+        ``qfrc_actuator``; N·m or N) — what a current-sensing drive reports,
+        gravity load included. A non-MuJoCo backend fills it from
+        ``obs["joint_efforts"]``. All or nothing: if any joint is unmeasured (absent
+        from the MJCF, no ``joint_efforts`` key, or a short vector) ``effort`` is
+        empty — never a zero a torque observer would read as a free joint.
 
         Raises:
             ROSRuntimeError: when called before `connect` or when the
@@ -824,6 +826,8 @@ class SimAttachedHAL:
                 if raw is None:
                     return missing
                 vec = np.asarray(raw, dtype=np.float64).reshape(-1)
+                if not missing and vec.shape[0] < njoints:
+                    return missing  # a short measured vector: unmeasured rows, not zeros
                 return [float(vec[i]) if i < vec.shape[0] else 0.0 for i in range(njoints)]
 
             return JointState(
@@ -838,8 +842,8 @@ class SimAttachedHAL:
 
         qpos = np.asarray(data.qpos, dtype=np.float64)
         qvel = np.asarray(data.qvel, dtype=np.float64)
-        qfrc_actuator = np.asarray(data.qfrc_actuator, dtype=np.float64)
         efforts: list[float] = []
+        measured = True
         if self._joint_index is None:
             names = [
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
@@ -855,18 +859,18 @@ class SimAttachedHAL:
                 # right.
                 positions.append(0.0)
                 velocities.append(0.0)
-                efforts.append(0.0)
+                measured = False
                 continue
             dof = int(model.jnt_dofadr[jid])
             positions.append(float(qpos[int(model.jnt_qposadr[jid])]))
             velocities.append(float(qvel[dof]))
-            efforts.append(float(qfrc_actuator[dof]))
+            efforts.append(joint_actuator_effort(data, dof))
         self._last_state_ns = time.time_ns()
         return JointState(
             name=[j.name for j in self.description.joints],
             position=positions,
             velocity=velocities,
-            effort=efforts,
+            effort=efforts if measured else [],
             stamp_ns=self._last_state_ns,
         )
 

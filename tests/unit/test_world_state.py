@@ -146,6 +146,7 @@ class TestSnapshotBeforeUpdates:
         agg = _make_agg()
         ws = agg.snapshot()
         assert ws.diagnostics["joint_state"] == "stale"
+        assert ws.joint_state.effort == []  # not measured yet, never zeros (#373)
 
     def test_stamp_ns_positive(self) -> None:
         agg = _make_agg()

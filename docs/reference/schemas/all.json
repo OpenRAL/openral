@@ -7705,7 +7705,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "JointState": {
-      "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
+      "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N), all joints or none. Empty means not\n        measured; a producer never zero-fills an unmeasured joint, since a\n        torque observer reads 0.0 as an unloaded joint (#373).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
       "properties": {
         "name": {
           "items": {
@@ -10752,7 +10752,7 @@
           "type": "object"
         },
         "JointState": {
-          "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
+          "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N), all joints or none. Empty means not\n        measured; a producer never zero-fills an unmeasured joint, since a\n        torque observer reads 0.0 as an unloaded joint (#373).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
           "properties": {
             "name": {
               "items": {
