@@ -90,6 +90,23 @@ def test_xr1_torch_pins_have_aarch64_wheels() -> None:
     assert ("torch", "2.9.1") in pins, "the torch pin moved without updating this test"
 
 
+def test_xr1_aarch64_stack_matches_the_flash_attn_prebuilt() -> None:
+    """aarch64 gets torch 2.10 (cu130, ``sm_110``) and the matching flash-attn wheel.
+
+    flash-attn 2.8.3's aarch64 prebuilts are ``cu12torch2.9`` and ``cu13torch2.10``
+    only; its sdist maps CUDA 13 to a ``cu12`` asset name, so the wheel is named by
+    URL and its torch tag must match the torch pin. x86_64 must stay on 2.9.1 + sdist.
+    """
+    xr1 = _load("xr1_sidecar")
+    torch_deps, attn_deps = xr1._deps("aarch64")
+    pins = _pins(torch_deps)
+    _assert_installable_on_aarch64(pins, "tools/xr1_sidecar.py::_XR1_AARCH64_TORCH_DEPS")
+    torch_minor = ".".join(dict(pins)["torch"].split(".")[:2])
+    (attn,) = attn_deps
+    assert f"cu13torch{torch_minor}cxx11abiTRUE-cp312-cp312-linux_aarch64.whl" in attn
+    assert xr1._deps("x86_64") == (xr1._XR1_TORCH_DEPS, ("flash-attn==2.8.3",))
+
+
 def test_lingbot_v2_overrides_have_aarch64_wheels() -> None:
     lingbot = _load("lingbot_vla2_sidecar")
     pins = _pins(lingbot._V2_OVERRIDES)

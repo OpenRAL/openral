@@ -34,7 +34,7 @@ it is the version several upstream VLA projects happen to pin. Every policy
 sidecar this repo controls the pins for targets **`torch==2.9.1`** for exactly
 this reason, on the CUDA index `openral_sim._sidecar_common.torch_backend()`
 picks: **`cu130` on aarch64** (Jetson Thor `sm_110` — see below), `cu128` on
-x86_64. XR-1 is the one exception and stays on `cu128` everywhere (see the table).
+x86_64. XR-1 is the one exception: it takes `torch==2.10.0` on aarch64 (see the table).
 The Cosmos 3 reasoner sidecar instead takes vLLM's own PyPI torch stack, and the
 workspace venv uses `cu130` on aarch64 too. Reproduce the gap with:
 
@@ -121,10 +121,15 @@ Both compilers are swappable without touching the torch build:
   at all instead of falling back to torch's pin. Passed at **install** time as
   well as compile time — torch pins `nvidia-cuda-nvrtc-cu12==12.8.93` exactly,
   so uv otherwise rejects the lock's aarch64 line as a conflict.
-- `nvidia-cuda-nvcc-cu12==12.9.86` — a pip-installable `ptxas` that does list
-  `sm_121 sm_121a`. `openral_sim._sidecar_common.make_isolated_env` points
-  `TRITON_PTXAS_PATH` at the venv-local copy (`venv_ptxas`), so no host CUDA
-  toolkit is required. Installed only by sidecars that run Triton kernels.
+- `nvidia-cuda-nvcc==13.0.88` — a pip-installable `ptxas` (wheel path
+  `nvidia/cu13/bin/ptxas`) that lists `sm_110 sm_110a` (Thor) and
+  `sm_121 sm_121a` (GB10). `openral_sim._sidecar_common.make_isolated_env`
+  points `TRITON_PTXAS_PATH` at the venv-local copy (`venv_ptxas`, which also
+  still finds the older `nvidia-cuda-nvcc-cu12` layout
+  `nvidia/cuda_nvcc/bin/ptxas`), so no host CUDA toolkit is required. Installed
+  only by sidecars that run Triton kernels. It replaced
+  `nvidia-cuda-nvcc-cu12==12.9.86`, whose `ptxas` knows `sm_121` but not
+  `sm_110` (CUDA 12.x calls Thor `sm_101`).
 
 Moving aarch64 to the `cu130` index fixes both too (nvrtc 13.0 and its ptxas
 know `sm_121`) and was verified working end-to-end. For GB10 it was not chosen:
@@ -145,7 +150,7 @@ not float with it); the lock resolves `2.13.0+cu130` / `0.28.0+cu130` on
 linux-aarch64. The sidecars follow the same routing through
 `torch_backend()` (`cu130` on aarch64, `cu128` on x86_64), keeping their own
 `torch==2.9.1` pin — `2.9.1+cu130` publishes aarch64 wheels and carries
-`sm_110` — except XR-1 (see the table below). On `cu130` the shared nvrtc
+`sm_110` — except XR-1, which moves to `torch==2.10.0` there (see the table below). On `cu130` the shared nvrtc
 override is a no-op on aarch64: torch then requires `nvidia-cuda-nvrtc==13.0.48`
 (CUDA 13 dropped the `-cu12` suffix), which already knows `sm_110` and
 `sm_121`. `qwen_vlm` and `locateanything` install from hash-locked files, and
@@ -159,7 +164,7 @@ against the universal lock only the CUDA stack differs.
 `cu128` routing. **Thor** is the `cu130` routing: "resolves" there means a
 `uv pip install --dry-run --python-platform aarch64-manylinux_2_28
 --torch-backend=cu130` resolution (2026-10-15) to `torch 2.9.1+cu130`, not a run
-on Thor hardware. GB10 is aarch64 too, so it now provisions the `cu130` stack
+on Thor hardware, unless the row says "run". GB10 is aarch64 too, so it now provisions the `cu130` stack
 as well; the GB10 runs below have not been repeated on it.
 
 | sidecar | GB10 | Thor | notes |
@@ -167,8 +172,8 @@ as well; the GB10 runs below have not been repeated on it.
 | `tools/qwen_vlm_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock` (`qwen_vlm-aarch64.lock` on aarch64). Live-verified on GB10: 3.29 GB VRAM, 90.7 s load. Without the override every query dies in `image_grid_thw.prod(-1)` (the nvrtc ceiling). |
 | `tools/locateanything_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` in `sidecar_requirements/locateanything.lock` (`locateanything-aarch64.lock` on aarch64). `decord` (x86_64-only) is required by the checkpoint's `trust_remote_code` processor, so aarch64 marker-swaps in `decord2`, an Apache-2.0 fork with `manylinux_2_28_aarch64` wheels that installs the same top-level package. |
 | `tools/da3_depth_sidecar.py` | ✅ | ⚠️ resolves, not run | `open3d` and `pycolmap` have no aarch64 wheel, so aarch64 uses a `--no-deps` install recipe plus the shared nvrtc override. Live-verified on GB10 (below). |
-| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ❌ Triton | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, and installs `nvidia-cuda-nvcc-cu12` for an `sm_121` `ptxas` (the only sidecar compiling its own Triton kernels). Live-verified on GB10: real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor:** `cu130` fixes the torch ops, but that CUDA 12.9 `ptxas` lists `sm_100…sm_103`, `sm_120`, `sm_121` and no `sm_110` (CUDA 12.x calls Thor `sm_101`), and triton 3.5.1's bundled one is older, so the MoE Triton kernels still have no `ptxas` for Thor. Needs a CUDA 13 `ptxas` wired into `venv_ptxas`; not done. |
-| `tools/xr1_sidecar.py` | ✅ | ❌ | all three install passes verified live on GB10 — see below. **Thor:** deliberately left on `cu128` (so no `sm_110` kernels): flash-attn 2.8.3's only aarch64 prebuilts are `cu12torch2.9` and `cu13torch2.10`, so `torch 2.9.1+cu130` would force an hour-plus nvcc source build. Moving XR-1 to Thor means moving it to torch 2.10 on `cu130`. |
+| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ✅ run | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, installs with `uv pip install --no-config` (from the repo root uv otherwise applies the workspace's aarch64 `torch>=2.13` override and the resolve fails), and on aarch64 installs `nvidia-cuda-nvcc==13.0.88` (`_AARCH64_PTXAS`) for a `ptxas` that knows `sm_110` and `sm_121` (the only sidecar compiling its own Triton kernels). Live-verified on GB10 (with the earlier CUDA 12.9 `ptxas`): real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor (2026-10-15, run):** venv provisioned by `_ensure_venv` (`torch 2.9.1+cu130`, arch list `sm_80…sm_110, sm_120`, capability `(11, 0)`); triton 3.5.1's bundled CUDA 12.8 `ptxas` fails on a three-line kernel with `Value 'sm_110a' is not defined for option 'gpu-name'`, the venv's CUDA 13.0 one compiles it. NF4 checkpoint served from the HF snapshot in 74 s boot (6.86 GB on the GPU); `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` passes the finite 14-D action and multi-step chunk tests (its `nvidia-smi` 8 GiB check cannot read memory on Thor: `[N/A]`); `sample_actions` 7.3 s cold, 4.7 s warmed per chunk; the Triton cache holds `robby_moe`'s `_moe_gate_up_grouped_kernel` / `_moe_down_grouped_kernel` / `_moe_pack_selected_kernel` compiled for `arch: 110`, and no `robby_moe_forward failed` fallback warning was logged. |
+| `tools/xr1_sidecar.py` | ✅ (2.9.1 stack) | ✅ run | x86_64 unchanged (`torch 2.9.1+cu128`, flash-attn sdist). aarch64 takes `torch 2.10.0` / `torchvision 0.25.0` / `torchaudio 2.10.0` on `cu130` plus flash-attn 2.8.3's `cu13torch2.10cxx11abiTRUE-cp312` aarch64 release wheel, named by URL (the sdist's `setup.py` maps CUDA 13 to a `cu12` asset name and would build from source). That wheel has no `sm_110` SASS or PTX, so on Thor `_xr1_server.py` probes flash-attn and loads with `attn_implementation="eager"`. Run on Thor — see below. The GB10 runs predate the 2.10 move. |
 | `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; every torch with aarch64 wheels is outside that cap, and the matching `torchcodec==0.5` is x86-only. Lifting this means moving v1 off lerobot 0.4.2. |
 | `tools/rldx_sidecar.py` | ✅ | ⚠️ not resolved | `uv sync` dies on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>`: `torchcodec` and `flash-attn` marker-dropped, torch moved to 2.9.1. Live-verified on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (below). **Thor:** `cu130` has `torch 2.9.1` / `torchvision 0.24.1` cp310 aarch64 wheels, but the full `-e <source>` resolve needs the upstream checkout and was not run. |
 | `tools/internvla_n1_sidecar.py` | ✅ | ⚠️ resolves, not run | Plain-PyPI `torch==2.6.0` is the CPU build on aarch64, and nothing upstream actually caps torch, so `_PINNED_DEPS` moved to `torch==2.9.1` / `torchvision==0.24.1` on the `torch_backend()` index with the shared nvrtc override. Live-verified on GB10 (below). |
@@ -254,6 +259,31 @@ flash_attn.flash_attn_func  bf16 (1,8,4,64)           → ok
 
 That is the dependency stack, not an end-to-end XR-1 rollout — the checkpoint
 itself has not been run on this host.
+
+### XR-1 run on Jetson Thor
+
+Provisioned on Thor through `xr1_sidecar._ensure_venv` (2026-10-15), then the
+sidecar CLI served `OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564`
+(`prequantized_nf4`, profile `vlabench_choice`) to a client sending the
+manifest's shapes: three 480×480 RGB views, 7-D state.
+
+```
+torch 2.10.0+cu130  arch_list sm_80 sm_90 sm_100 sm_110 sm_120 compute_120
+transformers 4.57.1  bitsandbytes 0.49.2 (NF4 Linear4bit fwd ok on sm_110)
+flash_attn 2.8.3+cu13torch2.10: cubins sm_80/90/100/120, no PTX → "no kernel image"
+[xr1-sidecar] flash-attn has no kernel for sm_110; attn_implementation=eager
+shards loaded in ~4 s; get_action (10, 7) finite; 1.42 s cold, 0.81 s warm
+```
+
+Three things this turned up. The repo root's `[tool.uv]` overrides
+(`torch>=2.13` on aarch64) leak into any `uv pip install` run from the repo,
+which put torch 2.13.0 beside torchaudio 2.10.0 and broke flash-attn's
+extension load until the installs got `--no-config`. MiBoT declares no SDPA
+support, so `eager` is the only fallback transformers accepts. And with
+`HF_HUB_OFFLINE=1` and an `hf://…@rev` ref, `AutoProcessor` silently returns
+the bare Qwen2 tokenizer (forward then fails on missing `state` /
+`action_mask`); the run used the local snapshot path. That last one is not
+Thor-specific and is not fixed here.
 
 ### DA3 depth verified live on GB10
 
