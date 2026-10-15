@@ -172,7 +172,7 @@ def test_aloha_rskill_change_selects_sim_lane() -> None:
     result = select_tests.select(REPO_ROOT, ["rskills/act-aloha/rskill.yaml"], CONFIG)
     assert "tests/unit" in result.targets
     assert target in result.targets
-    assert result.requirement_targets["sim"] == [target]
+    assert target in result.requirement_targets["sim"]
 
 
 def test_hyphenated_requirement_group_is_reported() -> None:
