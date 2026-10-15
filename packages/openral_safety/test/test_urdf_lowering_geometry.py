@@ -9,6 +9,8 @@ and tiny inline URDFs), no mocks (CLAUDE.md §1.11).
 
 from __future__ import annotations
 
+import importlib.util
+
 import numpy as np
 import pytest
 from openral_core import BoxShape, CapsuleShape, SphereShape
@@ -17,6 +19,13 @@ from openral_safety.urdf_lowering import (
     _xyzrpy_matrix,
     fit_capsule_to_vertices,
     lower_link_geometry,
+)
+
+# Clouds of >= _HULL_REDUCE_MIN_POINTS (64) vertices are hull-reduced through
+# trimesh, which ships only in the opt-in `lowering` group.
+needs_trimesh = pytest.mark.skipif(
+    importlib.util.find_spec("trimesh") is None,
+    reason="trimesh not installed (`just sync --group lowering`)",
 )
 
 
@@ -37,6 +46,7 @@ def _point_in_capsule(p, shape: CapsuleShape, origin_xyz_rpy) -> bool:
 # ── fit_capsule_to_vertices: containment is the contract ──────────────────────
 
 
+@needs_trimesh
 def test_fit_capsule_contains_every_vertex_of_a_rod() -> None:
     rng = np.random.default_rng(0)
     axis = np.linspace(-0.2, 0.2, 200)
@@ -57,6 +67,7 @@ def test_fit_capsule_contains_an_offaxis_box_cloud() -> None:
     assert all(_point_in_capsule(c, shape, origin) for c in corners)
 
 
+@needs_trimesh
 def test_fit_capsule_diagonal_rod_containment() -> None:
     # A rod along the (1,1,1) diagonal — exercises the +Z→axis rotation thoroughly.
     t = np.linspace(-0.3, 0.3, 150)
@@ -75,6 +86,7 @@ def _capsule_local(pts, origin_xyz_rpy):
     return (np.asarray(pts) - np.array([x, y, z])) @ r
 
 
+@needs_trimesh
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_fit_capsule_segment_is_the_shortest_that_contains(seed: int) -> None:
     """Each end sits where pulling it in by 0.1 mm would drop a vertex.
@@ -107,6 +119,7 @@ def test_fit_capsule_of_a_thin_disk_is_its_bounding_sphere() -> None:
     assert shape.radius_m == pytest.approx(np.hypot(0.04, 0.005))
 
 
+@needs_trimesh
 def test_fit_capsule_keeps_its_declared_headroom_around_every_vertex() -> None:
     """The committed capsule clears every vertex by ``CAPSULE_HEADROOM_M``, not by zero."""
     from openral_safety.urdf_lowering import CAPSULE_HEADROOM_M
@@ -124,6 +137,7 @@ def test_fit_capsule_keeps_its_declared_headroom_around_every_vertex() -> None:
     assert (padded.radius_m - np.sqrt(gap)).min() >= CAPSULE_HEADROOM_M - 1e-12
 
 
+@needs_trimesh
 def test_fit_capsule_is_never_larger_than_the_pca_axis_capsule() -> None:
     """The PCA axis is a candidate of the search, so the result can only be smaller.
 
