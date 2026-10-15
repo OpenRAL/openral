@@ -69,7 +69,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Sim rollouts | `openral sim run`: one YAML → reproducible sim rollout; video + metrics + `RSkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
 | Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, BEHAVIOR-1K/OmniGibson, RLBench/CoppeliaSim | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface; every span, metric, log site and load-phase timer is in the [Telemetry reference](docs/reference/telemetry.md) | `python/observability/` |
-| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `behavior`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
+| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `behavior`, `benchmark`, `deploy`, `dashboard`, `prompt`, `estop`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; robot manifests at `schema_version: "0.2"` (a `"0.1"` manifest is refused; there is no migration), other manifests at `"0.1"` | `python/core/`, `tools/schema_export.py` |
 | ROS 2 IDL | `openral_msgs` (.msg, .action) — normative across the runtime | `packages/msgs/` |
 
@@ -142,7 +142,7 @@ For contributors (full clone + ROS 2 + `colcon`):
 
 ```bash
 git clone https://github.com/OpenRAL/openral && cd openral
-just quickstart         # bootstrap → uv sync → ros2-build → openral REPL
+just quickstart         # bootstrap → just sync → ros2-build → openral REPL
 ```
 
 New to OpenRAL? [**Your first sim rollout**](docs/tutorials/sim/first-rollout.md)
@@ -324,7 +324,7 @@ just ros2-build && just ros2-test
 just schema-export && just docs
 ```
 
-Full toolchain: [docs/contributing/toolchain.md](docs/contributing/toolchain.md). Test inventory: [tests/README.md](tests/README.md). Selective testing: [docs/contributing/selective-testing.md](docs/contributing/selective-testing.md).
+Full toolchain: [docs/contributing/toolchain.md](docs/contributing/toolchain.md). Test tiers: [tests/README.md](tests/README.md). Selective testing: [docs/contributing/selective-testing.md](docs/contributing/selective-testing.md).
 
 ---
 
@@ -366,7 +366,8 @@ rSkills are Hugging Face Hub packages (manifest + weights + reproducible `eval/`
 - **`kind: detector`** — open-vocabulary object detectors: RT-DETR (COCO ONNX), **OmDet-Turbo** (Apache-2.0 open-vocab, default), and LocateAnything-3B (NF4 VLM). Continuous detectors stream into world state; on-demand ones answer the reasoner's `locate_in_view`.
 - **`kind: vlm`** — the Qwen3.5-4B scene VLM (Apache-2.0), drives the read-only `query_scene` tool for success/progress verification.
 - **`kind: reward`** — the Robometer-4B progress monitor (Apache-2.0), runs parallel to a VLA and drives `query_task_progress`.
-- **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-multi-joints-none` / `-eef-pose` / `-look-at`) and Nav2 (`rskill-nav2-mobile_base-navigate_to_pose-none`).
+- **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-multi-joints` / `-eef_pose` / `-look_at`) and Nav2 (`rskill-nav2-mobile_base-navigate_to_pose`).
+- **`kind: segmenter`** — the SAM 2.1 grasped-object mask producer (`rskill-sam2_1-any-grasped_object_mask-bf16`).
 - **`kind: playbook`** — human-authored Markdown SOPs the S2 reasoner reads as content (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object); no weights, no actuation.
 
 Most are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; the GR00T N1.7 LIBERO/SO-101 policies run in-process through lerobot 0.6.0's `GrootPolicy`, while the official BEHAVIOR-1K R1Pro checkpoint uses its pinned Isaac-GR00T Python 3.10 sidecar. The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code NF4 model validated on the SimplerEnv WidowX carrot-on-plate task.
@@ -396,7 +397,7 @@ The reasoner is the slow half of the dual-system architecture: an event-driven L
   uncurated model needs an explicit endpoint + dialect and logs a warning. No
   cloud lock-in, no hidden library default.
 - **Closed, capability-gated tool palette** — built from the installed rSkill registry and rebuilt on `/openral/skill_registry_changed`. The LLM cannot dispatch a skill that isn't installed, capability-matched, and licensed.
-- **Twelve typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`), five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`), the `memory_write` / `memory_search` MEMORY.md tools, and `decompose_mission`.
+- **Thirteen typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`), five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`), the `memory_write` / `memory_search` MEMORY.md tools, `decompose_mission`, and the explicit no-op `wait`.
 - **Playbooks** — human-authored `kind: playbook` Markdown SOPs (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object) read into the system prompt as content the reasoner follows — never code it executes.
 - **Self-maintained memory** — a `MEMORY.md` the reasoner reads each tick and edits through the typed `memory_write` tool (add/update/supersede/delete), with consolidation and retrieval-under-cap.
 - **Sequential missions** — a multi-task operator goal is parsed into a deterministic `MissionState` queue, advanced only when the active task passes the reward gate, with `decompose_mission` subdividing a blocked task on replan before human-handoff.
@@ -428,7 +429,7 @@ just lint           # ruff + mypy --strict
 just docs           # serve docs at http://localhost:8000
 ```
 
-Test suite inventory and coverage matrix: [tests/README.md](tests/README.md). Full setup guide: [docs/contributing/development.md](docs/contributing/development.md). Dev container (VS Code / Codespaces): `F1 → Reopen in Container`.
+Test tiers and CI workflows: [tests/README.md](tests/README.md). Full setup guide: [docs/contributing/development.md](docs/contributing/development.md). Dev container (VS Code / Codespaces): `F1 → Reopen in Container`.
 
 ---
 
@@ -443,9 +444,9 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 ## Community & support
 
 - 💬 **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
-- 📧 **[hello@openral.com](mailto:hello@openral.com)** — general enquiries
-- 🔒 **Security & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.com](mailto:security@openral.com) — **never** a public issue
-- 📋 **Code of Conduct reports:** [conduct@openral.com](mailto:conduct@openral.com)
+- 📧 **[hello@openral.dev](mailto:hello@openral.dev)** — general enquiries
+- 🔒 **Security & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.dev](mailto:security@openral.dev) — **never** a public issue
+- 📋 **Code of Conduct reports:** [conduct@openral.dev](mailto:conduct@openral.dev)
 
 See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANCE.md](GOVERNANCE.md).
 

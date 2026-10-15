@@ -44,8 +44,9 @@ bowl is grasped and placed:
 | :---: | :---: | :---: |
 | ![start](media/frame_start.png) | ![mid](media/frame_mid.png) | ![end](media/frame_end.png) |
 
-> In deploy the Reasoner scores a **trailing window** each tick and reads the
-> last-frame value (`success_now`) — exactly what this preview reproduces. HF
+> In deploy the Reasoner scores the **whole attempt** (start→now, up to
+> `reward.frame_window_s` = 40 s) and reads the last-frame value
+> (`success_now`) — what this preview reproduces on one clip. HF
 > cards render images but not HTML5 `<video>`; the full overlay is
 > **[`media/progress.mp4`](media/progress.mp4)** (20 frames, downloadable).
 >
@@ -107,7 +108,7 @@ pre-quantized OpenRAL NF4 checkpoint, without executing the old upstream
 ## Runtime
 
 The `kind: reward` runtime is implemented as a read-only Reasoner tool
-(`QueryTaskProgressTool`), **not** an `ExecuteSkill` (a reward monitor produces
+(`QueryTaskProgressTool`), **not** an `ExecuteRskill` (a reward monitor produces
 scalars, not actions):
 
 - **Reward monitor node**: `openral_perception_ros.reward_monitor_node` boots the
@@ -151,8 +152,8 @@ you.
 
 ## Benchmark Numbers
 
-Paper-reported (Robometer team, March 2026, arXiv 2603.02115);
-`reproduced_locally: false`. Robometer reports more generalizable reward
+Paper-reported (Robometer team, March 2026, arXiv 2603.02115); not
+reproduced locally, and no `eval/*.json` ships with this rSkill. Robometer reports more generalizable reward
 functions than prior methods (GVL, VLAC, RoboDopamine, TOPReward) across
 benchmarks and real-world evaluations, improving downstream robot-learning
 performance. See the paper for the full tables.
@@ -187,9 +188,9 @@ The model emits no action chunks and has no proprioception contract.
 | `quantization.dtype` / `scheme` | `int4` / `nf4` |
 | `weights_uri` | `hf://OpenRAL/rskill-robometer_4b-any-general-nf4` (pre-quantized NF4, meta-loadable; built from the SHA-pinned upstream `source_repo`) |
 | `min_vram_gb.bf16` | 9.0 GB |
-| `min_vram_gb.int4` | 3.6 GB |
-| `reward.frame_window_s` / `target_fps` | 40.0 s / 3.0 fps (a later reward-window amendment — scores the whole attempt start→now, not an 8 s trailing slice) |
-| `reward.progress_range` / `success_threshold` | `[0,1]` / 0.5 |
+| `min_vram_gb.int4` | 5.5 GB |
+| `reward.frame_window_s` / `target_fps` | 40.0 s / 3.0 fps (the Reasoner's verify scores the whole attempt start→now, not a trailing slice) |
+| `reward.progress_range` / `success_threshold` / `check_floor` | `[0,1]` / 0.8 / 0.5 |
 | `latency_budget.per_chunk_ms` | 3000 ms |
 | `actions` | `monitor` |
 

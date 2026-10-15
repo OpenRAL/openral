@@ -7,24 +7,24 @@ concrete adapters for the robots OpenRAL targets today.
 ## Synopsis
 
 ```python
-from openral_hal import HAL, SO100FollowerHAL, SO100DigitalTwin
+from openral_hal import HAL, SO100FollowerHAL, SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_core import Action, ControlMode
 
 hal: HAL = SO100FollowerHAL(port="/dev/ttyUSB0")        # real SO-100 follower arm
-# or, for offline / CI:
-hal = SO100DigitalTwin()                          # in-process simulator
+# or, for offline / CI, the same adapter over the in-process simulator:
+hal = SO100FollowerHAL(robot=SO100DigitalTwin(SO100DigitalTwinConfig()))
 
 hal.connect()
 state = hal.read_state()                          # → openral_core.JointState
 hal.send_action(
-    Action(control_mode=ControlMode.JOINT_POSITION, joint_positions=[0.0]*6)
+    Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6])
 )
 hal.disconnect()
 ```
 
 The `HAL` Protocol is **structural**: any class with `connect / disconnect /
-read_state / send_action / estop` and an `embodiment_tag: str` field satisfies
-it, without inheriting from anything.
+read_state / send_action / estop` and a `description: RobotDescription`
+attribute satisfies it, without inheriting from anything.
 
 ## What's in here
 
@@ -38,7 +38,7 @@ it, without inheriting from anything.
 | `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport **and** `ControllerStopSeam` (a simulated controller table) for unit tests; `SimTorqueSeam` — in-memory `InterbotixStopSeam`. |
 | `so100_follower.py` | `SO100FollowerHAL` + `SO100_DESCRIPTION` + `so100_with_sensors` — real SO-100 follower arm via the `lerobot` SDK. |
 | `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a literal IPv4-loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
-| `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (used by smoketests, sim tests, and as a stand-in when no hardware is connected). |
+| `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (a lerobot `Robot` that `SO100FollowerHAL(robot=...)` drives in place of the serial arm). |
 | `so100_mujoco.py` | `SO100MujocoHAL` — MuJoCo digital twin for the SO-100 follower, driving the `mujoco_menagerie` MJCF with the same 6-DoF action layout as `SO100FollowerHAL`. |
 | `_mujoco_arm.py` | `MujocoArmHAL` + `MujocoArmHAL.from_description` (MJCF resolved via `openral_core.assets.resolve_asset`) — shared MuJoCo backend for the arms below. It self-constructs from `RobotDescription.sim` (`SimDescription`), so per-robot subclasses are 5-line wrappers and **no Python file is required to add a new MuJoCo HAL** — declare a `sim:` block in `robots/<id>/robot.yaml` and call `MujocoArmHAL.from_description(desc)`. |
 | `franka_panda.py` | `FrankaPandaHAL` + `FRANKA_PANDA_DESCRIPTION` (sim baseline) + `franka_panda_with_sensors` (MuJoCo sim). |
@@ -48,11 +48,11 @@ it, without inheriting from anything.
 | `g1.py` | `G1MujocoHAL` + `G1_DESCRIPTION` — Unitree G1 humanoid (29-DoF) MuJoCo digital twin. ADR-0087 glide is the default; `walking_enabled=True` uses ADR-0089's pinned Apache-2.0 MuJoCo Playground ONNX policy + matching MJCF for gravity-on sim walking. |
 | `h1.py` | `H1MujocoHAL` + `H1_DESCRIPTION` — Unitree H1 humanoid (19-DoF, predecessor to the G1) MuJoCo digital twin on the `mujoco_menagerie/unitree_h1` MJCF. First HAL whose MJCF uses torque rather than position actuators: a software PD position loop runs every `mj_step` via the `MujocoArmHAL._per_step_update` hook, so the public action contract stays "position targets in radians". |
 | `flexiv_rizon4.py` | `Rizon4MujocoHAL` + `RIZON4_DESCRIPTION` — Flexiv Rizon 4 cobot (7-DoF, whole-body force sensitivity) MuJoCo digital twin on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper, no floating base. Real-HW path wrapping `flexivrobotics/flexiv_rdk` is a planned follow-up. |
-| `openarm.py` | `OpenArmMujocoHAL` + `OPENARM_DESCRIPTION` — Enactic OpenArm v2 bimanual humanoid arm (16-DoF: 7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF. Fresh `HALBase` subclass — v2 ships native `<position>` actuators with per-class PD gains baked into the MJCF, so the HAL just writes target → ctrl and steps. v2 MJCF fetched lazily via `openral_hal._openarm_v2_assets` (the `robot_descriptions` package still pins to a pre-v2 commit; helper drops out when upstream bumps). |
+| `openarm.py` | `OpenArmMujocoHAL` + `OPENARM_DESCRIPTION` — Enactic OpenArm v2 bimanual humanoid arm (16-DoF: 7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF. Thin `MujocoArmHAL` subclass (wiring in `OPENARM_DESCRIPTION.sim`) — v2 ships native `<position>` actuators with per-class PD gains baked into the MJCF, so the HAL just writes target → ctrl and steps. v2 MJCF fetched lazily via `openral_hal._openarm_v2_assets` (the `robot_descriptions` package still pins to a pre-v2 commit; helper drops out when upstream bumps). |
 | `openarm_real.py` | `OpenArmRealHAL` + `OPENARM_REAL_DESCRIPTION` — real Enactic OpenArm v2 over `openarm_bringup`'s `ros2_control` stack, sharing `OPENARM_DESCRIPTION` with the twin. Not Python-side CAN: the OpenArm loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++, so the chain is `Action` → four command topics → `controller_manager` → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors. Fans one 16-DoF action across the four controllers the bimanual bringup spawns (per-side arm + gripper), reads `/joint_states` by joint name, and refuses to `connect()` over a CAN link that is down. |
 | `anvil_openarm_v2.py` | `AnvilOpenArmV2MujocoHAL` + `ANVIL_OPENARM_V2_DESCRIPTION` — Anvil OpenARM 2.0 (Anvil Robotics' manufactured variant of the standard OpenArm v2; 16-DoF: 7 arm + 1 gripper per side). Thin manifest-driven subclass like `openarm.py` — the difference is entirely in the fetched MJCF: J1 clamped to ±135 deg, J6 radial deviation widened to -45..+70 deg, and the wrist support bracket (visual-only CAD meshes) that enables it. MJCF fetched at a pinned SHA from `bensonlee5/anvil-openarm-mujoco` by `openral_hal._anvil_openarm_v2_assets`. |
-| `_real_description.py` | `make_real_description(base, *, sdk_kind)` — internal helper deriving a real-HW `RobotDescription` from a sim baseline (flips `sdk_kind`; the `hal` entrypoints are shared); used by all real-HW adapters. |
-| `resolver.py` | `build_hal(description, *, mode, transport=None)` — the single seam mapping a manifest + mode to a constructed sim/real HAL. |
+| `_real_description.py` | `make_real_description(base, *, sdk_kind)` — internal helper deriving a real-HW `RobotDescription` from a sim baseline (flips `sdk_kind`; the `hal` entrypoints are shared); used by the UR, Franka, Sawyer, ALOHA and OpenArm real adapters. |
+| `resolver.py` | `build_hal(description, *, mode, transport=None, sim_env_yaml=None)` — the single seam mapping a manifest + mode to a constructed sim/real HAL. |
 | `ur.py` | `UR5eHAL` / `UR5e_DESCRIPTION` + `UR10eHAL` / `UR10e_DESCRIPTION` (and the `*_with_sensors` factories) — MuJoCo-backed sim. |
 | `ur_real.py` | `UR5eRealHAL` / `UR5e_REAL_DESCRIPTION` + `UR10eRealHAL` / `UR10e_REAL_DESCRIPTION` — real UR hardware via `ros2_control` + `ur_robot_driver` (URCap / RTDE; BSD-3-Clause driver). |
 | `_sensor_wiring.py` | Catalog-backed sensor wiring shared by the `*_with_sensors` factories. |
@@ -75,12 +75,12 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | SO-100 (MuJoCo digital twin) | `SO100MujocoHAL` | ✓ sim (`tests/sim/test_so100_follower_hal_mujoco.py`) | Real MuJoCo physics on the `mujoco_menagerie` MJCF; same 6-DoF action layout as `SO100FollowerHAL`. |
 | Franka Panda (sim) | `FrankaPandaHAL` | ✓ sim | MuJoCo-backed. |
 | Franka Panda (real-HW) | `FrankaPandaRealHAL` | ✓ unit + HIL fixture | `franka_ros2` / `libfranka` / FCI. Lab-gated HIL via `tests/hil/test_franka_panda.py`. Issue #56. |
-| Rethink Sawyer (real-HW) | `SawyerRealHAL` | ✓ unit + HIL fixture | `sawyer_robot` (community fork of `intera_sdk`). Lab-gated HIL via `tests/hil/test_sawyer.py`. Issue #57. No MuJoCo twin by design (vendor defunct; no real hardware will ever connect). |
+| Rethink Sawyer (real-HW) | `SawyerRealHAL` | ✓ unit + HIL fixture | `sawyer_robot` (community fork of `intera_sdk`). Lab-gated HIL via `tests/hil/test_sawyer.py`. Issue #57. No MuJoCo twin; sim runs through the MetaWorld scene adapter. |
 | Trossen ALOHA bimanual (real-HW) | `AlohaHAL` | ✓ unit + HIL fixture | Interbotix XS SDK via `interbotix_xs_sdk` (not `ros2_control`/`controller_manager`); 14-DoF. `connect()` does not yet wire a real hardware transport. Lab-gated HIL via `tests/hil/test_aloha.py`. Issue #58. |
 | Trossen ALOHA bimanual (MuJoCo digital twin) | `AlohaMujocoHAL` | ✓ sim (`tests/sim/test_aloha_bimanual_hal_mujoco.py`) | Real MuJoCo physics on gym-aloha's `bimanual_viperx_transfer_cube.xml`; same 14-DoF action layout as `AlohaHAL`. |
 | Unitree G1 (MuJoCo digital twin) | `G1MujocoHAL` | ✓ sim (`tests/sim/test_g1_hal_mujoco.py`) | 29-DoF humanoid: stock Menagerie contract twin + ADR-0087 glide, or explicit ADR-0089 gravity-on walking with the pinned MuJoCo Playground ONNX controller. Real-HW G1 still requires the M2 C++ S0 controller. |
 | Unitree H1 (MuJoCo digital twin) | `H1MujocoHAL` | ✓ sim (`tests/sim/test_h1_hal_mujoco.py`) | 19-DoF humanoid (G1's predecessor) on the `mujoco_menagerie/unitree_h1` MJCF. Same contract-validator scope as G1; falls without gravity disabled. Software PD position loop wraps the MJCF's torque actuators (mirrors `unitree_sdk2` on hardware). Real-HW H1 also planned under M2. |
-| Flexiv Rizon 4 (MuJoCo digital twin) | `Rizon4MujocoHAL` | ✓ sim (`tests/sim/test_rizon4_hal_mujoco.py`) | 7-DoF cobot with whole-body force sensitivity (0.1 N) on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper. Real-HW Rizon 4 path wraps `flexivrobotics/flexiv_rdk` (Python + C++ SDK; closed-with-api per CLAUDE.md §7.4). |
+| Flexiv Rizon 4 (MuJoCo digital twin) | `Rizon4MujocoHAL` | ✓ sim (`tests/sim/test_rizon4_hal_mujoco.py`) | 7-DoF cobot with whole-body force sensitivity (0.1 N) on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper. No real-HW adapter (`hal.real: null`); a `flexivrobotics/flexiv_rdk` path is a planned follow-up. |
 | Enactic OpenArm v2 (MuJoCo digital twin) | `OpenArmMujocoHAL` | ✓ sim (`tests/sim/test_openarm_hal_mujoco.py`) | 16-DoF bimanual (7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF (PR #19 on master). Shares `OPENARM_DESCRIPTION` with the real adapter below. |
 | Enactic OpenArm v2 (real-HW) | `OpenArmRealHAL` | ✓ unit + live CAN HIL | `openarm_bringup` `ros2_control` (4 controllers, 16-DoF) over the C++ `openarm_hardware` SystemInterface and two Damiao CAN FD buses (1 Mbit/s nominal, 5 Mbit/s data), one per arm. `connect()` preflights both SocketCAN links. `sdk_kind: open` — `openarm_can` and `openarm_ros2` are Apache-2.0, so unlike UR / Franka there is no closed vendor runtime in the path. Lab-gated HIL via `tests/hil/test_openarm_can_live.py`. |
 | Anvil OpenARM 2.0 (MuJoCo digital twin) | `AnvilOpenArmV2MujocoHAL` | ✓ sim (`tests/sim/test_anvil_openarm_v2_hal_mujoco.py`) | 16-DoF bimanual on the standard v2 MJCF plus Anvil's documented deltas (J1 ±135 deg; J6 -45..+70 deg radial deviation via the wrist support bracket, shipped as visual-only CAD meshes). Same native `<position>` actuators as the Enactic v2 twin — thin manifest-driven HAL, no PD workarounds. Real-HW path wraps Anvil's driver stack (`anvil-robotics/openarm`). |
@@ -90,11 +90,10 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | Universal Robots UR10e (real HW) | `UR10eRealHAL` | ✓ unit + HIL fixture | Same driver as the UR5e real-HW adapter; only the URDF / payload envelope differ. Lab-gated HIL via `tests/hil/test_ur10e.py`. Issue #55. |
 | `ros2_control`-driven arms | `RosControlHAL` | ✓ generic | Any `ros2_control` controller manager that exposes the standard topics/services. |
 
-The Pydantic descriptions above (e.g. `SO100_DESCRIPTION`,
-`FRANKA_PANDA_DESCRIPTION`) are paired with the canonical YAML manifests
-under `robots/<robot_id>/robot.yaml` — the YAML is the source of truth
-for sensors and capabilities, while the Python description pins the
-kinematic / safety values that don't change at runtime.
+The Python descriptions above (e.g. `FRANKA_PANDA_DESCRIPTION`) are in-code
+mirrors of `robots/<robot_id>/robot.yaml`; the manifest wins.
+`tests/unit/test_robot_manifests_match_hal_constants.py` fails when a mirror
+drifts from its manifest and pins that `build_hal` binds the loaded manifest.
 
 ## Adding a new MuJoCo-backed robot
 
@@ -223,7 +222,7 @@ parameters and topic names.
   joint-indexing / units / lifecycle / aggregator / safety wiring breaks
   that per-robot sim tests miss.
 - Full sweep: `just hal-twin-sweep` runs the per-HAL contract suite and the
-  cross-HAL `DeployRunner` suite (~200 tests, 7 robot families) with the ROS 2
+  cross-HAL `DeployRunner` suite with the ROS 2
   plugin workaround baked in.
 - HIL: `tests/hil/test_franka_panda.py`,
   `tests/hil/test_sawyer.py`, `tests/hil/test_aloha.py`,
@@ -234,16 +233,18 @@ parameters and topic names.
   (`RosControlHILTransport` + `make_hil_transport`) for the single-controller
   real-HW HALs (UR5e / UR10e / Franka Panda / Sawyer);
   `tests/hil/_aloha_ros_transport.py` (`AlohaHILTransport` +
-  `make_aloha_hil_transport`) for the bimanual ALOHA fan-out (4 controllers).
-  Both raise at import if `rclpy` is missing, so HIL tests guard with
+  `make_aloha_hil_transport`): four `JointTrajectory` publishers + one
+  aggregated `JointState` subscriber mirroring `AlohaHAL`'s current topic
+  contract, which a real ALOHA (`interbotix_xs_sdk`, no `controller_manager`)
+  does not expose — it is not evidence of what the rig accepts until #250
+  retargets it. Both raise at import if `rclpy` is missing, so HIL tests guard with
   `importlib.util.find_spec("rclpy")` first.
-- Doctests: every adapter file is in `Justfile::test-doctest`'s
-  `DOCTEST_TARGETS`; run `just test-doctest`.
+- Doctests: `just test-doctest` runs `--doctest-modules` over the whole
+  `openral_hal` package.
 
 ## See also
 
 - `openral_core.RobotDescription`, `JointSpec`, `Action`, `JointState`,
   `SafetyEnvelope`: the typed contract this package consumes and emits.
-- CLAUDE.md §3 (architecture) and §5 (exceptions: `ROSConfigError` /
-  `ROSRuntimeError` / `ROSSafetyViolation` are the only ones a HAL adapter
-  raises).
+- CLAUDE.md §3 (architecture) and §5 (the `ROSError` hierarchy HAL
+  adapters raise from).

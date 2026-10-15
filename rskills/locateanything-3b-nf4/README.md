@@ -51,8 +51,8 @@ assert manifest.quantization.extra["scheme"] == "nf4"
 ```
 
 The upstream model uses Transformers custom code (`trust_remote_code=True`).
-OpenRAL should execute it only after the operator has accepted the remote-code
-risk for this specific package.
+`tools/locateanything_sidecar.py` defaults `OPENRAL_ALLOW_REMOTE_CODE=1` for the
+sidecar process: launching the sidecar for this model is the operator's opt-in.
 
 ## What It Does
 
@@ -91,7 +91,7 @@ Two venvs: the **sidecar** venv (`transformers==4.57.1`, holds the model;
 provision separately and point at it with `OPENRAL_LOCATEANYTHING_SIDECAR_VENV`)
 and the **detector-node** venv (the deploy-sim runtime), which needs the `pyzmq`
 + `msgpack` ZMQ client from the `locateanything` dependency group
-(`uv sync --group locateanything`).
+(`just sync --group locateanything`).
 
 ## Upstream Model And Training
 
@@ -112,9 +112,9 @@ layout/OCR grounding, GUI grounding, and point localization.
 ## Supported Robots And Embodiments
 
 This detector is embodiment-agnostic. The only declared hardware requirement is
-an RGB camera stream of at least 640 x 480. All in-tree OpenRAL embodiment tags
-are listed in `rskill.yaml` so robots with a compatible RGB sensor can install
-the package once a PyTorch detector adapter is available.
+an RGB camera stream of at least 640 x 480. `rskill.yaml` declares the
+`embodiment_tags: ["any"]` wildcard, so any robot with a compatible RGB sensor
+can install it and run it through the `LocateAnythingDetector` backend above.
 
 ## Sensors And Observation Contract
 
@@ -123,7 +123,7 @@ the package once a PyTorch detector adapter is available.
 | in | any RGB camera | RGB image | min 640 x 480 | `vla_feature_key` is intentionally omitted |
 | in | detector query | text | natural language | object names, referring phrases, OCR/layout queries, GUI targets, point targets |
 | preprocessing | LocateAnythingProcessor | image + text | dynamic visual tokens | upstream processor uses 14 px patches, 2 x 2 merge kernel, and 25,600 token input limit |
-| out | localization tokens | text | boxes or points | adapter must parse coordinate tokens into OpenRAL `ObjectsMetadata` |
+| out | localization tokens | text | boxes or points | the adapter parses coordinate tokens into OpenRAL `ObjectsMetadata` |
 
 The model emits no action chunks and has no proprioception contract.
 
@@ -138,7 +138,7 @@ The model emits no action chunks and has no proprioception contract.
 | `runtime` | `pytorch` |
 | `quantization.dtype` | `int4` |
 | `quantization.extra.scheme` | `nf4` |
-| `weights_uri` | `hf://OpenRAL/rskill-locateanything_3b-any-general-nf4` |
+| `weights_uri` | `hf://OpenRAL/rskill-locateanything_3b-any-general-nf4@25a9bec53791029dfcc1badc727bbf80cecac9a1` |
 | `source_repo` | `hf://nvidia/LocateAnything-3B@7a81d810571dc5f244b2f0b6868128f24b1cbd85` |
 | `latency_budget.per_chunk_ms` | 1000 ms |
 | `actions` | `detect` |
@@ -184,5 +184,5 @@ The rSkill package metadata and README are OpenRAL project files. The wrapped
 LocateAnything weights and upstream custom-code sidecars are governed by the
 NVIDIA License from `nvidia/LocateAnything-3B`; Section 3.3 limits use to
 non-commercial research or evaluation except for NVIDIA and its affiliates.
-OpenRAL should require explicit non-commercial acceptance before install or
-activation.
+In a commercial deployment the rSkill loader blocks this posture unless
+`OPENRAL_ALLOW_NONCOMMERCIAL=1` is set.

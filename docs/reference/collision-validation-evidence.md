@@ -2402,7 +2402,8 @@ corner case.
 
 **This does not re-strike the lever.** It converts it from a free win into a
 **trade**, settled by one unmeasured number: the actual end-effector speed
-during the carry phase, where 71 % of the stops happen. If the policy creeps at
+while the payload is attached, where 71 % of the #204 battery's stops happen
+(70 of 99: 56 carrying + 14 placing). If the policy creeps at
 0.1 m/s the lever is still worth pulling; at 0.5 m/s it is not. The next step is
 to measure that from the battery's recorded joint states rather than assume it.
 
@@ -2465,8 +2466,8 @@ Across all 26 rounds on disk, counted by where the round actually ends:
 | `fridge` | 11 | 7 (64 %) | 2 (18 %) | **2 (18 %)** | 1 |
 | `utensil` | 15 | 6 (40 %) | 5 (33 %) | **4 (27 %)** | 0 |
 
-**Only one round in four reaches the phase the programme is about.** The carry
-phase holds 71 % of stops and every stop ADR-0101 targets, and a round arrives
+**Only one round in four reaches the phase the programme is about.** The attached-payload
+phases (carry + place) hold 71 % of the #204 stops and every stop ADR-0101 targets, and a round arrives
 there only after the policy grasps *and* the arm clears its own start pose.
 
 This is a **measurement-cost** finding, not a collision one, and it explains why
@@ -3162,7 +3163,8 @@ The 2026-09-09 ceiling battery's 20 gate-ON E-stops, read through their own
 `evidence_voxel_backing` records. **Those records are on the
 `sim.estop_ground_truth_evidence` line, not the snapshot line** — the snapshot
 only carries one when the kernel's evidence was already fresh, and it usually is
-not (`_late_voxel_backing`). 26 of 27 stops carry a record; reading only the
+not (`_late_voxel_backing`). Battery-wide, 26 of 27 snapshotted stops (these 20 gate-ON plus the gate-OFF
+arm's 7) carry a record — every one but the "no evidence line" row below; reading only the
 snapshot line finds `null` on all of them and invites the conclusion that the
 instrument is missing. It is not, and that error was published in #272's first
 draft and retracted.
@@ -3766,8 +3768,9 @@ themselves rather than inferred:
    re-derive as `unadjudicated`. As with caveats 5, 6 and 8 this withdraws a
    conclusion and reverses none: the one observed instance
    (`panda_link5`/`panda_link7`, 2026-09-04) replays as a **genuine** overlap
-   of the two links' exact hulls. Closing this properly needs a link-vs-link
-   pair set in `sim.estop_ground_truth_snapshot`, which does not exist yet.
+   of the two links' exact hulls. That link-vs-link pair set has since landed in
+   `sim.estop_ground_truth_snapshot` (`nearest_link_link_pairs`, #220) —
+   see caveat 11 for what its first version broke.
 
 10. **No `validation_matrix` round taken on post-#231 `master` before
     2026-09-07 is a measurement of the kernel.** The harness polled a DDS scope
@@ -3893,7 +3896,7 @@ Read at the time as "payload primitives are tight; a payload stop's whole error 
 | --- | --- | --- | --- | --- |
 | 1 | `tight_geometry` on `panda_link6` (+ `link3`/`link4`) | 18 of 29 link stops incl. `voxel_352030` | ~33 mm link excess | built + measured 2026-09-07, support excess 75.6→23.8, 76.1→23.2, 52.7→21.5 mm, mesh-outside-DOP 0.0 mm on all seven links, narrow-phase p99 2.0 ms / median 0.1 ms on 5 638 cells (15× under the 33 ms budget). Both manifests carry it; WG sign-off on Entry 026 (`OpenRAL/management#33`) was still pending when the note was last amended. Reverses `collision-hull-narrow-phase.md` §5.2's exclusion, which was true of start states only |
 | 2 | Promote fixtures the payload passes to modeled geometry (ADR-0101, #254; scope of the place allowance, #259) | 51 of 70 payload stops (`voxel_` cells); 9 of 11 placing stops clip scenery beside the target | removes the voxel term for modelled fixtures | ADR proposed, deliberately **not implemented**; with the WG (`OpenRAL/management#36`). Offline 48/51 (94 %) recovered, median 16.2 mm, min 0.1 mm; live-map 2026-09-09: 24/28 (86 %), p = 0.237, but median recovered clearance **8.56 mm** — the WG should rule on 8.56 mm, which argues for the ADR's suppression-off first landing. #259 answered 2026-09-10: the allowance is not broken (`place_allowance_active` is `allowance > 0.0`, non-zero only inside the declared target's box), so widening it is a conservatism decision, not a bug fix |
-| 3 | Voxel resolution 25 → 15 mm (#253, Entry 027) | class B only — 8 of 20 gate-ON stops (excess ≤ 21.65 mm), 3 of which already sit under 12.99 mm → **5 of 20 plausibly clear** | 8.66 mm of the 21.65 mm half-diagonal | struck on an estimate 2026-09-06; **un-struck 2026-09-07** (estimate wrong 32×); with the WG 2026-09-09; **live A/B 2026-09-11 null, struck** (+5.9 mm, CI [−5.7, +17.7], predicted −8.66 outside it, sign test 11/12 p = 1.0); **amended 2026-09-12: composes with #266** — replay on 182 clear poses: box @ 25 mm 154 false stops → refined @ 25 mm 136 → box @ 15 mm 138 → **refined @ 15 mm 15 (90 % fewer)**, all 7 real contacts caught in every condition. Re-ask after #266 lands; n=16 pairs (sd 22.2 mm) could not resolve −3 mm. 15 mm costs 0.6 → 2.8 MB per grid at 10 Hz (28 MB/s DDS) |
+| 3 | Voxel resolution 25 → 15 mm (#253, Entry 027) | class B only — 8 of 20 gate-ON stops (excess ≤ 21.65 mm), 3 of which already sit under 12.99 mm → **5 of 20 plausibly clear** | 8.66 mm of the 21.65 mm half-diagonal | struck on an estimate 2026-09-06; **un-struck 2026-09-07** (estimate wrong 32×); with the WG 2026-09-09; **live A/B 2026-09-11 null, struck** (+5.9 mm, CI [−5.7, +17.7], predicted −8.66 outside it, sign test 11/12 p = 1.0); **amended 2026-09-12: composes with #266** — replay on 182 clear poses: box @ 25 mm 154 false stops → refined @ 25 mm 136 → box @ 15 mm 138 → **refined @ 15 mm 15 (90 % fewer)**, all 7 real contacts caught in every condition. **Shipped in sim 2026-09-12 after #266** (`3bf865f23`; real hardware 20 mm since `ded5d9fd4`); n=16 pairs (sd 22.2 mm) could not resolve −3 mm. 15 mm costs 0.6 → 2.8 MB per grid at 10 Hz (28 MB/s DDS) |
 | 4 | ~~Payload as a tight hull~~ | — | −1.5 mm on the #204 decomposition | struck 2026-09-07; **the strike was wrong**: the 2026-09-11 A/B found the payload lowered to a local AABB, median **50.78 mm** (max 88.22) beyond the mesh, 2.3–3.9× the quantisation term — filed and landed as **#266**, overhang now ~9–10 mm. See the 2026-09-11 entry, `the 25 → 15 mm resolution lever, measured: null`, and the 2026-09-12/13 `#275` entries |
 | — | Negative world margin | — | — | deliberately not pulled: zero engineering, but it lets the 6 real contacts through and is the padding knob the survey §11 says nobody has tuned since 2013 |
 
@@ -3948,7 +3951,7 @@ Checklist, final state:
 - [x] ~~Payload bounding box~~ — struck 2026-09-07 (−1.5 mm); overturned by #266 (§5 lever 4).
 - [x] **`tight_geometry` link3/4/6** — built and measured; Entry 026 written 2026-09-07 (`OpenRAL/management#33`), WG sign-off pending. Found while validating: `test_kernel_latency_soak.py` never publishes `OccupancyVoxels`, so it cannot reach the narrow phase — vacuous for hull changes.
 - [x] **Narrow-phase latency surface** — `test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid` in the fridge pin file; p99 2.0 ms, mutation-checked.
-- [ ] **Voxel 25 → 15 mm (#253)** — with the WG, Entry 027; live A/B null 2026-09-11; re-ask after #266 (§5 lever 3).
+- [x] **Voxel 25 → 15 mm (#253)** — live A/B null 2026-09-11; re-asked after #266 and **shipped** in sim at 15 mm (`3bf865f23`, 2026-09-12, Entry 027); real hardware later moved 50 → 20 mm (`ded5d9fd4`); both in `deploy_e2e.launch.py::_octomap_resolution` (§5 lever 3).
 - [ ] ~~Drop `baguette` from the scorecard~~ — **withdrawn 2026-09-10**: 1/3 gate-off on the fixed harness, so the 0/11 was partly starved runs. Weak, not dead; keep until ten valid rounds.
 - [x] **ADR-0101** proposed, not implemented (crosses Layer 2 → 6); its suppression step is the first fail-open mechanism in the hazard log; four bounds proposed; first landing suppression-off as observability. Live-map re-derivation 2026-09-09 (§5 lever 2). See the 2026-09-09 entry, `ADR-0101's 94 % re-derived from the live map: 86 %`.
 - [x] **#217 closed COMPLETED 2026-09-06** — the #204 A/B was null with teeth: 5.0 % vs 10.0 %, Fisher p = 0.491, 0.85 power against 25 %→5 %. #204 converted an instrument and is off the suspect list.

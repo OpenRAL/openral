@@ -59,7 +59,8 @@ for the full override matrix.
 ## DeployScene catalogue (`scenes/deploy/`)
 
 Env-only "robot + scene" pins. No `task:` block, no eval; the runtime
-reasoner picks the rSkill. Consumed by `openral deploy sim`.
+reasoner picks the rSkill. Consumed by `openral deploy sim`, or by
+`openral deploy run` for the real-hardware scenes.
 
 | Config | Fixed / declared robot | `scene.id` | Backend | Use |
 |---|---|---|---|---|
@@ -75,7 +76,15 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 | [`robocasa_drawer_utensil.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_drawer_utensil.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToDrawer` | RoboCasa (MuJoCo) | Utensil counter→drawer pick-and-place; reach-down place target. No ADR-0097 declaration: its target is one of many generated `stack` levels, so a guessed name would resolve to a *different* real receptacle instead of failing closed. Confirmed live at seed 1 — the only bodies matching `drawer` are the *fridge's* freezer drawers, while the counter drawer is `stack_2_left_group_3_*` |
 | [`robocasa_fridge_drawer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_fridge_drawer.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceFridgeShelfToDrawer` | RoboCasa (MuJoCo) | Vegetable fridge-shelf→fridge-drawer pick-and-place; enclosed workspace. Declares its ADR-0097 place target (`sim:fridge_main_group_fridge_drawer0`, body 98 — corrected against a live seed-1 run after the HAL refused #142's guess fail-closed; the drawer, not the fridge root, whose subtree would also exempt both doors) |
 | [`robocasa_navigate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_navigate.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/NavigateKitchen` | RoboCasa (MuJoCo) | Mobile-base kitchen navigation sandbox (Nav2 graph compatible) |
-| [`robocasa_deliver_straw.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_deliver_straw.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/DeliverStraw` | RoboCasa (MuJoCo) | The **carry-while-navigating** scene for issue #108: the base drives 3.795 m at the pinned seed 3 while holding the straw, which is what exercises `openral_nav2_bringup`'s payload footprint. In `target50`, so XR-1 stays in distribution. Drawer is closed at reset — open → grasp → carry → place; only the carry phase reads the footprint. See [the carry survey](robocasa-carry-survey.md) |
+| [`robocasa_deliver_straw.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_deliver_straw.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/DeliverStraw` | RoboCasa (MuJoCo) | The **carry-while-navigating** scene for issue #108: the base drives 3.795 m at the pinned seed 3 while holding the straw, which is what exercises `openral_nav2_bringup` mid-carry (the scan payload filter; the dynamic payload footprint was removed in PR #186). In `target50`, so XR-1 stays in distribution. Drawer is closed at reset — open → grasp → carry → place. See [the carry survey](robocasa-carry-survey.md) |
+| [`robocasa_vslam.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_vslam.yaml) | `panda_mobile_vslam` *(declared)* | `robocasa/PickPlaceCounterToCabinet` | RoboCasa (MuJoCo) | Lidar-less twin of `robocasa_pnp`: the base localises from two base-mounted RGB cameras via in-process PyCuVSLAM, not a `LaserScan` |
+| [`robocasa_vslam_mono.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_vslam_mono.yaml) | `panda_mobile_vslam` *(declared)* | `robocasa/PickPlaceCounterToCabinet` | RoboCasa (MuJoCo) | Single-camera variant: one RGB camera + DepthAnything-3 metric depth into cuVSLAM RGB-D odometry and nvblox |
+| [`g1_vln.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/g1_vln.yaml) | `g1` *(declared)* | `g1_vln_bench` | Bare MuJoCo twin | Unitree G1 VLN bench: head camera, ADR-0089 pinned walking controller, `BODY_TWIST` navigation skills |
+| [`openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml) | `openarm` *(declared)* | `openarm_tabletop_pnp` | Custom MJCF HAL + **real** ZED-M | Real ZED depth through the octomap leg into the world map, with the simulated OpenArm HAL |
+| [`openarm_bench.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_bench.yaml) | `openarm` *(declared)* | `openarm_bench` | **Real hardware** (`deploy run`) | OpenArm v2 real bench cell: real arms and real cameras |
+| [`openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml) | `openarm` *(declared)* | `openarm_real_world_voxels` | **Real hardware** (`deploy run`) | Real cell with the safety kernel's world-voxel check on; follow [the runbook](../tutorials/deploy/openarm-real-world-voxel-check.md) |
+| [`openarm_real_autonomous.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_autonomous.yaml) | `openarm` *(declared)* | `openarm_real_autonomous` | **Real hardware** (`deploy run`) | `openarm_real_world_voxels` plus the reasoner, open-vocab detector and spatial-memory ingest: an LLM chooses the motion |
+| [`galaxea_a1_bench.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/galaxea_a1_bench.yaml) | `galaxea_a1` *(declared)* | `galaxea_a1_bench` | **Real hardware** (`deploy run`) | Galaxea A1 deployment; start the ROS 1 sidecar, camera bridge, LingBot policy server and A1 runtime policy gateway first |
 | [`isaac_franka_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka_urdf.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka sandbox loaded from URDF (Isaac Sim) |
 | [`isaac_panda_mobile_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_panda_mobile_urdf.yaml) | `panda_mobile` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Mobile-base Panda loaded from URDF (Isaac Sim) |
 | [`isaac_openarm_warehouse.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_openarm_warehouse.yaml) | `openarm` *(declared)* | `isaac_sim` | Isaac Sim | Bimanual OpenArm imported from its URDF, standing at a pallet of three pickable YCB props in the `Simple_Warehouse`; its meshes come from Enactic's public `openarm_description`, fetched on first use |
@@ -173,6 +182,10 @@ scene:
 | [`franka_tabletop_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_tabletop_push.yaml) | `franka_panda` *(scene-fixed)* | `tabletop_push` | `tabletop_push/push_to_goal` | Franka variant of the robot-agnostic cube push-to-goal |
 | [`pusht.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/pusht.yaml) | `pusht_2d` *(scene-fixed; 2-D pymunk)* | `pusht` | `pusht/0` | gym-pusht 2-D push smoke |
 | [`behavior_turning_on_radio.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/behavior_turning_on_radio.yaml) | `r1pro` *(scene-fixed)* | `behavior` | `behavior/turning_on_radio` | Official public-test instance 0 through the OmniGibson evaluator sidecar |
+| [`xr1_robocasa_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa_pnp.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | `robocasa/PickPlaceCounterToCabinet/0` | XR-1 observation/action integration check; not Xiaomi's RoboCasa v0.2 benchmark |
+| [`xr1_robocasa365_open_drawer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa365_open_drawer.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/OpenDrawer` | `robocasa/OpenDrawer/0` | 200-step XR-1 RoboCasa365 review rollout, not the target50 evaluation |
+| [`xr1_robocasa365_close_blender_lid.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa365_close_blender_lid.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/CloseBlenderLid` | `robocasa/CloseBlenderLid/0` | 150-step XR-1 RoboCasa365 approval rollout, not the target50 evaluation |
+| [`xr1_vlabench_select_fruit.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_vlabench_select_fruit.yaml) | `franka_panda` *(scene-fixed)* | `vlabench` | `vlabench/select_fruit` | Short XR-1 wiring check (front/base/wrist camera order, NF4 rSkill); not a benchmark score |
 
 ## BenchmarkScene catalogue (`scenes/benchmark/`)
 
@@ -251,8 +264,9 @@ just sim-custom                     # ACT × gym-aloha insertion (rskills/act-al
 
 `just sim-audit` runs
 [`tools/audit_sim_configs.py`](https://github.com/OpenRAL/openral/blob/master/tools/audit_sim_configs.py)
-over the per-tier catalogue and reports row-by-row latency + success
-metrics. `just sim-eval` runs the full benchmark suites end-to-end.
+over the per-tier catalogue (one real rollout per scene × rSkill row) and
+classifies each row's outcome into a JSON report + Markdown table. `just sim-eval <config>` runs one scene config through
+`openral sim run`; suites run through `openral benchmark run --suite <id>`.
 
 ## See also
 

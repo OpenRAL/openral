@@ -37,9 +37,8 @@ specialisation) and of [`rskill-moveit-multi-joints`](../rskill-moveit-joints/)
 (joint-space). The engine constructs an `rclpy.action.ActionClient` on the
 host `RskillRunnerNode`, sends one goal built from the lowered `pose` block,
 awaits the result, and replays the returned `trajectory_msgs/JointTrajectory`
-one waypoint per `step()` call onto `/openral/candidate_action` so the safety
-supervisor still applies its per-joint envelope check to every commanded
-position.
+one waypoint per `step()` call onto `/openral/candidate_action` so the C++
+safety kernel still checks every commanded position.
 
 ## What this skill does
 
@@ -110,12 +109,9 @@ trajectory replayed one waypoint per `step()` as a 1-row `JOINT_POSITION`
 | in  | `pose.orientation` | unit quaternion in `pose.quaternion_order` (default `xyzw`) | LLM-overridable |
 | out | per-waypoint `Action` | `joint_targets=[[n_dof floats]]`, `horizon=1`, `is_terminal=False` | One chunk per `step()` until completion is signalled by exception |
 
-Why one row per chunk (`chunk_size: 1` is schema-enforced for
-`kind: ros_action`): the OpenRAL safety supervisor only validates row 0
-of every `ActionChunk` today
-([`supervisor_node.py`](../../packages/openral_safety/openral_safety/supervisor_node.py)).
-Packing the full trajectory as one chunk with `horizon=N` would let
-waypoints 1..N actuate unchecked.
+`chunk_size: 1` is schema-enforced for `kind: ros_action`: each waypoint is
+its own `ActionChunk`, so the C++ safety kernel validates (and can reject) it
+before the next one is sent.
 
 ### GPU-accelerated planning (cuMotion)
 
@@ -187,7 +183,7 @@ reads the `link_name ← tool_frame` offset from TF:
 | `ros_integration.interface_name` | `/move_action` |
 | `ros_integration.goal_builder` | `pose` (selects `PoseGoalRskill`) |
 | `ros_integration.result_trajectory_field` | `planned_trajectory.joint_trajectory` |
-| `commercial_use_allowed` | `true` (apache-2.0) |
+| `is_commercial_use_allowed` | `true` (apache-2.0) |
 
 Full schema:
 [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
@@ -206,7 +202,10 @@ End-to-end, with a real MoveIt launch up:
 # 1. Bring up MoveIt for your robot (example: Panda)
 ros2 launch moveit_resources_panda_moveit_config demo.launch.py
 
-# 2. Dispatch a Cartesian end-effector pose goal:
+# 2. Boot the OpenRAL deploy graph against the same robot
+openral deploy sim --config scenes/deploy/<deploy-scene>.yaml --robot franka_panda
+
+# 3. Dispatch a Cartesian end-effector pose goal:
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
     "{rskill_id: 'OpenRAL/rskill-moveit-multi-eef_pose', deadline_s: 30.0, prompt: 'move to pre-grasp',
       goal_params_json: '{\"pose\": {\"position\": [0.4, 0.0, 0.5], \"orientation\": [0.0, 0.0, 0.0, 1.0]}}'}"
@@ -217,12 +216,13 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 - **Reachability is the planner's call.** A pose outside the arm's dexterous
   workspace simply fails to plan — there is no base-repositioning fallback
   here (that is the navigate rung of the ladder).
-- **OpenRAL safety supervisor does not do collision checking.** It trusts
-  MoveIt's internal FCL pass; the per-joint envelope check still runs per
-  waypoint. Kernel-side collision checking is a separate ADR + multi-PR effort.
-- **No velocity / jerk bound at the supervisor.** Same posture as
-  `rskill-moveit-multi-joints`: the per-joint position envelope runs per
-  waypoint; richer bounds are tracked separately.
+- **Kernel collision checks are deployment-configured.** MoveIt plans
+  against its own FCL `PlanningScene`; the C++ safety kernel separately checks
+  each waypoint against the per-joint position envelope and, when the deploy
+  enables them, self-collision and world-voxel collision.
+- **No velocity / jerk bound on `JOINT_POSITION` chunks.** Same posture as
+  `rskill-moveit-multi-joints`: position limits per waypoint, not the rate
+  between waypoints.
 
 ## License
 
@@ -233,8 +233,7 @@ Both are commercial-use-permissive.
 
 ## See also
 
-- MoveIt goal-builder library + rskill-moveit-* rename
-- ROS-wrapped rSkills
+- [Wrapped-ROS rSkills](../../docs/reference/rskills.md#wrapped-ros-rskills-kind-ros_action)
 - [`openral_rskill.ros_action_rskill`](../../python/rskill/src/openral_rskill/ros_action_rskill.py) — engine source
 - [`openral_rskill.pose_goal_rskill`](../../python/rskill/src/openral_rskill/pose_goal_rskill.py) — goal-lowering adapter
 - [`rskills/rskill-moveit-joints/`](../rskill-moveit-joints/) — sibling joint-space MoveIt wrapper

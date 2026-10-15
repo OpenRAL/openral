@@ -95,7 +95,8 @@ back to (or fails on) CPU.
   `/workspace/install/setup.bash`, sources both, and exec's the user command.
 - ENV: `ROS_DISTRO=jazzy`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`,
   `ROS_DOMAIN_ID=0`, `PATH=/workspace/.venv/bin:$PATH`, `PYTHONUNBUFFERED=1`.
-- Default `ENTRYPOINT`: `openral deploy run` (the CLI ships as `openral`).
+- `ENTRYPOINT` is the bare `openral` CLI (`docker run openral:x86 doctor`,
+  `… detect`, `… deploy run --config …`); the default `CMD` is `deploy run --help`.
 
 ## The GStreamer / DeepStream / TensorRT stack moved to OpenRAL Pro
 
@@ -171,8 +172,9 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ## CI
 
 `.github/workflows/docker-build.yml` builds this image **on merge to `master`
-only**, and only when its inputs change (`docker/inference/**`,
-`pyproject.toml`, `uv.lock`, `packages/**`, `cpp/**`, or the workflow itself).
+only**, and only when its inputs change (`docker/inference/**` except this README,
+`.dockerignore`, `pyproject.toml`, `uv.lock`, `python/**`, `packages/**`, `cpp/**`,
+the live-ROS tests it hosts, or the workflow itself).
 It builds, runs the smoke tests (asserts `gi` absent, cv2 / feetech /
 onnxruntime / omdet present, `deploy run --dry-run` resolves) plus the live-ROS
 suite, then pushes `openral:x86` to GHCR. The image is ~25 GB, so the workflow
@@ -193,7 +195,7 @@ defeat by accident.
 
 1. **Containerd image store, `docker` buildx driver.** The build writes straight
    into the store dockerd reads from. Under the older `docker-container` driver,
-   `--load` had to serialize the finished 7.9 GB image to a tarball and replay it
+   `--load` had to serialize the image's 7.9 GB of compressed layers to a tarball and replay it
    into the daemon — 45% of total build time, paid on every run no matter how
    good the cache was. The workflow asserts the snapshotter is active and fails
    the job if it is not.
@@ -253,7 +255,7 @@ Two consequences:
 After the above, neither a warm nor a cold build is dominated by compiling
 anything. Measured:
 
-| | Warm PR build (264s) | Cold master build (1350s) |
+| | Warm build (264s, measured when PRs still built the image) | Cold master build (1350s) |
 |---|---|---|
 | Actual compilation | ~0s (30/30 steps `CACHED`) | 322s (uv sync 113s, vendor 104s, 15 pkgs 105s) |
 | Export / unpack / cache export | ~250s unpacking + 138s blob pull | 810s (60%) |

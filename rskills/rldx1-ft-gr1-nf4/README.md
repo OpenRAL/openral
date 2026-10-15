@@ -42,7 +42,6 @@ The `rldx` adapter auto-spawns the sidecar (`--embodiment-tag GENERAL_EMBODIMENT
 openral sim run \
     --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
     --rskill rskills/rldx1-ft-gr1-nf4 \
-    --rskill rskills/rldx1-ft-gr1-nf4 \
     --view
 ```
 
@@ -50,7 +49,7 @@ Manual boot (debug / shared host): set `OPENRAL_RLDX_AUTO_SPAWN=0` and run `pyth
 
 ### Sidecar runtime knobs
 
-* **`torch.compile` is disabled by default in the sidecar** (the boot helper sets `TORCH_COMPILE_DISABLE=1` + `TORCHINDUCTOR_DISABLE=1` in the child env). The upstream `run_rldx_server.py` doesn't request compile unless `--compile` is passed, but `bitsandbytes`/bnb-4bit can trigger inductor implicitly via `torch.dispatch`, and the post-load warmup never returns on ≤8 GiB GPUs (observed on RTX 4070-class hosts: model loads, ZMQ bind never happens). Override by exporting `TORCH_COMPILE_DISABLE=0` if you have ≥12 GiB headroom and want the steady-state speedup.
+* **`torch.compile` is disabled by default in the sidecar** (the shared boot helper `openral_sim._sidecar_common` defaults `TORCH_COMPILE_DISABLE=1` + `TORCHINDUCTOR_DISABLE=1` in the child env). The upstream `run_rldx_server.py` doesn't request compile unless `--compile` is passed, but `bitsandbytes`/bnb-4bit can trigger inductor implicitly via `torch.dispatch`, and the post-load warmup never returns on ≤8 GiB GPUs (observed on RTX 4070-class hosts: model loads, ZMQ bind never happens). Override by exporting `TORCH_COMPILE_DISABLE=0` if you have ≥12 GiB headroom and want the steady-state speedup.
 * **First-boot wait** — `boot_timeout_s` defaults to 900 s. On a fresh host with no `~/.cache/openral/rldx-sidecar/source` checkout, the upstream `uv sync` + the bf16/nf4 model download can exceed that; raise via `OPENRAL_RLDX_BOOT_TIMEOUT_S=1800` (env) or `vla.extra.boot_timeout_s` (YAML) — set on the merged manifest at [`rskills/rldx1-ft-gr1-nf4/rskill.yaml`](rskill.yaml). Subsequent boots reuse the cached venv + weights and the ~3 min ceiling drops to ~30 s.
 
 ## Action / state contract

@@ -306,7 +306,7 @@ a `snapshot_download`.
 | `latency_budget.per_chunk_ms` | 400 (**191 ms measured**, RTX 4070 Laptop) |
 | `min_vram_gb.bf16` | 1.5 (**1.19 GiB peak measured**) |
 | `reward_rskill_name` | `OpenRAL/rskill-robometer_4b-any-general-nf4` |
-| `commercial_use_allowed` | `true` (Apache-2.0) |
+| `is_commercial_use_allowed` | `true` (Apache-2.0) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 

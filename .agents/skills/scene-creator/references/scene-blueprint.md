@@ -6,8 +6,8 @@ Use this reference when creating or reviewing OpenRAL simulation scenes, BDDL ta
 
 | Need | Recommended path |
 | --- | --- |
-| New task in an existing registered backend | Add a `SceneEnvironment` YAML |
-| Custom Panda + LIBERO object/task variant | Write BDDL and use `franka_libero_custom_bddl` |
+| New task in an existing registered backend | Add a `SimScene` YAML |
+| Custom Panda + LIBERO object/task variant | Write BDDL plus a scene adapter that loads it (no custom-BDDL scene is registered today) |
 | New arena, non-LIBERO robot, custom physics, or new simulator | Add a Python scene adapter |
 | Reproducible evaluation suite | Add benchmark config plus docs/eval command |
 
@@ -48,7 +48,7 @@ Rules:
 
 ## BDDL Checklist
 
-For custom LIBERO scenes:
+For custom LIBERO tasks (behind an adapter that loads the BDDL):
 
 - Start from an upstream LIBERO BDDL file.
 - Keep `:objects`, `:obj_of_interest`, `:init`, `:goal`, and `:language` coherent.

@@ -30,7 +30,7 @@ two-bowls example in [`PLAYBOOK.md`](./PLAYBOOK.md).
 This playbook is content, not code. When installed, the reasoner injects
 `PLAYBOOK.md` into its system prompt and follows the SOP, composing tools it
 already has (`query_scene`, `memory_search`, `recall_object`, `emit_prompt`). It
-is `role: s2` and is **never** dispatched through `ExecuteSkill`. It actuates
+is `role: s2` and is **never** dispatched through `ExecuteRskill`. It actuates
 nothing: its job is to gate the downstream `execute_rskill` → Action chunk → C++
 safety kernel with a single unambiguous goal — the playbook holds no actuation
 authority (CLAUDE.md §1.1).
@@ -81,8 +81,9 @@ print(m.playbook.trigger)
 ## Reproduction
 
 Packaging-only: `tests/unit/test_playbook_rskill_manifest.py` validates the
-manifest + SOP. No benchmark number to reproduce; reasoner integration tests in
-later phases exercise the behaviour.
+manifest + SOP. No benchmark number to reproduce;
+`tests/unit/test_reasoner_playbooks.py` covers the reasoner's `## PLAYBOOKS`
+system-prompt injection.
 
 ## Evaluation
 

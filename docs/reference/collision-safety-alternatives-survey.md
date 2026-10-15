@@ -15,7 +15,8 @@
 ## 1. The problem being shopped for
 
 A C++ kernel vets every VLA action chunk: self-collision via per-link OBBs with an SRDF-derived
-16-pair allowed-collision list, world collision via an octomap-derived 25 mm voxel grid, staged
+16-pair allowed-collision list (15 today), world collision via an octomap-derived 25 mm voxel grid
+(sim now 15 mm, real 20 mm), staged
 26-DOP → convex-hull-GJK narrow phase for links declaring `tight_geometry`
 (`robots/panda_mobile/robot.yaml`; `cpp/openral_safety_kernel/README.md`).
 
@@ -39,8 +40,8 @@ the gripper is absent from `collision_geometry` and intended-contact scoping was
 ## 2. What the last two weeks built — PR ledger and verdicts
 
 54 merged PRs (2026-08-11 → 08-29), cross-checked against the
-[validation evidence ledger](collision-validation-evidence.md)'s 8 standing caveats (3 of them
-withdrawals).
+[validation evidence ledger](collision-validation-evidence.md)'s 8 standing caveats at the time (3 of them
+withdrawals; there are 11 now).
 
 ### 2.1 PR ledger
 
@@ -83,7 +84,7 @@ found two trusted mechanisms wrong in the *unsafe* direction (an ACM exempting a
 interpenetrates 48 mm; a probe reporting 0.000 m where truth is +107.9 mm); the link-envelope half is
 a dead end. **Instruments: keep. Link envelopes: done, stop.** *(Overtaken: true of start-state
 stops, wrong for carry-phase stops — `tight_geometry` on `link3`/`link4`/`link6` has since landed and
-been measured, `collision-validation-evidence.md` §6, lever 1.)*
+been measured, `collision-validation-evidence.md` §5, lever 1.)*
 
 **Voxel grid / octomap fidelity (#111, #135, #150, #151, #178, #180).** #135 fixed a half-voxel phase
 error by adding a half-voxel of dilation, #171 measured that dilation as 48 % of live stops, #178
@@ -439,7 +440,7 @@ field on the declaration path (dispatch → HAL → World State → kernel) plus
 
 *Outcome: shipped as ADR-0098, and the premise was wrong — the mm problem is the carried object
 against everything it passes, not the declared target; 56 stops were the payload against the rest
-of the kitchen. See `collision-validation-evidence.md` §6 and lever 2 of its lever table.*
+of the kitchen. See `collision-validation-evidence.md` §6 and §5, lever 2.*
 
 ### Path C — force-based contact gating for the declared phase
 

@@ -21,8 +21,9 @@ inference: false
 # XR-1 RoboCasa
 
 > OpenRAL wrapper for Xiaomi Robotics' XR-1 RoboCasa checkpoint on the
-> PandaMobile kitchen embodiment. The package points at the pinned upstream
-> safetensors; it does not copy weights.
+> PandaMobile kitchen embodiment. `weights_uri` is a SHA-pinned, pre-quantized
+> NF4 pack (`policy_extras.prequantized_nf4: true`) built from the SHA-pinned
+> upstream `source_repo`.
 
 ## Preview
 
@@ -87,7 +88,7 @@ Three RGB streams at 256x256 or larger and an 8-D arm/gripper state.
 | `runtime` / dtype | PyTorch sidecar / NF4 |
 | `weights_uri` | `hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4` |
 | `latency_budget.per_chunk_ms` | 120000 |
-| `commercial_use_allowed` | yes |
+| `is_commercial_use_allowed` | yes |
 
 ## Quick start
 

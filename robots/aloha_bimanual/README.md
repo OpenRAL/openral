@@ -1,12 +1,14 @@
 # `aloha_bimanual` — Robot description
 
 Canonical `RobotDescription` manifest for the **Trossen ALOHA** bimanual
-teleop platform: two 7-DoF arms with parallel grippers (14-DoF action space)
+teleop platform: two 6-DoF arms with parallel grippers (14-DoF action space)
 and one top-down RGB camera. Two execution paths share it: `AlohaHAL` for the
 real Interbotix XS hardware (via `interbotix_xs_sdk`, not
 `ros2_control`/`controller_manager`; hardware transport not yet wired in
-`connect()`) and `AlohaMujocoHAL`, the MuJoCo digital twin on the
-[`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF.
+`connect()`) and the MuJoCo digital twin on the
+[`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF
+(`hal.sim: null`, so `build_hal` derives `MujocoArmHAL.from_description` from
+the `sim:` block; `AlohaMujocoHAL` is the class form).
 
 ## At a glance
 
@@ -16,10 +18,10 @@ real Interbotix XS hardware (via `interbotix_xs_sdk`, not
 | `embodiment_kind` | `bimanual` |
 | Joints | 14 (2 × 6 revolute + 2 grippers) |
 | End-effector | parallel grippers (one per arm) |
-| Sensors | 1× top-down RGB camera (480 × 640 @ 30 Hz, key `observation.images.top`) |
+| Sensors | 1× top-down RGB camera (640 × 480 @ 50 Hz, key `observation.images.top`) |
 | Embodiment tags | `aloha`, `lerobot` |
 | Supported control modes | `joint_position` |
-| `sdk_kind` | `closed` (Trossen / `gym_aloha` MuJoCo bindings) |
+| `sdk_kind` | `closed_with_api` (Trossen `interbotix_xs_sdk`; the in-code sim baseline `ALOHA_DESCRIPTION` keeps `open`) |
 
 > **Note.** Joint kinematics are approximate (`gym-aloha` does not expose the
 > URDF through its gym API), but sufficient for capability matching and
@@ -52,7 +54,8 @@ real Interbotix XS hardware (via `interbotix_xs_sdk`, not
 ```bash
 just sim-act-aloha
 # which runs:
-#     openral sim run --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --save-video
+#     openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml \
+#         --rskill rskill://rskills/act-aloha --no-update-manifest --n-episodes 1 --save-dir example_videos
 ```
 
 ## E-stop and recovery

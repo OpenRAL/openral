@@ -2,7 +2,7 @@
 
 Three scene tiers, each a Pydantic schema in `openral_core`. Directory layout
 matches the schema, the CLI matches the directory, and every YAML loads through
-the strict per-tier loader `load_scene_strict(..., expect=<Tier>)`, which
+the strict per-tier loader `load_scene_strict(path, expected=<Tier>)`, which
 rejects a wrong-tier YAML at parse time.
 
 ```
@@ -89,8 +89,9 @@ openral sim run --config scenes/sim/tabletop_cube_push.yaml \
                 --rskill <id> --robot ur5e
 ```
 
-`openral benchmark scene` accepts the same overrides; `openral benchmark run`
-deliberately does not (it must reproduce the suite verbatim).
+`openral benchmark scene` takes only `--n-episodes` of these (the YAML pins
+the rest); `openral benchmark run` takes `--task` (one task of the suite) and
+`--n-episodes`. A lowered `--n-episodes` is for iteration, not paper numbers.
 
 ## Justfile shortcuts
 
@@ -99,7 +100,7 @@ deliberately does not (it must reproduce the suite verbatim).
 just sim-libero                     # SmolVLA × LIBERO        (GPU + MUJOCO_GL)
 just sim-xvla-libero                # xVLA × LIBERO           (Florence-2)
 just sim-pi05-libero                # π0.5 × LIBERO           (≥8 GB VRAM)
-just sim-act-libero                 # ACT × LIBERO            (paper protocol)
+just sim-act-libero                 # ACT × LIBERO            (per-policy comparison)
 # XR-1 uses direct commands and an isolated NF4 sidecar:
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa_pnp.yaml --rskill rskills/xr1-robocasa
 # OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa365_close_blender_lid.yaml --rskill rskills/xr1-robocasa365
@@ -127,11 +128,14 @@ bindings, octomap topic, TF and USB-hub pitfalls) is worked through in
 covers YAML authoring, adding a robot manifest, and custom scene / policy
 adapters. Quick reference:
 
-- A `DeployScene` is `scene:` only (+ optional `robot_id`, `base_pose`).
-- A `SimScene` is a `DeployScene` + required `task:` block (+ optional `seed`,
-  `n_episodes`, `record_video`).
-- A `BenchmarkScene` is a `SimScene` + required `metadata: BenchmarkMetadata`
-  (paper URL + honest_scope string) + non-`None` `seed` and `n_episodes`.
+- A `DeployScene` is a `scene:` block plus optional deploy context:
+  `robot_id`, `robot_unit`, `base_pose`, `hal`, `sensors`, `drivers`,
+  `runtime`, `safety`, `composition`, `extra_allowed_collision_pairs`,
+  `grasp_declaration` / `place_declaration`, `memory_dir`, `seed`.
+- A `SimScene` is a `DeployScene` + required `task:` block (+ optional
+  `n_episodes`, `record_video`, `save_dir`, `metadata`).
+- A `BenchmarkScene` is a `SimScene` with `metadata: BenchmarkMetadata`
+  (paper URL + honest_scope string), `seed` and `n_episodes` required.
 
 On a wrong-tier YAML the loader names the tier the file actually fits. A YAML
 that still carries a `vla:` block raises `ROSConfigError`; the policy is always
@@ -426,7 +430,7 @@ The runner resolves `--rskill <name>` to its `RSkillManifest`, looks up the
 configured `RobotDescription`, and verifies the manifest's `embodiment_tags`
 and `sensors_required` intersect the robot's capabilities and sensor catalogue
 **before** policy load. The check fires inside
-`openral_sim.runner._check_rskill_compatibility` and raises `ROSConfigError`
+`openral_sim.sim_runner._check_rskill_compatibility` and raises `ROSConfigError`
 (missing manifest / unregistered robot) or `ROSCapabilityMismatch`
 (incompatible); there is no warn-and-proceed path. Background: the original
 scene-schema design and the later three-tier-split design (loader strictness).

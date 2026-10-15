@@ -69,9 +69,7 @@ checkpoint's own key is `observation.image`. The manifest's
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/diffusion_pusht` |
 | `latency_budget.per_chunk_ms` | 1 250 ms (warm full-chunk ≈ 1 756 ms on RTX 4070 Laptop, dominated by DDPM) |
-| `latency_budget.warmup_ms` | 10 000 ms |
-| `latency_budget.load_ms` | 30 000 ms |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` (derived from `license`) | `true` |
 
 Full schema: `openral_core.RSkillManifest` —
 `python/core/src/openral_core/schemas.py`.
@@ -79,13 +77,17 @@ Full schema: `openral_core.RSkillManifest` —
 ## Reproduction
 
 ```bash
-git clone https://github.com/OpenRAL/openral && cd OpenRAL
-just bootstrap && uv sync --all-packages --group sim
+git clone https://github.com/OpenRAL/openral && cd openral
+just bootstrap && just sync --group sim
 
-# End-to-end via the canonical SimEnvironment config (CPU is enough):
+# One-episode BenchmarkScene demo (CPU is enough):
 just sim-diffusion-pusht
 # which runs:
-#     openral sim run --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht --save-video
+#     openral benchmark scene --config scenes/benchmark/pusht.yaml \
+#       --rskill rskill://rskills/diffusion-pusht --no-update-manifest --n-episodes 1 --save-dir example_videos
+
+# Full 50-episode protocol (eval/pusht.json):
+openral benchmark run --suite pusht --rskill diffusion-pusht
 
 # Sim test (gym_pusht + pymunk):
 uv run pytest tests/sim/test_pusht_2d_diffusion_pusht.py -v -m sim
@@ -95,7 +97,7 @@ uv run pytest tests/sim/test_pusht_2d_diffusion_pusht.py -v -m sim
 
 This rSkill package (`rskill.yaml`, `README.md`) is **Apache-2.0** to
 match the upstream weights. Commercial use is allowed
-(`commercial_use_allowed: true`).
+(`is_commercial_use_allowed` is `true`).
 
 ## See also
 

@@ -39,7 +39,7 @@ completion-adjudication gate (`describe_image`). Against that contract:
 | S2 requirement | Cosmos 3 Edge |
 |---|---|
 | Typed tool calls via provider tool-use API (CLAUDE.md §3) | Served behind vLLM's OpenAI-compatible chat-completions API with `--enable-auto-tool-choice`; the existing `tool_choice="required"` wire path is reused unchanged |
-| ~0.2 Hz tick budget | 4B AR decode on an edge GPU is comfortably sub-second per short tool call — orders of magnitude inside budget (measured numbers pending, see below) |
+| ~0.2 Hz tick budget | Measured 1.3–2 s warm per tool-call tick (Jetson AGX Thor, RTX 4070), inside the 5 s heartbeat; the first tool call after boot is a one-off ~64 s grammar build (see [Validation status](#validation-status)) |
 | `describe_image` completion gate | Native VLM — the *same local model* adjudicates completion; today's local text-only baselines (e.g. Ollama Qwen3 8B) cannot do this without a second cloud/VLM endpoint |
 | Physical/embodied judgment | This is the model's actual training objective (robotics / AV / warehouse domains), vs. general-web LLMs adapted to it |
 | On-robot, offline, no PII egress | Fully local; no cloud round-trip, no per-token cost, trivially satisfies the no-PII-in-cloud-logs rule |
@@ -54,19 +54,24 @@ completion-adjudication gate (`describe_image`). Against that contract:
   bounded readiness wait → terminate-only-our-child teardown).
 - `tools/cosmos3_reasoner_sidecar.py` — uv-provisions an isolated Python
   3.12 venv from the hash-pinned pure-PyPI
-  `tools/sidecar_requirements/cosmos3_reasoner.lock` (vllm 0.24.0 at lock
-  time) **plus a SHA-pinned transformers overlay** for `cosmos3_edge`
-  (`_TRANSFORMERS_EDGE_SHA`, no released transformers has it yet), then —
-  for the Edge diffusers layout — **downloads the checkpoint and builds a
-  flattened reasoner view** (`resolve_served_model` / `materialize_reasoner_view`)
-  and execs `vllm serve <view> --served-model-name nvidia/Cosmos3-Edge
-  --enable-auto-tool-choice --tool-call-parser hermes --max-model-len 8192
-  --gpu-memory-utilization 0.90 --enforce-eager` on port **8901**. Every one
-  of those non-obvious flags was forced by a real failure on the 8 GB 4070
-  (see the validation ledger).
+  `tools/sidecar_requirements/cosmos3_reasoner.lock` (vllm 0.28.0, torch
+  2.13.0, on every platform) **plus a SHA-pinned transformers overlay** for
+  `cosmos3_edge` (`_TRANSFORMERS_EDGE_SHA`). It asks the venv's vLLM whether
+  it carries the native Edge model (`vllm_has_native_edge_model`; 0.28.0
+  does) and serves the snapshot as-is; only a vLLM without it gets the
+  **flattened reasoner view** (`resolve_served_model` /
+  `materialize_reasoner_view`). It then execs `vllm serve <model>
+  --served-model-name nvidia/Cosmos3-Edge --enable-auto-tool-choice
+  --tool-call-parser hermes --max-model-len 8192 --gpu-memory-utilization 0.90
+  --enforce-eager --max-num-seqs 4 --limit-mm-per-prompt '{"video":0,"image":1}'`
+  (plus `--kv-cache-dtype` when set) on port **8901**, with
+  `VLLM_USE_FLASHINFER_SAMPLER=0`. Every one of those non-obvious flags was
+  forced by a real failure (see the validation ledger).
 - Config surface: `OPENRAL_REASONER_{MODEL,ENDPOINT,API_KEY,TIMEOUT_S,MAX_TOKENS}`
   plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
-  / `OPENRAL_COSMOS3_SIDECAR` / `OPENRAL_COSMOS3_GPU_MEM_UTIL`. Self-managed
+  / `OPENRAL_COSMOS3_SIDECAR` (client) and `OPENRAL_COSMOS3_GPU_MEM_UTIL` /
+  `OPENRAL_COSMOS3_MAX_NUM_SEQS` / `OPENRAL_COSMOS3_LIMIT_MM_PER_PROMPT` /
+  `OPENRAL_COSMOS3_SIDECAR_HOME` / `OPENRAL_COSMOS3_SIDECAR_VENV` (sidecar). Self-managed
   serving (your own `vllm serve`, or the Cosmos 3 Reasoner NIM container) is a
   `OPENRAL_REASONER_ENDPOINT` away.
 - `openral doctor` knows the provider (default base URL, no-key, no-model
@@ -91,10 +96,11 @@ permitting.
 
 ## Risks and open questions
 
-0. **BLOCKER (live-confirmed): vLLM cannot yet run a forward pass on
-   `cosmos3_edge`.** The served engine boots but 500s on the first request
-   via an upstream `get_rope_index` shape bug — not OpenRAL's to fix.
-   Everything below assumes that clears.
+0. **vLLM's Transformers fallback cannot run `cosmos3_edge`.** It boots but
+   500s on the first request via an upstream `get_rope_index` shape bug. The
+   pinned vLLM 0.28.0 carries the native Edge model
+   ([#48291](https://github.com/vllm-project/vllm/pull/48291)) and does not
+   take that path; a vLLM without it still hits the bug (the sidecar warns).
 1. **Tool-calling reliability of a 4B world model is unproven.** Cosmos 3's
    reasoner is trained for physical reasoning and grounding, not
    function-calling agent traces. The palette's `execute_rskill__*` /
@@ -102,12 +108,13 @@ permitting.
    degrade at 4B. Mitigations already in place: `tool_choice="required"`,
    Pydantic union validation with `ROSReasonerInvalidPlan` feedback into the
    next prompt, and the per-kind retry cap. Escalation path: same provider,
-   `MODEL=nvidia/Cosmos3-Nano`. (Not yet measurable — see risk 0.)
+   `MODEL=nvidia/Cosmos3-Nano`. First look: 1/3 ticks validated first-shot;
+   the reliability eval is pending.
 2. **Tool-call parser.** Edge's reasoner is Nemotron-backbone (Nano/Super
    are Qwen3-VL-based); the family documents Qwen3-VL-compatible message
    conventions, so the sidecar defaults to vLLM's `hermes` parser. The grammar
-   builds correctly from our palette (confirmed live); whether Edge *emits* in
-   that format is unmeasured (risk 0). Override `--tool-call-parser` if it
+   builds correctly from our palette (confirmed live), and Edge returned
+   validated tool calls through it on Thor and x86. Override `--tool-call-parser` if it
    diverges, or switch the default if vLLM ships a dedicated `cosmos3` parser.
 3. **Serving-stack freshness — CONFIRMED, and handled.** No released
    transformers recognises `cosmos3_edge`; the sidecar pins the `main`-branch
@@ -162,7 +169,7 @@ display.
 | Factory / client / autostart lifecycle / doctor rows | ✅ unit-tested (`tests/unit/test_reasoner_cosmos3.py`, `tests/unit/test_doctor.py`) |
 | Tool-call wire path through `Cosmos3ToolUseClient` | ✅ unit-tested against the openai-SDK network-boundary double |
 | Sidecar view/argv/layout helpers | ✅ unit-tested (`tests/unit/test_cosmos3_sidecar.py`) |
-| Lock resolves (vllm 0.24.0, torch 2.11.0, py3.12) | ✅ compiled + hash-pinned |
+| Lock resolves (vllm 0.28.0, torch 2.13.0, py3.12, every platform) | ✅ compiled + hash-pinned |
 | `cosmos3_edge` arch recognised by the serving stack | ✅ **via SHA-pinned transformers overlay** — no *released* transformers knows `cosmos3_edge` yet (5.14.1 rejects it); `main`@`cbf4d720` accepts it. Codified in the sidecar. |
 | Weights loadable by vLLM (diffusers subfolder layout) | ✅ **via the flattened reasoner view** (`materialize_reasoner_view`) — vLLM's loader can't follow the subfolder `weight_map`; the symlink view fixes it. |
 | `vllm serve nvidia/Cosmos3-Edge` boots on 8 GB | ✅ "Application startup complete"; ~6.4 GB resident at BF16, 8192-token KV, `--enforce-eager`. On this 8 GB card the 8192 window needs `OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` (the default 0.90 leaves only ~0.54 GiB for KV, short of the ~0.88 GiB the window needs — 0.90 suits the ≥12 GB cards Edge targets). All knobs codified in the sidecar. |
@@ -183,14 +190,13 @@ display.
 | Tick latency on Jetson AGX Thor | ✅ **1.26 / 1.26 / 1.36 s warm** per tool-call tick — inside the 0.2 Hz S2 budget, and in line with the 1.5–2 s measured on the 4070. **First** tool-call request cost **64 s** cold (xgrammar builds the tool-call grammar); that is a one-off per grammar, not a per-tick cost, but it does mean the first reasoner tick after boot blows a 5 s budget. |
 | Tool-call reliability vs. the deploy-sim baseline on Thor | ⬜ still pending — three identical ticks are a latency measurement, not a reliability eval. |
 
-### Upstream timeline & what unblocks the pinned sidecar
+### Upstream status
 
-* **vLLM [#48291](https://github.com/vllm-project/vllm/pull/48291)** (merged, **in no release yet**): native Edge reasoner; bypasses the buggy fallback and loads the diffusers layout directly.
-* **vLLM [#49190](https://github.com/vllm-project/vllm/pull/49190)** (open): skips the generator-tower `k_norm_und_for_gen` tensors (without it the native loader errors on weight mapping) + video-processing fixes. The weight-filter half is required for Edge; validated here as a one-line local patch.
-* **transformers**: `cosmos3_edge` still release-less (5.14.1 lacks it); the SHA-pinned overlay remains required for config parsing on every path.
-* **Nightly caveat**: the current vLLM nightly wheel's metadata carries a self-contradictory `torchcodec` constraint on x86 Linux (resolver-breaking); it installs only with `--no-deps` over an existing 0.24.0 dep tree — fine for validation, not lockable.
+* **vLLM [#48291](https://github.com/vllm-project/vllm/pull/48291)**: native Edge reasoner; shipped in vLLM 0.28.0, which the sidecar lock pins on every platform.
+* **transformers**: the sidecar still installs the SHA-pinned overlay (`_TRANSFORMERS_EDGE_SHA`); drop it, and add `transformers>=<version>` to `cosmos3_reasoner.in`, once a transformers release carries `cosmos3_edge`.
+* `materialize_reasoner_view` only serves a vLLM without the native model; retire it once no supported platform needs it.
 
-**Action when a vLLM release ships #48291 + #49190**: bump `cosmos3_reasoner.in`/`.lock`, drop the Edge branch of `materialize_reasoner_view` (native impl reads the repo layout), keep the transformers overlay until a transformers release lands, and re-run the reliability eval. Until then `OPENRAL_REASONER_MODEL=cosmos3-edge` on the pinned stable boots but 500s on inference; the curated cloud models in the reasoner README remain the working default.
+Still owed: the tool-call reliability eval against the deploy-sim baseline.
 
 ## Layer-boundary notes
 
@@ -198,7 +204,7 @@ This integration touches **Layer 4 (Reasoning) only** — a new
 `ToolUseClient` backend behind the existing Protocol; no layer boundary
 moved. Two adjacent opportunities are intentionally *not* part of it:
 
-- **WAM (Layer 5):** Cosmos 3's generator tower is an action-conditioned
+- **WAM (OpenRAL Pro, not a public layer):** Cosmos 3's generator tower is an action-conditioned
   world model — a mental-simulation backend. WAM implementations live in
   the private OpenRAL Pro monorepo (ADR-0104), not here. Separate decision
   + PR.

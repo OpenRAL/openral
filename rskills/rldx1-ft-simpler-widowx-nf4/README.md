@@ -37,8 +37,8 @@ Differences from the canonical sibling:
 - Upstream weights: `hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX`.
 - Benchmark target: SIMPLER WidowX (real-to-sim correlation for the
   Bridge / WidowX evaluation protocol).
-- Same NF4-on-backbone, bf16-on-head quantization recipe; same sidecar
-  boot path; same non-commercial license posture
+- Same sidecar NF4 quantization recipe (backbone and MSAT head; see the
+  canonical README); same sidecar boot path; same non-commercial license posture
   (`OPENRAL_ALLOW_NONCOMMERCIAL=1` required for any activation, plus a
   vendor agreement with RLWRLD for commercial deployment).
 

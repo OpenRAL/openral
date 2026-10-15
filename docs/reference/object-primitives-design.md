@@ -1,7 +1,7 @@
 # Object instances before contact — grasp regions without a hovering policy
 
 Status: **design + prototype (default off), pending Safety-WG review**, 2026-10-05. Issue #349.
-Branch `feat/object-primitives-349` off the #289 bench integration. The prototype is §4:
+Developed on `feat/object-primitives-349`; landed on `master` with #289. The prototype is §4:
 `openral_hal._object_primitives` + `GraspTargetLeg(premeasure=True)`, behind
 `vision_attachment.grasp_target_premeasure`. Everything in §3 that is not in §4 is design.
 

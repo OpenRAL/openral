@@ -2,8 +2,8 @@
 
 The sim-pseudo manifest the eval layer loads for the ManiSkill3 / SimplerEnv
 WidowX envs only: `python/sim/src/openral_sim/backends/simpler_env.py`
-registers the `simpler_env/widowx_*` scenes for the BridgeData V2 / SimplerEnv
-WidowX setup.
+registers the `simpler_env` scene with `fixed_robot="widowx"`; its
+`simpler_env/widowx_*` tasks are the BridgeData V2 / SimplerEnv WidowX setup.
 
 The WidowX-250s is a real 5-DoF + gripper desktop arm (Trossen Robotics), but
 OpenRAL ships no HAL adapter for it: `hal.sim` and `hal.real` are both null

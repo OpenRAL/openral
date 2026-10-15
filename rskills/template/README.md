@@ -147,7 +147,7 @@ sensor or scene camera names; values are the checkpoint's view names.
 | `runtime` / `quantization.dtype` | <!-- TODO: pytorch / bf16 --> |
 | `weights_uri` | <!-- TODO: hf://<owner>/<repo> --> |
 | `latency_budget.per_chunk_ms` | <!-- TODO --> |
-| `commercial_use_allowed` | <!-- TODO: derived from license --> |
+| `is_commercial_use_allowed` | <!-- TODO: derived from license --> |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -168,9 +168,9 @@ print(pkg.manifest.name, pkg.manifest.version)
 # TODO: replace with the exact `openral sim run` / `openral benchmark run`
 # command that reproduces the numbers in `eval/*.json` (or, for
 # packaging-only skills, validates the wiring).
-just bootstrap && uv sync --all-packages
+just bootstrap && just sync
 
-openral sim run --config scenes/<your-config>.yaml \
+openral sim run --config scenes/sim/<your-config>.yaml \
             --rskill rskills/TEMPLATE_ID
 ```
 
@@ -179,7 +179,7 @@ openral sim run --config scenes/<your-config>.yaml \
 <!-- TODO: One subsection per `eval/<benchmark>.json` file you ship. If
      this is a packaging-only skill with no benchmarks, replace this
      section with a one-line "No benchmarks shipped — see
-     CLAUDE.md §6.4." note and the validator will still accept it. -->
+     CLAUDE.md §3." note and the validator will still accept it. -->
 
 | Benchmark | Score | `reproduced_locally` | Config |
 | --- | --- | --- | --- |
@@ -189,7 +189,7 @@ openral sim run --config scenes/<your-config>.yaml \
 
 <!-- TODO: State the license posture explicitly. The wrapping rSkill
      package is typically Apache-2.0; the wrapped weights may differ.
-     Make the consumer-visible posture (`commercial_use_allowed`) match
+     Make the consumer-visible posture (`is_commercial_use_allowed`) match
      `rskill.yaml::license`. -->
 
 This rSkill package (`rskill.yaml`, `README.md`, `eval/*.json`) is
@@ -203,6 +203,6 @@ This rSkill package (`rskill.yaml`, `README.md`, `eval/*.json`) is
      sibling rSkills. Helps consumers navigate the in-tree catalog. -->
 
 - `robots/<embodiment>/README.md` — RobotDescription manifest.
-- `scenes/<config>.yaml` — paired SimEnvironment config.
+- `scenes/sim/<config>.yaml` — paired SimScene config.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

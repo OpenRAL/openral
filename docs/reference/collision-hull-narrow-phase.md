@@ -10,8 +10,8 @@
 > to `check_self_collision`'s box↔box pass, which is why §9 exists. That
 > extension retired the `panda_link5`↔`panda_link7` ACM exemption — the one open
 > item the collision-safety alternatives survey §2.2 left on the ACM theme.
-> `panda_link5` and `panda_link7` now declare `tight_geometry` too, so §5.1's
-> "today that is link1 and link2" reads all seven links since 2026-09-07 (§5.2).
+> `panda_link5` and `panda_link7` declare `tight_geometry` too, and since
+> 2026-09-07 all seven links do (§5.1, §5.2).
 >
 > The evidence this rests on was produced by four earlier studies and is cited,
 > not re-argued: the [collision-primitive study](collision-primitive-study.md)
@@ -76,8 +76,8 @@ the geom transform only ([#161 §11](collision-tight-geometry.md)), matching
 | link6 | 52.70 | 21.53 | 0.00 |
 | link7 | 28.25 | 12.97 | 0.00 |
 
-Links 3–7 were measured but not shipped when this was written — see §5.2.
-`tests/unit/test_collision_tight_geometry.py` pins the `link1`/`link2` rows, so a
+Links 3–7 were measured but not shipped when this was written — see §5.2; all
+seven ship now. `tests/unit/test_collision_tight_geometry.py` pins all seven rows, so a
 change that quietly stopped tightening fails rather than going unnoticed.
 
 ---
@@ -246,9 +246,11 @@ of `panda_link1` shipping stage 1 only (§5.2).
 
 Two call sites, both gated on a manifest declaring `tight_geometry`: the
 `box_box_distance` in `check_voxel_collision`'s **box pass** (this document's
-original scope) — `panda_link1` (stage 1) and `panda_link2` (stages 1 and 2) —
-and the `box_box_distance` in `check_self_collision`'s **box↔box pass**, added by
-#191 and described in §9, which `panda_link5` and `panda_link7` joined for.
+original scope, then `panda_link1` and `panda_link2`) and the `box_box_distance`
+in `check_self_collision`'s **box↔box pass**, added by #191 and described in §9,
+which `panda_link5` and `panda_link7` joined for. Since 2026-09-07 all seven
+`panda_mobile` links declare it: `panda_link1` stage 1 only, the other six both
+stages.
 
 ### 5.2 Not replaced, and why
 
@@ -287,9 +289,11 @@ link geometry clears it:
 | **world-side** — exact geometry still stops | 17 | **74 %** |
 
 *(23 live stops across four scenes.)* Within the world-side residue, **11
-stops — 48 % of all stops — are held by the octree→grid bridge's rasterisation
+stops — 48 % of all stops — were held by the octree→grid bridge's rasterisation
 dilation** ([mechanism](world-map-fidelity.md#2-the-octreegrid-bridge-dilates-by-up-to-one-cell-by-design);
-[issue #173][i173]), the single largest term in the apportionment. The other
+[issue #173][i173]), the single largest term in the apportionment. That dilation
+was removed on 2026-08-25: the grid is now published on the octree's own lattice
+(`octree_to_grid.hpp`). The other
 world-side mechanism, non-collidable geometry being real to the depth camera, is
 [issue #174][i174].
 
@@ -297,7 +301,7 @@ world-side mechanism, non-collidable geometry being real to the depth camera, is
 [i174]: https://github.com/OpenRAL/openral/issues/174
 
 **So this change is necessary and correct, but not sufficient.** It fixes
-the link-side term exactly; the majority term is elsewhere and now has an owner.
+the link-side term exactly; the majority term was elsewhere (#173, since removed).
 The link-side excess #171 removes is large (median **28.72 mm**, up to 42.56 mm
 on `panda_link2`), and it is real clearance the robot has today and is not being
 credited with.
@@ -426,7 +430,7 @@ rather than intentions:
 4. **The change cannot add a stop** — by construction, pinned by test. ✔ §4.2
 5. **Every real-time bound fails conservative** — iteration cap, refinement budget, vertex ceiling, overlap fallback. ✔ §4.3
 6. **`check_attached_self_collision` is unaffected**, unlike the change #161 costed. ✔ §6
-7. **The recovery claim is the one the evidence supports** — a cost and correctness change; #171 apportions **26 % link-side / 74 % world-side**, 48 % of all stops held by the octree→grid rasterisation (issue #173). ✔ §5.3, §5.4
+7. **The recovery claim is the one the evidence supports** — a cost and correctness change; #171 apportions **26 % link-side / 74 % world-side**, 48 % of all stops held by the octree→grid rasterisation (issue #173, removed 2026-08-25). ✔ §5.3, §5.4
 8. **The real-HAL margin is an open condition** — §3.2 measures 0.82× at `world_voxel_margin_m = 0.02`; re-measurement is a precondition for any robot that would ship there.
 9. ~~**Issue #155 sequencing is unchanged**~~ **Superseded by #191**, which regenerates the `panda_mobile` / `panda_mobile_vslam` ACM precisely so that it stops carrying the exemption. §9.
 

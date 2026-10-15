@@ -58,10 +58,10 @@ with RolloutRecorder(
 Dataset-bridge PR series status:
 
 - **PR2** *(partial)* — `SensorRosPublisher` in `python/sensors/`
-  (`ros_publisher.py`) ships and is tested. The wrapping
+  (`ros_publisher.py`) ships and is tested; the wrapping
   `packages/openral_sensors_ros/` lifecycle node from the dataset-bridge design
-  is **not yet built**, so feeding live camera topics into a recorder on the
-  hardware path is the one remaining gap.
+  is not built. The deploy recorder does not need it: `DatasetRecorderBridge`
+  reads camera frames from the aggregator snapshot the runner feeds the policy.
 - **PR3** ✅ — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
   / `openral_msgs/Episode` IDLs + explicit `episode_start` / `episode_end`
   API on `DeployRunner` (`bag.py`).
@@ -95,7 +95,7 @@ offline:
 - `openral dataset push DS [--repo-id ID] [--yes] [--dry-run]` — consent-gated
   upload of a local dataset root to the HF Hub. PR5.
 
-**Deploy path** — `openral deploy sim --dataset-out PATH` attaches a
+**Deploy path** — `openral deploy sim|run --dataset-out PATH` attaches a
 `DatasetRecorderBridge` to the live graph (`compose_runtime`), writing the same
 `Rosbag2Sink` mcap for offline `from-bag` conversion. Note:
 
@@ -126,8 +126,8 @@ uv run pytest python/dataset/tests/test_sink_lerobot.py -v
 Per CLAUDE.md §1.11 (no mocks), every test loads the real SO-100
 `RobotDescription` (`robots/so100_follower/robot.yaml`) and the real
 `lerobot.datasets.LeRobotDataset` writer, and `pytest.skip`s with a typed reason
-on hosts without `lerobot[dataset]>=0.6.0` (today behind the `libero` /
-`metaworld` dependency groups).
+on hosts without `lerobot[dataset]>=0.6.0` (installed by
+`just sync --group dataset`).
 
 ### Coverage scope
 

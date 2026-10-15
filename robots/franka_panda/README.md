@@ -2,8 +2,8 @@
 
 Canonical `RobotDescription` manifest for the **Franka Emika Panda**
 7-DoF cobot (3 kg payload, 0.855 m reach, joint torque sensors,
-parallel gripper). Mirrors the in-code `FRANKA_PANDA_DESCRIPTION`
-(`python/hal/src/openral_hal/franka_panda.py`); drift between
+parallel gripper). Mirrors the in-code `FRANKA_PANDA_REAL_DESCRIPTION`
+(`python/hal/src/openral_hal/franka_panda_real.py`); drift between
 the two is guarded by
 [`tests/unit/test_robot_manifests_match_hal_constants.py`](../../tests/unit/test_robot_manifests_match_hal_constants.py).
 
@@ -15,15 +15,15 @@ the two is guarded by
 | `embodiment_kind` | `manipulator` |
 | Joints | 7 revolute + 1 synthetic gripper (`panda_joint1`–`panda_joint7`, `panda_gripper`) |
 | End-effector | `panda_hand` parallel gripper (1 DoF, 70 N max grip force, 3 kg payload) |
-| Embodiment tags | `franka_panda`, `franka`, `panda` |
+| Embodiment tags | `franka_panda`, `franka`, `panda`, `libero` |
 | Supported control modes | `joint_position` |
-| `sdk_kind` | `closed_with_api` (MuJoCo via `mujoco_menagerie`); real-HW (FCI) tracked by [#56](https://github.com/OpenRAL/openral/issues/56) |
-| `hal.sim` | `openral_hal.franka_panda:FrankaPandaHAL` (`deploy sim`) |
+| `sdk_kind` | `closed_with_api` (libfranka / FCI under `franka_ros2`; [#56](https://github.com/OpenRAL/openral/issues/56)); the in-code sim baseline `FRANKA_PANDA_DESCRIPTION` keeps `open` |
+| `hal.sim` | `null`: `build_hal` derives `MujocoArmHAL.from_description` from the `sim:` block (`deploy sim`; mujoco_menagerie MJCF) |
 | `hal.real` | `openral_hal.franka_panda_real:FrankaPandaRealHAL` (`deploy run`) |
 
 The synthetic `panda_gripper` joint reports a normalised `[0, 1]` value
 (0 = fully closed, 1 = fully open); `MujocoArmHAL` translates to/from the MJCF
-tendon actuator.
+gripper actuator (`ctrl_range` 0–255) and the two finger qpos.
 
 ## Why "physical robot only"
 
@@ -40,12 +40,12 @@ manifest conflated the two).
 
 | Layer | Where |
 | --- | --- |
-| Python HAL adapter (sim) | `openral_hal.franka_panda:FrankaPandaHAL` |
+| Python HAL adapter (sim) | derived `MujocoArmHAL`; class form `openral_hal.franka_panda:FrankaPandaHAL` for direct construction |
 | Real-HW adapter | `openral_hal.franka_panda_real:FrankaPandaRealHAL` |
 | ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Sim test (HAL) | `tests/sim/test_franka_panda_hal_mujoco.py` |
-| Sim test (LIBERO + VLA) | `tests/sim/test_franka_panda_smolvla_libero.py`, `test_xvla_libero.py` (and skill-level π0.5 LIBERO test) |
-| Example configs | `scenes/{smolvla,xvla,pi05}_libero_spatial.yaml` |
+| Sim test (LIBERO + VLA) | `tests/sim/test_franka_panda_smolvla_libero.py`, `test_franka_groot_libero.py`, `test_franka_molmoact2_libero.py` |
+| Example configs | `scenes/sim/libero_spatial.yaml`, `scenes/benchmark/libero_*.yaml`, `scenes/deploy/libero_{object,pnp}.yaml` (with e.g. `--rskill rskills/smolvla-libero`) |
 
 ## E-stop and recovery
 

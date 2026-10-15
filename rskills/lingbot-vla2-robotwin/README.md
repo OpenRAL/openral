@@ -40,9 +40,9 @@ The measured numbers below were taken on an OpenRAL pre-quantized mirror
 the download to a quarter and skip the per-boot conversion; only `weights_uri`
 would change, since `_detect_prequantized` picks the fast path from the pack's
 `quantization_metadata.json` sentinel. NF4 needs a **CUDA GPU** either way
-(bitsandbytes has no CPU 4-bit kernel); for a CPU or ≥16 GB-card bf16 load, run
-the `--quantization none` path over the same weights
-(`OPENRAL_LINGBOT_VLA2_DEVICE=cpu`).
+(bitsandbytes has no CPU 4-bit kernel); for a CPU or ≥16 GB-card bf16 load, set
+`OPENRAL_QUANTIZATION_DTYPE=bf16` (the sidecar's unquantized `none` mode) over the
+same weights, plus `OPENRAL_LINGBOT_VLA2_DEVICE=cpu` for a CPU load.
 
 > ⚠️ **Foundation checkpoint, not a task policy.** `robbyant/lingbot-vla-v2-6b`
 > is the LingBot-VLA 2.0 pre-trained foundation model (upstream card: "from
@@ -92,7 +92,7 @@ steps per re-inference.
 
 The upstream `lingbotvla` package pins `torch==2.8.0` / `transformers==4.57.3` /
 `triton==3.4.0` and ships custom Triton MoE kernels, which cannot coexist with the
-OpenRAL `transformers>=5` runtime (CLAUDE.md §3). The model therefore runs in an
+OpenRAL `transformers>=5` runtime. The model therefore runs in an
 **auto-provisioned Python 3.12 + torch-2.9.1 ZMQ sidecar**; the boot helper
 overrides upstream's torch 2.8.0 / triton 3.4.0, neither of which publishes a
 linux-aarch64 wheel ([aarch64 support](../../docs/reference/aarch64-support.md)).
@@ -119,7 +119,7 @@ sidecar reply is a finite `(50, 14)` chunk; the adapter replays 25 steps.
 
 | Metric | Value |
 | --- | --- |
-| Resident weights (post-load) | **6.84 GB** (NF4 backbone + bf16 expert; identical either load path) |
+| Resident weights (post-load) | **6.79 GB** (NF4 backbone + bf16 expert; identical either load path) |
 | Peak VRAM (during inference) | **6.97 GB** (fits 8 GB with ~1 GB headroom) |
 | Download | **25.5 GB** fp32 upstream, one-time (**~6.8 GB** once the NF4 mirror is republished) |
 | Cold load (download cached → CPU graph build → NF4 overlay → CUDA) | **~90 s** on the packed mirror; + the ~30 s on-line pack as shipped |
@@ -236,7 +236,7 @@ thin wrapper: the runtime weights are the upstream checkpoint, NF4-packed at loa
 | `min_vram_gb` | fp32 `25.5`, bf16 `12.8`, int4 `7.0` (**measured**: 6.79 GB weights / 6.97 GB peak) |
 | `latency_budget.per_chunk_ms` | `1500.0` (measured p95 976 ms + margin; ~130 ms on a 4090D reference) |
 | `evaluated_tasks` | `robotwin` |
-| `commercial_use_allowed` | `true` (Apache-2.0) |
+| `is_commercial_use_allowed` (derived from `license`) | `true` (Apache-2.0) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -291,9 +291,9 @@ achievable zero-shot from the wrapped weights; see
 ## License
 
 This rSkill package (`rskill.yaml`, `README.md`) is **Apache-2.0**. The runtime
-weights at `hf://OpenRAL/lingbot-vla-v2-6b-nf4` are an NF4-quantized copy of the
-upstream `hf://robbyant/lingbot-vla-v2-6b` checkpoint, redistributed under the same
-**Apache-2.0** license (code and weights), so commercial use is permitted. The
+weights are the upstream `hf://robbyant/lingbot-vla-v2-6b` checkpoint (NF4-packed at
+load), released under **Apache-2.0** (code and weights), so commercial use is
+permitted. The
 package does not copy weights into this git repository; runtime loading still emits
 OpenRAL's unverified-provenance warning until the planned signing control exists.
 
@@ -302,4 +302,4 @@ OpenRAL's unverified-provenance warning until the planned signing control exists
 - `robots/aloha_agilex/robot.yaml` — RobotDescription manifest (dual-arm AgileX).
 - `rskills/smolvla-robotwin/` — sibling SmolVLA rSkill on the same embodiment.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

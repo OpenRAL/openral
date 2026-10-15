@@ -24,7 +24,7 @@ When a new Jetson generation lands (Spark, …) add a directory
 under this tree with a fresh real-device capture before extending
 `_JETSON_CC_BY_BOARD_KEYWORD` in `python/detect/src/openral_detect/probes/gpu.py`.
 
-Thor is in `JETSON_BOARD_TOPS` **by omission**: NVIDIA publishes its headline
+Thor is **deliberately absent** from `JETSON_BOARD_TOPS`: NVIDIA publishes its headline
 figure in sparse FP4 TFLOPS and there is no documented conversion to the peak
 dense INT8 TOPS the other rows use, so the board reports `tops == 0.0` rather
 than a derived number. Add the row when a comparable INT8 figure is published.

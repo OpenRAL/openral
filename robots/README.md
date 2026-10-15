@@ -3,45 +3,43 @@
 One `RobotDescription` manifest (`robot.yaml`) per embodiment: the normative
 joint / sensor / capability / safety / HAL contract every other layer (rSkills,
 scenes, the eval registry, the HAL itself) validates against. The
-`python/sim/src/openral_sim` robots adapter scans `robots/*/robot.yaml` at
-import time and auto-registers each one; `$OPENRAL_ROBOTS_DIR` overrides the
-search path for out-of-tree manifests.
+`openral_sim.policies.robots` adapter scans `robots/*/robot.yaml` at import
+time and auto-registers each one; `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` is
+looked up first, for out-of-tree manifests.
 
 There are 21 robot directories, each with a `robot.yaml` and most with a
 `README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
 caveats). `hal.real` is the source of truth for real-hardware support:
 `null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
-`hal.sim` being `null` does **not** mean no sim support: several embodiments
-(`aloha_agilex`, `gr1`, `pusht_2d`, `so101_follower`, `r1pro`) drive a sim
-rollout through a scene-adapter's `fixed_robot=` binding or an out-of-process
-sidecar instead of the generic `MujocoArmHAL.from_description` path. `widowx`
-is different again: it drives a free-axis (multi-robot) SimplerEnv/ManiSkill3
-scene with no `fixed_robot=` binding — the robot is selected by the scene
-YAML's `robot_id:` field instead.
+`hal.sim` being `null` does **not** mean no sim support: when the manifest has
+a `sim:` block, `openral_hal.build_hal` derives `MujocoArmHAL.from_description`
+from it (most arms below), and several embodiments (`aloha_agilex`, `gr1`,
+`pusht_2d`, `r1pro`, `sawyer`, `widowx`) run only through a scene adapter's
+`fixed_robot=` binding, some of them in an out-of-process sidecar.
 
 | Robot dir | Description | Embodiment tags | Sim support | Real-HW support | README |
 | --- | --- | --- | --- | --- | --- |
 | `aloha_agilex` | Bimanual 6-DoF AgileX PiPER arms + parallel grippers (RoboTwin 2.0's default embodiment; 14-DoF action space) | `aloha_agilex`, `aloha`, `lerobot` | yes — `fixed_robot="aloha_agilex"` scene adapter (SAPIEN, via the RoboTwin sidecar); no on-disk URDF/MJCF | no (`hal.real` null) | [README.md](aloha_agilex/README.md) |
-| `aloha_bimanual` | Bimanual Trossen ALOHA (ViperX arms) | `aloha`, `lerobot` | yes — `AlohaMujocoHAL` (gym-aloha MJCF twin) | yes — `AlohaHAL` (Trossen `interbotix_xs_sdk`, not `ros2_control`) | [README.md](aloha_bimanual/README.md) |
-| `anvil_openarm_v2` | Bimanual Anvil OpenARM 2.0 arms | `openarm`, `anvil_openarm_v2`, `anvil`, `bimanual` | yes — `AnvilOpenArmV2MujocoHAL` | no (`hal.real` null) | [README.md](anvil_openarm_v2/README.md) |
-| `franka_panda` | 7-DoF collaborative arm (Franka Emika Panda); LIBERO's canonical embodiment | `franka_panda`, `franka`, `panda`, `libero` | yes — `FrankaPandaHAL` (mujoco_menagerie MJCF) | yes — `FrankaPandaRealHAL` (FCI) | [README.md](franka_panda/README.md) |
+| `aloha_bimanual` | Bimanual Trossen ALOHA (ViperX arms) | `aloha`, `lerobot` | yes — derived `MujocoArmHAL` (gym-aloha MJCF; `sim:` block) + `fixed_robot="aloha_bimanual"` scene adapter (gym-aloha) | yes — `AlohaHAL` (Trossen `interbotix_xs_sdk`, not `ros2_control`) | [README.md](aloha_bimanual/README.md) |
+| `anvil_openarm_v2` | Bimanual Anvil OpenARM 2.0 arms | `openarm`, `anvil_openarm_v2`, `anvil`, `bimanual` | yes — derived `MujocoArmHAL` (`sim:` block; class form `AnvilOpenArmV2MujocoHAL`) | no (`hal.real` null) | [README.md](anvil_openarm_v2/README.md) |
+| `franka_panda` | 7-DoF collaborative arm (Franka Emika Panda); LIBERO's canonical embodiment | `franka_panda`, `franka`, `panda`, `libero` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `FrankaPandaHAL`) + LIBERO / RLBench / ManiSkill3 / VLABench scene adapters | yes — `FrankaPandaRealHAL` (FCI) | [README.md](franka_panda/README.md) |
 | `g1` | Unitree G1 humanoid, floating base | `g1`, `unitree_g1`, `humanoid`, `mobile_base` | yes — `G1MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](g1/README.md) |
 | `galaxea_a1` | 6-DoF manipulator (Galaxea A1), joint/gripper-space real-hardware manifest | `galaxea_a1` | no (`hal.sim` null) | yes — `GalaxeaA1HAL` | [README.md](galaxea_a1/README.md) |
 | `google_robot` | Google Everyday Robot mobile manipulator (discontinued 2023; coarse kinematic approximation) | `google_robot`, `everyday_robot`, `rt1`, `rt2`, `oxe` | no today — no scene currently binds it; the `simpler_env/google_robot_*` benchmark suite was removed because the upstream ManiSkill3 GoogleRobot envs are unregistered (`NameNotFound`) | no (`hal.real` null) | [README.md](google_robot/README.md) |
 | `gr1` | Fourier GR-1 humanoid — arms + waist + Fourier dex hands (legs/head disabled) | `gr1`, `fourier_gr1`, `humanoid`, `robocasa` | yes — `fixed_robot="gr1"` scene adapter (RoboCasa GR1 Tabletop Tasks backend) | no (`hal.real` null) | no README |
 | `h1` | Unitree H1 humanoid, bipedal floating base | `h1`, `unitree_h1`, `humanoid` | yes — `H1MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](h1/README.md) |
-| `openarm` | Enactic OpenArm v2 bimanual arms (manifest's own `name:` is `openarm_v2`, directory is `openarm`) | `openarm`, `openarm_v2`, `enactic`, `bimanual` | yes — `OpenArmMujocoHAL` | yes — `OpenArmRealHAL` | [README.md](openarm/README.md) |
+| `openarm` | Enactic OpenArm v2 bimanual arms (manifest's own `name:` is `openarm_v2`, directory is `openarm`) | `openarm`, `openarm_v2`, `enactic`, `bimanual` | yes — derived `MujocoArmHAL` (`sim:` block; class form `OpenArmMujocoHAL`) | yes — `OpenArmRealHAL` | [README.md](openarm/README.md) |
 | `panda_mobile` | Franka Panda 7-DoF arm on a 3-DoF holonomic base (RoboCasa's default robot composition; 2-D LiDAR SLAM) | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |
 | `panda_mobile_vslam` | Lidar-less visual-SLAM twin of `panda_mobile` — localises/maps from two base-mounted RGB cameras via cuVSLAM instead of a `LaserScan` | `panda_mobile`, `robocasa`, `franka`, `panda`, `mobile_base` | yes — `PandaMobileHAL` (RoboCasa/robosuite backend) | no (`hal.real` null) | no README |
 | `pusht_2d` | PushT 2-D pseudo-robot (lerobot PushT benchmark) | `pusht`, `lerobot` | yes — `fixed_robot="pusht_2d"` scene adapter (gym-pusht) | no (`hal.real` null) | [README.md](pusht_2d/README.md) |
-| `r1pro` | Galaxea R1 Pro mobile bimanual manipulator — the official 2026 BEHAVIOR-1K OmniGibson evaluator embodiment | `r1pro`, `mobile_base` | yes — out-of-process OmniGibson/Isaac Sim sidecar (`tools/behavior_scene_sidecar.py`), 61-D state / 23-D action | no (`hal.real` null) | [README.md](r1pro/README.md) |
-| `rizon4` | 7-DoF collaborative arm (Flexiv Rizon 4), no gripper | `rizon4`, `flexiv` | yes — `Rizon4MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](rizon4/README.md) |
-| `sawyer` | 7-DoF collaborative arm (Rethink Robotics Sawyer) | `sawyer`, `rethink` | no (`hal.sim` null) | yes — `SawyerRealHAL` (`intera_sdk`/`sawyer_robot` fork, BSD-3) | [README.md](sawyer/README.md) |
-| `so100_follower` | 6-DoF follower arm (LeRobot SO-100), serial — not `ros2_control` | `so100_follower`, `lerobot` | no (`hal.sim` null) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so100_follower/README.md) |
-| `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | yes — `fixed_robot="so101_follower"` scene adapter (`so101_box`, MuJoCo tabletop arena) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |
-| `ur10e` | 6-DoF collaborative arm (Universal Robots UR10e), no gripper | `ur10e`, `ur` | yes — `UR10eHAL` (mujoco_menagerie MJCF) | yes — `UR10eRealHAL` | [README.md](ur10e/README.md) |
-| `ur5e` | 6-DoF collaborative arm (Universal Robots UR5e), no gripper | `ur5e`, `ur` | yes — `UR5eHAL` (mujoco_menagerie MJCF) | yes — `UR5eRealHAL` | [README.md](ur5e/README.md) |
-| `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — SimplerEnv/ManiSkill3 scenes (`scenes/benchmark/widowx_carrot_on_plate.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
+| `r1pro` | Galaxea R1 Pro mobile bimanual manipulator — the official 2026 BEHAVIOR-1K OmniGibson evaluator embodiment | `r1pro`, `mobile_base` | yes — `fixed_robot="r1pro"` BEHAVIOR scene adapter, out-of-process OmniGibson/Isaac Sim sidecar (`tools/behavior_scene_sidecar.py`), 61-D state / 23-D action | no (`hal.real` null) | [README.md](r1pro/README.md) |
+| `rizon4` | 7-DoF collaborative arm (Flexiv Rizon 4), no gripper | `rizon4`, `flexiv` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `Rizon4MujocoHAL`) | no (`hal.real` null) | [README.md](rizon4/README.md) |
+| `sawyer` | 7-DoF collaborative arm (Rethink Robotics Sawyer) | `sawyer`, `rethink` | yes — `fixed_robot="sawyer"` scene adapter (MetaWorld) | yes — `SawyerRealHAL` (`intera_sdk`/`sawyer_robot` fork, BSD-3) | [README.md](sawyer/README.md) |
+| `so100_follower` | 6-DoF follower arm (LeRobot SO-100), serial — not `ros2_control` | `so100_follower`, `lerobot` | yes — derived `MujocoArmHAL` (`rd:so_arm100_mj_description` MJCF; `sim:` block) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so100_follower/README.md) |
+| `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | yes — derived `MujocoArmHAL` (`sim:` block) + `fixed_robot="so101_follower"` scene adapter (`so101_box`, MuJoCo tabletop arena) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |
+| `ur10e` | 6-DoF collaborative arm (Universal Robots UR10e), no gripper | `ur10e`, `ur` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `UR10eHAL`) | yes — `UR10eRealHAL` | [README.md](ur10e/README.md) |
+| `ur5e` | 6-DoF collaborative arm (Universal Robots UR5e), no gripper | `ur5e`, `ur` | yes — derived `MujocoArmHAL` (mujoco_menagerie MJCF; class form `UR5eHAL`) | yes — `UR5eRealHAL` | [README.md](ur5e/README.md) |
+| `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — `fixed_robot="widowx"` SimplerEnv/ManiSkill3 scene adapter (`scenes/benchmark/widowx_carrot_on_plate.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
 
 ## Add a new robot
 

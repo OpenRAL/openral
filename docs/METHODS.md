@@ -26,11 +26,11 @@
 
 | File | Scope |
 |---|---|
-| [00-core-schemas.md](methods/00-core-schemas.md) | Layer 0 — `openral_core` Pydantic schemas, loaders, URDF resolve, exception hierarchy |
-| [01-hal.md](methods/01-hal.md) | Layer 1 — HAL Protocol + every robot adapter (real, MuJoCo, sim-attached, lifecycle, transports) |
-| [02-sensors.md](methods/02-sensors.md) | Layer 2 — sensor catalog, `SensorSpec`/`SensorBundle` factories, ROS publisher, reader protocol |
-| [03-world-state.md](methods/03-world-state.md) | Layer 3 — state adapter registry, world-state aggregator, spatial memory, geometry/grid, object lift |
-| [04-rskill.md](methods/04-rskill.md) | Layer 4 — rSkill ABC, runtimes (PyTorch/ONNX; TensorRT via the private OpenRAL Pro plugin), loader, executor, VLA adapters |
+| [00-core-schemas.md](methods/00-core-schemas.md) | Contracts — `openral_core` Pydantic schemas, loaders, URDF resolve, exception hierarchy |
+| [01-hal.md](methods/01-hal.md) | Layer 0 — HAL Protocol + every robot adapter (real, MuJoCo, sim-attached, lifecycle, transports) |
+| [02-sensors.md](methods/02-sensors.md) | Layer 1 — sensor catalog, `SensorSpec`/`SensorBundle` factories, ROS publisher, reader protocol |
+| [03-world-state.md](methods/03-world-state.md) | Layer 2 — state adapter registry, world-state aggregator, spatial memory, geometry/grid, object lift |
+| [04-rskill.md](methods/04-rskill.md) | Layer 3 — rSkill ABC, runtimes (PyTorch/ONNX; TensorRT via the private OpenRAL Pro plugin), loader, executor, VLA adapters |
 | [05-inference-runner.md](methods/05-inference-runner.md) | Inference Runner — clocks, runner loop, sensor readers, dataset recording |
 | [06-reasoning-wam-safety-observability.md](methods/06-reasoning-wam-safety-observability.md) | CLAUDE.md layers 4–6 — Reasoner core/tool-use, safety supervisor, observability |
 | [07-eval-sim.md](methods/07-eval-sim.md) | Eval (sim) — scene/robot registries, SimRunner, scene + policy adapters, benchmark suites |

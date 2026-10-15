@@ -243,11 +243,11 @@ that extends `SensorSpec` in place against the pre-publish baseline
 
 ## 5. Catalog & factory implementation status
 
-The catalog ships only the sensor entries that are actually wired into a robot
-manifest or HAL adapter today. Each entry is addressable by stable id (`<vendor>/<model>`)
+The catalog ships only sensor entries that a robot manifest, HAL adapter or
+scene uses, or that a deployed rig carries. Each entry is addressable by stable id (`<vendor>/<model>`)
 through the `SensorCatalog` registry and surfaced via the `openral sensor list /
 show` CLI. Speculative entries (extra RealSense SKUs, Orbbec, Logitech C922 /
-Brio, Arducam, every 2D / 3D LiDAR, standalone IMUs, ATI / Bota / OnRobot F/T,
+Brio, every 2D / 3D LiDAR, standalone IMUs, ATI / Bota / OnRobot F/T,
 GelSight DIGIT, XELA, AnySkin) are intentionally excluded; reintroduce
 them only when a robot manifest or HAL factory needs them.
 
@@ -258,13 +258,15 @@ frames, serial/MXID, VLA feature keys, and sim placement. Scene-only cameras may
 remain inline without catalog provenance because many are benchmark viewpoints
 rather than deployable hardware.
 
-### What shipped (7 entries, 4 modules)
+### What shipped (9 entries, 6 modules)
 
 | Module | Catalog ids | Modalities | Wired in |
 |---|---|---|---|
 | `realsense.py` | `intel/realsense_d435`, `intel/realsense_d435i`, `intel/realsense_d415` | RGB+DEPTH(+IMU) bundles | `ur10e_with_sensors`, `franka_panda_with_sensors`, `ur5e_with_sensors` |
 | `usb_uvc.py` | `generic/usb_uvc_rgb`, `logitech/c920` | RGB | SO-100/SO-101 wrist camera specs, `so100_with_sensors` |
 | `luxonis.py` | `luxonis/oak_d_pro` | RGB+DEPTH+IMU bundle | available catalog entry; SO-101's world-fixed front camera may use this hardware model but is not robot-mounted provenance |
+| `stereolabs.py` | `stereolabs/zed_mini` | stereo RGB + DEPTH + IMU bundle | `robots/openarm/robot.yaml` (`catalog_id`) |
+| `arducam.py` | `arducam/b0495` | RGB (global shutter) | available catalog entry; no manifest references it |
 | `force_torque.py` | `robotiq/ft_300s` | FORCE_TORQUE (n_axes=6) | `ur5e_with_sensors`, `ur10e_with_sensors` |
 
 ### How to use
@@ -273,7 +275,7 @@ rather than deployable hardware.
 from openral_sensors import CATALOG
 
 # List
-print(CATALOG.list_ids())                       # 7 ids
+print(CATALOG.list_ids())                       # 9 ids
 print([e.id for e in CATALOG.filter(vendor="intel")])
 
 # Build a SensorBundle / SensorSpec for a robot manifest
@@ -292,8 +294,8 @@ openral sensor show intel/realsense_d435i --name head --parent-frame head_link
 
 | Module | Factories | Blocked-by |
 |---|---|---|
-| `stereolabs.py` | `zed_2i_bundle`, `zed_x_bundle` | gap S (stereo `baseline_m`) |
-| `luxonis.py` | `oak_d_pro_bundle`, `oak_d_lite_bundle` | gap S |
+| `stereolabs.py` | `zed_2i_bundle`, `zed_x_bundle` (`zed_mini_bundle` shipped) | gap S (stereo `baseline_m`) |
+| `luxonis.py` | `oak_d_lite_bundle` (`oak_d_pro_bundle` shipped) | gap S |
 | `event_camera.py` | `prophesee_evk4_spec`, `inivation_davis346_spec` | gap E |
 | `thermal.py` | `flir_boson_spec`, `spot_thermal_payload_spec` | gap T |
 | `proximity.py` | `maxbotix_ultrasonic_spec`, `teraranger_evo_spec` | gap U |
@@ -331,15 +333,15 @@ Every new module follows the conventions used by `realsense.py`,
 
 ## 7. Summary — status & next steps
 
-1. ✅ **Catalog pruned to actually-wired sensors** (§5): 7 entries across 4
+1. ✅ **Catalog pruned to actually-used sensors** (§5): 9 entries across 6
    vendor modules, `SensorCatalog` registry, `openral sensor list / show` CLI,
    full unit-test coverage. No schema change required.
 2. **Open one ADR** for the §4 schema additions (event, thermal, range_1d,
    barometer, magnetometer, contact, stereo baseline) bundled together as
    `schema v0.3`, with a single migration entry and a regenerated
    `docs/reference/schemas/`.
-3. After the ADR lands, ship Tier 3 modules (`stereolabs.py`, `luxonis.py`,
-   `event_camera.py`, `thermal.py`, `proximity.py`, `barometer.py`) as
+3. After the ADR lands, ship the remaining Tier 3 factories (ZED 2i / ZED X,
+   OAK-D Lite) and modules (`event_camera.py`, `thermal.py`, `proximity.py`, `barometer.py`) as
    separate small PRs, each with the test shape mandated in §6.
 4. Optional follow-up: add materialization helpers that copy a catalog factory
    output into a robot manifest while forcing authors to keep calibrated fields

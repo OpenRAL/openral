@@ -13,7 +13,7 @@ robot capability:
 ```
 lidar:   /scan ─────────────▶ slam_toolbox ──▶ /map  (+ map → odom TF)
 visual:  cameras (+ IMU) ───▶ cuVSLAM ───────▶ map → odom TF
-                                  └─▶ (+ nvblox, Phase 2) ──▶ /map costmap
+                                  └─▶ (+ nvblox) ──▶ /map costmap
 ```
 
 `deploy_sim.py` resolves the backend (`lidar` wins when both flags are set — it

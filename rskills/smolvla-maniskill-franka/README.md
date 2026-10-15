@@ -40,7 +40,7 @@ camera views (overhead + wrist); 9-D Franka proprio state.
 
 | Field | Value |
 | --- | --- |
-| Actions | `pick`, `lift` |
+| Actions | `pick`, `grasp` |
 | Objects | `cube` |
 | Scenes  | `tabletop` |
 | Embodiment | `franka_panda` |
@@ -78,7 +78,7 @@ the Franka qpos (7 arm + 2 finger joints), exactly the gym observation
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Franka Panda (ManiSkill3 SAPIEN) | `franka_panda` | ✓ end-to-end | Manifest validates and `openral sim run --view` produces a live SAPIEN window of the policy lifting the cube; processors are auto-synthesized from the training dataset's `meta/episodes_stats.jsonl` because the upstream model repo doesn't ship `policy_*processor.json`. |
+| Franka Panda (ManiSkill3 SAPIEN) | `franka_panda` | ⚠ no task-matched in-tree scene | Trained on LiftCube; the only in-tree ManiSkill3 Panda scenes are PickCube-v1 and its siblings, which the `evaluated_tasks` gate refuses (see [The LiftCube gap](#the-liftcube-gap)). The upstream model repo ships no `policy_*processor.json`; the manifest's `processors` point at copies on the OpenRAL repo. |
 
 ## Sensors required
 
@@ -107,7 +107,7 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 | `chunk_size` / `n_action_steps` | `50` / `50` |
 | `latency_budget.per_chunk_ms` | 200 ms |
 | `state_contract.dim` / `action_contract.dim` | 9 / 8 |
-| `commercial_use_allowed` | `true` (apache-2.0) |
+| `is_commercial_use_allowed` | `true` (apache-2.0) |
 
 ## Quick start
 
@@ -119,34 +119,33 @@ print(pkg.manifest.name, pkg.manifest.version)
 print(pkg.manifest.weights_uri)
 ```
 
+## The LiftCube gap
+
+The checkpoint was trained on LiftCube, but ManiSkill3 PickCube-v1 (the task of
+[`scenes/benchmark/maniskill_pick_cube.yaml`](../../scenes/benchmark/maniskill_pick_cube.yaml)
+and the `maniskill3_panda` suite) only succeeds when the cube reaches a goal
+position. The policy loads and actuates there but cannot satisfy that success
+check. The manifest therefore declares `evaluated_tasks: ["maniskill3/LiftCube"]`,
+and the task gate (`openral_sim.benchmark.check_benchmark_task_compatibility`)
+refuses the pairing: `openral benchmark scene` raises `ROSCapabilityMismatch`, and
+`openral benchmark run --suite maniskill3_panda` exits because no suite task
+matches.
+
 ## Reproduction
 
 ```bash
-# One-time bootstrap
 just bootstrap && just sync --group sim --group maniskill3
 
-# End-to-end rollout (live SAPIEN window via --view).
-DISPLAY=:1 uv run --group sim --group maniskill3 \
-    openral sim run --config scenes/benchmark/maniskill_pick_cube.yaml \
-                --rskill rskills/smolvla-maniskill-franka \
-                --view
+# Refused by the task gate today (see above); runs once a LiftCube scene exists
+# or the checkpoint is replaced by a PickCube-trained one.
+openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml \
+    --rskill rskills/smolvla-maniskill-franka
 ```
-
-The runner deferred-opens the SAPIEN window after the policy load
-(~25 s) so the window manager never sees an unresponsive empty
-viewer. On a warm cache the policy lifts the cube within ~200 steps
-(reward accumulates from `0` to `~50` over the rollout).
 
 ## Evaluation
 
-The shipped LiftCube checkpoint scores **0.0** on PickCube-v1 (task
-mismatch — see the LiftCube gap above); the headline will lift once a
-PickCube-trained policy replaces it. Re-run via the curated franka_panda
-suite (it auto-filters to this rSkill's task):
-
-```bash
-openral benchmark run --suite maniskill3_panda --rskill rskills/smolvla-maniskill-franka
-```
+[`eval/scene_maniskill3.json`](eval/scene_maniskill3.json) records **0.0** on
+PickCube-v1 (1 episode) — the task mismatch above, recorded before the gate.
 
 ## How the wiring works
 
@@ -165,10 +164,10 @@ state, and emits 8-D joint position commands. The end-to-end path:
    what it expects, and `state_contract.dim: 9` so the adapter
    truncates the env's `qpos+qvel` state to qpos-only.
 3. **SmolVLA adapter** (`python/sim/src/openral_sim/policies/smolvla.py`)
-   detects the upstream model's missing `policy_*processor.json`
-   files and rebuilds the lerobot processors from
-   `manifest.dataset_uri`'s `meta/episodes_stats.jsonl` (a generic path
-   for any community finetune uploaded without processors).
+   loads the processors from `processors.preprocessor_uri` /
+   `postprocessor_uri`; if they are missing it rebuilds them from
+   `manifest.dataset_uri`'s dataset stats (a generic path for any community
+   finetune uploaded without processors).
 4. **`--view`** triggers the SAPIEN `viewer_render()` hook
    (deferred-window, mirroring PR #160's simpler_env). The window
    opens lazily on the first applied step, after the policy is
@@ -187,5 +186,5 @@ publishes a different posture, update this manifest's `license:` field.
 ## See also
 
 - [`robots/franka_panda/robot.yaml`](../../robots/franka_panda/robot.yaml) — RobotDescription manifest.
-- [`scenes/benchmark/maniskill_pick_cube.yaml`](../../scenes/benchmark/maniskill_pick_cube.yaml) — paired BenchmarkScene config (pass `--rskill rskills/smolvla-maniskill-franka`).
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [`scenes/benchmark/maniskill_pick_cube.yaml`](../../scenes/benchmark/maniskill_pick_cube.yaml) — the PickCube-v1 BenchmarkScene (task-gated, see above).
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

@@ -50,7 +50,8 @@ Full head-camera clip: [media/head_camera_view.mp4](media/head_camera_view.mp4).
 ## What this skill does
 
 Drives a mobile base to follow a natural-language navigation instruction
-("go to the kitchen and stop at the fridge") from an egocentric RGB-D camera.
+("go to the kitchen and stop at the fridge") from one forward egocentric RGB
+camera (depth, when used, is estimated by DA3 — see below).
 It emits a stream of base **body-twist** velocity commands and raises STOP on
 arrival. Navigation verbs / spatial targets it is offered for in the reasoner
 palette are in the manifest's `actions:` / `objects:` / `scenes:` keys.
@@ -139,7 +140,7 @@ sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 Run in the RoboCasa navigation scene:
 
 ```
-just sync --all-packages --group robocasa --group rldx
+just sync --group robocasa --group rldx
 OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   openral deploy sim --config scenes/deploy/robocasa_navigate.yaml
 ```

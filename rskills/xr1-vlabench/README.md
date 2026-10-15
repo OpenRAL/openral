@@ -90,13 +90,13 @@ Three RGB streams at 480x480 and VLABench's 7-D EE/gripper state.
 | `runtime` / dtype | PyTorch sidecar / NF4 |
 | `weights_uri` | `hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4` |
 | `latency_budget.per_chunk_ms` | 2000 |
-| `commercial_use_allowed` | yes |
+| `is_commercial_use_allowed` | yes |
 
 ## Quick start
 
 ```bash
 just sync --group sidecar-wire
-OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run \
+OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark scene \
   --config scenes/benchmark/vlabench_select_fruit.yaml \
   --rskill rskills/xr1-vlabench
 ```
@@ -107,10 +107,11 @@ Provision the VLABench asset bundle documented by the scene backend, then run
 the command above. This package ships no score until that real simulator run
 has completed.
 
-### Persist NF4 locally
+### Rebuilding the NF4 pack
 
-The default sidecar quantizes the pinned BF16 source at load. Export once to
-avoid that repeated pack step:
+`weights_uri` is a pre-quantized NF4 pack (`policy_extras.prequantized_nf4:
+true`), so the sidecar loads it without quantizing at load. It was exported from
+the pinned BF16 source with:
 
 ```bash
 OPENRAL_ALLOW_REMOTE_CODE=1 uv run python tools/xr1_sidecar.py \
@@ -119,9 +120,7 @@ OPENRAL_ALLOW_REMOTE_CODE=1 uv run python tools/xr1_sidecar.py \
   --export-dir outputs/run_artifacts/xr1-vlabench-nf4-rskill/weights
 ```
 
-The local unpublished package is then
-`outputs/run_artifacts/xr1-vlabench-nf4-rskill`.
-Its packed output was verified bit-identical to runtime NF4 on the same seeded
+The packed output was verified bit-identical to runtime NF4 on the same seeded
 input (`MAE=0`, `max error=0`). On the reference host, policy initialization
 dropped from about 18.0 s to 10.1 s.
 

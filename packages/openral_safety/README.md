@@ -83,7 +83,7 @@ MJCF can describe the same machine with different intermediate frames (`g1`'s
 above it), so checking against the wrong one measures a convention, not a
 defect.
 
-Per CLAUDE.md §7.7 / §1.1, any PR that **extends** enforcement here
+Per CLAUDE.md §3 (Safety) / §1.1, any PR that **extends** enforcement here
 requires:
 
 1. Explicit reviewer assignment to the safety working group.
@@ -94,7 +94,7 @@ requires:
 
 ## Layer
 
-CLAUDE.md §6.1 Layer 6 (Safety). The in-process tick-time gate the
+CLAUDE.md §3 Layer 5 (Safety). The in-process tick-time gate the
 `DeployRunner` calls is the `SafetyClient` Protocol in
 `python/runner/src/openral_runner/safety.py` (`NullSafetyClient`). This
 package is the **chunk-rate topic boundary** the `rskill_runner_node` and
@@ -132,10 +132,15 @@ skill_runner (defense in depth, CLAUDE.md §1.5).
   production launches).
 * First-row joint targets vs `min_joint` / `max_joint` per-joint
   position limits (both empty ≡ "do not enforce").
+* Per-control-mode bounds, each `-1.0` ≡ "do not enforce" by default:
+  Cartesian delta step (`max_cartesian_step_m` / `_rad`), EE twist speed
+  (`max_ee_speed_m_s` / `max_ee_angular_speed_rad_s`), base twist speed
+  (`max_base_linear_speed_m_s` / `max_base_angular_speed_rad_s`) and gripper
+  width (`gripper_min` / `gripper_max`).
 
-Velocity, force, and workspace AABB enforcement live only in the C++
-kernel, intentionally **not** in Python (§7.7 prohibits a divergent
-Python-side enforcer that has to be re-validated against the kernel).
+Joint-velocity, force, workspace-AABB and collision enforcement live only in
+the C++ kernel, intentionally **not** in Python (CLAUDE.md §3: a divergent
+Python-side enforcer would have to be re-validated against the kernel).
 
 On envelope violation:
 
@@ -143,7 +148,7 @@ On envelope violation:
 2. `std_msgs/Empty` is published on `/openral/estop`.
 3. The node latches into an estop state; subsequent chunks are dropped
    until `/openral/estop_reset` is called and the 500 ms cooldown has
-   elapsed. `ROSEStopRequested` (CLAUDE.md §10) is never
+   elapsed. `ROSEStopRequested` (CLAUDE.md §5) is never
    auto-cleared.
 
 ## Production vs Day-1
@@ -188,5 +193,5 @@ in production.
   `SafetyClient` Protocol + `NullSafetyClient` (the in-process seam
   the runner calls every tick). Independent of the topic boundary
   surfaced here.
-* CLAUDE.md §1.5, §6.1, §7.7, §10 (`ROSSafetyViolation` /
+* CLAUDE.md §1.5, §3, §5 (`ROSSafetyViolation` /
   `ROSEStopRequested`).

@@ -24,23 +24,19 @@ inference: false
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on the [LIBERO](https://libero-project.github.io/) benchmark, packaged for use with the [OpenRAL](https://github.com/OpenRAL/openral) robot agent framework.
 
-This package wraps [`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/HuggingFaceVLA/smolvla_libero) with a `rskill.yaml` manifest that adds capability checking, license surfacing, latency budgets, and local registry integration. It does **not** copy model weights.
+This package wraps [`lerobot/smolvla_libero`](https://huggingface.co/lerobot/smolvla_libero) with a `rskill.yaml` manifest that adds capability checking, license surfacing, latency budgets, and local registry integration. It does **not** copy model weights. (`HuggingFaceVLA/smolvla_libero` was the earlier wrap; its config does not match the paper — see the `rskill.yaml` header.)
 
 ## Quick start
 
 ```python
-import os
-os.environ["HF_TOKEN"] = "<your-read-token>"
-
 from openral_rskill.loader import rSkill
 
 # Install from HF Hub (downloads manifest + registers locally):
 pkg = rSkill.from_pretrained("OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16")
-# pkg.manifest.weights_uri → "hf://HuggingFaceVLA/smolvla_libero"
-# pkg.local_dir            → ~/.cache/openral/rskills/...
+# pkg.manifest.weights_uri → "hf://lerobot/smolvla_libero"
 
-# Or load offline from local clone:
-pkg = rSkill.from_yaml("skills/smolvla-libero/rskill.yaml")
+# Or load offline from a local clone:
+pkg = rSkill.from_yaml("rskills/smolvla-libero/rskill.yaml")
 ```
 
 Via CLI:
@@ -53,103 +49,67 @@ openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 
 | Field | Value |
 |---|---|
-| Source repo | [`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/HuggingFaceVLA/smolvla_libero) |
+| Source repo | [`lerobot/smolvla_libero`](https://huggingface.co/lerobot/smolvla_libero) |
 | Base model | [`lerobot/smolvla_base`](https://huggingface.co/lerobot/smolvla_base) |
 | Paper | [arxiv:2506.01844](https://arxiv.org/abs/2506.01844) — *SmolVLA: Efficient Vision-Language-Action Model* |
 | License | Apache-2.0 |
 | Parameters | ~450 M |
 | Benchmark | LIBERO (table-top manipulation, 4 suites × 10 tasks) |
-| Training data | [`physical-intelligence/libero`](https://huggingface.co/datasets/physical-intelligence/libero) — 1 693 demos |
+| Training data | [`HuggingFaceVLA/libero`](https://huggingface.co/datasets/HuggingFaceVLA/libero) (manifest `dataset_uri`) |
 
 ## Supported robots
 
 | Robot | Embodiment tag | Status | Notes |
 |---|---|---|---|
-| Franka Panda (LIBERO sim) | `libero` | ✓ validated | Native training embodiment |
-| SO-100 follower arm | `so100_follower` | ✓ IO verified | Digital-twin rollout tested (Day 20) |
-| Any 6–7 DOF manipulator | `manipulator` | ⚡ experimental | Requires obs-format adapter |
+| Franka Panda (LIBERO sim) | `franka_panda` | ✓ validated | Native training embodiment |
 
-To add a new robot: create a `SensorBundle` + obs-format adapter, update `embodiment_tags` in `rskill.yaml`, and open a PR.
+To add a new robot: declare matching `vla_feature_key`s on its cameras in `robots/<robot_id>/robot.yaml`, add its tag to `embodiment_tags` in `rskill.yaml`, and open a PR.
 
 ## Hardware requirements
 
-### Minimum (inference only)
-
 | Component | Minimum | Recommended |
 |---|---|---|
-| GPU | Any CUDA 11.8+ GPU with ≥ 2 GiB VRAM | RTX 3060 / 4060 Ti |
-| VRAM | 1.5 GiB (fp32) · 0.95 GiB (bf16) | ≥ 4 GiB |
+| GPU | CUDA GPU with ≥ 2 GiB VRAM | RTX 3060 / 4060 Ti |
+| VRAM | `min_vram_gb.bf16: 1.2` (0.93 GB weights at load, RTX 4070) | ≥ 4 GiB, so the paired reward monitor co-resides |
 | RAM | 4 GiB | 16 GiB |
-| CPU | Any x86-64 / ARM64 | — |
 | Storage | 2 GiB (weights) | SSD recommended |
 
-### Reference host (Day 20 measurements)
+The deploy also loads the paired reward monitor (`reward_rskill_name: OpenRAL/rskill-robometer_4b-any-general-nf4`), which declares its own `min_vram_gb`.
 
-| Component | Spec |
-|---|---|
-| GPU | NVIDIA RTX 4070 Laptop (7.62 GiB VRAM, CUDA 12.8) |
-| Driver | 555.xx |
-| PyTorch | 2.10.0+cu128 |
-| Peak VRAM | ~1.1 GiB (bf16 chunk inference, 512 × 512 inputs) |
-
-> **CPU fallback**: ~20× slower inference (900 ms chunk → ~18 s). Set `device="cpu"` in the run script; no code changes required.
+> **CPU fallback**: ~20× slower inference. Pass `--device cpu` to `openral sim run` / `openral benchmark run`.
 
 ## Sensors
 
-| Key | Type | Resolution | Format | Description |
-|---|---|---|---|---|
-| `observation.images.OBS_IMAGE_1` | RGB camera | 512 × 512 | `float32 [0, 1]` | Top / overhead view (primary) |
-| `observation.images.OBS_IMAGE_2` | RGB camera | 512 × 512 | `float32 [0, 1]` | Wrist / end-effector view |
-| `observation.state` | Proprioception | (7,) | `float32` | Joint positions (rad or deg, model-native) |
+| Key | Type | Min resolution | Description |
+|---|---|---|---|
+| `observation.images.camera1` | RGB camera | 224 × 224 | Overhead / agent view |
+| `observation.images.camera2` | RGB camera | 224 × 224 | Wrist / end-effector view |
+| `observation.state` | Proprioception | (8,) | `libero_eef8d` task-space state: eef position ‖ eef axis-angle ‖ gripper |
 
-Images are resized to 512 × 512 before tokenisation. The model applies pixel-shuffle (4×) to compress each frame to 64 VLM tokens (no tiling).
-
-**For SO-100 digital twin runs**: images are synthesised as zero tensors (no real camera); state uses 6-DOF twin positions padded to 7-DOF.
+The runner matches each camera against the robot's `SensorSpec.vla_feature_key`. Images are rotated 180° (`image_preprocessing.flip_180: true`), as in LIBERO training. `openral sim run` supplies the 8-D state directly; `openral deploy sim` assembles it from TF + `JointState` (`eef_frame: panda_hand_tcp`, `world_frame: world`).
 
 ## Observation → action contract
 
-```python
-from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-from lerobot.policies.factory import make_pre_post_processors
-
-policy = SmolVLAPolicy.from_pretrained("HuggingFaceVLA/smolvla_libero").eval()
-preprocessor, _ = make_pre_post_processors(policy.config, "HuggingFaceVLA/smolvla_libero")
-
-# Raw observation dict (LIBERO format):
-raw = {
-    "observation.images.OBS_IMAGE_1": top_cam,   # (1, 3, 512, 512) float32 [0, 1]
-    "observation.images.OBS_IMAGE_2": wrist_cam, # (1, 3, 512, 512) float32 [0, 1]
-    "observation.state": joint_pos,              # (1, 7)           float32
-    "task": ["pick up the red cube"],            # list[str]
-}
-
-batch = preprocessor(raw)                        # normalise, tokenise
-action = policy.select_action(batch)             # → (1, 8) float32
-
-# action[:, :7] = joint position commands (Franka Panda)
-# action[:, 7]  = gripper width command (0 = closed, 1 = open)
-```
+| Direction | Shape | Notes |
+|---|---|---|
+| in | 2 × RGB + `(8,)` state + task string | see *Sensors* |
+| out | `(7,)` per step | `representation: delta_ee_6d_plus_gripper` — 6-D OSC end-effector delta (`cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]`) + gripper |
 
 ### Action chunking
 
 | Field | Value |
 |---|---|
 | `chunk_size` | 50 |
-| `n_action_steps` | 50 |
+| `n_action_steps` | 25 (half-chunk replan) |
 | Flow matching steps | 10 |
-| Inference mode | Synchronous (drain chunk, then re-infer) |
 
 ## Optimizations
 
 | Optimization | Command / config | VRAM impact | Latency impact |
 |---|---|---|---|
-| **bf16 autocast** (default) | `torch.autocast("cuda", torch.bfloat16)` | −30% vs fp32 | −10–20% |
+| **bf16** (default) | `quantization.dtype: bf16` | −30% vs fp32 | −10–20% |
 | **torch.compile** | `torch.compile(policy, mode="reduce-overhead")` | +0% | −15–25% (after warm-up) |
-| **TensorRT** (planned) | `rskill.yaml → engine_uri` (v0.3) | −20% | −40–60% |
-| **INT8 / FP8** (planned) | `QuantizationConfig(dtype="int8")` (v0.3) | −50% | −50% |
-| **CPU-only** | pass `device="cpu"` | n/a | ~20× slower |
-
-`torch.compile` requires PyTorch 2.3+. TRT/INT8 support is tracked in [OpenRAL #milestone-m3](https://github.com/OpenRAL/openral).
+| **CPU-only** | `--device cpu` | n/a | ~20× slower |
 
 ## rSkill manifest summary
 
@@ -160,20 +120,28 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 | `name` | `OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
-| `role` | `s1` (fast visuomotor policy, 30–50 Hz) |
-| `embodiment_tags` | `libero`, `so100_follower`, `manipulator` |
+| `role` / `kind` | `s1` / `vla` |
+| `model_family` | `smolvla` |
+| `embodiment_tags` | `franka_panda` |
 | `runtime` | `pytorch` |
 | `quantization.dtype` | `bf16` |
-| `weights_uri` | `hf://HuggingFaceVLA/smolvla_libero` |
+| `min_vram_gb` | `bf16: 1.2` |
+| `weights_uri` | `hf://lerobot/smolvla_libero` |
 | `latency_budget.per_chunk_ms` | 150 ms |
-| `latency_budget.warmup_ms` | 8 000 ms |
-| `latency_budget.load_ms` | 30 000 ms |
-| `dispatch_target` | `edge` |
-| `fallback_skill_id` | `null` |
-| `commercial_use_allowed` | `true` |
-| `signature` | `null` (sigstore v1.0, planned) |
+| `latency_budget.max_execution_s` | 60 s |
+| `reward_rskill_name` | `OpenRAL/rskill-robometer_4b-any-general-nf4` |
+| `is_commercial_use_allowed` | `true` |
 
 ## Evaluation results
+
+### Locally reproduced (`openral benchmark run`)
+
+| Suite | Success | Episodes per task | JSON |
+|---|:---:|:---:|---|
+| LIBERO-Spatial | 0.90 | 1 | [`eval/libero_spatial.json`](eval/libero_spatial.json) |
+| LIBERO-Object | 0.78 | 10 | [`eval/libero_object.json`](eval/libero_object.json) |
+| LIBERO-Goal | 0.67 | 10 | [`eval/libero_goal.json`](eval/libero_goal.json) |
+| LIBERO-Long (`libero_10`) | 0.59 | 10 | [`eval/libero_10.json`](eval/libero_10.json) |
 
 ### Upstream benchmark (paper, not locally reproduced)
 
@@ -190,62 +158,25 @@ Protocol: 10 trials per task, binary success/fail, Franka Panda in LIBERO simula
 
 Full results with config: [`eval/libero.json`](eval/libero.json) — `reproduced_locally: false`.
 
-### IO contract verification (Day 20, locally measured)
-
-Verified locally with `tests/sim/test_franka_panda_smolvla_libero.py` and the SO-100 digital twin:
-
-| Property | Expected | Measured | Status |
-|---|---|---|---|
-| State input shape | (1, 7) float32 | (1, 7) float32 | ✓ |
-| Image input resolution | 512 × 512 | 512 × 512 | ✓ |
-| Action output shape | (1, 8) float32 | (1, 8) float32 | ✓ |
-| Actions finite (no NaN/Inf) | true | true | ✓ |
-| Warm chunk latency | ≤ 150 ms | ~110 ms | ✓ |
-| Cached step latency | ≤ 30 ms | ~4 ms | ✓ |
-| Peak VRAM | ≤ 2.0 GiB | ~1.1 GiB | ✓ |
-| 50-step digital twin rollout | completes | completes | ✓ |
-
 ## Local reproduction
 
-### 1 — Install prerequisites
-
 ```bash
-git clone https://github.com/OpenRAL/openral && cd OpenRAL
-CC=/usr/bin/gcc just sync --group sim
-```
+git clone https://github.com/OpenRAL/openral && cd openral
+CC=/usr/bin/gcc just sync --group libero
 
-### 2 — Manifest + IO contract tests (no GPU required for manifest tests)
+# One suite (writes rskills/smolvla-libero/eval/<suite>.json):
+openral benchmark run --suite libero_spatial --rskill rskills/smolvla-libero
 
-```bash
-# Manifest tests only (fast, no weights download):
-uv run pytest tests/sim/test_franka_panda_smolvla_libero.py::TestRSkillManifest -v
-
-# Full IO contract tests (requires CUDA + HF Hub cache):
+# Sim-tier tests (IO contract, rollout, peak VRAM; need CUDA + the HF cache):
 uv run pytest tests/sim/test_franka_panda_smolvla_libero.py -v -m sim
 ```
 
-### 3 — LIBERO benchmark reproduction (requires LIBERO gym, planned Day 21+)
-
-```bash
-# Install LIBERO gymnasium environment:
-uv add libero --group sim
-
-# Run full 40-task eval:
-uv run pytest tests/sim/test_franka_panda_smolvla_libero.py::TestSmolVLALiberoPolicy -v -m sim
-```
-
-Full LIBERO repro (updating `eval/libero.json` to `reproduced_locally: true`) needs the LIBERO gym
-package and ~8 h on a desktop GPU; tracked as a Day 21+ milestone.
-
 ## Schema compliance
 
-Validated with:
-
 ```bash
-uv run python tools/schema_export.py           # regenerate JSON Schema
 uv run python -c "
 from openral_rskill.loader import rSkill
-pkg = rSkill.from_yaml('skills/smolvla-libero/rskill.yaml')
+pkg = rSkill.from_yaml('rskills/smolvla-libero/rskill.yaml')
 print(pkg.manifest.model_dump_json(indent=2))
 "
 ```
@@ -260,7 +191,7 @@ The manifest validates against `RSkillManifest` (Pydantic v2).
 
 ## License
 
-This rSkill package (`rskill.yaml`, `README.md`, `eval/libero.json`) is **Apache-2.0**.
-The wrapped model weights ([`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/HuggingFaceVLA/smolvla_libero)) are also Apache-2.0 per the upstream repo.
+This rSkill package (`rskill.yaml`, `README.md`, `eval/*.json`) is **Apache-2.0**.
+The wrapped model weights ([`lerobot/smolvla_libero`](https://huggingface.co/lerobot/smolvla_libero)) are also Apache-2.0 per the upstream repo.
 
-Commercial use is allowed. See `rskill.yaml → commercial_use_allowed: true`.
+Commercial use is allowed. `RSkillManifest.is_commercial_use_allowed` derives this from `license`.

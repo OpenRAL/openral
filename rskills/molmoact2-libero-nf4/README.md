@@ -55,20 +55,21 @@ continuous action chunk that the adapter replays one step at a time.
 
 MolmoAct2 grafts a modern DiT-style flow-matching continuous-action expert
 onto the Molmo2-ER discrete-token VLM via per-layer KV-cache conditioning
-(arXiv:2605.02881). It ships as a transformers **custom-code** model
-(`trust_remote_code`, `auto_map` → `MolmoAct2ForConditionalGeneration`), not a
-lerobot policy. The OpenRAL `molmoact2` adapter
-(`python/sim/src/openral_sim/policies/molmoact2.py`) loads it via
-`AutoModelForImageTextToText.from_pretrained` + `AutoProcessor` from the
-manifest's `source_repo`, NF4-quantizes every Linear with ≥4M weight elements
-via bitsandbytes, overlays the prequantized pack from `weights_uri`, then drives
-it through the checkpoint's own `predict_action(...)` continuous-action API. Two
+(arXiv:2605.02881). Upstream ships it as transformers **custom code**
+(`trust_remote_code`), not a lerobot policy. The OpenRAL `molmoact2` adapter
+(`python/sim/src/openral_sim/policies/molmoact2.py`) instead builds the graph from
+lerobot 0.6.0's vendored in-tree `MolmoAct2ForConditionalGeneration` and
+`MolmoAct2Processor` (config, processor and `norm_stats.json` from the
+manifest's `source_repo`), so no remote code executes and
+`OPENRAL_ALLOW_REMOTE_CODE` is not needed. It NF4-quantizes the model via
+bitsandbytes, overlays the prequantized pack from `weights_uri`, then drives it
+through the checkpoint's own `predict_action(...)` continuous-action API. Two
 RGB camera streams (ordered `[agentview, wrist]`) plus an 8-D proprio state go
 in; an `(n_action_steps, 7)` end-effector action chunk comes out — sliced from
 the checkpoint's padded 32-D action down to the embodiment's 7-D — replayed one
 step at a time and re-inferred when the queue empties. The chunk length is the
 checkpoint's `action_horizon` (LIBERO = 10). Images are rotated 180° and the
-`camera1`/`camera2` scene keys are aliased to the model's `image`/`image2`
+`camera1`/`camera2` scene keys are aliased to the model's `image`/`wrist_image`
 input features.
 
 Verified end-to-end on a single 8 GB RTX 4070 (LIBERO-Spatial task 0, NF4):
@@ -127,7 +128,7 @@ weights.
 | `weights_uri` | `hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` |
 | `chunk_size` / `n_action_steps` | 10 / 10 (= checkpoint `action_horizon`) |
 | `latency_budget.per_chunk_ms` | 1000 ms (flow-matching sampling; measured ~80–90 ms/step NF4) |
-| `commercial_use_allowed` | `true` (Apache-2.0) |
+| `is_commercial_use_allowed` (derived from `license`) | `true` (Apache-2.0) |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -149,18 +150,18 @@ uv run openral rskill check                # does this host meet the requirement
 ## Reproduction
 
 ```bash
-just bootstrap && uv sync --all-packages --group libero
+just bootstrap && just sync --group libero
 
 # LIBERO-Spatial closed-loop rollout (NF4 weights fit an 8 GB GPU):
-openral sim run --config scenes/benchmark/libero_spatial.yaml --rskill rskills/molmoact2-libero-nf4 \
-                --rskill rskills/molmoact2-libero-nf4
+openral sim run --config scenes/sim/libero_spatial.yaml --rskill rskills/molmoact2-libero-nf4
 ```
 
 Producing / refreshing the NF4 weights on the Hub (one-shot, needs a CUDA
 host):
 
 ```bash
-HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
+# allenai is not a trusted remote-code org, so --trust-remote-code needs the ack:
+HF_TOKEN=<write-token> OPENRAL_ALLOW_REMOTE_CODE=1 uv run python tools/quantize_rskill.py \
     --source allenai/MolmoAct2-LIBERO \
     --target OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4 \
     --loader transformers --trust-remote-code
@@ -169,9 +170,9 @@ HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
 ## Evaluation
 
 `eval/libero.json::status` is **pending**: its success rates are paper-cited
-(`reproduced_locally: false`). The reproduction command is in
-`eval/libero.json::source.reproduction_cli`; a full local rerun needs a GPU and
-has not been run yet.
+(`reproduced_locally: false`). Reproduce with
+`openral benchmark run --suite libero_spatial --rskill molmoact2-libero-nf4`; a
+full local rerun needs a GPU and has not been run yet.
 
 | Benchmark | Score | `reproduced_locally` | Config |
 | --- | --- | --- | --- |
@@ -191,4 +192,4 @@ is permitted. Review the upstream LICENSE before deployment.
 - [`scenes/benchmark/libero_spatial.yaml`](../../scenes/benchmark/libero_spatial.yaml) — canonical LIBERO-Spatial BenchmarkScene (pass `--rskill rskills/molmoact2-libero-nf4`).
 - [`rskills/pi05-libero-int8/README.md`](../pi05-libero-int8/README.md) — π0.5 LIBERO alternative (the model MolmoAct2 outperforms).
 - [`rskills/smolvla-libero/README.md`](../smolvla-libero/README.md) — Apache-2.0 LIBERO alternative.
-- [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.
+- [CLAUDE.md §3](../../CLAUDE.md) — rSkill packaging contract.

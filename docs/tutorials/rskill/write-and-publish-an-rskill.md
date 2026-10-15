@@ -40,8 +40,9 @@ openral rskill new pi05-pick-cube
 ```
 
 Valid `--family` values: `act | smolvla | pi05 | xvla | diffusion`.
-`--license` is one of `apache-2.0 | mit | bsd | permissive_research |
-nvidia_non_commercial | proprietary | unknown`. `--embodiment-tag` must be a
+`--license` is any `RSkillLicensePosture` value: `apache-2.0 | mit | bsd |
+permissive_research | nvidia_non_commercial | nvidia_open_model |
+rlwrld_non_commercial | cc-by-nc-sa-4.0 | proprietary | unknown`. `--embodiment-tag` must be a
 tag some `robots/*/robot.yaml` declares, or `any` / `custom` / `multi`
 (e.g. `so100_follower`, `franka_panda`, `aloha`). This writes `rskills/pi05-pick-cube/{rskill.yaml,README.md,eval/}`.
 
@@ -195,8 +196,9 @@ python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish
 python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish --bump-revision
 ```
 
-- **Repos are created private.** You flip it public on the Hub when ready;
-  this is deliberate for license-restricted weights.
+- **Repos are created private** unless you pass `--public`, which the
+  publisher refuses for non-commercial weights. Otherwise flip it public on
+  the Hub when ready.
 - **Provenance is not yet signed.** Sigstore signing/verification is the
   *planned* control but is **not implemented**. Until it lands,
   `rSkill.from_pretrained` / `from_yaml` emit an `rskill.unverified_provenance`

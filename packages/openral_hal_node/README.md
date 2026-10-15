@@ -43,8 +43,9 @@ Declared in `ManifestHALLifecycleNode` / `HALLifecycleNodeBase`
 (`python/hal/src/openral_hal/lifecycle.py`): `robot_yaml`, `hal_mode`,
 `sim_env_yaml`, real-transport overrides (`port`, `robot_ip`, `fci_ip`, `id`,
 `calibration_dir`, `hal_transport_json`), `scene_composition_json`,
-`viewer_enabled`, `walking_enabled`, the camera / scan / depth / odom rates and
-`publish_rate_hz`. Publishes `/joint_states` + `~/joint_states`; subscribes
+`viewer_enabled`, `walking_enabled`, the camera / scan / depth / odom rates,
+`publish_rate_hz`, `urdf_joint_names`, and the `vision_attachment_*` evidence-producer
+group (default off). Publishes `/joint_states` + `~/joint_states`; subscribes
 `/openral/safe_action` and `/openral/estop`; mobile bases also publish `/odom`,
 the `odom -> base_link` TF and consume `/cmd_vel`.
 
@@ -56,6 +57,8 @@ the `odom -> base_link` TF and consume `/cmd_vel`.
 | --- | --- |
 | `test_lifecycle_node.py` | full lifecycle cycle for every in-tree sim-twin manifest; `hal.read_state` / `hal.send_action` spans |
 | `test_lifecycle_estop_safety.py` | e-stop forwarding, recovery policy and diagnostics against the Galaxea A1 real HAL |
+| `test_lifecycle_estop_real_adapters.py` | e-stop branching on real `UR5eRealHAL` / `OpenArmRealHAL` adapters over `SimTransport` |
+| `test_lifecycle_slot_group_stop_boundary.py` | a slot group cut short by a stop does not leak into the next goal (OpenArm MuJoCo twin; not in `colcon test`) |
 | `test_real_hal_spans.py` | spans from a real-HAL adapter (`SO100FollowerHAL` on its digital twin) |
 | `test_mobile_base_helpers.py` | mobile-base odom / scan helpers (panda_mobile manifest frames) |
 | `test_panda_mobile_sensor_bridge_regression.py` | `/scan`, depth cloud and `/odom` on the RoboCasa kitchen (not in `colcon test`; run directly) |

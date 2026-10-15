@@ -1,7 +1,7 @@
 # `openral dashboard` — live debugging UI
 
 A single-page, read-only debug pane over the OpenRAL OTel stream: the most
-recent `rskill.execute`, `skill.chunk_inference`, and `safety.check` spans,
+recent `rskill.execute`, `rskill.chunk_inference`, and `safety.check` spans,
 rolling metric histograms, and an event log, live, without Jaeger. It is an
 embedded OTLP receiver, not an in-process exporter, so instrumented workloads
 stay decoupled from it. It does not replace Jaeger for post-hoc analysis.
@@ -37,7 +37,7 @@ Pass the whole command as **one shell-quoted string** (shlex-tokenised):
 
 ```bash
 openral dashboard \
-  --inprocess "openral sim run --config scenes/benchmark/pusht.yaml --rskill diffusion-pusht"
+  --inprocess "openral sim run --config scenes/sim/pusht.yaml --rskill diffusion-pusht"
 ```
 
 ### Workload → dashboard (`--dashboard` on sim / deploy / benchmark)
@@ -47,7 +47,7 @@ the flag:
 
 ```bash
 openral sim run --dashboard \
-  --config scenes/benchmark/pusht.yaml \
+  --config scenes/sim/pusht.yaml \
   --rskill diffusion-pusht
 
 openral deploy run --dashboard --config scenes/deploy/so101_bench.yaml

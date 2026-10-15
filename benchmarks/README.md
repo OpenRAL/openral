@@ -42,7 +42,7 @@ a message pointing at the bare-list format. Use YAML anchors (`&scene` /
 
 | Suite YAML | Robot | Scene | Tasks | Per-scene `n_episodes` | `success_key` | `max_steps` | Total rollouts |
 |---|---|---|---|---|---|---|---|
-| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 50 | `is_success` | 280 | 500 |
+| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 50 | `is_success` | 220 | 500 |
 | `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 50 | `is_success` | 280 | 500 |
 | `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 50 | `is_success` | 300 | 500 |
 | `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 50 | `is_success` | 520 | 500 |
@@ -70,19 +70,20 @@ auto-filters to the tasks a policy declares, so it stays runnable as task-matche
 MS3 Panda policies land.
 
 The ManiSkill/SimplerEnv SAPIEN rows (`maniskill3_*` and `simpler_env_*`) need
-opt-in extras. Without `uv sync --group maniskill3` (or `simpler-env`),
+opt-in extras. Without `just sync --group maniskill3` (or `simpler-env`),
 `openral benchmark run` raises a typed `ROSConfigError` at lazy import time with
 the install hint. simpler-env has no PyPI release; after
-`uv sync --group simpler-env` also run:
+`just sync --group simpler-env` also run (`uv pip`, not `uv run pip`, which exits
+0 without building it):
 
 ```
-uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
+uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
 ```
 
 `robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN). It runs
 out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
 RoboTwin's SAPIEN/CuRobo/pytorch3d stack is incompatible with the py3.12 workspace;
-`uv sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
+`just sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
 msgpack). The heavy lerobot-main + RoboTwin + asset venv is externally provisioned
 (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual sidecar-provisioning recipe). Task-matched
 rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
@@ -95,7 +96,7 @@ simulator that is **never vendored** (CLAUDE.md §1.9); the released 3D keyframe
 policies pin the `MohitShridhar/RLBench@peract` fork.
 Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-rlbench`,
 MIT) run in an externally-provisioned py3.10 sidecar venv; the openral side only
-needs `uv sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
+needs `just sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
 typed `ROSConfigError` with the full provisioning recipe when the sidecar venv /
 `COPPELIASIM_ROOT` are absent. Verified live on an 8 GB Ada GPU host
 (open_drawer 4/4, meat_off_grill 3/3, close_jar solved).

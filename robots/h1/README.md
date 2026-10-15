@@ -38,7 +38,7 @@ verifies:
 - embodiment / VLA tag plumbing.
 
 It is **not** for rolling out a policy that walks or balances. Balance and
-walking belong to the C++ S0 cerebellum (CLAUDE.md §6.2, M2 milestone) and are
+walking belong to the C++ S0 cerebellum (CLAUDE.md §3, M2 milestone) and are
 out of scope here.
 
 ## Torque vs position actuators
@@ -81,7 +81,7 @@ the latter live in the future C++ S0 cerebellum.
 | Python description | `openral_hal.H1_DESCRIPTION` |
 | Sim test | `tests/sim/test_h1_hal_mujoco.py` |
 | Sibling humanoid (newer) | [`robots/g1/`](../g1/README.md) — Unitree G1, 29-DoF |
-| Future real-HW HAL | planned under M2 (CLAUDE.md §6.2), `unitree_sdk2` + C++ S0 cerebellum |
+| Future real-HW HAL | planned under M2 (CLAUDE.md §3, S0), `unitree_sdk2` + C++ S0 cerebellum |
 
 ## Joints
 
@@ -134,5 +134,5 @@ not a HAL bug. Tests validate each section independently.
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `H1MujocoHAL`, supported robots.
 - [`robots/g1/README.md`](../g1/README.md) — Unitree G1 (newer / more DoF humanoid sibling).
-- CLAUDE.md §6.1 (8 layers) and §6.2 (dual-system pattern; S0 cerebellum for humanoids).
+- CLAUDE.md §3 (the seven layers; dual-system pattern, S0 cerebellum for humanoids).
 - [`docs/architecture/repo-state-map.html`](../../docs/architecture/repo-state-map.html) — HAL · Unitree H1 (sim, MuJoCo) green block.

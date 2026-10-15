@@ -585,7 +585,7 @@ for the reasoner and never gates motors.
 
 `deploy run` spawns the live dashboard by default (`--dashboard/--no-dashboard`,
 port `--dashboard-port`, default **4318**): a read-only pane over the OTel stream
-(the most recent `rskill.execute`, `skill.chunk_inference`, and `safety.check`
+(the most recent `rskill.execute`, `rskill.chunk_inference`, and `safety.check`
 spans, rolling metric histograms, per-camera thumbnails, and an event log).
 Operator discovery / write endpoints exist for tooling but are kept off the main
 surface.

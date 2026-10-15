@@ -27,7 +27,8 @@ their environment directly and start no lifecycle node.
 | Unitree G1 humanoid | [`robots/g1/`](https://github.com/OpenRAL/openral/tree/master/robots/g1/) | `G1MujocoHAL` (ADR-0087 glide fallback; ADR-0089 pinned ONNX walking controller + head camera for VLN) | ✓ sim |
 | Rethink Sawyer | [`robots/sawyer/`](https://github.com/OpenRAL/openral/tree/master/robots/sawyer/) | eval-only sim (MetaWorld backend; `hal.sim` is null) + real-HW `SawyerRealHAL` (`sawyer_robot` fork, `intera_sdk` lineage) | ✓ sim · HW adapter landed, never validated — no physical Sawyer (#57) |
 | Fourier GR1 | [`robots/gr1/`](https://github.com/OpenRAL/openral/tree/master/robots/gr1/) | eval-only (RoboCasa GR1 fork + RLDX-1) | ✓ sim |
-| Panda mobile (RoboCasa kitchen) | [`robots/panda_mobile/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile/) | eval-only (drives RoboCasa kitchen via robosuite) | ✓ sim |
+| Panda mobile (RoboCasa kitchen) | [`robots/panda_mobile/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile/) | `PandaMobileHAL` (sim-only, RoboCasa/robosuite backend) | ✓ sim |
+| Panda mobile, visual-SLAM twin | [`robots/panda_mobile_vslam/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile_vslam/) | `PandaMobileHAL` (sim-only); localises from two base RGB cameras via cuVSLAM instead of a `LaserScan` | ✓ sim |
 | Galaxea R1 Pro | [`robots/r1pro/`](https://github.com/OpenRAL/openral/tree/master/robots/r1pro/) | generic scene-attached HAL + official BEHAVIOR/OmniGibson sidecar | ✓ sim |
 | Google Robot (SimplerEnv) | [`robots/google_robot/`](https://github.com/OpenRAL/openral/tree/master/robots/google_robot/) | eval-only (SimplerEnv `fractal20220817_data` bridge env) | ✓ sim |
 | WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | eval-only (SimplerEnv `bridge_orig` env) | ✓ sim |

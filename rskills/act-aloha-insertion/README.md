@@ -48,7 +48,8 @@ checkpoints from the same paper. The runnable demo is
 ## Evaluation
 
 Locally reproduced on the **ALOHA bimanual peg insertion** benchmark via
-`openral benchmark run --suite aloha_insertion --rskill act-aloha-insertion`
+`openral benchmark run --suite aloha --rskill act-aloha-insertion` (the `aloha`
+suite skips the transfer-cube task via `evaluated_tasks`)
 (`reproduced_locally: true`, see
 [`eval/aloha_insertion.json`](eval/aloha_insertion.json)).
 
@@ -64,7 +65,7 @@ intrinsics); this reproduction shows the same gap, not a regression.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers); MuJoCo MJX `AlohaInsertion-v0`. |
+| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers); MuJoCo `AlohaInsertion-v0`. |
 
 Same physical embodiment as the [`act-aloha`](../act-aloha/) sibling; only the
 task contact dynamics differ (peg insertion is harder than cube pick-and-place).
@@ -91,7 +92,7 @@ third-person views.
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/act_aloha_sim_insertion_human` |
 | `chunk_size` | 100 |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` (derived from `license`) | `true` |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
@@ -101,16 +102,17 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 just sim-custom
 ```
 
-…which is equivalent to:
+…a one-episode `BenchmarkScene` demo, equivalent to:
 
 ```bash
-MUJOCO_GL=egl uv run --group sim openral sim run \
+MUJOCO_GL=egl uv run --all-packages --group sim openral benchmark scene \
   --config scenes/benchmark/aloha_insertion.yaml \
-  --save-video example_videos
+  --rskill rskill://rskills/act-aloha-insertion \
+  --no-update-manifest --n-episodes 1 --save-dir example_videos
 ```
 
 ## License
 
-This rSkill package (`rskill.yaml`, `README.md`) is **MIT** to match
-the upstream weights. Commercial use is allowed
-(`commercial_use_allowed: true`).
+OpenRAL wrapper files follow the project Apache-2.0 license. The upstream
+weights are **MIT**, so the manifest declares `license: mit` and commercial use
+is allowed (`is_commercial_use_allowed` is `true`).

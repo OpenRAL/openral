@@ -61,9 +61,8 @@ time:
    `position_constraints` + `orientation_constraints`.
 
 `plan_only: true`, deliberately: OpenRAL's actuation path is the per-waypoint
-replay through `/openral/candidate_action` (`chunk_size: 1`, so the safety
-supervisor's per-joint envelope check sees every aiming step, and the HAL
-actuates). Letting `move_group` also execute on its own controllers would
+replay through `/openral/candidate_action` (`chunk_size: 1`, so the C++
+safety kernel checks every aiming step, and the HAL actuates). Letting `move_group` also execute on its own controllers would
 bypass the kernel and double-drive the arm.
 
 ### Observation → action contract
@@ -101,7 +100,7 @@ computes the gaze pose analytically.
 | --- | --- |
 | Upstream | [`moveit_msgs/action/MoveGroup`](https://github.com/moveit/moveit_msgs/blob/master/action/MoveGroup.action) (BSD-3-Clause) |
 | Planner library | [MoveIt 2](https://moveit.picknik.ai/) (BSD-3-Clause) |
-| Gaze geometry | `openral_world_state.geometry.compute_gaze_pose` (Apache-2.0, in-tree) |
+| Gaze geometry | `openral_core.geometry.compute_gaze_pose` (Apache-2.0, in-tree) |
 | Collision check | FCL via MoveIt's `PlanningScene` (run during planning) |
 | Wrapped artefact | rSkill manifest + README — no weights, no preprocessor JSONs |
 
@@ -154,7 +153,7 @@ exist in TF (declared in the robot manifest + published by
 | `ros_integration.interface_name` | `/move_action` |
 | `ros_integration.goal_builder` | `look_at` (selects `LookAtRskill`) |
 | `ros_integration.result_trajectory_field` | `planned_trajectory.joint_trajectory` |
-| `commercial_use_allowed` | `true` (apache-2.0) |
+| `is_commercial_use_allowed` | `true` (apache-2.0) |
 
 Full schema:
 [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
@@ -173,7 +172,10 @@ End-to-end, with a real MoveIt launch up:
 # 1. Bring up MoveIt for your robot (example: Panda)
 ros2 launch moveit_resources_panda_moveit_config demo.launch.py
 
-# 2. Dispatch a look-at goal (aim the wrist camera at a tabletop point):
+# 2. Boot the OpenRAL deploy graph against the same robot
+openral deploy sim --config scenes/deploy/<deploy-scene>.yaml --robot franka_panda
+
+# 3. Dispatch a look-at goal (aim the wrist camera at a tabletop point):
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
     "{rskill_id: 'OpenRAL/rskill-moveit-multi-look_at', deadline_s: 30.0, prompt: 'look at the mug',
       goal_params_json: '{\"look_at\": {\"target_xyz\": [0.5, 0.0, 0.2], \"camera\": \"wrist\"}}'}"
@@ -187,9 +189,9 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
   of the ladder).
 - **Single-camera aim.** One camera per dispatch; multi-camera coverage is a
   reasoner-level concern.
-- **No velocity / jerk bound at the supervisor.** Same posture as
-  `rskill-moveit-multi-joints`: the per-joint position envelope runs per
-  waypoint; richer bounds are tracked separately.
+- **No velocity / jerk bound on `JOINT_POSITION` chunks.** Same posture as
+  `rskill-moveit-multi-joints`: position limits per waypoint, not the rate
+  between waypoints.
 
 ## License
 
@@ -200,9 +202,8 @@ Both are commercial-use-permissive.
 
 ## See also
 
-- MoveIt goal-builder library + rskill-moveit-* rename
-- look_at skill + grid-refined approach
+- [Wrapped-ROS rSkills](../../docs/reference/rskills.md#wrapped-ros-rskills-kind-ros_action)
 - [`openral_rskill.look_at_rskill`](../../python/rskill/src/openral_rskill/look_at_rskill.py) — adapter source
-- [`openral_world_state.geometry`](../../python/world_state/src/openral_world_state/geometry.py) — gaze math
+- [`openral_core.geometry`](../../python/core/src/openral_core/geometry.py) — gaze math
 - [`rskills/rskill-moveit-joints/`](../rskill-moveit-joints/) — sibling joint-space MoveIt wrapper
 - [`rskills/rskill-moveit-eef-pose/`](../rskill-moveit-eef-pose/) — sibling Cartesian end-effector pose wrapper

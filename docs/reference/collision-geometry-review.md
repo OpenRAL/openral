@@ -1,7 +1,7 @@
 # Collision geometry review: one fitter, capsules and hulls, eight robots
 
-> Status: analysis plus the refit on PR #324 (`perf/generalization-capsules`), which now also carries
-> PR #325's MJCF fitter (the OpenArm), folded into the same code path.
+> Status: analysis plus the refit of PR #324 (`perf/generalization-capsules`, landed via #289), which
+> also carries PR #325's MJCF fitter (the OpenArm), folded into the same code path.
 > Everything in `cpp/openral_safety_kernel/` and `packages/openral_safety/` is Safety-WG gated
 > (hazard-log entries listed in §9). **The C++ kernel was not changed.**
 > The one-shot analysis scripts are not checked in (§1.11 keeps fixtures for tests, not studies).
@@ -38,7 +38,7 @@
    (up to 0.4 ms per configuration, §4) and the kernel broad phase that would remove it (§8.3);
    the G1 and UR twins whose frames differ from the URDF (§12); Franka's fingers and SO-101's
    gripper, which carry no primitive (pre-existing, §12); the octomap self-filter padding
-   (§8.4); a follower-joint finger in the kernel (§8.3).
+   (§8.4). (The follower-joint finger §8.3 recommended landed in #349.)
 
 ## 1. What the kernel does today (read from source)
 
@@ -366,7 +366,8 @@ Reading:
   0.2-0.4 ms per configuration (§4) is almost all far box ↔ capsule pairs. Conservative by
   construction (a pair is skipped only when its bounding spheres are further apart than the
   margin), allocation-free, and the only change here that the humanoids' latency needs.
-- None of the three changes today's verdicts; each needs a hazard-log entry and an ADR.
+- None of the three changed the verdicts of the day; each needs a hazard-log entry and an ADR
+  (the follower finger's are owed in `finger-mimic-geometry.md` §7).
 
 ### 8.4 Octomap self-filter padding (noted, not changed)
 
@@ -454,7 +455,8 @@ PR #325 (`fix/openarm-collision-refit`) fitted the OpenArm with `fit_trimmed_cap
 (the PCA capsule this PR had replaced) against a PCA box, on the MJCF collision meshes only,
 behind `--fit-mjcf-geometry`. Its two commits were cherry-picked here (62fa002f, 58356ab1) and
 then folded into the one fitter: the trimmed capsule and `fit_tightest_primitive` are deleted,
-the MJCF reader hands its meshes (collision + visual, finger swept) to `fit_link_primitives`,
+the MJCF reader hands its meshes (collision + visual; the finger was swept until #349, which gave
+the follower its own rigid link) to `fit_link_primitives`,
 and the flag is gone. #325's enclosure test (MuJoCo FK for the meshes, kernel FK for the
 primitives) now runs on every robot with an MJCF twin.
 
@@ -503,7 +505,9 @@ The kept rows are pairs whose collision meshes never touch but whose convex cove
 finger_pair ↔ link6 and link5 ↔ link7 sit either side of the wrist, where every convex set
 around each link (hull included) overlaps the other at every pose. Only a non-convex
 representation (a decomposition of each link, or the follower-joint finger of §8.3 with the
-finger as two links) could check them. The WG keeps or retires them.
+finger as two links, built since in #349) could check them. The WG keeps or retires them; the
+`finger_pair` rows were measured against the old swept hull
+([`finger-mimic-geometry.md`](finger-mimic-geometry.md) §7).
 
 Per link (support excess over the link's hull, box = the kernel's broad phase):
 
@@ -679,7 +683,8 @@ kernel's FK. What it found:
   is a synthetic link (a prismatic joint off the hand) with no URDF counterpart, so the URDF
   lowering fits nothing to it; the twin maps it to the left finger, whose mesh (and the coupled
   right finger's) reaches ~50 mm past the hand. The twin test is a strict xfail with that
-  reason. Covering it means the OpenArm's follower-finger sweep on a URDF-lowered robot, a
-  follow-up for the WG list.
+  reason. Covering it means fitting each jaw as a link, with the coupled finger on a mimic joint
+  as the OpenArm's has been since #349 ([`finger-mimic-geometry.md`](finger-mimic-geometry.md)),
+  a follow-up for the WG list.
 - **SO-101** (hand-authored manifest, not re-lowered here): `gripper_base` and `moving_jaw`
   carry no primitive; strict xfail, same follow-up.

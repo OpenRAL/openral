@@ -1,7 +1,7 @@
 # Pick and place on the real OpenArm cell with the world-voxel check on
 
-Status: **implemented on the branch, default-off, pending Safety-WG review**, 2026-10-03. Branch
-`feat/real-pick-place-attachment` (draft PR #332). Every step of §3 except 5 (the attended
+Status: **implemented, default-off, pending Safety-WG review**, 2026-10-03. Developed on
+`feat/real-pick-place-attachment` (draft PR #332), landed on `master` via #289. Every step of §3 except 5 (the attended
 position-stall measurement) and 9 (enabling the Thor scene) is implemented and committed off; the
 kernel exemption, the release window and the place witness are each proven against the real
 `safety_kernel_node` (the tests named in §3). Place needs no surveyed cell geometry and no named
@@ -23,10 +23,15 @@ using SAM 2.1 to see the object.
    real margin the finger hull trips on the target's own cells before gripper effort can rise, so
    no grasp event, no attachment, no payload path. Sim hides this behind a 0 mm margin
    (`deploy_e2e.launch.py` L178-186).
+   *Since:* the declaration-scoped grasp-target exemption (§2.1, ADR-0115) is in
+   `check_voxel_collision`, behind the kernel parameter `grasp_allowance_enabled` (default off).
 2. **A margin reduction cannot fix it on the OpenArm.** `openarm_<side>_finger_pair` is one convex
-   hull of both jaws swept over the stroke (`docs/reference/collision-geometry-review.md`
-   L90-92, L349-351); a grasped box sits centimetres inside it, and 20 mm cube quantisation plus
+   hull of both jaws swept over the stroke ([collision-geometry-review.md](collision-geometry-review.md)
+   §3, §8.3); a grasped box sits centimetres inside it, and 20 mm cube quantisation plus
    the 20 mm margin already exceeds the ADR-0097 cap of min(1.5 voxel, 40 mm) = 30 mm.
+   *Since (#349):* each jaw is its own rigid box + hull — the follower on a mimic joint
+   ([finger-mimic-geometry.md](finger-mimic-geometry.md)) — so the volume between open jaws is no
+   longer solid; a grasped box still meets the jaws' own hulls, so the §2.1 exemption stays the fix.
 3. **The real attachment leg cannot construct for a bimanual robot.** `GripperEffortTrigger` and
    `VisionAttachmentEvidenceProducer` require exactly one `role: gripper` joint / one parent link
    (`_grasp_trigger.py` L164-185, `_vision_attachment_evidence.py` L476-483); OpenArm has two.
@@ -158,11 +163,13 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   Rides the `AttachmentState` → `WorldStateStamped` envelope beside the place declaration so
   the kernel applies region and attachment set from one snapshot. Additive optional fields: no
   `schema_version` bump.
-- Dispatch (`rskill_runner_node.py`, cloned from `_arm_place_declaration` L2020-2063) names the
-  target and **strips any region**; retracts on every exit incl. E-stop (L977, L2102, L2228).
+- Dispatch (`rskill_runner_node.py` `_arm_grasp_declaration`, cloned from
+  `_arm_place_declaration`) names the target and **strips any region**; retracts on every exit
+  incl. E-stop (`_retract_grasp_declaration`).
 - Kernel: while live, cells whose centre lies in the producer-measured oriented box are exempt
-  **for the declared gripper's finger link only** (intersection of a launch-derived manifest
-  allowlist — the `role: gripper` joints' `child_link`s — and the declaration's `contact_links`).
+  **for the declared gripper's finger links only** (intersection of a launch-derived manifest
+  allowlist — `RobotDescription.grasp_contact_links()`: the `role: gripper` joints' `child_link`s
+  and, since #349, their mimic followers — and the declaration's `contact_links`).
   Every other link, every cell outside the region, self-collision, attached checks and the force
   gate are unchanged. An exempt pair never supplies the reported identity (the attached-path
   contract) and reaches `sweep_min` at its own depth; the velocity band clamps an untripped
@@ -749,8 +756,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `tests/integration/test_safety_kernel_place_allowance_band.py::test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift`
   (real kernel: refused without it, accepted with it, retired three cells up, not re-armed).
   Safety-WG: extends Entry 012 / ADR-0097 to the vision pick path, hazard row HZ-0115-28.
-- Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
-  driver's `camera_info`, explicit mask/depth resampling.
+- The three silent head-camera bugs of §1.4 are fixed by the consumers, not the manifest: every
+  projection uses the image header's frame and the driver's `CameraInfo`
+  (`depth_cloud.intrinsics_from_camera_info`), and a mask is resampled onto the depth raster
+  explicitly (`resample_mask_nearest`). `head_zed` keeps `frame_id: zed_camera_link` and nominal
+  intrinsics on purpose (the kernel mount and unit overlays key on them); nothing geometric reads
+  them.
 
 ### 2.3 Place
 

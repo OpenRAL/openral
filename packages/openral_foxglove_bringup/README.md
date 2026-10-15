@@ -38,7 +38,7 @@ groups, reviewable one at a time:
 |---|---|
 | `SCENE_TOPICS` | Camera images (+ `/compressed` siblings, `camera_info`), `/map`, octomap cloud, `/scan`, `/odom`, `/joint_states`, `/robot_description`, TF |
 | `DEPTH_TOPICS` | Per-camera depth + `points`, the DA3 metric-depth sidecar, nvblox filtered depth + ESDF slice, `/openral/imu`, cuVSLAM odometry |
-| `BUCKET2_TOPICS` | The converter's outputs (`PointCloud2` voxels, attachment `MarkerArray`) |
+| `BUCKET2_TOPICS` | The converter's outputs (`PointCloud2` voxels; attachment, static-geometry and collision `MarkerArray`s) |
 | `TELEMETRY_TOPICS` | `world_state_fast`/`_slow`, `policy_state`, `episode`, `critic/score`, `reward/active_task`, `perception/objects`, `attachment_state`(`_applied`), `skill_registry_changed`, `/diagnostics`, `/rosout` |
 
 Every entry is an observation topic a node publishes *about itself*. The
@@ -215,8 +215,9 @@ fallback for a viewer opened against a graph nobody launched from the CLI.
 
 ## Render `/tf` + the robot model
 
-deploy-sim publishes `/joint_states` but not dynamic `/tf`, so the 3D panel
-can't draw the robot. Opt in to a `robot_state_publisher` (turns
+deploy-sim runs its own `robot_state_publisher` only when the manifest
+carries an `assets.urdf` (see above). For a robot without one, or a graph not
+launched by the CLI, opt in to a `robot_state_publisher` here (turns
 `/joint_states` + URDF → `/tf` + `/robot_description`):
 
 ```bash
@@ -232,8 +233,8 @@ ros2 launch openral_foxglove_bringup foxglove.launch.py \
 Under a real deploy-sim, set **only** `with_robot_state_publisher:=true` — the
 sim is the real `/joint_states` source; a second publisher would fight it.
 Resolve a manifest robot's URDF via `robot_descriptions` (e.g.
-`panda_description` for `franka_panda` / `panda_mobile`). `openarm` has no local
-URDF in `robot_descriptions` (its manifest URDF is `robots/openarm/openarm.urdf`). Meshes render only when the URDF's `package://` paths resolve
+`panda_description` for `franka_panda` / `panda_mobile`). `openarm` is not in
+`robot_descriptions`; its manifest URDF is `robots/openarm/openarm.urdf`. Meshes render only when the URDF's `package://` paths resolve
 to an ament package on the ROS path. See `VERIFICATION.md`.
 
 ## Compress camera images

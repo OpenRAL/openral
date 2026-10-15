@@ -15,11 +15,11 @@ serial side); only the MJCF mesh set differs.
 | `embodiment_kind` | `manipulator` |
 | Joints | 6 (5 revolute arm + 1 revolute gripper) |
 | End-effector | parallel gripper (1 DoF, 5 N max grip force, 0.5 kg payload, 0.32 m workspace radius) |
-| Sensors | OAK-D Pro overhead RGB (`front` → `observation.images.camera1`) + 256×256 wrist RGB on the terminal gripper body (`wrist` → `observation.images.camera2`) |
+| Sensors | OAK-D Pro overhead RGB (`top` → `observation.images.camera1`) + 256×256 wrist RGB on the terminal gripper body (`wrist` → `observation.images.camera2`) |
 | Embodiment tags | `so101_follower`, `lerobot` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | `sdk_kind` | `open` (LeRobot SDK, Apache-2.0) |
-| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; for `deploy sim` the generic HAL camera rig splices the `front` + `wrist` cameras from their `sensors[].sim_placement` into the bare MJCF so the twin renders them (issue #88) |
+| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; for `deploy sim` the generic HAL camera rig splices the `top` + `wrist` cameras from their `sensors[].sim_placement` into the bare MJCF so the twin renders them (issue #88) |
 | `hal.real` | `openral_hal.so100_follower:SO100FollowerHAL` (shared SO-100 Feetech follower; `deploy run`) |
 | Action / observation spec | 6-D joint positions @ 30 Hz / `(6,)` joint state |
 
@@ -70,10 +70,10 @@ the reasoner selects it at runtime from the installed `rskills/` registry. See t
 
 ## Hardware-in-the-loop
 
-The SO-101 is the only robot in this repo with a committed, self-contained
-real-hardware deploy scene: [`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml)
-carries the serial port, the lerobot calibration identity and both camera
-bindings, and the Feetech calibration itself is committed next to it at
+The SO-101's committed real-hardware deploy scene,
+[`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml),
+carries the serial port and the lerobot calibration identity and selects the
+bench host's camera bindings (`robot_unit`), and the Feetech calibration itself is committed next to it at
 `scenes/deploy/calibration/so_follower.json`.
 
 Two non-motion commands check the rig before anything is dispatched:
@@ -118,7 +118,7 @@ supported device is supplied, so keep the physical power switch within reach.
 | --- | --- |
 | Sim scene | [`so101_box`](../../python/sim/src/openral_sim/backends/so101_box/) — 100 × 61.5 × 75 cm tabletop arena with wrist + overhead OAK-D Pro RGB-D and an optional tube-insertion task |
 | Example config | [`scenes/sim/so101_tube_insertion.yaml`](../../scenes/sim/so101_tube_insertion.yaml) |
-| Python HAL adapter | `openral_hal.so100_sim:SO100DigitalTwin` (kinematics identical to SO-100; the SO-101 hardware is drop-in on the serial-Feetech path) |
+| Python HAL adapters | `openral_hal.so100_follower:SO100FollowerHAL` (real, shared with the SO-100 on the serial-Feetech path); sim: derived `MujocoArmHAL` (`hal.sim: null`) or the `so101_box` scene |
 
 ## See also
 

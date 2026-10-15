@@ -19,7 +19,7 @@ It decides *what to do next*; it never drives motors itself.
 
 ## Cadence & event model
 
-As of the 2026-05-25 amendment the reasoner is event-driven with a slow heartbeat:
+The reasoner is event-driven with a slow heartbeat:
 
 - **Heartbeat** — a periodic timer ticks at `tick_hz` (default **0.2 Hz**, one
   tick every 5 s). A heartbeat tick that sees no new event since the last
@@ -54,7 +54,7 @@ matching dispatch in `reasoner_node` (CLAUDE.md §3).
 | Tool (`tool=`) | Dispatch | Notes |
 |---|---|---|
 | `ExecuteRskillTool` (`execute_rskill`) | action goal on `/openral/execute_rskill` | `rskill_id`, `prompt`, `goal_params_json`, `deadline_s`. Emits a `FailureTrigger` on rejection/abort/timeout. |
-| `LifecycleTransitionTool` (`lifecycle_transition`) | `<node>/change_state` service | `configure` / `activate` / `deactivate` / `cleanup` only — `shutdown` is reserved for the safety supervisor (CLAUDE.md §6). |
+| `LifecycleTransitionTool` (`lifecycle_transition`) | `<node>/change_state` service | `configure` / `activate` / `deactivate` / `cleanup` only — `shutdown` is reserved for the safety supervisor. |
 | `EmitPromptTool` (`emit_prompt`) | publish on a `PromptStamped` topic | Stamps the active OTel `traceparent` into `metadata_json`. Used to stage multi-step plans / cascade prompts. |
 | `ReloadGstPipelineTool` (`reload_gst_pipeline`) | `/openral/sensors/<id>/reload_pipeline` service | ⚠️ **log-and-acknowledge stub** today — the F6 sensor-service IDL is not yet on disk ([GH-126](https://github.com/OpenRAL/openral/issues/126)). |
 
@@ -120,7 +120,8 @@ robot; no actuation authority.
 
 The palette ([`openral_reasoner.palette.ToolPalette`](https://github.com/OpenRAL/openral/blob/master/python/reasoner/src/openral_reasoner/palette.py))
 is built at `on_configure` and **rebuilt on `/openral/skill_registry_changed`**
-(fired by `openral rskill install|remove`). `build_tool_palette()` filters
+(`std_msgs/Empty`; the deploy launch fires it once a late action server such as
+Nav2's `/navigate_to_pose` appears). `build_tool_palette()` filters
 installed rSkills by:
 
 - `RobotCapabilities` flags (`capabilities_required` ⊆ robot capabilities),
@@ -198,7 +199,8 @@ Every `ReasonerCore.tick` opens an OTel span `reasoner.tick` (via
 `openral_observability.reasoner_span`) with attributes including `reasoner.tick.idx`,
 `reasoner.model`, `reasoner.force`, `reasoner.tool`, `reasoner.rskill_id`,
 `reasoner.tier` (`A`/`B`/`C`/`D`/`heartbeat`), and `reasoner.suppressed_reason`
-(`palette_empty` / `retry_cap` / `heartbeat_idle`). The captured `traceparent` is
+(`min_interval` / `retry_cap` / `retry_cap_hold` / `mission_finished` /
+`heartbeat_idle` / `palette_empty`). The captured `traceparent` is
 threaded onto outbound `emit_prompt` payloads so the bag↔OTel correlator can join a
 published prompt back to the producing tick. Watch it live on `openral dashboard`.
 
@@ -224,22 +226,12 @@ safety, world-state, and perception nodes.
 
 ---
 
-## In development
-
-The reasoner core, playbooks, the self-maintained `MEMORY.md`, and the sequential
-mission task-queue have all landed on this integration branch.
-Still in flight:
-
-- **Dashboard mission card** — surfacing the `MissionState` ledger + the reward
-  gate and attempts/cap ladder on the live `openral dashboard` (PR #122).
-
----
-
 ## See also
 
 - [Reasoner Design & Decisions](reasoner-design.md) — the why behind every mechanism on this page.
 - [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — full ROS wrapper contract, provider presets, baseline LLM configs.
-- Private decision log: the supervisor graph + tool-dispatch design, reasoner-managed
-  SLAM/Nav2 background services, LLM task planning & active search, playbooks +
-  self-maintained MEMORY.md, success-gating + sequential mission task queue.
+- Private decision log (`OpenRAL/management`): ADR-0018 (reasoner + supervisor
+  graph), ADR-0025 (reasoner-managed background services), ADR-0039 (LLM task
+  planning & active search), ADR-0072 (playbooks + self-maintained memory),
+  ADR-0073 (success gating + task queue), ADR-0088 (model registry).
 - [rSkills reference](rskills.md) — the `kind: detector` / `vlm` / `reward` / `ros_action` / `playbook` skills the reasoner reads and dispatches.

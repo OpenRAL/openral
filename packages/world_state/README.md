@@ -32,7 +32,7 @@ ros2 run openral_world_state world_state_node \
 
 | Transition | Action |
 | --- | --- |
-| `configure` | Build the stub `RobotDescription` (unless one was injected via the compose factory), instantiate `WorldStateAggregator(staleness_limit_s=…)`, subscribe to `/joint_states`, create fast + slow `WorldStateStamped` publishers, wire the F8 diagnostics heartbeat. |
+| `configure` | Build the stub `RobotDescription` (unless one was injected via the compose factory), instantiate `WorldStateAggregator(staleness_limit_s=…)`, subscribe to `/joint_states`, `/openral/policy_state`, the attachment-state topic and one image topic per `camera_names` entry, create fast + slow `WorldStateStamped` publishers, wire the F8 diagnostics heartbeat. |
 | `activate` | Start the fast publish timer at `publish_rate_hz_fast`; slow topic publishes every `round(fast/slow)` ticks from the same snapshot. |
 | `deactivate` | Stop the timer. |
 | `cleanup` | Destroy subscriptions, publishers, and aggregator (the latter only when this node owns it; the compose factory keeps the aggregator alive on its behalf). |
@@ -46,12 +46,19 @@ ros2 run openral_world_state world_state_node \
 | `publish_rate_hz_slow` | double | `5.0` | Slow-topic snapshot rate (`/openral/world_state_slow`). |
 | `joint_states_topic` | string | `/joint_states` | JointState input topic. Override in tests or composed graphs that isolate robot buses. |
 | `staleness_limit_s` | double | `0.5` | Age threshold for marking sensors stale (0.5 s clears 10 Hz camera flapping). |
+| `policy_state_staleness_limit_s` | double | `5.0` | Separate staleness window for the step-locked `/openral/policy_state`. |
+| `camera_names` | string[] | `[""]` (none) | One `sensor_msgs/Image` subscription on `camera_topic(<name>)` per entry. |
+| `attachment_state_topic` | string | `/openral/attachment_state` | `AttachmentState` input relayed onto `WorldStateStamped`. |
+| `direct_image_frame_sensors` | string[] | `[""]` (none) | Cameras the co-located sensor leg writes directly; their image callback keeps the thumbnail span but does not re-write the aggregator. |
 
 ## Topics
 
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
 | Sub | `/joint_states` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/JointState` |
+| Sub | `/openral/policy_state` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `std_msgs/Float32MultiArray` |
+| Sub | `/openral/attachment_state` (configurable) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
+| Sub | `camera_topic(<name>)` per `camera_names` entry | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` |
 | Pub | `/openral/world_state_fast` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
 | Pub | `/openral/world_state_slow` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
 | Pub | `/diagnostics` | default | `diagnostic_msgs/DiagnosticArray` (supervisor-graph F8 heartbeat) |
@@ -66,13 +73,13 @@ themselves (per the reasoner/supervisor-graph design). There is no JSON fallback
 ## Wiring
 
 ```
-HAL (openral_hal_node)       ──► /joint_states ─┐
-                                                     ├─► world_state_node ──► /openral/world_state_fast (30 Hz)
-sensors/ → ROS topics (planned per-sensor packages) ─┘                  └──► /openral/world_state_slow (5 Hz)
+HAL (openral_hal_node) ──► /joint_states ─┐
+camera_topic(<name>) images ──────────────┤
+/openral/attachment_state ────────────────┼─► world_state_node ──► /openral/world_state_fast (30 Hz)
+/openral/policy_state ────────────────────┘                    └──► /openral/world_state_slow (5 Hz)
 ```
 
-The HAL provides joints; sensor topics will be wired in as the per-sensor ROS
-packages land. The aggregator is the only place joint + sensor state are fused
+The aggregator is the only place joint + sensor state are fused
 into the snapshot consumed by S1 / S2.
 
 ## Tests
@@ -87,12 +94,14 @@ into the snapshot consumed by S1 / S2.
   publication, `DIAG_STALE` on dropout, recovery to `DIAG_OK`, and
   parallel-array consistency under 8 concurrent publishers. CI runs
   this in docker-build's live-ROS step (`scripts/ros_live_tests.sh`).
+- Package (`test/`): `test_lifecycle_node_image_qos.py` (AST guard: camera subscriptions
+  stay BEST_EFFORT) and `test_lifecycle_node_sigint_shape.py`.
 
 ## Build
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-just ros2-build       # includes world_state alongside msgs + hal_node
+just ros2-build       # includes world_state
 just ros2-test        # colcon test
 just test-integration # PYTHONPATH-aware pytest run for the launch tests
 ```
@@ -170,4 +179,4 @@ ObjectsMetadata.camera_frame_id + camera_intrinsics             ─┘          
 - The ROS 2 reasoner/supervisor-graph design and the
   capability review's F2 section for the full design rationale.
 - The perception → spatial-memory object-lift design decisions and follow-ups.
-- CLAUDE.md §6.1 (layer discipline) and §5.3 (QoS).
+- CLAUDE.md §3 (layer discipline) and §2 (QoS).

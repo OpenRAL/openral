@@ -52,7 +52,7 @@ on CPU on a DGX Spark / Jetson. x86_64 resolution is untouched and never
 contacts that host.
 
 Upgrading an *existing* aarch64 venv also needs a one-time
-`uv sync --frozen --reinstall-package torchvision`, because both torchvision
+`just sync --frozen --reinstall-package torchvision`, because both torchvision
 builds share the version string. Details:
 [aarch64 CUDA hosts](../reference/aarch64-support.md).
 
@@ -127,9 +127,9 @@ runtime-editable RoboCasa install is in place, a plain `uv sync --all-packages`
 ## ROS 2
 
 ```bash
-just ros2-build                 # colcon build (msgs + hal_node + world_state + reasoner_ros
-                                # + prompt_router + safety + safety_watchdog + safety_kernel
-                                # + human_estop + skill_ros)
+just ros2-build                 # colcon build of the packages the recipe lists (msgs,
+                                # hal_node, world_state, reasoner_ros, safety_kernel,
+                                # rskill_ros, perception_ros, …)
 just ros2-test                  # colcon test + colcon test-result --verbose
 source install/setup.bash       # after build
 ```
@@ -210,7 +210,10 @@ just sim-custom                 # custom example — ACT × gym-aloha insertion
 ## Hardware-in-loop (requires connected robot + USB perms)
 
 ```bash
-just hil franka_panda            # Franka HIL tests (also: ur5e, ur10e, sawyer, aloha, galaxea_a1; OpenArm HIL runs by filename, e.g. `uv run pytest tests/hil/test_openarm_can_live.py` — no `just hil openarm`; SO-100 / G1 HIL are planned)
+just hil franka_panda            # runs tests/hil/test_<name>.py (also ur5e, ur10e, sawyer, aloha,
+                                 # galaxea_a1, openarm_can_live, …; no SO-100 / G1 HIL file)
+just hil-so101                   # SO-101 non-motion serial gate
+just hil-openarm-deploy          # OpenArm full-graph gate (attaches to a running graph)
 ```
 
 ## Docs
@@ -279,7 +282,7 @@ openral estop reset              # clear every e-stop latch: kernel reset, then 
 - **`openral` seems to run the wrong branch / wrong `robots/` manifests?** You are in a second checkout while `~/.local/bin/openral` is baked to the first (see [`OPENRAL_REPO_ROOT`](#which-checkout-does-openral-run-openral_repo_root)). No `WARNING: cwd is inside the OpenRAL checkout …` line means your wrapper predates that check; regenerate it with `just install-cli`.
 - **Python import unclear?** `uv run python -c 'import openral_<pkg>; print(openral_<pkg>.__file__)'`.
 - **ROS 2 topic missing?** `ros2 topic list -t` in a `source install/setup.bash`-ed shell.
-- **Schema diff?** `just schema-export` and check `git diff python/openral_core/schemas/`.
+- **Schema diff?** `just schema-export` and check `git diff docs/reference/schemas/`.
 - **CI flake?** Re-run once. If it flakes again, triage with the `flake` label and don't merge.
 - **Hardware test fails on a runner?** Check the runner's e-stop log first. Never push a "fix" that makes a hardware test pass without understanding why it failed.
 - **Out of GPU memory?** Lower batch / quantize / use a smaller skill variant — never silently downcast or skip frames.

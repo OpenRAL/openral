@@ -30,7 +30,7 @@ applied.
 | --- | --- | --- | --- |
 | `robocasa_baguette` | `PickPlaceCounterToCabinet` | 1 | none (layout drawn) |
 | `robocasa_sink_cup` | `PickPlaceCounterToSink` | 1 | none (layout drawn) |
-| `robocasa_fridge_drawer` | `PickPlaceFridgeShelfToDrawer` | 1 | `layout_ids: [30]` |
+| `robocasa_fridge_drawer` | `PickPlaceFridgeShelfToDrawer` | 1 | `layout_ids: [30]` at census time; now `[47]` (proposal 4) |
 | `robocasa_drawer_utensil` | `PickPlaceCounterToDrawer` | 1 | `layout_ids: [3]` |
 
 Every row of the census pins `layout_ids: [N]`. **A pinned layout N is not the
@@ -88,8 +88,9 @@ minimum is therefore the distance the kernel would report with perfect
 perception, and it bounds the live kernel from the conservative side. It is
 consistent with the field observation that the 2026-08-22 fridge round E-stopped
 at `t = 4.85 s` rather than at `t = 0`: the map fills in as the camera sees.
-**How much of this grid the live octomap actually contains at reset is
-unmeasured here.**
+**How much of this grid the live octomap contains at reset is unmeasured for
+the 240 census states.** Live captures for four fridge layouts, taken later,
+are in proposal 4 below: there the live map stops *more* often than this grid.
 
 ### Mesh side — `mj_geomDistance` is not usable for these pairs
 
@@ -404,8 +405,8 @@ no base-primitive change would alter a single row of this census.**
 `robocasa_drawer_utensil` at its shipped `layout_ids: [3]` pin — **no stop**, every
 link `genuinely_clear`. The pin does what it claims.
 
-`robocasa_fridge_drawer` at its shipped `layout_ids: [30]` pin — **still stops**,
-on `panda_link2`:
+`robocasa_fridge_drawer` at its then-shipped `layout_ids: [30]` pin (since moved
+to **47**, see proposal 4) — **still stops**, on `panda_link2`:
 
 | link | mesh gap | kernel min | budget | classification | nearest world body |
 | --- | ---: | ---: | ---: | --- | --- |
@@ -564,9 +565,10 @@ threshold was changed. In rough order of cost:
 
 ## What was not measured
 
-- **The live octomap.** Every kernel number here is against a geometrically
-  ideal grid. How much of it the depth camera has actually voxelised at reset is
-  unmeasured, and it is the difference between "would stop" and "does stop".
+- **The live octomap, for the census states.** Every kernel number here is
+  against a geometrically ideal grid. The only live measurements are the
+  61 fridge-layout captures in proposal 4 (layouts 18, 21, 43, 47), where the
+  live map stopped more often than the ideal grid, not less.
 - **Any state after `t = 0`.** This is a start-state census only.
 - **Unpinned draws.** Pinning changes the RNG draw order, so these 240 rows say
   nothing about what an unpinned seed-1 run produces for `robocasa_baguette` or

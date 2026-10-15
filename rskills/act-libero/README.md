@@ -59,19 +59,21 @@ inference: false
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://Deepkar/libero-test-act` |
 | `chunk_size` | 100 |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` (derived from `license`) | `true` |
 
 Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openral_core/schemas.py).
 
 ## Run
 
 ```bash
-CC=/usr/bin/gcc uv sync --group libero      # first time only
-openral sim run --config scenes/benchmark/libero_spatial.yaml --rskill rskills/act-libero \
-           --rskill rskills/act-libero
+CC=/usr/bin/gcc just sync --group libero    # first time only
+just sim-act-libero
+# which runs:
+#   openral sim run --config scenes/sim/libero_spatial.yaml \
+#     --rskill rskill://rskills/act-libero --save-video example_videos
 ```
 
-The shipped sim YAML pins `libero_spatial/0` for a 200-step
+The shipped sim YAML pins `libero_spatial/0` for a 100-step
 single-episode rollout. Sweep tasks with `--task libero_spatial/<n>`.
 A spot-check on `libero_spatial/2` reaches `is_success=True` in
 ~91 steps (reward 1.0) on a single seed.
@@ -100,12 +102,16 @@ mismatch).
 
 ## Benchmarks
 
-None measured yet. Populate `eval/` with `openral benchmark run` JSON
-fixtures before publishing a headline number.
+[`eval/libero_spatial.json`](eval/libero_spatial.json) (`reproduced_locally:
+true`) is a smoke-scale run: **1 episode per task** (seed 0, max 220 steps)
+over the 10 LIBERO-Spatial tasks, `avg_success_rate` **0.5** (tasks 2–6
+succeed). One episode per task is not the published protocol; treat it as a
+coverage check, not a headline number. Reproduce with
+`openral benchmark run --suite libero_spatial --rskill rskills/act-libero`.
 
 ## License
 
 Apache-2.0 — both the wrapping rSkill package (`rskill.yaml`,
 `README.md`) and the wrapped upstream weights at
 `hf://Deepkar/libero-test-act`. Commercial use is allowed
-(`commercial_use_allowed: true`).
+(`is_commercial_use_allowed` is `true`).

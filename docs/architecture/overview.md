@@ -3,20 +3,21 @@
 OpenRAL has seven layers. Each has one responsibility and talks only to adjacent layers through typed contracts. The [repo state map](repo-state-map.html) is the interactive per-module canvas (status colors, inputs, outputs, schemas); the status marks below match it: **✓ shipped** = source + tests on disk, **🟡 partial** = some pieces shipped, **⏳ planned** = not yet on disk.
 
 ```
-0  HAL                  python/hal/, packages/openral_hal_node/     ✓ shipped (12 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Galaxea A1, Rizon4, H1, G1, panda_mobile)
+0  HAL                  python/hal/, packages/openral_hal_node/     ✓ shipped (manifest-driven; one RobotDescription per robot under robots/)
 1  Sensors              python/sensors/                             ✓ shipped (catalog + vendor adapters)
 2  World State          python/world_state/, packages/world_state/  ✓ shipped (aggregator + lifecycle node)
 3  rSkill (S1)           python/rskill/, packages/openral_rskill_ros/ ✓ shipped (Python ABC + rSkill loader + openral_rskill_ros action server)
 4  Reasoning (S2)       python/reasoner/, packages/openral_reasoner_ros/  ✓ shipped (ReasonerCore + reasoner/prompt-router nodes + typed ReasonerToolCall dispatch; full replanning ladder in progress)
-5  Safety               packages/openral_safety/, cpp/openral_safety_kernel/  🟡 partial (Python supervisor + an independent deadman watchdog and human-E-stop forwarder, launched by the deploy graph; hardware-pendant driver and certifiable C++ kernel planned)
+5  Safety               packages/openral_safety/, cpp/openral_safety_kernel/  🟡 partial (C++ deny-by-default kernel + deadman watchdog + human-E-stop forwarder, launched by the deploy graph; no hardware-pendant driver ships; certification pending)
 6  Observability        python/observability/                       ✓ shipped (OTel SDK + OTLP exporter + structlog↔OTel bridge)
 ```
 
-Layers 0–3 and Observability (Layer 6) ship today; the `rSkill` loader's
-policy adapters cover SmolVLA, ACT, Diffusion Policy, π0.5, and xVLA.
-Reasoning (Layer 4) and Safety (Layer 5) have initial ROS 2
-implementations; the certifiable C++ safety kernel (Layer 5) is still
-planned. The prose below describes their target shape.
+Layers 0–3 and Observability (Layer 6) ship today. The registered policy
+adapters (`openral_sim.POLICIES`) cover SmolVLA, ACT, Diffusion Policy, π0.5,
+xVLA, MolmoAct2, RLDX-1, GR00T (N1.7 and the BEHAVIOR-1K checkpoint), OpenVLA,
+Xiaomi XR-1, LingBot-VLA 1/2, LingBot-VA, InternVLA-N1 and 3D Diffuser Actor.
+Reasoning (Layer 4) and Safety (Layer 5) run in the deploy graph; the C++
+safety kernel is implemented and tested, certification pending.
 
 The cross-cutting eval layer (`python/sim/`) ships and drives closed-loop
 sim via `openral sim run` against the configs under `scenes/`.

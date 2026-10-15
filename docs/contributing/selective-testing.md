@@ -1,7 +1,7 @@
 # Selective testing & the test audit
 
-OpenRAL carries **~3.3k test functions across ~360 files**. Two tools keep that
-suite fast *and* meaningful:
+OpenRAL's suite is large (current counts: [`test-audit.md`](test-audit.md)). Two
+tools keep it fast *and* meaningful:
 
 | Tool | Question it answers | Entry point |
 | --- | --- | --- |
@@ -19,10 +19,10 @@ selector never edits). They pass `mypy --strict tools/` and are covered by
 ### Why
 
 The cheap, high-signal workflows run on every PR (`quality`: ruff + mypy +
-schema drift + `mkdocs --strict`; `test-selective`; `dco`), while the expensive
-suites (`test-ros2`) stay `workflow_dispatch`-only ("out of GitHub Actions
-credits"; see the headers in `.github/workflows/`). Running 2.9k tests on every
-push is the difference between affordable and not. Selective execution maps a
+schema drift + `mkdocs --strict`; `test-selective`; `dco`; `test-ros2`'s colcon
+subset), while the opt-in dependency lanes run in `heavy-lanes` only once a PR
+is otherwise ready (see the headers in `.github/workflows/`). Running the whole
+suite on every push is the difference between affordable and not. Selective execution maps a
 git diff to the **minimal** set of pytest targets that can see the change, so a
 one-line edit to a leaf package runs a handful of tests, not the whole suite.
 
@@ -30,8 +30,8 @@ one-line edit to a leaf package runs a handful of tests, not the whole suite.
 
 1. **Blast radius first.** If a changed path matches `full_run_globs` in
    [`tools/test_selection.toml`](https://github.com/OpenRAL/openral/blob/master/tools/test_selection.toml) — root
-   `pyproject.toml`, `uv.lock`, a shared `conftest.py`, the selector's own
-   inputs, or `openral_core` source (the root of the dependency graph, whose
+   `pyproject.toml`, `uv.lock`, the `Justfile`, a shared `conftest.py`, the
+   selector's own inputs and workflows, or `openral_core` source (the root of the dependency graph, whose
    ~530-target fan-out only the sharded full run finishes in time), it emits
    `full_run = true` and the caller runs everything. No cleverness about a
    wide-blast change: a wrong *negative* would silently skip a regression.
@@ -43,7 +43,7 @@ one-line edit to a leaf package runs a handful of tests, not the whole suite.
    The one exception, release-please's release PR, is handled in the workflow so
    the selector keeps no special cases: `test-selective` short-circuits the
    `release-please--*` branch before invoking the selector (see
-   [Releasing](releasing.md)). That PR rewrites all 15 pyprojects and would
+   [Releasing](releasing.md)). That PR rewrites all 14 pyprojects (root + 13 members) and would
    otherwise trip this rule and the package graph, for a diff whose every commit
    already ran on its own PR.
 2. **Dependency graph, derived not hand-written.** The package graph is read
@@ -136,14 +136,15 @@ one-line edit to a leaf package runs a handful of tests, not the whole suite.
    `isolated_targets`; the full-run path `--ignore`s them from every partition
    and runs each in its own `pytest` invocation, and each opt-in dependency lane
    (`run_lane`) likewise splits its isolated targets out of the batched run and
-   runs them one-per-process (still under that lane's `--group`). An isolated
-   file may legitimately `importorskip` an optional dep it does not need in that
-   lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
-   exit code: a real failure fails the lane; an all-/partial-skip does not.
+   runs them one-per-process (still under that lane's `--group`). In
+   `test-selective` an isolated run is judged by exit code (a real failure
+   fails; exit 5, nothing collected, does not). In a dependency lane its junit
+   report also goes through the [lane policy](#lane-policy-what-a-skip-is-allowed-to-mean),
+   so an undeclared skip fails the lane exactly as in the batched run.
 
    The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from a git pin
    (no PyPI release). Each opt-in lane is its own CI job with its own runner and
-   venv (`lane` in `test-selective.yml`), so the `libero` lane can no longer
+   venv (`lane` in `heavy-lanes.yml`), so the `libero` lane can no longer
    leave robosuite 1.4.0 behind for a later lane. The guard stays anyway: a bare
    `uv run --group robocasa` switch does not reliably land the git-pinned
    package (uv evicts master for a wheel; see `python/sim/src/openral_sim/_deps.py`),
@@ -174,7 +175,7 @@ The options:
 The mechanism is a **declared capability allowlist**, not a blanket tolerance:
 
 - `[capability_gaps]` in `tools/test_selection.toml` names each capability the
-  runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`), what it is, what
+  runner provably lacks (`cuda`, `vulkan`, `sidecar`, `ros`, `hf-cache`), what it is, what
   *would* satisfy it, and the skip-reason patterns that indicate it.
 - A skip matching a declared pattern is **declared-not-run** — allowed,
   attributed to the gap, counted, and printed in the job summary, never called
@@ -234,7 +235,7 @@ no longer look the same.
 ```bash
 # What would run for the current branch vs origin/master?
 just test-changed                       # prints the plan
-uv run python tools/select_tests.py --files python/state_adapter/src/openral_state_adapter/core.py
+uv run python tools/select_tests.py --files python/state_adapter/src/openral_state_adapter/_registry.py
 uv run python tools/select_tests.py --base origin/master --head HEAD
 
 # Actually run only the affected tests:
@@ -339,7 +340,7 @@ composite action.
 
 | Change | Result |
 | --- | --- |
-| `python/state_adapter/src/openral_state_adapter/core.py` | `python/state_adapter/tests` only (leaf package) |
+| `python/state_adapter/src/openral_state_adapter/_registry.py` | `python/state_adapter/tests` + the two `tests/unit` files importing it (leaf package) |
 | `python/hal/src/openral_hal/sim_attached.py` | broad — hal fans out to the runtime, CLI and sim tests |
 | `python/core/src/openral_core/schemas.py` | **full run** — core is depended on by every package |
 | `packages/openral_hal_node/**` | `packages/openral_hal_node/test` |

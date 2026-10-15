@@ -5,7 +5,7 @@
 
 ## Layer
 
-CLAUDE.md §6.1 Layer 3 (rSkill). The runtime path is the in-process
+CLAUDE.md §3 Layer 3 (rSkill). The runtime path is the in-process
 [`openral_runner.DeployRunner`](../../python/runner/src/openral_runner/deploy_runner.py);
 this package is the ROS-side surface that exposes a typed action
 goal to external clients (CLI, reasoner, dashboard) and routes
@@ -17,7 +17,12 @@ chunks to the safety boundary.
 |---|---|---|
 | pub | `/openral/candidate_action` | `openral_msgs/ActionChunk` (via `ROSPublishingHAL`) |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) |
+| pub | `/openral/place_declaration` | `openral_msgs/PlaceDeclaration` (RELIABLE · TRANSIENT_LOCAL) |
+| pub | `/openral/grasp_declaration` | `openral_msgs/GraspDeclaration` (RELIABLE · TRANSIENT_LOCAL) |
+| pub | `/openral/reward/active_task` | `std_msgs/String` (executing instruction, for the reward monitor) |
+| pub | `/openral/episode` | `openral_msgs/Episode` |
 | sub | `/openral/estop` | `std_msgs/Empty` (defense in depth alongside HAL) |
+| sub | `/openral/estop_cleared` | `std_msgs/Empty` (clears the runner latch after a reset) |
 | sub | `/openral/safety_status` | `openral_msgs/SafetyStatus` (latched; RELIABLE · TRANSIENT_LOCAL · KL=1) |
 | action | `/openral/execute_rskill` | `openral_msgs/action/ExecuteRskill` |
 
@@ -123,7 +128,7 @@ One generic launch file ships with this package:
   `hal_executable`, `hal_node_name`, `hal_params_file`.
 
   Normally you use
-  `openral deploy sim --config <SceneEnvironment.yaml>` (see
+  `openral deploy sim --config <DeployScene.yaml>` (see
   `python/cli/src/openral_cli/deploy_sim.py`). The CLI:
   1. resolves the robot via the DeployScene's `robot_id` (or
      `--robot` override) → `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` or
@@ -174,7 +179,7 @@ The rSkill lifecycle-node contract mandates two gates:
 ## Tests
 
 `test/test_rskill_runner_node.py` is a real `launch_testing`-equivalent
-integration test (CLAUDE.md §1.11 / §5.4: no mocks). It composes the
+integration test (CLAUDE.md §1.11 / §2: no mocks). It composes the
 runtime via `compose_so100_runtime`, brings up a real
 `SafetyPassthroughNode`, and asserts:
 

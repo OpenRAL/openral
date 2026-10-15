@@ -32,7 +32,7 @@ pkg = rSkill.from_yaml("rskills/xvla-libero/rskill.yaml")
 ```
 
 ```bash
-just sim-xvla-libero --no-run   # validate wiring only
+just sim-xvla-libero --dry-run  # validate wiring only
 just sim-xvla-libero            # full run (LIBERO sim; needs GPU + MUJOCO_GL)
 ```
 
@@ -47,17 +47,19 @@ just sim-xvla-libero            # full run (LIBERO sim; needs GPU + MUJOCO_GL)
 | Weights license | Apache-2.0 |
 | Benchmark | LIBERO |
 
-State dimensions, camera names, normalisation statistics, and the
-underlying paper are TBD pending checkpoint inspection — see
-`eval/libero.json::status: pending` and
-`docs/reference/vla_compatibility.md` §3.1.
+The manifest declares the LIBERO contract the sibling LIBERO rSkills use — an
+8-D `libero_eef8d` task-space state, two cameras aliased `camera1 → image` /
+`camera2 → image2` with a 180° flip, and a 7-D `delta_ee_6d_plus_gripper`
+action — but no benchmark run has verified it yet, and the underlying paper is
+TBD (`eval/libero.json::status: pending`; see
+`docs/reference/vla_compatibility.md` §3.1).
 
 ## Supported robots
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
 | Franka Panda (LIBERO sim) | `franka_panda` | ✓ matches manifest | Native training embodiment (assumed). |
-| Other 7-DoF arms | — | needs adapter | A third 224×224 zero-tensor slot is filled in-process by the runner; it does not correspond to a physical sensor. |
+| Other 7-DoF arms | — | needs adapter | A third 224×224 zero-tensor slot (`empty_camera_0`) is filled in-process by the xVLA adapter; it does not correspond to a physical sensor. |
 
 ## Sensors required
 
@@ -76,9 +78,9 @@ underlying paper are TBD pending checkpoint inspection — see
 | `role` | `s1` |
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/xvla-libero` |
+| `chunk_size` | 16 |
 | `latency_budget.per_chunk_ms` | 200 ms (conservative — update after local profiling) |
-| `latency_budget.warmup_ms` / `load_ms` | 15 000 ms / 60 000 ms |
-| `commercial_use_allowed` | `true` |
+| `is_commercial_use_allowed` | `true` |
 
 Full schema: `openral_core.RSkillManifest`.
 

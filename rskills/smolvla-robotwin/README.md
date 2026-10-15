@@ -90,7 +90,7 @@ sidecar venv, then:
 
 ```bash
 # openral-side wire (pyzmq + msgpack)
-just sync --all-packages --group robotwin --inexact
+just sync --group robotwin --inexact
 
 # single task
 openral benchmark scene \
@@ -111,10 +111,10 @@ The SAPIEN+RoboTwin sidecar provisioning recipe uses
 - **Dataset:** [`lerobot/robotwin_unified`](https://huggingface.co/datasets/lerobot/robotwin_unified)
   (Apache-2.0; `pepijn223/robotwin_unified_v3` renamed).
 - **Eval protocol:** RoboTwin official — 100 episodes/task, sim built-in success,
-  `episode_length=300`. No locally-reproduced official numbers shipped yet (`eval/` is empty).
-  The current website artifact is a 150-step GPU `openral benchmark scene` smoke clip
-  (`robotwin_smolvla-robotwin_fail.mp4`, `success=False`) for visual validation only;
-  populate `eval/` with `openral benchmark run --suite robotwin` on the eval host.
+  `episode_length=300`. The shipped [`eval/robotwin.json`](eval/robotwin.json) is a
+  smoke run, not the official protocol: `openral benchmark run --suite robotwin`,
+  5 tasks × 1 episode (seed 0, `max_steps=300`), **0/5 solved**. Raise
+  `--n-episodes` toward 100 for an official-protocol number.
 
 > **STATE NOTE:** the live RoboTwin sidecar returns a 14-D aloha-agilex state, and the
 > official `policy_preprocessor.json` normalization stats expect `observation.state`

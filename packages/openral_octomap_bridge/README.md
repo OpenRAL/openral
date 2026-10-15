@@ -392,7 +392,7 @@ margin on cells inside a declared `PlaceRegion`, not a change to which cells
 exist — this bridge never reads `AttachmentState.place_declaration`.
 
 The two predicates (bridge vs. kernel) are a deliberate cross-package
-mirror — consolidating them would couple this Layer-2 node to the Layer-6
+mirror — consolidating them would couple this Layer-2 node to the Layer-5
 kernel's collision core — see `docs/methods/14-duplication-watch.md`, "Support-contact patch predicate"
 (Deliberate mirrors).
 
@@ -453,12 +453,13 @@ sees the payload's silhouette until transparency rays retire it.
 
 **Who the residual reaches.** Issue #108 expected Nav2 to be a consumer — it
 is not: Nav2's costmaps take a `sensor_msgs/LaserScan` (lidar profile) and
-an `OccupancyGrid` on `/map` (visual profile,
-`packages/openral_nav2_bringup/config/nav2_panda_mobile.yaml`); nothing in
+an `OccupancyGrid` on `/map` (visual profile)
+(`packages/openral_nav2_bringup/config/nav2_panda_mobile.yaml` /
+`nav2_visual.yaml`); nothing in
 the Nav2 graph subscribes `/octomap_binary`. The payload is kept out of
 Nav2's world at *its* source by `openral_nav2_bringup`'s
-`payload_scan_filter_node`, and into Nav2's robot by the footprint publisher
-beside it. What remains on this octree is the dashboard and any future
+`payload_scan_filter_node`; Nav2's footprint is the bare chassis (ADR-0099,
+Nav2 is base-only). What remains on this octree is the dashboard and any future
 direct octomap consumer — a display concern.
 
 ## The frame contract (ADR-0095)
@@ -508,7 +509,7 @@ kernel's capsule-vs-voxel check (`world_voxel_enabled:=true`). **Auto-enables**
 when the robot manifest declares a depth `SensorSpec`:
 
 ```bash
-openral deploy sim --config scenes/sim/robocasa_panda_mobile_kitchen.yaml   # panda_mobile → auto-on
+openral deploy sim --config scenes/deploy/robocasa_pnp.yaml   # panda_mobile → auto-on
 # or force it / point at a different depth topic:
 openral deploy sim --config <cfg> --enable-octomap
 ```
@@ -520,7 +521,8 @@ colcon-built (both in the deploy Docker images).
 
 ```bash
 ros2 launch openral_octomap_bridge octomap_voxel_bridge.launch.py \
-    base_frame:=base_link octomap_topic:=/octomap_binary
+    base_frame:=base_link octomap_topic:=/octomap_binary \
+    coverage_radius_m:=<robot reach + margin>   # required: 0 publishes nothing
 ```
 
 and launch the kernel with `world_voxel_enabled:=true` (plus
@@ -541,6 +543,7 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
 | `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
+| `static_points_file` | `""` | Base-frame surface points of declared static geometry, marked occupied in every published grid. Only adds occupancy; empty = off; a file that fails to load is fatal. |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
 | `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |
@@ -553,6 +556,16 @@ cell is the snap onto the octree's lattice). Keep
 `size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 614125 = 85³, 1.05 m at 25 mm
 cells; `deploy_e2e.launch.py` derives it from the robot's ball), or
 the kernel fails closed.
+
+### `robot_self_filter`
+
+The package's second executable (`robot_self_filter`, real camera path) takes
+`cloud_in` and publishes `cloud_out` (+ `cloud_out_rgb` for viewers). Parameters:
+the kernel's collision model (`collision_*`), `padding_m` (`0.02`),
+`max_joint_state_skew_s` (`0.1`), `tf_timeout_s` (`0.05`), `joint_state_history_s`
+(`2.0`), `attached_filter_enabled` (`true`), `attached_state_timeout_s` (`0.5`),
+`joint_states_topic` (`/joint_states`), `world_state_topic`
+(`/openral/world_state_fast`). With no collision model it forwards nothing.
 
 ## Producing the upstream OctoMap
 
