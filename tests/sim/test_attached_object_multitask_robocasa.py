@@ -56,6 +56,7 @@ pytestmark = [
 @contextmanager
 def _build_hal(task_name: str) -> Iterator[SimAttachedHAL]:
     scene_id = f"robocasa/{task_name}"
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     config = SimEnvironment(
         robot_id="panda_mobile",
         scene=SceneSpec(
@@ -68,6 +69,9 @@ def _build_hal(task_name: str) -> Iterator[SimAttachedHAL]:
                 "prebuilt_task": task_name,
                 "robots": ["PandaMobile"],
                 "controller": "OSC_POSE",
+                # One env.step must be one robot control period (#362), as the
+                # deploy scenes pin it; robosuite's native 20 Hz is refused.
+                "control_freq_hz": description.control_rate_hz,
             },
         ),
         task=TaskSpec(
@@ -79,7 +83,6 @@ def _build_hal(task_name: str) -> Iterator[SimAttachedHAL]:
         seed=1,
     )
     rollout = _build_robocasa_sim(config)
-    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     hal = SimAttachedHAL(rollout, description, env_reset_seed=1)
     hal.connect()
     try:
