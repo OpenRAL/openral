@@ -529,6 +529,9 @@ class _IsaacSimSidecar(SidecarSimRollout):
         joint_vel = raw.get("joint_velocities")
         if joint_vel is not None:
             obs["joint_velocities"] = np.asarray(joint_vel, dtype=np.float32).reshape(-1)
+        joint_eff = raw.get("joint_efforts")
+        if joint_eff is not None:
+            obs["joint_efforts"] = np.asarray(joint_eff, dtype=np.float32).reshape(-1)
         # Kinematic planar-base pose (x, y, yaw), when the manifest scene drives a
         # mobile base — the deploy-sim odom path reads this.
         base_pose = raw.get("base_pose")

@@ -44,9 +44,11 @@ class _FakeSim:
         self,
         joint_positions: list[float] | None,
         joint_velocities: list[float] | None = None,
+        joint_efforts: list[float] | None = None,
     ) -> None:
         self._jp = joint_positions
         self._jv = joint_velocities
+        self._je = joint_efforts
         self.steps = 0
 
     def _obs(self) -> dict:
@@ -55,6 +57,8 @@ class _FakeSim:
             obs["joint_positions"] = np.asarray(self._jp, dtype=np.float32)
         if self._jv is not None:
             obs["joint_velocities"] = np.asarray(self._jv, dtype=np.float32)
+        if self._je is not None:
+            obs["joint_efforts"] = np.asarray(self._je, dtype=np.float32)
         return obs
 
     def reset(self, seed: int | None = None) -> dict:
@@ -127,6 +131,29 @@ def test_read_state_velocity_zeros_without_joint_velocities() -> None:
     try:
         state = hal.read_state()
         assert all(v == 0.0 for v in state.velocity)
+    finally:
+        hal.disconnect()
+
+
+def test_read_state_uses_obs_joint_efforts() -> None:
+    description = _franka_description()
+    n = len(description.joints)
+    je = [1.5 * i - 3.0 for i in range(n)]
+    hal = SimAttachedHAL(_FakeSim([0.0] * n, joint_efforts=je), description)
+    hal.connect()
+    try:
+        np.testing.assert_allclose(hal.read_state().effort, je, atol=1e-5)
+    finally:
+        hal.disconnect()
+
+
+def test_read_state_effort_empty_without_joint_efforts() -> None:
+    """No measured effort → none published; zeros would read as a free, unloaded arm."""
+    description = _franka_description()
+    hal = SimAttachedHAL(_FakeSim([0.0] * len(description.joints)), description)
+    hal.connect()
+    try:
+        assert hal.read_state().effort == []
     finally:
         hal.disconnect()
 

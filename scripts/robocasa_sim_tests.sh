@@ -69,6 +69,8 @@ TARGETS=(
     tests/sim/test_panda_mobile_hal_robocasa_body_twist.py
     tests/sim/test_panda_mobile_hal_robocasa_layout_pin.py
     tests/sim/test_panda_mobile_hal_robocasa_continuous.py
+    # /joint_states.effort is the real actuator torque (#373 force layer input).
+    tests/sim/test_panda_mobile_hal_robocasa_joint_effort.py
     # The generic scene inputs: the RGB-D frame contract, the kitchen's static
     # fixtures, and the derived search/workspace declarations.
     tests/sim/test_panda_mobile_hal_robocasa_scene_inputs.py

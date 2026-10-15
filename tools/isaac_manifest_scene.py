@@ -3095,3 +3095,18 @@ class IsaacManifestScene(IsaacSceneBase):
             base_joints=self._base_joints,
             rates=True,
         )
+
+    def _joint_efforts(self) -> NDArray[np.float32] | None:
+        if self._robot is None:
+            return None
+        # PhysX's per-DOF joint force (drive + constraint), the analogue of a
+        # current-sensing motor. Grippers report their leader finger DOF raw
+        # (grippers=[]: a force has no meaning on the normalised manifest range).
+        return map_dof_to_manifest(
+            np.asarray(self._robot.get_measured_joint_efforts(), dtype=np.float32),
+            dof_index=self._dof_index,
+            manifest_joints=self._manifest_joints,
+            grippers=[],
+            base_values=[0.0 for _ in self._base_joints],
+            base_joints=self._base_joints,
+        )
