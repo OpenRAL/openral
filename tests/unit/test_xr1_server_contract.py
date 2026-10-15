@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 _PATH = Path(__file__).parents[2] / "tools" / "_xr1_server.py"
@@ -45,3 +46,28 @@ def test_export_metadata_filter_never_copies_weight_shards(tmp_path: Path) -> No
     weights.write_bytes(b"weights")
     assert _MODULE._is_metadata_asset(metadata) is True
     assert _MODULE._is_metadata_asset(weights) is False
+
+
+def test_non_mibot_processor_fails_at_load() -> None:
+    with pytest.raises(TypeError, match="not the checkpoint's MiBotProcessor"):
+        _MODULE._require_mibot_processor(object(), "hf://OpenRAL/x@abc")
+
+
+def test_pinned_hf_ref_resolves_to_its_snapshot_offline_without_refs_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pack fetched by sha has no refs/main: transformers' AutoProcessor probes
+    # ignore the revision and miss it, so the server must hand over the snapshot dir.
+    from huggingface_hub import constants
+
+    sha = "5e6c1eaac1e40f68cf592bd348ba07cbfc926ce6"
+    repo_dir = tmp_path / "models--OpenRAL--rskill-xr1-panda_mobile-robocasa-nf4"
+    snapshot = repo_dir / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "processor_config.json").write_text("{}")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+
+    ref = f"hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4@{sha}"
+    assert Path(_MODULE._local_snapshot(ref)) == snapshot
+    assert _MODULE._local_snapshot(str(snapshot)) == str(snapshot)

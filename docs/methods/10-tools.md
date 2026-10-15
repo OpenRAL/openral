@@ -550,9 +550,11 @@ _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provision
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_xr1_server.py L17) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`'s `_NDARRAY_SENTINEL`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_STATE_DIM = 60` (_xr1_server.py L18) — XR-1's internal padded state width; `_pad_state` pads any frame/history up to this.
 - `_ACTION_DIMS = {"robocasa_mg": 7, "robocasa365": 12, "vlabench_choice": 7}` (_xr1_server.py L19) — Per-benchmark-profile action width the checkpoint processor decodes.
-- `main() -> int` (_xr1_server.py L370) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
+- `main() -> int` (_xr1_server.py L410) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
 - `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
 - `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
+- `_local_snapshot(model) -> str` — resolve a local path or `hf://repo@sha` ref to a local snapshot dir (`snapshot_download`, works offline). transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes, so a repo id + `revision=` reads `main` (offline without a cached `refs/main`: falls back to the bare Qwen2 tokenizer).
+- `_require_mibot_processor(processor, model) -> Any` — raise `TypeError` at load when `AutoProcessor` returned anything without `decode_action` (i.e. not the checkpoint's MiBotProcessor), instead of failing the first forward on missing `state`/`action_mask`.
 - `class _XR1Policy` — Pinned `AutoModel`/`AutoProcessor` custom-code loader; NF4 uses a BF16 compute dtype, and `prequantized_nf4` reloads a saved packed checkpoint without re-quantizing. `export_pretrained` writes sharded packed safetensors plus quantization metadata.
 
 ### `tools/qwen_vlm_sidecar.py` + `tools/_qwen_vlm_server.py`
@@ -650,8 +652,8 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_V2_OVERRIDES: tuple[str, ...]` (L98) — the override requirement files applied on top of upstream's v2 lock.
 - `main() -> int` (L325) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
-- `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L319) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
-- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L944) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.
+- `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L336) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
+- `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L961) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.
 
 ### `tools/cosmos3_reasoner_sidecar.py`
 _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASONER_MODEL=cosmos3-edge`), companion to `Cosmos3ToolUseClient`. Provisions an isolated venv plus a SHA-pinned transformers overlay, builds a flattened reasoner view for vLLM's loader, and execs into `vllm serve` — its OpenAI-compatible HTTP API is the wire contract the reasoner already speaks. Cosmos 3 weights are commercial-OK, so there is no license guard; forward-pass inference is currently blocked by an upstream bug (see [`docs/reference/cosmos3-edge-reasoner.md`](../reference/cosmos3-edge-reasoner.md))._

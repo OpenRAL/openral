@@ -42,6 +42,29 @@ def _split_model_ref(model: str) -> tuple[str, str | None]:
     return repo_id, revision if separator else None
 
 
+def _local_snapshot(model: str) -> str:
+    """Resolve ``model`` to a local directory transformers loads without revision lookups.
+
+    transformers 4.57.1's ``AutoProcessor`` drops ``revision`` from its config
+    probes (it filters kwargs by ``cached_file``'s signature, which is only
+    ``**kwargs``), so for an ``hf://repo@sha`` ref it looks the processor up on
+    ``main``: offline with no cached ``refs/main`` it finds nothing and falls back
+    to the bare Qwen2 tokenizer; online it reads ``main``'s config instead of the
+    pin. A snapshot directory carries the pin in its path. Same weights/code/config
+    set as ``from_pretrained`` fetches; never ``*.bin`` / ``*.pt``.
+    """
+    repo_id, revision = _split_model_ref(model)
+    if Path(repo_id).exists():
+        return repo_id
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(
+        repo_id,
+        revision=revision,
+        allow_patterns=["*.json", "*.py", "*.jinja", "*.txt", "*.safetensors", "tokenizer*"],
+    )
+
+
 def _messages(profile: str, images: list[Any], instruction: str) -> list[dict[str, Any]]:
     if profile == "robocasa_mg":
         content = [
@@ -119,6 +142,22 @@ def _center_crop(image: Any, ratio: float) -> Any:
     )
 
 
+def _require_mibot_processor(processor: Any, model: str) -> Any:
+    """Return ``processor``, or raise if it is not the checkpoint's MiBotProcessor.
+
+    ``AutoProcessor`` falls back to a bare tokenizer when it cannot find a
+    processor class in the checkpoint's configs, and the first forward then dies
+    on missing ``state`` / ``action_mask``. Fail at load with the real cause.
+    """
+    if not callable(getattr(processor, "decode_action", None)):
+        raise TypeError(
+            f"XR-1 processor for {model!r} resolved to {type(processor).__name__}, not "
+            "the checkpoint's MiBotProcessor: transformers found no processor_config.json "
+            "/ processing_mibot.py for it (incomplete snapshot, or a revision mismatch)."
+        )
+    return processor
+
+
 def _is_metadata_asset(path: Path) -> bool:
     """True for custom-code/processor metadata; never for weight tensors."""
     return path.is_file() and path.suffix != ".safetensors"
@@ -158,21 +197,22 @@ class _XR1Policy:
         import torch
         from transformers import AutoModel, AutoProcessor, BitsAndBytesConfig
 
-        repo_id, revision = _split_model_ref(model)
+        local = _local_snapshot(model)
         self._torch = torch
         self._source_model = model
         self._profile = profile
         self._quantization = quantization
         # reason: transformers ships AutoProcessor / BitsAndBytesConfig untyped,
         # same as the safetensors `safe_open` sites in quantize_lingbot_vla2.py.
-        self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call, unused-ignore]
-            repo_id,
-            revision=revision,
-            trust_remote_code=True,
-            use_fast=False,
+        self._processor = _require_mibot_processor(
+            AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call, unused-ignore]
+                local,
+                trust_remote_code=True,
+                use_fast=False,
+            ),
+            model,
         )
         model_kwargs: dict[str, Any] = {
-            "revision": revision,
             "trust_remote_code": True,
             "attn_implementation": _attn_implementation(torch),
             "dtype": torch.bfloat16,
@@ -189,7 +229,7 @@ class _XR1Policy:
             model_kwargs["device_map"] = {"": 0}
         elif quantization == "prequantized_nf4":
             model_kwargs["device_map"] = {"": 0}
-        self._model = AutoModel.from_pretrained(repo_id, **model_kwargs)
+        self._model = AutoModel.from_pretrained(local, **model_kwargs)
         if quantization == "none":
             self._model = self._model.cuda()
         self._model.eval()
