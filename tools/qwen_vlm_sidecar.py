@@ -82,6 +82,9 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
                 uv,
                 "pip",
                 "install",
+                # --no-config: from the repo root uv would apply the root [tool.uv]
+                # overrides (torch>=2.13 on aarch64) and make the lock unsatisfiable.
+                "--no-config",
                 "--python",
                 str(py),
                 f"--torch-backend={torch_backend()}",

@@ -7,7 +7,9 @@
 #     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/locateanything.lock
 # and the aarch64 lock (cu130: Jetson Thor is sm_110, which cu128 has no kernels
-# for; seed it with a copy of locateanything.lock first so only the CUDA stack moves):
+# for; seed it with a copy of locateanything.lock first so only the CUDA stack moves,
+# then delete its torch and torchvision entries so they are re-hashed against
+# the cu130 index):
 #   uv pip compile tools/sidecar_requirements/locateanything.in --no-config \
 #     --python-platform aarch64-manylinux_2_28 --torch-backend=cu130 --generate-hashes \
 #     --python-version 3.12 --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
