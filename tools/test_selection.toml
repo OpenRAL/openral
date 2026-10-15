@@ -182,6 +182,7 @@ skip_patterns = [
   "*requires CUDA*",
   "*requires a CUDA GPU*",
   "*needs CUDA*",
+  "*needs a CUDA device*",
   "*needs a local GPU*",
   "*requires a local NVIDIA GPU*",
   "*no NVIDIA GPU visible to nvidia-smi*",
@@ -252,6 +253,11 @@ sim = [
   "tests/sim/test_hal_joint_convention.py",
   "tests/sim/test_hal_protocol_contracts.py",
   "tests/sim/test_pusht_2d_diffusion_pusht.py",
+  # bitsandbytes + accelerate come from the sim group; the NF4 packing cases
+  # skip without CUDA (capability_gaps.cuda), the shell/meta-init ones run.
+  "tests/unit/test_nf4_prequant_overlay.py",
+  "tests/unit/test_pi05_quantization_helpers.py",
+  "tests/unit/test_robometer_nf4_shells_on_meta.py",
 ]
 # Explicit files, not a `test_*libero*.py` glob: the glob also matched
 # `test_franka_groot_libero.py`, whose GR00T action head needs
