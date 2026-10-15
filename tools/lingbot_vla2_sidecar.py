@@ -42,6 +42,7 @@ from openral_sim._sidecar_common import (
     ensure_uv,
     make_isolated_env,
     run_cmd,
+    torch_backend,
     write_sidecar_identity,
 )
 
@@ -76,7 +77,7 @@ _NVRTC_OVERRIDE = (
 # V2 torch stack, newer than upstream's torch==2.8.0/torchvision==0.23.0/
 # torchaudio==2.8.0/triton==3.4.0: cu128 torch 2.8.0 and triton 3.4.0 ship no
 # aarch64 wheel (GB10/DGX Spark/Jetson Thor), so upstream's pins are
-# uninstallable there. 2.9.1+cu128 (-> triton 3.5.1) does ship aarch64. Fed to
+# uninstallable there. 2.9.1 (-> triton 3.5.1) does ship aarch64, on cu130 too. Fed to
 # `uv pip install --overrides`; lingbotvla runs off sys.path (not installed),
 # so it has no metadata cap to fight. V1 is NOT covered — see
 # ``_install_v1``. See docs/reference/aarch64-support.md.
@@ -213,7 +214,7 @@ def _ensure_venv(
     """Return the sidecar venv python, provisioning it from the upstream pins.
 
     ``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` reuses an existing interpreter.
-    Otherwise builds Python 3.12 from upstream ``requirements.txt`` (cu128)
+    Otherwise builds Python 3.12 from upstream ``requirements.txt`` (``torch_backend()``)
     under ``_V2_OVERRIDES``, plus ``pyzmq`` + ``bitsandbytes``.
     """
     override = os.environ.get(venv_env)
@@ -248,7 +249,8 @@ def _ensure_venv(
                 "install",
                 "--python",
                 str(py),
-                "--torch-backend=cu128",
+                # cu130 on aarch64: the cu128 wheels have no Jetson Thor (sm_110) kernels.
+                f"--torch-backend={torch_backend()}",
                 "--overrides",
                 str(overrides),
                 "--overrides",
@@ -268,6 +270,8 @@ def _ensure_venv(
         # pass carries it.
         extras = ["pyzmq", "bitsandbytes"]
         if platform.machine() == "aarch64":
+            # CUDA 12.9 ptxas knows sm_121 (GB10) but not sm_110 (Jetson Thor;
+            # 12.x calls it sm_101), so Triton kernels still fail on Thor even on cu130.
             extras.append("nvidia-cuda-nvcc-cu12==12.9.86")
         run_cmd(
             _LABEL,
@@ -302,6 +306,9 @@ def _ensure_venv(
                 _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
                 "pyzmq",
                 "bitsandbytes",
+                # aarch64 only, so a cu128 -> cu130 move repairs those venvs
+                # without invalidating every x86_64 one.
+                *((torch_backend(),) if platform.machine() == "aarch64" else ()),
             )
         ),
     )

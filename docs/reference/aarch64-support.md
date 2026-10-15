@@ -19,7 +19,8 @@ aarch64 wheel on any index either. Both gaps close at torch 2.9:
 | `torch==2.7.1+cu128` | ✅ `manylinux_2_28_aarch64` | but requires `triton==3.3.1` ❌ |
 | `torch==2.8.0+cu128` | ❌ x86_64 + win_amd64 only | requires `triton==3.4.0` ❌ |
 | `torch==2.9.0/2.9.1+cu128` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅ |
-| `torch==2.9.0/2.9.1+cu130` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅ |
+| `torch==2.9.0/2.9.1+cu130` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅; 2.9.1+cu130's arch list is `sm_80 sm_90 sm_100 sm_110 sm_120 compute_120` (read from its `libtorch_python.so`, 2026-10-15) |
+| `torchvision==0.24.x` on `cu130` | ✅ `manylinux_2_28_aarch64` | untagged like the `cu128` one, but a different file (`89743dce…`) that links `libcudart.so.13`; tagged `+cu130` aarch64 builds start at 0.25.0 |
 | `triton` ≤ `3.4.0` | ❌ x86_64 only | |
 | `triton` ≥ `3.5.0` | ✅ `manylinux_2_28_aarch64` | |
 | `torchvision` / `torchaudio` on `cu128` | ✅ `manylinux_2_28_aarch64` | **but the filename carries no `+cu128` local tag**, unlike the x86_64 wheel — grepping the index for `+cu128` misses it entirely |
@@ -30,10 +31,12 @@ aarch64 wheel on any index either. Both gaps close at torch 2.9:
 
 So torch 2.8.0 is a single-release hole in an otherwise continuous series, and
 it is the version several upstream VLA projects happen to pin. Every policy
-sidecar this repo controls the pins for targets **`torch==2.9.1` on the `cu128`
-index** for exactly this reason (the Cosmos 3 reasoner sidecar instead takes
-vLLM's own PyPI torch stack, and the workspace venv uses `cu130` on aarch64 —
-see below). Reproduce the gap with:
+sidecar this repo controls the pins for targets **`torch==2.9.1`** for exactly
+this reason, on the CUDA index `openral_sim._sidecar_common.torch_backend()`
+picks: **`cu130` on aarch64** (Jetson Thor `sm_110` — see below), `cu128` on
+x86_64. XR-1 is the one exception and stays on `cu128` everywhere (see the table).
+The Cosmos 3 reasoner sidecar instead takes vLLM's own PyPI torch stack, and the
+workspace venv uses `cu130` on aarch64 too. Reproduce the gap with:
 
 ```bash
 uv venv --python 3.12 /tmp/probe && \
@@ -139,21 +142,36 @@ So the workspace root routes aarch64 `torch`/`torchvision` to `cu130` and
 lifts the `torch<2.10` cap there to `torch>=2.13,<2.14` /
 `torchvision>=0.28,<0.29` (torchvision is ABI-locked to a torch minor and does
 not float with it); the lock resolves `2.13.0+cu130` / `0.28.0+cu130` on
-linux-aarch64. The sidecars keep their own `--torch-backend=cu128` pins (see
-the table below).
+linux-aarch64. The sidecars follow the same routing through
+`torch_backend()` (`cu130` on aarch64, `cu128` on x86_64), keeping their own
+`torch==2.9.1` pin — `2.9.1+cu130` publishes aarch64 wheels and carries
+`sm_110` — except XR-1 (see the table below). On `cu130` the shared nvrtc
+override is a no-op on aarch64: torch then requires `nvidia-cuda-nvrtc==13.0.48`
+(CUDA 13 dropped the `-cu12` suffix), which already knows `sm_110` and
+`sm_121`. `qwen_vlm` and `locateanything` install from hash-locked files, and
+`--torch-backend` is one global choice per compile, so they now ship a second,
+aarch64-only lock (`*-aarch64.lock`, compiled with `--torch-backend=cu130`);
+against the universal lock only the CUDA stack differs.
 
 ## Per-sidecar status
 
-| sidecar | aarch64 | notes |
-|---|---|---|
-| `tools/qwen_vlm_sidecar.py` | ✅ | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock`. Live-verified on GB10: 3.29 GB VRAM, 90.7 s load. Without the override every query dies in `image_grid_thw.prod(-1)` (the nvrtc ceiling). |
-| `tools/locateanything_sidecar.py` | ✅ | `torch==2.9.1` in `sidecar_requirements/locateanything.lock`. `decord` (x86_64-only) is required by the checkpoint's `trust_remote_code` processor, so aarch64 marker-swaps in `decord2`, an Apache-2.0 fork with `manylinux_2_28_aarch64` wheels that installs the same top-level package. |
-| `tools/da3_depth_sidecar.py` | ✅ | `open3d` and `pycolmap` have no aarch64 wheel, so aarch64 uses a `--no-deps` install recipe plus the shared nvrtc override. Live-verified on GB10 (below). |
-| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, and installs `nvidia-cuda-nvcc-cu12` for an `sm_121` `ptxas` (the only sidecar compiling its own Triton kernels). Live-verified on GB10: real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. |
-| `tools/xr1_sidecar.py` | ✅ | all three install passes verified live on GB10 — see below |
-| `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; every torch with aarch64 wheels is outside that cap, and the matching `torchcodec==0.5` is x86-only. Lifting this means moving v1 off lerobot 0.4.2. |
-| `tools/rldx_sidecar.py` | ✅ | `uv sync` dies on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>`: `torchcodec` and `flash-attn` marker-dropped, torch moved to 2.9.1. Live-verified on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (below). |
-| `tools/internvla_n1_sidecar.py` | ✅ | Plain-PyPI `torch==2.6.0` is the CPU build on aarch64, and nothing upstream actually caps torch, so `_PINNED_DEPS` moved to `torch==2.9.1` / `torchvision==0.24.1` on `cu128` with the shared nvrtc override. Live-verified on GB10 (below). |
+**GB10** means verified live on a GB10 — all of those runs were on the earlier
+`cu128` routing. **Thor** is the `cu130` routing: "resolves" there means a
+`uv pip install --dry-run --python-platform aarch64-manylinux_2_28
+--torch-backend=cu130` resolution (2026-10-15) to `torch 2.9.1+cu130`, not a run
+on Thor hardware. GB10 is aarch64 too, so it now provisions the `cu130` stack
+as well; the GB10 runs below have not been repeated on it.
+
+| sidecar | GB10 | Thor | notes |
+|---|---|---|---|
+| `tools/qwen_vlm_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock` (`qwen_vlm-aarch64.lock` on aarch64). Live-verified on GB10: 3.29 GB VRAM, 90.7 s load. Without the override every query dies in `image_grid_thw.prod(-1)` (the nvrtc ceiling). |
+| `tools/locateanything_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` in `sidecar_requirements/locateanything.lock` (`locateanything-aarch64.lock` on aarch64). `decord` (x86_64-only) is required by the checkpoint's `trust_remote_code` processor, so aarch64 marker-swaps in `decord2`, an Apache-2.0 fork with `manylinux_2_28_aarch64` wheels that installs the same top-level package. |
+| `tools/da3_depth_sidecar.py` | ✅ | ⚠️ resolves, not run | `open3d` and `pycolmap` have no aarch64 wheel, so aarch64 uses a `--no-deps` install recipe plus the shared nvrtc override. Live-verified on GB10 (below). |
+| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ❌ Triton | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, and installs `nvidia-cuda-nvcc-cu12` for an `sm_121` `ptxas` (the only sidecar compiling its own Triton kernels). Live-verified on GB10: real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor:** `cu130` fixes the torch ops, but that CUDA 12.9 `ptxas` lists `sm_100…sm_103`, `sm_120`, `sm_121` and no `sm_110` (CUDA 12.x calls Thor `sm_101`), and triton 3.5.1's bundled one is older, so the MoE Triton kernels still have no `ptxas` for Thor. Needs a CUDA 13 `ptxas` wired into `venv_ptxas`; not done. |
+| `tools/xr1_sidecar.py` | ✅ | ❌ | all three install passes verified live on GB10 — see below. **Thor:** deliberately left on `cu128` (so no `sm_110` kernels): flash-attn 2.8.3's only aarch64 prebuilts are `cu12torch2.9` and `cu13torch2.10`, so `torch 2.9.1+cu130` would force an hour-plus nvcc source build. Moving XR-1 to Thor means moving it to torch 2.10 on `cu130`. |
+| `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; every torch with aarch64 wheels is outside that cap, and the matching `torchcodec==0.5` is x86-only. Lifting this means moving v1 off lerobot 0.4.2. |
+| `tools/rldx_sidecar.py` | ✅ | ⚠️ not resolved | `uv sync` dies on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>`: `torchcodec` and `flash-attn` marker-dropped, torch moved to 2.9.1. Live-verified on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (below). **Thor:** `cu130` has `torch 2.9.1` / `torchvision 0.24.1` cp310 aarch64 wheels, but the full `-e <source>` resolve needs the upstream checkout and was not run. |
+| `tools/internvla_n1_sidecar.py` | ✅ | ⚠️ resolves, not run | Plain-PyPI `torch==2.6.0` is the CPU build on aarch64, and nothing upstream actually caps torch, so `_PINNED_DEPS` moved to `torch==2.9.1` / `torchvision==0.24.1` on the `torch_backend()` index with the shared nvrtc override. Live-verified on GB10 (below). |
 
 ### RLDX-1 verified live on GB10
 
@@ -167,7 +185,8 @@ half-true, and one was backwards:
 | upstream's Blackwell path (`pixi.toml`) is `platforms = ["linux-64"]`, so it's irrelevant | **Backwards.** pixi is x86_64-only, but its contents show upstream itself moves to torch 2.8.0+cu128 / 2.10.0+cu130, torchcodec 0.7.0 and source-built flash-attn for Blackwell while keeping every other pin. Moving torch off the 2.7.0 pin is upstream's own posture on new hardware. |
 
 So the aarch64 branch replaces `uv sync` (which cannot succeed) with
-`uv pip install -e <source> --torch-backend=cu128` under two `--overrides`
+`uv pip install -e <source> --torch-backend=cu128` (now `cu130`, via
+`torch_backend()`) under two `--overrides`
 files — `sidecar_requirements/rldx-aarch64-override.txt` (torch 2.9.1 /
 torchvision 0.24.1; `torchcodec` and `flash-attn` marker-dropped) and the shared
 `aarch64-nvrtc-override.txt`. Same `<source>/.venv`, same Python 3.10, same
@@ -348,8 +367,8 @@ supports". That is not a real constraint — checked against the published
 metadata, `transformers==4.51.0` declares `torch>=2.0`, `diffusers==0.32.2`
 declares `torch>=1.4`, and `accelerate==1.4.0` declares `torch>=2.0.0`; none of
 the three has an upper bound. So the pin moved to the repo-standard
-`torch==2.9.1` / `torchvision==0.24.1` on `cu128`, with the shared nvrtc
-override on **every** uv pass (this sidecar has four). The `diffusers==0.32.2`
+`torch==2.9.1` / `torchvision==0.24.1` on `cu128` (now `cu130` on aarch64, via
+`torch_backend()`), with the shared nvrtc override on **every** uv pass (this sidecar has four). The `diffusers==0.32.2`
 pin is untouched — it is a checkpoint-compatibility pin, not a torch one.
 
 Verified from a **fresh** `--home` (clone, submodule, venv, four install passes,
@@ -398,8 +417,9 @@ checkpoint's `(1024, 384)` — the reduced SwiGLU width, not 1536. It also
 
 ## The workspace venv itself
 
-The sidecars each pass `--torch-backend=cu128` to their own `uv pip install`,
-so they always got real CUDA builds. The **workspace** venv did not: `uv sync`
+The sidecars each pass `--torch-backend` (`torch_backend()`; originally a
+hard-coded `cu128`) to their own `uv pip install`, so they always got real CUDA
+builds. The **workspace** venv did not: `uv sync`
 resolved torch from PyPI, whose aarch64 wheel is CPU-only, and a freshly synced
 DGX Spark reported `torch.__version__ == '2.9.1+cpu'`. Every *in-process*
 policy — SmolVLA, ACT, diffusion, pi05, GR00T N1.7, MolmoAct2, the Robometer

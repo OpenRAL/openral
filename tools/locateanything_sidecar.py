@@ -28,20 +28,30 @@ import os
 import sys
 from pathlib import Path
 
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, torch_backend
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "locateanything-sidecar"
 _VENV_ENV = "OPENRAL_LOCATEANYTHING_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_LOCATEANYTHING_SIDECAR_HOME"
 
 # Fully-pinned, hash-locked deps (transformers==4.57.1 is the load-bearing pin;
-# torch/torchvision resolve to the +cu128 wheels). Regenerate after editing the
-# .in source with:
+# torch/torchvision resolve to the `torch_backend()` wheels — +cu128 on x86_64, +cu130 on
+# aarch64 for Jetson Thor's sm_110). `--torch-backend` is one global choice per compile, so
+# aarch64 gets its own lock. Regenerate both after editing the .in source (seed the aarch64
+# lock with a copy of locateanything.lock first so only the CUDA stack moves):
 #   uv pip compile tools/sidecar_requirements/locateanything.in \
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
 #     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/locateanything.lock
-_LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "locateanything.lock"
+#   uv pip compile tools/sidecar_requirements/locateanything.in --no-config \
+#     --python-platform aarch64-manylinux_2_28 --torch-backend=cu130 --generate-hashes \
+#     --python-version 3.12 --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
+#     -o tools/sidecar_requirements/locateanything-aarch64.lock
+_LOCK = (
+    Path(__file__).resolve().parent
+    / "sidecar_requirements"
+    / ("locateanything-aarch64.lock" if torch_backend() == "cu130" else "locateanything.lock")
+)
 # Raises nvrtc past the sm_121 cliff on aarch64 (see the file's header). Passed
 # at *install* time as well as compile time: torch's own metadata pins
 # ``nvidia-cuda-nvrtc-cu12==12.8.93``, so without the override uv rejects the
@@ -61,7 +71,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """
 
     def _install(uv: str, py: Path) -> None:
-        # No --require-hashes: cu128 torch wheels surface a marker-only
+        # No --require-hashes: the CUDA torch wheels surface a marker-only
         # transitive (torchcodec) the lock drops, which --require-hashes
         # would reject even though it's never installed here.
         run_cmd(
@@ -72,7 +82,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
                 "install",
                 "--python",
                 str(py),
-                "--torch-backend=cu128",
+                f"--torch-backend={torch_backend()}",
                 "--overrides",
                 str(_NVRTC_OVERRIDE),
                 "-r",

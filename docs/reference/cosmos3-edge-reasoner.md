@@ -17,7 +17,11 @@ Mixture-of-Transformers model, two towers:
   Trained for world understanding, spatial grounding (2D boxes, 2D/3D
   points), physical-plausibility judgment, task planning, action
   forecasting, and embodied decision making. Callable independently of the
-  generator; up to 256K context; Qwen3-VL-compatible message conventions.
+  generator; Qwen3-VL-compatible message conventions. Context: the model card
+  says up to 256K tokens, but the checkpoint's own `config.json` sets
+  `text_config.max_position_embeddings: 131072` (128K), which is the ceiling
+  vLLM enforces. OpenRAL serves far less: the sidecar's `--max-model-len`
+  default is 8192 (see [Expected footprint](#expected-footprint)).
 - **Generator tower** — diffusion: video / audio / **action-chunk** out
   (world simulation, policy rollout). Not used by the reasoner integration;
   it is the future WAM / policy-rSkill surface (see
@@ -84,15 +88,21 @@ The reasoner tower is ~3B params; at BF16 (the only officially-tested
 precision) it loaded at **~6.4 GB resident on an 8 GB GPU** with an
 8192-token KV cache — a genuine fit, but a *tight* one. `--enforce-eager`
 (skip CUDA-graph capture) is load-bearing at 8 GB, and the 8192 window needs
-`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` there. The reasoner's own system prompt
-plus tool schemas already run ~7.7K tokens, so a sub-8192 window rejects a
-real tick — which puts **8 GB at the practical floor**: it works, but with
-no room for a co-resident S1 VLA and little KV headroom.
+`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` there. When this section was first written
+(2026-08) the reasoner's system prompt plus tool schemas ran ~7.7K tokens, so
+8192 was the smallest window that held a tick. The 2026-09-14 measurement in
+[Validation status](#validation-status) supersedes that: real palettes now run
+~10.2K (4 skills) to ~20K (14 skills) tokens, so the 8192 default 400s on any
+real palette and 8 GB needs the 12288-token recipe given there. **8 GB is the
+practical floor**: it works for small palettes only, with no room for a
+co-resident S1 VLA and little KV headroom.
 
 A **≥12 GB card is the comfortable minimum**; Jetson Thor T3000 (32 GB) /
 T2000 (16 GB) — Edge's actual targets — have ample room, and the sidecar's
-0.90 default suits them. The model supports up to 131K context, KV-VRAM
-permitting.
+0.90 default suits them. The checkpoint's limit is 131,072 tokens
+(`max_position_embeddings`; the model card's "256K" is not what this
+checkpoint's config allows), KV-VRAM permitting; raise `--max-model-len` to
+use it.
 
 ## Risks and open questions
 

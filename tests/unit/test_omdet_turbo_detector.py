@@ -10,7 +10,7 @@ Two tiers:
 * **Real end-to-end** (gated): load the real ``omlab/omdet-turbo-swin-tiny-hf``
   Apache-2.0 weights and detect indoor classes on the real ``coco_sample.jpg``
   fixture. Skipped unless a GPU is present — the legitimate CI skip path
-  (CLAUDE.md §12).
+  (CLAUDE.md §1.12).
 """
 
 from __future__ import annotations
@@ -287,8 +287,8 @@ def _omdet_runtime_present() -> bool:
 
 
 def _cuda_arch_supported_by_torch_build() -> bool:
-    # Stock `pytorch-cu128` wheels compile kernels for a fixed arch list
-    # (`sm_70`..`sm_120` for torch 2.9.1), no `compute_*` PTX to JIT from. On an
+    # Stock CUDA torch wheels compile kernels for a fixed arch list (`sm_70`..
+    # `sm_120` for x86_64 torch 2.9.1+cu128), no `compute_*` PTX to JIT from. On an
     # older GPU (Pascal GTX 1060, `sm_61`) every kernel launch dies with "no
     # kernel image is available", raising `torch.AcceleratorError` at
     # collection time and poisoning the CUDA context for later tests. Compare
@@ -315,10 +315,11 @@ def _cuda_arch_supported_by_torch_build() -> bool:
 
 
 def _torchvision_cuda_nms_present() -> bool:
-    # pyproject.toml pins torchvision to `pytorch-cu128` on aarch64-linux
+    # pyproject.toml pins torchvision to `pytorch-cu130` on aarch64-linux
     # because the plain PyPI aarch64 wheel is CPU-only (`torchvision::nms` has
-    # no CUDA kernel), raising `NotImplementedError` on `batched_nms`. Both
-    # wheels report the same `0.24.1` string (no `+cu128` tag), so a venv
+    # no CUDA kernel), raising `NotImplementedError` on `batched_nms`. The
+    # index's untagged 0.24.x aarch64 wheels report the same `0.24.1` string as
+    # PyPI's CPU-only one (no `+cu130` tag), so a venv
     # provisioned before this pin landed satisfies `uv sync` without
     # reinstalling — needs `uv sync --frozen --reinstall-package torchvision`
     # (docs/reference/aarch64-support.md). Detect the stale state directly
@@ -356,21 +357,21 @@ def _torchvision_cuda_nms_present() -> bool:
     not (_gpu_present() and _omdet_runtime_present()),
     reason="needs a local GPU + the `omdet` group (torch/transformers/timm) to "
     "load omlab/omdet-turbo-swin-tiny-hf; run `just sync --group omdet` "
-    "(the legitimate CI skip path, CLAUDE.md §12).",
+    "(the legitimate CI skip path, CLAUDE.md §1.12).",
 )
 @pytest.mark.skipif(
     not _cuda_arch_supported_by_torch_build(),
     reason="the local GPU's compute capability is outside the arch list this "
     "torch/torchvision build ships kernels for (pre-sm_70 Pascal and older "
-    "against the cu128 wheels), so OmDet-Turbo's CUDA `batched_nms` fails with "
+    "against the cu128/cu130 wheels), so OmDet-Turbo's CUDA `batched_nms` fails with "
     "`no kernel image is available for execution on the device`; needs an "
     "sm_70+ GPU or a torch built for this arch.",
 )
 @pytest.mark.skipif(
     not _torchvision_cuda_nms_present(),
     reason="installed torchvision has no CUDA `nms` kernel (CPU-only aarch64 "
-    "wheel, satisfying the `0.24.1` version pin without the `+cu128` build); "
-    "run `uv sync --frozen --reinstall-package torchvision` "
+    "wheel, satisfying the version pin without the CUDA build); "
+    "run `just sync --frozen --reinstall-package torchvision` "
     "(docs/reference/aarch64-support.md).",
 )
 def test_e2e_detects_indoor_objects_on_coco_sample() -> None:

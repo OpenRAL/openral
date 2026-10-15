@@ -28,6 +28,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -388,6 +389,27 @@ def venv_torch_version(venv: Path) -> str | None:
             # Strip any local version tag (`2.9.1+cu128` → `2.9.1`).
             return version.split("+", 1)[0]
     return None
+
+
+def torch_backend(machine: str | None = None) -> str:
+    """Return the ``uv pip install --torch-backend`` value for a sidecar venv.
+
+    ``cu130`` on aarch64, ``cu128`` everywhere else. Jetson Thor is ``sm_110``,
+    and the ``cu128`` wheels carry neither ``sm_110`` SASS nor a ``compute_*``
+    entry to JIT from, so every CUDA op fails there ("no kernel image is
+    available"); ``cu130`` carries ``sm_110`` and still runs GB10 (``sm_121``).
+    x86_64 keeps ``cu128``, the stack every sidecar was validated on. Mirrors
+    the root ``pyproject.toml`` aarch64 routing; see
+    ``docs/reference/aarch64-support.md``.
+
+    Args:
+        machine: ``platform.machine()``-style arch string; ``None`` reads this host's.
+
+    Example:
+        >>> torch_backend("aarch64"), torch_backend("x86_64")
+        ('cu130', 'cu128')
+    """
+    return "cu130" if (machine or platform.machine()) == "aarch64" else "cu128"
 
 
 def venv_ptxas(venv: Path) -> Path | None:

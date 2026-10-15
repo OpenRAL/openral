@@ -29,21 +29,32 @@ import os
 import sys
 from pathlib import Path
 
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, torch_backend
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "qwen-vlm-sidecar"
 _VENV_ENV = "OPENRAL_QWEN_VLM_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_QWEN_VLM_SIDECAR_HOME"
 
-# Hash-locked deps: transformers==5.3.0 (matches the runtime pin), torch/torchvision +cu128.
-# `fla`/`causal-conv1d` (optional Gated-DeltaNet kernels) deliberately excluded — without them
-# transformers falls back to slower PyTorch ops but still loads; their wheels don't resolve
-# everywhere. Regenerate:
+# Hash-locked deps: transformers==5.3.0 (matches the runtime pin), torch/torchvision on the
+# `torch_backend()` index — +cu128 on x86_64, +cu130 on aarch64 (Jetson Thor is sm_110, which
+# the cu128 wheels have no kernels for). `--torch-backend` is one global choice per compile, so
+# aarch64 gets its own lock. `fla`/`causal-conv1d` (optional Gated-DeltaNet kernels)
+# deliberately excluded — without them transformers falls back to slower PyTorch ops but still
+# loads; their wheels don't resolve everywhere. Regenerate both (seed the aarch64 lock with a
+# copy of qwen_vlm.lock first so only the CUDA stack moves):
 #   uv pip compile tools/sidecar_requirements/qwen_vlm.in \
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
 #     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/qwen_vlm.lock
-_LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "qwen_vlm.lock"
+#   uv pip compile tools/sidecar_requirements/qwen_vlm.in --no-config \
+#     --python-platform aarch64-manylinux_2_28 --torch-backend=cu130 --generate-hashes \
+#     --python-version 3.12 --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
+#     -o tools/sidecar_requirements/qwen_vlm-aarch64.lock
+_LOCK = (
+    Path(__file__).resolve().parent
+    / "sidecar_requirements"
+    / ("qwen_vlm-aarch64.lock" if torch_backend() == "cu130" else "qwen_vlm.lock")
+)
 # Raises nvrtc past the sm_121 cliff on aarch64. Load-bearing here: Qwen3.5's
 # `image_grid_thw.prod(-1)` is a jiterator op — every GB10 query died in nvrtc without this.
 # Passed at install time too: torch pins `nvidia-cuda-nvrtc-cu12==12.8.93`, so without the
@@ -62,7 +73,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """
 
     def _install(uv: str, py: Path) -> None:
-        # No --require-hashes: cu128 torch wheels surface a marker-only
+        # No --require-hashes: the CUDA torch wheels surface a marker-only
         # transitive (torchcodec) the lock drops, which --require-hashes
         # would reject even though it's never installed here.
         run_cmd(
@@ -73,7 +84,7 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
                 "install",
                 "--python",
                 str(py),
-                "--torch-backend=cu128",
+                f"--torch-backend={torch_backend()}",
                 "--overrides",
                 str(_NVRTC_OVERRIDE),
                 "-r",

@@ -49,6 +49,7 @@ _common = _importlib_util.module_from_spec(_spec)
 _spec.loader.exec_module(_common)
 ensure_pip_venv: Callable[..., Path] = _common.ensure_pip_venv
 run_cmd: Callable[..., None] = _common.run_cmd
+torch_backend: Callable[[], str] = _common.torch_backend
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "da3-depth-sidecar"
 _VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"
@@ -68,7 +69,7 @@ _REQUIREMENTS = ("depth-anything-3", "addict", "pyzmq", "msgpack")
 #              `depth_anything_3.utils.export` → see `_defer_pycolmap_import`.
 # Pin set = upstream pyproject minus those two, minus xformers (x86-only, optional upstream)
 # and pre-commit (dev tool), plus `addict` (undeclared dep of model/da3.py), plus the repo's
-# aarch64 torch pins (2.9.1: cu128 has no aarch64 wheel for 2.8.0 / triton 3.4.0; see
+# aarch64 torch pins (2.9.1 on cu130: no aarch64 wheel for 2.8.0 / triton 3.4.0; see
 # docs/reference/aarch64-support.md) and the ZMQ/msgpack wire deps. NVRTC override shared with
 # the other sidecars: DA3's jit-scripted `affine_inverse` is NVRTC-fused after warm-up, so
 # without it the first request succeeds and every later one dies.
@@ -172,7 +173,12 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     """
     aarch64 = platform.machine() == "aarch64"
     spec = (
-        (*_AARCH64_REQUIREMENTS, _AARCH64_DA3, _NVRTC_OVERRIDE.read_text(encoding="utf-8"))
+        (
+            *_AARCH64_REQUIREMENTS,
+            _AARCH64_DA3,
+            _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
+            torch_backend(),
+        )
         if aarch64
         else _REQUIREMENTS
     )
@@ -181,7 +187,8 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         # --no-config: launched from the repo root (the deploy launch's cwd), uv would
         # otherwise apply the root pyproject's [tool.uv] torch overrides to this
         # isolated venv and fail to resolve against its own torch pin.
-        pip = [uv, "pip", "install", "--no-config", "--python", str(py), "--torch-backend=cu128"]
+        pip = [uv, "pip", "install", "--no-config", "--python", str(py)]
+        pip.append(f"--torch-backend={torch_backend()}")  # cu130 on aarch64 (Thor sm_110)
         if not aarch64:
             run_cmd("da3-sidecar", [*pip, *_REQUIREMENTS])
             return

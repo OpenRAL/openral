@@ -29,7 +29,13 @@ import sys
 import textwrap
 from pathlib import Path
 
-from openral_sim._sidecar_common import build_parser, ensure_pip_venv, run_cmd, run_sidecar
+from openral_sim._sidecar_common import (
+    build_parser,
+    ensure_pip_venv,
+    run_cmd,
+    run_sidecar,
+    torch_backend,
+)
 
 _LABEL = "rldx-sidecar"
 _REPO_URL = "https://github.com/RLWRLD/RLDX-1.git"
@@ -82,7 +88,8 @@ def _install_deps_aarch64(*, source: Path, quantization: str) -> Path:
             "--overrides",
             str(_NVRTC_OVERRIDE),
         ]
-        run_cmd(_LABEL, [*pip, "--torch-backend=cu128", "-e", str(source)], cwd=source)
+        backend = f"--torch-backend={torch_backend()}"  # cu130 here: aarch64-only path
+        run_cmd(_LABEL, [*pip, backend, "-e", str(source)], cwd=source)
         extras = _aarch64_extras(quantization)
         if extras:
             run_cmd(_LABEL, [*pip, *extras], cwd=source)
@@ -97,6 +104,7 @@ def _install_deps_aarch64(*, source: Path, quantization: str) -> Path:
             _AARCH64_OVERRIDE.read_text(encoding="utf-8"),
             _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
             *_aarch64_extras(quantization),
+            torch_backend(),
         ),
     )
     return py.parent.parent
