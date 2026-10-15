@@ -484,3 +484,15 @@ class TestSkillSearch:
             "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
         }
         assert self._BROKEN_ID not in ids
+
+
+def test_rskill_new_license_help_lists_every_posture() -> None:
+    """``rskill new --license`` help derives from the enum, so it cannot drift (#403)."""
+    import typer.main
+    from openral_core.schemas import RSkillLicensePosture
+
+    group = typer.main.get_command(app)
+    new_cmd = group.commands["rskill"].commands["new"]  # type: ignore[attr-defined] # reason: click.Group
+    (license_opt,) = [p for p in new_cmd.params if p.name == "license_"]
+    for posture in RSkillLicensePosture:
+        assert posture.value in (license_opt.help or "")

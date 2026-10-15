@@ -103,8 +103,9 @@ def _sim_run_callback(
         None,
         "--robot",
         help=(
-            "robot_id for free-axis scenes. Rejected on scenes with a "
-            "fixed_robot (LIBERO, MetaWorld, PushT, ALOHA, RoboCasa)."
+            "robot_id. Required on free-axis scenes; on scenes that fix their "
+            "robots (LIBERO, MetaWorld, PushT, ALOHA, RoboCasa) it must be one "
+            "of the scene's allowed robots (default: the scene's own)."
         ),
     ),
     task: str | None = typer.Option(

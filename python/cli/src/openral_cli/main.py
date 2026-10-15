@@ -50,6 +50,7 @@ from urllib.parse import urlparse
 import click
 import typer
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_core.schemas import RSkillLicensePosture
 from openral_observability import (
     cli_command_span,
     configure_observability,
@@ -1784,10 +1785,6 @@ def calibrate_camera(
         raise typer.Exit(code=result.returncode)
 
 
-if __name__ == "__main__":
-    app()
-
-
 # ── rskill sub-app ────────────────────────────────────────────────────────────
 
 rskill_app = typer.Typer(
@@ -2351,10 +2348,7 @@ def rskill_new(
     license_: str | None = typer.Option(
         None,
         "--license",
-        help=(
-            "One of: apache-2.0 | mit | bsd | permissive_research | "
-            "nvidia_non_commercial | proprietary | unknown."
-        ),
+        help="One of: " + " | ".join(p.value for p in RSkillLicensePosture) + ".",
     ),
     embodiment_tag: str | None = typer.Option(
         None,
@@ -2423,7 +2417,6 @@ def rskill_new(
         >>> # openral rskill new pi05-pick-cube --family pi05 --embodiment-tag franka_panda
         >>> # openral rskill new act-aloha-insertion --owner foo --embodiment-tag aloha
     """
-    from openral_core.schemas import RSkillLicensePosture
     from openral_rskill.loader import intree_embodiment_tags
 
     from openral_cli._rskill_scaffolder import scaffold_rskill
@@ -3873,7 +3866,7 @@ def dashboard(
             "Optional shell-quoted command to spawn as a child process with "
             "OTEL_EXPORTER_OTLP_ENDPOINT pointed at this dashboard. Pass the "
             "whole command as one string (shlex-tokenised), e.g. "
-            "`--inprocess 'openral sim run --config scenes/benchmark/pusht.yaml"
+            "`--inprocess 'openral sim run --config scenes/sim/pusht.yaml"
             " --rskill diffusion-pusht'`."
         ),
     ),
@@ -4526,3 +4519,7 @@ def profile_session(
     except LttngSessionError as exc:
         console.print(f"[red]openral profile session:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+if __name__ == "__main__":
+    app()
