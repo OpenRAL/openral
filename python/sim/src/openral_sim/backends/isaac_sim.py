@@ -451,9 +451,20 @@ class _IsaacSimSidecar(SidecarSimRollout):
         The sidecar ``static_colliders`` endpoint (``IsaacManifestScene.static_collider_boxes``):
         ``{"frame": "base_frame", "boxes": [{"path", "collision_enabled", "center_m",
         "rotation" (3x3 rows), "half_extents_m"}]}`` — each a superset of its collider.
-        ``tools/isaac_static_geometry.py`` turns them into a scene's declared static geometry.
+        ``tools/derive_scene_inputs.py`` turns them into a scene's declared static geometry.
         """
         return self._client.call("static_colliders")
+
+    def scene_ground_truth(self) -> dict[str, Any]:
+        """The declared objects and the active prompt's destinations as base-frame boxes.
+
+        The sidecar ``scene_ground_truth`` endpoint
+        (``IsaacManifestScene.scene_ground_truth``): ``{"frame": "base_frame",
+        "objects": {name: box}, "placements": [{"object", "target": box}]}``, each box
+        ``{"center_m", "rotation" (3x3 rows), "half_extents_m"}``. Call ``set_task``
+        first: the placements are the active prompt's.
+        """
+        return self._client.call("scene_ground_truth")
 
     def set_task(self, instruction: str) -> dict[str, Any]:
         """Make ``instruction`` the prompt the scene grades (``openral deploy sim``).
@@ -532,17 +543,13 @@ class _IsaacSimSidecar(SidecarSimRollout):
             }
         # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
         # the RGB-D streams a real driver publishes, for the vision attachment leg.
+        # One contract for every backend (``openral_sim.depth_frames``).
         frames = raw.get("depth_frames")
         if isinstance(frames, dict):
+            from openral_sim.depth_frames import depth_frame
+
             obs["depth_frames"] = {
-                str(k): {
-                    "depth": np.asarray(v["depth"], dtype=np.float32),
-                    "rgb": np.asarray(v["rgb"], dtype=np.uint8),
-                    "k": np.asarray(v["k"], dtype=np.float64).reshape(4),
-                    "optical_in_base": np.asarray(v["optical_in_base"], dtype=np.float64).reshape(
-                        4, 4
-                    ),
-                }
+                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
                 for k, v in frames.items()
                 if isinstance(v, dict)
             }
@@ -1087,10 +1094,10 @@ class IsaacSimOptions(BaseModel):
     translucent_materials: bool = False
     exposure_ev: float | None = Field(default=None, ge=-10.0, le=10.0)
     # Gaussian sigma (px) applied to every RGB frame after rendering: RTX output is
-    # sharper than a real camera's compressed stream (OpenArm restock: ~0.9 px). 0 = off.
+    # sharper than a real camera's compressed stream (OpenArm pick-and-place: ~0.9 px). 0 = off.
     image_blur_sigma_px: float = Field(default=0.0, ge=0.0, le=5.0)
     # Per-camera overrides (RGB sensor name -> IsaacCameraImagePost): a camera whose real
-    # counterpart differs from the scene-wide look (OpenArm restock: the Arducam wrists run
+    # counterpart differs from the scene-wide look (OpenArm pick-and-place: the Arducam wrists run
     # auto exposure / white balance and are softer than the top ZED).
     camera_image_post: dict[str, IsaacCameraImagePost] = Field(default_factory=dict)
     # Robot visual material name pattern (fnmatch) -> diffuse RGB in [0, 1], applied after

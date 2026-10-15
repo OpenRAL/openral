@@ -275,7 +275,7 @@ def _g1_joint_specs() -> list[JointSpec]:
                 position_limits=_G1_POSITION_LIMITS[name],
                 velocity_limit=_G1_VELOCITY_LIMITS_BY_GROUP[group],
                 effort_limit=_G1_EFFORT_LIMITS_BY_GROUP[group],
-                has_torque_sensor=True,  # G1 publishes joint torque feedback
+                has_torque_sensor=False,  # tau_est is current-derived, not a joint torque sensor
                 actuator_kind="bldc",
             )
         )

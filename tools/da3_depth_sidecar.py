@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import argparse
 
-# Load the (pure-stdlib) sidecar helpers by file path instead of
+# Load the sidecar helpers by file path instead of
 # `from openral_sim._sidecar_common import …`: the package import executes
 # `openral_sim.__init__` → full backend registration → the whole sim stack,
-# which the deploy launch's autostart interpreter (`slam_depth_sidecar_autostart`
-# spawns this under plain python3) does not have. This launcher stays runnable
-# by ANY python3 — its only non-stdlib need is `uv` on PATH for provisioning.
+# which this launcher does not need. The helpers are not stdlib-only — they do
+# `from openral_core import gpu` at import — so the launcher needs an interpreter
+# that can import `openral_core` (the deploy launch's autostart,
+# `slam_depth_sidecar_autostart`, spawns it with the launch's own
+# `sys.executable`, i.e. the OpenRAL venv) plus `uv` on PATH for provisioning.
 import importlib.util as _importlib_util
 import os
 import platform
@@ -42,7 +44,7 @@ from pathlib import Path
 
 _common_path = Path(__file__).parent.parent / "python/sim/src/openral_sim/_sidecar_common.py"
 _spec = _importlib_util.spec_from_file_location("_sidecar_common", _common_path)
-assert _spec is not None and _spec.loader is not None  # stdlib file ships with the repo
+assert _spec is not None and _spec.loader is not None  # helper file ships with the repo
 _common = _importlib_util.module_from_spec(_spec)
 _spec.loader.exec_module(_common)
 ensure_pip_venv: Callable[..., Path] = _common.ensure_pip_venv
@@ -55,7 +57,8 @@ _HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"
 # Pinned dependency source. A fully hash-locked `.lock` (uv pip compile
 # --generate-hashes) is the reproducibility target (CLAUDE.md §1.8); until it is
 # generated, install the package set verified working on the 8 GB Ada host.
-_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")
+# `addict`: imported by depth_anything_3/model/da3.py but undeclared upstream (0.1.1).
+_REQUIREMENTS = ("depth-anything-3", "addict", "pyzmq", "msgpack")
 
 # aarch64 (GB10 / DGX Spark, Jetson Thor): `pip install depth-anything-3` is unsatisfiable —
 # two declared deps ship no linux-aarch64 wheel:
@@ -175,7 +178,10 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     )
 
     def _install(uv: str, py: Path) -> None:
-        pip = [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128"]
+        # --no-config: launched from the repo root (the deploy launch's cwd), uv would
+        # otherwise apply the root pyproject's [tool.uv] torch overrides to this
+        # isolated venv and fail to resolve against its own torch pin.
+        pip = [uv, "pip", "install", "--no-config", "--python", str(py), "--torch-backend=cu128"]
         if not aarch64:
             run_cmd("da3-sidecar", [*pip, *_REQUIREMENTS])
             return
@@ -185,16 +191,24 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         run_cmd("da3-sidecar", [*pip, "--no-deps", _AARCH64_DA3])
         _defer_pycolmap_import(py)
 
-    return ensure_pip_venv(
-        label="da3-sidecar",
-        home=home,
-        python="3.12",
-        install=_install,
-        override=override,
-        override_env=_VENV_ENV,
-        # Keyed on the pins so editing them repairs an existing venv.
-        spec=spec,
-    )
+    # The deploy launch can start two of these at once (mono SLAM's DA3-SMALL on :5771 and
+    # estimated_depth_camera's DA3METRIC on :5772) over the same home: serialise
+    # provisioning so the second reuses the first's venv instead of racing its install.
+    import fcntl
+
+    home.mkdir(parents=True, exist_ok=True)
+    with open(home / ".provision.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return ensure_pip_venv(
+            label="da3-sidecar",
+            home=home,
+            python="3.12",
+            install=_install,
+            override=override,
+            override_env=_VENV_ENV,
+            # Keyed on the pins so editing them repairs an existing venv.
+            spec=spec,
+        )
 
 
 def main() -> int:

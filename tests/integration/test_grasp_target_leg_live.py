@@ -165,7 +165,7 @@ def _declaration(stamp_ns: int, centre: np.ndarray, *, active: bool = True) -> A
         half_extents=(0.15, 0.20, 0.15),
     )
     declaration = GraspDeclaration(
-        target_id="cell:restock_box",
+        target_id="cell:pick_box",
         contact_links=("openarm_left_finger_pair", "openarm_right_finger_pair"),
         rskill_id="openral/itest-grasp-target",
         trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
@@ -350,7 +350,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         )
         envelope = latest()
         declared = envelope.grasp_declaration
-        assert declared.target_id == "cell:restock_box"
+        assert declared.target_id == "cell:pick_box"
         assert declared.rskill_id == "openral/itest-grasp-target"
         assert declared.search_box_valid
         region = PlaceRegion.from_idl(declared.region)
@@ -479,7 +479,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         )
         (held,) = latest().objects
         assert held.evidence_kind == "grasp_target_region"
-        assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
+        assert held.object_id == "cell:pick_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
         # The payload is the region lowered onto the measured support top (one cell under
         # its lower face; Isaac i56/i57), bloated on the sides and top, then cell-closed
@@ -488,7 +488,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         # named here.
         support = region.pose.xyz[2] - region.half_extents[2] - _RES
         closed = bridge._grasp_target.kernel_region(
-            "cell:restock_box", lowered_to_support(region, support), payload=True
+            "cell:pick_box", lowered_to_support(region, support), payload=True
         )
         assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
         # The hand-side face is clipped at the palm plane (#349, ``_padding_clip_point``):
@@ -527,7 +527,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         #       face one voxel below), normal up — until it is lifted three cells.
         assert held.support_contact_valid, "the measured support was not attested"
         witness = held.support_contact
-        assert witness.support_id == "map_support_under:cell:restock_box"
+        assert witness.support_id == "map_support_under:cell:pick_box"
         assert witness.evidence_kind == "map_support_proximity"
         t_base_obj = t_base_link7 @ homogeneous_from_quat_xyz(
             (
@@ -561,7 +561,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ), f"the witness outlived the lift: {[ln for ln in logs if 'support witness' in ln]}"
         (carried,) = latest().objects
         assert (carried.object_id, carried.stamp_ns) == (held.object_id, held.stamp_ns)
-        assert any("support witness for 'cell:restock_box' retired" in ln for ln in logs)
+        assert any("support witness for 'cell:pick_box' retired" in ln for ln in logs)
     finally:
         # Stop the executor first: a timer callback waiting on the bridge lock must not
         # run on entities the teardown destroyed.

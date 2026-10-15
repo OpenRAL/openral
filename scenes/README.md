@@ -294,7 +294,7 @@ wall-time idle stepper from pacing the clock while a skill is active.
 
 **Camera images lag the state, and say so.** Isaac's RTX pipeline delivers a
 camera frame 2–4 steps after the physics state it shows (133 ms at 30 Hz in the
-restock scene), and not at a constant lag. The scene does not render extra frames
+tote scene), and not at a constant lag. The scene does not render extra frames
 to hide it: every observation carries `image_time_ns`, the sim time each camera's
 frame shows, and `deploy sim` stamps `/openral/cameras/*` (RGB, depth, colour,
 clouds) with it, so consumers pair images with joint states and TF at the right
@@ -395,7 +395,7 @@ guarantee transparent plastic. `exposure_ev` selects fixed
 manual exposure (ISO 100, 20 ms, f/5 at zero; +1 doubles exposure), preventing automatic
 exposure changes between poses. `image_blur_sigma_px` blurs every RGB frame by that
 Gaussian sigma: RTX renders are sharper than a real camera's compressed stream (the
-restock training frames match about 0.9 px). `robot_material_colors` recolours the imported
+pick-and-place training frames match about 0.9 px). `robot_material_colors` recolours the imported
 robot's visual materials by name (`fnmatch` on the material prim name, diffuse RGB): the
 OpenArm meshes' "matte_black" ships at diffuse 0.247, which renders mid-grey next to the
 real near-black plastic. All are opt-in; omitted values retain

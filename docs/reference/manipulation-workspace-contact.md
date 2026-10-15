@@ -9,14 +9,14 @@ Safety-WG review**, 2026-10-11. Issue #349, PR #370. Builds on the grasp-target 
 
 ## 1. Problem
 
-A learned manipulation policy (π0.5 restock, bimanual OpenArm, joint-position chunks at 30 Hz)
+A learned manipulation policy (π0.5 pick-and-place, bimanual OpenArm, joint chunks at 30 Hz)
 completes its task only by touching the world. The safety kernel stops on any overlap between
 conservative link geometry and the occupied voxel map (15 mm cells, margin 0 in sim, 20 mm real),
 with one scoped relaxation per declared, measured region: the grasp target (fingers) and the place
-target (carried payload). Every Isaac deploy-sim run of the restock task ended in a kernel stop
+target (carried payload). Every Isaac deploy-sim run of the task ended in a kernel stop
 before the grasp, while the same prompts place the box without the kernel.
 
-## 2. Evidence (Isaac Sim 6.1, restock tote scene, 2026-10-11)
+## 2. Evidence (Isaac Sim 6.1, tote scene, 2026-10-11)
 
 **Kernel stops, adjudicated against PhysX ground truth** (`sim.estop_ground_truth_snapshot`,
 `docs/reference/sim-environments.md`): 44 stops over 40 deploy-sim trials, 8 prompts. In all but
@@ -88,16 +88,13 @@ Contact classes, per (robot link, world cell, task state):
     2013 brakes in one run, mix02 0/3). Rows s ≥ 1 read the larger of the measured and the
     **commanded** speed between consecutive rows, so a fast command within a chunk does not read
     slow (#349 review B); under the brake (§6) such a speed-only violation creeps at the bounded
-    speed. Without a fresh measured velocity the commanded speed governs every row. Calibration (§2): sim evaluation **0.35 m/s**, just above the
-    fastest sustained non-target contact (finger sliding on the tote, 0.32 m/s); candidate for
-    real hardware **0.25 m/s**, ISO 10218-1's reduced speed — a Safety-WG decision.
+    speed. Without a fresh measured velocity the commanded speed governs every row.
+    Calibration: §8.
   - **Lead** (push force): the hand's displacement from its **measured** pose to the checked row,
     at most `workspace_contact_max_lead_m`. On a joint-PD position-controlled arm the
     commanded-minus-measured gap is proportional to the force the joint drives apply, so this
     bounds how hard the hand may push into what it touches. The speed bound alone would let a
-    hand whose stationary target is buried deep in a carton keep pushing. Calibration: sim
-    evaluation **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac stops measured
-    plus margin; the real-hardware value is a Safety-WG decision (capped at 0.10 m).
+    hand whose stationary target is buried deep in a carton keep pushing. Calibration: §8.
 
   Both are set explicitly by the scene; there is no default. Faster or further-leading motion
   inside the workspace is checked as today.
@@ -107,7 +104,7 @@ Contact classes, per (robot link, world cell, task state):
 
 ### 3.1 Static geometry: what the camera has not seen is not free
 
-**Evidence (deliberate-collision probes, 2026-10-11).** Joint sweeps from the restock start
+**Evidence (deliberate-collision probes, 2026-10-11).** Joint sweeps from the task start
 pose, published on `/openral/candidate_action` with no goal active, kernel and Isaac live. The
 probe E-stops the graph itself when the kernel has not, so the sim HAL logs PhysX ground truth
 at the end pose either way. Single-joint sweeps either hit joint-envelope limits
@@ -126,7 +123,7 @@ toward the cell's left wall (y = +0.55 m):
 | no static geometry | **no stop** | left `ee_base_link` and **`link6`** pressed against `Cell/LeftWall`: 0 mm separation, impulse 1.33 and 0.14 N·s |
 | with static geometry | stopped at 2.7 s, before any contact | none — the finger reached the declared shelf-rack post first |
 
-Unobserved space is free end to end (octomap → bridge → kernel); for the restock stage the
+Unobserved space is free end to end (octomap → bridge → kernel); for the tote stage the
 declared fixtures add about **59 400 cells the camera map lacks**.
 
 **Rule:** a scene declares its static fixtures (walls, shelf frame, table, tote shell) as
@@ -135,10 +132,53 @@ camera's occupancy and that declared geometry, always — regardless of what the
 or cleared. A scene may only **add** occupancy (the fail-closed direction), so declared static
 geometry needs no measurement before it counts, unlike an exemption. The workspace rule then
 applies to it like any other cell: hand links may graze the declared tote/shelf inside a live,
-confirmed workspace, slowly; arm links stop on it everywhere. For Isaac scenes the fixtures come
-from the stage's static colliders; for a real cell, from its measured cell description. The
+confirmed workspace, slowly; arm links stop on it everywhere. For sim scenes the fixtures come
+from the backend's static colliders (§3.2); for a real cell, from its measured cell description. The
 safety envelope's `no_go_zones` are declared today but enforced nowhere — this layer is where
 declared geometry becomes enforced.
+
+### 3.2 Scene inputs are derived, not hand-written
+
+The rule needs three per-scene inputs: the declared static geometry (§3.1), the grasp
+declaration's `search_box`, and its `workspace_box`. None has to be written by hand:
+`tools/derive_scene_inputs.py` boots the scene's sim (any backend) and writes them into a derived
+scene. A value the scene already declares wins unless `--replace`, which prints both.
+
+- **Static geometry** — the backend's static colliders in `base_frame`: Isaac, the USD collision
+  prims of non-robot, non-dynamic fixtures (`static_colliders`); MuJoCo, every world-welded
+  collision geom except the robot's own bodies (`openral_sim.backends.mujoco_geometry`). Each is
+  a superset of its collider. Fixed-base robots only: on a mobile base, base-frame fixtures are
+  true only at the reset pose, so none are declared.
+- **`search_box`** — the reasoner's own grounding (`ground_grasp_target`), fed the sim's object
+  boxes as detections instead of perception's: the target's bound padded on every side.
+- **`workspace_box`** — `openral_reasoner.grounding.ground_workspace`: the hull of the source
+  fixture (the static collider group the target rests on: a tote's floor, walls and rims) and the
+  instruction's destination (Isaac: the prompt's `placement_success` region and the regions it
+  grades as adjacent; RoboCasa: the task's destination fixture), padded, plus headroom on top for
+  a hand riding above its payload. An axis wider than the workspace cap is cut to the cap around
+  the target, never widened past it; a box still over the volume cap is not declared.
+
+Restock `mix_02` (Isaac, 2026-10-13), hand-written → derived, base-frame x / y / z ranges (m):
+`search_box` [0.167, 0.356] / [−0.012, 0.200] / [−0.613, −0.373] → [0.178, 0.350] / [0.016, 0.154]
+/ [−0.628, −0.458] (the producer's region, (0.262, 0.078) ± (0.063, 0.042), lies inside);
+`workspace_box` [0.039, 0.735] / [−0.221, 0.278] / [−0.660, −0.214] → [0.027, 0.735] /
+[−0.229, 0.302] / [−0.612, −0.204]; static geometry 43 → 45 colliders, the 33 shared ones
+identical; the rest is shelf stock — 10 of the hand file's boxes are not in the current `mix_02`
+stage, which has 12 it lacks (the hand file predates the scene's last edit). One
+deploy each: hand-written complete, 0 kernel stops, 2 brakes; derived complete, 0 stops, 0
+brakes (the r37 baseline: 4/4 complete, 0 stops, 0–4 brakes). RoboCasa `robocasa_pnp`: the
+target lies 2.3 m behind the base on the island, so the island-to-cabinet hull exceeds the
+volume cap and no `workspace_box` is derived; `front_depth` publishes depth only, because the
+panda_mobile intrinsics (fx = width, 53°) disagree with the MJCF camera's 60° `fovy`.
+
+Ground truth is a sim-only source (`scene_ground_truth`); the functions take plain boxes, so a
+real cell supplies the same boxes from its scene graph.
+
+**One perception contract.** Every backend publishes depth through one registered RGB-D frame
+(`openral_sim.depth_frames.depth_frame`: depth, colour from the same render, K, optical pose in
+`base_frame`): Isaac renders it; the MuJoCo bridge builds it from its ray-cast and the same
+MJCF camera's colour. Both are ground truth; no estimated depth reaches octomap or the kernel
+through it.
 
 ## 4. Why this is sound enough to propose
 
@@ -397,13 +437,28 @@ Cartesian control modes, the force/current contact layer.
 5. Both hands share one max-speed test and one mask: the idle hand entering the declared box while
    slow is exempt too.
 
-**Calibration points:** `workspace_contact_max_speed_mps` (`v_contact`; sim **0.35 m/s** from the
-`sim run` contact steps); `workspace_contact_max_lead_m` (sim **0.05 m** from the 3.3–4 cm
-free-motion lag of the Isaac stops plus margin; cap 0.10 m); the freshness window
-`kWorkspaceCommandFreshPeriods` (2 periods); `WORKSPACE_MIN_COVER` (10 %); the workspace caps
-(0.50 m half-extent, 0.25 m³). The real-hardware values of both bounds are a Safety-WG decision.
+**Calibration points.** This table is the single source for the two bounds' values; the
+`DeployRuntime` field docstrings and the safety-kernel README point here. Both bounds are set
+explicitly by the scene (no default).
 
-**Validation owed:** the 8 restock prompts in Isaac deploy sim with ground truth (completion rate
+| bound | deploy-sim scenes | earlier sim evaluation value | real hardware (Safety-WG decision, issue #374) |
+|---|---|---|---|
+| `workspace_contact_max_speed_mps` (`v_contact`; schema cap `le=1.0`) | **0.5 m/s** | **0.35 m/s**, derived from the §2 `openral sim run` contact speeds (no kernel in the loop): just above the fastest sustained non-target contact, a finger sliding on the tote at 0.32 m/s | candidate **0.25 m/s**, ISO 10218-1's reduced speed |
+| `workspace_contact_max_lead_m` (schema cap `le=0.10`, mirrored by the kernel's `kMaxWorkspaceContactLeadM`) | **0.10 m** (the cap) | **0.05 m**, from the 3.3–4 cm free-motion tracking lag the Isaac kernel stops measured, plus margin | **open Safety-WG question**: issue #374 names the candidate as "a lead below the sim value" without saying which sim value (0.10 m deploy-sim or 0.05 m earlier evaluation); at most 0.10 m either way |
+
+The deploy-sim values are those of the local (gitignored) deploy scenes the Isaac deploy-sim
+runs use, checked on 2026-10-14: every one sets `workspace_contact_max_speed_mps: 0.5` and
+`workspace_contact_max_lead_m: 0.1`. The §6 measurements predate them: the stops
+quoted there ("against the 0.35 bound"; across 9 place batches, contact at 0.35–0.41 m/s and a
+lead of 80–96 mm) could only fire under a speed bound ≤ 0.35 m/s and a lead bound < 80 mm, which
+is consistent with the earlier 0.35 m/s / 0.05 m values; the exact bounds of each batch were not
+recorded. Under the deploy-sim 0.5 m/s / 0.10 m those readings would be tolerated, so §6's stop
+tails do not describe the deploy-sim bounds.
+
+Other calibration points: the freshness window `kWorkspaceCommandFreshPeriods` (2 periods);
+`WORKSPACE_MIN_COVER` (10 %); the workspace caps (0.50 m half-extent, 0.25 m³).
+
+**Validation owed:** the 8 task prompts in Isaac deploy sim with ground truth (completion rate
 vs `sim run`, zero arm-link stops missed, a deliberate arm/shelf collision still stopped); the
 Safety-WG review; then the real-cell posture (the `deploy run` refusal lifts only with the ADR).
 
@@ -417,6 +472,6 @@ Safety-WG review; then the real-cell posture (the `deploy run` refusal lifts onl
 4. Kernel: hand-link mask from the manifest; per-cell workspace containment; hand speed from the
    checked row; disclosure on every exempted contact (log + span), never silent.
 5. Measure `v_contact` from the sim-run contact data (hand speed at the contact steps).
-6. Validate: the same 8 restock prompts in deploy sim with ground truth — target: completion rate
+6. Validate: the same 8 task prompts in deploy sim with ground truth — target: completion rate
    approaching `sim run`'s, zero arm-link stops missed, and a deliberate arm/shelf collision still
    stopped.

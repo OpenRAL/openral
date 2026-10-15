@@ -59,6 +59,9 @@ assets:
   # unioned into the MJCF lowering - see the SRDF header for the paper trail.
   srdf: "file:openarm.srdf"
 
+# Arm joints declare has_torque_sensor: false. OpenArm's joint torque is a
+# current-derived estimate from the motor driver, not a joint torque sensor;
+# declaring a sensor would let force decisions over-trust the estimate (#375).
 joints:
   # ── Left arm (7 revolute) ─────────────────────────────────────────
   - name: "left_joint1"
@@ -71,7 +74,7 @@ joints:
     position_limits: [-3.49066, 1.39626]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint1"
   - name: "left_joint2"
@@ -84,7 +87,7 @@ joints:
     position_limits: [-3.31613, 0.174533]
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint2"
   - name: "left_joint3"
@@ -97,7 +100,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint3"
   - name: "left_joint4"
@@ -110,7 +113,7 @@ joints:
     position_limits: [0.0, 2.44346]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint4"
   - name: "left_joint5"
@@ -123,7 +126,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint5"
   - name: "left_joint6"
@@ -136,7 +139,7 @@ joints:
     position_limits: [-0.785398, 0.785398]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint6"
   - name: "left_joint7"
@@ -149,7 +152,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_left_joint7"
   # ── Left gripper (1 revolute) — v2 grippers are hinge joints ─────
@@ -195,7 +198,7 @@ joints:
     position_limits: [-1.39626, 3.49066]   # mirrored vs left
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint1"
   - name: "right_joint2"
@@ -208,7 +211,7 @@ joints:
     position_limits: [-0.174533, 3.31613]   # mirrored vs left
     velocity_limit: 4.0
     effort_limit: 40.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint2"
   - name: "right_joint3"
@@ -221,7 +224,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint3"
   - name: "right_joint4"
@@ -234,7 +237,7 @@ joints:
     position_limits: [0.0, 2.44346]
     velocity_limit: 4.0
     effort_limit: 27.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint4"
   - name: "right_joint5"
@@ -247,7 +250,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint5"
   - name: "right_joint6"
@@ -260,7 +263,7 @@ joints:
     position_limits: [-0.785398, 0.785398]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint6"
   - name: "right_joint7"
@@ -273,7 +276,7 @@ joints:
     position_limits: [-1.5708, 1.5708]
     velocity_limit: 4.0
     effort_limit: 7.0
-    has_torque_sensor: true
+    has_torque_sensor: false
     actuator_kind: "bldc"
     sim_joint_name: "openarm_right_joint7"
   # ── Right gripper (1 revolute) — mirrored range vs left ──────────
@@ -585,7 +588,7 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
-    # The ZED-M left image at the restock rSkill's training raster (672x376): the Thor
+    # The ZED-M left image at the pick-and-place rSkill's training raster (672x376): the Thor
     # cell's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
     # 1920x1080, 2026-10-02) scaled per axis, so a sim renders the policy's view at its
     # field of view (65.3 deg horizontal) and aspect.
@@ -604,7 +607,7 @@ sensors:
     # device; `ros2_image` subscribes). The frame and intrinsics above are the sim
     # render's stand-ins: fine for a policy view, which conditions on pixels, but NOT
     # for anything geometric on real hardware — use `head_zed` for that. The key stays
-    # `observation.images.top`: the restock π0.5 rSkill aliases it onto its checkpoint's
+    # `observation.images.top`: the pick-and-place π0.5 rSkill aliases it onto its checkpoint's
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.

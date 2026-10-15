@@ -999,7 +999,7 @@ def _noisy(x: float, y: float, yaw: float, **noise: object) -> dict[str, object]
 def test_object_pose_noise_is_seeded_truncated_and_collision_free(
     _manifest_scene_mod: object,
 ) -> None:
-    """Two tote cartons (OpenArm restock E14 footprints) 8 mm apart, inside a tote floor."""
+    """Two tote cartons (OpenArm pick-and-place E14 footprints) 8 mm apart, inside a tote floor."""
     mod = _manifest_scene_mod
     sample = mod.sample_object_poses  # type: ignore[attr-defined]
     overlap = mod._rects_overlap  # type: ignore[attr-defined]
@@ -1077,7 +1077,7 @@ def test_object_pose_noise_schema() -> None:
 
 
 def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
-    """OpenArm restock speed knobs: wrists rendered at 224 px high keep their field of view."""
+    """OpenArm π0.5 speed knobs: wrists rendered at 224 px high keep their field of view."""
     from openral_sim.backends.isaac_sim import _render_desc
 
     path = _repo_root() / "robots/openarm/robot.yaml"

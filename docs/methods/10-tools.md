@@ -28,14 +28,18 @@ _Overlays a robot's kernel collision primitives — the shapes the C++ safety ke
 - `--viewer` — interactive MuJoCo window; `--screenshot PATH` writes an offscreen PNG; `--rviz` publishes the primitives as markers in RViz. `--robot <id>` (default `so101_follower`) and `--deg <j...>` set the pose in degrees.
 - `main(argv=None) -> int` (L334) — CLI entry; builds the robot's kernel collision primitives and dispatches to the viewer/screenshot/RViz renderer named above.
 
-### `tools/isaac_static_geometry.py`
+### `tools/derive_scene_inputs.py`
 
-Export an Isaac scene's static colliders as declared static geometry (#349).
+Derive a deploy scene's safety inputs from the simulator instead of by hand (#349): the declared static geometry and the grasp declaration's `search_box` / `workspace_box`. Backend-neutral (Isaac sidecar or MuJoCo); explicit scene values win unless `--replace`, and both are printed for comparison.
 
-- `to_declared(box) -> dict` (L28) — A sidecar `kind: box` collider as a `StaticBox` entry (`quat_xyzw`, base frame).
-- `mesh_bounds(vertices) -> tuple[list[float], list[float]]` (L56) — Centre and half-extents of a vertex set's axis-aligned bound.
-- `nearest_distance_m(entry) -> float` (L68) — Lower bound on an entry's distance from the base-frame origin.
-- `main(argv=None) -> int` (L80) — Boots the scene's Isaac env (`build_sim_env_from_yaml`) and writes its static colliders as a `StaticGeometry` YAML (meshes as `.npz` beside it, `--out`) or prints them (`--max-distance`).
+- `to_declared(box) -> dict` (L40) — A backend `kind: box` collider as a `StaticBox` entry (`quat_xyzw`, base frame).
+- `mesh_bounds(vertices) -> tuple[list[float], list[float]]` (L68) — Centre and half-extents of a vertex set's axis-aligned bound.
+- `nearest_distance_m(entry) -> float` (L80) — Lower bound on an entry's distance from the base-frame origin.
+- `aabb(box) -> Bbox` (L92) — Base-frame axis-aligned bound `(x0, y0, z0, x1, y1, z1)` of an oriented `{center_m, rotation, half_extents_m}` box.
+- `source_fixture(obj, colliders, tol_m=0.02, gap_m=0.25) -> tuple[Bbox, str] | None` (L114) — The static collider group the object rests on (highest box under the object's centre, then every collider sharing its parent path and connected to it within `gap_m` — RoboCasa's parked unused panels 10 m up are not) and its bound: a tote's floor + walls + rims, a counter body's geoms.
+- `destination_hull(placements, obj_name, anchor, cap_m) -> tuple[Bbox | None, list[str], list[str]]` (L171) — The hull of `obj_name`'s candidate destinations (one placement each: `target` + `adjacent`) that reach into the pick's `anchor` ± `cap_m` window, and the names kept / dropped; a candidate wholly outside (a mobile base drives between pick and place) is dropped. `main` grounds the workspace from the source fixture and this hull, and falls back to the pick side alone (logged) when the two together exceed the workspace caps.
+- `write_static(reply, out, max_distance) -> int` (L272) — The backend's colliders as a `StaticGeometry` YAML (meshes as `.npz` beside it).
+- `main(argv=None) -> int` (L331) — Boots the scene (`build_sim_env_from_yaml`), resets at its seed, exports static colliders (Isaac `static_collider_boxes`; MuJoCo `mujoco_geometry.static_collider_boxes` with the robot's bodies excluded; none for a mobile base, whose base-frame fixtures hold only at the reset pose), `set_task(prompt)` + `scene_ground_truth`, grounds `search_box` with `ground_grasp_target` (sim objects as `DetectedObject`s) and `workspace_box` with `ground_workspace` (source fixture + destination region and its graded-adjacent regions), and writes the derived scene (`--out`, static geometry beside it).
 
 ### `tools/generate_tight_geometry.py`
 
@@ -274,9 +278,10 @@ _Robot-agnostic, URDF-driven Isaac Sim scene (the sidecar's only scene): imports
 - `class IsaacManifestScene(IsaacSceneBase)` (L1474) — URDF-driven, robot-agnostic Isaac scene built from the marshaled robot spec. Reads `action.control_freq_hz` from the spec (refuses a spec without it); `build` creates the World with `physics_dt = rendering_dt = physics_dt_for(control_freq_hz)` (equal, because a rendered `world.step()` runs `app.update()`, which advances `rendering_dt`) and ends with `_fix_time_base`, so one `step` is one control period (`physics_substeps` is never pinned here).
   - `IsaacManifestScene.set_task(instruction) -> dict[str, Any]` — Deploy sim (`placement_success_by_prompt` in the spec): activates that prompt's rubric (none without an entry) from a fresh grade via `_activate_placement_success`; a `sim run` scene keeps its build-time rubric. Reply `graded`, `grade_scores` (`{}` ungraded), `prompts`. Under deploy sim `_reward_terminated` never terminates; `info["placement_grade"]` still reports. (L2673)
   - `IsaacManifestScene._body_speed(collider) -> float | None` (L2785) — World linear speed of the robot rigid body owning `collider` (deepest captured body path prefixing it; `SingleRigidPrim` made on first use); `None` when no robot body owns it. Feeds `robot_contacts[].link_speed_mps`.
-  - `IsaacManifestScene._contact_points() -> list[dict[str, Any]]` (L2893) — Every PhysX contact point of the last physics step as plain dicts (the shape `aggregate_robot_contacts` folds); shared by `contact_ground_truth` and the step info's `robot_contacts`.
-  - `IsaacManifestScene.contact_ground_truth() -> dict[str, Any]` (L2930) — The sidecar `contacts` reply: `aggregate_robot_contacts` over `get_physx_simulation_interface().get_contact_report()` (last physics step), each pair with both colliders' authored `contact_offset_m` / `rest_offset_m` (`None` = PhysX-derived), `sim_time_ns`, `self_contact_points`, `nearest_robot_world_pairs: None` + reason, `CONTACTS_CAVEAT`. `_enable_contact_reports` (in `build`) applies `PhysxContactReportAPI` (threshold 0) to every robot rigid body.
+  - `IsaacManifestScene._contact_points() -> list[dict[str, Any]]` (L2948) — Every PhysX contact point of the last physics step as plain dicts (the shape `aggregate_robot_contacts` folds); shared by `contact_ground_truth` and the step info's `robot_contacts`.
+  - `IsaacManifestScene.contact_ground_truth() -> dict[str, Any]` (L2985) — The sidecar `contacts` reply: `aggregate_robot_contacts` over `get_physx_simulation_interface().get_contact_report()` (last physics step), each pair with both colliders' authored `contact_offset_m` / `rest_offset_m` (`None` = PhysX-derived), `sim_time_ns`, `self_contact_points`, `nearest_robot_world_pairs: None` + reason, `CONTACTS_CAVEAT`. `_enable_contact_reports` (in `build`) applies `PhysxContactReportAPI` (threshold 0) to every robot rigid body.
   - `IsaacManifestScene.static_collider_boxes() -> dict[str, Any]` (L2803) — The sidecar `static_colliders` reply: every static collider (CollisionAPI, not under the robot, no enabled non-kinematic rigid body on itself or an ancestor) in `base_frame` via `_world_from_base`: triangle-mesh colliders (approximation `none`) as `kind: mesh` vertices + fan-triangulated triangles, others as `kind: box` USD bounds (`oriented_box`); each with `path`, `type`, `approximation`, `collision_enabled`.
+  - `IsaacManifestScene.scene_ground_truth() -> dict[str, Any]` (L2893) — The sidecar `scene_ground_truth` reply: each declared object's USD bound posed by PhysX (`get_world_pose`, scale from USD) and the active rubric's placements (`object`, `target` region box, `adjacent` region boxes), all in `base_frame`. Feeds `tools/derive_scene_inputs.py`.
 - `oriented_box(frame_from_local, local_min, local_max) -> dict` (L524) — The oriented box a local axis-aligned range spans in another frame (scale folded into the half-extents): `center_m`, `rotation` (3x3 rows), `half_extents_m`.
   - `IsaacManifestScene._fix_time_base() -> None` — Run at the end of `build`, once the stage (environment USD included) is complete: reads the World's actual physics and rendering dts, refuses (`ValueError`) a rendering dt that differs from the physics dt, calls `resolve_time_base`, and sets the kinematic base's integration interval to the resolved `sim_dt_per_tick_s` (one source for both).
   - `IsaacManifestScene._depth_frames() -> dict[str, dict[str, Any]]` (L2572) — Registered colour + metric depth per depth camera, from ONE render of the same Isaac camera: `distance_to_image_plane` (`0.0` = no return / past `range_max_m`), its RGB, `k = [fx, fy, cx, cy]` from Isaac's intrinsics matrix, and the camera's REP-103 optical pose (`camera_axes="ros"`) in `base_frame` as a 4x4 — the four streams a real RGB-D driver gives the vision attachment leg. Shipped in every step reply, so the published colour/depth pair is never more than one HAL step apart from what the segmenter and the HAL bridge each last received (the bridge's `mask_depth_max_skew_s` is 0.1 s).
@@ -570,21 +575,21 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 ### `tools/da3_depth_sidecar.py` + `tools/_da3_depth_server.py`
 _Boot helper + server for the Depth Anything 3 monocular metric-depth sidecar, companion to `openral_perception_ros`'s depth-provider node. Runs in its own Python 3.12 venv behind a ZMQ REQ/REP + msgpack wire, since the model ships outside transformers; the provider republishes the reply as a depth image for nvblox. Loaded by file path so the deploy launch can autostart it under a plain interpreter._
 
-- `_DEFAULT_HOME: Path` (L51) — default cache dir.
-- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L52) — `--venv` override env var name.
-- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L53) — `--home` override env var name.
-- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L58) — x86_64 install set.
-- `_NVRTC_OVERRIDE: Path` (L72) — aarch64 nvrtc override file passed at install time.
-- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L75) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
-- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L102) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
-- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L108) — the anchor statement `_defer_pycolmap_import` rewrites.
-- `_PYCOLMAP_LAZY_IMPORT: str` (L109) — the lazy `__getattr__` proxy it rewrites that statement into.
-- `ensure_venv(home, *, override=None) -> Path` (L163) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
-- `_site_packages(py) -> Path` (L128) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
-- `_defer_pycolmap_import(py) -> None` (L136) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
-- `main() -> int` (L200) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
+- `_DEFAULT_HOME: Path` (L53) — default cache dir.
+- `_VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"` (L54) — `--venv` override env var name.
+- `_HOME_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_HOME"` (L55) — `--home` override env var name.
+- `_REQUIREMENTS = ("depth-anything-3", "pyzmq", "msgpack")` (L61) — x86_64 install set.
+- `_NVRTC_OVERRIDE: Path` (L75) — aarch64 nvrtc override file passed at install time.
+- `_AARCH64_REQUIREMENTS: tuple[str, ...]` (L78) — upstream's dependency list minus `open3d` / `pycolmap` / `xformers` / `pre-commit`, plus the undeclared `addict` and the repo's `torch==2.9.1` aarch64 pins.
+- `_AARCH64_DA3 = "depth-anything-3==0.1.1"` (L105) — installed `--no-deps` after `_AARCH64_REQUIREMENTS` on aarch64.
+- `_PYCOLMAP_EAGER_IMPORT = "\nimport pycolmap\n"` (L111) — the anchor statement `_defer_pycolmap_import` rewrites.
+- `_PYCOLMAP_LAZY_IMPORT: str` (L112) — the lazy `__getattr__` proxy it rewrites that statement into.
+- `ensure_venv(home, *, override=None) -> Path` (L166) — Returns the sidecar venv python, provisioning it if absent. x86_64 installs the plain requirement set; aarch64 substitutes packages with no aarch64 wheel and applies an nvrtc override, load-bearing because the model's JIT-fused op otherwise fails on later requests.
+- `_site_packages(py) -> Path` (L131) — the `site-packages` of the venv owning `py`; `SystemExit` if absent.
+- `_defer_pycolmap_import(py) -> None` (L139) — aarch64 only: rewrites the installed package's eager `import pycolmap` into a lazy proxy, since that dependency has no aarch64 wheel but is only needed by a code path this sidecar never calls. A deferred import, not a stub — the real error still raises if that path is used.
+- `main() -> int` (L214) — argparse (`--model` default `depth-anything/DA3-SMALL`, `--host`, `--port` default 5771, `--process-res` default 504, `--home`, `--venv`); execs into `_da3_depth_server.py`. No JIT/fuser env knobs needed, since the nvrtc override fixes the issue at install time.
 - `_load(model_id) -> (torch, model)` / `_infer(torch, model, image, process_res) -> (depth, K, latency_ms)` — load DA3 to CUDA in eval mode; one image → metric depth `(H, W)` float32 + 3×3 intrinsics.
-- `main() -> int` (_da3_depth_server.py L60) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
+- `main() -> int` (_da3_depth_server.py L70) — ZMQ REP loop (`ping`/`depth`/`shutdown`) that replies with an error object rather than dying on a bad frame. Validated live on both an 8 GB Ada GPU and a GB10 aarch64 host.
 
 ### `tools/internvla_n1_sidecar.py` + `tools/_internvla_n1_server.py`
 _Boot helper + server for InternVLA-N1/DualVLN, companion to `openral_sim.policies.internvla_n1`. Runs out-of-process over ZMQ because upstream's pinned transformers version conflicts with the workspace's; provisions a py3.11 venv from an inference-only pin set and serves the Qwen2.5-VL-7B S2 planner + NavDP DiT S1 policy, mapping discrete VLN-CE actions to a `BODY_TWIST`._

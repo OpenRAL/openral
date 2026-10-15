@@ -62,8 +62,17 @@ cannot be fixed in the manifest, set the explicit `min_height_m` /
 
 ### Installing the NVIDIA Isaac ROS stack (visual backend only)
 
-cuVSLAM + nvblox are **not bundled** (closed NVIDIA binaries, license
-guard). Install them once on the GPU host (Ubuntu 24.04 x86_64 / supported
+cuVSLAM + nvblox are **not bundled**. cuVSLAM is a closed NVIDIA binary
+(NVIDIA license, kept behind the license guard). The nvblox library and
+`isaac_ros_nvblox` / `nvblox_ros` are Apache-2.0 and simply not vendored — they
+ship as prebuilt packages from the same NVIDIA apt repo. **But** the Isaac ROS
+NITROS/GXF runtime they pull in may carry NVIDIA licensing — review before
+commercial deployment: on the release-4.x line this install targets,
+`nvblox_ros` depends on `isaac_ros_managed_nitros`, the NITROS image/camera-info
+types and `isaac_ros_gxf` (which installs prebuilt `libgxf_*.so`), all declared
+under the *NVIDIA Isaac ROS Software License*, which limits use to systems with
+NVIDIA GPUs and restricts redistribution. Install both once
+on the GPU host (Ubuntu 24.04 x86_64 / supported
 Jetson, CUDA 13.0+, driver 580+):
 
 ```bash
@@ -166,8 +175,11 @@ python tools/da3_depth_sidecar.py --port 5771   # DA3-Small, ~0.27 GB / ~27 Hz o
 
 > **cuVSLAM is the camera-based backend for lidar-less robots.** It produces
 > `map → odom` localization, **not** an occupancy grid — Nav2's costmap needs the
-> companion **nvblox** stage (depth + cuVSLAM pose → `/map`). The cuVSLAM/nvblox
-> engines are precompiled NVIDIA binaries under an
-> NVIDIA EULA — **not bundled** by OpenRAL; install them on the target GPU host
-> behind the NVIDIA license guard. Live bring-up is operator-run (needs a GPU +
+> companion **nvblox** stage (depth + cuVSLAM pose → `/map`). Neither engine is
+> **bundled** by OpenRAL: cuVSLAM is a closed NVIDIA binary under an NVIDIA
+> license (installed behind the license guard); the nvblox library and
+> `isaac_ros_nvblox` are Apache-2.0 and come prebuilt from NVIDIA's apt repo, but
+> the Isaac ROS NITROS/GXF runtime they pull in may carry NVIDIA licensing —
+> review before commercial deployment (see "Installing the NVIDIA Isaac ROS
+> stack" above). Install both on the target GPU host. Live bring-up is operator-run (needs a GPU +
 > the Isaac ROS stack); the in-tree tests are hermetic launch-contract checks.

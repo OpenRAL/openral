@@ -15,7 +15,7 @@
 # end/cancel and E-stop; every consumer MUST also expire it on timeout_s so a
 # dispatcher dying mid-goal cannot leave an exemption armed.
 
-# Identity of the declared grasp target (e.g. "cell:restock_box"). Empty is
+# Identity of the declared grasp target (e.g. "cell:pick_box"). Empty is
 # invalid while active=true.
 string target_id
 
@@ -52,7 +52,8 @@ bool region_valid
 PlaceRegion region
 
 # Optional search box (real pick-and-place design §2.2), in the voxel grid's base
-# frame: where the target producer looks in the occupancy map for the seed it
+# frame or a fixed tf2 frame (`odom`, `map`) the producer re-expresses in the grid's
+# frame every tick: where the target producer looks in the occupancy map for the seed it
 # prompts the segmenter with. It only SEEDS perception and arms nothing — the
 # exemption is always the measured `region` above. Unlike `region`, a scene may
 # supply it and dispatch passes it through unchanged. search_box_valid false =
@@ -61,7 +62,7 @@ bool search_box_valid
 PlaceRegion search_box
 
 # Optional manipulation workspace (issue #349, docs/reference/manipulation-workspace-contact.md),
-# in the voxel grid's base frame: the box the task works in (the source tote's interior for a
+# in the voxel grid's base frame or, like `search_box`, a fixed tf2 frame: the box the task works in (the source tote's interior for a
 # pick). Like `search_box`, a scene may DECLARE it and dispatch passes it through unchanged; on
 # its own it exempts nothing. workspace_box_valid false = no workspace. `workspace_box.geometry[]`
 # MUST be empty.

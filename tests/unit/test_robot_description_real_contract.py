@@ -144,6 +144,25 @@ def test_each_kernel_read_safety_field_must_be_declared(field: str) -> None:
     assert not any(f"safety.{o}" in str(excinfo.value) for o in others)
 
 
+@pytest.mark.parametrize("field", RobotDescription.REAL_HARDWARE_SAFETY_FIELDS)
+def test_the_error_says_which_required_fields_are_not_yet_enforced(field: str) -> None:
+    """Issue #375: a field required as a declaration but unchecked by the kernel says so."""
+    declared = {k: getattr(_FULL_SAFETY, k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS}
+    del declared[field]
+    with pytest.raises(ValidationError) as excinfo:
+        _description(safety=SafetyEnvelope(**declared))  # type: ignore[arg-type]  # reason: mapping of the model's own fields
+    unenforced = field in RobotDescription.UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS
+    assert ("not yet enforced by the safety kernel" in str(excinfo.value)) is unenforced
+
+
+def test_the_unenforced_fields_are_still_required() -> None:
+    """Declared-not-enforced fields stay a subset of the required real-hardware fields."""
+    assert set(RobotDescription.UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS) <= set(
+        RobotDescription.REAL_HARDWARE_SAFETY_FIELDS
+    )
+    assert "max_force_n" in RobotDescription.UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS
+
+
 def test_an_explicit_value_equal_to_the_default_counts_as_declared() -> None:
     """What is refused is inheriting a default silently, not the number itself."""
     explicit = SafetyEnvelope(

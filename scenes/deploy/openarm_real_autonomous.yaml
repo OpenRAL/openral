@@ -26,7 +26,7 @@
 # spatial memory gives each instance a node id, and the reasoner names one instance per
 # skill (grasp_target.object_id) — grounding refuses a bare label that matches several.
 #
-# What this scene cannot do yet: the only OpenArm VLA today is task-specific (the restock
+# What this scene cannot do yet: the only OpenArm VLA today is task-specific (the pick-and-place
 # policy). A general "pick up X" needs a language-conditioned pick/place policy installed for
 # the OpenArm; until one exists the reasoner has nothing general to dispatch and should hand
 # off to the operator. The vision attachment leg stays OFF (pending Safety-WG), so a grasped
