@@ -131,6 +131,21 @@ def compose_sim_env(
     )
 
 
+_SIM_DIR = Path(__file__).parent
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark every test collected under ``tests/sim/`` with ``sim``.
+
+    ``just test-sim`` / ``just hal-twin-sweep`` select with ``-m sim``; a file that forgot its
+    ``pytestmark`` was silently deselected. Applying the marker here makes the directory the
+    single source of truth. The hook sees the whole session's items, hence the path filter.
+    """
+    for item in items:
+        if item.path.is_relative_to(_SIM_DIR):
+            item.add_marker(pytest.mark.sim)
+
+
 def mujoco_renderer_probe_error() -> str | None:
     """Return ``None`` if a MuJoCo off-screen renderer can be created, else a reason.
 

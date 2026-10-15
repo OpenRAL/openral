@@ -255,7 +255,7 @@ def _octomap_clamping_max(hal_mode: str) -> float:
 
 
 def _octomap_resolution(hal_mode: str) -> float:
-    """Use manipulation-scale voxels in sim without changing real maps.
+    """Use manipulation-scale voxels: 15 mm in sim, 20 mm on real hardware.
 
     ``OPENRAL_OCTOMAP_RESOLUTION_M`` overrides it, for the resolution battery in
     the programme note §5 (``docs/reference/collision-validation-evidence.md``).
@@ -265,8 +265,8 @@ def _octomap_resolution(hal_mode: str) -> float:
 
     **A finer grid is LESS conservative**, not more: the cell half-diagonal is
     the kernel's quantisation term, so shrinking it makes the kernel stop later
-    and nearer. Sim ships **15 mm** as of #253's ruling; real hardware stays at
-    50 mm.
+    and nearer. Sim ships **15 mm** as of #253's ruling; real hardware ships
+    20 mm (down from 50 mm, see below).
 
     The sim evidence: replayed on the real kernel over identical payload poses,
     `PickPlaceCounterToSink` (the DOP-only, field-typical payload) goes from
