@@ -47,7 +47,11 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    # ms a BT action node waits for a server to ACCEPT a goal before the node
+    # fails. Nav2's default 20 ms is below the measured tail on a loaded host
+    # (goal-ack p99 19 ms, max 29 ms on 20 saturated cores, trivial server), so a
+    # busy planner aborts the leg. Latency tolerance only; not a nav precision knob.
+    default_server_timeout: 1000
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]
