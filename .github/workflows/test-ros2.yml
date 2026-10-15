@@ -35,12 +35,22 @@ name: test-ros2
 on:
   pull_request:
     branches: [master]
+  # Master runs exist to write the ccache entry every PR can restore (a PR
+  # run's cache is scoped to its own refs/pull/N/merge). Only when the built
+  # sources change: otel-cpp's pinned source is what the cache mostly holds.
+  push:
+    branches: [master]
+    paths:
+      - "cpp/**"
+      - "packages/msgs/**"
+      - "packages/openral_octomap_bridge/**"
+      - ".github/workflows/test-ros2.yml"
   workflow_dispatch:
     inputs:
       packages:
-        description: "colcon --packages-up-to targets (space-separated)"
+        description: "colcon --packages-up-to targets (space-separated; empty = openral_safety_kernel openral_octomap_bridge)"
         required: false
-        default: "openral_safety_kernel openral_octomap_bridge"
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -79,20 +89,42 @@ jobs:
             git ca-certificates \
             libprotobuf-dev protobuf-compiler \
             nlohmann-json3-dev \
+            ccache \
             ros-jazzy-octomap ros-jazzy-octomap-msgs ros-jazzy-octomap-server
           rm -rf /var/lib/apt/lists/*
 
+      # The default package set is all CMake + gtest: Python only runs inside
+      # rosidl/ament codegen, and the container's /usr/bin/python3 already has
+      # what that imports (catkin_pkg, em, lark, numpy). The uv venv the
+      # Justfile builds against exists so Python *tests* can import
+      # `openral_*`; none run here, and restoring + syncing it cost 2.6 min.
+      # A dispatch that widens `packages` may pull in ament_python packages
+      # and their tests, so it still gets the venv.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        if: inputs.packages != ''
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # The colcon build points -DPython3_EXECUTABLE at this venv, so it has to
-      # exist before the build, not just before the tests.
       - name: Sync the Python environment
+        if: inputs.packages != ''
         run: |
           uv lock --check
           uv sync --frozen --all-packages
+
+      # ccache under the workspace so actions/cache can carry it between runs.
+      # opentelemetry_cpp_vendor alone was ~2 min of every cold build and its
+      # pinned upstream source never changes. The CMAKE_*_COMPILER_LAUNCHER env
+      # vars (not --cmake-args) are what reach the vendor's ExternalProject
+      # sub-build too. Saved under a per-commit key and restored from the
+      # newest prefix match, so each run starts from the previous one's cache.
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .ccache
+          key: ros2-ccache-${{ github.sha }}
+          restore-keys: |
+            ros2-ccache-
 
       - name: Declared-dependency check
         run: bash scripts/check_ros_build_deps.sh
@@ -101,15 +133,23 @@ jobs:
       # gtest_vendor declares cmake_minimum_required(VERSION 3.5), which CMake
       # >= 3.27 deprecates loudly through colcon on every package with tests.
       - name: colcon build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_MAXSIZE: 500M
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
         run: |
           . /opt/ros/jazzy/setup.sh
+          if [ -x .venv/bin/python ]; then py="$(pwd)/.venv/bin/python"; else py=/usr/bin/python3; fi
+          ccache --zero-stats
           colcon build --merge-install --symlink-install \
             --base-paths packages cpp \
             --packages-up-to ${PACKAGES} \
-            --cmake-args -DPython3_EXECUTABLE="$(pwd)/.venv/bin/python" \
+            --cmake-args -DPython3_EXECUTABLE="$py" \
                          -DCMAKE_C_COMPILER=/usr/bin/gcc \
                          -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
                          -DCMAKE_POLICY_VERSION_MINIMUM=3.10
+          ccache --show-stats
 
       # `colcon test` exits 0 even when tests fail — the failure lives in the
       # per-package result files. `colcon test-result --verbose` is what turns a

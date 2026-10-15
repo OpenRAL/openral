@@ -418,8 +418,9 @@ ros2-env:
 # `empy<4` are pinned in the workspace dev deps (`pyproject.toml`) so
 # they land inside `.venv/` on `uv sync --all-packages` and ament's
 # configure step finds them on the venv's own `sys.path` — no
-# sitecustomize / PYTHONPATH bridge required. Matches `.github/workflows/
-# test-ros2.yml`, which also activates the venv before colcon.
+# sitecustomize / PYTHONPATH bridge required. `.github/workflows/
+# test-ros2.yml` builds against the system Python instead: its default
+# package set runs no Python tests, so it skips the venv entirely.
 #
 # The list mirrors every colcon package currently on disk under packages/ and
 # cpp/ that is wired into the ROS 2 graph (F1 skill_runner,
