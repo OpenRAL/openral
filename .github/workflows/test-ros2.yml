@@ -8,9 +8,8 @@ name: test-ros2
 # had no CI coverage of any kind: a kernel-only PR gets a green
 # `select-and-test` that ran zero tests. This file is that missing half.
 #
-# Auto-triggers disabled: out of GitHub Actions credits, matching hal.yml,
-# test-python.yml and docs.yml. Re-enable PR/push triggers once billing is
-# restored — see "Re-enabling on PRs" below. Until then this is the documented,
+# Auto-triggers disabled: out of GitHub Actions credits. Re-enable PR/push
+# triggers once billing is restored — see "Re-enabling on PRs" below. Until then this is the documented,
 # reproducible way to run the kernel suite in CI on demand, and the local
 # equivalent is `just ros2-build && just ros2-test`.
 #
