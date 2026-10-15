@@ -4,7 +4,7 @@ r"""Real-hardware ros2_control bringup for the OpenArm v2 bimanual arm.
 already-running ``ros2_control`` controllers over topics — same pattern as every other real-HW
 HAL in this repo (``FrankaPandaRealHAL`` assumes ``franka_ros2``'s ``franka.launch.py`` is
 already up). It never has and never will start ``controller_manager`` itself: that graph is C++,
-runs at 400 Hz+, and belongs under a vendor bringup launch, not under a Python HAL (CLAUDE.md
+runs at 750 Hz, and belongs under a vendor bringup launch, not under a Python HAL (CLAUDE.md
 §1.5).
 
 Before this file, nothing in this repo started that graph on real CAN hardware: an operator had

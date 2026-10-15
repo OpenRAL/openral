@@ -7,10 +7,10 @@ twin to hardware unchanged.
 Actuation path (CLAUDE.md §1.5: motors only through a typed bridge to
 ros2_control with a watchdog; anything >100 Hz is C++). The OpenArm's
 Damiao BLDC servos run one CAN FD bus per arm (1 Mbit/s arbitration,
-5 Mbit/s data) at 400 Hz:
+5 Mbit/s data) at 750 Hz:
 
     Skill → Action → OpenArmRealHAL → ros2_control command topics
-          → controller_manager (400 Hz, C++)
+          → controller_manager (750 Hz, C++)
           → openarm_hardware SystemInterface (C++)
           → openarm_can → SocketCAN → Damiao motors
 
