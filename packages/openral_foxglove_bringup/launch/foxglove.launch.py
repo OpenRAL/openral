@@ -220,7 +220,7 @@ def generate_launch_description() -> LaunchDescription:
         republish_compressed_cfg: LaunchConfiguration,
         compressed_camera_topics_cfg: LaunchConfiguration,
         use_sim_time_cfg: LaunchConfiguration,
-    ) -> list:
+    ) -> list[Node]:
         if republish_compressed_cfg.perform(context).lower() != "true":
             return []
         raw_topics_str = compressed_camera_topics_cfg.perform(context).strip()

@@ -84,7 +84,7 @@ def _facet_samples(hull_points: Points, samples_per_edge: int) -> Points:
     import numpy as np
 
     # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
-    from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
+    from scipy.spatial import ConvexHull
 
     hull = ConvexHull(hull_points)
     # Keep TOTAL samples bounded, not samples-per-facet: cost is

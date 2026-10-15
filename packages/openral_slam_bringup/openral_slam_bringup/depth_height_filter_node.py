@@ -97,7 +97,7 @@ def _mat_mul(
     b: tuple[tuple[float, float, float], ...],
 ) -> tuple[tuple[float, float, float], ...]:
     cols = ((b[0][0], b[1][0], b[2][0]), (b[0][1], b[1][1], b[2][1]), (b[0][2], b[1][2], b[2][2]))
-    return tuple(tuple(sum(row[i] * col[i] for i in range(3)) for col in cols) for row in a)  # type: ignore[return-value] # reason: tuple comprehension has fixed 3x3 shape.
+    return tuple(tuple(sum(row[i] * col[i] for i in range(3)) for col in cols) for row in a)  # type: ignore[misc]  # reason: tuple comprehension has fixed 3x3 shape.
 
 
 def _vec_add(

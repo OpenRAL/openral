@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
     from openral_rskill._policy_io import PolicyIOCodec
     from openral_rskill.base import rSkillBase
+    from openral_rskill.ros_action_rskill import ROSActionRskill
     from openral_world_state import WorldStateAggregator
 
 __all__ = ["RskillRunnerNode", "main"]
@@ -722,11 +723,11 @@ if _ROS2_AVAILABLE:
                 still build the node via ``compose_runtime``).
             """
             try:
-                import tf2_ros  # type: ignore[import-untyped]
+                import tf2_ros
             except ImportError:
                 return None
-            import rclpy.time  # type: ignore[import-untyped]
-            from openral_state_adapter import TransformView  # type: ignore[import-untyped]
+            import rclpy.time
+            from openral_state_adapter import TransformView
 
             self._tf_buffer = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -907,8 +908,8 @@ if _ROS2_AVAILABLE:
             # them cleanly. The TransformListener owns a subscription
             # to /tf + /tf_static; dropping the reference is enough.
             self._tf_lookup = None
-            self._tf_buffer = None  # type: ignore[assignment]
-            self._tf_listener = None  # type: ignore[assignment]
+            self._tf_buffer = None
+            self._tf_listener = None
             return TransitionCallbackReturn.SUCCESS
 
         def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -2639,7 +2640,7 @@ def _default_skill_resolver(
     )
 
 
-def _ros_action_adapter_cls(builder: str | None) -> type:
+def _ros_action_adapter_cls(builder: str | None) -> type[ROSActionRskill]:
     """Map a manifest ``goal_builder`` to its ``ROSActionRskill`` subclass.
 
     ``ros_integration.goal_builder`` selects a
@@ -3443,12 +3444,12 @@ def _clip_input_bounds(slots: Sequence[ActionSlot], policy_action: Any) -> Any:
 
 
 def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot control mode; flat dispatch mirrors the manifest's slot list
-    slots: list,
+    slots: list[ActionSlot],
     policy_action: Any,
     *,
     description: Any | None = None,
     cartesian_delta_scale: tuple[float, ...] | None = None,
-) -> list:
+) -> list[Action]:
     """Build one typed ``Action`` per non-discard ``ActionSlot``.
 
     ``manifest.action_contract.slots`` declares how the policy's flat action vector splits into
@@ -3480,7 +3481,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         n_dof_total = len(description.joints)
         joint_name_to_idx = {j.name: i for i, j in enumerate(description.joints)}
 
-    out: list = []
+    out: list[Action] = []
     for slot in slots:
         if slot.discard:
             continue
@@ -3583,7 +3584,7 @@ def _policy_action_to_actions(
     slots: Sequence[ActionSlot] | None,
     description: RobotDescription | None,
     cartesian_delta_scale: tuple[float, ...] | None,
-) -> Any:
+) -> Action | list[Action]:
     """Raw policy vector → the typed ``Action``(s) the safety kernel sees.
 
     The codec runs on BOTH paths, so a degrees checkpoint reaches the wire in radians
@@ -3620,7 +3621,7 @@ def _policy_action_to_actions(
 
 def _make_policy_adapter_skill(
     *,
-    manifest: object,
+    manifest: RSkillManifest,
     adapter: object,
     prompt: str,
     description: RobotDescription | None = None,
@@ -3664,16 +3665,14 @@ def _make_policy_adapter_skill(
     # from the manifest's action_contract + the robot description and applied on BOTH the
     # whole-vector joint path and the slot path (see `_policy_action_to_actions`). A
     # joint-position contract without joint_units is a ROSConfigError (issue #135).
-    codec = PolicyIOCodec.from_manifest(
-        cast("RSkillManifest", manifest), description, adapter=adapter
-    )
+    codec = PolicyIOCodec.from_manifest(manifest, description, adapter=adapter)
     # Sensor-name -> VLA-slot map (camera1/camera2/...) so `_step_impl`
     # rekeys `obs["images"]` to what the adapter looks up. Built once at
     # skill-build time; see `sensor_name_to_slot`.
     sensor_to_slot = sensor_name_to_slot(description)
     # Slots the policy cannot run without: an undecodable frame on one of these
     # raises instead of silently dropping the view (see `_decode_image_frames`).
-    required_slots = required_vla_camera_slots(cast("RSkillManifest", manifest), description)
+    required_slots = required_vla_camera_slots(manifest, description)
     # Print to stderr so the diagnostic shows up in the launch's
     # stitched-together stdout (structlog's OTel sink doesn't surface
     # there). One-time event at build-time — keeps the per-step
@@ -3703,17 +3702,18 @@ def _make_policy_adapter_skill(
 
         def __init__(self) -> None:
             super().__init__(
-                name=manifest.name,  # type: ignore[attr-defined]
-                version=manifest.version,  # type: ignore[attr-defined]
-                role=manifest.role,  # type: ignore[attr-defined]
-                embodiment_tags=list(manifest.embodiment_tags),  # type: ignore[attr-defined]
+                name=manifest.name,
+                version=manifest.version,
+                role=manifest.role,
+                embodiment_tags=list(manifest.embodiment_tags),
                 latency_budget_ms=(
-                    manifest.latency_budget.per_chunk_ms  # type: ignore[attr-defined]
-                    if manifest.latency_budget is not None  # type: ignore[attr-defined]
+                    manifest.latency_budget.per_chunk_ms
+                    if manifest.latency_budget is not None
                     else None
                 ),
             )
-            self._adapter = adapter
+            # Duck-typed PolicyAdapter: unit tests pass partial adapters (no spec/device).
+            self._adapter: Any = adapter
             self._prompt = prompt
             # Hold the full manifest so the F1 skill_runner can read
             # fields the rSkillBase ABC doesn't expose (e.g.
@@ -3782,7 +3782,7 @@ def _make_policy_adapter_skill(
                 if hasattr(self._adapter, "reset"):
                     # Drop the synthetic chunk (and join any prefetch it
                     # launched) so tick 1 starts from a clean buffer.
-                    self._adapter.reset()  # type: ignore[attr-defined]
+                    self._adapter.reset()
             except Exception as exc:  # reason: an optimisation must never block activate
                 log.warning("rskill_runner.warmup_failed", skill=self.name, error=str(exc))
                 return
@@ -3824,7 +3824,7 @@ def _make_policy_adapter_skill(
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
             if hasattr(self._adapter, "reset"):
-                self._adapter.reset()  # type: ignore[attr-defined]
+                self._adapter.reset()
 
         def set_goal_prompt(self, prompt: str) -> None:
             """Point the loaded policy at a new goal's prompt; start a fresh episode.
@@ -3836,7 +3836,7 @@ def _make_policy_adapter_skill(
             it launched, inferred from the old prompt) is dropped: the first
             chunk of this goal is inferred from this goal's prompt.
             """
-            self._prompt = _effective_goal_prompt(cast("RSkillManifest", manifest), prompt)
+            self._prompt = _effective_goal_prompt(manifest, prompt)
             log.info("rskill_runner.goal_prompt_set", skill=self.name, prompt=self._prompt)
             if hasattr(self._adapter, "reset"):
                 self._adapter.reset()
@@ -3847,7 +3847,7 @@ def _make_policy_adapter_skill(
         def _shutdown_impl(self) -> None:
             """Release GPU memory / file handles owned by the adapter."""
             if hasattr(self._adapter, "close"):
-                self._adapter.close()  # type: ignore[attr-defined]
+                self._adapter.close()
 
         def _dump_obs_to_disk(
             self,
@@ -3989,7 +3989,7 @@ def _make_policy_adapter_skill(
             # `sensor_name_to_slot` / `_decode_image_frames`).
             _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot, required_slots)
 
-            action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]
+            action_array = self._adapter.step(obs, self._prompt)
             # Reorder policy-order action → robot-order action so the
             # safety_kernel + HAL apply each value to the joint the
             # envelope's per-index limits describe. PolicyAdapter returns
@@ -4068,7 +4068,7 @@ def _make_policy_adapter_skill(
     skill = _PolicyAdapterSkill()
     skill.configure()
     skill.activate()
-    return skill  # type: ignore[return-value]
+    return skill
 
 
 def main(args: list[str] | None = None) -> int:

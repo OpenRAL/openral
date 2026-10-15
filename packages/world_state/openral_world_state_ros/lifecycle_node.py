@@ -26,20 +26,40 @@ period and made diagnostics flap).
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+    from openral_core.schemas import (
+        AttachedCollisionObject,
+        DetectedObject,
+        GraspDeclaration,
+        IntrinsicsPinhole,
+        ObjectsMetadata,
+        PlaceDeclaration,
+        SensorSpec,
+        WorldState,
+    )
+    from openral_msgs.msg import OccupancyVoxels
+    from openral_observability import DiagnosticsHeartbeat
+    from openral_world_state import ObjectMemory, VoxelFrustumLifter, WorldStateAggregator
+    from rclpy.timer import Timer
+    from sensor_msgs.msg import PointCloud2
 
 log = logging.getLogger(__name__)
 
 try:
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_observability import log_lifecycle_errors
-    from rclpy.executors import (  # type: ignore[import-untyped]
+    from rclpy.executors import (
         ExternalShutdownException,
     )
-    from rclpy.lifecycle import (  # type: ignore[import-untyped]
+    from rclpy.lifecycle import (
         LifecycleNode,
         TransitionCallbackReturn,
     )
-    from rclpy.qos import (  # type: ignore[import-untyped]
+    from rclpy.qos import (
         QoSDurabilityPolicy,
         QoSProfile,
         QoSReliabilityPolicy,
@@ -63,7 +83,7 @@ def main() -> None:
     configure_observability(service_name="openral.world_state")
 
     rclpy.init()
-    node = _WorldStateLifecycleNode()  # type: ignore[name-defined]
+    node = _WorldStateLifecycleNode()
     try:
         try:
             rclpy.spin(node)
@@ -103,7 +123,7 @@ if _ROS2_AVAILABLE:
             staleness_limit_s (float): Staleness threshold. Default: 0.5.
         """
 
-        def __init__(self, aggregator: object | None = None) -> None:
+        def __init__(self, aggregator: WorldStateAggregator | None = None) -> None:
             """Declare parameters; does not open any connections.
 
             Args:
@@ -177,7 +197,7 @@ if _ROS2_AVAILABLE:
             self._slow_divider = 1
             self._tick_count = 0
             # supervisor-graph F8 — heartbeat.
-            self._heartbeat: object | None = None
+            self._heartbeat: DiagnosticsHeartbeat | None = None
             self._init_lift_state()
 
             self.get_logger().info("WorldState node initialised.")
@@ -189,20 +209,20 @@ if _ROS2_AVAILABLE:
             self._tf_listener: object | None = None
             self._det_sub: object | None = None
             self._voxel_sub: object | None = None
-            self._memory_timer: object | None = None
-            self._lifter: object | None = None
-            self._memory: object | None = None
-            self._latest_voxels: object | None = None
+            self._memory_timer: Timer | None = None
+            self._lifter: VoxelFrustumLifter | None = None
+            self._memory: ObjectMemory | None = None
+            self._latest_voxels: OccupancyVoxels | None = None
             self._voxel_stamp_ns: int = 0
             # #11 — depth point-cloud fallback for the lift (octomap-free path).
             self._depth_points_sub: object | None = None
-            self._latest_depth_points: object | None = None
+            self._latest_depth_points: PointCloud2 | None = None
             self._depth_points_stamp_ns: int = 0
             self._depth_max_points: int = 0
-            self._candidate_buffer: list[object] = []
+            self._candidate_buffer: list[tuple[str, list[DetectedObject]]] = []
             # Detection camera -> (optical frame, K) it was last lifted through; eviction
             # projects the same geometry every memory tick.
-            self._seen_cameras: dict[str, tuple[str, object]] = {}
+            self._seen_cameras: dict[str, tuple[str, IntrinsicsPinhole]] = {}
             self._manifest_fallback_logged: set[str] = set()
             self._map_frame = "map"
             self._voxel_staleness_ns = 0
@@ -212,12 +232,12 @@ if _ROS2_AVAILABLE:
             self, state: object
         ) -> TransitionCallbackReturn:
             """Initialise the aggregator (if owned) and topic plumbing."""
-            from openral_msgs.msg import (  # type: ignore[import-untyped]
+            from openral_msgs.msg import (
                 WorldStateStamped,
             )
             from openral_observability import DiagnosticsHeartbeat, Level
             from sensor_msgs.msg import (
-                JointState as RosJointState,  # type: ignore[import-untyped]
+                JointState as RosJointState,
             )
 
             robot_name: str = self.get_parameter("robot_name").get_parameter_value().string_value
@@ -371,7 +391,7 @@ if _ROS2_AVAILABLE:
                 component_name="openral_world_state",
                 status_fn=_status,
             )
-            self._heartbeat.create_publisher()  # type: ignore[union-attr]
+            self._heartbeat.create_publisher()
 
             self.get_logger().info(f"WorldState configured for robot '{robot_name}'.")
             self._lift_enabled = (
@@ -473,7 +493,7 @@ if _ROS2_AVAILABLE:
                     self._on_memory_tick,
                 )
             if self._heartbeat is not None:
-                self._heartbeat.start()  # type: ignore[union-attr]
+                self._heartbeat.start()
             self.get_logger().info(
                 f"WorldState publishing fast={fast_hz:.1f} Hz, "
                 f"slow={slow_hz:.1f} Hz (divider={self._slow_divider}).",
@@ -483,7 +503,7 @@ if _ROS2_AVAILABLE:
         def on_deactivate(self, state: object) -> TransitionCallbackReturn:
             """Stop the publish timer."""
             if self._heartbeat is not None:
-                self._heartbeat.stop()  # type: ignore[union-attr]
+                self._heartbeat.stop()
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
@@ -495,7 +515,7 @@ if _ROS2_AVAILABLE:
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
             """Destroy subscriptions, publishers, and (if owned) aggregator."""
             if self._heartbeat is not None:
-                self._heartbeat.destroy()  # type: ignore[union-attr]
+                self._heartbeat.destroy()
                 self._heartbeat = None
             if self._joint_sub is not None:
                 self.destroy_subscription(self._joint_sub)
@@ -507,13 +527,13 @@ if _ROS2_AVAILABLE:
                 self.destroy_subscription(self._attachment_sub)
                 self._attachment_sub = None
             for sub in self._camera_subs.values():
-                self.destroy_subscription(sub)  # type: ignore[arg-type]
+                self.destroy_subscription(sub)
             self._camera_subs.clear()
             if self._det_sub is not None:
-                self.destroy_subscription(self._det_sub)  # type: ignore[arg-type]
+                self.destroy_subscription(self._det_sub)
                 self._det_sub = None
             if self._voxel_sub is not None:
-                self.destroy_subscription(self._voxel_sub)  # type: ignore[arg-type]
+                self.destroy_subscription(self._voxel_sub)
                 self._voxel_sub = None
             self._tf_listener = None
             self._tf_buffer = None
@@ -640,12 +660,12 @@ if _ROS2_AVAILABLE:
 
             from openral_core.schemas import JointState
             from sensor_msgs.msg import (
-                JointState as RosJointState,  # type: ignore[import-untyped]
+                JointState as RosJointState,
             )
 
             if self._aggregator is None:
                 return
-            ros_msg: RosJointState = msg  # type: ignore[assignment]
+            ros_msg: RosJointState = msg
             js = JointState(
                 name=list(ros_msg.name),
                 position=list(ros_msg.position),
@@ -703,7 +723,7 @@ if _ROS2_AVAILABLE:
                 .get_parameter_value()
                 .integer_value
             )
-            depth_topic = (
+            depth_topic: str = (
                 self.get_parameter("object_depth_points_topic").get_parameter_value().string_value
             )
             if depth_topic:
@@ -717,7 +737,7 @@ if _ROS2_AVAILABLE:
             self._latest_depth_points = msg
             self._depth_points_stamp_ns = self.get_clock().now().nanoseconds
 
-        def _depth_centers_base(self, base_frame: str, now_ns: int) -> object | None:
+        def _depth_centers_base(self, base_frame: str, now_ns: int) -> NDArray[np.float64] | None:
             """Depth-cloud points as ``(N, 3)`` in the base frame, or ``None``.
 
             #11 — fallback depth source for the object lift when no octomap voxel
@@ -743,7 +763,7 @@ if _ROS2_AVAILABLE:
             except Exception as exc:  # decode is best-effort; never kill the callback
                 self.get_logger().debug(f"depth cloud decode failed: {exc}")
                 return None
-            cloud_frame = str(getattr(cloud.header, "frame_id", "") or "")  # type: ignore[attr-defined]
+            cloud_frame = str(getattr(cloud.header, "frame_id", "") or "")
             t_base_from_cloud = self._lookup_4x4(base_frame, cloud_frame)
             if t_base_from_cloud is None:
                 return None
@@ -752,7 +772,7 @@ if _ROS2_AVAILABLE:
             )
             return centers if centers.shape[0] else None
 
-        def _lookup_4x4(self, target: str, source: str) -> object | None:
+        def _lookup_4x4(self, target: str, source: str) -> NDArray[np.float64] | None:
             """Latest target<-source transform as a 4x4 numpy array, or None."""
             import rclpy
             from openral_world_state import homogeneous_from_quat_xyz
@@ -770,9 +790,10 @@ if _ROS2_AVAILABLE:
             q = tf.transform.rotation
             return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
-        def _sensor_spec(self, sensor_id: str) -> object | None:
+        def _sensor_spec(self, sensor_id: str) -> SensorSpec | None:
             """Find a SensorSpec by name across sensors + sensor_bundles."""
-            desc = self._aggregator.description  # type: ignore[union-attr]
+            assert self._aggregator is not None
+            desc = self._aggregator.description
             for s in desc.sensors:
                 if s.name == sensor_id:
                     return s
@@ -782,7 +803,7 @@ if _ROS2_AVAILABLE:
                         return s
             return None
 
-        def _camera_geometry(self, md: object) -> tuple[str, object] | None:
+        def _camera_geometry(self, md: ObjectsMetadata) -> tuple[str, IntrinsicsPinhole] | None:
             """The (optical frame, K) a detection batch's pixels project through.
 
             The detector stamps the driver's ``CameraInfo`` frame + K on the batch;
@@ -790,11 +811,12 @@ if _ROS2_AVAILABLE:
             this fall back to the manifest ``SensorSpec`` — logged once per camera,
             because on real hardware that spec may be a sim stand-in.
             """
-            if md.camera_intrinsics is not None:  # type: ignore[attr-defined]
-                return (md.camera_frame_id, md.camera_intrinsics)  # type: ignore[attr-defined]
-            sid = md.sensor_id  # type: ignore[attr-defined]
+            # ObjectsMetadata validates frame and K as set together or not at all.
+            if md.camera_intrinsics is not None and md.camera_frame_id is not None:
+                return (md.camera_frame_id, md.camera_intrinsics)
+            sid = md.sensor_id
             spec = self._sensor_spec(sid)
-            if spec is None or spec.intrinsics is None:  # type: ignore[attr-defined]
+            if spec is None or spec.intrinsics is None:
                 self.get_logger().debug(f"no intrinsics for sensor '{sid}'")
                 return None
             if sid not in self._manifest_fallback_logged:
@@ -802,9 +824,9 @@ if _ROS2_AVAILABLE:
                 self.get_logger().warning(
                     f"object lift: detections from '{sid}' carry no CameraInfo frame/K; "
                     f"projecting through the manifest SensorSpec (frame "
-                    f"'{spec.frame_id}', fx={spec.intrinsics.fx})"  # type: ignore[attr-defined]
+                    f"'{spec.frame_id}', fx={spec.intrinsics.fx})"
                 )
-            return (spec.frame_id, spec.intrinsics)  # type: ignore[attr-defined]
+            return (spec.frame_id, spec.intrinsics)
 
         def _on_objects(self, msg: object) -> None:  # PromptStamped
             """Decode detections, lift to 3D, buffer candidates (best-effort)."""
@@ -841,30 +863,31 @@ if _ROS2_AVAILABLE:
             # the raw depth point cloud when no fresh grid exists (#11) so the
             # lift — and thus spatial-memory ingest + recall_object — works even
             # with octomap disabled. Both yield occupied centres in the base frame.
-            if voxels_fresh:
+            if voxels_fresh and grid is not None:
                 centers = decode_occupied_centers(
-                    origin=(grid.origin.x, grid.origin.y, grid.origin.z),  # type: ignore[attr-defined]
+                    origin=(grid.origin.x, grid.origin.y, grid.origin.z),
                     # The grid's lattice is the OctoMap's, so its axes are not
                     # base_frame's — dropping this puts every lifted object in
                     # the wrong place whenever the base is not map-aligned.
                     orientation_xyzw=(
-                        grid.orientation.x,  # type: ignore[attr-defined]
-                        grid.orientation.y,  # type: ignore[attr-defined]
-                        grid.orientation.z,  # type: ignore[attr-defined]
-                        grid.orientation.w,  # type: ignore[attr-defined]
+                        grid.orientation.x,
+                        grid.orientation.y,
+                        grid.orientation.z,
+                        grid.orientation.w,
                     ),
-                    resolution=grid.resolution,  # type: ignore[attr-defined]
-                    size_xyz=(grid.size_x, grid.size_y, grid.size_z),  # type: ignore[attr-defined]
-                    occupancy=bytes(grid.occupancy),  # type: ignore[attr-defined]
+                    resolution=grid.resolution,
+                    size_xyz=(grid.size_x, grid.size_y, grid.size_z),
+                    occupancy=bytes(grid.occupancy),
                 )
             else:
-                centers = self._depth_centers_base(base_frame, now_ns)
-                if centers is None:
+                depth_centers = self._depth_centers_base(base_frame, now_ns)
+                if depth_centers is None:
                     return  # no voxels and no usable depth cloud => skip
+                centers = depth_centers
             cands = self._lifter.lift(  # type: ignore[union-attr]
                 detections=md.detections,
                 occupied_centers_base=centers,
-                intrinsics=intrinsics,  # type: ignore[arg-type]
+                intrinsics=intrinsics,
                 frame_size=(md.frame_width, md.frame_height),
                 t_cam_from_base=t_cam_from_base,
                 t_map_from_base=t_map_from_base,
@@ -894,12 +917,12 @@ if _ROS2_AVAILABLE:
                 t_cam_from_map = t_cam_from_base @ np.linalg.inv(t_map_from_base)
                 preds.append(
                     build_in_fov_predicate(
-                        intrinsics=intrinsics,  # type: ignore[arg-type]
+                        intrinsics=intrinsics,
                         t_cam_from_map=t_cam_from_map,
                     )
                 )
 
-            def in_fov(obj: object) -> bool:
+            def in_fov(obj: DetectedObject) -> bool:
                 return any(p(obj) for p in preds)
 
             objects = self._memory.tick(cands, stamp_ns=stamp_ns, in_fov=in_fov)
@@ -931,7 +954,7 @@ _IDL_DIAG_TO_STR: dict[int, str] = {
 }
 
 
-def world_state_from_idl(msg: object) -> object:
+def world_state_from_idl(msg: object) -> WorldState:
     """Translate an ``openral_msgs.msg.WorldStateStamped`` → ``openral_core.WorldState``.
 
     Symmetric inverse of ``build_world_state_stamped_msg``; feeds the
@@ -1079,14 +1102,14 @@ def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
     )
 
 
-def _attached_object_from_idl(msg: object) -> object:
+def _attached_object_from_idl(msg: object) -> AttachedCollisionObject:
     """Convert one ROS attached-object message into the normative schema."""
     from openral_core.schemas import AttachedCollisionObject
 
     return AttachedCollisionObject.from_idl(msg)
 
 
-def _place_declaration_from_idl(msg: object) -> object | None:
+def _place_declaration_from_idl(msg: object) -> PlaceDeclaration | None:
     """Decode the place declaration riding an ``AttachmentState``, if any.
 
     ``None`` for an absent or retracted declaration, which is the pre-ADR-0097
@@ -1100,7 +1123,7 @@ def _place_declaration_from_idl(msg: object) -> object | None:
     return declaration if declaration.active else None
 
 
-def _grasp_declaration_from_idl(msg: object) -> object | None:
+def _grasp_declaration_from_idl(msg: object) -> GraspDeclaration | None:
     """Decode the grasp declaration riding an ``AttachmentState``, if any.
 
     Sibling of ``_place_declaration_from_idl``: ``None`` for an absent or
@@ -1129,15 +1152,15 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     Returns:
         A populated ``openral_msgs.msg.WorldStateStamped``.
     """
-    from geometry_msgs.msg import (  # type: ignore[import-untyped]
+    from geometry_msgs.msg import (
         Pose,
         Quaternion,
         Twist,
         Vector3,
     )
-    from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
+    from openral_msgs.msg import WorldStateStamped
     from openral_observability import propagation
-    from sensor_msgs.msg import JointState as RosJointState  # type: ignore[import-untyped]
+    from sensor_msgs.msg import JointState as RosJointState
 
     msg = WorldStateStamped()
     if node is not None:
@@ -1269,7 +1292,7 @@ def _fill_battery(msg: object, world_state: object) -> None:
 
 def _fill_detected_objects(msg: object, world_state: object) -> None:
     """Populate the detected_object_* parallel arrays from ``WorldState.detected_objects``."""
-    from geometry_msgs.msg import Point  # type: ignore[import-untyped]
+    from geometry_msgs.msg import Point
 
     objects = world_state.detected_objects  # type: ignore[attr-defined]
     msg.detected_object_labels = [o.label for o in objects]  # type: ignore[attr-defined]
@@ -1296,7 +1319,7 @@ def _fill_detected_objects(msg: object, world_state: object) -> None:
 
 def _fill_attached_objects(msg: object, world_state: object) -> None:
     """Populate attached payloads in stable object-id order."""
-    from openral_msgs.msg import (  # type: ignore[import-untyped]
+    from openral_msgs.msg import (
         AttachedCollisionObject as RosAttachedCollisionObject,
     )
     from openral_msgs.msg import (
@@ -1329,7 +1352,7 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
     if declaration is not None:
         # The factory encodes the declared target's own geometry (ADR-0098) when
         # the producer measured any; a region with none never calls it.
-        declaration.fill_idl(  # type: ignore[attr-defined]
+        declaration.fill_idl(
             msg.place_declaration,  # type: ignore[attr-defined]
             primitive_factory=RosAttachedCollisionPrimitive,
         )
