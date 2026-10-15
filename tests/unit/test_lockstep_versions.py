@@ -320,7 +320,11 @@ def test_release_please_reports_a_stalled_release() -> None:
     )
     # The action sets releases_created in manifest mode; release_created is the
     # single-package name. Reading only one silently misses a real release.
-    assert "releases_created" in summarise["env"]["RELEASED"], (
+    # The "pick release-please outputs" step (id: release) collapses the
+    # first attempt and the 5xx retry into one ``released`` output.
+    pick = next(s for s in steps if s.get("id") == "release")
+    assert "releases_created" in pick["env"]["RELEASED"], (
         "manifest mode reports via releases_created"
     )
+    assert summarise["env"]["RELEASED"] == "${{ steps.release.outputs.released }}"
     assert "GH_TOKEN" in summarise["env"], "the label query needs an authenticated gh"
