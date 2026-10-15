@@ -7,7 +7,7 @@ The full closed-loop coverage lives in ``tests/sim/test_ur5e_hal_mujoco.py``,
 not-connected error paths, and structural checks — so refactors of the
 shared base fail the unit lane (<2 s) instead of the slow sim lane.
 
-Per CLAUDE.md §5.4 unit tests must "mock all I/O".  ``MujocoArmHAL`` only
+Unit tests stay fast and hardware-free (CLAUDE.md §2).  ``MujocoArmHAL`` only
 imports ``mujoco`` inside ``connect``, so every test in this file
 constructs the HAL but never connects.
 """

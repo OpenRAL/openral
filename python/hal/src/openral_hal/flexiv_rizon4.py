@@ -160,7 +160,7 @@ RIZON4_DESCRIPTION = RobotDescription(
     sdk_kind="open",
     # The Rizon 4 sim HAL is the only execution path today; a future
     # ``Rizon4RealHAL`` wrapping ``flexiv_rdk`` (closed-with-api per
-    # CLAUDE.md §7.4 — Flexiv's RDK is BSD-style but vendor-distributed)
+    # CLAUDE.md §1.9 — Flexiv's RDK is BSD-style but vendor-distributed)
     # will derive its ``RobotDescription`` from this sim baseline via
     # ``make_real_description``, matching the UR / Franka / Sawyer /
     # ALOHA pattern.

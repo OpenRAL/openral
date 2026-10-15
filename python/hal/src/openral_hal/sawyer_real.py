@@ -16,7 +16,7 @@ original SDK.  The shim exposes a joint trajectory controller (default
 name: ``"sawyer_arm_controller"``) and the ``/robot/joint_states`` topic
 (legacy intera_sdk topic name preserved by the fork).
 
-Per CLAUDE.md §7.4 ``intera_sdk`` is BSD-3 — fully compatible — so the
+Per CLAUDE.md §1.9 ``intera_sdk`` is BSD-3 — fully compatible — so the
 manifest declares ``sdk_kind: "closed_with_api"`` (the original company is
 gone but the SDK + the forks need an explicit lineage tag) and sets
 ``hal.real`` to this adapter (Sawyer has no sim HAL, so ``hal.sim`` is None).

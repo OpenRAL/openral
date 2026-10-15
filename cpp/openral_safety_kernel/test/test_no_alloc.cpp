@@ -6,7 +6,7 @@
 // EnvelopeIntersection + ChunkView; the counter must stay at 0 across
 // all iterations.
 //
-// CLAUDE.md §5.2 — "no allocations inside hot loops". This test makes
+// CLAUDE.md §2 — "no allocations inside hot loops". This test makes
 // that guarantee enforceable in CI.
 
 #include "openral_safety_kernel/collision.hpp"
@@ -108,7 +108,7 @@ TEST(NoAlloc, ValidatorIsAllocationFreeOverThousandsOfChunks) {
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
-      << "validator allocated on the hot path; CLAUDE.md §5.2 forbids this.";
+      << "validator allocated on the hot path; CLAUDE.md §2 forbids this.";
 }
 
 TEST(NoAlloc, ValidatorViolationPathIsAlsoAllocationFree) {

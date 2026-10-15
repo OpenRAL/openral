@@ -1,7 +1,7 @@
 """Unit tests for ``_resolve_state_dim`` in the openarm_robosuite backend.
 
 Backend derives observation/action width from the rSkill manifest's
-``state_contract.dim`` / ``action_contract.dim`` (CLAUDE.md §6.4) instead of a
+``state_contract.dim`` / ``action_contract.dim`` (CLAUDE.md §3 rSkill packaging) instead of a
 hardcoded constant tied to one checkpoint, falling back to the openarm
 robot.yaml's joint count when no rSkill resolves.
 """

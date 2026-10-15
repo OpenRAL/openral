@@ -4,12 +4,12 @@
 Owns the ``openral_msgs/action/ExecuteRskill`` action server and the in-process
 ``openral_runner.DeployRunner`` mandated by the F1 design. One node per robot.
 
-Action-goal lifecycle (CLAUDE.md §6.4 + the F1 design):
+Action-goal lifecycle (CLAUDE.md §3 rSkill packaging + the F1 design):
 
 1. **goal_accept_cb** — resolve the rskill via a callable resolver (default
    ``openral_rskill.rSkill.from_pretrained``); license + capability gate; envelope gate
    against the configured ``RobotDescription``. Rejects (``ROSCapabilityMismatch`` /
-   ``ROSConfigError``, CLAUDE.md §10) stamp both the prose ``failure_reason`` and the
+   ``ROSConfigError``, CLAUDE.md §5) stamp both the prose ``failure_reason`` and the
    uint8 ``failure_kind`` for the reasoner's replanning ladder
    (``_failure_kind_for_exception`` maps the §5 hierarchy).
 2. **execute_cb** — instantiate/reuse a ``openral_runner.DeployRunner`` with the

@@ -25,7 +25,7 @@ Public surface:
   action layout.
 - ``G1MujocoHAL`` / ``G1_DESCRIPTION``: Unitree G1, 29-DoF (ADR-0087 glide
   default, optional ADR-0089 pretrained walking controller in sim);
-  real-HW G1 planned M2 (CLAUDE.md §6.2).
+  real-HW G1 planned M2 (CLAUDE.md §3 dual-system pattern).
 - ``H1MujocoHAL`` / ``H1_DESCRIPTION``: Unitree H1, 19-DoF (predecessor to
   G1: 5-DoF/leg, 1-DoF torso, 4-DoF/arm); same validator scope as
   ``G1MujocoHAL``; real-HW also waits on the M2 S0 cerebellum.

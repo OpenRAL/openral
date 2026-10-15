@@ -4,7 +4,7 @@ The ``onnxruntime`` import is **deferred to construction time** so this
 module loads cleanly on hosts without the wheel — ``import openral_rskill``
 must not fail just because the optional ONNX backend isn't installed.
 The deferral also lets ``pytest --doctest-modules`` collect the file in
-the curated doctest set (CLAUDE.md §5.4); see
+the curated doctest set (CLAUDE.md §2); see
 ``tests/unit/test_doctest_runner.py::DOCTEST_TARGETS``.
 
 Public surface

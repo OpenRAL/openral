@@ -8,7 +8,7 @@ arguments is a no-op.  Calling it with no endpoint (the default when the
 helpers still work, they just emit nothing.
 
 This is required behaviour: CI runs without an OTLP collector and must
-not fail. CLAUDE.md §9 calls out "observability as a hard dependency of
+not fail. Making observability a hard dependency of
 the actuation path" as an anti-pattern; the no-op fallback enforces that.
 
 ``shutdown_observability`` flushes all three providers and shuts them

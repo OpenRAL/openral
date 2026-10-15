@@ -244,7 +244,7 @@ def test_main_exits_1_when_manifest_missing_in_real_directory(
     assert excinfo.value.code == 1
 
 
-# ── _publish: privacy gate (CLAUDE.md §7.2 / §12 — security regression guard)
+# ── _publish: privacy gate (security regression guard)
 
 
 def test_publish_passes_private_true_to_create_repo(
@@ -280,7 +280,7 @@ def test_publish_aborts_when_repo_reports_not_private(
 
     Regression guard: if this stops aborting, an attacker (or a typo) could
     silently publish closed-source weights to a public repo (CLAUDE.md
-    §7.2 ban on bundling closed-source weights without the license guard).
+    §1.9 ban on bundling closed-source weights without the license guard).
     """
     skill_dir = _write_skill_dir(tmp_path)
     manifest = publisher._validate_manifest(skill_dir)
@@ -312,7 +312,7 @@ def test_publish_uses_ignore_patterns_for_secret_files(
     assert expected <= actual, f"Missing ignore patterns: {expected - actual}"
 
 
-# ── --public flag + license gate (CLAUDE.md §9) ─────────────────────────────
+# ── --public flag + license gate (CLAUDE.md §1.9) ───────────────────────────
 
 
 def test_public_visibility_error_allows_commercial(publisher: types.ModuleType) -> None:
@@ -399,7 +399,7 @@ def test_publish_public_aborts_when_repo_reports_private(
     fake_api.upload_folder.assert_not_called()
 
 
-# ── Doc-validation gate (CLAUDE.md §6.4) ────────────────────────────────────
+# ── Doc-validation gate (CLAUDE.md §3 rSkill packaging) ─────────────────────
 
 
 def test_main_dry_run_exits_1_when_readme_missing(

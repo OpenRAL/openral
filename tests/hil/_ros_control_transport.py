@@ -15,7 +15,7 @@ and the live driver are present. Unit-lane conformance tests use
 Defaults match ``ur_robot_driver`` (``/scaled_joint_trajectory_controller/joint_trajectory``,
 ``/joint_states``); pass explicit topics for other controllers.
 
-Per CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between. Raises
+Per CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between. Raises
 ``RuntimeError`` if imported on a host without ``rclpy``, so the caller must guard with
 ``importlib.util.find_spec``.
 """

@@ -14,7 +14,7 @@ dependencies = [
     "openral-dataset==0.3.1",        # reason: RolloutRecorder + LeRobotDatasetSink for --dataset-out
     "openral-world-state==0.3.1",    # reason: shared look-at gaze geometry for scene-camera placement
     # x-release-please-end
-    "structlog>=24.1",    # reason: structured logging per CLAUDE.md §5.1
+    "structlog>=24.1",    # reason: structured logging per CLAUDE.md §2
     "PyYAML>=6.0",        # reason: SimEnvironment YAML config loader
     "typer>=0.12",        # reason: CLI framework — exposes eval_app for mounting into ral
     "imageio[ffmpeg]>=2.34",  # reason: --save-video and website MP4 writers use imageio's ffmpeg plugin.

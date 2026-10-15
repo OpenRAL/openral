@@ -7,7 +7,7 @@ gripper normalisation, capability + safety envelope, embodiment tags) so a
 breaking change to ``FRANKA_PANDA_DESCRIPTION`` fails the fast unit lane
 instead of the slow sim lane.
 
-Per CLAUDE.md §5.4 unit tests must mock all I/O.  This file does that by
+Unit tests stay fast and hardware-free (CLAUDE.md §2).  This file does that by
 exercising only the pure-Python ``RobotDescription`` and module-level
 constants — never importing ``mujoco`` or instantiating ``FrankaPandaHAL``.
 """

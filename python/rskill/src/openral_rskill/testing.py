@@ -1,6 +1,6 @@
-"""Test helpers for skill latency-budget enforcement (CLAUDE.md §5.4).
+"""Test helpers for skill latency-budget enforcement (CLAUDE.md §2).
 
-CLAUDE.md §5.4 requires *"latency budgets declared per skill; CI fails if
+CLAUDE.md §2 requires *"latency budgets declared per skill; CI fails if
 exceeded on the reference host"*. Sim tests measure warm-step and
 cached-pop latency (``tests/sim/test_smolvla_so100.py`` and friends); this
 module supplies the assertion helper against the manifest contract.

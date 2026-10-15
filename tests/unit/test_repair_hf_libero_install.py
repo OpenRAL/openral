@@ -4,7 +4,7 @@ The script removes a spurious ``hf_libero-<ver>.egg-info`` FILE that the
 PyPI sdist drops alongside the proper ``.dist-info/`` directory and
 which makes ``uv sync`` fall back to a failing distutils uninstall
 path. These tests build a synthetic venv-shaped tree under ``tmp_path``
-(no mocks, no monkey-patching — CLAUDE.md §1.11 / §5.4) and assert the
+(no mocks, no monkey-patching — CLAUDE.md §1.11 / §2) and assert the
 script's pre / post invariants directly on the filesystem.
 
 Pins:

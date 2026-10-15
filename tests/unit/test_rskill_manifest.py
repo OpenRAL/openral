@@ -1,6 +1,6 @@
 """Unit tests for the RSkillManifest schema (V1) and ``rskill.yaml`` loader.
 
-Covers the rSkill *package* contract (CLAUDE.md §6.4 / RFC §1.4, §8.7) —
+Covers the rSkill *package* contract (CLAUDE.md §3 rSkill packaging / RFC §1.4, §8.7) —
 distinct from the in-process ``Skill`` ABC (tested in ``test_skill.py``).
 
 ``schema_version`` stays "0.1" (unpublished, so extended in place rather than

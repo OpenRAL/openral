@@ -71,7 +71,7 @@ _QOS_PROMPT = QoSProfile(
 _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S = 30.0
 
 # v1 adapter registry — only the CLI source is wired. Priorities chosen
-# so a human prompt overtakes an auto-prompt (CLAUDE.md §6.2 — the
+# so a human prompt overtakes an auto-prompt (the
 # reasoner is below operator authority).
 DEFAULT_SOURCES: dict[str, int] = {
     "cli": 100,  # human, highest

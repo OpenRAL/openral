@@ -11,7 +11,7 @@ This file pins:
 - the manifest pointer (closed_with_api → ``AlohaHAL``);
 - the per-arm + per-gripper command split in ``AlohaHAL.send_action``,
   exercised against a real ``SimTransport`` (no mocks per CLAUDE.md
-  §1.11 / §5.4);
+  §1.11 / §2);
 - the e-stop semantics.
 """
 

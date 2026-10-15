@@ -2,7 +2,7 @@
 
 Per CLAUDE.md §1.11, real probes only (no MagicMock); the sole allowed
 boundary fake is missing-optional-dep injection at import boundaries
-(CLAUDE.md §5.4) — done here by monkeypatching ``sys.modules`` so the
+(CLAUDE.md §1.11) — done here by monkeypatching ``sys.modules`` so the
 in-function ``import`` raises ``ImportError`` as it would on a stripped host.
 
 Contract: probes never raise; return a sensible empty default and append a

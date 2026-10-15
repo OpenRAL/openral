@@ -14,7 +14,7 @@ Environment:
     FRANKA_STATE_TOPIC: Override for the joint-state topic
         (defaults to ``/joint_states``).
 
-Safety rules (from CLAUDE.md §7.3):
+Safety rules (from CLAUDE.md §2 Tests, §3 Safety):
 - Each test is idempotent and time-bounded (< 120 s).
 - The fixture always disconnects on teardown, even on failure.
 - No test moves the arm faster than 50 % of its velocity limit.

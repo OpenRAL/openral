@@ -14,7 +14,7 @@ that the ROS 2 reasoner/supervisor graph's step 1 locks:
    ``failure_kind`` uint8 matching the CLAUDE.md §5 exception the
    dispatch path actually raised (``FAILURE_NONE`` on success).
 
-Per CLAUDE.md §1.11 / §5.4: no mocks. The skill is a real
+Per CLAUDE.md §1.11 / §2: no mocks. The skill is a real
 ``rSkillBase`` subclass (``_ConstantSkill``) that emits a constant
 six-DoF joint-position chunk — not a `MagicMock`. The
 `WorldStateAggregator` is the production class; the skill_runner_node

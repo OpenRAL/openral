@@ -191,7 +191,7 @@ def test_publisher_round_trip_via_real_subscriber() -> None:
     pub = SensorRosPublisher(reader=reader, topic="/cam/image_raw", rate_hz=60.0)
     pub.start()
     try:
-        # The publisher uses BEST_EFFORT QoS per CLAUDE.md §5.3 (sensor
+        # The publisher uses BEST_EFFORT QoS per CLAUDE.md §2 (sensor
         # streams); the subscriber MUST match or DDS reports a QoS
         # incompatibility and no messages flow.
         sub_node = rclpy.create_node("sensor_ros_publisher_test_subscriber")

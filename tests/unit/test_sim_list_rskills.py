@@ -1,6 +1,6 @@
 """End-to-end test for the ``openral rskill list`` in-tree discovery line.
 
-CLAUDE.md §1.11 and §5.4 require real components — this test walks the
+CLAUDE.md §1.11 and §2 require real components — this test walks the
 in-repo ``rskills/<dir>/rskill.yaml`` files (no mocks, no stubs) and
 asserts every in-tree rSkill appears in the unified listing as a
 paste-able bare name under the ``in-tree`` source.

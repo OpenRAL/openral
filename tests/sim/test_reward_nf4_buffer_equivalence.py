@@ -17,7 +17,7 @@ modules' own ``__init__``:
 
 Gated on a local GPU + the native deps (`just sync --group libero`, which also
 brings `datasets` for the LIBERO clip); GPU-less CI is the legitimate skip
-(CLAUDE.md §12). Run with (single GPU — take the shared lock):
+(CLAUDE.md §1.12). Run with (single GPU — take the shared lock):
     flock /tmp/openral-gpu.lock -c \
       "./.venv/bin/pytest tests/sim/test_reward_nf4_buffer_equivalence.py -v"
 """

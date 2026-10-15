@@ -13,7 +13,7 @@ Drives the real ``openral_observability.FailureBusPublisher`` against the colcon
    cadence carrying the suppressed counts.
 6. ``SEVERITY_ABORT`` is never rate-limited.
 
-Per CLAUDE.md §1.11 / §5.4: real schemas, real IDL, real rclpy, no mocks. Skips with a typed
+Per CLAUDE.md §1.11 / §2: real schemas, real IDL, real rclpy, no mocks. Skips with a typed
 reason when ROS 2 is not sourced.
 """
 

@@ -42,7 +42,7 @@ from pydantic import (
 
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
-# CLAUDE.md §10).
+# CLAUDE.md §5).
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -5510,7 +5510,7 @@ class RSkillInfo(BaseModel):
 # ─── rSkill package manifest ──────────────────────────────────────────────────
 #
 # An ``rSkill`` is the *packaged, signed, capability-tagged distribution
-# format* for a robot skill (CLAUDE.md §6.4 / RFC §1.4, §8.7).  One HF Hub
+# format* for a robot skill (CLAUDE.md §3 rSkill packaging / RFC §1.4, §8.7).  One HF Hub
 # repo per rSkill, containing weights + ``rskill.yaml`` + optional engine
 # files + ``README.md`` with a runnable example.
 #
@@ -5522,7 +5522,7 @@ class RSkillInfo(BaseModel):
 
 
 class RSkillLicensePosture(str, Enum):
-    """License posture surfaced at install time (CLAUDE.md §7.4)."""
+    """License posture surfaced at install time (CLAUDE.md §3 VLA license matrix)."""
 
     APACHE_2_0 = "apache-2.0"
     MIT = "mit"
@@ -5554,7 +5554,7 @@ class RSkillLatencyBudget(BaseModel):
 
     Attributes:
         per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on
-            the reference host (CLAUDE.md §7.4).
+            the reference host (CLAUDE.md §2).
         warmup_ms: Maximum allowed warm-up time during ``activate()``.
         load_ms: Maximum allowed weight-load time during ``configure()``.
         max_execution_s: Total execution budget for one ``execute_rskill`` goal, in graph-clock
@@ -8020,7 +8020,7 @@ class RSkillManifest(BaseModel):
         weights_uri: HF Hub revision-pinned URI or local path to weights;
             production deployments pin a SHA (CLAUDE.md operating principle 8).
         chunk_size: Action-chunk length emitted per ``Skill.step``.
-        latency_budget: Latency contract enforced by CI on the reference host (CLAUDE.md §7.4).
+        latency_budget: Latency contract enforced by CI on the reference host (CLAUDE.md §2).
         min_vram_gb: Optional minimum VRAM (GB) per quantization dtype; informational only.
         fallback_skill_id: rSkill id to substitute on failure (RFC §8.3 replanning ladder).
         benchmarks: Canonical suite id → success rate ``[0.0, 1.0]``; full
@@ -8261,7 +8261,7 @@ class RSkillManifest(BaseModel):
         (including ``unknown``) → False, conservatively. The loader
         consults this in ``rSkill._check_license``; users wanting to
         deploy a non-commercial skill in a research context set
-        ``OPENRAL_ALLOW_NONCOMMERCIAL=1`` per CLAUDE.md §7.4.
+        ``OPENRAL_ALLOW_NONCOMMERCIAL=1`` per CLAUDE.md §1.9.
         """
         return self.license in _LICENSES_ALLOWING_COMMERCIAL
 
@@ -9315,7 +9315,7 @@ def assert_vla_reward_fits(
 # Every benchmarked rSkill ships one ``eval/<benchmark>.json`` file per
 # benchmark suite it has been (or will be) evaluated on.  Four shapes are
 # already in tree (``rskills/{smolvla-libero, smolvla-metaworld, pi05-libero-int8,
-# xvla-libero}/eval/*.json``); CLAUDE.md §6.4 lists ``eval/`` as required
+# xvla-libero}/eval/*.json``); CLAUDE.md §3 rSkill packaging lists ``eval/`` as required
 # packaging.  This schema pins the format so ``rSkill.from_yaml`` can
 # validate every JSON it finds and ``openral benchmark report`` can aggregate
 # across skills.
@@ -13223,7 +13223,7 @@ actuation authority): ``RecallObjectTool``, ``ResolvePlaceTool``,
 
 Extending the palette requires (a) a new variant here, (b) the corresponding
 ROS-side dispatch in ``openral_reasoner_ros.reasoner_node``, (c) a CLAUDE.md
-§6.2 / §7.6 amendment if the new tool shifts the reasoner's authority surface.
+§3 amendment if the new tool shifts the reasoner's authority surface.
 The query variants' dispatch + result-return path is wired separately; until
 then they are a typed contract not yet exposed in the live provider palette.
 """

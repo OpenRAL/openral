@@ -14,13 +14,13 @@ Environment:
     UR5E_STATE_TOPIC: Override for the joint-state topic
         (defaults to ``/joint_states``).
 
-Safety rules (CLAUDE.md §7.3, §7.7):
+Safety rules (CLAUDE.md §2 Tests, §3 Safety):
 - Each test is idempotent and time-bounded (< 30 s per test).
 - The fixture always calls ``hal.disconnect()`` in teardown, even on failure.
 - Tests never command motion — only ``read_state``, hold-in-place, and
   E-stop are exercised.
 - ``ROSEStopRequested`` raised by ``estop()`` is allowed to bubble up; per
-  CLAUDE.md §10 it is **never** silently caught.
+  CLAUDE.md §5 it is **never** silently caught.
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ class TestUR5eHIL:
     def test_deadman_topic_advertised(self, ur5e_hal: UR5eRealHAL) -> None:
         """The HAL records the deadman / safety-mode topic the supervisor watches.
 
-        Per CLAUDE.md §7.7 the safety supervisor (a separate process) is what
+        Per CLAUDE.md §5 the safety supervisor (a separate process) is what
         actually subscribes; the HAL is the source of truth for the topic
         name so the supervisor's launch file can pick it up.
         """
@@ -153,7 +153,7 @@ class TestUR5eHIL:
     def test_estop_raises_estoprequested(self, ur5e_hal: UR5eRealHAL) -> None:
         """``estop`` must always raise ``ROSEStopRequested``.
 
-        Per CLAUDE.md §10 / HAL Protocol docstring — this exception is
+        Per CLAUDE.md §5 / HAL Protocol docstring — this exception is
         **never** silently caught.  The fixture's teardown calls
         ``disconnect()`` after the test, which is idempotent.
         """

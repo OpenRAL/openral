@@ -12,7 +12,7 @@ The point of this suite is the H1 "real hardware first day" contract
 action layout, lifecycle, and ``RobotDescription`` joint order are
 guaranteed to match what a future ``H1RealHAL`` over ``unitree_sdk2``
 will see when the physical robot arrives.  Balance + walking remain
-out of scope — they live in CLAUDE.md §6.2 (M2 C++ S0 cerebellum) and
+out of scope — they live in CLAUDE.md §3 dual-system pattern (M2 C++ S0 cerebellum) and
 no Python HAL twin can validate them.
 
 Gravity is disabled in every test because without an S0 balance

@@ -17,7 +17,7 @@ Wrapper over bare ``RosControlHAL``: pins UR-series defaults
 manifests (``robots/ur5e``/``robots/ur10e``) pin to; surfaces the
 deadman/E-stop subscription contract the safety supervisor expects.
 
-License posture (CLAUDE.md §7.4): ``ur_robot_driver`` is BSD-3 (open); the
+License posture (CLAUDE.md §1.9): ``ur_robot_driver`` is BSD-3 (open); the
 manifest's ``sdk_kind`` is marked ``closed`` to flag that the runtime path
 requires a real arm + URCap, not a restrictive Python/driver license.
 
@@ -93,7 +93,7 @@ class _URRealHAL(RosControlHAL):
 
     The deadman subscription contract is left to the safety supervisor (the
     HAL records the topic it expects via ``deadman_topic``).  Per
-    CLAUDE.md §7.7 the HAL never silences a ``ROSEStopRequested`` raised by
+    CLAUDE.md §5 the HAL never silences a ``ROSEStopRequested`` raised by
     ``estop``.
 
     **Lifecycle e-stop.** ``estop()`` first deactivates the

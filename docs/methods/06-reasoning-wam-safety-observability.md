@@ -279,26 +279,26 @@ _Tier-C critic progress-stall / success watchdog — default decision core for t
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through with real per-control-mode envelope checks, the estop latch/reset pair, and the latched SafetyStatus topic. Reserves the node name and topic surface for the future C++ kernel; any addition of enforcement beyond this file requires safety-WG sign-off._
 
-- `class SafetyPassthroughNode(LifecycleNode)` (L148) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the `SafetyStatus` topic.
-  - `__init__(node_name="openral_safety") -> None` (L169)
-  - `on_configure(state) -> TransitionCallbackReturn` (L232) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
-  - `on_activate(state) -> TransitionCallbackReturn` (L322)
-  - `on_deactivate(state) -> TransitionCallbackReturn` (L354)
-  - `on_cleanup(state) -> TransitionCallbackReturn` (L364)
-  - `on_shutdown(state) -> TransitionCallbackReturn` (L396)
-  - `_on_candidate_action(msg) -> None` (L402) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
-  - `_envelope_violation(msg) -> tuple[str | None, str]` (L459) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
-  - `_handle_violation(msg, *, kind, reason) -> None` (L720) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
-  - `_on_external_estop(_msg) -> None` (L749) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
-  - `_on_estop_reset(request, response) -> object` (L776) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
-- `SafetySupervisorNode` (L860) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
-- `SAFETY_STATUS_TOPIC: str` (L69) — `/openral/safety_status`, the latched current-safety-state topic (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), published alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes.
-- `SAFETY_STATUS_HEARTBEAT_S: float` (L76) — 1.0 s liveness refresh; `header.stamp` is re-stamped at this cadence even when nothing changed, so a durable value can be told apart from a dead publisher's leftover state.
-- `main(args=None) -> int` (L863) — Entry point for `ros2 run openral_safety supervisor_node`.
-- module constant `_KERNEL_LABEL_PASSTHROUGH: str = "passthrough"` (L54) — `safety.kernel` span/log label this Python passthrough stamps (vs. the future C++ kernel's own label).
-- module constant `_WORKSPACE_VIOLATION_KINDS: frozenset[str]` (L93) — `{"workspace", "gripper_range"}`, envelope-violation kinds `_envelope_violation` can return.
-- module constant `_RATE_VIOLATION_KINDS: frozenset[str]` (L94) — `{"cartesian_step", "cartesian_step_rot", "ee_linear_speed", "ee_angular_speed", "base_linear_speed", "base_angular_speed"}`, the rate/speed-bound violation kinds.
-- module constant `DEFAULT_ESTOP_RESET_COOLDOWN_S: float = 0.5` (L82) — default cooldown `_on_estop_reset` enforces since the last estop before clearing the latch.
+- `class SafetyPassthroughNode(LifecycleNode)` (L151) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the `SafetyStatus` topic.
+  - `__init__(node_name="openral_safety") -> None` (L172)
+  - `on_configure(state) -> TransitionCallbackReturn` (L235) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
+  - `on_activate(state) -> TransitionCallbackReturn` (L325)
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L357)
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L367)
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L399)
+  - `_on_candidate_action(msg) -> None` (L405) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
+  - `_envelope_violation(msg) -> tuple[str | None, str]` (L462) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
+  - `_handle_violation(msg, *, kind, reason) -> None` (L723) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
+  - `_on_external_estop(_msg) -> None` (L752) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
+  - `_on_estop_reset(request, response) -> object` (L779) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
+- `SafetySupervisorNode` (L863) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
+- `SAFETY_STATUS_TOPIC: str` (L72) — `/openral/safety_status`, the latched current-safety-state topic (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), published alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes.
+- `SAFETY_STATUS_HEARTBEAT_S: float` (L79) — 1.0 s liveness refresh; `header.stamp` is re-stamped at this cadence even when nothing changed, so a durable value can be told apart from a dead publisher's leftover state.
+- `main(args=None) -> int` (L866) — Entry point for `ros2 run openral_safety supervisor_node`.
+- module constant `_KERNEL_LABEL_PASSTHROUGH: str = "passthrough"` (L57) — `safety.kernel` span/log label this Python passthrough stamps (vs. the future C++ kernel's own label).
+- module constant `_WORKSPACE_VIOLATION_KINDS: frozenset[str]` (L96) — `{"workspace", "gripper_range"}`, envelope-violation kinds `_envelope_violation` can return.
+- module constant `_RATE_VIOLATION_KINDS: frozenset[str]` (L97) — `{"cartesian_step", "cartesian_step_rot", "ee_linear_speed", "ee_angular_speed", "base_linear_speed", "base_angular_speed"}`, the rate/speed-bound violation kinds.
+- module constant `DEFAULT_ESTOP_RESET_COOLDOWN_S: float = 0.5` (L85) — default cooldown `_on_estop_reset` enforces since the last estop before clearing the latch.
 
 ### `cpp/openral_safety_kernel/include/openral_safety_kernel/lifecycle_kernel.hpp`
 _C++ (Layer 5). Node-side caps on the world-voxel freshness parameters (hazard log Entries 033/034)._
@@ -1031,9 +1031,9 @@ _The `--inprocess` inverse: spawn `openral dashboard` as a child process and att
 - module constant `_ENV_PROTOCOL: str = "OTEL_EXPORTER_OTLP_PROTOCOL"` (L33)
 - module constant `_HTTP_OK: int = 200` (L34) — healthz poll success code.
 - `spawn_dashboard(*, host="127.0.0.1", port=4318, ready_timeout_s=10.0) -> Iterator[str | None]` [@contextmanager] (L38) — Spawn `openral dashboard` as a child, set the OTLP env, poll `/healthz` until ready, yield the URL, and SIGINT the child on exit. Yields `None` if `openral` isn't on PATH, the child dies early, or the health check never passes within the timeout.
-- `_wait_healthy(healthz_url, child, *, timeout_s) -> bool` (L206) — Poll `healthz_url` until it returns `_HTTP_OK` or `child` exits or `timeout_s` elapses.
-- `_shutdown_child(child) -> None` (L221) — SIGINT the child and wait, escalating if needed.
-- `attached_dashboard(*, enabled, port=4318, subcommand=None, mode=None) -> Iterator[bool]` [@contextmanager] (L133) — Convenience wrapper for CLI commands that gate dashboard attach on a flag. `enabled=False` yields `False` as a true no-op (no FastAPI/uvicorn imports). `enabled=True` delegates to `spawn_dashboard`, re-runs `configure_observability` on the new endpoint, and re-opens the `cli.command` root span so workload spans have a real recording ancestor instead of being orphaned under the pre-dashboard root. Drains via `shutdown_observability` in `finally`. Yields `True` iff the child reported healthy.
+- `_wait_healthy(healthz_url, child, *, timeout_s) -> bool` (L202) — Poll `healthz_url` until it returns `_HTTP_OK` or `child` exits or `timeout_s` elapses.
+- `_shutdown_child(child) -> None` (L217) — SIGINT the child and wait, escalating if needed.
+- `attached_dashboard(*, enabled, port=4318, subcommand=None, mode=None) -> Iterator[bool]` [@contextmanager] (L129) — Convenience wrapper for CLI commands that gate dashboard attach on a flag. `enabled=False` yields `False` as a true no-op (no FastAPI/uvicorn imports). `enabled=True` delegates to `spawn_dashboard`, re-runs `configure_observability` on the new endpoint, and re-opens the `cli.command` root span so workload spans have a real recording ancestor instead of being orphaned under the pre-dashboard root. Drains via `shutdown_observability` in `finally`. Yields `True` iff the child reported healthy.
 
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._

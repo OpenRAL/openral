@@ -4,7 +4,7 @@ Installs an in-memory span exporter on the global TracerProvider and an
 in-memory metric reader on the global MeterProvider so each test can
 assert on emitted telemetry without needing a live OTLP collector.
 
-Per CLAUDE.md §1.11 / §5.4 these are *real* OTel SDK components — not
+Per CLAUDE.md §1.11 / §2 these are *real* OTel SDK components — not
 mocks. Tests exercise the same provider classes shipping in production;
 only the exporter is swapped for an in-memory one.
 """

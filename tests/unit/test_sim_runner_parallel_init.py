@@ -1,7 +1,7 @@
 """Unit tests for ``_build_env_and_policy`` (GH-134 parallel sim startup).
 
 Exercises the real ``mock`` scene + ``zero`` / ``random`` policies — no
-mocks, no stubs, no patches (CLAUDE.md §1.11 / §5.4). All assertions are
+mocks, no stubs, no patches (CLAUDE.md §1.11 / §2). All assertions are
 on real ``SimRollout`` / ``PolicyAdapter`` instances built by
 the real ``openral_sim.factory.make_env`` / ``make_policy``.
 

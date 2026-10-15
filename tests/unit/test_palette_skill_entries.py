@@ -6,7 +6,7 @@ that the palette returned by ``build_tool_palette`` carries
 ``RSkillToolEntry`` records with the manifest's description /
 actions / objects / scenes — not just opaque ids.
 
-Per CLAUDE.md §1.11 / §5.4: no mocks, no smoke tests. Every assertion
+Per CLAUDE.md §1.11 / §2: no mocks, no smoke tests. Every assertion
 exercises the real Pydantic schemas and the real palette filter.
 """
 

@@ -9,7 +9,7 @@
     Skeleton only: declares the lifecycle node and the package layout the
     real C++ safety kernel (cpp/openral_safety_kernel/, planned) drops
     into. Carries no enforcement logic; PRs that add enforcement require
-    safety working group review per CLAUDE.md §7.7.
+    safety working group review per CLAUDE.md §3 Safety.
   </description>
   <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>

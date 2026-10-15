@@ -1,6 +1,6 @@
 """Unit tests for ``openral_rskill.testing.assert_within_budget``.
 
-Enforcement point for CLAUDE.md §5.4: latency budgets declared per skill; CI
+Enforcement point for CLAUDE.md §2: latency budgets declared per skill; CI
 fails if exceeded on the reference host. Sim tests measure latency; this
 helper turns measurements into pytest assertions against the manifest.
 

@@ -26,7 +26,7 @@ The bf16 fast path is ~7.7 GiB of weights, the untied reference 8.7 GiB: it
 needs a >= 10 GiB GPU (Orin / Thor / a desktop card) and skips on an 8 GiB
 laptop. The int8 path (this rSkill's own config) runs there. Needs the cached
 checkpoint (~7.5 GB); absent GPU or checkpoint is the legitimate skip
-(CLAUDE.md §12). Run under the shared GPU lock:
+(CLAUDE.md §1.12). Run under the shared GPU lock:
     flock <gpu.lock> ./.venv/bin/pytest tests/sim/test_pi05_meta_init_parity.py -v
 """
 

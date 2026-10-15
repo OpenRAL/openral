@@ -12,7 +12,7 @@ by ``openral_rskill.loader.discover_intree_rskills`` the test asserts:
   to a different code path.
 
 No mocks, no synthetic fixtures — exercises the real `discover_intree_rskills`
-helper and the real manifests on disk (CLAUDE.md §1.11, §5.4).
+helper and the real manifests on disk (CLAUDE.md §1.11, §2).
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ not drive motors directly**:
 * ``connect`` / ``disconnect`` open / close that publisher + subscription
   on the host node — the adapter holds no rclpy node of its own (composing
   into the host's executor keeps QoS / lifecycle / shutdown in one place
-  per CLAUDE.md §6.1).
+  per CLAUDE.md §3).
 
 Single change to the in-process hot path: ``DeployRunner._tick_impl`` still
 calls ``hal.send_action(action)`` — only the sink moves from motors to a
@@ -394,7 +394,7 @@ class ROSPublishingHAL:
     def estop(self) -> None:
         """Trigger an emergency stop.
 
-        Per CLAUDE.md §10, this raises ``ROSEStopRequested`` so the
+        Per CLAUDE.md §5, this raises ``ROSEStopRequested`` so the
         safety supervisor boundary can record + brake. The owning
         lifecycle node also publishes ``std_msgs/Empty`` on
         ``/openral/estop`` (see ``rskill_runner_node.estop``) — defense

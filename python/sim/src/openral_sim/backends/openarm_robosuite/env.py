@@ -192,7 +192,7 @@ def _resolve_state_dim(
     Source of truth precedence:
 
     1. ``manifest.state_contract.dim`` — the rSkill's declared state
-       vector width (per CLAUDE.md §6.4 every rSkill that wants to
+       vector width (per CLAUDE.md §3 rSkill packaging every rSkill that wants to
        drive the dataset bridge must set this).
     2. ``manifest.action_contract.dim`` — used as a cross-check when
        both are present; the env asserts they agree because this
@@ -848,7 +848,7 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
     instruction = env_cfg.task.instruction or "pick the red cube and place it in the drawer"
 
     # Resolve the policy's state / action dimension. The rSkill manifest
-    # is the source of truth (CLAUDE.md §6.4); the robot manifest's
+    # is the source of truth (CLAUDE.md §3 rSkill packaging); the robot manifest's
     # joint count is the fallback for test paths that do not point at
     # an rSkill (e.g. ``mock://noop``).
     weights_uri = getattr(env_cfg.vla, "weights_uri", None)

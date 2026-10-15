@@ -195,7 +195,7 @@ def test_runner_records_skill_lifecycle_step_count(
     assert active_skill.step_count == 3
 
 
-# ── Safety supervisor boundary (CLAUDE.md §10) ──────────────────────────────
+# ── Safety supervisor boundary (CLAUDE.md §5) ───────────────────────────────
 
 
 class _RejectAfterSafetyClient:

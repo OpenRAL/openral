@@ -12,7 +12,7 @@ loop end-to-end on real hardware (or a digital twin)::
         snapshot = aggregator.snapshot()
         action = skill.step(snapshot)
         try:
-            safety_client.check_action(action)        # CLAUDE.md §10
+            safety_client.check_action(action)        # CLAUDE.md §5
             hal.send_action(action)
         except ROSSafetyViolation as exc:
             record on TickResult.safety_violations
@@ -78,7 +78,7 @@ class DeployRunner(InferenceRunnerBase):
     come for free.
 
     The runner is the safety-supervisor boundary for the inference loop
-    (CLAUDE.md §10): when ``SafetyClient.check_action`` raises
+    (CLAUDE.md §5): when ``SafetyClient.check_action`` raises
     ``ROSSafetyViolation``, the runner records the violation on the
     ``TickResult`` and skips the ``HAL.send_action`` call; the
     exception is **not** re-raised because the runner already mitigated

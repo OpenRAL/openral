@@ -1,7 +1,7 @@
 """DeployRunner emits ``hal.read_state`` / ``hal.send_action`` spans + metrics.
 
 End-to-end against a real SO-100 digital twin (no mocks per CLAUDE.md
-§1.11 / §5.4). The runner-side wrapping covers every HAL adapter
+§1.11 / §2). The runner-side wrapping covers every HAL adapter
 without touching adapter code; the in-process timing stays on the
 ``TickResult`` (used by the rate-limiter) while the spans/histograms
 give Jaeger / Prom callers structured visibility.

@@ -7,7 +7,7 @@ calls ``/openral/perception/query_scene``, and asserts a grounded text answer.
 No mocks (CLAUDE.md §1.11) — this exercises the integration-tier glue the unit
 tests can't: frame caching + the service handler calling the VLM backend.
 
-Gated (CLAUDE.md §12) on a provisioned sidecar venv (``OPENRAL_QWEN_VLM_SIDECAR_VENV``)
+Gated (CLAUDE.md §1.12) on a provisioned sidecar venv (``OPENRAL_QWEN_VLM_SIDECAR_VENV``)
 + a local GPU, and on the ROS stack being importable (``openral_msgs`` built,
 ``rclpy`` sourced). Run with ROS 2 + the worktree ``install/`` sourced and the
 openral src dirs on ``PYTHONPATH``.

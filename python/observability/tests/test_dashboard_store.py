@@ -3,7 +3,7 @@
 Tests feed real ``ResourceSpans`` / ``ResourceMetrics`` protobuf
 messages — built via ``opentelemetry-proto`` directly — into the
 store and assert against its snapshot. No mocks per CLAUDE.md §1.11
-and §5.4; the only test scaffolding is the protobuf builder, which
+and §2; the only test scaffolding is the protobuf builder, which
 constructs the same wire format an OTLP exporter would have sent.
 """
 

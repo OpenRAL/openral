@@ -15,7 +15,7 @@ What is asserted
 * Closed-loop rollout completes 50 steps without NaN / inf actions; agent
   joints actually move (MuJoCo dynamics propagate).
 * Mean per-step latency stays within ``manifest.latency_budget.per_chunk_ms``
-  with the canonical ``tolerance_pct=100`` (CLAUDE.md §5.4).
+  with the canonical ``tolerance_pct=100`` (CLAUDE.md §2).
 * Peak VRAM during the rollout stays under 500 MB (catches load
   regressions; baseline 285 MB).
 

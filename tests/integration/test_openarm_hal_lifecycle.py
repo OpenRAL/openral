@@ -10,7 +10,7 @@ Exercises the real production lifecycle node end-to-end:
   blocks subsequent safe_action commands
 * trigger_deactivate + trigger_cleanup
 
-Per CLAUDE.md §1.11 / §5.4: real ``rclpy``, real ``openral_msgs``, real
+Per CLAUDE.md §1.11 / §2: real ``rclpy``, real ``openral_msgs``, real
 ``OpenArmMujocoHAL`` against the upstream v2 bimanual MJCF. Skipped
 when ROS 2 is not sourced or ``mujoco`` is not installed.
 """

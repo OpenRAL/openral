@@ -65,7 +65,7 @@ _TRANSITIONS: dict[RSkillState, frozenset[RSkillState]] = {
 }
 
 
-class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official package-format name (CLAUDE.md §6.4); rSkillBase is its ABC
+class rSkillBase(abc.ABC):  # noqa: N801  # reason: rSkill is the official package-format name (CLAUDE.md §3); rSkillBase is its ABC
     """Abstract base class for all OpenRAL skills.
 
     Subclasses must implement:

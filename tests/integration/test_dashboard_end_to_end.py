@@ -3,10 +3,10 @@
 Spins up the dashboard on a real local socket, configures a real OTel
 SDK to export spans over OTLP/HTTP at that socket, emits a span, and
 asserts the dashboard's ``/api/state`` reflects it. Real components
-end-to-end per CLAUDE.md §1.11 and §5.4.
+end-to-end per CLAUDE.md §1.11 and §2.
 
 The test is in ``tests/integration/`` (not ``tests/unit/``) because it
-spins a uvicorn thread; per CLAUDE.md §5.4 integration tests are
+spins a uvicorn thread; per CLAUDE.md §2 integration tests are
 allowed to take a few seconds.
 """
 

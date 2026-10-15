@@ -17,7 +17,7 @@ is the non-zero-copy fallback.
 module is importable on hosts without a sourced ROS env; the publisher just
 never starts there (unit tests ``pytest.importorskip("rclpy")``).
 
-QoS per CLAUDE.md §5.3: image streams ``BEST_EFFORT``/``VOLATILE``/
+QoS per CLAUDE.md §2: image streams ``BEST_EFFORT``/``VOLATILE``/
 ``KEEP_LAST=5``; ``CameraInfo`` ``RELIABLE``/``VOLATILE``/``KEEP_LAST=1``.
 """
 
@@ -88,7 +88,7 @@ class SensorRosPublisher:
         frame_id: ``Image.header.frame_id`` to stamp on outgoing
             messages. Defaults to ``reader.sensor_id``.
         qos_depth: Depth of the image publisher's QoS history queue
-            (CLAUDE.md §5.3 calls for ``KEEP_LAST=5–10`` for sensor
+            (CLAUDE.md §2 calls for ``KEEP_LAST=5–10`` for sensor
             streams; defaults to 5).
         camera_info: Optional ``IntrinsicsPinhole``. When
             provided, a companion ``CameraInfo`` topic is published at
@@ -230,7 +230,7 @@ class SensorRosPublisher:
             from rclpy.node import Node
 
             self._node = Node(self._node_name)
-        # Image stream QoS — sensor_data-style per CLAUDE.md §5.3.
+        # Image stream QoS — sensor_data-style per CLAUDE.md §2.
         image_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=self._qos_depth,

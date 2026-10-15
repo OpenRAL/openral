@@ -16,7 +16,7 @@ contract closes the loop:
         → bridge publishes /joint_states (from twin.read_state)
         → world_state aggregator updates
 
-Per CLAUDE.md §1.11 / §5.4: real ``rclpy``, real ``openral_msgs/ActionChunk``, real
+Per CLAUDE.md §1.11 / §2: real ``rclpy``, real ``openral_msgs/ActionChunk``, real
 ``SO100DigitalTwin`` from lerobot, real ``rSkillBase`` subclass producing real joint-position
 targets. Skipped when ROS 2 is not sourced.
 

@@ -6,7 +6,7 @@ already covered by ``tests/unit/test_hal.py``.  This file pins:
 - the ``SAWYER_DESCRIPTION`` joint inventory + capability surface;
 - the manifest pointer (closed_with_api → ``SawyerRealHAL``);
 - the closed-loop ``send_action`` / ``read_state`` path against a real
-  ``SimTransport`` (no mocks, per CLAUDE.md §1.11 / §5.4).
+  ``SimTransport`` (no mocks, per CLAUDE.md §1.11 / §2).
 """
 
 from __future__ import annotations

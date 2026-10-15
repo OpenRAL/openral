@@ -2,7 +2,7 @@
 
 These tests exercise the actual ``openral_cli.install`` Typer app and the
 REPL dispatcher in ``openral_cli.main`` — no mocks, no smoke-only
-assertions (CLAUDE.md §1.11 / §5.4).
+assertions (CLAUDE.md §1.11 / §2).
 
 The pure-Python pieces (group enumeration, conflict detection, REPL line
 dispatch) run unconditionally.  The piece that would actually shell out

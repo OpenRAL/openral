@@ -1,6 +1,6 @@
 """WorldStateAggregator.snapshot emits an OTel span + staleness telemetry.
 
-Real OTel SDK + in-memory exporter (CLAUDE.md §1.11 / §5.4). The
+Real OTel SDK + in-memory exporter (CLAUDE.md §1.11 / §2). The
 ``world_state.snapshot`` span gates the on-the-wire vocabulary defined
 in design §4.3:
 

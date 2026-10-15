@@ -1,6 +1,6 @@
-"""Doctest enforcement — implements the CLAUDE.md §5.4 doctest mandate.
+"""Doctest enforcement — implements the CLAUDE.md §2 doctest mandate.
 
-CLAUDE.md §5.4 requires every public docstring example to run. Enforced for
+CLAUDE.md §2 requires every public docstring example to run. Enforced for
 the curated, explicitly opt-in ``DOCTEST_TARGETS`` list; adding a package
 means appending it here AND to ``just test-doctest`` in the Justfile.
 

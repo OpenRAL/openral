@@ -4,7 +4,7 @@ Enforces that an rSkill directory ships with a *useful* README and a
 filled-in manifest before it can be published to the HF Hub. The schema-level
 Pydantic validators on ``openral_core.schemas.RSkillManifest`` answer "is
 this YAML well-formed"; this validator answers "is this rSkill ready for
-someone who isn't the author to install and run" (CLAUDE.md §6.4:
+someone who isn't the author to install and run" (CLAUDE.md §3 rSkill packaging:
 ``README.md`` with a runnable example is required packaging alongside
 ``rskill.yaml``, weights, and ``eval/``). ``tools/rskill_publisher.py`` imports
 ``validate_rskill_docs`` as a hard gate; its dry-run path emits the same
@@ -257,7 +257,7 @@ def _validate_readme(skill_dir: Path) -> list[DocValidationIssue]:
                     f"README.md is required at {readme_path}. Every rSkill "
                     "package must ship a README explaining what the skill "
                     "does, how it works, and how it was trained "
-                    "(CLAUDE.md §6.4). Start from rskills/template/README.md."
+                    "(CLAUDE.md §3 rSkill packaging). Start from rskills/template/README.md."
                 ),
             )
         ]
