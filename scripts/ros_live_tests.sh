@@ -319,16 +319,28 @@ ISOLATED_TARGETS=(
 
 export OPENRAL_TEST_ROS_LIVE=1
 
-# Exit 5 ("nothing collected") is expected only under an explicit -k / -m
-# selection, which empties some runs. Unfiltered, it means a target ran nothing.
+# Exit 5 ("nothing collected") is expected under an explicit -k / -m selection,
+# which empties some runs, and for a file skipped whole at import -- pytest
+# reports a module-level importorskip as "1 skipped" yet exits 5. Otherwise it
+# means a target ran nothing, which fails the step.
 filtered=0
 for a in "$@"; do
     case "$a" in -k | -k* | -m | -m*) filtered=1 ;; esac
 done
 rc=0
-keep() { [ "$1" -eq 5 ] && [ "$filtered" -eq 1 ] || rc=$1; }
-python -m pytest "${TARGETS[@]}" "$@" || keep $?
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+run() {
+    local r=0
+    # pipefail (set above) makes the pipeline's status pytest's, not tee's.
+    "$@" 2>&1 | tee "$out" || r=$?
+    if [ "$r" -eq 5 ] && { [ "$filtered" -eq 1 ] || grep -qE '[0-9]+ skipped' "$out"; }; then
+        r=0
+    fi
+    [ "$r" -eq 0 ] || rc=$r
+}
+run python -m pytest "${TARGETS[@]}" "$@"
 for t in "${ISOLATED_TARGETS[@]}"; do
-    MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@" || keep $?
+    run env MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@"
 done
 exit "$rc"
