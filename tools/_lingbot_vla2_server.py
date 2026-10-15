@@ -75,13 +75,30 @@ def _resolve_repo() -> Path:
     return repo
 
 
+def _offline_snapshot(repo_id: str) -> str:
+    """Return ``repo_id``, or its cached snapshot dir when ``HF_HUB_OFFLINE`` is set.
+
+    transformers 4.57.3's tokenizer load (``_patch_mistral_regex``) calls
+    ``huggingface_hub.model_info`` for any non-local id, which raises under
+    ``HF_HUB_OFFLINE=1`` even when the repo is fully cached; a local path skips
+    that check. Online the id passes through unchanged, so a partial cache still
+    gets its missing files fetched. Not cached offline -> huggingface_hub's own
+    ``LocalEntryNotFoundError``.
+    """
+    from huggingface_hub import constants, snapshot_download
+
+    if not constants.HF_HUB_OFFLINE:
+        return repo_id
+    return snapshot_download(repo_id, local_files_only=True)
+
+
 def _resolve_qwen() -> str:
     for env in ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH"):
         val = os.environ.get(env)
         if val:
             return val
     # Fall back to the HF id; the server will fetch it if not cached.
-    return "Qwen/Qwen3-VL-4B-Instruct"
+    return _offline_snapshot("Qwen/Qwen3-VL-4B-Instruct")
 
 
 def _resolve_checkpoint(model: str) -> str:
@@ -686,7 +703,7 @@ def _resolve_qwen25() -> str:
         val = os.environ.get(env)
         if val:
             return val
-    return "Qwen/Qwen2.5-VL-3B-Instruct"
+    return _offline_snapshot("Qwen/Qwen2.5-VL-3B-Instruct")
 
 
 def _install_attn_fallback_v1(*, target: str) -> None:
