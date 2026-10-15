@@ -107,13 +107,13 @@ latency_budget:
 # the lead in actions consumed, default 20). RTC builds on prefetch: guides
 # the prefetched chunk inside the flow-matching denoiser to blend with the
 # executing chunk's unconsumed tail instead of a hard cut. Flow-matching
-# families only (smolvla/pi05); requires chunk_prefetch: true and
-# chunk_prefetch_at >= rtc.execution_horizon (executor warns otherwise):
+# families only (smolvla/pi05); requires chunk_prefetch: true. Omit
+# execution_horizon to guide across the whole overlap (it defaults to
+# chunk_prefetch_at); a value above chunk_prefetch_at warns:
 # policy_extras:
 #   chunk_prefetch: true
 #   rtc:
 #     enabled: true
-#     execution_horizon: 10
 #     max_guidance_weight: 10.0
 #     prefix_attention_schedule: ones  # full-weight blend; measurably better OOD, equal in-distribution
 

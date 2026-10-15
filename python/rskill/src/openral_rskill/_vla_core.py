@@ -22,6 +22,7 @@ post-processor pipelines stay where they are.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import gc
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -915,7 +916,9 @@ def build_chunk_executor(
     set and ``init_rtc_processor()`` called *before* the executor is built —
     and hands the same ``RTCConfig`` to the executor so it serves actions from
     an ``ActionQueue``. RTC needs a real overlap between chunks, so it refuses
-    single-step policies and ``chunk_prefetch: false``.
+    single-step policies and ``chunk_prefetch: false``. A block without
+    ``execution_horizon`` guides across the whole overlap: the horizon defaults
+    to the (clamped) ``chunk_prefetch_at`` lead, the leftover a prefetch sees.
 
     A ``policy_extras.chunk_boundary_blend`` block (see
     ``_parse_chunk_boundary_blend``) stitches non-RTC chunks: the executor fades
@@ -1039,6 +1042,13 @@ def build_chunk_executor(
                 f"{adapter_name}: RTC guidance backpropagates through the denoiser each "
                 "step; bitsandbytes-quantized weights (nf4/int8) are not supported"
             )
+        # No explicit horizon: guide across the whole overlap. The prefetched
+        # chunk's leftover is prefetch_at rows; a shorter horizon wastes it (#397).
+        rtc_cfg = (
+            rtc_cfg
+            if "execution_horizon" in spec_extra["rtc"]
+            else dataclasses.replace(rtc_cfg, execution_horizon=prefetch_at)
+        )
         policy.config.rtc_config = rtc_cfg
         policy.init_rtc_processor()
     executor = ChunkedExecutor(

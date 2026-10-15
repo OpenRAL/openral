@@ -167,6 +167,45 @@ def test_build_chunk_executor_activates_rtc() -> None:
     ex.stop()
 
 
+def test_build_chunk_executor_rtc_horizon_defaults_to_prefetch_lead() -> None:
+    # No execution_horizon: guide across the whole overlap the prefetch leaves (#397).
+    policy = _FlowPolicyStub()
+    ex = build_chunk_executor(
+        {"chunk_prefetch": True, "chunk_prefetch_at": 7, "rtc": {}},
+        policy=policy,
+        adapter_name="pi05",
+    )
+    assert ex is not None
+    assert policy.config.rtc_config.execution_horizon == 7
+    assert ex._rtc_horizon == 7
+    ex.stop()
+
+
+def test_build_chunk_executor_rtc_horizon_defaults_to_clamped_lead() -> None:
+    # prefetch_at past the chunk is clamped to chunk_size - 1; the horizon follows the clamp.
+    policy = _FlowPolicyStub()
+    ex = build_chunk_executor(
+        {"chunk_prefetch": True, "chunk_prefetch_at": 50, "rtc": {}},
+        policy=policy,
+        adapter_name="pi05",
+    )
+    assert ex is not None
+    assert policy.config.rtc_config.execution_horizon == policy.config.n_action_steps - 1
+    ex.stop()
+
+
+def test_build_chunk_executor_rtc_explicit_horizon_wins() -> None:
+    policy = _FlowPolicyStub()
+    ex = build_chunk_executor(
+        {"chunk_prefetch": True, "chunk_prefetch_at": 7, "rtc": {"execution_horizon": 3}},
+        policy=policy,
+        adapter_name="pi05",
+    )
+    assert ex is not None
+    assert policy.config.rtc_config.execution_horizon == 3
+    ex.stop()
+
+
 def test_build_chunk_executor_rtc_requires_prefetch() -> None:
     with pytest.raises(ROSConfigError, match="chunk_prefetch"):
         build_chunk_executor({"rtc": {}}, policy=_FlowPolicyStub(), adapter_name="smolvla")
