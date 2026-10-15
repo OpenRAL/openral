@@ -161,6 +161,13 @@ def _provision_rlbench(dry_run: bool = False) -> int:  # noqa: PLR0911
         rc = _run(["uv", "venv", "--seed", "--python", "3.10", str(RLBENCH_VENV)], dry_run=dry_run)
         if rc != 0:
             return rc
+    elif subprocess.run(
+        [str(RLBENCH_PYTHON), "-m", "pip", "--version"], capture_output=True, check=False
+    ).returncode:
+        # A venv an earlier run created without --seed has no pip for the installs below.
+        rc = _run([str(RLBENCH_PYTHON), "-m", "ensurepip"], dry_run=dry_run)
+        if rc != 0:
+            return rc
     POLICY_SRC.mkdir(parents=True, exist_ok=True)
     if not PYREP_DIR.exists():
         rc = _run(["git", "clone", "--depth", "1", PYREP_REPO, str(PYREP_DIR)], dry_run=dry_run)
