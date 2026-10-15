@@ -5,6 +5,14 @@ name: "r1pro"
 embodiment_kind: "mobile_manipulator"
 base_frame: "base_link"
 odom_frame: "odom"
+# Bare-chassis outline (ADR-0099: Nav2 is base-only), measured from the
+# BEHAVIOR-1K r1pro.urdf @ c325bd3b visual meshes (collision meshes are not
+# shipped); see docs/reference/g1-r1pro-base-footprints.md. Does not cover the
+# torso, which leans 8.6 cm past the front bumper in BEHAVIOR's reset pose.
+footprint_radius: 0.41
+footprint_polygon: [[0.24, 0.31], [0.20, 0.34], [-0.11, 0.34], [-0.36, 0.15],
+                    [-0.39, 0.11], [-0.40, 0.03], [-0.40, -0.03], [-0.39, -0.11],
+                    [-0.36, -0.15], [-0.11, -0.34], [0.20, -0.34], [0.24, -0.31]]
 
 joints:
   - name: "torso_joint1"

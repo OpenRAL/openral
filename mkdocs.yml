@@ -110,6 +110,7 @@ nav:
     - Staged hull narrow phase in the safety kernel: reference/collision-hull-narrow-phase.md
     - Collision geometry review (one fitter, capsules and hulls, per robot): reference/collision-geometry-review.md
     - The live world map, measured: reference/world-map-fidelity.md
+    - G1 and R1 Pro base footprints: reference/g1-r1pro-base-footprints.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md
     - Real pick and place on the OpenArm cell (investigation and plan): reference/real-pick-place-design.md
