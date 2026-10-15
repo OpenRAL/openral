@@ -566,7 +566,7 @@ _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `QwenSc
 - `_LOCK: Path` (L53) — Hash-locked pinned deps file the venv is provisioned from.
 - `_NVRTC_OVERRIDE: Path` (L62) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
 - `ensure_venv(home, *, override=None) -> Path` (L67) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
-- `main() -> int` (L108) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
+- `main() -> int` (L111) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
 - `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L61) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load with serial materialization for 8 GB.
 - `_query(processor, model, *, image, question, max_side, max_new_tokens) -> str` (_qwen_vlm_server.py L103) — one scene-question→answer generate via the canonical Qwen-VL recipe (strips the `<think>` trace).
 - `main() -> int` (_qwen_vlm_server.py L172) — ZMQ REP loop (`ping`/`query`/`shutdown`) that replies with an error object rather than dying on exception. Validated live against real hardware.
@@ -580,7 +580,7 @@ _Boot helper + server for the `nvidia/LocateAnything-3B` open-vocabulary detecto
 - `_LOCK: Path` (L50) — Hash-locked pinned deps (`transformers==4.57.1` load-bearing); regenerated via `uv pip compile tools/sidecar_requirements/locateanything.in`.
 - `_NVRTC_OVERRIDE: Path` (L59) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
 - `ensure_venv(home, *, override=None) -> Path` (L64) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded, keyed on `_LOCK` + `_NVRTC_OVERRIDE`); honours `$OPENRAL_LOCATEANYTHING_SIDECAR_VENV`.
-- `main() -> int` (L106) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
+- `main() -> int` (L109) — argparse (`--model` required, `--host`, `--port`, `--max-side`, `--home`, `--venv`); sets `OPENRAL_ALLOW_REMOTE_CODE=1` (the operator opted in by launching this sidecar) and execs into `_locateanything_server.py`.
 - `_split_model_ref(model_ref) -> tuple[str, str]` (_locateanything_server.py L44) — Split a `repo@revision` reference into `(repo, revision)`.
 - `_load(model_ref) -> (processor, model)` (_locateanything_server.py L55) — NF4 bitsandbytes load of the pinned custom-code checkpoint.
 - `_detect(processor, model, image, query, *, max_side, mode, max_new_tokens) -> str` (_locateanything_server.py L99) — One detection request → the model's raw generated text; `<ref>`/`<box>` parsing stays in the main-env backend.
