@@ -453,3 +453,36 @@ def test_nav2_never_commands_a_twist_the_kernel_would_estop(robot: str, config: 
         del mppi(d)["vx_max"], mppi(d)["wz_max"]
         del smoother(d)["max_velocity"], smoother(d)["min_velocity"]
     assert out == base
+
+
+def test_speed_cap_bounds_every_corner_of_an_asymmetric_smoother_box() -> None:
+    """Mixed-sign corners (max vx with min vy) must sit inside the ‖v‖ disk too."""
+    import math
+
+    mod = _import_launch_module()
+    params = {
+        "controller_server": {"ros__parameters": {"FollowPath": {"vx_max": 1.0, "wz_max": 2.0}}},
+        "velocity_smoother": {
+            "ros__parameters": {
+                "max_velocity": [0.5, 0.1, 2.0],
+                "min_velocity": [-0.1, -0.5, -2.0],
+            }
+        },
+    }
+    mod._cap_speeds(params, 0.5, 1.0)
+    smoother = params["velocity_smoother"]["ros__parameters"]
+    hi, lo = smoother["max_velocity"], smoother["min_velocity"]
+    for vx in (hi[0], lo[0]):
+        for vy in (hi[1], lo[1]):
+            assert math.hypot(vx, vy) <= 0.5 + 1e-9, (vx, vy)
+    assert (hi[2], lo[2]) == (1.0, -1.0)
+
+
+def test_speed_cap_refuses_a_params_file_without_the_limits_it_must_cap() -> None:
+    """A custom params file without MPPI/smoother limits fails loudly, never launches uncapped."""
+    mod = _import_launch_module()
+    from openral_core.exceptions import ROSConfigError
+
+    params = {"controller_server": {"ros__parameters": {"FollowPath": {}}}}
+    with pytest.raises(ROSConfigError, match="vx_max"):
+        mod._cap_speeds(params, 0.5, 1.0)

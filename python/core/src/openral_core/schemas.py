@@ -1478,7 +1478,8 @@ class SafetyEnvelope(BaseModel):
         max_base_linear_speed_m_s: Per-control-mode kernel bound —
             BODY_TWIST linear bound
             (Euclidean over vx,vy,vz). ``None`` skips the check;
-            mobile manipulators / wheeled bases declare it.
+            mobile manipulators / wheeled bases declare it. Must be
+            finite and > 0 (``inf`` would disable the kernel bound).
         max_base_angular_speed_rad_s: Per-control-mode kernel bound —
             BODY_TWIST angular
             bound (Euclidean over wx,wy,wz; for planar bases only
@@ -1540,8 +1541,9 @@ class SafetyEnvelope(BaseModel):
     max_cartesian_step_m: float | None = None
     max_cartesian_step_rad: float | None = None
     max_ee_angular_speed_rad_s: float | None = None
-    max_base_linear_speed_m_s: float | None = None
-    max_base_angular_speed_rad_s: float | None = None
+    # Finite and positive: `+inf` would read as "no bound" in the kernel (issue #405).
+    max_base_linear_speed_m_s: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
+    max_base_angular_speed_rad_s: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     self_collision_margin_m: float = 0.0  # negative tolerates grazing
     starting_pose_max_joint_speed_rad_s: float | None = Field(default=None, gt=0.0)
     starting_pose_tolerance_rad: float | None = Field(default=None, gt=0.0)
