@@ -319,10 +319,16 @@ ISOLATED_TARGETS=(
 
 export OPENRAL_TEST_ROS_LIVE=1
 
+# Exit 5 ("nothing collected") is expected only under an explicit -k / -m
+# selection, which empties some runs. Unfiltered, it means a target ran nothing.
+filtered=0
+for a in "$@"; do
+    case "$a" in -k | -k* | -m | -m*) filtered=1 ;; esac
+done
 rc=0
-python -m pytest "${TARGETS[@]}" "$@" || rc=$?
+keep() { [ "$1" -eq 5 ] && [ "$filtered" -eq 1 ] || rc=$1; }
+python -m pytest "${TARGETS[@]}" "$@" || keep $?
 for t in "${ISOLATED_TARGETS[@]}"; do
-    # Exit 5 is "nothing collected" -- a `-k` that matches nothing in this file.
-    MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@" || { r=$?; [ "$r" -eq 5 ] || rc=$r; }
+    MUJOCO_GL="${MUJOCO_GL:-egl}" python -m pytest "$t" "$@" || keep $?
 done
 exit "$rc"
