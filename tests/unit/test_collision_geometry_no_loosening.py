@@ -107,7 +107,9 @@ def test_a_link_the_lowering_drops_counts_as_loosening() -> None:
 # ── the manifests ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("robot_name", _HAND_TIGHTENED)
+# panda_mobile is not parametrized here: test_panda_mobile_relower_would_inflate_four_arm_links
+# runs the same lowering and asserts the exact loosened set, which implies this.
+@pytest.mark.parametrize("robot_name", [n for n in _HAND_TIGHTENED if n != "panda_mobile"])
 def test_shipped_geometry_is_tighter_than_a_re_lower(robot_name: str) -> None:
     """The committed primitives must stay the tighter ones.
 
