@@ -1,6 +1,6 @@
 name: pages
 # Deploy MkDocs to GitHub Pages on every push to master.
-# Served at https://openral.github.io/openral/
+# Served at https://docs.openral.com/
 #
 # One-time setup required in the GitHub UI:
 #   Settings → Pages → Source: "GitHub Actions"

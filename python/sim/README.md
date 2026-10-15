@@ -7,7 +7,7 @@ Abstraction Layer for vision-language-action robotics. This package is one
 member of the OpenRAL Python workspace; see the architecture overview and the
 seven-layer model in the project docs.
 
-- **Docs:** https://openral.github.io/openral/
+- **Docs:** https://docs.openral.com/
 - **Source:** https://github.com/OpenRAL/openral
 - **License:** Apache-2.0
 
