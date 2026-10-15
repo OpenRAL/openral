@@ -517,6 +517,7 @@ lowering = [
     "numpy>=2.0.0,<2.6.0",  # reason: PCA capsule fitting + pose sampling; pin matches workspace-wide numpy constraint from lerobot>=0.5.1
     "xacrodoc>=0.3.0",    # reason: process xacro-only URDFs (UR / Flexiv) for onboarding via robot_descriptions:<module>
     "mujoco>=3.8.0",      # reason: lower FK + ACM from MJCF-native robots (openarm) whose mesh collision the URDF path can't read
+    "scipy>=1.13",        # reason: ConvexHull / HalfspaceIntersection / cKDTree in urdf_lowering + tight_geometry
 ]
 
 [tool.pytest.ini_options]

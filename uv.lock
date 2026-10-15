@@ -3302,6 +3302,7 @@ locateanything = [
 lowering = [
     { name = "mujoco" },
     { name = "numpy" },
+    { name = "scipy" },
     { name = "trimesh" },
     { name = "xacrodoc" },
     { name = "yourdfpy" },
@@ -3461,6 +3462,7 @@ locateanything = [
 lowering = [
     { name = "mujoco", specifier = ">=3.8.0" },
     { name = "numpy", specifier = ">=2.0.0,<2.6.0" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "trimesh", specifier = ">=4.0.0" },
     { name = "xacrodoc", specifier = ">=0.3.0" },
     { name = "yourdfpy", specifier = ">=0.0.56" },
