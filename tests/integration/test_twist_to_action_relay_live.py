@@ -167,13 +167,17 @@ def test_relay_routes_cmd_vel_through_the_kernel(tmp_path: Path) -> None:
         assert estops, "kernel must E-stop on an over-speed /cmd_vel"
     finally:
         rclpy.shutdown()
-        # SIGTERM is what `ros2 launch` escalates to; Jazzy rclpy handles it (no custom handler).
-        os.killpg(relay.pid, signal.SIGTERM)
         try:
-            relay.wait(timeout=10)
-        finally:
+            # An early-exited relay is already reaped; killpg would raise and mask the failure.
             if relay.poll() is None:
-                os.killpg(relay.pid, signal.SIGKILL)
+                # SIGTERM is what `ros2 launch` escalates to; Jazzy rclpy handles it.
+                os.killpg(relay.pid, signal.SIGTERM)
+                try:
+                    relay.wait(timeout=10)
+                finally:
+                    if relay.poll() is None:
+                        os.killpg(relay.pid, signal.SIGKILL)
+        finally:
             terminate_kernel(kernel)
     assert relay.returncode is not None and relay.returncode >= 0, "relay ignored SIGTERM"
 
