@@ -16,8 +16,6 @@ build/
 .ruff_cache/
 .hypothesis/
 htmlcov/
-.coverage
-coverage.xml
 *.cover
 
 # uv

@@ -46,8 +46,6 @@ dist
 .ruff_cache
 .hypothesis
 htmlcov
-.coverage
-coverage.xml
 
 # colcon artifacts. The image runs its own `colcon build` into a clean
 # /workspace; a host-built tree leaking in would shadow it with binaries linked
