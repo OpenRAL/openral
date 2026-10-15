@@ -246,6 +246,10 @@ def _gpu_present() -> bool:
 def test_e2e_detect_cats_on_coco_sample() -> None:
     # coco_sample.jpg is the canonical COCO image of two cats and two remotes
     # (no person). Querying "cat" exercises the real open-vocab grounding path.
+    from openral_core.schemas import RSkillManifest
+    from openral_runner.backends.gstreamer.detector_factory import (
+        weights_source_from_manifest,
+    )
     from openral_runner.backends.gstreamer.locateanything_detector import (
         LocateAnythingDetector,
     )
@@ -260,6 +264,9 @@ def test_e2e_detect_cats_on_coco_sample() -> None:
     det = LocateAnythingDetector(
         labels=["cat"],
         model_id="OpenRAL/rskill-locateanything_3b-any-general-nf4",
+        # The sidecar runs checkpoint code, so it only accepts a pinned
+        # repo@revision; the constructor default is unpinned — use the manifest's.
+        weights_source=weights_source_from_manifest(RSkillManifest.from_yaml(str(_MANIFEST))),
         port=5759,
         boot_timeout_s=1800,
     )
