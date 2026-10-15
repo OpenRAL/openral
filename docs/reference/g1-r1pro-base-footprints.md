@@ -2,8 +2,8 @@
 
 *Researched 2026-10-15.* Planar outlines, in metres, in each manifest's
 `base_frame` (x forward, y left), for the Nav2 fields `footprint_polygon` and
-`footprint_radius` on [`robots/g1/robot.yaml`](../../robots/g1/robot.yaml) and
-[`robots/r1pro/robot.yaml`](../../robots/r1pro/robot.yaml). Neither manifest
+`footprint_radius` on [`robots/g1/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/g1/robot.yaml) and
+[`robots/r1pro/robot.yaml`](https://github.com/OpenRAL/openral/blob/master/robots/r1pro/robot.yaml). Neither manifest
 declares either field today.
 
 Every number below was either quoted from a manufacturer page or computed from
@@ -29,7 +29,7 @@ in BEHAVIOR's evaluation reset pose.
 `RobotDescription.footprint_radius` feeds Nav2's `robot_radius`.
 `footprint_polygon` is a list of base-frame `(x, y)` vertices, counter-clockwise
 by convention, with at least 3 vertices
-([`python/core/src/openral_core/schemas.py`](../../python/core/src/openral_core/schemas.py),
+([`python/core/src/openral_core/schemas.py`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py),
 fields near L2768 and L2797; the validator is `_validate_footprint_polygon`).
 
 Two of the repo's decisions constrain what a "correct" outline is
@@ -85,7 +85,7 @@ The page does not say which arm pose the 450 mm width refers to.
 
 The repo has no G1 home pose of its own. The walking path resets to a
 `knees_bent` keyframe from a separate walking MJCF
-([`python/hal/src/openral_hal/g1.py`](../../python/hal/src/openral_hal/g1.py)),
+([`python/hal/src/openral_hal/g1.py`](https://github.com/OpenRAL/openral/blob/master/python/hal/src/openral_hal/g1.py)),
 which this page did not measure.
 
 ### Results in the pelvis frame, `stand` keyframe
