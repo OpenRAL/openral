@@ -13,6 +13,8 @@ gated behind `pytest.importorskip` so this module loads without it.
 
 from __future__ import annotations
 
+from typing import Any  # reason: mujoco ships no stubs, so MjModel/MjData handles are Any
+
 import numpy as np
 import pytest
 from openral_core import SceneSpec
@@ -101,7 +103,7 @@ def test_resolve_env_name_procedural_dispatch() -> None:
         ("navigate", "NavigateKitchen"),
     ]
     for verb, env in cases:
-        opts = RoboCasaBackendOptions(mode="procedural", task_verb=verb)  # type: ignore[arg-type]
+        opts = RoboCasaBackendOptions(mode="procedural", task_verb=verb)
         assert _resolve_env_name(opts, "robocasa") == env
 
 
@@ -338,7 +340,7 @@ _PANDA_MOBILE_MJCF = f"""
 """
 
 
-def _build_synthetic_panda_mobile_model() -> tuple[object, object]:
+def _build_synthetic_panda_mobile_model() -> tuple[Any, Any]:
     """Compile and return ``(model, data)`` for the synthetic MJCF.
 
     Skips the calling test cleanly when ``mujoco`` isn't installed (the

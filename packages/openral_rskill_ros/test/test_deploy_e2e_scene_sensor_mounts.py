@@ -230,7 +230,7 @@ def test_a_robot_without_rgb_gets_a_typed_empty_camera_list() -> None:
         for e in entities
         if isinstance(e, Node) and getattr(e, "_Node__node_executable", None) == "runtime_node"
     )
-    evaluate_parameters(ctx, runtime._Node__parameters)  # type: ignore[attr-defined]  # raises on []
+    evaluate_parameters(ctx, runtime._Node__parameters)  # raises on []
 
 
 def test_the_sim_foxglove_layout_lists_the_rendered_cameras(

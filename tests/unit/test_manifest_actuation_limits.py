@@ -126,6 +126,7 @@ def test_revolute_params_override_only_revolute_joints() -> None:
     bounds = runner.starting_pose_joint_bounds(0.2, 0.01, desc)
     for joint, (speed, tolerance) in zip(desc.joints, bounds, strict=True):
         if joint.joint_type is JointType.PRISMATIC:
+            assert joint.velocity_limit is not None
             assert (speed, tolerance) == (
                 min(desc.safety.starting_pose_max_joint_speed_m_s or 0.0, joint.velocity_limit),
                 desc.safety.starting_pose_tolerance_m,
@@ -343,9 +344,9 @@ def test_no_real_runner_window_is_looser_than_the_former_shipped_value(
 ) -> None:
     fn = launch_module._runner_joint_state_staleness_s  # type: ignore[attr-defined]
     real = [
-        RobotDescription.from_yaml(p)
+        RobotDescription.from_yaml(str(p))
         for p in sorted((REPO_ROOT / "robots").glob("*/robot.yaml"))
-        if RobotDescription.from_yaml(p).hal.real is not None
+        if RobotDescription.from_yaml(str(p)).hal.real is not None
     ]
     assert len(real) >= 5
     for desc in real:

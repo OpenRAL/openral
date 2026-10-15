@@ -12,8 +12,11 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import openral_observability.tracing_lttng as ttng
 import pytest
@@ -66,10 +69,10 @@ def test_tracepoint_falls_back_to_jsonl_when_lttngust_missing(
     # JSON fallback even on hosts that happen to have lttngust.
     real_import = importlib.import_module
 
-    def _fake_import(name: str, *args: object, **kwargs: object) -> object:
+    def _fake_import(name: str, package: str | None = None) -> ModuleType:
         if name == "lttngust":
             raise ImportError("simulated missing lttngust for this test")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, package)
 
     monkeypatch.setattr(importlib, "import_module", _fake_import)
     # tracing_lttng uses the builtin ``import`` statement; patch builtins
@@ -80,9 +83,9 @@ def test_tracepoint_falls_back_to_jsonl_when_lttngust_missing(
 
     def _fake_builtin_import(
         name: str,
-        *args: object,
-        **kwargs: object,
-    ) -> object:
+        *args: Any,  # reason: forwards __import__'s mixed-type args verbatim
+        **kwargs: Any,  # reason: forwards __import__'s mixed-type args verbatim
+    ) -> ModuleType:
         if name == "lttngust":
             raise ImportError("simulated missing lttngust for this test")
         return real_builtin_import(name, *args, **kwargs)
@@ -115,7 +118,7 @@ def test_lttng_session_helpers_error_cleanly_without_lttng_on_path(
             return None
         return f"/usr/bin/{name}"
 
-    monkeypatch.setattr(ttng.shutil, "which", _no_lttng)
+    monkeypatch.setattr(shutil, "which", _no_lttng)
     with pytest.raises(ttng.LttngSessionError, match="lttng-tools not found on PATH"):
         ttng.start_session(name="openral", output_dir=tmp_path)
     with pytest.raises(ttng.LttngSessionError, match="lttng-tools not found on PATH"):

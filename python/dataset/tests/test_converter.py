@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_dataset import (
@@ -56,14 +57,14 @@ pytest.importorskip(
 )
 
 
-def _camera_frames(robot: RobotDescription, fill: int = 0) -> dict[str, np.ndarray]:
+def _camera_frames(robot: RobotDescription, fill: int = 0) -> dict[str, NDArray[np.uint8]]:
     """Per-camera frame at the manifest's declared intrinsic resolution.
 
     The enriched ``Rosbag2Sink`` now records real pixels, so the frames
     fed to ``record_frame`` must match ``SensorSpec.intrinsics`` (the
     sink + converter validate against it) — not an arbitrary thumbnail.
     """
-    images: dict[str, np.ndarray] = {}
+    images: dict[str, NDArray[np.uint8]] = {}
     for sensor in robot.sensors:
         if sensor.vla_feature_key is None or sensor.intrinsics is None:
             continue
@@ -79,7 +80,10 @@ def _camera_frames(robot: RobotDescription, fill: int = 0) -> dict[str, np.ndarr
 
 def _zero_frame(
     robot: RobotDescription,
-) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+) -> tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]]:
+    assert robot.observation_spec is not None
+    assert robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
     return state, _camera_frames(robot), action
@@ -135,7 +139,7 @@ def test_converter_rejects_bag_without_episode_markers(
     with bag_path.open("wb") as f:
         writer = Writer(f)
         writer.start(profile="openral", library="test")
-        writer.finish()
+        writer.finish()  # type: ignore[no-untyped-call]  # reason: mcap's Writer.finish is unannotated upstream
 
     with pytest.raises(ROSConfigError, match=r"no /openral/episode markers"):
         Rosbag2ToLeRobotConverter.from_bag(
@@ -291,6 +295,9 @@ def test_converter_round_trips_real_state_action_images(
 
     bag_path = tmp_path / "real.mcap"
     n_ticks = 4
+    assert so100_robot.observation_spec is not None
+    assert so100_robot.action_spec is not None
+    assert so100_robot.action_spec.dim is not None
     state_dim = so100_robot.observation_spec.state_shape[0]
     action_dim = so100_robot.action_spec.dim
     img_fill = 123
@@ -332,9 +339,7 @@ def test_converter_round_trips_real_state_action_images(
     # decoded frame normalised to [0, 1] (CHW float32), so a constant
     # fill of 123 lands near 123/255 ≈ 0.48. SVT-AV1 is lossy, so assert
     # the mean is in a band around the expected fill rather than exact.
-    ds = lerobot.datasets.LeRobotDataset(  # type: ignore[attr-defined]
-        f"openral/dataset-{so100_robot.name}", root=out
-    )
+    ds = lerobot.datasets.LeRobotDataset(f"openral/dataset-{so100_robot.name}", root=out)
     frame0 = ds[0]
     cam_np = np.asarray(frame0["observation.images.camera1"])
     assert cam_np.size > 0
@@ -381,7 +386,7 @@ def test_converter_round_trips_robot_without_observation_spec(tmp_path: Path) ->
     assert summary.n_episodes == 1
     assert summary.n_frames == 3
 
-    ds = lerobot.datasets.LeRobotDataset(f"openral/dataset-{franka.name}", root=out)  # type: ignore[attr-defined]
+    ds = lerobot.datasets.LeRobotDataset(f"openral/dataset-{franka.name}", root=out)
     assert ds.num_frames == 3
     info = json.loads((out / "meta" / "info.json").read_text())
     assert tuple(info["features"]["observation.state"]["shape"]) == (state_dim,)

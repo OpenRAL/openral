@@ -30,9 +30,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import SimEnvironment
 
 from tests.sim.conftest import mujoco_renderer_probe_error
 
@@ -90,12 +94,12 @@ def env_cfg():
 
 
 class TestGr1RoboCasaEnvBuild:
-    def test_scene_is_the_gr1_tabletop(self, env_cfg) -> None:
+    def test_scene_is_the_gr1_tabletop(self, env_cfg: SimEnvironment) -> None:
         """Sanity: the composed scene is the GR1 PnP tabletop on a GR1 robot."""
         assert env_cfg.scene.id == "robocasa/gr1/PnPCupToDrawerClose"
         assert env_cfg.robot_id == "gr1"
 
-    def test_env_builds_and_resets_without_invalid_base_type(self, env_cfg) -> None:
+    def test_env_builds_and_resets_without_invalid_base_type(self, env_cfg: SimEnvironment) -> None:
         """Build the GR1 env and reset it — the issue #44 crash point.
 
         A robosuite drift regression surfaces here as

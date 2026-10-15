@@ -108,7 +108,7 @@ def test_task_verb_literal() -> None:
     with pytest.raises(ValidationError):
         RoboCasaBackendOptions(
             mode="procedural",
-            task_verb="grasp",  # type: ignore[arg-type]
+            task_verb="grasp",
         )
 
 

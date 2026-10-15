@@ -169,8 +169,10 @@ def test_bf16_override_maps_to_the_sidecars_unquantized_mode(
     env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)))
     behavior_groot.build_behavior_groot_policy(env_cfg, manifest, {})
 
-    assert "--quantization" in captured["launch_argv"]  # type: ignore[operator]
-    argv = list(captured["launch_argv"])  # type: ignore[arg-type]
+    launch_argv = captured["launch_argv"]
+    assert isinstance(launch_argv, list)
+    assert "--quantization" in launch_argv
+    argv = list(launch_argv)
     assert argv[argv.index("--quantization") + 1] == "none"
 
 

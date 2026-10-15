@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import pathlib
+from typing import Any
 
 import pytest
 import yaml
@@ -117,7 +118,7 @@ def test_robometer_fixture_validates() -> None:
 
 # ─── Validator boundary tests ─────────────────────────────────────────────────
 
-_VALID_REWARD: dict = {
+_VALID_REWARD: dict[str, Any] = {
     "schema_version": "0.1",
     "name": "openral/test-reward",
     "version": "0.1.0",

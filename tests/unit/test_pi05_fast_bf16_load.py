@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-torch = pytest.importorskip("torch")
+if TYPE_CHECKING:
+    import torch
+else:
+    torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError  # noqa: E402
@@ -28,11 +32,13 @@ from openral_sim._quantization import (  # noqa: E402
 from openral_sim.policies.pi05 import _init_pi05_buffers  # noqa: E402
 
 
-def _stream(policy: torch.nn.Module, snapshot: Path, **kwargs: object) -> None:
+def _stream(policy: torch.nn.Module, snapshot: Path, **kwargs: Any) -> None:  # reason: forwarded
     stream_state_into_policy(policy, str(snapshot), torch=torch, family="test", **kwargs)
 
 
 class _Rope(torch.nn.Module):
+    inv_freq: torch.Tensor
+
     def __init__(self) -> None:
         super().__init__()
         self.rope_theta = 10000.0
@@ -40,6 +46,8 @@ class _Rope(torch.nn.Module):
 
 
 class _Vision(torch.nn.Module):
+    position_ids: torch.Tensor
+
     def __init__(self) -> None:
         super().__init__()
         self.register_buffer("position_ids", torch.full((1, 16), -1, dtype=torch.int64))
@@ -75,7 +83,7 @@ def test_real_gemma_modules_rebuild_to_their_constructed_values() -> None:
     gemma = pytest.importorskip("transformers.models.gemma.modeling_gemma")
     from transformers import GemmaConfig
 
-    cfg = GemmaConfig(
+    cfg = GemmaConfig(  # type: ignore[call-arg, unused-ignore]  # reason: transformers is optional; its config kwargs are untyped **kwargs in some releases
         vocab_size=64, hidden_size=32, num_attention_heads=4, head_dim=8, rope_theta=50000.0
     )
 
@@ -234,7 +242,10 @@ def test_a_sharded_checkpoint_is_streamed_from_every_shard(tmp_path: Path) -> No
     state = {k: v.detach().clone() for k, v in source.state_dict().items()}
     snapshot = tmp_path / "sharded"
     snapshot.mkdir()
-    shards = {"model-00001-of-00002.safetensors": [], "model-00002-of-00002.safetensors": []}
+    shards: dict[str, list[str]] = {
+        "model-00001-of-00002.safetensors": [],
+        "model-00002-of-00002.safetensors": [],
+    }
     names = list(shards)
     for i, key in enumerate(sorted(state)):
         shards[names[i % 2]].append(key)

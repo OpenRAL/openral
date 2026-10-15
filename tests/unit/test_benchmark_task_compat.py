@@ -17,13 +17,13 @@ Validates against a real in-tree manifest fixture (CLAUDE.md §1.11).
 from __future__ import annotations
 
 import pytest
-from openral_core import load_benchmark_suite
+from openral_core import RSkillManifest, load_benchmark_suite
 from openral_core.exceptions import ROSCapabilityMismatch
 from openral_rskill.loader import load_rskill_manifest
 from openral_sim.benchmark import check_benchmark_task_compatibility, filter_scenes_for_skill
 
 
-def _manifest_with(evaluated_tasks: list[str]):
+def _manifest_with(evaluated_tasks: list[str]) -> RSkillManifest:
     base = load_rskill_manifest("rskills/smolvla-libero")
     return base.model_copy(update={"evaluated_tasks": evaluated_tasks})
 

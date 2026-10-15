@@ -11,6 +11,8 @@ model: configure builds none) to pin the ``camera_infos`` parameter handling.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from openral_core import RobotDescription, ROSConfigError, SensorSpec
 from openral_perception_ros.camera_topics import parse_camera_entries
@@ -23,7 +25,9 @@ _ZED_THOR_K = [1498.18, 0.0, 936.11, 0.0, 1498.18, 541.81, 0.0, 0.0, 1.0]
 
 
 def _head_zed() -> SensorSpec:
-    spec = sensor_spec_by_name(RobotDescription.from_yaml(_ROBOT_YAML), "head_zed")
+    spec: SensorSpec | None = sensor_spec_by_name(
+        RobotDescription.from_yaml(_ROBOT_YAML), "head_zed"
+    )
     assert spec is not None
     return spec
 
@@ -105,7 +109,7 @@ def test_node_configure_wires_camera_infos_and_rejects_unknown_ids() -> None:
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.parameter import Parameter
 
-    def _node(name: str, infos: list[str]) -> object:
+    def _node(name: str, infos: list[str]) -> Any:  # reason: make_segmenter_node returns Any
         node = make_segmenter_node(name)
         node.set_parameters(
             [

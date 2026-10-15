@@ -159,7 +159,7 @@ def test_collision_evidence_dispatches_through_failure_union() -> None:
         horizon_step=2,
         min_distance_m=-0.01,
     )
-    decoded = TypeAdapter(FailureEvidence).validate_json(ev.model_dump_json())
+    decoded: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(ev.model_dump_json())
     assert isinstance(decoded, CollisionEvidence)
     assert decoded.collision_kind == "self"
     assert decoded.min_distance_m == -0.01
@@ -175,7 +175,7 @@ def test_kernel_reactive_collision_evidence_validates() -> None:
     truncation instead of a structured summary.
     """
     payload = _KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
-    decoded = TypeAdapter(FailureEvidence).validate_json(payload)
+    decoded: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(payload)
     assert isinstance(decoded, CollisionEvidence)
     assert decoded.collision_kind == "world"
     assert decoded.link_a == "ee"
@@ -199,7 +199,7 @@ def test_kernel_predictive_evidence_carries_the_configuration_it_adjudicated() -
     6 significant digits would round to ~1e-6 rad, i.e. mm-scale error at 1 m reach.
     """
     payload = _KERNEL_PREDICTIVE_EVIDENCE.read_text(encoding="utf-8").strip()
-    decoded = TypeAdapter(FailureEvidence).validate_json(payload)
+    decoded: FailureEvidence = TypeAdapter(FailureEvidence).validate_json(payload)
     assert isinstance(decoded, CollisionEvidence)
     assert decoded.horizon_step == 5
     assert not decoded.is_reactive

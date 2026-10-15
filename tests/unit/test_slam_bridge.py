@@ -177,15 +177,22 @@ def test_dashboard_store_picks_up_slam_occupancy_grid_span() -> None:
 
 
 def _footprint_to_pixels_ref(
-    polygon, robot_x, robot_y, yaw, origin_x, origin_y, resolution, height
-):
+    polygon: list[tuple[float, float]],
+    robot_x: float,
+    robot_y: float,
+    yaw: float,
+    origin_x: float,
+    origin_y: float,
+    resolution: float,
+    height: float,
+) -> list[tuple[float, float]]:
     """Python reference for the JS footprintToPixels: rotate base-frame
     vertices by yaw, translate to the robot world pose, then world->pixel
     (with the vertical flip py = (height-1) - row)."""
     import math
 
     c, s = math.cos(yaw), math.sin(yaw)
-    out = []
+    out: list[tuple[float, float]] = []
     for bx, by in polygon:
         wx = robot_x + bx * c - by * s
         wy = robot_y + bx * s + by * c

@@ -122,7 +122,8 @@ def test_deploy_runner_emits_hal_spans_and_histograms(
         for scope_metric in resource_metric.scope_metrics:
             for metric in scope_metric.metrics:
                 if metric.name == semconv.METRIC_HAL_READ_STATE_DURATION:
-                    for point in metric.data.data_points:  # type: ignore[attr-defined]
+                    for point in metric.data.data_points:
                         assert isinstance(point, HistogramDataPoint)
+                        assert point.attributes is not None
                         assert point.attributes[semconv.LABEL_HAL_ADAPTER] == "so100followerhal"
                         assert point.count >= 1

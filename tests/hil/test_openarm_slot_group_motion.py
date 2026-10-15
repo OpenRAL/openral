@@ -134,6 +134,8 @@ def test_one_slot_dispatched_tick_moves_only_the_joint_it_addresses(
     assert RSKILL is not None  # narrowed by requires_rskill
     robot = RobotDescription.from_yaml(str(ROBOT))
     manifest = RSkillManifest.from_yaml(str(RSKILL))
+    assert manifest.action_contract is not None
+    assert manifest.action_contract.slots is not None
 
     context = rclpy.Context()
     context.init()

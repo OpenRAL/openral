@@ -33,6 +33,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -84,8 +85,8 @@ def _kernel_params() -> tuple[dict[str, object], list[str], list[int]]:
     """(kernel params, link names, the qpos slots of panda_joint1..7)."""
     robot = _robot()
     collision = collision_params_from_description(robot)
-    names = list(collision["collision_link_names"])  # type: ignore[arg-type]  # reason: ROS param list
-    dof_index = list(collision["collision_dof_index"])  # type: ignore[arg-type]  # reason: ROS param list
+    names = list(cast("list[str]", collision["collision_link_names"]))
+    dof_index = list(cast("list[int]", collision["collision_dof_index"]))
     n_dof = max(dof_index) + 1
     arm_slots = [dof_index[names.index(f"panda_link{i}")] for i in range(1, 8)]
     params: dict[str, object] = {
@@ -189,7 +190,7 @@ def test_kernel_clears_the_reset_pose_and_stops_the_real_collision() -> None:
     from std_msgs.msg import Empty
 
     params, _names, arm_slots = _kernel_params()
-    n_dof = int(params["n_dof"])  # type: ignore[arg-type]  # reason: set above as int
+    n_dof = int(cast(int, params["n_dof"]))  # set above as int
     node_name = f"safety_kernel_link57_{uuid.uuid4().hex[:8]}"
     proc = start_kernel(params, node_name, isolated_domain_id())
     try:

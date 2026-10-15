@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 pytest.importorskip("yourdfpy")
@@ -52,10 +53,10 @@ def _so100() -> tuple[RobotDescription, str]:
     return robot, str(urdf)
 
 
-def _link_cloud(urdf: str, link_name: str) -> np.ndarray:
+def _link_cloud(urdf: str, link_name: str) -> npt.NDArray[np.float64]:
     model = _load_urdf(urdf)
-    handler = model._filename_handler  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-    link = model.link_map[link_name]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+    handler = model._filename_handler
+    link = model.link_map[link_name]
     return np.vstack(
         [
             _apply(_origin_matrix(el.origin), _collision_local_vertices(el, handler))
@@ -68,7 +69,7 @@ def _link_cloud(urdf: str, link_name: str) -> np.ndarray:
 def wrist() -> LinkCollisionGeometry:
     _, urdf = _so100()
     lowered = lower_link_geometry(urdf, tight_links={"wrist"})
-    entries = [g for g in lowered if g.link_name == "wrist"]
+    entries: list[LinkCollisionGeometry] = [g for g in lowered if g.link_name == "wrist"]
     assert len(entries) == 1, entries
     return entries[0]
 

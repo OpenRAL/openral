@@ -364,6 +364,6 @@ def test_perception_publisher_publishes_motion_events_end_to_end() -> None:
     # metadata_json round-trips through the discriminator.
     from pydantic import TypeAdapter
 
-    metadata = TypeAdapter(PerceptionEventMetadata).validate_json(msg.metadata_json)
+    metadata: object = TypeAdapter(PerceptionEventMetadata).validate_json(msg.metadata_json)
     assert isinstance(metadata, MotionMetadata)
     assert metadata.sensor_id == "cam0"

@@ -41,7 +41,7 @@ def _write_one_message_bag(bag_path: Path, traceparent: str, topic: str) -> None
                 "utf-8"
             ),
         )
-        w.finish()
+        w.finish()  # type: ignore[no-untyped-call]  # reason: mcap ships Writer.finish unannotated
 
 
 def test_ral_replay_writes_timeline_to_out(tmp_path: Path) -> None:
@@ -115,6 +115,8 @@ def test_ral_replay_frame_pivots_into_dataset_trace(tmp_path: Path) -> None:
     bag_sink = Rosbag2Sink(bag_path=bag)
     rec = RolloutRecorder(robot=robot, task_string="t", fps=30.0, sinks=[lerobot_sink, bag_sink])
 
+    assert robot.observation_spec is not None and robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
     images = {
@@ -216,14 +218,14 @@ def test_ral_profile_session_start_errors_when_lttng_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """start_session surfaces the lttng-tools-missing message through the CLI."""
-    import openral_observability.tracing_lttng as ttng
+    import shutil
 
     def _no_lttng(name: str) -> str | None:
         if name == "lttng":
             return None
         return f"/usr/bin/{name}"
 
-    monkeypatch.setattr(ttng.shutil, "which", _no_lttng)
+    monkeypatch.setattr(shutil, "which", _no_lttng)
     result = runner.invoke(
         app,
         ["profile", "session", "start", "--output", str(tmp_path), "--name", "ut"],

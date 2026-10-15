@@ -27,7 +27,7 @@ sys.modules[_spec.name] = quantize_rskill
 _spec.loader.exec_module(quantize_rskill)
 
 
-def _write(out_dir: Path, name: str, payload: dict) -> None:
+def _write(out_dir: Path, name: str, payload: dict[str, object]) -> None:
     (out_dir / name).write_text(json.dumps(payload))
 
 

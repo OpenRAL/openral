@@ -28,7 +28,7 @@ pytest.importorskip("onnxruntime")
 pytest.importorskip("lerobot")
 pytest.importorskip("cv2")
 
-import onnxruntime as ort  # noqa: E402
+import onnxruntime as ort  # type: ignore[import-untyped]  # noqa: E402  # reason: no py.typed
 
 _CHECKPOINT = "gabrycina/so101-passing-pen-policy"
 _HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"

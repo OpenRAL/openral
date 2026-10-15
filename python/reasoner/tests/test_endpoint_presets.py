@@ -17,6 +17,7 @@ from openral_reasoner.tool_use import (
     ANTHROPIC_BASE_URL,
     OLLAMA_BASE_URL,
     OPENROUTER_BASE_URL,
+    AnthropicToolUseClient,
     OpenAICompatibleToolUseClient,
     build_tool_use_client_from_env,
 )
@@ -172,6 +173,7 @@ def test_anthropic_preset_is_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
     client = build_tool_use_client_from_env()
 
     assert type(client).__name__ == "AnthropicToolUseClient"
+    assert isinstance(client, AnthropicToolUseClient)
     assert client._base_url == ANTHROPIC_BASE_URL
 
 

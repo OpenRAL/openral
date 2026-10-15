@@ -8,12 +8,22 @@ the LLM as one opaque string and forgotten on the pull-once prompt drain.
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from openral_reasoner import (
     MissionState,
     TaskState,
     evaluate_task_verdict,
 )
 from openral_reasoner.mission import DEFAULT_MAX_SUBDIVIDE_DEPTH
+
+_T = TypeVar("_T")
+
+
+def _some(value: _T | None) -> _T:
+    assert value is not None
+    return value
+
 
 # ── MissionState.from_prompt — single-task seeding ────────────────────────────
 
@@ -37,7 +47,7 @@ def test_first_task_is_active_rest_pending() -> None:
     m = MissionState(["a", "b", "c"])
     statuses = [(t.task_id, t.status) for t in m.tasks]
     assert statuses == [("t1", "active"), ("t2", "pending"), ("t3", "pending")]
-    assert m.active().text == "a"
+    assert _some(m.active()).text == "a"
     assert len(m) == 3
     assert not m.is_complete()
 
@@ -61,7 +71,7 @@ def test_complete_active_advances_to_next() -> None:
     t1 = m.tasks[0]
     assert t1.status == "done" and t1.last_verdict == "success=0.91"
     # active is now t2; mission not yet complete.
-    assert m.active().task_id == "t2"
+    assert _some(m.active()).task_id == "t2"
     assert not m.is_complete()
 
 
@@ -77,9 +87,9 @@ def test_abandon_active_advances_and_is_terminal() -> None:
     nxt = m.abandon_active("ladder exhausted: stalled@0.73")
     assert nxt is not None and nxt.task_id == "t2"
     t1 = m.tasks[0]
-    assert t1.status == "abandoned" and t1.last_verdict.startswith("ladder exhausted")
+    assert t1.status == "abandoned" and _some(t1.last_verdict).startswith("ladder exhausted")
     # Abandoned is terminal — it is NOT silently re-queued.
-    assert m.active().task_id == "t2"
+    assert _some(m.active()).task_id == "t2"
 
 
 def test_mission_complete_when_all_terminal_mixed() -> None:
@@ -98,7 +108,7 @@ def test_record_attempt_increments_and_tracks_ids() -> None:
     m = MissionState(["a", "b"])
     m.record_attempt(rskill_id=skill_id, trace_id="abc123")
     m.record_attempt(rskill_id=skill_id)
-    t1 = m.active()
+    t1 = _some(m.active())
     assert t1.attempts == 2
     assert t1.last_rskill_id == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
     assert t1.last_trace_id == "abc123"  # preserved; second call passed no trace
@@ -109,7 +119,7 @@ def test_mark_verifying_keeps_task_active_for_active_lookup() -> None:
     m.mark_verifying()
     assert m.tasks[0].status == "verifying"
     # `active()` still returns it while verifying (gating is in progress).
-    assert m.active().task_id == "t1"
+    assert _some(m.active()).task_id == "t1"
 
 
 def test_record_attempt_and_complete_on_finished_mission_are_noops() -> None:
@@ -195,9 +205,9 @@ def test_subdivide_active_splices_children_in_place() -> None:
 def test_subdivide_then_advance_walks_children_then_tail() -> None:
     m = MissionState(["task one", "task two"])
     m.subdivide_active(["one-a", "one-b"])
-    assert m.active().task_id == "t1.1"
-    assert m.complete_active("ok").task_id == "t1.2"  # next child
-    assert m.complete_active("ok").task_id == "t2"  # then the original tail
+    assert _some(m.active()).task_id == "t1.1"
+    assert _some(m.complete_active("ok")).task_id == "t1.2"  # next child
+    assert _some(m.complete_active("ok")).task_id == "t2"  # then the original tail
     assert m.complete_active("ok") is None
     assert m.is_complete()
 
@@ -205,8 +215,8 @@ def test_subdivide_then_advance_walks_children_then_tail() -> None:
 def test_subdivide_respects_depth_bound_then_refuses() -> None:
     m = MissionState.from_prompt("root task")
     # depth 0 → 1 → 2 allowed; at DEFAULT_MAX_SUBDIVIDE_DEPTH (2) it is refused.
-    assert m.subdivide_active(["a", "b"]).depth == 1
-    assert m.subdivide_active(["c", "d"]).depth == DEFAULT_MAX_SUBDIVIDE_DEPTH
+    assert _some(m.subdivide_active(["a", "b"])).depth == 1
+    assert _some(m.subdivide_active(["c", "d"])).depth == DEFAULT_MAX_SUBDIVIDE_DEPTH
     assert m.subdivide_active(["e"]) is None  # would be depth 3 — refused → caller hands off
     # The refused call must not mutate the queue (the depth-1 sibling t1.2 trails).
     assert [t.task_id for t in m.tasks] == ["t1.1.1", "t1.1.2", "t1.2"]
@@ -214,7 +224,7 @@ def test_subdivide_respects_depth_bound_then_refuses() -> None:
 
 def test_subdivide_custom_max_depth() -> None:
     m = MissionState.from_prompt("root")
-    assert m.subdivide_active(["a"], max_depth=1).depth == 1
+    assert _some(m.subdivide_active(["a"], max_depth=1)).depth == 1
     assert m.subdivide_active(["b"], max_depth=1) is None  # depth 1 >= 1
 
 
@@ -223,7 +233,7 @@ def test_subdivide_empty_subtasks_is_noop() -> None:
     assert m.subdivide_active([]) is None
     assert m.subdivide_active(["  ", ""]) is None  # whitespace trims to empty
     assert [t.task_id for t in m.tasks] == ["t1"]
-    assert m.active().task_id == "t1"
+    assert _some(m.active()).task_id == "t1"
 
 
 def test_subdivide_with_no_active_task_is_noop() -> None:
@@ -266,8 +276,8 @@ def test_has_started_true_after_a_terminal_task() -> None:
 def test_rearm_active_moves_verifying_back_to_active() -> None:
     m = MissionState.from_prompt("pick the milk")
     m.mark_verifying()
-    assert m.active().status == "verifying"
-    rearmed = m.rearm_active()
+    assert _some(m.active()).status == "verifying"
+    rearmed = _some(m.rearm_active())
     assert rearmed is m.active() and rearmed.status == "active"
     # idempotent on an already-active task.
-    assert m.rearm_active().status == "active"
+    assert _some(m.rearm_active()).status == "active"

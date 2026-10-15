@@ -419,7 +419,7 @@ def test_switching_rskill_id_evicts_prior_resident_skill() -> None:
     """Single-resident-skill eviction: dispatching a different rskill_id shuts down
     (unloads) the prior resident skill.
     """
-    from openral_rskill.base import RSkillState
+    from openral_core.schemas import RSkillState
 
     built: list[Any] = []
     with _compose_harness(resolver=_tracking_resolver(built)) as (executor, runtime, _s, _o):
@@ -529,7 +529,7 @@ def test_policy_stays_resident_across_goal_prompts() -> None:
 
 def test_revision_change_reloads_a_resident_policy() -> None:
     """A different revision is different weights: evict and load, prompt or not."""
-    from openral_rskill.base import RSkillState
+    from openral_core.schemas import RSkillState
 
     built: list[Any] = []
     with _compose_harness(resolver=_prompted_resolver(built, [])) as (executor, runtime, _s, _o):
@@ -577,8 +577,8 @@ def captured_spans() -> Iterator[InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(provider)
     yield exporter
     exporter.clear()

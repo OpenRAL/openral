@@ -211,7 +211,7 @@ def test_skill_info_returns_fresh_copy(skill_name: str) -> None:
     """``skill.info`` is documented as a copy; mutating it must not corrupt internal state."""
     skill = SKILL_BUILDERS[skill_name]()
     snapshot1 = skill.info
-    snapshot1.weights_loaded = True  # type: ignore[misc]  # reason: deliberately mutating the copy
+    snapshot1.weights_loaded = True
     snapshot2 = skill.info
     assert snapshot2.weights_loaded is False  # internal state unchanged
 

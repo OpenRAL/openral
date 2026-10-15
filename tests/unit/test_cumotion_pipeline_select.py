@@ -29,7 +29,7 @@ def _cpu_compute() -> ComputeSpec:
     return ComputeSpec()
 
 
-def _movegroup_goal() -> dict[str, object]:
+def _movegroup_goal() -> dict[str, dict[str, object]]:
     return {"request": {"group_name": "panda_arm"}, "planning_options": {"plan_only": True}}
 
 

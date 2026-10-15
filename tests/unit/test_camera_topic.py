@@ -43,7 +43,7 @@ def test_prefix_override_for_a_namespaced_graph() -> None:
 
 def test_real_manifest_sensor_names_build_their_topics() -> None:
     """Every RGB sensor the SO-101 manifest declares gets a well-formed topic."""
-    desc = RobotDescription.from_yaml(REPO / "robots" / "so101_follower" / "robot.yaml")
+    desc = RobotDescription.from_yaml(str(REPO / "robots" / "so101_follower" / "robot.yaml"))
     rgb = [s.name for s in desc.sensors if s.modality == "rgb"]
     assert rgb, "so101_follower declares RGB cameras"
     assert [camera_topic(n) for n in rgb] == [f"/openral/cameras/{n}/image" for n in rgb]

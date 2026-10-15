@@ -20,6 +20,7 @@ GR00T weights are genuinely unavailable.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -88,7 +89,7 @@ def groot_adapter():
     adapter.close()
 
 
-def test_groot_libero_emits_valid_action_chunk(groot_adapter) -> None:
+def test_groot_libero_emits_valid_action_chunk(groot_adapter: Any) -> None:
     """The NF4 in-process backend returns a finite 7-D LIBERO action per step.
 
     Steps the adapter across a full execution horizon so the internal action

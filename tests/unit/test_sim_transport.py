@@ -43,8 +43,10 @@ def test_state_returns_independent_copies() -> None:
     """Mutating the returned dict must not corrupt internal state."""
     t = SimTransport(n_joints=2)
     s = t.state()
-    s["position"][0] = 9.0  # type: ignore[index]
-    s["position"].append(99.0)  # type: ignore[union-attr]
+    position = s["position"]
+    assert isinstance(position, list)
+    position[0] = 9.0
+    position.append(99.0)
     # Internal state is unchanged
     s2 = t.state()
     assert s2["position"] == [0.0, 0.0]
@@ -106,7 +108,7 @@ def test_publish_coerces_int_targets_to_float() -> None:
     )
     pos = t.state()["position"]
     assert pos == [1.0, -1.0]
-    assert all(isinstance(v, float) for v in pos)  # type: ignore[union-attr]
+    assert all(isinstance(v, float) for v in pos)
 
 
 # ── publish() — drop / no-op cases ───────────────────────────────────────────

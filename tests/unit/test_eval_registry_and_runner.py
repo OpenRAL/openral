@@ -46,7 +46,7 @@ def _mock_env(**overrides: object) -> SimEnvironment:
         "vla": VLASpec(id="zero", weights_uri="mock://noop", extra={"action_dim": 7}),
     }
     base.update(overrides)
-    return SimEnvironment(**base)  # type: ignore[arg-type]
+    return SimEnvironment(**base)
 
 
 def _runnable_env(**overrides: object) -> SimEnvironment:
@@ -146,6 +146,7 @@ def test_sim_runner_sizes_mock_policy_to_the_env() -> None:
     runner = SimRunner(env_cfg)
     runner.activate()
     try:
+        assert env_cfg.task.max_steps is not None
         runner.run(max_ticks=env_cfg.task.max_steps + 1)
     finally:
         runner.deactivate()
@@ -174,6 +175,7 @@ def test_sim_runner_mock_loop() -> None:
     runner = SimRunner(env_cfg)
     runner.activate()
     try:
+        assert env_cfg.task.max_steps is not None
         runner.run(max_ticks=env_cfg.task.max_steps + 1)
     finally:
         runner.deactivate()
@@ -197,6 +199,7 @@ def test_sim_runner_random_policy_does_not_crash() -> None:
     runner = SimRunner(env_cfg)
     runner.activate()
     try:
+        assert env_cfg.task.max_steps is not None
         runner.run(max_ticks=env_cfg.task.max_steps + 1)
     finally:
         runner.deactivate()

@@ -22,8 +22,12 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import SimEnvironment
 
 # Use `importlib.util.find_spec` + `pytestmark` rather than module-level
 # `pytest.importorskip` / `pytest.skip(allow_module_level=True)`: with
@@ -75,7 +79,9 @@ def env_cfg():
     )
 
 
-def test_sim_run_with_dataset_out_produces_reloadable_v3(env_cfg, tmp_path: Path) -> None:
+def test_sim_run_with_dataset_out_produces_reloadable_v3(
+    env_cfg: SimEnvironment, tmp_path: Path
+) -> None:
     """Run a 5-step Aloha rollout with --dataset-out and reload the dataset.
 
     Mirrors the real CLI invocation in `python/sim/src/openral_sim/cli.py`
@@ -132,6 +138,7 @@ def test_sim_run_with_dataset_out_produces_reloadable_v3(env_cfg, tmp_path: Path
     runner.activate()
     try:
         # max_ticks accounts for the leading reset-tick per episode.
+        assert env_cfg.task.max_steps is not None
         runner.run(max_ticks=env_cfg.n_episodes * (env_cfg.task.max_steps + 1))
     finally:
         runner.deactivate()

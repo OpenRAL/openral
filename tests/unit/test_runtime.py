@@ -155,7 +155,7 @@ class TestQuantizationEnums:
     def test_fp8_wire_value_is_pinned_and_distinct_from_int8(self) -> None:
         # Serialized into rSkill manifests; FP8 (E4M3) must never alias INT8.
         assert QuantizationDtype("fp8") is QuantizationDtype.FP8
-        assert QuantizationDtype.FP8 is not QuantizationDtype.INT8
+        assert QuantizationDtype("fp8") is not QuantizationDtype("int8")
 
     def test_backend_values(self) -> None:
         assert QuantizationBackend.PYTORCH.value == "pytorch"
@@ -245,7 +245,7 @@ def test_backend_runtime_starts_unloaded_on_its_device(module: str, cls: str) ->
 class TestPyTorchRuntime:
     """Tests that do not require real checkpoint files."""
 
-    def _rt(self) -> object:
+    def _rt(self) -> Runtime:
         from openral_rskill.runtime_pytorch import PyTorchRuntime
 
         return PyTorchRuntime(device="cpu")
@@ -253,12 +253,12 @@ class TestPyTorchRuntime:
     def test_load_nonexistent_raises(self) -> None:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="not found"):
-            rt.load("/nonexistent/path/model.pt")  # type: ignore[union-attr]
+            rt.load("/nonexistent/path/model.pt")
 
     def test_quantize_before_load_raises(self) -> None:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="before load"):
-            rt.quantize(QuantizationConfig(dtype=QuantizationDtype.INT8))  # type: ignore[union-attr]
+            rt.quantize(QuantizationConfig(dtype=QuantizationDtype.INT8))
 
     def test_load_unsafe_pickle_refused_without_env(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -419,7 +419,7 @@ class TestPyTorchRuntime:
 
 @pytest.mark.skipif(not _ORT_AVAILABLE, reason="onnxruntime not installed")
 class TestONNXRuntime:
-    def _rt(self, device: str = "cpu") -> object:
+    def _rt(self, device: str = "cpu") -> Runtime:
         from openral_rskill.runtime_onnx import ONNXRuntime
 
         return ONNXRuntime(device=device)
@@ -433,12 +433,12 @@ class TestONNXRuntime:
     def test_load_nonexistent_raises(self) -> None:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="not found"):
-            rt.load("/nonexistent/model.onnx")  # type: ignore[union-attr]
+            rt.load("/nonexistent/model.onnx")
 
     def test_quantize_always_raises(self) -> None:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="offline"):
-            rt.quantize(QuantizationConfig())  # type: ignore[union-attr]
+            rt.quantize(QuantizationConfig())
 
     def test_full_lifecycle_with_exported_model(self, tmp_path: pathlib.Path) -> None:
         pytest.importorskip("torch", reason="torch required to export ONNX")
@@ -450,7 +450,7 @@ class TestONNXRuntime:
         path = tmp_path / "model.onnx"
         th.onnx.export(
             model,
-            th.zeros(1, 3),
+            (th.zeros(1, 3),),
             str(path),
             input_names=["x"],
             output_names=["y"],

@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 mujoco = pytest.importorskip("mujoco", reason="needs mujoco (sim group) for the MJCF meshes")
@@ -25,7 +26,7 @@ pytest.importorskip("scipy")
 from openral_core import MimicJoint, RobotDescription  # noqa: E402
 from openral_core.assets import AssetRefError, resolve_asset  # noqa: E402
 from openral_core.exceptions import ROSConfigError  # noqa: E402
-from openral_core.schemas import JointType  # noqa: E402
+from openral_core.schemas import JointSpec, JointType  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 from openral_safety.urdf_lowering import (  # noqa: E402
     _body_mesh,
@@ -47,12 +48,15 @@ _RIGID_TOLERANCE_M = 1e-6
 _FK_TOLERANCE_M = 1e-3
 _OPENINGS = 25
 
+_Coupled = dict[int, list[tuple[int, float, float]]]
+_OpenArm = tuple[RobotDescription, object, object, dict[str, int], _Coupled]
+
 
 @pytest.fixture(scope="module")
-def openarm() -> tuple[RobotDescription, object, object, dict[str, int], dict]:
+def openarm() -> _OpenArm:
     robot = RobotDescription.from_yaml(str(_MANIFEST))
     try:
-        mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=_MANIFEST.parent)
+        mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=_MANIFEST.parent)  # type: ignore[arg-type]  # reason: openarm declares assets.mjcf
     except AssetRefError as exc:
         pytest.skip(f"openarm MJCF unavailable on this host: {exc}")
     model = mujoco.MjModel.from_xml_path(str(mjcf))
@@ -60,13 +64,13 @@ def openarm() -> tuple[RobotDescription, object, object, dict[str, int], dict]:
     return robot, model, data, _mjcf_link_bodies(robot, model), mjcf_coupled_joints(model)
 
 
-def _gripper(robot: RobotDescription, side: str) -> tuple[object, MimicJoint]:
+def _gripper(robot: RobotDescription, side: str) -> tuple[JointSpec, MimicJoint]:
     joint = next(j for j in robot.joints if j.name == f"{side}_gripper")
     mimic = next(m for m in robot.mimic_joints if m.mimics == joint.name)
     return joint, mimic
 
 
-def _pose(model: object, data: object, coupled: dict, leader: int, q: float) -> None:
+def _pose(model: object, data: object, coupled: _Coupled, leader: int, q: float) -> None:
     mujoco.mj_resetData(model, data)
     data.qpos[int(model.jnt_qposadr[leader])] = q  # type: ignore[attr-defined]  # reason: MjModel
     for follower, c0, c1 in coupled.get(leader, []):
@@ -74,22 +78,25 @@ def _pose(model: object, data: object, coupled: dict, leader: int, q: float) -> 
     mujoco.mj_kinematics(model, data)
 
 
-def _body_tf(data: object, body: int) -> np.ndarray:
+def _body_tf(data: object, body: int) -> npt.NDArray[np.float64]:
     tf = np.eye(4)
     tf[:3, :3] = data.xmat[body].reshape(3, 3)  # type: ignore[attr-defined]  # reason: MjData
     tf[:3, 3] = data.xpos[body]  # type: ignore[attr-defined]  # reason: MjData
     return tf
 
 
-def _rotation(axis: tuple[float, float, float], angle: float) -> np.ndarray:
+def _rotation(axis: tuple[float, float, float], angle: float) -> npt.NDArray[np.float64]:
     a = np.asarray(axis, dtype=float)
     a = a / np.linalg.norm(a)
     k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
-    return np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
+    rot: npt.NDArray[np.float64] = np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
+    return rot
 
 
 @pytest.mark.parametrize("side", _SIDES)
-def test_each_finger_is_one_rigid_exact_hull_holding_its_own_mesh(openarm, side: str) -> None:
+def test_each_finger_is_one_rigid_exact_hull_holding_its_own_mesh(
+    openarm: _OpenArm, side: str
+) -> None:
     robot, model, data, link_body, _ = openarm
     mujoco.mj_resetData(model, data)
     mujoco.mj_kinematics(model, data)
@@ -105,7 +112,7 @@ def test_each_finger_is_one_rigid_exact_hull_holding_its_own_mesh(openarm, side:
 
 @pytest.mark.parametrize("side", _SIDES)
 def test_the_kernel_places_the_follower_where_the_mjcf_does_at_every_opening(
-    openarm, side: str
+    openarm: _OpenArm, side: str
 ) -> None:
     """``origin · R(axis, multiplier · q + offset)`` from link7 is the MJCF's follower body."""
     robot, model, data, link_body, coupled = openarm
@@ -130,7 +137,9 @@ def test_the_kernel_places_the_follower_where_the_mjcf_does_at_every_opening(
 
 
 @pytest.mark.parametrize("side", _SIDES)
-def test_the_open_jaw_leaves_the_space_between_the_fingers_free(openarm, side: str) -> None:
+def test_the_open_jaw_leaves_the_space_between_the_fingers_free(
+    openarm: _OpenArm, side: str
+) -> None:
     """The point of the change: at full open, neither finger's hull covers the gap."""
     robot, model, data, link_body, coupled = openarm
     joint, mimic = _gripper(robot, side)
@@ -154,7 +163,7 @@ def test_the_open_jaw_leaves_the_space_between_the_fingers_free(openarm, side: s
 
 
 def test_the_manifest_mimic_relation_is_the_mjcf_equality_and_a_mismatch_is_refused(
-    openarm,
+    openarm: _OpenArm,
 ) -> None:
     robot, model, _, _, coupled = openarm
     declared = _declared_mimic_followers(robot, model, coupled)
@@ -217,7 +226,7 @@ def test_the_generated_acm_exempts_the_follower_against_its_leader_and_its_paren
         assert exempt == {f"openarm_{side}_finger_pair", f"openarm_{side}_link7"}, exempt
 
 
-def test_a_mimic_without_sim_joint_name_lowers_its_mjcf_axis_by_name(openarm) -> None:
+def test_a_mimic_without_sim_joint_name_lowers_its_mjcf_axis_by_name(openarm: _OpenArm) -> None:
     """The axis lookup uses the body mapping's rule, ``sim_joint_name or name``: a
     follower named like its MJCF joint gets the MJCF axis, not the +z default."""
     robot = openarm[0]

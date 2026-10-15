@@ -67,10 +67,11 @@ def test_drop_in_robot_via_env_override(tmp_path: Path, monkeypatch: pytest.Monk
 
     # Re-import the adapter module so the discover scan runs against the
     # override path. Use a fresh registry to keep state hygienic.
+    from openral_core import RobotDescription
     from openral_sim import registry as registry_module
-    from openral_sim.registry import _Registry  # type: ignore[attr-defined]
+    from openral_sim.registry import _Registry
 
-    fresh_robots = _Registry("robot")
+    fresh_robots: _Registry[RobotDescription] = _Registry("robot")
     monkeypatch.setattr(registry_module, "ROBOTS", fresh_robots)
     robots_mod = importlib.import_module("openral_sim.policies.robots")
     importlib.reload(robots_mod)

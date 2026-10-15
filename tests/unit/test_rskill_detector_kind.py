@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import pathlib
+from typing import Any
 
 import pytest
 import yaml
@@ -104,7 +105,7 @@ def test_rtdetr_coco_fixture_validates() -> None:
 # ─── Validator boundary tests ─────────────────────────────────────────────────
 
 # Minimal valid detector manifest dict — used as baseline for each mutation.
-_VALID_DETECTOR: dict = {
+_VALID_DETECTOR: dict[str, Any] = {
     "schema_version": "0.1",
     "name": "openral/test-detector",
     "version": "0.1.0",

@@ -117,7 +117,9 @@ def _lift(
     return lifted
 
 
-def _ground(ref: GraspTargetRef, live: list[DetectedObject], graph: SceneGraph | None = None):
+def _ground(
+    ref: GraspTargetRef, live: list[DetectedObject], graph: SceneGraph | None = None
+) -> GraspDeclaration:
     return ground_grasp_target(
         ref,
         live_objects=live,

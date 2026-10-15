@@ -59,7 +59,9 @@ def survivors() -> Iterator[list[subprocess.Popen[bytes]]]:
         proc.wait(timeout=10)
 
 
-def test_reaps_a_node_the_process_group_kill_cannot_reach(survivors: list) -> None:
+def test_reaps_a_node_the_process_group_kill_cannot_reach(
+    survivors: list[subprocess.Popen[bytes]],
+) -> None:
     node = _spawn("--ros-args", "-r", "__node:=octomap_voxel_bridge")
     survivors.append(node)
 
@@ -68,7 +70,9 @@ def test_reaps_a_node_the_process_group_kill_cannot_reach(survivors: list) -> No
     assert node.poll() is not None
 
 
-def test_spares_the_probe_and_its_shell_on_the_same_domain(survivors: list) -> None:
+def test_spares_the_probe_and_its_shell_on_the_same_domain(
+    survivors: list[subprocess.Popen[bytes]],
+) -> None:
     """The probe exports ROS_DOMAIN_ID too; only `--ros-args` marks a node."""
     not_a_node = _spawn()
     survivors.append(not_a_node)
@@ -78,7 +82,7 @@ def test_spares_the_probe_and_its_shell_on_the_same_domain(survivors: list) -> N
     assert not_a_node.poll() is None
 
 
-def test_leaves_other_domains_alone(survivors: list) -> None:
+def test_leaves_other_domains_alone(survivors: list[subprocess.Popen[bytes]]) -> None:
     """Workers share a host; reaping domain N must not touch worker N+1."""
     env = {**os.environ, "ROS_DOMAIN_ID": "232"}
     other = subprocess.Popen(

@@ -88,6 +88,7 @@ def test_range_min_cannot_reach_past_the_chassis() -> None:
 
     # Circumscribed radius of the bare chassis outline the shaped self-filter
     # (`payload_scan_filter_node`) proves against — 0.43 m for panda_mobile.
+    assert desc.footprint_polygon is not None
     circumscribed_m = max(math.hypot(x, y) for x, y in desc.footprint_polygon)
 
     assert lidar.range_min_m < circumscribed_m, (

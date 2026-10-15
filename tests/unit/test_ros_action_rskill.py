@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from openral_core import (
+    Action,
     ActuatorRequirement,
     ControlMode,
     ControlModeSemantics,
@@ -220,6 +221,11 @@ def _result_only_manifest() -> RSkillManifest:
     )
 
 
+def _one(step: Action | list[Action]) -> Action:
+    assert isinstance(step, Action)
+    return step
+
+
 def _make_skill(manifest: RSkillManifest, description: RobotDescription | None) -> ROSActionRskill:
     """Construct the adapter without driving its lifecycle."""
     return ROSActionRskill(
@@ -249,19 +255,19 @@ def test_trajectory_mode_replays_waypoints_then_signals_completion() -> None:
         stamp_ns=0, joint_state=JointState(name=["j_a", "j_b"], position=[0.5, 0.6], stamp_ns=0)
     )
 
-    a0 = skill.step(at_final)
+    a0 = _one(skill.step(at_final))
     assert a0.control_mode is ControlMode.JOINT_POSITION
     assert a0.horizon == 1
     assert a0.joint_targets == [[0.1, 0.2]]
 
-    a1 = skill.step(at_final)
+    a1 = _one(skill.step(at_final))
     assert a1.joint_targets == [[0.3, 0.4]]
 
-    a2 = skill.step(at_final)
+    a2 = _one(skill.step(at_final))
     assert a2.joint_targets == [[0.5, 0.6]]
 
     # No measured joint state: never "reached", the final waypoint is held.
-    assert skill.step(world_state=None).joint_targets == [[0.5, 0.6]]  # type: ignore[arg-type]
+    assert _one(skill.step(world_state=None)).joint_targets == [[0.5, 0.6]]  # type: ignore[arg-type]
 
     with pytest.raises(ROSRskillGoalSatisfied, match="reached the final of 3 waypoints"):
         skill.step(at_final)
@@ -369,7 +375,7 @@ def _make_skill_with_fake_action(
     code path against synthetic SUCCEEDED / ABORTED / CANCELED inputs.
     """
     skill = _make_skill(manifest, description=None)
-    skill._interface_kind = "action"  # type: ignore[attr-defined]
+    skill._interface_kind = "action"
     skill._interface_type = type(
         "_FakeIDL", (), {"Goal": dataclass(type("Goal", (), {})), "Result": dict}
     )
@@ -662,7 +668,8 @@ def test_replay_paces_by_time_from_start_and_completes_once_reached() -> None:
     t0 = time.monotonic()
     with pytest.raises(ROSRskillGoalSatisfied, match="reached the final of 3 waypoints"):
         for _ in range(300):
-            action = skill.step(measured)
+            action = _one(skill.step(measured))
+            assert action.joint_targets is not None
             emitted.append((time.monotonic() - t0, action.joint_targets[0]))
             measured = _panda_world_state(robot, action.joint_targets[0])  # drives follow
             time.sleep(_TICK_S)

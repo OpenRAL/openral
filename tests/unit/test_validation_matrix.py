@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from openral_core import ValidationStopEvidence
+from openral_core import ValidationRoundVerdicts, ValidationSceneVerdict, ValidationStopEvidence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures" / "validation_matrix"
@@ -51,14 +51,19 @@ sys.modules[_spec.name] = validation_matrix
 _spec.loader.exec_module(validation_matrix)
 
 
-def _derived(round_dir: Path, tmp_path: Path) -> object:
+def _scene(verdicts: ValidationRoundVerdicts, name: str) -> ValidationSceneVerdict:
+    """``verdicts.scene(name)``, asserted present (narrows the Optional for mypy)."""
+    scene = verdicts.scene(name)
+    assert scene is not None, name
+    return scene
+
+
+def _derived(round_dir: Path, tmp_path: Path) -> ValidationRoundVerdicts:
     """Copy a fixture round into ``tmp_path`` and derive its verdicts there.
 
     The fixture directory stays inputs-only; ``verdicts`` writes ``verdicts.json``
     and ``NOTES.md`` next to the artifacts, which must not land in the repo.
     """
-    from openral_core import ValidationRoundVerdicts
-
     work = tmp_path / round_dir.name
     shutil.copytree(round_dir, work)
     assert validation_matrix.cmd_verdicts(work) == 0
@@ -103,7 +108,7 @@ def test_kernel_verdicts_are_transcribed_verbatim(
 ) -> None:
     """Each tripping pair and depth matches the ledger's table byte for byte."""
     verdicts = _derived(ROUND_0822, tmp_path)
-    stop = verdicts.scene(scene).stop
+    stop = _scene(verdicts, scene).stop
     assert stop is not None
     assert (stop.party_a, stop.party_b, stop.horizon_step) == (party_a, party_b, step)
     assert stop.min_distance_m == min_distance_m
@@ -122,7 +127,7 @@ def test_no_place_allowance_anywhere_in_the_round(tmp_path: Path) -> None:
 
 def test_baguette_grasped_and_the_witness_armed_then_separated(tmp_path: Path) -> None:
     """Attach at t=176.32, witness armed, separated, detach at t=226.54."""
-    baguette = _derived(ROUND_0822, tmp_path).scene("baguette")
+    baguette = _scene(_derived(ROUND_0822, tmp_path), "baguette")
     assert baguette.witness.attach_t_s == pytest.approx(176.32, abs=0.01)
     assert baguette.witness.detach_t_s == pytest.approx(226.54, abs=0.01)
     assert baguette.witness.support_id == "sim:counter_1_left_group_main"
@@ -135,7 +140,7 @@ def test_fridge_and_utensil_never_grasped(tmp_path: Path) -> None:
     """Neither scene reached a grasp — ledger's "grasped: no" column."""
     verdicts = _derived(ROUND_0822, tmp_path)
     for scene in ("fridge", "utensil"):
-        assert verdicts.scene(scene).witness.attach_t_s is None
+        assert _scene(verdicts, scene).witness.attach_t_s is None
 
 
 def test_baguette_discrepancy_survives_the_measurement_but_not_the_budget(
@@ -150,7 +155,7 @@ def test_baguette_discrepancy_survives_the_measurement_but_not_the_budget(
     same robot publishes on a later round is a cross-round inference the
     harness deliberately does not make.
     """
-    ground_truth = _derived(ROUND_0822, tmp_path).scene("baguette").ground_truth
+    ground_truth = _scene(_derived(ROUND_0822, tmp_path), "baguette").ground_truth
     assert ground_truth is not None
     assert ground_truth.verdict == "unadjudicated"
     assert ground_truth.budget_source == "grid-quantization"
@@ -163,6 +168,7 @@ def test_baguette_discrepancy_survives_the_measurement_but_not_the_budget(
     assert ground_truth.quantization_budget_m == pytest.approx(0.021651, abs=1e-6)
     assert ground_truth.discrepancy_m == pytest.approx(0.1209178, abs=1e-6)
     # It clears 88.2 mm by 32.7 mm, which is why the ledger keeps it open.
+    assert ground_truth.discrepancy_m is not None
     assert ground_truth.discrepancy_m > 0.08822
 
 
@@ -182,7 +188,7 @@ def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
     old = _derived(ROUND_0822, tmp_path / "old")
     new = _derived(ROUND_0823, tmp_path / "new")
 
-    old_stop, new_stop = old.scene("utensil").stop, new.scene("utensil").stop
+    old_stop, new_stop = _scene(old, "utensil").stop, _scene(new, "utensil").stop
     assert old_stop is not None and new_stop is not None
     assert (old_stop.party_a, old_stop.party_b, old_stop.horizon_step) == (
         new_stop.party_a,
@@ -191,7 +197,7 @@ def test_the_utensil_false_positive_is_withdrawn_by_its_own_later_rerun(
     )
     assert old_stop.min_distance_m == new_stop.min_distance_m == -0.0172764
 
-    old_gt, new_gt = old.scene("utensil").ground_truth, new.scene("utensil").ground_truth
+    old_gt, new_gt = _scene(old, "utensil").ground_truth, _scene(new, "utensil").ground_truth
     assert old_gt is not None and new_gt is not None
     assert old_gt.discrepancy_m == new_gt.discrepancy_m == pytest.approx(0.0605324, abs=1e-6)
     assert old_gt.nearest_tripping_party_m == pytest.approx(0.043256, abs=1e-6)
@@ -245,7 +251,7 @@ def test_a_lower_bound_budget_can_clear_a_stop_but_never_convict_one() -> None:
         )
         adjudication = validation_matrix.adjudicate_ground_truth(snapshot, stop, 0.025)
         assert adjudication is not None
-        return adjudication.verdict
+        return str(adjudication.verdict)
 
     # nearest_tripping_party_m is +43.256 mm, so the discrepancy is
     # 0.043256 - min_distance_m against a 21.651 mm voxel term.
@@ -279,7 +285,7 @@ def test_sink_cup_payload_contact_rests_on_a_region_marker(tmp_path: Path) -> No
     filtered the payload side, so it measured its own marker. Honest verdict is
     ``unadjudicated``; the numbers stay recorded.
     """
-    sink = _derived(ROUND_0822, tmp_path).scene("sink_cup")
+    sink = _scene(_derived(ROUND_0822, tmp_path), "sink_cup")
     assert sink.stop is not None
     assert sink.stop.involves_payload is True
     assert sink.ground_truth is not None
@@ -301,7 +307,7 @@ def test_fridge_zero_metre_pair_is_a_visual_shell(tmp_path: Path) -> None:
     link is 16.1 mm clear — a distance to a geom MuJoCo can never contact isn't
     a penetration.
     """
-    fridge = _derived(ROUND_0822, tmp_path).scene("fridge")
+    fridge = _scene(_derived(ROUND_0822, tmp_path), "fridge")
     assert fridge.ground_truth is not None
     assert fridge.ground_truth.verdict == "unadjudicated"
     assert fridge.ground_truth.payload_contacts == 0
@@ -385,7 +391,7 @@ def test_diff_two_real_rounds_at_the_same_sha(tmp_path: Path) -> None:
 
 def test_prior_round_records_a_live_exemption(tmp_path: Path) -> None:
     """sweep_min (−35.5 mm) deeper than min_distance (−4.2 mm): a cell was exempted."""
-    baguette = _derived(ROUND_0816, tmp_path).scene("baguette")
+    baguette = _scene(_derived(ROUND_0816, tmp_path), "baguette")
     assert baguette.stop is not None
     assert baguette.stop.min_distance_m == -0.00418456
     assert baguette.stop.sweep_min_distance_m == -0.0355338
@@ -553,9 +559,9 @@ def test_initial_configuration_stop_outranks_ground_truth(tmp_path: Path) -> Non
     from openral_core import ValidationRoundVerdicts
 
     verdicts = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
-    assert verdicts.scene("fridge").outcome == "estop-initial-configuration"
+    assert _scene(verdicts, "fridge").outcome == "estop-initial-configuration"
     # The other three are untouched by the reclassification.
-    assert verdicts.scene("sink_cup").outcome == "estop-collision-unadjudicated"
+    assert _scene(verdicts, "sink_cup").outcome == "estop-collision-unadjudicated"
 
 
 # ── 4. The pinned stack ───────────────────────────────────────────────────────
@@ -798,7 +804,7 @@ def test_import_maps_the_historical_scene_directories(tmp_path: Path) -> None:
     }
     assert metadata["artifact_stem"] == "seed1"
     verdicts = ValidationRoundVerdicts.from_json(str(work / "verdicts.json"))
-    assert verdicts.scene("baguette").outcome == "estop-collision-unadjudicated"
+    assert _scene(verdicts, "baguette").outcome == "estop-collision-unadjudicated"
 
 
 def test_import_reads_the_stack_out_of_the_rounds_own_log() -> None:
@@ -1044,7 +1050,7 @@ def test_the_harness_uses_the_hals_budget_not_a_narrower_one(tmp_path: Path) -> 
     (2026-08-25 correction, ``docs/reference/collision-validation-evidence.md``),
     a cross-round inference the harness itself does not make.
     """
-    utensil = _derived(ROUND_0823, tmp_path).scene("utensil")
+    utensil = _scene(_derived(ROUND_0823, tmp_path), "utensil")
     ground_truth = utensil.ground_truth
     assert ground_truth is not None
     assert ground_truth.budget_source == "hal-adjudication-budget"
@@ -1262,7 +1268,7 @@ def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:
     0.000 m from the freezer door, while the same link's collision geom is
     2.5 mm clear; a mesh MuJoCo can never contact can't support ``real-contact``.
     """
-    fridge = _derived(ROUND_0823, tmp_path).scene("fridge")
+    fridge = _scene(_derived(ROUND_0823, tmp_path), "fridge")
     assert fridge.ground_truth is not None
     assert fridge.ground_truth.nearest_any_m == 0.0
     assert fridge.ground_truth.nearest_pair["geom_a"] == "robot0_g42_vis"
@@ -1274,7 +1280,7 @@ def test_the_0823_probe_still_ranks_a_visual_geom_first(tmp_path: Path) -> None:
     # before any action reached the HAL, which outranks the adjudication —
     # `baguette` is the same round's plain collision stop.
     assert fridge.outcome == "estop-initial-configuration"
-    baguette = _derived(ROUND_0823, tmp_path / "again").scene("baguette")
+    baguette = _scene(_derived(ROUND_0823, tmp_path / "again"), "baguette")
     assert baguette.outcome == "estop-collision-unadjudicated"
 
 

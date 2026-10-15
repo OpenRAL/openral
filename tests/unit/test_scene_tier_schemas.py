@@ -262,7 +262,7 @@ def test_sim_scene_requires_task():
     from openral_core import SceneSpec, SimScene
 
     with pytest.raises(ValidationError):
-        SimScene(scene=SceneSpec(id="libero_spatial", backend="mujoco"))
+        SimScene(scene=SceneSpec(id="libero_spatial", backend="mujoco"))  # type: ignore[call-arg]  # reason: omitting the required task is the test
 
 
 def test_sim_scene_scene_id_mismatch_rejected():

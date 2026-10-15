@@ -21,9 +21,10 @@ import gen_ros_topic_graph as graph  # noqa: E402
 
 @pytest.fixture(scope="module")
 def endpoints() -> list[graph.Endpoint]:
-    return graph.extract_python(graph._iter_sources((".py",))) + graph.extract_cpp(
-        graph._iter_sources((".cpp", ".hpp", ".h"))
-    )
+    eps: list[graph.Endpoint] = graph.extract_python(
+        graph._iter_sources((".py",))
+    ) + graph.extract_cpp(graph._iter_sources((".cpp", ".hpp", ".h")))
+    return eps
 
 
 def _where(endpoints: list[graph.Endpoint], kind: str, role: str, name: str) -> set[str]:

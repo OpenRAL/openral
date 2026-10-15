@@ -69,7 +69,7 @@ class TestTieTransformersWeights:
                 raise RuntimeError("embed_tokens is not an nn.Module")
 
         root = nn.Module()
-        root.good = _Tie()  # type: ignore[assignment]
-        root.bad = _Raises()  # type: ignore[assignment]
+        root.good = _Tie()
+        root.bad = _Raises()
         tie_transformers_weights(root)  # must not raise
         assert calls == ["tied"]

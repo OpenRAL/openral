@@ -13,6 +13,8 @@ Covers three wire-level fixes:
 
 from __future__ import annotations
 
+from typing import cast
+
 from openral_core import RSkillAction, WaitTool
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 from openral_reasoner.tool_use import (
@@ -57,7 +59,10 @@ def test_openai_function_objects_carry_no_input_schema_key() -> None:
 def test_openai_and_anthropic_surfaces_expose_the_same_tools() -> None:
     palette = _palette("OpenRAL/rskill-smolvla-so100-pick-fp16")
     anthropic_names = {t["name"] for t in _tool_palette_to_anthropic_tools(palette)}
-    openai_names = {t["function"]["name"] for t in _tool_palette_to_openai_tools(palette)}
+    openai_names = {
+        cast("dict[str, object]", t["function"])["name"]
+        for t in _tool_palette_to_openai_tools(palette)
+    }
     assert anthropic_names == openai_names
 
 

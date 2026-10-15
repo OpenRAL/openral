@@ -26,6 +26,7 @@ sidecar venv (RTX GPU). CI without those skips (§1.12).
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 import pytest
 
@@ -65,20 +66,20 @@ def hal():
     hal.disconnect()
 
 
-def test_connect_resolves_action_dim(hal) -> None:
+def test_connect_resolves_action_dim(hal: Any) -> None:
     _hal, _desc = hal
     # 7 arm joints + gripper, derived from the manifest (not a hardcoded 8).
     assert _hal._env_action_dim == 8
 
 
-def test_read_state_shaped_to_manifest(hal) -> None:
+def test_read_state_shaped_to_manifest(hal: Any) -> None:
     _hal, description = hal
     state = _hal.read_state()
     assert len(state.position) == len(description.joints)
     assert state.name == [j.name for j in description.joints]
 
 
-def test_fixed_base_does_not_settle_away_from_spawn(hal) -> None:
+def test_fixed_base_does_not_settle_away_from_spawn(hal: Any) -> None:
     import numpy as np
 
     attached, _description = hal
@@ -96,7 +97,7 @@ def test_fixed_base_does_not_settle_away_from_spawn(hal) -> None:
 # articulation drive).
 
 
-def test_send_action_drives_imported_articulation(hal) -> None:
+def test_send_action_drives_imported_articulation(hal: Any) -> None:
     import numpy as np
     from openral_core import Action
     from openral_core.schemas import ControlMode

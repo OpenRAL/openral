@@ -58,6 +58,7 @@ def test_yaw_to_quat_xyzw_unit_norm() -> None:
 def test_constant_scan_no_hit_ranges_panda_mobile_shape() -> None:
     """panda_mobile lidar (n_beams + max_range from the manifest) → all max_range."""
     assert _lidar is not None
+    assert _lidar.n_channels is not None and _lidar.range_max_m is not None
     n_beams = int(_lidar.n_channels)
     max_range = float(_lidar.range_max_m)
     ranges = constant_scan_no_hit_ranges(n_beams=n_beams, max_range_m=max_range)

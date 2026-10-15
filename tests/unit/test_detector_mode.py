@@ -171,9 +171,11 @@ def test_locate_in_view_description_lists_locator_options() -> None:
             ),
         ),
     )
-    desc = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}["locate_in_view"][
-        "description"
-    ]
+    desc = str(
+        {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}["locate_in_view"][
+            "description"
+        ]
+    )
     assert "'detector'" in desc
     assert "omdet-turbo-locator" in desc and "locateanything-3b-nf4" in desc
 
@@ -205,7 +207,7 @@ def test_locate_in_view_description_lists_continuous_coverage() -> None:
         ),
     )
     tools = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}
-    desc = tools["locate_in_view"]["description"]
+    desc = str(tools["locate_in_view"]["description"])
     assert "already tracked continuously" in desc.lower()
     assert "OpenRAL/rskill-omdet_turbo-any-indoor-fp16" in desc
     assert "266 classes" in desc and "kitchenware" in desc
@@ -215,7 +217,7 @@ def test_locate_in_view_description_plain_without_continuous_detectors() -> None
     # detector_available but no continuous bank → no coverage clause appended.
     palette = ToolPalette(detector_available=True)
     tools = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}
-    assert "already tracked continuously" not in tools["locate_in_view"]["description"].lower()
+    assert "already tracked continuously" not in str(tools["locate_in_view"]["description"]).lower()
 
 
 # ── node wiring policy: continuous publishes, on_demand serves ───────────────
@@ -246,6 +248,7 @@ def test_node_wiring_matches_intree_detector_manifests() -> None:
     serves = {"omdet-turbo-locator", "locateanything-3b-nf4"}
     for rid in publishes | serves:
         m = _load(rid)
+        assert m.detector is not None, rid
         w = detector_node_wiring(m.detector.mode)
         assert w.run_continuous_leg is (rid in publishes), rid
         assert w.serve_on_demand is (rid in serves), rid

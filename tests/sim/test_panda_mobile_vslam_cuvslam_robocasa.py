@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 _NODE = (
     Path(__file__).resolve().parents[2]
@@ -42,7 +43,7 @@ _HW = 256
 class _Tf:
     """geometry_msgs/Transform stand-in built from a 4x4 pose (for transform_to_pose)."""
 
-    def __init__(self, mat: np.ndarray) -> None:
+    def __init__(self, mat: NDArray[np.float64]) -> None:
         from math import sqrt
 
         r = mat[:3, :3]
@@ -97,7 +98,7 @@ def test_cuvslam_multicam_tracks_robocasa_agentview_rig() -> None:
         env.reset()
         sim = env.sim
 
-        def world_from(name: str) -> np.ndarray:
+        def world_from(name: str) -> NDArray[np.float64]:
             m = np.eye(4)
             m[:3, :3] = sim.data.get_body_xmat(name).reshape(3, 3)
             m[:3, 3] = sim.data.get_body_xpos(name)

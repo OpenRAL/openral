@@ -101,6 +101,7 @@ def test_episode_counters_increment_on_finalize(
     assert len(count_points) == 1
     assert isinstance(count_points[0], NumberDataPoint)
     assert count_points[0].value == 3
+    assert count_points[0].attributes is not None
     assert count_points[0].attributes["scene.id"] == "mock"
     assert count_points[0].attributes["task.id"] == "mock/0"
     assert count_points[0].attributes["vla.id"] == "zero"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from openral_core import FrameEncoding, SensorFrame
@@ -131,7 +132,7 @@ def test_publisher_accepts_external_node_without_owning_its_lifecycle() -> None:
         reader=reader,
         topic="/cam/image_raw",
         rate_hz=30.0,
-        node=node,  # type: ignore[arg-type] # reason: constructor is ROS-I/O-free
+        node=node,
     )
 
     assert pub._node is node
@@ -382,13 +383,13 @@ def test_camera_info_intrinsics_scale_with_a_downscaled_image() -> None:
         max_size=(320, 240),
     )
 
-    published: list[object] = []
+    published: list[Any] = []  # reason: sensor_msgs CameraInfo is untyped
 
     class _Sink:
         def publish(self, msg: object) -> None:
             published.append(msg)
 
-    pub._info_publisher = _Sink()  # type: ignore[assignment]  # reason: duck-typed sink
+    pub._info_publisher = _Sink()
     pub._publish_camera_info(320, 240, stamp=None)
 
     info = published[0]

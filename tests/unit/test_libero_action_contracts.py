@@ -37,6 +37,7 @@ def test_libero_skill_declares_cartesian_action_contract(skill: str) -> None:
         dim=m.action_contract.dim,
         description=_franka(),
     )
+    assert slots is not None
     assert [s.control_mode for s in slots] == [
         ControlMode.CARTESIAN_DELTA,
         ControlMode.GRIPPER_POSITION,

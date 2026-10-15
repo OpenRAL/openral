@@ -298,7 +298,9 @@ def _region(now_ns: int) -> PlaceRegion:
     )
 
 
-def _place_declaration(now_ns: int, *, timeout_s: float = 60.0, region: bool = True) -> object:
+def _place_declaration(
+    now_ns: int, *, timeout_s: float = 60.0, region: bool = True
+) -> PlaceDeclaration:
     return PlaceDeclaration(
         target_id="sim:cab_1_left_group_main",
         object_id="baguette_seed1",
@@ -566,7 +568,7 @@ def test_fill_idl_encodes_every_union_member(
 ) -> None:
     """Each of the three union members lowers to its IDL tag + dimension layout."""
     primitive = AttachedCollisionPrimitive(
-        shape=shape,  # type: ignore[arg-type]  # reason: parametrized over the union
+        shape=shape,
         pose_in_object=Pose6D(
             xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="payload"
         ),

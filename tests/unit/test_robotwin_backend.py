@@ -27,6 +27,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import yaml
+from numpy.typing import NDArray
 from openral_core import RobotDescription, RSkillManifest
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.schemas import BenchmarkScene, PhysicsBackend
@@ -168,7 +169,7 @@ def test_robotwin_sidecar_fallback_time_starts_at_zero_and_steps() -> None:
 
     class Env:
         def step(
-            self, action: np.ndarray
+            self, action: NDArray[np.float32]
         ) -> tuple[dict[str, object], float, bool, bool, dict[str, bool]]:
             return {}, 0.0, False, False, {"is_success": False}
 
@@ -286,7 +287,7 @@ def test_aloha_agilex_manifest() -> None:
     assert r.name == "aloha_agilex"
     assert len(r.joints) == 14
     assert [s.name for s in r.sensors] == ["top", "wrist_left", "wrist_right"]
-    assert r.action_spec.dim == 14
+    assert r.action_spec is not None and r.action_spec.dim == 14
     assert "aloha_agilex" in r.capabilities.embodiment_tags
 
 
@@ -306,7 +307,7 @@ def test_smolvla_robotwin_manifest_loads() -> None:
     assert m.evaluated_tasks == ["robotwin"]
     assert m.state_contract is not None
     assert m.state_contract.dim == 14
-    assert m.action_contract.dim == 14
+    assert m.action_contract is not None and m.action_contract.dim == 14
 
 
 def test_gate_accepts_rskill_on_every_robotwin_scene() -> None:

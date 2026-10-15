@@ -36,8 +36,16 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
-from openral_core.schemas import JointType, LinkCollisionGeometry, RobotDescription
+from openral_core.schemas import (
+    FixedAttachment,
+    JointSpec,
+    JointType,
+    LinkCollisionGeometry,
+    MimicJoint,
+    RobotDescription,
+)
 
 from tests.unit._collision_kernel_verdict import kernel_link_gap
 
@@ -47,23 +55,26 @@ _MANIFESTS = sorted(_REPO_ROOT.glob("robots/*/robot.yaml"))
 _REST_STATE_NAMES = ("ready", "home")
 
 
-def _rot(rpy: tuple[float, float, float]) -> np.ndarray:
+def _rot(rpy: tuple[float, float, float]) -> npt.NDArray[np.float64]:
     r, p, y = rpy
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
     ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
     rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    return rz @ ry @ rx
+    rot: npt.NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
-def _tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> np.ndarray:
+def _tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> npt.NDArray[np.float64]:
     m = np.eye(4)
     m[:3, :3] = _rot((rpy[0], rpy[1], rpy[2]))
     m[:3, 3] = xyz
     return m
 
 
-def _joint_motion(joint_type: JointType, axis: tuple[float, float, float], q: float) -> np.ndarray:
+def _joint_motion(
+    joint_type: JointType, axis: tuple[float, float, float], q: float
+) -> npt.NDArray[np.float64]:
     """The joint's own motion (URDF: applied after its origin transform)."""
     m = np.eye(4)
     a = np.asarray(axis, dtype=float)
@@ -76,14 +87,18 @@ def _joint_motion(joint_type: JointType, axis: tuple[float, float, float], q: fl
     return m
 
 
-def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, np.ndarray]:
+def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, npt.NDArray[np.float64]]:
     """World pose of every link at joint positions ``q`` (missing joints at 0)."""
-    edges = [*robot.fixed_attachments, *robot.joints, *robot.mimic_joints]
+    edges: list[FixedAttachment | JointSpec | MimicJoint] = [
+        *robot.fixed_attachments,
+        *robot.joints,
+        *robot.mimic_joints,
+    ]
     roots = {e.parent_link for e in edges} - {e.child_link for e in edges}
     # The kernel roots its model at the chain's single root; a `base_frame`
     # outside the chain (UR's `ur5e_base_link`) names that same frame.
     root = robot.base_frame if robot.base_frame in roots or len(roots) != 1 else roots.pop()
-    poses: dict[str, np.ndarray] = {root: np.eye(4)}
+    poses: dict[str, npt.NDArray[np.float64]] = {root: np.eye(4)}
     pending = (
         [
             (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))

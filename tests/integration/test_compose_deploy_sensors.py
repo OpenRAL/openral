@@ -41,6 +41,7 @@ def _compose(scene_path: Path) -> tuple[Any, Any]:
     from openral_rskill_ros.compose import compose_runtime
 
     scene = DeployScene.from_yaml(str(scene_path))
+    assert scene.robot_id is not None
     runtime = compose_runtime(
         _REPO / "robots" / scene.robot_id / "robot.yaml", deploy_sensors=scene.sensors
     )
@@ -48,7 +49,7 @@ def _compose(scene_path: Path) -> tuple[Any, Any]:
 
 
 def _destroy(runtime: Any) -> None:
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
 
     runtime.skill_runner_node.destroy_node()
     runtime.world_state_node.destroy_node()
@@ -57,7 +58,7 @@ def _destroy(runtime: Any) -> None:
 
 @pytest.mark.parametrize("scene_path", _SCENES_WITH_FEATURE_KEYS, ids=lambda p: p.stem)
 def test_scene_feature_keys_reach_the_runner_and_recorder_slots(scene_path: Path) -> None:
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_core import sensor_name_to_slot
 
     runtime = None
@@ -99,7 +100,7 @@ def test_merging_a_scene_never_drops_or_renames_a_manifest_slot(scene_path: Path
     ``wrist`` entries carry no key and must keep the manifest's ``camera1`` /
     ``camera2`` slots now that the runner sees the merged list.
     """
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_core import RobotDescription, sensor_name_to_slot
 
     runtime = None
@@ -142,7 +143,7 @@ def test_the_scene_unit_overlay_reaches_every_composed_consumer(
     The sensor leg, world state and runner all read ``runtime.description``; the committed
     bench scenes name their host's unit, whose bindings must be there and nowhere else.
     """
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_core import DeployScene, resolve_sensor_overlays
     from openral_rskill_ros.compose import compose_runtime
 
@@ -179,7 +180,7 @@ def test_the_object_lift_maps_in_the_frame_the_deploy_maps_in(
     so every lifted box was dropped there and a reasoner-named grasp target could never be
     grounded (real pick-and-place design §2.2). Same rule as the launch's ``_octomap_frames``.
     """
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_core import RobotDescription
     from openral_rskill_ros.compose import compose_runtime
 

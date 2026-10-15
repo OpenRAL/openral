@@ -545,7 +545,7 @@ def test_every_single_controller_real_adapter_is_drivable(entry_point: str) -> N
     hal = _import_object(entry_point)()  # type: ignore[operator]  # reason: entry point resolves to a HAL class
     assert isinstance(hal, RosControlDrivable), entry_point
     assert hal.command_topics() == [f"/{hal.controller_name}/joint_trajectory"]  # type: ignore[attr-defined]  # reason: every listed adapter pins controller_name
-    assert hal.ros2_control_joint_names() == [j.name for j in hal.description.joints]
+    assert hal.ros2_control_joint_names() == [j.name for j in hal.description.joints]  # type: ignore[attr-defined]  # reason: every listed adapter carries its description
 
 
 def test_a_hal_missing_the_surface_is_not_drivable() -> None:

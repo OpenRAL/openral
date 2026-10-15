@@ -319,7 +319,7 @@ def test_the_refinement_survives_the_wire_unchanged() -> None:
     # wire and every exactly-lowered primitive.
     plain = _Msg()
     plain.shape_type = _Msg.SHAPE_BOX
-    plain.shape_dimensions = [0.1, 0.1, 0.1]
+    plain.shape_dimensions = [0.1, 0.1, 0.1]  # type: ignore[misc]  # reason: shadows the ClassVar like the IDL instance field
     assert AttachedCollisionPrimitive.from_idl(plain, object_id="sim:x").tight_geometry is None
 
 

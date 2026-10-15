@@ -357,7 +357,12 @@ def test_backstops_cannot_be_disabled_on_a_graph_clock() -> None:
     from openral_core.exceptions import ROSConfigError
     from openral_rskill.execution_budget import ExecutionBudget
 
-    for kwargs in ({"stall_s": 0.0}, {"stall_s": math.nan}, {"wall_cap_factor": -1.0}):
+    cases: tuple[dict[str, Any], ...] = (
+        {"stall_s": 0.0},
+        {"stall_s": math.nan},
+        {"wall_cap_factor": -1.0},
+    )
+    for kwargs in cases:
         with pytest.raises(ROSConfigError, match="finite value > 0"):
             ExecutionBudget(1.0, graph_now=lambda: 1.0, **kwargs)
     # Irrelevant (and so unchecked) without a graph clock.

@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.geometry import look_at_quat_wxyz
 from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW, depth_optical_frame_id
@@ -23,7 +24,7 @@ from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW, depth_optical_fra
 _ROBOT_YAML = Path(__file__).resolve().parents[2] / "robots" / "openarm" / "robot.yaml"
 
 
-def _rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
+def _rpy(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
     """ROS fixed-axis roll/pitch/yaw: ``Rz(yaw) @ Ry(pitch) @ Rx(roll)``."""
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
@@ -31,10 +32,11 @@ def _rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
     rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    return rz @ ry @ rx
+    rot: NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
-def _quat_xyzw_to_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
+def _quat_xyzw_to_matrix(x: float, y: float, z: float, w: float) -> NDArray[np.float64]:
     return np.array(
         [
             [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
@@ -44,7 +46,7 @@ def _quat_xyzw_to_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
     )
 
 
-def _angle_deg(a: np.ndarray, b: np.ndarray) -> float:
+def _angle_deg(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
     return float(np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1.0) / 2.0, -1.0, 1.0))))
 
 
@@ -68,6 +70,7 @@ def test_head_zed_sim_camera_matches_its_tf_mount() -> None:
     assert left_mount.parent_link == "openarm_base"
     assert np.allclose(left_mount.origin_rpy, 0.0)
 
+    assert spec.static_transform_xyz_rpy is not None
     x, y, z, roll, pitch, yaw = spec.static_transform_xyz_rpy
     mount = _rpy(roll, pitch, yaw)
     # Position: the mount, re-expressed from the left base link.

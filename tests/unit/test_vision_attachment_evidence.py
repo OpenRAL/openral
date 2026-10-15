@@ -23,6 +23,7 @@ import pytest
 from numpy.typing import NDArray
 from openral_core import (
     AttachmentEvidenceKind,
+    BoxShape,
     IntrinsicsPinhole,
     RobotDescription,
     scale_intrinsics_to,
@@ -76,7 +77,7 @@ def _mask(path: Path) -> NDArray[np.bool_]:
 
 
 def _plane_depth(
-    shape: tuple[int, int], *, distance_m: float, tilt: float = 0.0
+    shape: tuple[int, ...], *, distance_m: float, tilt: float = 0.0
 ) -> NDArray[np.float64]:
     """Depth of a flat surface at ``distance_m``, optionally foreshortened.
 
@@ -162,6 +163,7 @@ def test_clustered_primitives_respect_the_sixteen_box_contract_and_cover_the_clo
     local = (cloud - centre) @ rotation
     inside = np.zeros(len(cloud), dtype=bool)
     for prim in primitives:
+        assert isinstance(prim.shape, BoxShape)
         half = np.asarray(prim.shape.half_extents_m, dtype=np.float64)
         centre_local = np.asarray(prim.pose_in_object.xyz, dtype=np.float64)
         inside |= np.all(np.abs(local - centre_local) <= half, axis=1)
@@ -181,6 +183,8 @@ def test_view_ray_inflation_grows_the_boxes() -> None:
         inflation_m=0.02,
         inflation_axis_in_link=(1.0, 0.0, 0.0),
     )
+    assert isinstance(padded[0].shape, BoxShape)
+    assert isinstance(bare[0].shape, BoxShape)
     assert sum(padded[0].shape.half_extents_m) > sum(bare[0].shape.half_extents_m)
 
 
@@ -457,6 +461,7 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     # Fail-closed, not fail-silent: a conservative box still reaches the kernel.
     assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
+    assert isinstance(attachment.primitives[0].shape, BoxShape)
     assert attachment.primitives[0].shape.half_extents_m == (0.05, 0.05, 0.05)
     # The SO-101's tool point is the jaw centre and its jaw hinges at the link origin
     # (palm plane 0): the cube stays centred on the tool point.

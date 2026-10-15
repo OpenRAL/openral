@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, MutableMapping
 
 import pytest
 import structlog
@@ -14,8 +15,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 def _capturing_log() -> tuple[structlog.BoundLogger, list[dict[str, object]]]:
     captured: list[dict[str, object]] = []
 
-    def capture(_logger: object, _method: str, event: dict[str, object]) -> dict[str, object]:
-        captured.append(event)
+    def capture(
+        _logger: object, _method: str, event: MutableMapping[str, object]
+    ) -> Mapping[str, object]:
+        captured.append(dict(event))
         # Stop the chain — do not pass to a real logger backend.
         raise structlog.DropEvent
 

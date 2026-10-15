@@ -14,11 +14,17 @@ fails locally without paying the sidecar boot.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
 import pytest
+from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from openral_sim.policies.rldx import _RLDXSidecarAdapter
 
 
-def _make_adapter(state_layout: str):
+def _make_adapter(state_layout: str) -> _RLDXSidecarAdapter:
     from openral_core import VLASpec
     from openral_sim.policies.rldx import _RLDXSidecarAdapter
 
@@ -47,7 +53,7 @@ def _make_adapter(state_layout: str):
     return adapter
 
 
-def _make_simpler_obs(eef_pos: np.ndarray) -> dict:
+def _make_simpler_obs(eef_pos: NDArray[np.float64]) -> dict[str, Any]:
     return {
         "images": {"top": np.zeros((480, 640, 3), dtype=np.uint8)},
         "state": np.zeros(16, dtype=np.float32),
@@ -196,7 +202,9 @@ class TestSimplerGoogleWireShape:
         assert float(wire["state.gripper_position"].reshape(-1)[0]) == pytest.approx(1.0 - 0.037)
 
 
-def _make_simpler_action_dict(*, chunk_len: int, gripper_close: list[float]) -> dict:
+def _make_simpler_action_dict(
+    *, chunk_len: int, gripper_close: list[float]
+) -> dict[str, NDArray[np.float32]]:
     """Build a fake action dict in the canonical vector layout for chunk tests."""
     return {
         "action.end_effector_position": np.zeros((1, chunk_len, 3), dtype=np.float32),

@@ -28,8 +28,10 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import (
     Action,
+    BoxShape,
     ControlMode,
     GripperClosureCalibration,
     JointState,
@@ -52,7 +54,7 @@ from PIL import Image
 _ERASER_MASK = Path("tests/unit/fixtures/sam2_wrist_eraser_mask.png")
 
 
-def _real_mask() -> np.ndarray:
+def _real_mask() -> NDArray[np.bool_]:
     """The committed SAM 2.1 mask of the eraser in the SO-101's jaws."""
     return np.asarray(Image.open(_ERASER_MASK).convert("L")) > 0
 
@@ -380,10 +382,14 @@ def test_the_real_hals_applied_slot_group_commands_both_jaws() -> None:
     assert [a.control_mode for a in group].count(ControlMode.GRIPPER_POSITION) == 2
     for action in group[:-1]:
         hal.send_action(action)
-    assert hal.last_applied_action is None, "an incomplete tick applied nothing"
+    # Read into a local so the None check does not narrow the property for later reads.
+    pending = hal.last_applied_action
+    assert pending is None, "an incomplete tick applied nothing"
     hal.send_action(group[-1])
     assert published, "the composed tick reached the controllers"
-    bridge.observe_command(hal.last_applied_action)
+    applied = hal.last_applied_action
+    assert applied is not None
+    bridge.observe_command(applied)
     assert (left.trigger.last_command, right.trigger.last_command) == pytest.approx((0.0, -0.75))
     hal.disconnect()
 
@@ -483,13 +489,14 @@ def test_the_region_payload_is_the_declared_object_at_the_region() -> None:
         declaration,
         attach_link="openarm_left_link7",
         touch_links=("openarm_left_finger_pair",),
-        t_link_from_region=np.linalg.inv(t_base_from_link),
+        t_link_from_region=np.linalg.inv(t_base_from_link).astype(np.float64),
         stamp_ns=7,
     )
     assert held.object_id == (declaration.object_id or declaration.target_id)
     assert held.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
     assert held.attach_link == "openarm_left_link7"
     (prim,) = held.primitives
+    assert isinstance(prim.shape, BoxShape)
     assert prim.shape.half_extents_m == (0.03, 0.04, 0.05)
     back = t_base_from_link @ homogeneous_from_quat_xyz(
         held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -628,7 +635,7 @@ def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_sup
             scene.model_copy(update={"region": region}),
             attach_link="openarm_right_link7",
             touch_links=("openarm_right_finger_pair",),
-            t_link_from_region=np.linalg.inv(t_base_from_link),
+            t_link_from_region=np.linalg.inv(t_base_from_link).astype(np.float64),
             stamp_ns=7,
             support_z=-0.48,
         )
@@ -636,6 +643,7 @@ def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_sup
         t = t_base_from_link @ homogeneous_from_quat_xyz(
             held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
         )
+        assert isinstance(prim.shape, BoxShape)
         return t[:3, 3], t[:3, :3], np.asarray(prim.shape.half_extents_m)
 
     def cell(xyz: tuple[float, float, float]) -> tuple[Any, Any, Any]:
@@ -950,6 +958,7 @@ def test_the_bridge_derives_its_trigger_windows_from_the_manifest_rate() -> None
     )
     assert bridge._evidence._config == expected
     assert all(leg.trigger._config == expected for leg in bridge._legs)
+    assert description.action_spec is not None
     slow = description.model_copy(
         update={"action_spec": description.action_spec.model_copy(update={"control_freq_hz": 10.0})}
     )
@@ -1082,7 +1091,7 @@ def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down
     from sensor_msgs_py import point_cloud2
     from std_msgs.msg import Header
 
-    def cloud(stamp_ns: int, points: np.ndarray) -> Any:
+    def cloud(stamp_ns: int, points: NDArray[np.float32]) -> Any:
         header = Header(frame_id="openarm_base")
         header.stamp.sec, header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
         return point_cloud2.create_cloud_xyz32(header, points.tolist())
@@ -1114,8 +1123,10 @@ def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down
                     later = points + np.float32(1.0)
                     bridge._on_kept_cloud(cloud(stamp + 150_000_000, later))
                     near = bridge.kept_points(stamp + 60_000_000, "openarm_base")
+                    assert near is not None
                     np.testing.assert_allclose(near, points, atol=1e-6)
                     far = bridge.kept_points(stamp + 90_000_000, "openarm_base")
+                    assert far is not None
                     np.testing.assert_allclose(far, later, atol=1e-6)
                     for i in range(2, 10):  # eight newer captures roll the first one out
                         bridge._on_kept_cloud(cloud(stamp + i * 150_000_000, points))
@@ -1419,7 +1430,11 @@ def test_an_oblique_payload_box_is_clipped_without_losing_its_front() -> None:
 
     th = math.radians(45.0)
     pose = np.eye(4)
-    pose[:3, :3] = [[1, 0, 0], [0, math.cos(th), -math.sin(th)], [0, math.sin(th), math.cos(th)]]
+    pose[:3, :3] = [
+        [1.0, 0.0, 0.0],
+        [0.0, math.cos(th), -math.sin(th)],
+        [0.0, math.sin(th), math.cos(th)],
+    ]
     pose[2, 3] = -0.10
     half = np.array([0.03, 0.03, 0.05])
     clipped_pose, clipped_half = _clip_behind_tool_point(pose, half, np.array([0.0, 0.0, -0.07]))

@@ -50,7 +50,7 @@ class TestD435Bundle:
     def test_topic_prefix(self) -> None:
         bundle = realsense_d435_bundle(name="head")
         rgb = next(s for s in bundle.sensors if s.modality == SensorModality.RGB)
-        assert rgb.ros2_topic.startswith("/head/")
+        assert rgb.ros2_topic is not None and rgb.ros2_topic.startswith("/head/")
 
     def test_frame_ids_use_name(self) -> None:
         bundle = realsense_d435_bundle(name="cam")

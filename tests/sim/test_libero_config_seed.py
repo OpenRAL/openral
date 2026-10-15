@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -29,9 +30,9 @@ import pytest
 pytest.importorskip("libero")
 
 
-def test_seed_lets_libero_import_with_closed_stdin(tmp_path: object) -> None:
+def test_seed_lets_libero_import_with_closed_stdin(tmp_path: Path) -> None:
     """A fresh process with an empty config dir + closed stdin imports clean."""
-    config_dir = os.fspath(tmp_path)  # type: ignore[arg-type]  # reason: pytest tmp_path
+    config_dir = os.fspath(tmp_path)
     script = (
         "from openral_sim.backends.libero import _seed_libero_config_if_absent\n"
         "_seed_libero_config_if_absent()\n"

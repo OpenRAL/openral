@@ -149,7 +149,7 @@ def test_resolve_sampler_fractional_returns_parent_based(
     assert isinstance(sampler, ParentBased)
     # ``ParentBased.get_description()`` carries the ratio in its
     # ``TraceIdRatioBased{0.100000}`` root rendering.
-    assert "0.1" in sampler.get_description()
+    assert "0.1" in sampler.get_description()  # type: ignore[no-untyped-call]  # reason: unannotated upstream
 
 
 def test_resolve_sampler_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,7 +159,7 @@ def test_resolve_sampler_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENRAL_OTEL_SAMPLE_RATIO", "0.25")
     sampler = _sdk._resolve_sampler(None)
     assert isinstance(sampler, ParentBased)
-    assert "0.25" in sampler.get_description()
+    assert "0.25" in sampler.get_description()  # type: ignore[no-untyped-call]  # reason: unannotated upstream
 
 
 def test_resolve_sampler_malformed_env_var_is_always_on(
@@ -234,7 +234,7 @@ def test_configure_http_protobuf_installs_http_span_processor(
     assert tracer_provider is not None
     # Walk the span processor chain to find the OTLP BatchSpanProcessor.
     found_http = False
-    for proc in tracer_provider._active_span_processor._span_processors:  # type: ignore[attr-defined]
+    for proc in tracer_provider._active_span_processor._span_processors:
         exporter = getattr(proc, "span_exporter", None)
         # The OTLP exporter is wrapped by _FailureCountingSpanExporter so
         # dropped batches feed openral.observability.export_failures; unwrap

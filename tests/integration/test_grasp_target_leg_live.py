@@ -40,6 +40,7 @@ from typing import Any
 import numpy as np
 import pytest
 import yaml
+from numpy.typing import NDArray
 
 from tests.integration.test_vision_attachment_optical_frame_live import (
     _camera_info,
@@ -72,13 +73,13 @@ _MASK_RADIUS_PX = 400
 _FREEZE_S = 2.0
 
 
-def _thor_mount() -> np.ndarray:
+def _thor_mount() -> NDArray[np.float64]:
     unit = yaml.safe_load(_THOR_YAML.read_text())
     xyzrpy = next(s for s in unit["sensors"] if s["name"] == "head_zed")["static_transform_xyz_rpy"]
     return _homogeneous(_rot_rpy(*xyzrpy[3:]), xyzrpy[:3])
 
 
-def _box_centres(t_base_opt: np.ndarray) -> list[np.ndarray]:
+def _box_centres(t_base_opt: NDArray[np.float64]) -> list[NDArray[np.float64]]:
     """Where the optical axis meets the table, snapped so the box faces are cell faces."""
     origin, axis = t_base_opt[:3, 3], t_base_opt[:3, 2]
     hit = origin + axis * (_SUPPORT_Z - origin[2]) / axis[2]
@@ -86,7 +87,7 @@ def _box_centres(t_base_opt: np.ndarray) -> list[np.ndarray]:
     return [np.array([x, 0.0, _SUPPORT_Z + _BOX_HALF[2]])]
 
 
-def _voxels(centres: list[np.ndarray], stamp: Any, source: Any = None) -> Any:
+def _voxels(centres: list[NDArray[np.float64]], stamp: Any, source: Any = None) -> Any:
     """A base-aligned 20 mm lattice: the table layer under the search box + solid boxes.
 
     ``source`` is the grid's ``source_stamp`` (the world data's capture time; default
@@ -114,7 +115,9 @@ def _voxels(centres: list[np.ndarray], stamp: Any, source: Any = None) -> Any:
     return msg
 
 
-def _depth(t_base_opt: np.ndarray, centres: list[np.ndarray]) -> np.ndarray:
+def _depth(
+    t_base_opt: NDArray[np.float64], centres: list[NDArray[np.float64]]
+) -> NDArray[np.float64]:
     """Ray-cast the boxes (only) into a 32FC1 z-depth raster; 0 = no return."""
     fx, fy, cx, cy = _THOR_K
     rows, cols = np.mgrid[0 : _FULL[0], 0 : _FULL[1]]
@@ -136,7 +139,7 @@ def _depth(t_base_opt: np.ndarray, centres: list[np.ndarray]) -> np.ndarray:
     return depth.reshape(_FULL).astype(np.float32)
 
 
-def _depth_msg(grid: np.ndarray, stamp: Any) -> Any:
+def _depth_msg(grid: NDArray[np.float64], stamp: Any) -> Any:
     from sensor_msgs.msg import Image
 
     msg = Image()
@@ -149,7 +152,7 @@ def _depth_msg(grid: np.ndarray, stamp: Any) -> Any:
     return msg
 
 
-def _declaration(stamp_ns: int, centre: np.ndarray, *, active: bool = True) -> Any:
+def _declaration(stamp_ns: int, centre: NDArray[np.float64], *, active: bool = True) -> Any:
     from openral_core import GraspDeclaration, PlaceRegion, Pose6D
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
 
@@ -214,7 +217,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
     node = Node("test_grasp_target_hal")
     peer = Node("test_grasp_target_peer")
     segmenter = Node("test_grasp_target_segmenter")
-    prompts: list[np.ndarray] = []
+    prompts: list[NDArray[np.float64]] = []
 
     def segment(request: Any, response: Any) -> Any:
         """Mask a disc around the prompt's pixel; the prompt arrives in the optical frame."""
@@ -454,8 +457,9 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         # face, downward too, then cell-closed (``GraspTargetLeg.fill``, HZ-0115-32); the
         # payload is bloated on the sides and top only, then cell-closed (i50).
         assert bridge._grasp_target is not None
-        region = bridge._grasp_target.tracker.region
-        assert region is not None
+        tracked = bridge._grasp_target.tracker.region
+        assert tracked is not None
+        region = tracked
         margin = bridge._config.grasp_target_margin_m
         # (a re-fit may land between the two reads: same static scene, millimetres apart)
         assert published.pose.xyz[:2] == pytest.approx(region.pose.xyz[:2], abs=1e-3)
@@ -750,7 +754,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
     def latest() -> Any:
         return envelopes[-1] if envelopes else None
 
-    def region_around(centre: np.ndarray) -> bool:
+    def region_around(centre: NDArray[np.float64]) -> bool:
         msg = latest()
         if msg is None or not (msg.grasp_declaration_valid and msg.grasp_declaration.region_valid):
             return False

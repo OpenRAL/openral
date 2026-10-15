@@ -21,6 +21,8 @@ proves that gate actually detects the condition.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import pytest
 
@@ -35,12 +37,17 @@ from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 
 from tests.hil._openarm_ros_transport import OpenArmHILTransport  # noqa: E402
 
+if TYPE_CHECKING:
+    from rclpy.context import Context
+
+_Rig: TypeAlias = "tuple[OpenArmHILTransport, OpenArmRealHAL, Node, Context]"
+
 _TEST_DOMAIN = "92"
 _QOS = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
 
 
 @pytest.fixture
-def isolated_ros(monkeypatch: pytest.MonkeyPatch):
+def isolated_ros(monkeypatch: pytest.MonkeyPatch) -> Iterator[Context]:
     """A private DDS domain, LOCALHOST-only, torn down after the test."""
     monkeypatch.setenv("ROS_DOMAIN_ID", _TEST_DOMAIN)
     monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
@@ -51,7 +58,7 @@ def isolated_ros(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def rig(isolated_ros):
+def rig(isolated_ros: Context) -> Iterator[_Rig]:
     """A transport plus the HAL metadata it is built from."""
     node = Node("openarm_transport_test", context=isolated_ros)
     hal = OpenArmRealHAL(require_can_links=False)
@@ -67,14 +74,14 @@ def rig(isolated_ros):
 
 
 class TestConstruction:
-    def test_it_must_be_built_from_the_ros2_control_namespace(self, rig) -> None:
+    def test_it_must_be_built_from_the_ros2_control_namespace(self, rig: _Rig) -> None:
         """16 names, and they are the URDF ones `/joint_states` is keyed by."""
         _, hal, _, _ = rig
         names = hal.ros2_control_joint_names()
         assert len(names) == 16
         assert names[0] == "openarm_left_joint1"
 
-    def test_a_wrong_joint_count_is_refused(self, isolated_ros) -> None:
+    def test_a_wrong_joint_count_is_refused(self, isolated_ros: Context) -> None:
         node = Node("openarm_transport_bad", context=isolated_ros)
         hal = OpenArmRealHAL(require_can_links=False)
         try:
@@ -85,7 +92,7 @@ class TestConstruction:
         finally:
             node.destroy_node()
 
-    def test_a_zero_trajectory_window_is_refused(self, isolated_ros) -> None:
+    def test_a_zero_trajectory_window_is_refused(self, isolated_ros: Context) -> None:
         # time_from_start = 0 asks a JointTrajectoryController to teleport,
         # which is the unbounded-rate command this transport exists to avoid.
         node = Node("openarm_transport_bad2", context=isolated_ros)
@@ -103,7 +110,7 @@ class TestConstruction:
 
 
 class TestPublish:
-    def test_a_hal_command_crosses_dds_as_a_joint_trajectory(self, rig) -> None:
+    def test_a_hal_command_crosses_dds_as_a_joint_trajectory(self, rig: _Rig) -> None:
         """The whole point: a HAL publish becomes a real message on the wire."""
         transport, hal, node, _ = rig
         topics = list(hal.command_topics())
@@ -127,7 +134,7 @@ class TestPublish:
         assert msg.points[0].time_from_start.sec == 0
         assert msg.points[0].time_from_start.nanosec == 800_000_000
 
-    def test_only_the_last_step_of_a_chunk_is_commanded(self, rig) -> None:
+    def test_only_the_last_step_of_a_chunk_is_commanded(self, rig: _Rig) -> None:
         """A multi-step chunk collapses to its final target, as ALOHA's does."""
         transport, hal, node, _ = rig
         topics = list(hal.command_topics())
@@ -143,13 +150,13 @@ class TestPublish:
         assert received, "no gripper JointTrajectory crossed DDS within 5 s"
         assert [round(v, 6) for v in received[-1].points[0].positions] == [0.3]
 
-    def test_an_unknown_topic_raises_rather_than_dropping_the_command(self, rig) -> None:
+    def test_an_unknown_topic_raises_rather_than_dropping_the_command(self, rig: _Rig) -> None:
         # Silently dropping is the ADR-0102 failure mode all over again.
         transport, _, _, _ = rig
         with pytest.raises(ValueError, match="unknown topic"):
             transport.publish("/not/a/controller", {"joint_names": [], "joint_targets": [[0.0]]})
 
-    def test_a_width_mismatch_raises(self, rig) -> None:
+    def test_a_width_mismatch_raises(self, rig: _Rig) -> None:
         transport, hal, _, _ = rig
         with pytest.raises(ValueError, match="names 2 joints"):
             transport.publish(
@@ -159,17 +166,17 @@ class TestPublish:
 
 
 class TestStateGate:
-    def test_no_joint_state_means_every_joint_is_missing(self, rig) -> None:
+    def test_no_joint_state_means_every_joint_is_missing(self, rig: _Rig) -> None:
         transport, _, _, _ = rig
         assert len(transport.missing_joints()) == 16
         assert transport.wait_for_every_joint(deadline_s=0.4) is False
 
-    def test_state_zero_fills_an_unheard_joint(self, rig) -> None:
+    def test_state_zero_fills_an_unheard_joint(self, rig: _Rig) -> None:
         """Why the gate exists: absence is indistinguishable from 0.0 downstream."""
         transport, _, _, _ = rig
         assert transport.state()["position"] == [0.0] * 16
 
-    def test_a_partial_joint_state_is_reported_missing(self, rig) -> None:
+    def test_a_partial_joint_state_is_reported_missing(self, rig: _Rig) -> None:
         """Half a `/joint_states` must not read as a complete pose.
 
         This is the condition that would let the motion test compute
@@ -195,9 +202,9 @@ class TestStateGate:
             "a partial /joint_states must NOT satisfy the motion gate"
         )
         # …and the zero-fill that makes it dangerous:
-        assert transport.state()["position"][8:] == [0.0] * 8
+        assert cast("list[float]", transport.state()["position"])[8:] == [0.0] * 8
 
-    def test_a_complete_joint_state_opens_the_gate(self, rig) -> None:
+    def test_a_complete_joint_state_opens_the_gate(self, rig: _Rig) -> None:
         transport, hal, node, _ = rig
         names = hal.ros2_control_joint_names()
         pub = node.create_publisher(RosJointState, "/joint_states", _QOS)
@@ -213,4 +220,4 @@ class TestStateGate:
             opened = transport.wait_for_every_joint(deadline_s=0.2)
         assert opened, "a complete /joint_states should satisfy the gate"
         assert transport.missing_joints() == []
-        assert transport.state()["position"][15] == pytest.approx(0.15)
+        assert cast("list[float]", transport.state()["position"])[15] == pytest.approx(0.15)

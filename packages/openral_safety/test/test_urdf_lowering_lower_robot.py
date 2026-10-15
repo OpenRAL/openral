@@ -143,7 +143,7 @@ def test_lower_robot_requires_urdf_path() -> None:
         lower_robot(robot, acm_only=True)
 
 
-def test_lower_robot_refuses_empty_geometry_from_unresolvable_meshes(tmp_path) -> None:
+def test_lower_robot_refuses_empty_geometry_from_unresolvable_meshes(tmp_path: Path) -> None:
     """A URDF whose collision meshes don't resolve raises — never an empty model.
 
     Regression for the vendored-URDF portability bug: ur5e/ur10e/rizon4 shipped

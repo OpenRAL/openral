@@ -27,11 +27,11 @@ _ROBOMETER = _REPO_ROOT / "rskills" / "robometer-4b" / "rskill.yaml"
 
 
 def _vla() -> RSkillManifest:
-    return RSkillManifest.from_yaml(_SMOLVLA)
+    return RSkillManifest.from_yaml(str(_SMOLVLA))
 
 
 def _reward() -> RSkillManifest:
-    return RSkillManifest.from_yaml(_ROBOMETER)
+    return RSkillManifest.from_yaml(str(_ROBOMETER))
 
 
 def test_smolvla_manifest_declares_its_reward_pairing_and_size() -> None:

@@ -405,6 +405,10 @@ class TestPrefetchTimeAlignment:
         served = []
         for step in range(4 * chunk_size):
             # The payload factory captures the step whose observation it would read.
-            served.append(int(ex.select_action(lambda s=step: {"step": s})[0, 0].item()))
+
+            def payload(s: int = step) -> dict[str, int]:
+                return {"step": s}
+
+            served.append(int(ex.select_action(payload)[0, 0].item()))
         ex.stop()
         assert served == list(range(4 * chunk_size))

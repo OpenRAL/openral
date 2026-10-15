@@ -141,7 +141,10 @@ def _cloud_in_base_frame(model: object, data: object) -> NDArray[np.float64]:
         base_body_name=base_body,
     )
     rot = _quat_xyzw_to_matrix(quat)
-    return _depth_cloud_in_optical_frame(model, data) @ rot.T + np.asarray(xyz)
+    cloud: NDArray[np.float64] = _depth_cloud_in_optical_frame(model, data) @ rot.T + np.asarray(
+        xyz
+    )
+    return cloud
 
 
 def _panda_mobile_description() -> object:

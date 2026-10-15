@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -85,7 +86,7 @@ class TestSimplerEnvAdapter:
         assert env_id == "PutCarrotOnPlateInScene-v1"
         assert kwargs == {}
 
-    def test_reset_returns_populated_observation(self, sim) -> None:
+    def test_reset_returns_populated_observation(self, sim: Any) -> None:
         obs = sim.reset(seed=0)
         assert "images" in obs and "top" in obs["images"]
         rgb = obs["images"]["top"]
@@ -97,7 +98,7 @@ class TestSimplerEnvAdapter:
         assert obs["state"].shape == (16,)
         assert obs["state"].dtype == np.float32
 
-    def test_step_propagates_action(self, sim) -> None:
+    def test_step_propagates_action(self, sim: Any) -> None:
         sim.reset(seed=0)
         t0 = sim.sim_time_ns()
         assert t0 is not None

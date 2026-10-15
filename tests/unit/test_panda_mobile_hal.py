@@ -251,7 +251,7 @@ def test_cartesian_delta_rejects_wrong_width() -> None:
         horizon=1,
         cartesian_delta=[(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
     )
-    a.cartesian_delta = [(0.0, 0.0, 0.0, 0.0, 0.0)]  # type: ignore[list-item]  # reason: deliberate width breach
+    a.cartesian_delta = [(0.0, 0.0, 0.0, 0.0, 0.0)]
     with pytest.raises(ROSConfigError, match="6 floats per row"):
         hal.send_action(a)
 

@@ -13,6 +13,8 @@ into `docs/reference/robocasa-carry-survey.md`.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import pytest
 import yaml
@@ -20,6 +22,9 @@ from openral_core.schemas import DeployScene
 from openral_sim._deps import _has_robocasa_kitchen
 
 from tests.sim.conftest import mujoco_renderer_probe_error
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 _ROBOCASA_INACTIVE = not _has_robocasa_kitchen()
 _RENDERER_ERROR = mujoco_renderer_probe_error() if not _ROBOCASA_INACTIVE else ""
@@ -50,17 +55,22 @@ def _measured_distances() -> tuple[dict[str, float], int]:
     import mujoco
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
-    env, seed = build_sim_env_from_yaml(SCENE)
+    rollout, seed = build_sim_env_from_yaml(SCENE)
+    env = cast("_RoboCasaSim", rollout)  # the pinned scene is a RoboCasa kitchen
     try:
         env.reset(seed=seed)
-        model, data = env.mujoco_handles()
+        handles = env.mujoco_handles()
+        assert handles is not None, "RoboCasa env exposes no MuJoCo handles"
+        model, data = handles
         inner = getattr(env, "_env", None) or getattr(env, "env", None)
+        assert inner is not None, "no wrapped robosuite env"
         base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "mobilebase0_base")
         base_xy = np.array(data.xpos[base_id])[:2]
         out: dict[str, float] = {}
         for name, obj in inner.objects.items():
             body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, obj.root_body)
             out[name] = float(np.linalg.norm(np.array(data.xpos[body])[:2] - base_xy))
+        assert seed is not None, "the scene pins its seed"
         return out, int(seed)
     finally:
         env.close()

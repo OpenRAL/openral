@@ -91,7 +91,7 @@ def _scan_mount_z() -> float:
     """
     from openral_core import RobotDescription
 
-    description = RobotDescription.from_yaml(_ROBOT_YAML)
+    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
     for sensor in description.sensors:
         if sensor.frame_id == _SCAN_FRAME:
             assert sensor.static_transform_xyz_rpy is not None

@@ -81,7 +81,7 @@ def test_every_intree_manifest_declares_control_mode_semantics() -> None:
         for i, actuator in enumerate(manifest.actuators_required):
             # control_mode_semantics is REQUIRED on the schema; presence
             # here means pydantic loaded it (Gap 2 contract).
-            if actuator.control_mode_semantics is None:  # type: ignore[unreachable]
+            if actuator.control_mode_semantics is None:
                 missing.append((name, i))
 
     assert not missing, f"manifests missing control_mode_semantics on actuator entry: {missing}"

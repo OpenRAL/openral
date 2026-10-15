@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+from collections.abc import Callable
 
 import pytest
 from openral_core import ObjectsMetadata
@@ -140,6 +141,7 @@ def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
         assert tier is DetectorTier.VLM_SIDECAR
         assert isinstance(det, LocateAnythingDetector)
         # Static default query = the manifest's labels joined for the prompt.
+        assert m.detector is not None
         assert det._query == "</c>".join(m.detector.labels)
         # weights_uri (the prequantized NF4 mirror this rSkill ships) wins over
         # source_repo (upstream provenance): the sidecar loads the mirror directly
@@ -174,7 +176,7 @@ def test_locate_in_view_tool_schema_round_trips() -> None:
     from openral_core import LocateInViewTool, ReasonerToolCall
     from pydantic import TypeAdapter
 
-    parsed = TypeAdapter(ReasonerToolCall).validate_python(
+    parsed: object = TypeAdapter(ReasonerToolCall).validate_python(
         {"tool": "locate_in_view", "query": "red mug", "camera": "wrist"}
     )
     assert isinstance(parsed, LocateInViewTool)
@@ -199,7 +201,9 @@ def test_locate_in_view_palette_gated_on_detector_available() -> None:
     assert "locate_in_view" in on
 
 
-def test_locateanything_extra_declares_sidecar_client_deps(expand_dependency_group) -> None:
+def test_locateanything_extra_declares_sidecar_client_deps(
+    expand_dependency_group: Callable[..., list[str]],
+) -> None:
     """The detector-node-side ZMQ client transport is a declared dependency.
 
     Regression: the ``LocateAnythingDetector`` client (deploy-sim/detector-node

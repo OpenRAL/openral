@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import math
 import pathlib
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core.assets import resolve_asset
 from openral_core.schemas import BoxShape, RobotDescription
@@ -51,7 +54,9 @@ _GROSS_FOLD = [_D2R(x) for x in (0, -90, 150, -30, 0, 10)]  # elbow 150° — wa
 # ── kernel-mirrored geometry (matches cpp/.../collision.cpp) ───────────────────
 
 
-def _transform(x, y, z, roll, pitch, yaw):
+def _transform(
+    x: float, y: float, z: float, roll: float, pitch: float, yaw: float
+) -> npt.NDArray[np.float64]:
     cr, sr = math.cos(roll), math.sin(roll)
     cp, sp = math.cos(pitch), math.sin(pitch)
     cy, sy = math.cos(yaw), math.sin(yaw)
@@ -68,7 +73,7 @@ def _transform(x, y, z, roll, pitch, yaw):
     return m
 
 
-def _axis_angle(axis, angle):
+def _axis_angle(axis: npt.ArrayLike, angle: float) -> npt.NDArray[np.float64]:
     a = np.asarray(axis, float)
     n = np.linalg.norm(a)
     m = np.eye(4)
@@ -87,7 +92,7 @@ def _axis_angle(axis, angle):
     return m
 
 
-def _fk(p, q):
+def _fk(p: dict[str, Any], q: Sequence[float]) -> list[npt.NDArray[np.float64]]:
     parent, origin, kind, dof, axis = (
         p["collision_parent"],
         p["collision_origin_xyzrpy"],
@@ -96,7 +101,7 @@ def _fk(p, q):
         p["collision_axis"],
     )
     names = p["collision_link_names"]
-    world = [None] * len(names)
+    world: list[npt.NDArray[np.float64]] = []
     for i in range(len(names)):
         ti = _transform(*origin[6 * i : 6 * i + 6])
         motion = np.eye(4)
@@ -104,17 +109,23 @@ def _fk(p, q):
         if d >= 0 and d < len(q) and kind[i] == 1:
             motion = _axis_angle(axis[3 * i : 3 * i + 3], q[d])
         local = ti @ motion
-        world[i] = local if parent[i] < 0 else world[parent[i]] @ local
+        world.append(local if parent[i] < 0 else world[parent[i]] @ local)
     return world
 
 
-def _box_box(a_tf, a_half_extents, b_tf, b_half_extents):
+def _box_box(
+    a_tf: npt.NDArray[np.float64],
+    a_half_extents: npt.ArrayLike,
+    b_tf: npt.NDArray[np.float64],
+    b_half_extents: npt.ArrayLike,
+) -> float:
     """Conservative SAT box-box distance (max separating gap; matches the C++)."""
     a_rot, b_rot = a_tf[:3, :3], b_tf[:3, :3]
     dc = b_tf[:3, 3] - a_tf[:3, 3]
     a_half_extents = np.asarray(a_half_extents)
     b_half_extents = np.asarray(b_half_extents)
-    axes = [a_rot[:, i] for i in range(3)] + [b_rot[:, i] for i in range(3)]
+    axes: list[npt.NDArray[np.floating[Any]]] = [a_rot[:, i] for i in range(3)]
+    axes += [b_rot[:, i] for i in range(3)]
     axes += [np.cross(a_rot[:, i], b_rot[:, j]) for i in range(3) for j in range(3)]
     best = -9.0
     for axis in axes:
@@ -128,7 +139,7 @@ def _box_box(a_tf, a_half_extents, b_tf, b_half_extents):
     return best
 
 
-def _boxes(p):
+def _boxes(p: dict[str, Any]) -> dict[str, tuple[npt.NDArray[np.float64], list[float]]]:
     names = p["collision_link_names"]
     bl, bh, bo = (
         p["collision_box_link"],
@@ -141,18 +152,18 @@ def _boxes(p):
     }
 
 
-def _kernel_self_min(p, q):
+def _kernel_self_min(p: dict[str, Any], q: Sequence[float]) -> float:
     """Min box↔box distance over every checked (non-allowed) link pair."""
     names = p["collision_link_names"]
     idx = {n: i for i, n in enumerate(names)}
-    allowed = set()
+    allowed: set[tuple[int, ...]] = set()
     ap = p.get("collision_allowed_pairs", [])
     for i in range(0, len(ap), 2):
         allowed.add(tuple(sorted((ap[i], ap[i + 1]))))
     world = _fk(p, q)
     boxes = _boxes(p)
     bn = list(boxes)
-    vals = []
+    vals: list[float] = []
     for i in range(len(bn)):
         for j in range(i + 1, len(bn)):
             a, b = bn[i], bn[j]
@@ -171,11 +182,15 @@ def _kernel_self_min(p, q):
     return min(vals)
 
 
-def _params():
+# reason: Any — the flattened ROS params are heterogeneous per key (lists of str/int/float).
+def _params() -> dict[str, Any]:
     pytest.importorskip("openral_safety")
     from openral_safety.envelope_loader import collision_params_from_description
 
-    return collision_params_from_description(RobotDescription.from_yaml(str(_MANIFEST)))
+    params: dict[str, Any] = collision_params_from_description(
+        RobotDescription.from_yaml(str(_MANIFEST))
+    )
+    return params
 
 
 # ── manifest / lowering shape ─────────────────────────────────────────────────
@@ -202,7 +217,7 @@ def test_every_obb_encloses_its_link_mesh():
     rd = RobotDescription.from_yaml(str(_MANIFEST))
     model = _mj_model()
 
-    def quat_to_rot(q):
+    def quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         w, x, y, z = q
         return np.array(
             [
@@ -216,6 +231,7 @@ def test_every_obb_encloses_its_link_mesh():
         bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, g.link_name)
         rot = _transform(*g.origin_xyz_rpy)[:3, :3]
         c = np.asarray(g.origin_xyz_rpy[:3])
+        assert isinstance(g.shape, BoxShape)
         he = np.asarray(g.shape.half_extents_m)
         worst = 0.0
         for gi in range(model.ngeom):
@@ -258,8 +274,9 @@ def test_gross_overfold_still_fires():
 # ── MuJoCo oracle: the operating envelope is grazing, not deep penetration ─────
 
 
-def _mj_model():
+def _mj_model() -> mj.MjModel:
     rd = RobotDescription.from_yaml(str(_MANIFEST))
+    assert rd.assets.mjcf is not None
     mjcf = resolve_asset(rd.assets.mjcf, "mjcf", manifest_dir=_MANIFEST.parent)
     return mj.MjModel.from_xml_path(str(mjcf))
 
@@ -274,7 +291,7 @@ def test_operating_envelope_is_near_contact_not_deep_penetration():
     data.qpos[:6] = _VLA_START
     mj.mj_forward(model, data)
 
-    def geoms(name):
+    def geoms(name: str) -> list[int]:
         bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, name)
         return [g for g in range(model.ngeom) if model.geom_bodyid[g] == bid]
 

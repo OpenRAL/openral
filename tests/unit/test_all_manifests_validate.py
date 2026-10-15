@@ -145,7 +145,7 @@ _ROOT = _repo_root()
 def _require_root() -> Path:
     if _ROOT is None:
         pytest.skip("No repo root found (wheel install?)")
-    return _ROOT  # type: ignore[return-value]
+    return _ROOT
 
 
 # ─── Completeness guards — fail when the on-disk set ≠ registry ───────────────
@@ -357,7 +357,12 @@ def test_scene_sensors_never_name_a_robot_sensor(tier: str, stem: str) -> None:
         check_scene_sensor_overrides,
     )
 
-    model = {"benchmark": BenchmarkScene, "sim": SimScene, "deploy": DeployScene}[tier]
+    models: dict[str, type[BenchmarkScene] | type[SimScene] | type[DeployScene]] = {
+        "benchmark": BenchmarkScene,
+        "sim": SimScene,
+        "deploy": DeployScene,
+    }
+    model = models[tier]
     scene = model.from_yaml(str(_scene_yaml(tier, stem)))
     if scene.robot_id is None or not scene.sensors:
         return

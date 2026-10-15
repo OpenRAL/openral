@@ -13,6 +13,8 @@ LIBERO-provisioned env / CI, never alongside the robocasa group.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 pytest.importorskip("openral_sim")
@@ -21,6 +23,7 @@ pytest.importorskip("libero")  # libero (robosuite 1.4) ⊥ robocasa (robosuite 
 
 from openral_core import RobotDescription
 from openral_hal import build_hal
+from openral_hal.sim_attached import SimAttachedHAL
 
 _FRANKA = "robots/franka_panda/robot.yaml"
 # The deploy scene, not scenes/sim/libero_spatial.yaml: that eval scene keeps LIBERO's
@@ -35,7 +38,8 @@ _SUITE = _LIBERO_SIM
 
 def test_franka_libero_scene_attach_state_and_images() -> None:
     desc = RobotDescription.from_yaml(_FRANKA)
-    hal = build_hal(desc, mode="sim", sim_env_yaml=_LIBERO_SIM)
+    # mode="sim" with a scene yaml attaches the deploy-sim HAL.
+    hal = cast(SimAttachedHAL, build_hal(desc, mode="sim", sim_env_yaml=_LIBERO_SIM))
     hal.connect()
     try:
         # Joint state: 8 DoF (7 arm + gripper). The LIBERO robosuite model names
@@ -71,7 +75,7 @@ def test_franka_libero_suite_scene_attach_resolves_action_dim() -> None:
     width (7).
     """
     desc = RobotDescription.from_yaml(_FRANKA)
-    hal = build_hal(desc, mode="sim", sim_env_yaml=_SUITE)
+    hal = cast(SimAttachedHAL, build_hal(desc, mode="sim", sim_env_yaml=_SUITE))
     hal.connect()  # raised ROSConfigError("cannot resolve the env action width") before the fix
     try:
         # 7 = LIBERO single-Panda OSC_POSE (6-D end-effector delta + gripper).

@@ -132,7 +132,7 @@ def test_ros_tee_releases_a_partial_start() -> None:
     assert not tee.is_started
     assert rclpy.ok() is owned_before
     # A frame that was mid-extraction when teardown ran is dropped, not published.
-    assert tee._publish_locked(b"\0\0\0", 1, 1, "rgb8", object) is None
+    tee._publish_locked(b"\0\0\0", 1, 1, "rgb8", object)
 
 
 def test_openral_camera_topics_resolve_through_camera_topic() -> None:

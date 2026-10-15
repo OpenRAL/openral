@@ -108,7 +108,7 @@ def test_rtc_postprocesses_at_merge_and_keeps_raw_rows_for_guidance() -> None:
 
     pre, post = _processor_pair()
     post_fn = _postprocess(post)
-    release, produced = threading.Event(), []
+    release, produced = threading.Event(), list[int]()
 
     def slow_prefetch(batch: dict[str, Any], **kwargs: Any) -> torch.Tensor:
         if produced:  # hold the prefetch until chunk 0 is popped past its launch

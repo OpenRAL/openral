@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 pytest.importorskip("rclpy")
 pytest.importorskip("tf2_ros")
@@ -44,7 +45,7 @@ _RES = 0.02
 _N = 5
 
 
-def _rot_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
+def _rot_rpy(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
     cr, sr, cp, sp, cy, sy = (
         math.cos(roll),
         math.sin(roll),
@@ -56,10 +57,11 @@ def _rot_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
     rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    return rz @ ry @ rx
+    rot: NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
-def _quat_xyzw(rot: np.ndarray) -> tuple[float, float, float, float]:
+def _quat_xyzw(rot: NDArray[np.float64]) -> tuple[float, float, float, float]:
     w = math.sqrt(max(0.0, 1.0 + rot[0, 0] + rot[1, 1] + rot[2, 2])) / 2.0
     return (
         (rot[2, 1] - rot[1, 2]) / (4 * w),
@@ -69,7 +71,7 @@ def _quat_xyzw(rot: np.ndarray) -> tuple[float, float, float, float]:
     )
 
 
-def _tf(parent: str, child: str, rot: np.ndarray, xyz: Any) -> Any:
+def _tf(parent: str, child: str, rot: NDArray[np.float64], xyz: Any) -> Any:
     from geometry_msgs.msg import TransformStamped
 
     msg = TransformStamped()

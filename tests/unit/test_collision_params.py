@@ -320,6 +320,7 @@ def test_a_capsule_split_into_a_chain_is_exactly_as_conservative() -> None:
     it — equals the single-capsule gap at every pose.
     """
     import numpy as np
+    import numpy.typing as npt
     from openral_safety.kernel_predicates import capsule_distance
 
     whole = LinkCollisionGeometry(
@@ -343,7 +344,7 @@ def test_a_capsule_split_into_a_chain_is_exactly_as_conservative() -> None:
     assert chain["collision_capsule_link"] == [1, 1, 2]
     rng = np.random.default_rng(0)
 
-    def gaps(params: dict[str, object], probe: np.ndarray) -> float:
+    def gaps(params: dict[str, object], probe: npt.NDArray[np.float64]) -> float:
         link = list(params["collision_capsule_link"])  # type: ignore[call-overload]  # reason: flat param list
         radius = list(params["collision_capsule_radius"])  # type: ignore[call-overload]  # reason: flat param list
         half = list(params["collision_capsule_half_length"])  # type: ignore[call-overload]  # reason: flat param list

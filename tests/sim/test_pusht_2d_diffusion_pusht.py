@@ -31,8 +31,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import SimEnvironment
+    from openral_sim.policies.diffusion import _DiffusionAdapter
 
 # Use `importlib.util.find_spec` + `pytestmark` rather than module-level
 # `pytest.importorskip` / `pytest.skip(allow_module_level=True)`: with
@@ -101,10 +106,10 @@ def skill_manifest():
 class TestDiffusionPushTIOContract:
     """Adapter IO shapes — verified through the canonical eval factory."""
 
-    def test_make_policy_has_pusht_io_shape(self, env_cfg) -> None:
+    def test_make_policy_has_pusht_io_shape(self, env_cfg: SimEnvironment) -> None:
         from openral_sim import make_policy
 
-        policy = make_policy(env_cfg)
+        policy = cast("_DiffusionAdapter", make_policy(env_cfg))
         try:
             cfg = policy._policy.config
             assert cfg.input_features["observation.image"].shape == (3, 96, 96)
@@ -115,11 +120,11 @@ class TestDiffusionPushTIOContract:
         finally:
             policy.close()
 
-    def test_all_parameters_live_on_gpu(self, env_cfg) -> None:
+    def test_all_parameters_live_on_gpu(self, env_cfg: SimEnvironment) -> None:
         """All ~263M parameters must reside on cuda:0 — no silent CPU fallback."""
         from openral_sim import make_policy
 
-        policy = make_policy(env_cfg)
+        policy = cast("_DiffusionAdapter", make_policy(env_cfg))
         try:
             inner = policy._policy
             param_devices = {p.device for p in inner.parameters()}
@@ -133,12 +138,15 @@ class TestDiffusionPushTIOContract:
 class TestDiffusionPushTRollout:
     """End-to-end episode through the strict runner."""
 
-    def test_pusht_episode_runs_via_sim_runner(self, env_cfg, skill_manifest) -> None:
+    def test_pusht_episode_runs_via_sim_runner(
+        self, env_cfg: SimEnvironment, skill_manifest: Any
+    ) -> None:
         from openral_sim import SimRunner
 
         runner = SimRunner(env_cfg)
         try:
             runner.activate()
+            assert env_cfg.task.max_steps is not None
             runner.run(max_ticks=env_cfg.n_episodes * (env_cfg.task.max_steps + 1))
         finally:
             runner.deactivate()
@@ -156,7 +164,7 @@ class TestDiffusionPushTRollout:
             f"mean_step_latency_ms={result.mean_step_latency_ms:.1f} > {ceiling:.1f}ms"
         )
 
-    def test_peak_vram_under_ceiling(self, env_cfg) -> None:
+    def test_peak_vram_under_ceiling(self, env_cfg: SimEnvironment) -> None:
         """One chunk denoise must fit in the 2 GiB ceiling."""
         from openral_sim import make_env, make_policy
 

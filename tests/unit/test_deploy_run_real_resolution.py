@@ -84,7 +84,7 @@ class TestRealModeResolution:
                 hal_mode="real",
             )
 
-    def test_real_mode_config_forwards_workcell_json(self, tmp_path) -> None:
+    def test_real_mode_config_forwards_workcell_json(self, tmp_path: Path) -> None:
         config = tmp_path / "deploy.yaml"
         config.write_text(
             "scene:\n"
@@ -104,7 +104,7 @@ class TestRealModeResolution:
         )
         assert any(arg.startswith("workcell_json:=") for arg in inv.argv_template)
 
-    def test_scene_hal_binding_feeds_hal_params(self, tmp_path) -> None:
+    def test_scene_hal_binding_feeds_hal_params(self, tmp_path: Path) -> None:
         """A DeployScene ``hal:`` binding lands in hal_params so
         ``deploy run --config <scene>`` needs no ``--hal`` (port + calibration)."""
         (tmp_path / "calibration").mkdir()
@@ -133,7 +133,7 @@ class TestRealModeResolution:
         # A relative calibration_dir resolves against the scene file's dir.
         assert inv.hal_params["calibration_dir"] == str((tmp_path / "calibration").resolve())
 
-    def test_cli_hal_override_beats_scene_binding(self, tmp_path) -> None:
+    def test_cli_hal_override_beats_scene_binding(self, tmp_path: Path) -> None:
         """Precedence: ``--hal`` > scene ``hal`` > ``robot.yaml`` defaults."""
         config = tmp_path / "deploy.yaml"
         config.write_text(
@@ -160,7 +160,9 @@ class TestSimModeUnchanged:
         # robot_yaml + hal_mode="sim" and builds a bare MujocoArmHAL twin (no
         # scene-attach), replacing the legacy sim_robot_yaml injection.
         assert inv.hal_params["hal_mode"] == "sim"
-        assert inv.hal_params["robot_yaml"].endswith("so100_follower/robot.yaml")
+        robot_yaml = inv.hal_params["robot_yaml"]
+        assert isinstance(robot_yaml, str)
+        assert robot_yaml.endswith("so100_follower/robot.yaml")
         assert "sim_robot_yaml" not in inv.hal_params
         assert "sim_env_yaml" not in inv.hal_params
 

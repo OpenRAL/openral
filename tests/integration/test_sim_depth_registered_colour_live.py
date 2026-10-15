@@ -33,7 +33,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -152,7 +152,7 @@ def test_head_camera_colour_is_registered_to_its_depth(tmp_path: Path) -> None:
         assert np.allclose([r.x, r.y, r.z, r.w], [-0.5, 0.5, -0.5, 0.5])
 
         # Registration against ground truth: project each cube's top-face centre.
-        model, data = hal.mujoco_handles()
+        model, data = cast(Any, hal).mujoco_handles()
         cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, _CAMERA)
         assert cam >= 0, "the camera rig did not splice head_zed"
         cam_pos = np.asarray(data.cam_xpos[cam])

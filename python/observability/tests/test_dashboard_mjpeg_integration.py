@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 
 import pytest
 
@@ -88,7 +89,7 @@ def _build_otlp_camera_payload(source: str, thumb_b64: str) -> bytes:
 
 
 @pytest.fixture(scope="module")
-def live_server() -> subprocess.Popen[bytes]:  # type: ignore[type-arg]
+def live_server() -> Iterator[subprocess.Popen[bytes]]:
     """Start a real uvicorn server; yield the Popen handle; terminate on teardown."""
     env = dict(os.environ)
     env["PYTHONPATH"] = _PYTHONPATH
@@ -115,7 +116,7 @@ def live_server() -> subprocess.Popen[bytes]:  # type: ignore[type-arg]
             proc.terminate()
             proc.wait(timeout=5)
             pytest.fail(f"uvicorn did not become healthy on {_BASE}/healthz within 10 s")
-        yield proc  # type: ignore[misc]
+        yield proc
     finally:
         proc.terminate()
         try:
@@ -124,7 +125,7 @@ def live_server() -> subprocess.Popen[bytes]:  # type: ignore[type-arg]
             proc.kill()
 
 
-def test_mjpeg_stream_wire_format(live_server: subprocess.Popen[bytes]) -> None:  # type: ignore[type-arg]
+def test_mjpeg_stream_wire_format(live_server: subprocess.Popen[bytes]) -> None:
     """POST a real OTLP camera span then verify the MJPEG stream wire format.
 
     Asserts:
@@ -174,7 +175,7 @@ def test_mjpeg_stream_wire_format(live_server: subprocess.Popen[bytes]) -> None:
 
 
 def test_mjpeg_stream_unknown_source_returns_404(
-    live_server: subprocess.Popen[bytes],  # type: ignore[type-arg]
+    live_server: subprocess.Popen[bytes],
 ) -> None:
     """``GET /api/camera/<unknown>/stream`` must return HTTP 404."""
     del live_server  # used only to ensure the server is up

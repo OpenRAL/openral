@@ -36,7 +36,7 @@ import importlib.util
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -289,7 +289,7 @@ class _Harness:
         assert future.done(), "list_controllers did not answer"
         return {str(c.name): str(c.state) for c in future.result().controller}
 
-    def wait(self, predicate: Any, timeout_s: float) -> bool:
+    def wait(self, predicate: Callable[[], bool], timeout_s: float) -> bool:
         """Poll ``predicate`` until true or ``timeout_s`` elapses."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -334,11 +334,9 @@ def test_estop_reaches_and_stops_the_downstream_controller(
         # The real transport reads the broadcaster; the node must see fresh state before
         # any command is meaningful.
         assert h.wait(
-            lambda: h.positions(joints) is not None and len(h.positions(joints)) == len(joints),
+            lambda: (got := h.positions(joints)) is not None and len(got) == len(joints),
             15.0,
-        ), (  # type: ignore[arg-type]  # reason: guarded by the None check
-            f"joint_state_broadcaster never reported all of {joints}"
-        )
+        ), f"joint_state_broadcaster never reported all of {joints}"
         for name in controllers:
             assert h.controller_states().get(name) == "active", h.controller_states()
 

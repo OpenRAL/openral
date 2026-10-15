@@ -25,8 +25,12 @@ from __future__ import annotations
 
 import os
 import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import RSkillManifest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _LIVE_ROS_REASON = (
@@ -104,7 +108,7 @@ def test_seeded_palette_resolves_every_vla_for_the_vram_gate() -> None:
         rclpy.shutdown()
 
 
-def _load(path: pathlib.Path) -> object | None:
+def _load(path: pathlib.Path) -> RSkillManifest | None:
     from openral_core import RSkillManifest
 
     try:

@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 pytest.importorskip("yourdfpy")
@@ -103,29 +104,34 @@ def test_the_static_link_discovery_finds_the_openarm_torso() -> None:
     assert ("openarm", "openarm_body_link0") in STATIC_LINKS
 
 
-def _rpy(r: float, p: float, y: float) -> np.ndarray:
+def _rpy(r: float, p: float, y: float) -> npt.NDArray[np.float64]:
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
     ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
     rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    return rz @ ry @ rx
+    rot: npt.NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
 def primitive_signed_distance(
-    shape: object, origin: tuple[float, ...], pts: np.ndarray
-) -> np.ndarray:
+    shape: object, origin: tuple[float, ...], pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Signed distance of link-frame points to a capsule/sphere/box placed at ``origin``."""
     rot = _rpy(*origin[3:])
     local = (pts - np.asarray(origin[:3])) @ rot
     if isinstance(shape, BoxShape):
         q = np.abs(local) - np.asarray(shape.half_extents_m)
-        return np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(q.max(axis=1), 0.0)
+        box_d: npt.NDArray[np.float64] = np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(
+            q.max(axis=1), 0.0
+        )
+        return box_d
     assert isinstance(shape, CapsuleShape | SphereShape), shape
     half = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
     z = np.clip(local[:, 2], -half, half)
     closest = np.zeros_like(local)
     closest[:, 2] = z
-    return np.linalg.norm(local - closest, axis=1) - shape.radius_m
+    round_d: npt.NDArray[np.float64] = np.linalg.norm(local - closest, axis=1) - shape.radius_m
+    return round_d
 
 
 @pytest.mark.parametrize("robot_id", URDF_LOWERED)
@@ -134,13 +140,13 @@ def test_every_link_vertex_is_inside_its_primitive_with_headroom(robot_id: str) 
     robot = RobotDescription.from_yaml(str(manifest))
     urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest.parent)  # type: ignore[union-attr]  # reason: every URDF_LOWERED robot declares assets.urdf
     model = _load_urdf(str(urdf))
-    handler = model._filename_handler  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+    handler = model._filename_handler
     by_link: dict[str, list[LinkCollisionGeometry]] = {}
     for geom in robot.collision_geometry:  # a link may carry several primitives
         by_link.setdefault(geom.link_name, []).append(geom)
     worst: list[tuple[float, str]] = []
     for link_name, geoms in by_link.items():
-        link = model.link_map[link_name]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+        link = model.link_map[link_name]
         elements = list(link.collisions or []) + list(link.visuals or [])
         assert elements, f"{link_name}: no URDF geometry to check against"
         parts = []

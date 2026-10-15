@@ -17,25 +17,29 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 from openral_core.schemas import LinkCollisionGeometry
 from openral_hal.convex_distance import ConvexBody, _signed_distance
 from openral_safety.kernel_predicates import shape_distance
 from openral_safety.urdf_lowering import _xyzrpy_matrix
 
 
-def _hull_world(geom: LinkCollisionGeometry, placed: np.ndarray) -> np.ndarray | None:
+def _hull_world(
+    geom: LinkCollisionGeometry, placed: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64] | None:
     tight = geom.tight_geometry
     if tight is None or not tight.hull_vertices_m:
         return None
     hull = np.asarray(tight.hull_vertices_m, dtype=float)
-    return hull @ placed[:3, :3].T + placed[:3, 3]
+    world: npt.NDArray[np.float64] = hull @ placed[:3, :3].T + placed[:3, 3]
+    return world
 
 
 def kernel_link_gap(
     geoms_a: Sequence[LinkCollisionGeometry],
-    pose_a: np.ndarray,
+    pose_a: npt.NDArray[np.float64],
     geoms_b: Sequence[LinkCollisionGeometry],
-    pose_b: np.ndarray,
+    pose_b: npt.NDArray[np.float64],
     margin: float,
 ) -> float:
     """The gap the kernel measures between two links at one pose (``<= margin`` trips).
@@ -69,7 +73,9 @@ def kernel_link_gap(
     return float(best)
 
 
-def tight_escape_per_point_m(geom: LinkCollisionGeometry, local: np.ndarray) -> np.ndarray:
+def tight_escape_per_point_m(
+    geom: LinkCollisionGeometry, local: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Per point, how far it reaches outside ``geom``'s DOP or hull (``<= 0``: inside).
 
     For a link split into several refined boxes (``--tight-link NAME=K``), a
@@ -104,7 +110,7 @@ def tight_escape_per_point_m(geom: LinkCollisionGeometry, local: np.ndarray) -> 
     return np.asarray(worst, dtype=float)
 
 
-def tight_escape_m(geom: LinkCollisionGeometry, local: np.ndarray) -> float:
+def tight_escape_m(geom: LinkCollisionGeometry, local: npt.NDArray[np.float64]) -> float:
     """How far box-frame points reach outside ``geom``'s DOP or hull (``<= 0``: inside).
 
     The refinement contains nothing by construction unless it contains the
@@ -123,10 +129,12 @@ def tight_escape_m(geom: LinkCollisionGeometry, local: np.ndarray) -> float:
 
 # Unit facet planes per refinement, keyed by object identity (the refinement is
 # kept alive in the value so the id cannot be reused).
-_FACETS: dict[int, tuple[np.ndarray, np.ndarray, object]] = {}
+_FACETS: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], object]] = {}
 
 
-def _signed_distance_to(geom: LinkCollisionGeometry, pts: np.ndarray) -> np.ndarray:
+def _signed_distance_to(
+    geom: LinkCollisionGeometry, pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Signed distance of link-frame points to one primitive (negative inside)."""
     from openral_core.schemas import BoxShape, CapsuleShape
 
@@ -135,20 +143,24 @@ def _signed_distance_to(geom: LinkCollisionGeometry, pts: np.ndarray) -> np.ndar
     shape = geom.shape
     if isinstance(shape, BoxShape):
         q = np.abs(local) - np.asarray(shape.half_extents_m)
-        return np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(q.max(axis=1), 0.0)
+        box_d: npt.NDArray[np.float64] = np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(
+            q.max(axis=1), 0.0
+        )
+        return box_d
     half = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
     z = np.clip(local[:, 2], -half, half)
     axial = local - np.column_stack([np.zeros_like(z), np.zeros_like(z), z])
-    return np.linalg.norm(axial, axis=1) - shape.radius_m  # type: ignore[union-attr]  # reason: capsule or sphere
+    round_d: npt.NDArray[np.float64] = np.linalg.norm(axial, axis=1) - shape.radius_m
+    return round_d
 
 
 def surface_pieces(
-    vertices: np.ndarray,
-    faces: np.ndarray,
+    vertices: npt.NDArray[np.float64],
+    faces: npt.ArrayLike,
     geoms: Sequence[LinkCollisionGeometry],
     *,
     max_depth: int = 10,
-) -> tuple[list[np.ndarray], int]:
+) -> tuple[list[npt.NDArray[np.float64]], int]:
     """Split a link's surface among its primitives, proving each piece is inside one.
 
     A triangle whose three corners lie inside one CONVEX primitive lies inside
@@ -177,15 +189,15 @@ def surface_pieces(
         ``(points per primitive, uncovered triangle count)``.
     """
     tris = np.asarray(vertices, dtype=float)[np.asarray(faces)]
-    pieces: list[list[np.ndarray]] = [[] for _ in geoms]
+    pieces: list[list[npt.NDArray[np.float64]]] = [[] for _ in geoms]
     for _ in range(max_depth + 1):
         if len(tris) == 0:
             break
-        inside = np.stack(
+        inside: npt.NDArray[np.bool_] = np.stack(
             [_signed_distance_to(g, tris.reshape(-1, 3)) <= 0.0 for g in geoms], axis=1
         ).reshape(len(tris), 3, len(geoms))
         held = inside.all(axis=1)  # (T, P): primitive p holds all three corners
-        accepted = held.any(axis=1)
+        accepted = np.any(held, axis=1)
         owner = held.argmax(axis=1)
         for k in range(len(geoms)):
             chosen = tris[accepted & (owner == k)]

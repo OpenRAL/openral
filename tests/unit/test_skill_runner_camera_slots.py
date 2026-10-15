@@ -21,6 +21,7 @@ from types import ModuleType
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription, RSkillManifest
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import FrameEncoding, SensorFrame
@@ -291,9 +292,11 @@ class TestBuildRuntimeSkillSceneCameras:
             def reset(self) -> None:
                 self.resets += 1
 
-            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+            def step(self, observation: dict[str, object], instruction: str) -> NDArray[np.float32]:
                 self.steps.append((observation, instruction))
-                return np.zeros(int(manifest.action_contract.dim), dtype=np.float32)
+                contract = manifest.action_contract
+                assert contract is not None
+                return np.zeros(int(contract.dim), dtype=np.float32)
 
             def close(self) -> None:
                 pass
@@ -312,7 +315,7 @@ class TestBuildRuntimeSkillSceneCameras:
             scene_cameras=("front", "wrist"),
             description=description,
         )
-        from openral_rskill.base import RSkillState
+        from openral_core import RSkillState
 
         assert skill.info.state is RSkillState.ACTIVE
         (adapter,) = built
@@ -322,11 +325,15 @@ class TestBuildRuntimeSkillSceneCameras:
         obs, instruction = adapter.steps[0]
         assert instruction == "put the mango into the blue bowl"
         assert obs["task"] == instruction
-        assert obs["state"].shape == (int(manifest.state_contract.dim),)  # type: ignore[union-attr]
+        state = obs["state"]
+        assert isinstance(state, np.ndarray)
+        assert manifest.state_contract is not None and manifest.state_contract.dim is not None
+        assert state.shape == (int(manifest.state_contract.dim),)
         rgb = {s.name: s for s in description.sensors if getattr(s, "modality", None) == "rgb"}
         slots = sensor_name_to_slot(description)
         for name, sensor in rgb.items():
             image = obs["images"][slots[name]]  # type: ignore[index]
+            assert sensor.intrinsics is not None
             assert image.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
             assert image.dtype == np.uint8
         assert adapter.resets >= 1
@@ -356,7 +363,7 @@ class TestBuildRuntimeSkillSceneCameras:
                 self.spec = env_cfg.vla  # type: ignore[attr-defined]
                 self.device = "cpu"
 
-            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+            def step(self, observation: dict[str, object], instruction: str) -> NDArray[np.float32]:
                 steps.append(observation)
                 return np.zeros(int(no_state.action_contract.dim), dtype=np.float32)  # type: ignore[union-attr]
 
@@ -384,7 +391,7 @@ class TestBuildRuntimeSkillSceneCameras:
             scene_cameras=("front", "wrist"),
             description=None,
         )
-        from openral_rskill.base import RSkillState
+        from openral_core import RSkillState
 
         assert skill.info.state is RSkillState.ACTIVE
         assert steps == [], "warm-up must not step a policy with an unknown state width"

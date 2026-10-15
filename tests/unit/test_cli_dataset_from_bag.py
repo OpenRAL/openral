@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_cli.main import app
 from openral_core import RobotDescription
@@ -35,11 +36,13 @@ pytest.importorskip(
 
 def _zero_frame(
     robot: RobotDescription,
-) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+) -> tuple[npt.NDArray[np.float32], dict[str, npt.NDArray[np.uint8]], npt.NDArray[np.float32]]:
+    assert robot.observation_spec is not None and robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
     # SVT-AV1 (libsvtav1 ≥ v3) requires minimum 64×64; 96×96 gives headroom.
-    images = {
+    images: dict[str, npt.NDArray[np.uint8]] = {
         "camera1": np.zeros((96, 96, 3), dtype=np.uint8),
         "camera2": np.zeros((96, 96, 3), dtype=np.uint8),
     }
@@ -140,7 +143,7 @@ def test_from_bag_rejects_empty_bag(real_robot_yaml: Path, tmp_path: Path) -> No
     with bag_path.open("wb") as f:
         writer = Writer(f)
         writer.start(profile="openral", library="test")
-        writer.finish()
+        writer.finish()  # type: ignore[no-untyped-call]  # reason: mcap Writer.finish is unannotated
 
     runner = CliRunner()
     result = runner.invoke(

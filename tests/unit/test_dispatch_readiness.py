@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
-import validation_matrix as vm  # type: ignore[import-not-found]  # reason: sibling script, no stub
+import validation_matrix as vm
 
 
 def _goal(tmp_path: Path, body: str) -> Path:

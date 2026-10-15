@@ -51,8 +51,8 @@ def _modern_manifest(
         license=RSkillLicensePosture.APACHE_2_0,
         role="s1",
         kind="vla",
-        model_family=family,  # type: ignore[arg-type]
-        embodiment_tags=[embodiment],  # type: ignore[list-item]
+        model_family=family,
+        embodiment_tags=[embodiment],
         runtime=RSkillRuntime.PYTORCH,
         weights_uri="hf://lerobot/smolvla_libero",
         chunk_size=16,

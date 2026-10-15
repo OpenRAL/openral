@@ -21,12 +21,12 @@ The fake implements the **subset** of SimRollout that
   (``None`` models a backend with no success predicate, which is what
   the HAL must treat as "unknown", never as failure).
 
-The real ``openral_sim.rollout.SimRollout`` Protocol carries
-additional methods (``render``, ``close``, ``task``, metrics
-accessors). The fake does NOT implement those because
-``SimAttachedHAL`` never calls them. If a future test or refactor
-needs the wider surface, extend this fake — don't reach into the
-real backends.
+It structurally satisfies the ``openral_sim.rollout.SimRollout``
+Protocol (``scene`` / ``task`` / ``reset`` / ``step`` / ``render`` /
+``close``) so it type-checks wherever a ``SimRollout`` is expected;
+``render`` returns ``None`` (rendering unavailable) and ``close`` is a
+no-op. If a future test or refactor needs a wider surface, extend this
+fake — don't reach into the real backends.
 """
 
 from __future__ import annotations
@@ -36,21 +36,24 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from openral_core import SceneSpec, TaskSpec
+from openral_sim.rollout import StepResult
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action
 
-__all__ = ["FakeSimEnv", "FakeStepResult", "GroupStepFakeSimEnv"]
+__all__ = ["FakeSimEnv", "GroupStepFakeSimEnv"]
 
 
-@dataclass
-class FakeStepResult:
-    """Minimal real ``StepResult`` shape consumed by the attached HAL."""
+def _default_scene() -> SceneSpec:
+    return SceneSpec(id="tabletop_push", backend="mujoco")
 
-    observation: dict[str, Any]
-    terminated: bool = False
-    truncated: bool = False
-    info: dict[str, object] = field(default_factory=dict)
+
+def _default_task() -> TaskSpec:
+    return TaskSpec(
+        id="tabletop_push/push_to_goal",
+        scene_id="tabletop_push",
+        instruction="push the red cube onto the green goal marker",
+    )
 
 
 @dataclass
@@ -118,10 +121,10 @@ class FakeSimEnv:
     # The SimRollout Protocol's ``scene`` / ``task`` attributes. Real
     # openral_core schemas (never placeholders) so a consumer that reports
     # them — e.g. the HAL's ``sim.task_success`` lines — is exercised
-    # against the shapes the deploy path actually carries. ``None`` models
-    # a rollout the test doesn't care to identify.
-    scene: SceneSpec | None = None
-    task: TaskSpec | None = None
+    # against the shapes the deploy path actually carries. The default is
+    # the in-tree ``tabletop_push`` scene, for tests that don't care which.
+    scene: SceneSpec = field(default_factory=_default_scene)
+    task: TaskSpec = field(default_factory=_default_task)
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         """Reset stub — returns an empty Observation-shaped dict."""
@@ -134,17 +137,25 @@ class FakeSimEnv:
             obs["raw_proprio"] = proprio
         return obs
 
-    def step(self, action: np.ndarray[Any, np.dtype[np.float32]]) -> FakeStepResult:
+    def step(self, action: np.ndarray[Any, np.dtype[np.float32]]) -> StepResult:
         """Step stub — records the action; returns an empty observation."""
         self.last_action = np.asarray(action, dtype=np.float32)
         self.step_calls += 1
         self._sim_time_ns += self.sim_dt_ns
-        return FakeStepResult(
+        return StepResult(
             observation={"images": {}, "state": np.zeros(0, dtype=np.float32)},
+            reward=0.0,
             terminated=self.step_terminated,
             truncated=self.step_truncated,
             info=dict(self.step_info),
         )
+
+    def render(self) -> np.ndarray[Any, np.dtype[np.uint8]] | None:
+        """Rendering is unavailable on the fake (the Protocol's ``None`` case)."""
+        return None
+
+    def close(self) -> None:
+        """No engine resources to release."""
 
     def sim_time_ns(self) -> int | None:
         """Per-episode elapsed sim time in ns, or ``None`` when clock-less.
@@ -219,7 +230,7 @@ class GroupStepFakeSimEnv(FakeSimEnv):
     one ``step`` of zeros, so the HAL's commit path runs exactly once per group.
     """
 
-    def step_action_group(self, actions: list[Action]) -> FakeStepResult:
+    def step_action_group(self, actions: list[Action]) -> StepResult:
         """Step once for the whole group; the slot payloads are not packed."""
         del actions
         return self.step(np.zeros(self.action_dim, dtype=np.float32))

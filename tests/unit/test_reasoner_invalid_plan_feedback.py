@@ -31,13 +31,13 @@ from openral_reasoner.context import (
     ExecutionEventRecord,
     reflect_on_invalid_plan,
 )
-from openral_reasoner.palette import build_tool_palette
+from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import OpenAICompatibleToolUseClient
 
 from tests.unit.conftest import _install_fake_openai
 
 
-def _empty_palette() -> object:
+def _empty_palette() -> ToolPalette:
     return build_tool_palette(
         installed_skills=[],
         robot_capabilities=RobotCapabilities(embodiment_tags=["franka_panda"]),

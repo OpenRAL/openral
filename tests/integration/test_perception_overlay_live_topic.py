@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -69,7 +69,7 @@ def _detector_qos() -> Any:
     )
 
 
-def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> bool:
+def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
     """Poll until ``predicate()`` is true or the timeout expires.
 
     The subscriber spins on its OWN daemon thread (that is its production

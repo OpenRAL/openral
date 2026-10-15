@@ -58,6 +58,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import CameraTopicKind, camera_topic
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
@@ -95,7 +96,7 @@ def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> bool:
     return False
 
 
-def _hand_at_zero(description: Any) -> np.ndarray:
+def _hand_at_zero(description: Any) -> NDArray[np.float64]:
     """``openarm_base <- openarm_left_link7`` at q = 0 (the manifest chain's origins composed).
 
     The same FK the kernel runs at q = 0 (``origin · joint motion``, motion = identity).

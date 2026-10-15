@@ -182,6 +182,7 @@ class TestHalJointStatesTopic:
         scene = DeployScene.from_yaml(str(REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"))
         assert scene.runtime is not None
         assert scene.runtime.joint_states_topic is None
+        assert scene.robot_id is not None
         topic = hal_joint_states_topic(
             _load(scene.robot_id),
             mode="real",

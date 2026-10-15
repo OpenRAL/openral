@@ -61,7 +61,7 @@ class TestSensorCatalog:
         cat.register(_dummy_entry())
         assert "acme/cam" in cat
         assert "missing/x" not in cat
-        assert 123 not in cat  # type: ignore[operator]
+        assert 123 not in cat
 
     def test_len(self) -> None:
         cat = SensorCatalog()

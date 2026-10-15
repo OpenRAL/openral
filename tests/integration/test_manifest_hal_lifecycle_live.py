@@ -86,7 +86,7 @@ def _run_lifecycle_and_count(robot_yaml: Path, *, rate_hz: float = 50.0) -> tupl
     sub_node = Node("test_manifest_hal_live_listener")
     executor.add_node(sub_node)
 
-    state = {"count": 0, "names": []}
+    state: dict[str, Any] = {"count": 0, "names": []}
 
     def _cb(msg: JointState) -> None:
         state["count"] += 1

@@ -20,6 +20,7 @@ sidecar venv (RTX GPU). CI without those skips (§1.12).
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 import pytest
 
@@ -59,19 +60,19 @@ def hal():
     hal.disconnect()
 
 
-def test_action_dim_is_11(hal) -> None:
+def test_action_dim_is_11(hal: Any) -> None:
     _hal, _desc = hal
     assert _hal._env_action_dim == 11  # 7 arm + 1 gripper + 3 base twist
 
 
-def test_read_state_is_11_joints(hal) -> None:
+def test_read_state_is_11_joints(hal: Any) -> None:
     _hal, description = hal
     state = _hal.read_state()
     assert len(state.position) == len(description.joints) == 11
     assert state.name == [j.name for j in description.joints]
 
 
-def test_base_pose_reads_obs_not_zero_after_twist(hal) -> None:
+def test_base_pose_reads_obs_not_zero_after_twist(hal: Any) -> None:
     from openral_core import Action
     from openral_core.schemas import ControlMode
 

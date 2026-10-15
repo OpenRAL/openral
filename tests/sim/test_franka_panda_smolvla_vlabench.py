@@ -55,6 +55,7 @@ def test_manifest_validates_and_declares_smolvla_vlabench() -> None:
         "observation.images.camera2",
         "observation.images.camera3",
     }
+    assert m.state_contract is not None and m.action_contract is not None
     assert m.state_contract.dim == 7
     assert m.action_contract.dim == 7
 

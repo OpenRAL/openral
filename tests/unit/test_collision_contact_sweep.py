@@ -26,8 +26,10 @@ numbers per robot). Real fixtures only (CLAUDE.md §1.11).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 pytest.importorskip("yourdfpy")
@@ -55,32 +57,34 @@ N_POSES = 120
 SEED = 20260924
 
 
-def _rpy(r: float, p: float, y: float) -> np.ndarray:
+def _rpy(r: float, p: float, y: float) -> npt.NDArray[np.float64]:
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
     ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
     rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    return rz @ ry @ rx
+    rot: npt.NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
-def _tf(xyzrpy: np.ndarray) -> np.ndarray:
+def _tf(xyzrpy: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     t = np.eye(4)
     t[:3, :3] = _rpy(*xyzrpy[3:])
     t[:3, 3] = xyzrpy[:3]
     return t
 
 
-def _axis_angle(axis: np.ndarray, q: float) -> np.ndarray:
+def _axis_angle(axis: npt.NDArray[np.float64], q: float) -> npt.NDArray[np.float64]:
     k = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
-    return np.eye(3) + np.sin(q) * k + (1.0 - np.cos(q)) * (k @ k)
+    rot: npt.NDArray[np.float64] = np.eye(3) + np.sin(q) * k + (1.0 - np.cos(q)) * (k @ k)
+    return rot
 
 
-def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
+def _kernel_fk(params: dict[str, Any], q: npt.NDArray[np.float64]) -> list[npt.NDArray[np.float64]]:
     """The kernel's ``forward_kinematics``: origin · joint motion, parent before child."""
     n = int(params["collision_n_links"])
     origin = np.asarray(params["collision_origin_xyzrpy"], dtype=float).reshape(n, 6)
     axis = np.asarray(params["collision_axis"], dtype=float).reshape(n, 3)
-    world: list[np.ndarray] = []
+    world: list[npt.NDArray[np.float64]] = []
     mult = params.get("collision_mimic_multiplier", [1.0] * n)
     off = params.get("collision_mimic_offset", [0.0] * n)
     for i in range(n):
@@ -99,7 +103,7 @@ def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
     return world
 
 
-def _hulls_overlap(a: np.ndarray, b: np.ndarray) -> bool:
+def _hulls_overlap(a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> bool:
     """Exact: do conv(a) and conv(b) intersect? (GJK proof when separated, else an LP.)"""
     ca, cb = a.mean(axis=0), b.mean(axis=0)
     ra = np.linalg.norm(a - ca, axis=1).max()
@@ -129,7 +133,7 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
     margin = float(params["self_collision_margin_m"])
     urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest.parent)  # type: ignore[union-attr]  # reason: every URDF_LOWERED robot declares assets.urdf
     model = _load_urdf(str(urdf))
-    handler = model._filename_handler  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+    handler = model._filename_handler
 
     # Every primitive the kernel gets, by link index (a link may carry several).
     prims: dict[int, list[LinkCollisionGeometry]] = {}
@@ -143,9 +147,9 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
     # convex — the hulls of its surface split among them (`surface_pieces`),
     # which contain the surface without filling the concavities a capsule chain
     # leaves out (the link's hull there would report contacts no mesh makes).
-    hull: dict[int, list[np.ndarray]] = {}
+    hull: dict[int, list[npt.NDArray[np.float64]]] = {}
     for li in sorted(prims):
-        link = model.link_map[names[li]]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+        link = model.link_map[names[li]]
         mesh = trimesh.util.concatenate(
             [
                 _collision_local_mesh(el, handler).apply_transform(_origin_matrix(el.origin))
@@ -163,8 +167,8 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
             np.asarray(trimesh.convex.convex_hull(p).vertices) for p in pieces if len(p) >= 4
         ]
 
-    child_to_urdf = {j.child: j.name for j in model.robot.joints}  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-    actuated = set(model.actuated_joint_names)  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+    child_to_urdf = {j.child: j.name for j in model.robot.joints}
+    actuated = set(model.actuated_joint_names)
     lo = np.array([j.position_limits[0] if j.position_limits else -np.pi for j in robot.joints])
     hi = np.array([j.position_limits[1] if j.position_limits else np.pi for j in robot.joints])
     root = names[int(np.flatnonzero(np.asarray(params["collision_parent"]) < 0)[0])]
@@ -179,17 +183,17 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
     for _ in range(N_POSES):
         q = rng.uniform(lo, hi)
         kernel_world = _kernel_fk(params, q)
-        model.update_cfg(  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+        model.update_cfg(
             {
                 child_to_urdf[j.child_link]: float(v)
                 for j, v in zip(robot.joints, q, strict=True)
                 if child_to_urdf.get(j.child_link) in actuated
             }
         )
-        base = np.linalg.inv(model.get_transform(root))  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+        base = np.linalg.inv(model.get_transform(root))
         truth = {}
         for li, hs in hull.items():
-            t = base @ model.get_transform(names[li])  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+            t = base @ model.get_transform(names[li])
             fk_err = max(fk_err, float(np.abs(t - kernel_world[li]).max()))
             truth[li] = [h @ t[:3, :3].T + t[:3, 3] for h in hs]
         for a, b in pairs:

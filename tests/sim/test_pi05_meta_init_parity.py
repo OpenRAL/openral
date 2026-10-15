@@ -106,7 +106,7 @@ def _fixed_tensors(policy: Any, cfg: Any, path: str) -> Iterator[tuple[str, Any]
     """Yield ``(model.<name>, tensor)`` exactly as ``from_pretrained`` would load them."""
     from safetensors import safe_open
 
-    with safe_open(path, framework="pt", device="cpu") as f:
+    with safe_open(path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]  # reason: safetensors lacks py.typed
         keys = list(f.keys())
         for i in range(0, len(keys), 32):
             chunk = {k: f.get_tensor(k) for k in keys[i : i + 32]}

@@ -13,6 +13,7 @@ exposes ``select_action(batch) -> Tensor``. That's fixture, not mock.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -50,7 +51,7 @@ class _FakePolicy:
 
 
 @pytest.fixture
-def span_exporter() -> InMemorySpanExporter:
+def span_exporter() -> Iterator[InMemorySpanExporter]:
     """Install an in-memory exporter on a fresh TracerProvider for one test.
 
     The observability tracing helpers go through ``trace.get_tracer`` so
@@ -59,8 +60,8 @@ def span_exporter() -> InMemorySpanExporter:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = provider
     yield exporter
     provider.shutdown()
 
@@ -148,7 +149,8 @@ class TestRunInference:
         assert attrs.get("inference.kind") == "prefetch"
         assert attrs.get("inference.chunk_index") == 3
         assert attrs.get("inference.chunk_size") == 10
-        assert attrs.get(semconv.INFERENCE_DURATION_MS, -1.0) >= 0.0
+        duration_ms = attrs.get(semconv.INFERENCE_DURATION_MS, -1.0)
+        assert isinstance(duration_ms, (int, float)) and duration_ms >= 0.0
 
     def test_call_kwargs_are_splatted_and_delay_recorded(
         self, span_exporter: InMemorySpanExporter
@@ -342,7 +344,7 @@ def test_call_make_processors_cached_first_offline_when_tokenizer_cached(
             fake_make, "CFG", pretrained_path=str(tmp_path)
         )
     finally:
-        _vla_core._hf_tokenizer_is_cached = monkey_target  # type: ignore[assignment]
+        _vla_core._hf_tokenizer_is_cached = monkey_target
         hc.HF_HUB_OFFLINE = saved
 
     assert out == ("PRE", "POST")
@@ -373,7 +375,7 @@ def test_call_make_processors_cached_first_passthrough_when_not_cached(
     try:
         _vla_core.call_make_processors_cached_first(fake_make, "CFG", pretrained_path=str(tmp_path))
     finally:
-        _vla_core._hf_tokenizer_is_cached = monkey_target  # type: ignore[assignment]
+        _vla_core._hf_tokenizer_is_cached = monkey_target
         hc.HF_HUB_OFFLINE = saved
 
     # Cold cache → don't force offline; let lerobot's first download happen.
@@ -602,7 +604,7 @@ class TestSuppressHfWeightInit:
         with torch.no_grad():
             layer.weight.fill_(1.5)
         with suppress_hf_weight_init():
-            PreTrainedModel._init_weights(None, layer)  # type: ignore[arg-type]
+            PreTrainedModel._init_weights(None, layer)  # type: ignore[arg-type,no-untyped-call,unused-ignore]  # reason: transformers untyped when installed, Any when absent
         assert torch.allclose(layer.weight, torch.full_like(layer.weight, 1.5))
 
 

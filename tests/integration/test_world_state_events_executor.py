@@ -21,11 +21,11 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_world_state_ingests_on_the_events_executor_thread() -> None:
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
     from openral_rskill_ros.compose import start_world_state_executor
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
-    from rclpy.lifecycle import TransitionCallbackReturn  # type: ignore[import-untyped]
-    from sensor_msgs.msg import JointState as RosJointState  # type: ignore[import-untyped]
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from sensor_msgs.msg import JointState as RosJointState
 
     if importlib.util.find_spec("rclpy.experimental") is None:
         pytest.skip("this rclpy ships no EventsExecutor (pre-Jazzy 7.1)")

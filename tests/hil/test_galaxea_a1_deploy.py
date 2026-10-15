@@ -28,7 +28,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION
@@ -45,7 +45,7 @@ _ALLOW_NUDGE = os.environ.get("GALAXEA_A1_ALLOW_NUDGE", "0") == "1"
 _ROS2_AVAILABLE = importlib.util.find_spec("rclpy") is not None
 _EXPECTED_NAMES = tuple(joint.name for joint in GALAXEA_A1_DESCRIPTION.joints)
 _FEEDBACK_TOLERANCE_RAD = float(
-    GALAXEA_A1_DESCRIPTION.hal.parameters.defaults["feedback_limit_tolerance_rad"]
+    cast(float, GALAXEA_A1_DESCRIPTION.hal.parameters.defaults["feedback_limit_tolerance_rad"])
 )
 _MAX_HOLD_DRIFT_RAD = 0.0175
 _GRAPH_TIMEOUT_S = 10.0
@@ -127,6 +127,7 @@ def _ordered_positions(message: JointState) -> tuple[float, ...]:
 def _project_feedback_to_command_limits(position: tuple[float, ...]) -> tuple[float, ...]:
     projected: list[float] = []
     for value, joint in zip(position, GALAXEA_A1_DESCRIPTION.joints, strict=True):
+        assert joint.position_limits is not None
         lower, upper = joint.position_limits
         command = min(upper, max(lower, value))
         assert abs(command - value) <= _FEEDBACK_TOLERANCE_RAD, (
@@ -297,7 +298,9 @@ def test_galaxea_a1_full_deploy_current_hold_and_estop() -> None:
         if _ALLOW_NUDGE:
             nudge_target = list(target)
             nudge_target[0] += _NUDGE_RAD
-            assert nudge_target[0] <= GALAXEA_A1_DESCRIPTION.joints[0].position_limits[1]
+            joint1_limits = GALAXEA_A1_DESCRIPTION.joints[0].position_limits
+            assert joint1_limits is not None
+            assert nudge_target[0] <= joint1_limits[1]
             nudge_trace_id = f"galaxea-a1-deploy-hil-nudge-{time.time_ns()}"
             candidate.flat = nudge_target
             candidate.trace_id = nudge_trace_id

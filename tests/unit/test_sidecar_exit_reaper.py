@@ -50,11 +50,11 @@ def _isolate_reaper_state() -> Iterator[None]:
 
 def test_reap_spawned_children_sigterms_live_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
     killed: list[int] = []
-    monkeypatch.setattr(sc.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(sc.os, "killpg", lambda pgid, _signum: killed.append(pgid))
+    monkeypatch.setattr("openral_sim.sidecar.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("openral_sim.sidecar.os.killpg", lambda pgid, _signum: killed.append(pgid))
     live = _FakeChild(111, alive=True)
     dead = _FakeChild(222, alive=False)
-    sc._spawned_children.extend([live, dead])
+    sc._spawned_children.extend([live, dead])  # type: ignore[list-item]  # reason: process-boundary Popen double (§1.11)
 
     sc._reap_spawned_children()
 
@@ -64,16 +64,17 @@ def test_reap_spawned_children_sigterms_live_and_clears(monkeypatch: pytest.Monk
 
 def test_register_spawned_child_tracks_and_installs_atexit(monkeypatch: pytest.MonkeyPatch) -> None:
     registered: list[Any] = []
-    monkeypatch.setattr(sc.atexit, "register", registered.append)
+    monkeypatch.setattr("openral_sim.sidecar.atexit.register", registered.append)
     # Force the worker-thread branch (current != main) so no real SIGTERM
     # handler is installed: each ``object`` call returns a distinct instance.
-    monkeypatch.setattr(sc.threading, "current_thread", object)
-    monkeypatch.setattr(sc.threading, "main_thread", object)
+    monkeypatch.setattr("openral_sim.sidecar.threading.current_thread", object)
+    monkeypatch.setattr("openral_sim.sidecar.threading.main_thread", object)
 
     child = _FakeChild(333)
     sc._register_spawned_child(child)  # type: ignore[arg-type]
 
-    assert child in sc._spawned_children
+    spawned: list[object] = [*sc._spawned_children]
+    assert child in spawned
     assert sc._reap_spawned_children in registered
     # Idempotent: a second registration does not re-install atexit.
     sc._register_spawned_child(_FakeChild(334))  # type: ignore[arg-type]
@@ -81,9 +82,9 @@ def test_register_spawned_child_tracks_and_installs_atexit(monkeypatch: pytest.M
 
 
 def test_terminate_child_deregisters_from_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sc.atexit, "register", lambda _fn: None)
-    monkeypatch.setattr(sc.threading, "current_thread", object)
-    monkeypatch.setattr(sc.threading, "main_thread", object)
+    monkeypatch.setattr("openral_sim.sidecar.atexit.register", lambda _fn: None)
+    monkeypatch.setattr("openral_sim.sidecar.threading.current_thread", object)
+    monkeypatch.setattr("openral_sim.sidecar.threading.main_thread", object)
     client = SidecarClient(
         name="rldx",
         host="127.0.0.1",
@@ -99,5 +100,6 @@ def test_terminate_child_deregisters_from_reaper(monkeypatch: pytest.MonkeyPatch
 
     client._terminate_child()
 
-    assert dead not in sc._spawned_children
+    remaining: list[object] = [*sc._spawned_children]
+    assert dead not in remaining
     assert client._child is None

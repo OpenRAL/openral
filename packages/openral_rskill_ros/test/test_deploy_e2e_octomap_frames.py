@@ -21,8 +21,12 @@ import importlib.util
 import os
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import RobotDescription
 
 _LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -44,10 +48,10 @@ def _import_launch_module() -> ModuleType:
     return mod
 
 
-def _description(robot_id: str):
+def _description(robot_id: str) -> RobotDescription:
     from openral_core import RobotDescription
 
-    return RobotDescription.from_yaml(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
+    return RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot_id / "robot.yaml"))
 
 
 class TestFixedBaseRobots:

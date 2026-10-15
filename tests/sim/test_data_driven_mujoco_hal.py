@@ -58,7 +58,8 @@ _MANIFEST_DRIVEN_ROBOTS = [
 @pytest.fixture(params=_MANIFEST_DRIVEN_ROBOTS)
 def robot_id(request: pytest.FixtureRequest) -> str:
     """One robot id per test case (see _MANIFEST_DRIVEN_ROBOTS)."""
-    return request.param
+    robot: str = request.param
+    return robot
 
 
 @pytest.fixture

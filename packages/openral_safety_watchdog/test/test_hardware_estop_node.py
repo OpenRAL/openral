@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -55,7 +56,7 @@ def ros_context() -> Any:
         rclpy.shutdown()
 
 
-def _spin_until(executor: Any, predicate: Any, *, timeout_s: float = 3.0) -> bool:
+def _spin_until(executor: Any, predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         executor.spin_once(timeout_sec=0.02)

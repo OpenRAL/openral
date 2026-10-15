@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 # openral_perception_ros is a colcon-built ROS package (ament_cmake); like every
@@ -18,7 +19,7 @@ from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr
 class _FakeImage:
     """Duck-typed sensor_msgs/Image stand-in (real msg used in integration)."""
 
-    def __init__(self, data, width, height, encoding, step):
+    def __init__(self, data: bytes, width: int, height: int, encoding: str, step: int) -> None:
         self.data = data
         self.width = width
         self.height = height
@@ -26,7 +27,7 @@ class _FakeImage:
         self.step = step
 
 
-def _rgb_frame(h, w):
+def _rgb_frame(h: int, w: int) -> npt.NDArray[np.uint8]:
     return np.arange(h * w * 3, dtype=np.uint8).reshape(h, w, 3)
 
 
@@ -52,7 +53,7 @@ def test_bgr8_passthrough():
 _ZED_W, _ZED_H = 1920, 1080
 
 
-def _padded(pixels, pad):
+def _padded(pixels: npt.NDArray[np.uint8], pad: int) -> tuple[bytes, int]:
     """Lay ``pixels`` out with ``pad`` junk bytes after every row; return (data, step)."""
     h, w, c = pixels.shape
     rows = np.full((h, w * c + pad), 0xEE, dtype=np.uint8)
@@ -60,7 +61,7 @@ def _padded(pixels, pad):
     return rows.tobytes(), w * c + pad
 
 
-def _random_frame(h, w, c):
+def _random_frame(h: int, w: int, c: int) -> npt.NDArray[np.uint8]:
     return np.random.default_rng(0).integers(0, 256, (h, w, c), dtype=np.uint8)
 
 

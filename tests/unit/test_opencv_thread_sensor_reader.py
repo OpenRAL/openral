@@ -250,7 +250,7 @@ def half_split_video(tmp_path: Path) -> Path:
     return path
 
 
-def _first_frame(reader: OpenCVThreadSensorReader) -> object:
+def _first_frame(reader: SensorReader) -> SensorFrame:
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         try:
@@ -275,6 +275,7 @@ def test_crop_keeps_only_the_requested_region(half_split_video: Path) -> None:
     with reader:
         frame = _first_frame(reader)
     assert (frame.width, frame.height) == (_W // 2, _H)
+    assert frame.data is not None
     assert len(frame.data) == (_W // 2) * _H * 3
     img = np.frombuffer(frame.data, dtype=np.uint8).reshape(_H, _W // 2, 3)
     # MJPG is lossy, so assert the dominant channel rather than exact values.
@@ -287,6 +288,7 @@ def test_crop_can_select_the_right_half(half_split_video: Path) -> None:
     )
     with reader:
         frame = _first_frame(reader)
+    assert frame.data is not None
     img = np.frombuffer(frame.data, dtype=np.uint8).reshape(_H, _W // 2, 3)
     assert img[:, :, 0].mean() > img[:, :, 2].mean(), "right crop is not the blue half"
 
@@ -339,8 +341,9 @@ def test_factory_forwards_crop_from_backend_params(half_split_video: Path) -> No
         backend_params={"device": str(half_split_video), "fps": _FPS, "crop": [0, 0, _W // 2, _H]},
     )
     (reader,) = make_sensor_readers([cfg])
+    assert isinstance(reader, OpenCVThreadSensorReader)
     with reader:
-        frame = _first_frame(reader)  # type: ignore[arg-type]
+        frame = _first_frame(reader)
     assert (frame.width, frame.height) == (_W // 2, _H)
 
 

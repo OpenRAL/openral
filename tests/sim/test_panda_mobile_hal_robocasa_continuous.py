@@ -13,8 +13,13 @@ bring-up path, a real robosuite/MuJoCo kitchen.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 pytest.importorskip("openral_sim")
 pytest.importorskip("mujoco")
@@ -25,7 +30,8 @@ pytest.importorskip("robocasa")  # robocasa (robosuite >=1.5) ⊥ libero (robosu
 def test_enable_continuous_survives_the_horizon() -> None:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
-    env, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    rollout, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    env = cast("_RoboCasaSim", rollout)  # the deploy scene is a RoboCasa kitchen
     try:
         env.reset(seed=seed)
         rs = env._env  # the robosuite kitchen env
@@ -56,7 +62,8 @@ def test_one_step_is_one_control_period_in_sim_time() -> None:
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
-    env, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    rollout, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    env = cast("_RoboCasaSim", rollout)  # the deploy scene is a RoboCasa kitchen
     try:
         env.reset(seed=seed)
         assert env.sim_dt_per_tick_s == pytest.approx(1 / 30, rel=0.01)

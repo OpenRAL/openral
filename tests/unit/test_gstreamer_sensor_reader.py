@@ -256,6 +256,7 @@ def test_factory_builds_reader_from_explicit_pipeline_yaml() -> None:
         },
     )
     reader = _make_gstreamer_reader(cfg)
+    assert isinstance(reader, GStreamerSensorReader)
     with reader:
         _wait_for_frame(reader)
         frame = reader.read_latest()
@@ -281,6 +282,7 @@ def test_factory_builds_reader_from_structured_source_yaml() -> None:
         },
     )
     reader = _make_gstreamer_reader(cfg)
+    assert isinstance(reader, GStreamerSensorReader)
     with reader:
         _wait_for_frame(reader)
         frame = reader.read_latest()

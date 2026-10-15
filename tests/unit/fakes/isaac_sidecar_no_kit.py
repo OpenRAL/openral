@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
 
@@ -46,7 +47,7 @@ class _NoKitScene:
         del seed
         return self._obs()
 
-    def step(self, action: np.ndarray) -> dict[str, Any]:
+    def step(self, action: npt.NDArray[np.float64]) -> dict[str, Any]:
         out = os.environ.get("OPENRAL_TEST_ISAAC_ACTIONS_OUT")
         if out:
             row = [None if np.isnan(v) else float(v) for v in np.asarray(action).reshape(-1)]
@@ -76,18 +77,20 @@ def main(argv: list[str]) -> int:
         action_dim = int(action["dim"])
         rate = action.get("control_freq_hz")
         sim_dt_per_tick_s = None if rate is None else 1.0 / float(rate)
-    return _serve(
-        _NoKitScene(action_dim, sim_dt_per_tick_s),
-        host=args.host,
-        port=args.port,
-        sim_app=None,
-        task=args.task,
-        layout=args.layout,
-        environment=args.environment_usd or "",
-        spawn=list(args.spawn_pose),
-        robot=args.robot,
-        objects=args.objects_json or "",
-        robot_spec_hash=hashlib.sha256(Path(args.robot_spec).read_bytes()).hexdigest(),
+    return int(
+        _serve(
+            _NoKitScene(action_dim, sim_dt_per_tick_s),
+            host=args.host,
+            port=args.port,
+            sim_app=None,
+            task=args.task,
+            layout=args.layout,
+            environment=args.environment_usd or "",
+            spawn=list(args.spawn_pose),
+            robot=args.robot,
+            objects=args.objects_json or "",
+            robot_spec_hash=hashlib.sha256(Path(args.robot_spec).read_bytes()).hexdigest(),
+        )
     )
 
 

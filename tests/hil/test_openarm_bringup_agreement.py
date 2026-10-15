@@ -24,6 +24,7 @@ energises all sixteen motors; reading the config energises nothing.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -31,7 +32,7 @@ import yaml
 _CONTROLLER_CONFIG = Path("config") / "controllers" / "openarm_bimanual_controllers.yaml"
 
 
-def _bringup_controller_config() -> dict | None:
+def _bringup_controller_config() -> dict[str, Any] | None:
     """The committed bimanual controller YAML, or None when bringup is absent."""
     try:
         from ament_index_python.packages import get_package_share_directory

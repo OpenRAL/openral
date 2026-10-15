@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import msgpack
 import numpy as np
 from fastapi.testclient import TestClient
@@ -48,7 +50,8 @@ def _pack(value: object) -> bytes:
             }
         return item
 
-    return msgpack.packb(value, default=_encode)
+    packed: bytes = msgpack.packb(value, default=_encode)
+    return packed
 
 
 def _unpack(value: bytes) -> object:
@@ -56,9 +59,9 @@ def _unpack(value: bytes) -> object:
         if b"__ndarray__" not in item:
             return item
         return np.ndarray(
-            buffer=item[b"data"],
-            dtype=np.dtype(item[b"dtype"]),
-            shape=item[b"shape"],
+            buffer=cast(bytes, item[b"data"]),
+            dtype=np.dtype(cast(str, item[b"dtype"])),
+            shape=cast(tuple[int, ...], item[b"shape"]),
         )
 
     return msgpack.unpackb(value, object_hook=_decode)

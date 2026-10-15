@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 
 import pytest
 from _launch_test_common import import_launch_module as _import_launch_module
@@ -161,7 +162,7 @@ def _safety_kernel_params(robot_id: str) -> dict[str, object]:
 
     module = _import_launch_module(_LAUNCH_FILE)
     ctx = _make_launch_context(_REPO_ROOT / "robots" / robot_id / "robot.yaml")
-    entities = module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
+    entities = module.compose_runtime_graph(ctx)
 
     # ``LifecycleNode.node_name`` only resolves after the action has
     # been executed by the launch service. We instead match by the
@@ -310,7 +311,7 @@ def test_a_robot_without_a_gripper_omits_the_grasp_links_and_refuses_the_allowan
     ctx = _make_launch_context(_REPO_ROOT / "robots" / "ur5e" / "robot.yaml")
     ctx.launch_configurations["grasp_allowance_enabled"] = "true"  # type: ignore[attr-defined]
     with pytest.raises(ROSConfigError, match="no role: gripper joint"):
-        module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
+        module.compose_runtime_graph(ctx)
 
 
 def test_region_age_bounds_are_derived_from_the_voxel_deadline() -> None:
@@ -321,7 +322,7 @@ def test_region_age_bounds_are_derived_from_the_voxel_deadline() -> None:
     """
     params = _safety_kernel_params("openarm")
     module = _import_launch_module(_LAUNCH_FILE)
-    deadline_s, _ = module._rig_from_launch_args({}).voxel_freshness_s  # type: ignore[attr-defined]
+    deadline_s, _ = module._rig_from_launch_args({}).voxel_freshness_s
     assert params["grasp_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
     assert params["place_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
-    assert 0.0 < params["grasp_region_max_age_s"] <= 4.0
+    assert 0.0 < cast(float, params["grasp_region_max_age_s"]) <= 4.0

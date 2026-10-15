@@ -10,6 +10,7 @@ without adding a new ROS package.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -20,14 +21,15 @@ from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
-def _cumotion_planning_config() -> dict:
+def _cumotion_planning_config() -> dict[str, Any]:
     config_path = os.path.join(
         get_package_share_directory("isaac_ros_cumotion_moveit"),
         "config",
         "isaac_ros_cumotion_planning.yaml",
     )
     with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config: dict[str, Any] = yaml.safe_load(f)
+    return config
 
 
 def generate_launch_description() -> LaunchDescription:

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -60,7 +60,7 @@ def _status_qos() -> Any:
     )
 
 
-def _spin_until(executor: Any, predicate: Any, *, timeout_s: float = 5.0) -> bool:
+def _spin_until(executor: Any, predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
     """Spin until ``predicate()`` is true or the timeout expires."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:

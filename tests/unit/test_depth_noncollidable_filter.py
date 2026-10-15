@@ -18,7 +18,10 @@ Real compiled ``MjModel``s throughout, no mocks (CLAUDE.md §1.11).
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_sim.backends.depth_camera import noncollidable_geom_ids, synthesize_depth_image
 
@@ -50,7 +53,7 @@ _SOLID = """
     </body>
 """
 
-_SYNTH = {
+_SYNTH: dict[str, Any] = {  # reason: heterogeneous kwargs splatted into the synth
     "camera_name": "depth_cam",
     "width": 16,
     "height": 16,
@@ -62,7 +65,7 @@ _SYNTH = {
 }
 
 
-def _depth(*, solid: bool) -> np.ndarray:
+def _depth(*, solid: bool) -> npt.NDArray[np.float32]:
     """The dense depth raster of the scene, with or without a solid behind."""
     xml = _SCENE.format(camera_z=_CAMERA_Z, solid=_SOLID if solid else "")
     model = mujoco.MjModel.from_xml_string(xml)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 # Importing the rldx module triggers the @POLICIES.register("rldx")
 # side-effect; we want that for the chunk-assembly integration test.
@@ -86,8 +87,8 @@ def test_rldx_gripper_to_libero_does_not_mutate_input() -> None:
 def _wire_action_dict(
     *,
     chunk_len: int = 16,
-    gripper_values: np.ndarray | None = None,
-) -> dict[str, np.ndarray]:
+    gripper_values: NDArray[np.float32] | None = None,
+) -> dict[str, NDArray[np.float32]]:
     """Build the on-the-wire action dict the upstream server returns.
 
     Layout matches ``RLDXSimPolicyWrapper`` (LIBERO suite, via
@@ -99,7 +100,7 @@ def _wire_action_dict(
         gripper_values = np.linspace(0.0, 1.0, chunk_len, dtype=np.float32)
     if gripper_values.shape != (chunk_len,):
         raise AssertionError(f"test bug: bad gripper shape {gripper_values.shape}")
-    out: dict[str, np.ndarray] = {}
+    out: dict[str, NDArray[np.float32]] = {}
     for i, axis in enumerate(_RLDX_ACTION_AXES[:-1]):  # all but gripper
         # 0.01, 0.02, ... per axis to make any column-swap visible.
         out[f"action.{axis}"] = np.full(

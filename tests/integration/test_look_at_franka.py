@@ -90,7 +90,7 @@ def test_look_at_rskill_aims_wrist_camera_at_target(
             # pose) and sends the MoveGroup goal (plan_only — OpenRAL's own
             # waypoint replay is the actuation path; MoveIt-side execution
             # would bypass the safety kernel).
-            first = skill.step(world_state=None)  # type: ignore[arg-type]
+            first = skill.step(world_state=None)
             assert first.control_mode is ControlMode.JOINT_POSITION
             assert len(first.joint_targets[0]) == len(description.joints)
 

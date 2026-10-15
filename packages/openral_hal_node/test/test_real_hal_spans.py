@@ -15,6 +15,9 @@ not on the path.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
+
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -40,11 +43,11 @@ def _make_node_with_twin_hal() -> object:
     hal = SO100FollowerHAL(robot=twin)
     hal.connect()
     node = ManifestHALLifecycleNode("openral_hal_so100")
-    node._hal = hal  # type: ignore[attr-defined]
+    node._hal = hal
     # Minimal publisher state so `_publish_joint_state` does not bail out.
-    node._publisher = object()  # type: ignore[attr-defined]
+    node._publisher = object()
     # Re-publishers are touched in the body — patch them out cheaply.
-    node._joint_state_pub = None  # type: ignore[attr-defined]
+    node._joint_state_pub = None
     return node
 
 
@@ -89,8 +92,8 @@ def test_publish_joint_state_emits_hal_read_state_span(
     assert attrs.get("openral.hal.adapter") == "so100followerhal"
     assert str(attrs.get("openral.hal.robot.model"))  # non-empty
     assert attrs.get("openral.tick.idx") == 0
-    names = list(attrs.get("openral.hal.joint.names") or [])
-    positions = list(attrs.get("openral.hal.joint.positions") or [])
+    names = list(cast("Sequence[object]", attrs.get("openral.hal.joint.names") or []))
+    positions = list(cast("Sequence[object]", attrs.get("openral.hal.joint.positions") or []))
     assert len(names) >= 1
     assert len(positions) >= 1
 
@@ -124,6 +127,6 @@ def test_send_action_traced_emits_hal_send_action_span(
     assert attrs.get("openral.hal.adapter") == "so100followerhal"
     assert attrs.get("openral.hal.control_mode") == "joint_position"
     assert attrs.get("openral.hal.action.source") == "safe_action"
-    next_row = list(attrs.get("openral.hal.action.next") or [])
+    next_row = list(cast("Sequence[object]", attrs.get("openral.hal.action.next") or []))
     assert len(next_row) == 6
     assert attrs.get("openral.hal.action.applied") is True

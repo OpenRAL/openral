@@ -396,7 +396,7 @@ def test_prompts_drain_once() -> None:
     assert len(r.prompts) == 2
     drained = r.drain_prompts()
     assert [p.text for p in drained] == ["pick", "place"]
-    assert r.prompts == ()
+    assert len(r.prompts) == 0
 
 
 def test_perception_buffer_renders_per_kind() -> None:
@@ -645,8 +645,11 @@ def test_mission_property_exposes_state_for_in_place_bookkeeping() -> None:
     r = ContextRenderer()
     r.set_mission(MissionState(["a", "b"]))
     # The node records attempts in place (non-waking bookkeeping).
-    r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16")
-    assert r.mission.active().attempts == 1
+    mission = r.mission
+    assert mission is not None
+    mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16")
+    active = mission.active()
+    assert active is not None and active.attempts == 1
     assert "attempts=1" in r.render(world_state=None)
 
 
@@ -654,7 +657,7 @@ def test_mission_finishes_when_last_task_completed() -> None:
     r = ContextRenderer()
     r.set_mission(MissionState.from_prompt("only task"))
     assert r.advance_mission(done=True, verdict="success=0.95") is None
-    assert r.mission.is_complete()
+    assert r.mission is not None and r.mission.is_complete()
     out = r.render(world_state=None)
     assert "✓ t1: only task" in out
 

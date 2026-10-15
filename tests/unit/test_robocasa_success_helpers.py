@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 from openral_core import SceneSpec, TaskSpec
 from openral_sim.backends.robocasa import _RoboCasaSim
 
@@ -39,7 +40,7 @@ class _MinimalRoboCasaSim(_RoboCasaSim):
         _raw: dict[str, object],
         *,
         step: int,
-        action: np.ndarray,
+        action: NDArray[np.float32] | None,
     ) -> None:
         del step, action
 

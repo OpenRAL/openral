@@ -45,10 +45,10 @@ def test_openarm_tabletop_action_dim_matches_state_dim() -> None:
         "scenes/sim/openarm_tabletop.yaml", robot_id_fallback="openarm"
     )
     # state_dim is derived from the manifest joint count (bimanual OpenArm v2).
-    assert env.action_dim == env._state_dim
-    assert env.action_dim > 0
+    assert env.action_dim == env._state_dim  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
+    assert env.action_dim > 0  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
 
     desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
     hal.connect()
-    assert hal._env_action_dim == env.action_dim
+    assert hal._env_action_dim == env.action_dim  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout

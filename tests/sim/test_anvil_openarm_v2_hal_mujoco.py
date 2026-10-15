@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import time
 
+import numpy as np
 import pytest
 
 # Use try/except → boolean + `pytestmark.skipif` rather than module-level
@@ -57,7 +58,7 @@ try:
         raise FileNotFoundError(f"missing MJCF at {_ANVIL_MJCF}")
     _MJCF_ERROR: str | None = None
 except Exception as exc:
-    _ANVIL_MJCF = ""  # type: ignore[assignment]
+    _ANVIL_MJCF = ""
     _MJCF_ERROR = str(exc)
 
 from openral_core import (
@@ -507,5 +508,6 @@ class TestWristCameras:
         images = connected_hal.read_images()
         assert set(images) == {"wrist_left", "wrist_right"}
         for name, frame in images.items():
+            assert isinstance(frame, np.ndarray), (name, type(frame))
             assert frame.shape == (400, 640, 3), (name, frame.shape)
             assert frame.dtype.name == "uint8", (name, frame.dtype)

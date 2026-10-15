@@ -83,7 +83,7 @@ def test_read_state_before_connect_raises() -> None:
         """Constructor never touches the node — safe to use a stub."""
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
     )
     with pytest.raises(ROSRuntimeError, match=r"before connect"):
@@ -97,7 +97,7 @@ def test_send_action_before_connect_raises() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
     )
     action = Action(
@@ -116,7 +116,7 @@ def test_read_state_rejects_stale_joint_state() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
         joint_state_staleness_limit_s=0.01,
     )
@@ -141,7 +141,7 @@ def test_estop_raises_typed() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
     )
     with pytest.raises(ROSEStopRequested):
@@ -241,6 +241,8 @@ def test_publish_action_chunk_round_trip() -> None:
             rclpy.spin_once(host, timeout_sec=0.02)
             rclpy.spin_once(sub_node, timeout_sec=0.02)
         assert received, "no scaled Cartesian ActionChunk received within 1 s"
+        assert cartesian.cartesian_delta is not None
+        assert cartesian.cartesian_delta_scale is not None
         assert list(received[0].flat) == pytest.approx(list(cartesian.cartesian_delta[0]))
         assert list(received[0].cartesian_delta_scale) == pytest.approx(
             list(cartesian.cartesian_delta_scale)
@@ -267,7 +269,7 @@ def test_grouped_action_waits_for_real_applied_ack() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
     )
     first = Action(
@@ -325,7 +327,7 @@ def test_single_action_waits_for_real_applied_ack() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
     )
     action = Action(
@@ -354,7 +356,7 @@ def test_single_action_ack_timeout_is_bounded() -> None:
         pass
 
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
         action_applied_timeout_s=0.01,
     )
@@ -538,7 +540,7 @@ def test_runner_session_id_round_trips_through_the_real_idl() -> None:
 
     session = 2**64 - 1
     hal = ROSPublishingHAL(
-        node=_StubNode(),  # type: ignore[arg-type]
+        node=_StubNode(),
         description=_so100_like_description(),
         tick_index_getter=lambda: 5,
         runner_session_id=session,
@@ -558,7 +560,7 @@ def test_runner_session_id_must_fit_the_uint64_wire_field() -> None:
 
     with pytest.raises(ROSConfigError, match="uint64"):
         ROSPublishingHAL(
-            node=_StubNode(),  # type: ignore[arg-type]
+            node=_StubNode(),
             description=_so100_like_description(),
             runner_session_id=2**64,
         )

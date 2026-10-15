@@ -76,8 +76,8 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    vla_manifest = RSkillManifest.from_yaml(_SMOLVLA)
-    reward_manifest = RSkillManifest.from_yaml(_ROBOMETER)
+    vla_manifest = RSkillManifest.from_yaml(str(_SMOLVLA))
+    reward_manifest = RSkillManifest.from_yaml(str(_ROBOMETER))
 
     executed: list[float] = []  # execute-callback timestamps — must stay empty
     failures: list[Any] = []  # captured FailureTrigger messages
@@ -92,8 +92,8 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     # the same pytest invocation installed one first, this call would silently
     # no-op and the exporter would never see a span. Same test-only reset as
     # tests/unit/test_reasoner_observability.py / the e2e file.
-    ot_trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    ot_trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    ot_trace._TRACER_PROVIDER_SET_ONCE._done = False
+    ot_trace._TRACER_PROVIDER = None
     ot_trace.set_tracer_provider(provider)
 
     rclpy.init()
@@ -283,7 +283,7 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    vla_manifest = RSkillManifest.from_yaml(_SMOLVLA)
+    vla_manifest = RSkillManifest.from_yaml(str(_SMOLVLA))
     assert (vla_manifest.active_min_vram_gb() or 0.0) > 0.5, "fixture must declare > 0.5 GB"
 
     # Pin the live probe: only 0.5 GB free right now.
@@ -316,7 +316,7 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
         reasoner.trigger_activate()
         # NO reward manifest — the free-VRAM tier must fire on its own.
         assert reasoner._reward_manifest is None
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest
 
         server_node = rclpy.create_node("openral_test_vla_server_free_vram")
 

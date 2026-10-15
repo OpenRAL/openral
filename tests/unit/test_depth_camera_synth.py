@@ -14,6 +14,7 @@ Tests build a real `mujoco.MjModel` (a camera facing a known-distance wall)
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -338,7 +339,7 @@ def test_depth_image_matches_cloud_z_column() -> None:
     raster flattened row-major must equal the cloud's ``z`` column exactly.
     """
     model, data = _model_data()
-    common = dict(
+    common: dict[str, Any] = dict(  # reason: heterogeneous kwargs splatted into the synths
         model=model,
         data=data,
         camera_name="depth0",
@@ -494,7 +495,9 @@ def test_an_overhang_with_no_collidable_geom_under_it_is_not_mapped_at_all() -> 
 # raster so both outputs stay correct off one cast.
 
 
-def _clearing_frame_kwargs(model: object, data: object) -> dict[str, object]:
+def _clearing_frame_kwargs(
+    model: object, data: object
+) -> dict[str, Any]:  # reason: heterogeneous kwargs splatted into the synths
     arm_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "robot_arm")
     return dict(
         model=model,

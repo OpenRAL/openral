@@ -754,7 +754,7 @@ class TestActuatorRequirement:
     def test_unknown_kind_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ActuatorRequirement(
-                kind="warp_drive",  # type: ignore[arg-type]
+                kind="warp_drive",
                 control_mode_semantics=self._abs_sem(),
             )
 

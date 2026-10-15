@@ -181,7 +181,7 @@ def _spin_for(node: Node, seconds: float) -> None:
 
 
 @pytest.fixture(scope="module")
-def live_graph() -> Any:  # type: ignore[misc]  # reason: generator fixture, rclpy types are lazy
+def live_graph() -> Any:
     """One node attached to the running deploy graph, shared by every assertion.
 
     Module-scoped on purpose: each `rclpy` participant pays the DDS discovery

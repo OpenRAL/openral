@@ -51,7 +51,7 @@ def _safety_span(_attrs: Callable[[dict[str, object]], list[KeyValue]]) -> Calla
             start_time_unix_nano=start,
             end_time_unix_nano=start + 300_000,  # 0.3 ms — matches the kernel span
             attributes=_attrs(attrs),
-            status=Status(code=0),  # kernel span is OK even on a violation
+            status=Status(code=Status.STATUS_CODE_UNSET),  # kernel span is OK even on a violation
         )
 
     return _safety_span
@@ -129,7 +129,7 @@ def test_persistent_slot_survives_a_high_rate_span_flood(
             start_time_unix_nano=start,
             end_time_unix_nano=start + 1_000_000,
             attributes=_attrs({"openral.hal.adapter": "so100"}),
-            status=Status(code=0),
+            status=Status(code=Status.STATUS_CODE_UNSET),
         )
         for i in range(300)
     ]
@@ -164,7 +164,7 @@ def test_error_events_survive_high_rate_flood_via_protected_lane(
         name="reasoner.skill_failure",
         start_time_unix_nano=es,
         end_time_unix_nano=es + 1_000,
-        status=Status(code=2),  # ERROR
+        status=Status(code=Status.STATUS_CODE_ERROR),  # ERROR
     )
     store.ingest_spans(_wrap(err_span))
 
@@ -177,7 +177,7 @@ def test_error_events_survive_high_rate_flood_via_protected_lane(
             name="hal.read_state",
             start_time_unix_nano=fs,
             end_time_unix_nano=fs + 1_000,
-            status=Status(code=0),
+            status=Status(code=Status.STATUS_CODE_UNSET),
         )
         for i in range(400)
     ]
@@ -277,7 +277,7 @@ def _skill_failure_span(
             start_time_unix_nano=start,
             end_time_unix_nano=start + 1_000,
             events=[ev],
-            status=Status(code=0),
+            status=Status(code=Status.STATUS_CODE_UNSET),
         )
 
     return _skill_failure_span
@@ -345,7 +345,7 @@ def test_skill_failure_survives_flood_even_when_warn(
             start_time_unix_nano=start,
             end_time_unix_nano=start + 1_000_000,
             attributes=_attrs({"openral.hal.adapter": "so100"}),
-            status=Status(code=0),
+            status=Status(code=Status.STATUS_CODE_UNSET),
         )
         for i in range(300)
     ]

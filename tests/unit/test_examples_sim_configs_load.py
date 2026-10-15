@@ -20,7 +20,11 @@ from openral_core import BenchmarkScene, DeployScene, SimScene
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENES_DIR = REPO_ROOT / "scenes"
 
-_TIER_LOADERS = {"sim": SimScene, "benchmark": BenchmarkScene, "deploy": DeployScene}
+_TIER_LOADERS: dict[str, type[SimScene] | type[BenchmarkScene] | type[DeployScene]] = {
+    "sim": SimScene,
+    "benchmark": BenchmarkScene,
+    "deploy": DeployScene,
+}
 
 
 def _yamls(subdir: str) -> list[Path]:

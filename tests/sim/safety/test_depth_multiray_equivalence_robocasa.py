@@ -221,7 +221,10 @@ def _visible(cast: _SceneCast, groups: NDArray[np.uint8]) -> NDArray[np.bool_]:
     raises on a group of 7 and silently wraps a negative one — and RoboCasa
     ships third-party MJCF, so neither is hypothetical.
     """
-    return groups[np.clip(np.asarray(cast.model.geom_group), 0, groups.size - 1)] != 0
+    visible: NDArray[np.bool_] = (
+        groups[np.clip(np.asarray(cast.model.geom_group), 0, groups.size - 1)] != 0
+    )
+    return visible
 
 
 def _per_pixel(

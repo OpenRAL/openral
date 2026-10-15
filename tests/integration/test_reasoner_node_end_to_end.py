@@ -135,8 +135,8 @@ def test_reasoner_node_emits_prompt_on_canned_response() -> None:
     _exp = InMemorySpanExporter()
     _provider = TracerProvider()
     _provider.add_span_processor(SimpleSpanProcessor(_exp))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset, mirrors tests/unit/test_reasoner_observability.py
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(_provider)
 
     rclpy.init()
@@ -911,7 +911,7 @@ def test_severity_fail_failure_preempts_reasoner_tick() -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_skill_registry_changed_triggers_palette_refresh(tmp_path) -> None:
+def test_skill_registry_changed_triggers_palette_refresh(tmp_path: Any) -> None:
     """A std_msgs/Empty on /openral/skill_registry_changed rebuilds the palette."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -1173,7 +1173,7 @@ def test_lifecycle_transition_calls_change_state() -> None:
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    class RecordingLifecycleNode(LifecycleNode):
+    class RecordingLifecycleNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Tiny lifecycle peer whose ``on_configure`` flips a flag."""
 
         def __init__(self) -> None:

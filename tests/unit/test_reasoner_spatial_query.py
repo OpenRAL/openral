@@ -20,6 +20,8 @@ from openral_reasoner.tool_use import _decode_tool_payload, _tool_palette_to_ant
 from openral_world_state import SpatialMemory
 
 if TYPE_CHECKING:
+    from openral_core import ApproachViewpoint
+    from openral_reasoner.spatial_query import ApproachRefiner
     from openral_world_state.grid import OccupancyGridIndex
 
 _FIXTURE = Path("tests/unit/fixtures/home_scene_graph.json")
@@ -163,10 +165,12 @@ def _grid_5x3(occupied: list[tuple[slice, slice]]) -> OccupancyGridIndex:
     return OccupancyGridIndex(data, resolution_m=0.1, origin_xy=(0.0, 0.0))
 
 
-def _refiner_for(grid: OccupancyGridIndex):
+def _refiner_for(grid: OccupancyGridIndex) -> ApproachRefiner:
     from openral_world_state.grid import refine_approach_pose
 
-    def refiner(viewpoint, target_xyz):
+    def refiner(
+        viewpoint: ApproachViewpoint, target_xyz: tuple[float, float, float]
+    ) -> ApproachViewpoint | None:
         return refine_approach_pose(grid, viewpoint, target_xyz, inflation_m=0.15)
 
     return refiner

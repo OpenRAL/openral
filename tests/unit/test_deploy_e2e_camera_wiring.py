@@ -35,7 +35,7 @@ def launch_module() -> object:
 
 
 def _robot(name: str) -> RobotDescription:
-    return RobotDescription.from_yaml(REPO_ROOT / "robots" / name / "robot.yaml")
+    return RobotDescription.from_yaml(str(REPO_ROOT / "robots" / name / "robot.yaml"))
 
 
 @pytest.mark.parametrize(

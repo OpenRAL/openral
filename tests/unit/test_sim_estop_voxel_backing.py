@@ -25,6 +25,7 @@ Real compiled MuJoCo models throughout, no mocks (CLAUDE.md §1.11).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -144,6 +145,12 @@ def _index_at(base_xyz: tuple[float, float, float]) -> int:
     return idx[0] + _GRID_SIZE[0] * (idx[1] + _GRID_SIZE[1] * idx[2])
 
 
+def _stamp_at(history: Sequence[Mapping[str, object]], stamp_ns: int) -> object:
+    current = grid_current_at(history, stamp_ns)
+    assert current is not None
+    return current["stamp_ns"]
+
+
 def _robot_bodies(model: Any) -> frozenset[int]:
     return robot_self_body_ids(model, _ROBOT_SIM_JOINTS)
 
@@ -154,7 +161,7 @@ def _backing(
     base_xyz: tuple[float, float, float],
     *,
     attached: frozenset[int] = frozenset(),
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return voxel_backing_record(
         model,
         data,
@@ -201,7 +208,7 @@ def test_cell_on_the_robots_own_mount_is_self_occupancy_not_silence() -> None:
 
     assert record["verdict"] == "self_occupancy_suspect"
     assert record["classes"] == ["self_occupancy_suspect"]
-    bodies = {str(b["body"]) for b in record["backing"]}  # type: ignore[index]
+    bodies = {str(b["body"]) for b in record["backing"]}
     assert bodies == {"manipulator_mount"}
 
 
@@ -217,7 +224,7 @@ def test_a_real_obstacle_beside_the_base_still_maps_as_world() -> None:
     record = _backing(model, data, (0.0, 0.36, 0.28))
 
     assert record["verdict"] == "solid_world"
-    bodies = {str(b["body"]) for b in record["backing"]}  # type: ignore[index]
+    bodies = {str(b["body"]) for b in record["backing"]}
     assert bodies == {"pantry_side_panel"}
 
 
@@ -253,7 +260,7 @@ def test_marker_geometry_is_named_not_silently_dropped() -> None:
     record = _backing(model, data, (-0.36, 0.0, 0.28))
 
     assert record["verdict"] == "noncollidable_world"
-    entry = next(b for b in record["backing"])  # type: ignore[call-overload]
+    entry = next(b for b in record["backing"])
     assert entry["body"] == "cab_region"
     assert entry["collidable"] is False
 
@@ -276,8 +283,8 @@ def test_empty_space_is_unbacked_and_says_how_hard_it_looked() -> None:
     assert record["classes"] == []
     assert record["backing"] == []
     # The coverage attestation the near-miss probe learned to carry.
-    assert int(record["rays_cast"]) == 3 * 3 * 3  # type: ignore[call-overload]
-    assert int(record["rays_hit"]) == 0  # type: ignore[call-overload]
+    assert int(record["rays_cast"]) == 3 * 3 * 3
+    assert int(record["rays_hit"]) == 0
 
 
 def test_the_cell_is_located_through_the_base_frame_not_the_world() -> None:
@@ -297,9 +304,7 @@ def test_the_cell_is_located_through_the_base_frame_not_the_world() -> None:
     assert driven["verdict"] == "self_occupancy_suspect"
     assert driven["base_xyz"] == parked["base_xyz"]
     assert driven["world_xyz"] != parked["world_xyz"]
-    assert pytest.approx(1.25, abs=1e-6) == (
-        driven["world_xyz"][0] - parked["world_xyz"][0]  # type: ignore[index]
-    )
+    assert pytest.approx(1.25, abs=1e-6) == (driven["world_xyz"][0] - parked["world_xyz"][0])
 
 
 def test_the_grids_own_rotation_places_the_cell() -> None:
@@ -314,7 +319,7 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
     # +90 degrees about z: the grid's +x runs along the base frame's +y.
     quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
     index = _index_at((0.115, 0.0, 0.145))
-    aligned = voxel_backing_record(
+    aligned: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=index,
@@ -324,7 +329,7 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
         robot_body_ids=_robot_bodies(model),
         base_frame_body=_BASE_BODY,
     )
-    rotated = voxel_backing_record(
+    rotated: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=index,
@@ -340,8 +345,8 @@ def test_the_grids_own_rotation_places_the_cell() -> None:
     )
     # The cell offset from origin rotates: (dx, dy) -> (-dy, dx).
     ox, oy, _ = _GRID_ORIGIN
-    ax, ay, az = aligned["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
-    rx, ry, rz = rotated["base_xyz"]  # type: ignore[misc]  # reason: dict[str, object] value
+    ax, ay, az = aligned["base_xyz"]
+    rx, ry, rz = rotated["base_xyz"]
     assert pytest.approx(-(ay - oy) + ox, abs=1e-6) == rx
     assert pytest.approx((ax - ox) + oy, abs=1e-6) == ry
     assert pytest.approx(az, abs=1e-9) == rz
@@ -365,14 +370,14 @@ def test_the_shared_cell_helper_carries_the_grids_rotation() -> None:
     """
     model, data = _model_data()
     quat = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
-    cell = {
+    cell: dict[str, Any] = {
         "index": _index_at((0.115, 0.0, 0.145)),
         "origin": _GRID_ORIGIN,
         "orientation": quat,
         "resolution": _GRID_RES,
         "size": _GRID_SIZE,
     }
-    through_helper = voxel_backing_for_cell(
+    through_helper: dict[str, Any] | None = voxel_backing_for_cell(
         model,
         data,
         cell,
@@ -380,10 +385,10 @@ def test_the_shared_cell_helper_carries_the_grids_rotation() -> None:
         attached_body_ids=frozenset(),
         base_frame_body=_BASE_BODY,
     )
-    rotated = voxel_backing_record(
+    rotated: dict[str, Any] = voxel_backing_record(
         model,
         data,
-        voxel_index=int(cell["index"]),  # type: ignore[arg-type]
+        voxel_index=int(cell["index"]),
         grid_origin=_GRID_ORIGIN,
         grid_orientation_xyzw=quat,
         grid_resolution=_GRID_RES,
@@ -396,10 +401,10 @@ def test_the_shared_cell_helper_carries_the_grids_rotation() -> None:
         "the helper placed the cell somewhere the grid's own rotation does not"
     )
 
-    identity = voxel_backing_record(
+    identity: dict[str, Any] = voxel_backing_record(
         model,
         data,
-        voxel_index=int(cell["index"]),  # type: ignore[arg-type]
+        voxel_index=int(cell["index"]),
         grid_origin=_GRID_ORIGIN,
         grid_resolution=_GRID_RES,
         grid_size=_GRID_SIZE,
@@ -430,7 +435,7 @@ def test_the_shared_cell_helper_declines_a_cell_with_no_index() -> None:
 def test_an_unset_grid_orientation_is_refused_not_read_as_identity() -> None:
     """All-zeros is what an unset field carries, and it is not a rotation."""
     model, data = _model_data()
-    record = voxel_backing_record(
+    record: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=_index_at((0.115, 0.0, 0.145)),
@@ -447,7 +452,7 @@ def test_an_unset_grid_orientation_is_refused_not_read_as_identity() -> None:
 
 def test_an_index_outside_the_grid_is_refused_not_guessed() -> None:
     model, data = _model_data()
-    record = voxel_backing_record(
+    record: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=_GRID_SIZE[0] * _GRID_SIZE[1] * _GRID_SIZE[2],
@@ -497,16 +502,16 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     OBB-to-voxel distance and a probe mesh-to-mesh distance comparable.
     """
     panda, description = _real_panda_and_manifest()
-    slop = collision_model_mesh_slop(panda, description)
+    slop: dict[str, Any] = collision_model_mesh_slop(panda, description)
 
-    link1 = slop["links"]["panda_link1"]  # type: ignore[index]
+    link1 = slop["links"]["panda_link1"]
     # Faces: sub-millimetre. The OBBs really do hug the meshes.
-    assert max(abs(v) for v in link1["face_slop_m"]) < 0.001  # type: ignore[index]
+    assert max(abs(v) for v in link1["face_slop_m"]) < 0.001
     # Corners: tens of millimetres, and that is the whole point.
-    assert 0.030 < link1["corner_slop_m"] < 0.080  # type: ignore[index]
+    assert 0.030 < link1["corner_slop_m"] < 0.080
     # Every kernel-checked link resolved, so the budget is not silently partial.
     assert slop["unresolved_links"] == []
-    assert float(slop["max_corner_slop_m"]) > 0.020  # type: ignore[arg-type]
+    assert float(slop["max_corner_slop_m"]) > 0.020
 
     # `has_stage2_hull` (#260), against the real manifest rather than a stub.
     # A `None` overhang is two different facts and only one of them leaves a
@@ -514,13 +519,9 @@ def test_collision_model_slop_is_tight_on_faces_and_loose_at_corners() -> None:
     # ships no stage-2 hull BY DECISION — #191 withdrew its refined envelope
     # for moving link1's own stops by 0.0003 mm — and every other kernel-checked
     # link carries one.
-    assert link1["has_stage2_hull"] is False  # type: ignore[index]
-    assert link1["hull_overhang_m"] is None  # type: ignore[index]
-    hulled = {
-        name: blk
-        for name, blk in slop["links"].items()  # type: ignore[union-attr]
-        if name != "panda_link1"
-    }
+    assert link1["has_stage2_hull"] is False
+    assert link1["hull_overhang_m"] is None
+    hulled = {name: blk for name, blk in slop["links"].items() if name != "panda_link1"}
     assert hulled, "the manifest must still carry hulls to contrast against"
     for name, blk in hulled.items():
         assert blk["has_stage2_hull"] is True, name
@@ -548,7 +549,7 @@ def test_the_snapshot_publishes_the_slop_block_where_the_adjudicator_reads_it() 
     data = mujoco.MjData(panda)
     mujoco.mj_forward(panda, data)
 
-    snapshot = estop_ground_truth_snapshot(
+    snapshot: dict[str, Any] = estop_ground_truth_snapshot(
         panda,
         data,
         robot_body_ids=frozenset(range(panda.nbody)),
@@ -601,13 +602,13 @@ def test_a_solid_surface_behind_a_visual_shell_is_not_read_as_decoration() -> No
         "the collidable slab behind the shell was missed; the stop would be "
         "adjudicated as landing on decoration"
     )
-    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    names = {str(entry["geom"]) for entry in record["backing"]}
     assert "counter_top" in names, "the slab that explains the cell must be named"
     assert "counter_top_visual" in names, (
         "the shell must still be reported — it is what the depth cast used to "
         "integrate, and dropping it would hide a real map defect"
     )
-    classes = {str(entry["class"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    classes = {str(entry["class"]) for entry in record["backing"]}
     assert classes == {"solid_world", "noncollidable_world"}
 
 
@@ -642,7 +643,7 @@ def test_a_collidable_slab_coincident_with_its_visual_shell_is_not_read_as_decor
     assert record["collidable_overlap_swept"] is True, (
         "the rays found nothing solid, so the overlap sweep must have run"
     )
-    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[call-overload]
+    names = {str(entry["geom"]) for entry in record["backing"]}
     assert names & {"counter2_top_0", "counter2_top_1"}, (
         f"the collidable chunk that explains the cell must be named; got {names}"
     )
@@ -687,7 +688,7 @@ def test_a_cell_holding_only_robot_geometry_is_swept_for_world_geometry_too() ->
     # `robot0_link2` sits on the arm. A cell centred on it holds robot geometry
     # and, in this fixture, nothing else — exactly the ambiguous case.
     robot_cell = _backing(model, data, (0.0, 0.0, 0.10))
-    classes = {str(e["class"]) for e in robot_cell["backing"]}  # type: ignore[call-overload]
+    classes = {str(e["class"]) for e in robot_cell["backing"]}
     if not classes or classes == {"noncollidable_world"}:
         pytest.skip("fixture geometry put nothing collidable in this cell")
     if classes <= {"self_occupancy_suspect"}:
@@ -737,7 +738,7 @@ def test_a_cell_frozen_before_the_grasp_is_recognised_after_it() -> None:
     record = _backing(model, data, cell)
 
     verdict = preattach_verdict(
-        world_xyz=record["world_xyz"],  # type: ignore[arg-type]
+        world_xyz=record["world_xyz"],
         resolution=_GRID_RES,
         preattach_keys=keys,
     )
@@ -753,7 +754,7 @@ def test_a_cell_absent_before_the_grasp_is_not_claimed_as_preexisting() -> None:
     elsewhere = _backing(model, data, (-0.3, 0.3, 0.145))
 
     verdict = preattach_verdict(
-        world_xyz=elsewhere["world_xyz"],  # type: ignore[arg-type]
+        world_xyz=elsewhere["world_xyz"],
         resolution=_GRID_RES,
         preattach_keys=keys,
     )
@@ -784,7 +785,7 @@ def test_the_frozen_set_survives_the_base_driving_away() -> None:
     assert after["world_xyz"] == pytest.approx(before["world_xyz"], abs=1e-9)
     assert after["voxel_index"] != before["voxel_index"]
     verdict = preattach_verdict(
-        world_xyz=after["world_xyz"],  # type: ignore[arg-type]
+        world_xyz=after["world_xyz"],
         resolution=_GRID_RES,
         preattach_keys=keys,
     )
@@ -800,11 +801,12 @@ def test_no_snapshot_reads_as_unavailable_never_as_a_new_cell() -> None:
     """
     model, data = _model_data()
     record = _backing(model, data, (0.3, 0.0, 0.145))
+    missing: frozenset[int] | None
     for missing in (None, frozenset()):
         verdict = preattach_verdict(
-            world_xyz=record["world_xyz"],  # type: ignore[arg-type]
+            world_xyz=record["world_xyz"],
             resolution=_GRID_RES,
-            preattach_keys=missing,  # type: ignore[arg-type]
+            preattach_keys=missing,
         )
         assert verdict["available"] is False
         assert "preexisting" not in verdict
@@ -880,7 +882,7 @@ def test_a_payload_in_the_cell_must_not_hide_the_world_surface_behind_it() -> No
     mujoco.mj_forward(model, data)
 
     record = _backing(model, data, cell_base, attached=frozenset({cup_body}))
-    names = {str(entry["geom"]) for entry in record["backing"]}  # type: ignore[index,union-attr]
+    names = {str(entry["geom"]) for entry in record["backing"]}
 
     assert "cup_body" in names, "the payload really is in this cell"
     assert record["collidable_overlap_swept"] is True, (
@@ -908,13 +910,13 @@ def test_the_decode_grid_is_chosen_by_stamp_not_by_arrival() -> None:
         {"stamp_ns": 200, "origin": (0.0, 0.0, 0.0)},
         {"stamp_ns": 300, "origin": (-0.05, 0.0, 0.0)},  # window shifted one cell
     ]
-    assert grid_current_at(hist, 250)["stamp_ns"] == 200
-    assert grid_current_at(hist, 200)["stamp_ns"] == 200, "at-or-before, inclusive"
-    assert grid_current_at(hist, 999)["stamp_ns"] == 300
+    assert _stamp_at(hist, 250) == 200
+    assert _stamp_at(hist, 200) == 200, "at-or-before, inclusive"
+    assert _stamp_at(hist, 999) == 300
     assert grid_current_at(hist, 50) is None, "nothing old enough: say so, do not use a newer one"
     assert grid_current_at([], 250) is None
     # Out-of-order arrival must not matter: stamp decides.
-    assert grid_current_at(list(reversed(hist)), 250)["stamp_ns"] == 200
+    assert _stamp_at(list(reversed(hist)), 250) == 200
 
 
 def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() -> None:
@@ -927,7 +929,7 @@ def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() ->
     model, data = _model_data()
     index = _index_at((0.3, 0.0, 0.145))
     shifted = (_GRID_ORIGIN[0] - _GRID_RES, _GRID_ORIGIN[1], _GRID_ORIGIN[2])
-    a = voxel_backing_record(
+    a: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=index,
@@ -937,7 +939,7 @@ def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() ->
         robot_body_ids=_robot_bodies(model),
         base_frame_body=_BASE_BODY,
     )
-    b = voxel_backing_record(
+    b: dict[str, Any] = voxel_backing_record(
         model,
         data,
         voxel_index=index,
@@ -947,7 +949,7 @@ def test_a_one_cell_window_shift_moves_the_decoded_cell_by_exactly_one_cell() ->
         robot_body_ids=_robot_bodies(model),
         base_frame_body=_BASE_BODY,
     )
-    delta = [b["world_xyz"][k] - a["world_xyz"][k] for k in range(3)]  # type: ignore[index]
+    delta = [b["world_xyz"][k] - a["world_xyz"][k] for k in range(3)]
     assert delta == pytest.approx([-_GRID_RES, 0.0, 0.0], abs=1e-9)
 
 
@@ -1030,7 +1032,9 @@ def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -
     half = math.radians(30.0) / 2.0
     data.qpos[adr + 3 : adr + 7] = [math.cos(half), 0.0, 0.0, math.sin(half)]  # wxyz
     mujoco.mj_forward(model, data)
-    pivoted = attached_model_slip(model, data, description=None, attached_objects=[obj])[0]
+    pivoted: dict[str, Any] = attached_model_slip(
+        model, data, description=None, attached_objects=[obj]
+    )[0]
     assert pivoted["slip_m"] == pytest.approx(0.0, abs=1e-6)
     assert pivoted["rotation_deg"] == pytest.approx(30.0, abs=1e-6)
     # The record rounds to micrometres; compare at that precision.
@@ -1088,7 +1092,7 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
     hal = build_hal(description, mode="sim")
     hal.connect()
     try:
-        slop = collision_model_mesh_slop(hal._model, description)
+        slop: dict[str, Any] = collision_model_mesh_slop(hal._model, description)  # type: ignore[attr-defined]  # reason: the sim HAL holds its MjModel; build_hal returns the HAL protocol
     finally:
         hal.disconnect()
     declared = {e.link_name for e in description.collision_geometry}

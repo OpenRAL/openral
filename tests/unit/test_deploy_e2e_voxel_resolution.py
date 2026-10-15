@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -25,7 +26,7 @@ LAUNCH = REPO_ROOT / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
 
 
 @pytest.fixture(scope="module")
-def launch_module() -> object:
+def launch_module() -> ModuleType:
     """The real launch file, loaded by path — it is not an importable package."""
     for dep in ("launch", "launch_ros", "lifecycle_msgs", "openral_foxglove_bringup"):
         pytest.importorskip(dep, reason=f"{dep} is a module-level import of the launch file")
@@ -38,7 +39,7 @@ def launch_module() -> object:
 
 
 def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_names(
-    launch_module: object,
+    launch_module: ModuleType,
 ) -> None:
     """The real-path self-filter gets exactly the kernel's collision model, on the real fixture.
 
@@ -53,7 +54,7 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
 
     description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
     collision = collision_params_from_description(description)
-    params = launch_module._self_filter_params(  # type: ignore[attr-defined]
+    params = launch_module._self_filter_params(
         collision, description, "/openral_hal_openarm/joint_states", 0.03
     )
     for key, value in collision.items():
@@ -68,13 +69,13 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
     assert params["padding_m"] == 0.03
     # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
-    assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")  # type: ignore[attr-defined]
+    assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")
 
 
 def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
-    launch_module: object, monkeypatch: pytest.MonkeyPatch
+    launch_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = launch_module._cpuset_prefix  # type: ignore[attr-defined]
+    prefix = launch_module._cpuset_prefix
     monkeypatch.delenv("OPENRAL_PERCEPTION_CPUSET", raising=False)
     assert prefix("OPENRAL_PERCEPTION_CPUSET") == ""
     monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "12,13")
@@ -86,12 +87,12 @@ def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
         prefix("OPENRAL_PERCEPTION_CPUSET")
 
 
-def test_the_cap_reproduces_the_constant_it_replaced(launch_module: object) -> None:
+def test_the_cap_reproduces_the_constant_it_replaced(launch_module: ModuleType) -> None:
     """25 mm must still give exactly 614 125, or this refactor changed the shipped graph."""
     assert launch_module._world_voxel_max_cells(1.05, 0.025) == 614125
 
 
-def test_the_cap_grows_with_a_finer_grid(launch_module: object) -> None:
+def test_the_cap_grows_with_a_finer_grid(launch_module: ModuleType) -> None:
     """A 15 mm ball needs 141^3 cells; a kernel still reserving 85^3 would reject every grid.
 
     That rejection is a fail-*open* on the world check — the kernel would carry
@@ -102,7 +103,7 @@ def test_the_cap_grows_with_a_finer_grid(launch_module: object) -> None:
     assert launch_module._world_voxel_max_cells(1.05, 0.0125) == 169**3
 
 
-def test_the_cap_counts_the_lattice_snap_for_any_radius(launch_module: object) -> None:
+def test_the_cap_counts_the_lattice_snap_for_any_radius(launch_module: ModuleType) -> None:
     """The bridge's snapped lattice needs ``floor(2r/res + 1/2) + 1`` cells per axis.
 
     With a per-robot radius the fraction of ``2r/res`` is arbitrary; ``int(2r/res) + 1``
@@ -122,7 +123,7 @@ def test_the_cap_counts_the_lattice_snap_for_any_radius(launch_module: object) -
 
 
 def test_the_resolution_override_is_honoured_within_its_range(
-    launch_module: object,
+    launch_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", "0.015")
@@ -131,7 +132,7 @@ def test_the_resolution_override_is_honoured_within_its_range(
 
 
 def test_an_unusable_resolution_falls_back_to_the_shipped_default(
-    launch_module: object,
+    launch_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Anything the lattice cannot place must not become a silently empty grid.
@@ -148,7 +149,7 @@ def test_an_unusable_resolution_falls_back_to_the_shipped_default(
 
 
 def test_the_shipped_defaults_are_15_mm_in_sim_and_20_mm_on_hardware(
-    launch_module: object,
+    launch_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#253's ruling, and the half of it that deliberately did NOT move.
@@ -183,7 +184,7 @@ def test_the_shipped_defaults_are_15_mm_in_sim_and_20_mm_on_hardware(
     assert launch_module._world_voxel_max_cells(1.05, 0.015) < 4_000_000
 
 
-def _load_tool(name: str) -> object:
+def _load_tool(name: str) -> ModuleType:
     """``tools/`` is not an installed package — load by path, as the other tool tests do."""
     spec = importlib.util.spec_from_file_location(name, REPO_ROOT / "tools" / f"{name}.py")
     assert spec is not None and spec.loader is not None
@@ -193,7 +194,7 @@ def _load_tool(name: str) -> object:
     return module
 
 
-def test_the_transport_probe_sizes_the_grid_the_kernel_reserves(launch_module: object) -> None:
+def test_the_transport_probe_sizes_the_grid_the_kernel_reserves(launch_module: ModuleType) -> None:
     """The probe's cell derivation is a hand-copy of the launch file's; pin them together.
 
     ``voxel_transport_probe`` re-derives the grid from its own ``RADIUS_M``
@@ -209,7 +210,7 @@ def test_the_transport_probe_sizes_the_grid_the_kernel_reserves(launch_module: o
     probe = _load_tool("voxel_transport_probe")
 
     for resolution in (0.025, 0.015, 0.0125):
-        assert probe.per_axis(resolution) ** 3 == launch_module._world_voxel_max_cells(  # type: ignore[attr-defined]
+        assert probe.per_axis(resolution) ** 3 == launch_module._world_voxel_max_cells(
             probe.RADIUS_M, resolution
         )
 
@@ -234,7 +235,7 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
 
 
 def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadline(
-    launch_module: object,
+    launch_module: ModuleType,
 ) -> None:
     """The bridge's ``max_octree_age_s`` never exceeds the kernel's voxel deadline (Entry 033).
 
@@ -246,7 +247,7 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     from openral_core import DeployRuntime
     from pydantic import ValidationError
 
-    rig_from = launch_module._rig_from_launch_args  # type: ignore[attr-defined]
+    rig_from = launch_module._rig_from_launch_args
 
     def freshness(deadline: str, age: str) -> tuple[float, float]:
         rig = rig_from({"world_voxel_deadline_s": deadline, "max_octree_age_s": age})
@@ -271,17 +272,17 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     assert '"world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0' in source
 
 
-def test_octomap_only_integrates_the_reach_box(launch_module: object) -> None:
+def test_octomap_only_integrates_the_reach_box(launch_module: ModuleType) -> None:
     """The input clip is the ball's reach box, inside the ball's bounding box.
 
     Thor, 2026-10-02: with 4 m rays and no clip, octomap_server integrated the floor
     0.7 m below the base and the wall 3 m out — most of the ZED cloud — and ran at
     ~2 Hz with multi-second gaps, i.e. a map the kernel's deadline kept failing closed on.
     """
-    ball = launch_module._CoverageBall(  # type: ignore[attr-defined]
+    ball = launch_module._CoverageBall(
         (0.0, 0.0, 0.0), 0.871, (-0.7, -0.86, -0.717), (0.7, 0.82, 0.7)
     )
-    bounds = launch_module._octomap_input_bounds(ball)  # type: ignore[attr-defined]
+    bounds = launch_module._octomap_input_bounds(ball)
     assert bounds == {
         "point_cloud_min_x": -0.7,
         "point_cloud_min_y": -0.86,

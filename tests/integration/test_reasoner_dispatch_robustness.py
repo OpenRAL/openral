@@ -298,7 +298,7 @@ def test_resident_vla_redispatch_skips_the_free_vram_probe(
 
     from tests.integration.fakes.fake_llm import FakeToolUseClient
 
-    vla_manifest = RSkillManifest.from_yaml(_SMOLVLA)
+    vla_manifest = RSkillManifest.from_yaml(str(_SMOLVLA))
     assert (vla_manifest.active_min_vram_gb() or 0.0) > 0.5, "fixture must declare > 0.5 GB"
 
     executed: list[str] = []
@@ -317,7 +317,7 @@ def test_resident_vla_redispatch_skips_the_free_vram_probe(
         reasoner.trigger_configure()
         reasoner.trigger_activate()
         assert reasoner._reward_manifest is None
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest
 
         server_node = rclpy.create_node("openral_test_vla_server_resident")
 

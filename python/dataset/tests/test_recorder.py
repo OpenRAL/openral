@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_dataset.recorder import (
     DatasetFrame,
@@ -51,11 +52,16 @@ class _CaptureSink(DatasetSink):
         self.finalized += 1
 
 
-def _zero_frame(robot: RobotDescription) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+def _zero_frame(
+    robot: RobotDescription,
+) -> tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]]:
     """Build (state, images, action) of the shapes the SO-100 expects."""
+    assert robot.observation_spec is not None
+    assert robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
-    images: dict[str, np.ndarray] = {
+    images: dict[str, NDArray[np.uint8]] = {
         "camera1": np.zeros((32, 32, 3), dtype=np.uint8),
         "camera2": np.zeros((32, 32, 3), dtype=np.uint8),
     }

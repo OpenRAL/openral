@@ -11,8 +11,13 @@ No mocks (CLAUDE.md §1.11): the real deploy scene, real bring-up, a real kitche
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 pytest.importorskip("openral_sim")
 mujoco = pytest.importorskip("mujoco")
@@ -25,7 +30,8 @@ def test_held_arm_effort_balances_gravity() -> None:
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
-    env, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    rollout, seed = build_sim_env_from_yaml("scenes/deploy/robocasa_pnp.yaml")
+    env = cast("_RoboCasaSim", rollout)  # the deploy scene is a RoboCasa kitchen
     try:
         desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
         hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
@@ -34,7 +40,9 @@ def test_held_arm_effort_balances_gravity() -> None:
         for _ in range(10):  # let the OSC hold settle
             env.step(zero)
         state = hal.read_state()
-        model, data = hal.mujoco_handles()
+        handles = hal.mujoco_handles()
+        assert handles is not None, "RoboCasa env exposes no MuJoCo handles"
+        model, data = handles
         arm = [i for i, j in enumerate(desc.joints) if j.name.startswith("panda_joint")]
         jids = {
             i: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, desc.joints[i].sim_joint_name)

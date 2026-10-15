@@ -282,6 +282,6 @@ def activate_kernel_node(
         deadline = time.time() + transition_timeout_s
         while time.time() < deadline and not fut.done():
             rclpy.spin_once(helper, timeout_sec=0.05)
-        if not fut.done() or not fut.result().success:  # type: ignore[union-attr]
+        if not fut.done() or not fut.result().success:
             return False
     return True

@@ -36,8 +36,8 @@ try:
         _failure_kind_for_exception,
     )
 except Exception:  # reason: availability gate (rclpy/openral_msgs absent)
-    RskillRunnerNode = None  # type: ignore[assignment, misc]
-    _failure_kind_for_exception = None  # type: ignore[assignment]
+    RskillRunnerNode = None
+    _failure_kind_for_exception = None
 
 
 # ── 1. _label_runtime_failure truth table ──────────────────────────────────
@@ -117,7 +117,7 @@ def test_finalize_goal_swallows_invalid_transition() -> None:
     assert RskillRunnerNode is not None
     gh = _RacingGoalHandle()
     # Called unbound with a minimal fake self (only needs get_logger()).
-    RskillRunnerNode._finalize_goal(_FakeSelf(), gh, "abort")  # type: ignore[arg-type]
+    RskillRunnerNode._finalize_goal(_FakeSelf(), gh, "abort")
     assert gh.calls == ["abort"]  # attempted once, exception swallowed
 
 
@@ -125,7 +125,7 @@ def test_finalize_goal_applies_transition_when_healthy() -> None:
     """On a healthy goal the transition is applied normally."""
     assert RskillRunnerNode is not None
     gh = _HealthyGoalHandle()
-    RskillRunnerNode._finalize_goal(_FakeSelf(), gh, "abort")  # type: ignore[arg-type]
+    RskillRunnerNode._finalize_goal(_FakeSelf(), gh, "abort")
     assert gh.calls == ["abort"]
 
 

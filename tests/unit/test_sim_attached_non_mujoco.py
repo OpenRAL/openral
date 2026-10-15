@@ -15,10 +15,12 @@ seam; no MuJoCo, no GPU, no ROS) + a real `RobotDescription`.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from openral_core import Action, ControlMode, RobotDescription
+from numpy.typing import NDArray
+from openral_core import Action, ControlMode, RobotDescription, SceneSpec, TaskSpec
 from openral_hal.sim_attached import SimAttachedHAL
 from openral_sim.rollout import StepResult
 
@@ -36,8 +38,8 @@ def _franka_description() -> RobotDescription:
 class _FakeSim:
     """Minimal non-MuJoCo SimRollout: no `mujoco_handles`, optional joint_positions."""
 
-    scene = None
-    task = None
+    scene: SceneSpec = None  # type: ignore[assignment]  # reason: the HAL never reads scene
+    task: TaskSpec = None  # type: ignore[assignment]  # reason: the HAL never reads task
     action_dim = 8
 
     def __init__(
@@ -51,8 +53,8 @@ class _FakeSim:
         self._je = joint_efforts
         self.steps = 0
 
-    def _obs(self) -> dict:
-        obs: dict = {"images": {}, "state": np.zeros(8, dtype=np.float32), "task": ""}
+    def _obs(self) -> dict[str, Any]:
+        obs: dict[str, Any] = {"images": {}, "state": np.zeros(8, dtype=np.float32), "task": ""}
         if self._jp is not None:
             obs["joint_positions"] = np.asarray(self._jp, dtype=np.float32)
         if self._jv is not None:
@@ -61,16 +63,16 @@ class _FakeSim:
             obs["joint_efforts"] = np.asarray(self._je, dtype=np.float32)
         return obs
 
-    def reset(self, seed: int | None = None) -> dict:
+    def reset(self, seed: int | None = None) -> dict[str, Any]:
         del seed
         return self._obs()
 
-    def step(self, action: np.ndarray) -> StepResult:
+    def step(self, action: NDArray[np.float32]) -> StepResult:
         del action
         self.steps += 1
         return StepResult(self._obs(), 0.0, False, False, {})
 
-    def render(self) -> np.ndarray | None:
+    def render(self) -> NDArray[np.uint8] | None:
         return None
 
     def close(self) -> None:
@@ -84,7 +86,7 @@ class _GroupedSim(_FakeSim):
         super().__init__(joint_positions)
         self.groups: list[list[Action]] = []
 
-    def step(self, action: np.ndarray) -> StepResult:
+    def step(self, action: NDArray[np.float32]) -> StepResult:
         raise AssertionError(f"flat step must not run for grouped backend: {action}")
 
     def step_action_group(self, actions: list[Action]) -> StepResult:
@@ -248,7 +250,7 @@ def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
     assert env.steps == 1
     assert len(env.groups) == 1
     assert [action.tick_index for action in env.groups[0]] == [7, 7]
-    assert hal.read_policy_state() == list(np.arange(8, dtype=np.float32))
+    assert hal.read_policy_state() == np.arange(8, dtype=np.float32).tolist()
 
 
 def test_incomplete_action_group_fails_on_first_tick_transition() -> None:
@@ -329,14 +331,7 @@ def test_group_commit_latches_commanded_base_twist() -> None:
         )
     )
     assert env.steps == 1
-    assert hal.base_twist == (
-        pytest.approx(0.1),
-        pytest.approx(0.2),
-        0.0,
-        0.0,
-        0.0,
-        pytest.approx(0.3),
-    )
+    assert hal.base_twist == pytest.approx((0.1, 0.2, 0.0, 0.0, 0.0, 0.3))
 
 
 def test_stale_pending_group_releases_idle_step(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,7 +341,7 @@ def test_stale_pending_group_releases_idle_step(monkeypatch: pytest.MonkeyPatch)
     class _IdleSteppableGroupedSim(_GroupedSim):
         # The real grouped backend (BEHAVIOR) accepts flat env.step too —
         # that is exactly what idle_step drives (its hold vector).
-        def step(self, action: np.ndarray) -> StepResult:
+        def step(self, action: NDArray[np.float32]) -> StepResult:
             del action
             self.steps += 1
             return StepResult(self._obs(), 0.0, False, False, {})

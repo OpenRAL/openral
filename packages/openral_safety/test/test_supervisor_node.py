@@ -243,7 +243,7 @@ def test_estop_reset_clears_latch_after_cooldown(ros_context: None) -> None:
 
         def _spin_for_future() -> bool:
             executor.spin_once(timeout_sec=0.05)
-            return future.done()
+            return bool(future.done())
 
         deadline = time.time() + 2.0
         while time.time() < deadline and not future.done():
@@ -320,8 +320,8 @@ def captured_spans() -> Iterator[InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(provider)
     yield exporter
     exporter.clear()

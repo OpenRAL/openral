@@ -20,7 +20,7 @@ from types import ModuleType
 
 import numpy as np
 import pytest
-from openral_core import Action, ActionSlot, ControlMode
+from openral_core import Action, ActionSlot, ControlMode, RobotDescription, RSkillManifest
 from openral_rskill._policy_io import PolicyIOCodec
 
 
@@ -269,15 +269,13 @@ def test_returned_actions_are_action_instances(runner_mod: ModuleType) -> None:
 # ─── The slot path applies the SAME policy<->robot codec as the joint path ───
 
 
-def _so101_degrees_slot_manifest() -> tuple[object, object]:
+def _so101_degrees_slot_manifest() -> tuple[RSkillManifest, RobotDescription]:
     """Real SO-101 degrees checkpoint, redeclared with a two-slot contract.
 
     Validating it through ``RSkillManifest`` pins that ``joint_units: degrees``
     together with ``slots`` is a legal manifest — legal only because the runner
     now converts the slot path too.
     """
-    from openral_core import RobotDescription, RSkillManifest
-
     description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     raw = RSkillManifest.from_yaml(
         "rskills/rskill-smolvla-so101-eraser_place-bf16/rskill.yaml"
@@ -313,6 +311,7 @@ def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleTyp
 
     manifest, description = _so101_degrees_slot_manifest()
     codec = PolicyIOCodec.from_manifest(manifest, description)
+    assert manifest.action_contract is not None
     # In-range values: the slot path now also pre-clamps to the joint envelope
     # (wrist_roll tops out at 2.7925 rad), and this test pins the unit codec.
     policy_action = np.array([90.0, -45.0, 30.0, 0.0, 90.0, 50.0], dtype=np.float32)
@@ -385,7 +384,9 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
         ActionSlot(range=(8, 14), control_mode=ControlMode.JOINT_POSITION, joint_names=right),
         ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
     ]
-    lo, hi = desc.joints[[j.name for j in desc.joints].index("left_joint5")].position_limits
+    limits5 = desc.joints[[j.name for j in desc.joints].index("left_joint5")].position_limits
+    assert limits5 is not None
+    lo, hi = limits5
     assert lo == pytest.approx(-1.5708, abs=1e-4)
 
     vec = np.zeros(16, dtype=np.float32)
@@ -428,7 +429,8 @@ def test_an_unnamed_joint_position_slot_is_clamped_in_description_order(
     )
     n = len(desc.joints)
     slots = [ActionSlot(range=(0, n - 1), control_mode=ControlMode.JOINT_POSITION)]
-    limits = [j.position_limits for j in desc.joints]
+    limits = [lim for j in desc.joints if (lim := j.position_limits) is not None]
+    assert len(limits) == n
     lo4, hi4 = limits[3]
     vec = np.zeros(n, dtype=np.float32)
     vec[3] = float(hi4) + 0.3  # panda_joint4 past its upper limit
@@ -492,7 +494,9 @@ def test_gripper_position_slots_are_clamped_inside_the_end_effectors_command_ran
         yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
     )
     right = next(e for e in desc.end_effectors if e.name == "right_gripper")
-    lo, hi = right.resolved_command_range()
+    command_range = right.resolved_command_range()
+    assert command_range is not None
+    lo, hi = command_range
     assert (lo, hi) == pytest.approx((-0.7854, 0.0))
     slots = [
         ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION),

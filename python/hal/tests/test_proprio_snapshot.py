@@ -48,7 +48,9 @@ def test_latest_reflects_most_recent_set() -> None:
     snap = ProprioSnapshot()
     snap.set(_frame(1))
     snap.set(_frame(2))
-    assert snap.latest().state.stamp_ns == 2
+    latest = snap.latest()
+    assert latest is not None
+    assert latest.state.stamp_ns == 2
 
 
 def test_concurrent_reads_never_see_a_torn_frame() -> None:
@@ -89,4 +91,6 @@ def test_concurrent_reads_never_see_a_torn_frame() -> None:
         t.join()
 
     assert not torn, f"observed {len(torn)} torn frames"
-    assert snap.latest().state.stamp_ns == n_iters - 1
+    latest = snap.latest()
+    assert latest is not None
+    assert latest.state.stamp_ns == n_iters - 1

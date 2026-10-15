@@ -84,7 +84,7 @@ class TestFrankaWithSensors:
         assert len(desc.sensor_bundles) == 1
         bundle = desc.sensor_bundles[0]
         assert bundle.sensors[0].vendor == "Intel"
-        assert "D435i" in bundle.sensors[0].model
+        assert "D435i" in (bundle.sensors[0].model or "")
 
     def test_parent_frame(self) -> None:
         desc = franka_panda_with_sensors()
@@ -106,7 +106,7 @@ class TestURWithSensors:
     def test_ur10e_default(self) -> None:
         desc = ur10e_with_sensors()
         assert len(desc.sensor_bundles) == 1
-        assert "D435" in desc.sensor_bundles[0].sensors[0].model
+        assert "D435" in (desc.sensor_bundles[0].sensors[0].model or "")
         assert any(s.vendor == "Robotiq" for s in desc.sensors)
 
 

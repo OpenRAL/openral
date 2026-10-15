@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
@@ -50,7 +51,7 @@ def _import_launch_module() -> ModuleType:
     return mod
 
 
-def _render(subs: object) -> str:
+def _render(subs: str | Iterable[object]) -> str:
     """Render a (possibly-normalized) launch substitution list to text.
 
     ``DeclareLaunchArgument.default_value`` and an
@@ -60,7 +61,7 @@ def _render(subs: object) -> str:
     """
     if isinstance(subs, str):
         return subs
-    return "".join(getattr(s, "text", "") for s in subs)  # type: ignore[union-attr]
+    return "".join(getattr(s, "text", "") for s in subs)
 
 
 def test_clock_origin_arg_declared_and_defaults_host_wall() -> None:

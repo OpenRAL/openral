@@ -82,7 +82,7 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
         f"expected all three rig cameras to be bound: {bound}"
     )
     assert declared - bound == set(), (
-        f"{sorted(declared - bound)} are declared but never bound, so their panels "
+        f"{sorted(declared - bound, key=str)} are declared but never bound, so their panels "
         "would advertise a channel with no publisher — the failure that reads as a "
         "dead camera. Bind them in the unit overlay (or, for a workcell camera, the scene)."
     )

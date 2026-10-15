@@ -13,14 +13,14 @@ from pydantic import ValidationError
 def test_normalized_conventions_default_their_range(
     convention: str, expected: tuple[float, float]
 ) -> None:
-    ee = EndEffectorSpec(name="g", kind="parallel_gripper", command_convention=convention)  # type: ignore[arg-type]  # reason: parametrized literal
+    ee = EndEffectorSpec(name="g", kind="parallel_gripper", command_convention=convention)
     assert ee.resolved_command_range() == expected
 
 
 @pytest.mark.parametrize("convention", ["raw_joint_rad", "width_meters"])
 def test_physical_conventions_require_a_range(convention: str) -> None:
     with pytest.raises(ValidationError, match="command_range is required"):
-        EndEffectorSpec(name="g", kind="parallel_gripper", command_convention=convention)  # type: ignore[arg-type]  # reason: parametrized literal
+        EndEffectorSpec(name="g", kind="parallel_gripper", command_convention=convention)
 
 
 def test_range_without_convention_is_refused() -> None:

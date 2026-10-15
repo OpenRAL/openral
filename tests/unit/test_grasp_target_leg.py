@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import (
     AttachedCollisionObject,
+    BoxShape,
     DeployScene,
     GraspDeclaration,
     PlaceRegion,
@@ -64,7 +66,7 @@ _S = 1_000_000_000
 _FREEZE_S = 2.0
 
 
-def _CONFIRMED(_region: PlaceRegion) -> bool:  # noqa: N802 — reads as a constant at call sites
+def _CONFIRMED(_region: PlaceRegion | None) -> bool:  # noqa: N802 — reads as a constant at call sites
     """``on_attach``'s confirm for a payload that is the held region (the region path)."""
     return True
 
@@ -105,7 +107,7 @@ def _measured(stamp_ns: int) -> PlaceRegion:
 
 
 def test_no_declaration_no_envelope() -> None:
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append)
     assert tracker.envelope(now_ns=_S) is None
     assert not tracker.wants_measurement(now_ns=_S)
 
@@ -122,7 +124,7 @@ def test_the_envelope_keeps_dispatch_fields_verbatim_and_adds_the_region() -> No
     assert after.model_copy(update={"region": None}) == dispatched
 
 
-def _odom_from_base(x: float, yaw: float) -> np.ndarray:
+def _odom_from_base(x: float, yaw: float) -> npt.NDArray[np.float64]:
     """``base <- odom`` for a base at ``(x, 0)`` with heading ``yaw`` in odom."""
     c, s = np.cos(yaw), np.sin(yaw)
     odom_from_base = np.array([[c, -s, 0, x], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1.0]])
@@ -137,13 +139,17 @@ def test_a_fixed_frame_search_box_stays_put_while_the_base_moves() -> None:
             "pose": Pose6D(xyz=(2.0, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="odom"),
         }
     )
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append)
     tracker.on_declaration(_dispatched().model_copy(update={"search_box": world}))
     generation = tracker.generation
     tracker.accept(_measured(11 * _S))
     for base_x, yaw, expected in ((0.0, 0.0, (2.0, 0.0)), (1.5, np.pi / 2, (0.0, -0.5))):
         t = _odom_from_base(base_x, yaw)
-        tracker.rebase(lambda _field, box, t=t: rebase_box(box, t, "openarm_base"))
+
+        def _resolve(_field: str, box: PlaceRegion, t: npt.NDArray[np.float64] = t) -> PlaceRegion:
+            return rebase_box(box, t, "openarm_base")
+
+        tracker.rebase(_resolve)
         box = tracker.declaration.search_box  # type: ignore[union-attr]  # reason: declared above
         assert box is not None and box.frame_id == "openarm_base"
         assert np.allclose(box.pose.xyz[:2], expected, atol=1e-9)
@@ -578,7 +584,7 @@ def test_a_region_over_the_declaration_caps_is_refused() -> None:
 
 
 def test_no_search_box_means_no_measurement() -> None:
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append)
     tracker.on_declaration(_dispatched().model_copy(update={"search_box": None}))
     assert not tracker.wants_measurement(now_ns=11 * _S)
 
@@ -602,7 +608,7 @@ def test_the_freeze_ttl_derives_from_the_deploys_grid_age_unless_set() -> None:
     """The kernel's voxel deadline (``grid_max_age_s``) sets the freeze: twice it."""
     robot = RobotDescription.from_yaml(str(_ROBOT))
 
-    def leg(**kwargs: float) -> GraspTargetLeg:
+    def leg(**kwargs: Any) -> GraspTargetLeg:  # any VisionAttachmentConfig field
         bridge = VisionAttachmentBridge(
             None,
             robot,
@@ -727,6 +733,7 @@ def test_a_shelf_board_edge_over_a_bench_is_not_the_targets_support() -> None:
     grid = _shelf_lattice(range(7, 14), range(7, 14))
     point, support = _leg()._seed(grid, _item_search_box())
     assert support == pytest.approx(0.120)
+    assert support is not None
     assert point[2] > support + 0.1  # on the item's top, above the board
 
 
@@ -1022,7 +1029,7 @@ def test_a_named_search_box_wins_and_no_approach_runs() -> None:
 
 
 def test_a_named_hand_without_a_box_narrows_the_approach_to_that_hand() -> None:
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append)
     tracker.on_declaration(_goal_scope().model_copy(update={"contact_links": _RIGHT}))
     _approach(tracker, _near(_LEFT))
     assert not tracker.wants_measurement(now_ns=11 * _S), "the undeclared hand never arms"
@@ -1090,7 +1097,7 @@ def test_the_leg_arms_the_hand_whose_tcp_is_near_occupied_cells_and_not_the_far_
 # ── grid freshness: the world data's age, not the republish's ───────────────────
 
 
-def _offline_leg(**kwargs: float) -> GraspTargetLeg:
+def _offline_leg(**kwargs: Any) -> GraspTargetLeg:  # any VisionAttachmentConfig field
     robot = RobotDescription.from_yaml(str(_ROBOT))
     bridge = VisionAttachmentBridge(
         None,
@@ -1157,7 +1164,7 @@ def test_a_completed_pick_re_arms_the_hand_under_a_fresh_identity() -> None:
     """Multi-pick per goal: while handed over nothing arms; the DETACH drops the region at
     once but keeps the handover; once the hand holds nothing the pick is complete and the
     hand re-arms — under a fresh ``target_id``, the goal's ``stamp_ns``, behind the backoff."""
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append, first_pick=7)
     tracker.on_declaration(_goal_scope())
     here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
     first = _pick(tracker, here, now_ns=11 * _S)
@@ -1199,7 +1206,7 @@ def test_a_re_activated_hals_tracker_never_reuses_an_identity() -> None:
     here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
     minted: list[int] = []
     for _ in range(2):
-        tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+        tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append)
         tracker.on_declaration(_goal_scope())
         for k in range(3):
             picked = _pick(tracker, here, now_ns=(11 + 10 * k) * _S)
@@ -1263,7 +1270,7 @@ def test_a_confirm_that_raises_hands_nothing_over() -> None:
     _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
 
-    def broken(_region: PlaceRegion) -> bool:
+    def broken(_region: PlaceRegion | None) -> bool:
         raise RuntimeError("tf2 lookup exploded")
 
     tracker.on_attach("openarm_left_finger_pair", confirm=broken)
@@ -2295,7 +2302,7 @@ def test_an_attachment_change_after_a_retraction_still_advances_the_identity() -
     the change's detach edge retires it there — so a re-arm under that identity would be
     refused for the goal. Any identity armed since the last advance advances it; nothing
     armed since, nothing to retire, no advance."""
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append, first_pick=7)
     tracker.on_declaration(_goal_scope())
     later = 11 * _S + int(_FREEZE_S * _S) + 1  # past the refusal backoff
 
@@ -2345,6 +2352,10 @@ def test_a_tick_that_cannot_sample_the_hands_restarts_the_away_window() -> None:
             assert target is not None and target.contact_links == _LEFT
             return target.target_id
 
+        def no_grid() -> None:
+            leg._bridge._grid = None
+            leg._tick()
+
         def stale_grid() -> None:
             leg._bridge._grid = (_held_block_lattice(), leg._now_ns(), time.monotonic() - 60.0)
             leg._tick()
@@ -2355,7 +2366,7 @@ def test_a_tick_that_cannot_sample_the_hands_restarts_the_away_window() -> None:
             leg._inflight = None
 
         unknowns: dict[str, Any] = {
-            "no grid": lambda: (setattr(leg._bridge, "_grid", None), leg._tick()),
+            "no grid": no_grid,
             "stale grid": stale_grid,
             "request in flight": in_flight,
             "stale verdict": lambda: tracker.on_approach(
@@ -2466,7 +2477,7 @@ def test_a_hand_that_left_and_stayed_away_re_arms_under_a_fresh_identity() -> No
     every sample for a continuous freeze window re-arms under a fresh identity. Wiggling, a
     refusal in place, coming straight back, a tf2 gap (unlocated) or a ``min_cells`` dip with
     the hand still over the target is not away, and any of them restarts the window."""
-    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=list[str]().append, first_pick=7)
     tracker.on_declaration(_goal_scope())
     here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
     there = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
@@ -2754,9 +2765,10 @@ def _i4x_lattice() -> VoxelLattice:
     return VoxelLattice("openarm_base", (0.0, -0.3, -0.6), (0.0, 0.0, 0.0, 1.0), 0.015, cells, occ)
 
 
-def _i4x_centres(cells: set[tuple[int, int, int]]) -> np.ndarray:
+def _i4x_centres(cells: set[tuple[int, int, int]]) -> npt.NDArray[np.float64]:
     ijk = np.asarray(sorted(cells), dtype=np.float64)
-    return (ijk + 0.5) * 0.015 + np.asarray((0.0, -0.3, -0.6))
+    centres: npt.NDArray[np.float64] = (ijk + 0.5) * 0.015 + np.asarray((0.0, -0.3, -0.6))
+    return centres
 
 
 #: The can's map component: its cells more than a voxel above the support.
@@ -2942,7 +2954,9 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         attached = leg.kernel_region("i45", done, payload=True)
         assert published.half_extents == pytest.approx(attached.half_extents)
         assert published.pose.xyz == pytest.approx(attached.pose.xyz)
-        assert payload.primitives[0].shape.half_extents_m == pytest.approx(attached.half_extents)
+        payload_shape = payload.primitives[0].shape
+        assert isinstance(payload_shape, BoxShape)
+        assert payload_shape.half_extents_m == pytest.approx(attached.half_extents)
         t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(payload.attach_link))
         assert t_base_link is not None
         t_base_obj = t_base_link @ homogeneous_from_quat_xyz(
@@ -3021,9 +3035,9 @@ def test_two_threads_hammering_the_tracker_never_replace_a_handed_over_region() 
         for n in range(1, 400):
             now = 11 * _S + n * 3 * _S  # past each pick's backoff
             tracker.on_approach(_near(_LEFT), now_ns=now, move_m=_CELL)
-            took: list[PlaceRegion] = []
+            took: list[PlaceRegion | None] = []
 
-            def confirm(region: PlaceRegion, took: list[PlaceRegion] = took) -> bool:
+            def confirm(region: PlaceRegion | None, took: list[PlaceRegion | None] = took) -> bool:
                 took.append(region)
                 return True
 
@@ -3130,7 +3144,13 @@ _TARGET_BOX = (np.array([0.41, -0.04, 0.03]), np.array([0.49, 0.04, 0.13]))
 _FINGER_BOX = (np.array([0.44, -0.015, 0.14]), np.array([0.46, 0.015, 0.20]))
 
 
-def _oblique_capture() -> tuple[np.ndarray, np.ndarray, np.ndarray, Any, np.ndarray]:
+def _oblique_capture() -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.bool_],
+    npt.NDArray[np.float64],
+    Any,
+    npt.NDArray[np.float64],
+]:
     """Ray-cast the target and finger from a head camera 45 degrees above the target.
 
     Returns ``(depth, mask, t_base_from_cam, intrinsics, kept)``: the z-depth raster, the

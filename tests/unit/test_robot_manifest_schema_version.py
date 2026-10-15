@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _ur5e() -> dict[str, object]:
     raw = yaml.safe_load((REPO_ROOT / "robots/ur5e/robot.yaml").read_text(encoding="utf-8"))
     assert raw["schema_version"] == "0.2"
+    assert isinstance(raw, dict)
     return raw
 
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 pytest.importorskip("yourdfpy")
@@ -140,7 +141,7 @@ def test_the_root_and_the_torso_are_placed_from_the_arm_mounts() -> None:
     link_body = _mjcf_link_bodies(robot, model)
     assert _TORSO not in link_body and "openarm_base" not in link_body
 
-    def body_tf(b: int) -> np.ndarray:
+    def body_tf(b: int) -> npt.NDArray[np.float64]:
         tf = np.eye(4)
         tf[:3, :3] = data.xmat[b].reshape(3, 3)
         tf[:3, 3] = data.xpos[b]
@@ -269,12 +270,14 @@ def test_the_cut_search_finds_the_cut_trying_every_cut_finds() -> None:
 
 @pytest.fixture(scope="module")
 def torso_pieces(torso_mesh: trimesh.Trimesh) -> list[LinkCollisionGeometry]:
-    return _split_tight_pieces(_TORSO, torso_mesh, 3)
+    pieces: list[LinkCollisionGeometry] = _split_tight_pieces(_TORSO, torso_mesh, 3)
+    return pieces
 
 
-def _box_frame(g: LinkCollisionGeometry, pts: np.ndarray) -> np.ndarray:
+def _box_frame(g: LinkCollisionGeometry, pts: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     tf = _xyzrpy_matrix(g.origin_xyz_rpy)
-    return (pts - tf[:3, 3]) @ tf[:3, :3]
+    local: npt.NDArray[np.float64] = (pts - tf[:3, 3]) @ tf[:3, :3]
+    return local
 
 
 def test_three_slabs_hold_the_torso_and_cut_where_the_shape_changes(
@@ -314,7 +317,7 @@ def test_three_slabs_hold_the_torso_and_cut_where_the_shape_changes(
     whole = fit_link_with_tight_geometry(_TORSO, torso_mesh)
     whole_volume = trimesh.convex.convex_hull(
         np.asarray(whole.tight_geometry.hull_vertices_m)
-    ).volume  # type: ignore[union-attr]  # reason: a refined link ships a hull
+    ).volume
     split_volume = sum(
         trimesh.convex.convex_hull(np.asarray(g.tight_geometry.hull_vertices_m)).volume  # type: ignore[union-attr]  # reason: asserted above
         for g in pieces

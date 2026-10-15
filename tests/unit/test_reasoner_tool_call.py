@@ -21,7 +21,7 @@ from openral_core import (
 )
 from pydantic import TypeAdapter, ValidationError
 
-ADAPTER = TypeAdapter(ReasonerToolCall)
+ADAPTER: TypeAdapter[ReasonerToolCall] = TypeAdapter(ReasonerToolCall)
 
 
 def test_execute_skill_round_trip() -> None:
@@ -75,7 +75,7 @@ def test_memory_search_round_trip_and_decode() -> None:
 
 def test_memory_section_is_closed() -> None:
     with pytest.raises(ValidationError):
-        MemoryWriteTool(op="add", section="not_a_section", content="x")  # type: ignore[arg-type]
+        MemoryWriteTool(op="add", section="not_a_section", content="x")
 
 
 def test_reload_gst_pipeline_round_trip() -> None:
@@ -116,7 +116,7 @@ def test_emit_prompt_rejects_relative_topic() -> None:
 def test_lifecycle_transition_rejects_unknown_transition() -> None:
     """The transition Literal is closed to the canonical four."""
     with pytest.raises(ValidationError):
-        LifecycleTransitionTool(node="/x", transition="shutdown")  # type: ignore[arg-type]
+        LifecycleTransitionTool(node="/x", transition="shutdown")
 
 
 def test_execute_skill_rejects_empty_skill_id() -> None:

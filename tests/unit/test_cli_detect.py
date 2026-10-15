@@ -405,7 +405,9 @@ class TestBhDetect:
         scene = DeployScene.from_yaml(str(deploy))
         by_name = {s.name: s for s in scene.sensors}
         assert set(by_name) == {"overhead"}  # workspace cam ONLY in the scene
-        assert by_name["overhead"].deploy_binding.backend_params["device"] == "/dev/video8"
+        binding = by_name["overhead"].deploy_binding
+        assert binding is not None
+        assert binding.backend_params["device"] == "/dev/video8"
         assert scene.robot_id == "my_so101_bench"
 
     def test_wizard_rejects_duplicate_sensor_name(self, tmp_path: Path) -> None:
@@ -478,6 +480,7 @@ class TestBhDetect:
         assert chin.modality == "rgb"
         assert chin.frame_id == "chin_optical_frame"
         assert chin.parent_frame == "base_link"
+        assert chin.deploy_binding is not None
         assert chin.deploy_binding.backend_params["device"] == "/dev/video7"
 
     def test_thumbnail_hint_when_device_unreadable(self, tmp_path: Path) -> None:
@@ -544,8 +547,10 @@ class TestBhDetect:
         scene = DeployScene.from_yaml(str(deploy))
         by_name = {s.name: s for s in scene.sensors}
         assert "front_depth" in by_name
-        assert by_name["front_depth"].deploy_binding.backend_params.get("serial") == "828612070123"
-        assert "device" not in by_name["front_depth"].deploy_binding.backend_params
+        binding = by_name["front_depth"].deploy_binding
+        assert binding is not None
+        assert binding.backend_params.get("serial") == "828612070123"
+        assert "device" not in binding.backend_params
 
     def test_detect_custom_dir_rewrites_file_asset_refs(self, tmp_path: Path) -> None:
         """Writing the custom manifest to a new dir rewrites file: URDF refs so they
@@ -574,6 +579,7 @@ class TestBhDetect:
 
         desc = RobotDescription.from_yaml(str(out))
         # The rewritten ref must resolve to the real canonical URDF file.
+        assert desc.assets.urdf is not None
         resolved = resolve_asset(desc.assets.urdf.ref, "urdf")
         assert resolved is not None and resolved.is_file()
         assert desc.assets.urdf.ref.startswith("file:robots/so101_follower/")
@@ -603,7 +609,7 @@ class TestBhDetect:
 
         desc = RobotDescription.from_yaml(str(out))
         first = next(j for j in desc.joints if j.position_limits is not None)
-        assert first.position_limits[0] == -1.5
+        assert first.position_limits is not None and first.position_limits[0] == -1.5
 
     def test_detect_gate_declined_keeps_canonical(self, tmp_path: Path) -> None:
         out = tmp_path / "robot.yaml"

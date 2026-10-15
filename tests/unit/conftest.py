@@ -10,7 +10,7 @@ don't exercise those paths pay nothing at collection time.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,8 +37,8 @@ def memory_exporter() -> Iterator[InMemorySpanExporter]:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     # opentelemetry-api guards against re-setting the global provider once it
     # has been set; bypass that by writing through the private holder.
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # test-only reset
+    trace._TRACER_PROVIDER = None  # test-only reset
     trace.set_tracer_provider(provider)
     try:
         yield exporter
@@ -61,8 +61,8 @@ def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
     provider = MeterProvider(metric_readers=[reader])
     # Same private-holder dance as TracerProvider — the API enforces set-once
     # semantics that get in the way of per-test isolation.
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # test-only reset
+    metrics_internal._METER_PROVIDER = None  # test-only reset
     metrics.set_meter_provider(provider)
     # The metrics module caches instruments per id(meter); swapping the
     # provider invalidates those keys naturally, but drop the cache
@@ -108,7 +108,9 @@ class _CaptureProcessor:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict[str, Any]]] = []
 
-    def __call__(self, logger: Any, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    def __call__(
+        self, logger: Any, method: str, event_dict: MutableMapping[str, Any]
+    ) -> MutableMapping[str, Any]:
         del logger, method
         name = str(event_dict.pop("event", ""))
         self.events.append((name, dict(event_dict)))

@@ -39,7 +39,7 @@ try:
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
-    _ReasonerNode = None  # type: ignore[assignment, misc]  # reason: ROS not sourced
+    _ReasonerNode = None  # ROS not sourced
 
 _ROS_SKIP = pytest.mark.skipif(not _HAS_ROS, reason="requires rclpy + openral_msgs")
 
@@ -294,7 +294,7 @@ class _FakeDescribeClient:
     def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
         if isinstance(self._result, Exception):
             raise self._result
-        return self._result  # type: ignore[return-value]
+        return self._result
 
 
 class _FakeAdjudicationNode:
@@ -336,7 +336,7 @@ def test_adjudicate_no_frame_returns_none() -> None:
     """No cached frame → None (cannot adjudicate)."""
     assert _ReasonerNode is not None
     fake = _FakeAdjudicationNode(frame=None, describe_result="yes")
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is None
 
 
@@ -346,7 +346,7 @@ def test_adjudicate_no_client_returns_none() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg)  # no describe_result → client is None
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is None
 
 
@@ -355,7 +355,7 @@ def test_adjudicate_vlm_yes_returns_true() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg, describe_result="yes")
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is True
 
 
@@ -365,7 +365,7 @@ def test_adjudicate_vlm_done_returns_true() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg, describe_result="Done!")
-    result = _ReasonerNode._adjudicate_completion(fake, "place the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "place the cup")
     assert result is True
 
 
@@ -374,7 +374,7 @@ def test_adjudicate_vlm_no_returns_false() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg, describe_result="no")
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is False
 
 
@@ -384,7 +384,7 @@ def test_adjudicate_vlm_raises_returns_none() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg, describe_result=RuntimeError("timeout"))
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is None
 
 
@@ -394,7 +394,7 @@ def test_adjudicate_vlm_ambiguous_returns_false() -> None:
     assert _ReasonerNode is not None
     jpeg = _make_jpeg()
     fake = _FakeAdjudicationNode(frame=jpeg, describe_result="I cannot tell from the image")
-    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")  # type: ignore[arg-type]
+    result = _ReasonerNode._adjudicate_completion(fake, "pick the cup")
     assert result is False
 
 

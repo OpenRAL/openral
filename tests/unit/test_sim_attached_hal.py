@@ -220,7 +220,7 @@ def test_multi_slot_tick_commits_one_atomic_env_step() -> None:
     hal.send_action(grip)
     assert env.step_calls == 1
     assert hal.last_committed_tick == 1
-    assert env.last_action is not None
+    assert env.last_action is not None and cart.cartesian_delta is not None
     assert list(env.last_action[3:9]) == pytest.approx(list(cart.cartesian_delta[0]))
     assert env.last_action[-1] == pytest.approx(-1.0)
 
@@ -781,7 +781,7 @@ _PLANAR_BASE_MJCF = """
 """
 
 
-def _build_planar_base_mjcf() -> tuple[object, object]:
+def _build_planar_base_mjcf() -> tuple[Any, Any]:  # reason: mujoco ships no stubs
     """Construct a real MuJoCo MjModel/MjData from a 3-joint MJCF.
 
     Mirrors the panda_mobile base layout (forward + side + yaw)
@@ -1483,7 +1483,8 @@ def test_a_mobile_manipulator_group_records_its_jaw_target() -> None:
     assert applied is not None
     assert applied.control_mode is ControlMode.JOINT_POSITION
     assert applied.joint_names == ["panda_gripper"]
-    assert applied.joint_targets == [[pytest.approx(0.03)]]
+    assert applied.joint_targets is not None and len(applied.joint_targets) == 1
+    assert applied.joint_targets[0] == pytest.approx([0.03])
     assert hal.base_twist[0] == pytest.approx(0.1), "the twist slot still drove the base"
 
     blind = [a for a in _panda_mobile_group(0.0, tick=2) if a.ee_name is None]
@@ -1498,7 +1499,7 @@ def test_overlapping_gripper_targets_are_unknown() -> None:
     """Two slots writing one jaw: which value the jaw got is unknown, so ``None``."""
     description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     twist, arm, grip = _panda_mobile_group(0.03, tick=1)
-    overlap = arm.model_copy(update={"joint_names": [*arm.joint_names, "panda_gripper"]})
+    overlap = arm.model_copy(update={"joint_names": [*(arm.joint_names or []), "panda_gripper"]})
     assert sim_attached.gripper_targets_action([twist, overlap, grip], description) is None
     alone = sim_attached.gripper_targets_action([twist, overlap], description)
     assert alone is not None and alone.joint_targets == [[0.0]]
@@ -1509,7 +1510,10 @@ def test_a_too_short_joint_row_naming_a_gripper_is_unknown() -> None:
     description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     twist, arm, _ = _panda_mobile_group(0.03, tick=1)
     short = arm.model_copy(
-        update={"joint_names": [*arm.joint_names, "panda_gripper"], "joint_targets": [[0.2] * 10]}
+        update={
+            "joint_names": [*(arm.joint_names or []), "panda_gripper"],
+            "joint_targets": [[0.2] * 10],
+        }
     )
     assert sim_attached.gripper_targets_action([twist, short], description) is None
 
@@ -1533,7 +1537,8 @@ def test_bimanual_jaw_record_needs_every_gripper() -> None:
     both = sim_attached.gripper_targets_action([twist, left, right], description)
     assert both is not None
     assert both.joint_names == ["left_gripper", "right_gripper"]
-    assert both.joint_targets == [[pytest.approx(0.01), pytest.approx(0.02)]]
+    assert both.joint_targets is not None and len(both.joint_targets) == 1
+    assert both.joint_targets[0] == pytest.approx([0.01, 0.02])
     assert sim_attached.gripper_targets_action([twist, left], description) is None
 
 
@@ -1565,7 +1570,7 @@ def test_reset_episode_resets_the_live_env_with_the_next_seed_each_time() -> Non
     assert hal.reset_episode() == 8
     assert hal.reset_episode() == 9
     assert env.reset_calls == [7, 8, 9]
-    assert hal._pending_actions == {} or len(hal._pending_actions) == 0
+    assert len(hal._pending_actions) == 0
     hal.connect()  # a lifecycle re-connect keeps the base seed
     assert env.reset_calls[-1] == 7
 

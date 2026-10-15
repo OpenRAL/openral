@@ -37,6 +37,7 @@ def test_build_reward_monitor_propagates_contract() -> None:
     manifest = _load_manifest()
     mon = build_reward_monitor(manifest)
     assert isinstance(mon, RobometerInProcessReward)
+    assert manifest.reward is not None
     assert mon._num_bins == manifest.reward.num_bins
     assert mon._success_threshold == manifest.reward.success_threshold
     # hf:// scheme stripped from the weights source; the manifest now points at the
@@ -128,7 +129,7 @@ def _missing_live_deps() -> list[str]:
 
 
 @pytest.mark.skipif(
-    not _gpu_present() or _missing_live_deps(),
+    not _gpu_present() or bool(_missing_live_deps()),
     reason="needs a local GPU plus Robometer deps in the current env",
 )
 def test_e2e_score_clip_in_process() -> None:

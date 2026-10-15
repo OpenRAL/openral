@@ -70,7 +70,7 @@ class TestRuntimeField:
     )
     def test_ambiguous_choices_are_refused(self, fields: dict[str, str], match: str) -> None:
         with pytest.raises(ValidationError, match=match):
-            DeployRuntime(**fields)  # type: ignore[arg-type]
+            DeployRuntime(**fields)
 
     def test_its_cloud_is_the_map_input_sim_and_real(self) -> None:
         sensors = RobotDescription.from_yaml(str(_VSLAM)).sensors

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from openral_core import Action, ControlMode, RobotDescription
-from openral_core.schemas import WorldState
+from openral_core.schemas import SensorFrame, WorldState
 from openral_dataset import RolloutRecorder, Rosbag2Sink
 from openral_dataset.bag import PHASE_END, PHASE_START, TOPIC_EPISODE, TOPIC_IMAGE, TOPIC_TICK
 from openral_hal.so100_follower import SO100FollowerHAL
@@ -193,7 +193,7 @@ class _FrameWatchingSkill(_NoOpSkill):
 
     def __init__(self) -> None:
         super().__init__()
-        self.seen: list[object] = []
+        self.seen: list[SensorFrame | None] = []
 
     def _step_impl(self, world_state: WorldState) -> Action:
         self.seen.append((world_state.image_frames or {}).get("wrist"))

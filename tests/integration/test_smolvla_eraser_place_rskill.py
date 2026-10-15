@@ -200,7 +200,7 @@ def test_home_pose_matches_the_dataset(manifest: RSkillManifest) -> None:
     states, episodes, frames = [], [], []
     for path in sorted(glob.glob(root + "/data/**/*.parquet", recursive=True)):
         # reason: pyarrow ships inline types but leaves parquet.read_table untyped
-        table = pq.read_table(path)  # type: ignore[no-untyped-call]
+        table = pq.read_table(path)
         states.append(np.stack([np.asarray(x) for x in table["observation.state"].to_pylist()]))
         episodes.append(np.asarray(table["episode_index"]))
         frames.append(np.asarray(table["frame_index"]))

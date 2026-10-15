@@ -198,6 +198,7 @@ def test_factory_reuses_matching_sidecar_with_correct_layout(
     the manifest's ``rc365`` layout, not a hardcoded LIBERO contract.
     """
     from openral_sim._sidecar_common import sidecar_identity_path, write_sidecar_identity
+    from openral_sim.policies.rldx import _Gr00tFamilySidecarAdapter
     from openral_sim.registry import POLICIES
 
     port = _free_port()
@@ -216,6 +217,7 @@ def test_factory_reuses_matching_sidecar_with_correct_layout(
     try:
         with _zmq_ping_responder(port):
             adapter = POLICIES.get("rldx")(rc365_env_cfg)
+        assert isinstance(adapter, _Gr00tFamilySidecarAdapter)
         assert adapter.state_layout == "rc365"
         assert adapter._child is None  # reused, never spawned
     finally:
@@ -260,6 +262,7 @@ def test_factory_trusts_unidentified_sidecar(rc365_env_cfg: SimEnvironment) -> N
     no record is unverifiable, not a mismatch.
     """
     from openral_sim._sidecar_common import sidecar_identity_path
+    from openral_sim.policies.rldx import _Gr00tFamilySidecarAdapter
     from openral_sim.registry import POLICIES
 
     port = _free_port()
@@ -271,4 +274,5 @@ def test_factory_trusts_unidentified_sidecar(rc365_env_cfg: SimEnvironment) -> N
     )
     with _zmq_ping_responder(port):
         adapter = POLICIES.get("rldx")(rc365_env_cfg)
+    assert isinstance(adapter, _Gr00tFamilySidecarAdapter)
     assert adapter.state_layout == "rc365"

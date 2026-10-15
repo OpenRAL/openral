@@ -13,9 +13,14 @@ Skipped when ``torch`` or ``bitsandbytes`` isn't importable (CLAUDE.md
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
-torch = pytest.importorskip("torch")
+if TYPE_CHECKING:
+    import torch
+else:
+    torch = pytest.importorskip("torch")
 bnb = pytest.importorskip("bitsandbytes")
 
 from openral_sim._quantization import (  # noqa: E402
@@ -45,10 +50,16 @@ def _build_module() -> torch.nn.Module:
     return Tiny()
 
 
+def _linear(module: torch.nn.Module, name: str) -> torch.nn.Linear:
+    layer = module.get_submodule(name)
+    assert isinstance(layer, torch.nn.Linear)
+    return layer
+
+
 def test_quantize_nf4_swaps_only_large_linears() -> None:
     module = _build_module()
-    assert module.big.weight.numel() >= DEFAULT_MIN_PARAMS_TO_QUANTIZE
-    assert module.small.weight.numel() < DEFAULT_MIN_PARAMS_TO_QUANTIZE
+    assert _linear(module, "big").weight.numel() >= DEFAULT_MIN_PARAMS_TO_QUANTIZE
+    assert _linear(module, "small").weight.numel() < DEFAULT_MIN_PARAMS_TO_QUANTIZE
 
     quantize_nf4_in_place(module, torch=torch, compute_dtype=torch.bfloat16)
 
@@ -104,7 +115,7 @@ def test_quantize_nf4_meta_path_builds_real_params4bit() -> None:
     """
     pytest.importorskip("accelerate")
     module = _build_module()
-    src_big = module.big.weight.data.clone()  # snapshot real bf16 data
+    src_big = _linear(module, "big").weight.data.clone()  # snapshot real bf16 data
 
     quantize_nf4_in_place(
         module,
@@ -130,7 +141,7 @@ def test_quantize_int8_meta_path_builds_real_int8params() -> None:
     """
     pytest.importorskip("accelerate")
     module = _build_module()
-    src_big = module.big.weight.data.clone()
+    src_big = _linear(module, "big").weight.data.clone()
 
     quantize_int8_in_place(
         module,

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -54,7 +54,7 @@ class _StandinNode:
 
 
 @pytest.fixture
-def bridge_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+def bridge_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[MutableMapping[str, Any]]]:
     """Capture the bridge module's INFO+ structlog records.
 
     ``conftest.py`` filters below WARNING and caches bound loggers on first use; both must be
@@ -263,7 +263,7 @@ def test_bridge_reassembles_slot_dispatched_action(tmp_path: Path) -> None:
 
 
 def test_bridge_reports_when_no_skill_ever_executed(
-    tmp_path: Path, bridge_logs: list[dict[str, Any]]
+    tmp_path: Path, bridge_logs: list[MutableMapping[str, Any]]
 ) -> None:
     """A session where no episode marker fires reports it instead of exiting silently.
 
@@ -315,7 +315,7 @@ def test_bridge_reports_when_no_skill_ever_executed(
 
 
 def test_bridge_reports_recorded_episode_counts(
-    tmp_path: Path, bridge_logs: list[dict[str, Any]]
+    tmp_path: Path, bridge_logs: list[MutableMapping[str, Any]]
 ) -> None:
     """A run that did record reports its episode + frame totals at shutdown."""
     robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"))

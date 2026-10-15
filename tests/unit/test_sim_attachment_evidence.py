@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any  # reason: mujoco ships no stubs, so MjModel/MjData handles are Any
+
 import pytest
 from openral_core import (
     BoxShape,
@@ -118,18 +120,18 @@ def _description(*, logical_finger_pair: bool = False) -> RobotDescription:
 
 
 @pytest.fixture
-def sim() -> tuple[object, object]:
+def sim() -> tuple[Any, Any]:
     model = mujoco.MjModel.from_xml_string(_MJCF)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     return model, data
 
 
-def _body_id(model: object, name: str) -> int:
+def _body_id(model: Any, name: str) -> int:
     return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
 
 
-def test_classifies_free_hinge_and_slide_bodies(sim: tuple[object, object]) -> None:
+def test_classifies_free_hinge_and_slide_bodies(sim: tuple[Any, Any]) -> None:
     model, _data = sim
 
     assert (
@@ -139,7 +141,7 @@ def test_classifies_free_hinge_and_slide_bodies(sim: tuple[object, object]) -> N
     assert classify_body_mobility(model, _body_id(model, "drawer")) is SimObjectMobility.SLIDE
 
 
-def test_extracts_multiple_runtime_primitives(sim: tuple[object, object]) -> None:
+def test_extracts_multiple_runtime_primitives(sim: tuple[Any, Any]) -> None:
     model, data = sim
     primitives = extract_body_primitives(
         model,
@@ -155,7 +157,7 @@ def test_extracts_multiple_runtime_primitives(sim: tuple[object, object]) -> Non
 
 
 def test_reduces_many_runtime_geoms_to_bounded_conservative_boxes(
-    sim: tuple[object, object],
+    sim: tuple[Any, Any],
 ) -> None:
     model, data = sim
     primitives = extract_body_primitives(
@@ -183,7 +185,7 @@ def test_reduces_many_runtime_geoms_to_bounded_conservative_boxes(
 
 
 def test_sustained_two_finger_contact_attaches_then_releases(
-    sim: tuple[object, object],
+    sim: tuple[Any, Any],
 ) -> None:
     model, data = sim
     tracker = SimAttachmentEvidenceTracker(model, _description())
@@ -222,7 +224,7 @@ def test_sustained_two_finger_contact_attaches_then_releases(
 
 
 def test_logical_finger_pair_resolves_both_physical_jaws(
-    sim: tuple[object, object],
+    sim: tuple[Any, Any],
 ) -> None:
     model, data = sim
     tracker = SimAttachmentEvidenceTracker(
@@ -239,7 +241,7 @@ def test_logical_finger_pair_resolves_both_physical_jaws(
 
 
 def test_articulated_handle_contact_never_becomes_payload(
-    sim: tuple[object, object],
+    sim: tuple[Any, Any],
 ) -> None:
     model, data = sim
     payload_joint = mujoco.mj_name2id(

@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(
 @contextmanager
 def _rclpy_session() -> Iterator[Any]:
     """Initialise rclpy for the test and shut down cleanly."""
-    import rclpy  # type: ignore[import-untyped]
+    import rclpy
 
     rclpy.init()
     try:
@@ -52,7 +52,7 @@ def _rclpy_session() -> Iterator[Any]:
 
 def test_ros_control_bridge_caches_published_joint_state() -> None:
     """A ``JointState`` published on the bridge's topic must surface in ``state()``."""
-    from sensor_msgs.msg import JointState as RosJointState  # type: ignore[import-untyped]
+    from sensor_msgs.msg import JointState as RosJointState
 
     from tests.hil._ros_control_transport import RosControlHILTransport
 
@@ -66,7 +66,7 @@ def test_ros_control_bridge_caches_published_joint_state() -> None:
                 command_topic="/test/cmd",
                 joint_state_topic="/test/states",
             )
-            from rclpy.qos import QoSProfile, QoSReliabilityPolicy  # type: ignore[import-untyped]
+            from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 
             qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
             publisher = helper.create_publisher(RosJointState, "/test/states", qos)
@@ -95,7 +95,7 @@ def test_ros_control_bridge_caches_published_joint_state() -> None:
 
 def test_ros_control_bridge_publishes_joint_trajectory() -> None:
     """``transport.publish`` must emit a ``JointTrajectory`` on the command topic."""
-    from trajectory_msgs.msg import JointTrajectory  # type: ignore[import-untyped]
+    from trajectory_msgs.msg import JointTrajectory
 
     from tests.hil._ros_control_transport import RosControlHILTransport
 
@@ -109,7 +109,7 @@ def test_ros_control_bridge_publishes_joint_trajectory() -> None:
                 command_topic="/test/cmd",
                 joint_state_topic="/test/states",
             )
-            from rclpy.qos import QoSProfile, QoSReliabilityPolicy  # type: ignore[import-untyped]
+            from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 
             qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
             received: list[Any] = []
@@ -138,7 +138,7 @@ def test_ros_control_bridge_publishes_joint_trajectory() -> None:
 
 def test_aloha_bridge_dispatches_arm_and_gripper() -> None:
     """``AlohaHILTransport.publish`` must route by topic to the right publisher."""
-    from trajectory_msgs.msg import JointTrajectory  # type: ignore[import-untyped]
+    from trajectory_msgs.msg import JointTrajectory
 
     from tests.hil._aloha_ros_transport import AlohaHILTransport
 
@@ -171,7 +171,7 @@ def test_aloha_bridge_dispatches_arm_and_gripper() -> None:
                 right_gripper_command_topic="/test/right_gripper/command",
                 joint_state_topic="/test/aloha_states",
             )
-            from rclpy.qos import QoSProfile, QoSReliabilityPolicy  # type: ignore[import-untyped]
+            from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 
             qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
             arm_msgs: list[Any] = []

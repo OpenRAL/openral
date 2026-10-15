@@ -208,6 +208,7 @@ def test_build_manifest_detector_dispatches_zeroshot_in_process() -> None:
     try:
         assert tier is DetectorTier.ZEROSHOT_HF
         assert isinstance(det, OmDetTurboDetector)
+        assert m.detector is not None
         assert det._labels == m.detector.labels  # fixed vocabulary
         assert weights_source_from_manifest(m) == "omlab/omdet-turbo-swin-tiny-hf"
         # The "unprompted" intent is declared by the manifest mode, not

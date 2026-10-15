@@ -54,7 +54,8 @@ def test_discovery_start_graceful_without_zeroconf(monkeypatch: object) -> None:
     # monkeypatch is typed as object above to keep mypy happy with the narrow
     # structural use below; we rely on pytest's runtime injection.
     mp: pytest.MonkeyPatch = monkeypatch  # type: ignore[assignment] # reason: pytest injects a MonkeyPatch at runtime
-    mp.setitem(sys.modules, "zeroconf", None)  # type: ignore[arg-type] # reason: None sentinel forces ImportError on `import zeroconf`
+    # None sentinel forces ImportError on `import zeroconf`.
+    mp.setitem(sys.modules, "zeroconf", None)
     disc = Discovery()
     disc.start(host="127.0.0.1", port=4318)
     assert disc.enabled is False

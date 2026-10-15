@@ -19,14 +19,17 @@ def test_query_task_progress_tool_schema_round_trips() -> None:
     from openral_core import QueryTaskProgressTool, ReasonerToolCall
     from pydantic import TypeAdapter
 
-    parsed = TypeAdapter(ReasonerToolCall).validate_python(
+    parsed: ReasonerToolCall = TypeAdapter(ReasonerToolCall).validate_python(
         {"tool": "query_task_progress", "window_s": 5.0, "task": "Put the cube in the bowl"}
     )
     assert isinstance(parsed, QueryTaskProgressTool)
     assert parsed.window_s == 5.0
     assert parsed.task == "Put the cube in the bowl"
     # window_s has a default; task is optional (reuses the active goal).
-    default = TypeAdapter(ReasonerToolCall).validate_python({"tool": "query_task_progress"})
+    default: ReasonerToolCall = TypeAdapter(ReasonerToolCall).validate_python(
+        {"tool": "query_task_progress"}
+    )
+    assert isinstance(default, QueryTaskProgressTool)
     assert default.window_s == 8.0
     assert default.task == ""
 

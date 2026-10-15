@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 from openral_core import Action, ControlMode, JointState, RobotDescription, VLASpec, WorldState
 from openral_core.loaders import load_scene_strict
 from openral_core.schemas import DeployScene, SimScene
@@ -130,12 +131,12 @@ def test_runtime_skill_consumes_world_state_policy_state() -> None:
         device = "cpu"
 
         def __init__(self) -> None:
-            self.state: np.ndarray | None = None
+            self.state: npt.NDArray[np.float32] | None = None
 
         def reset(self) -> None:
             return None
 
-        def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+        def step(self, observation: dict[str, object], instruction: str) -> npt.NDArray[np.float32]:
             del instruction
             self.state = np.asarray(observation["state"], dtype=np.float32)
             return np.zeros(23, dtype=np.float32)

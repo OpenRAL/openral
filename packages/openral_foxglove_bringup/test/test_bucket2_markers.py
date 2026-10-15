@@ -15,6 +15,8 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+from types import ModuleType
+from typing import Any, TypeAlias
 
 import pytest
 
@@ -27,7 +29,7 @@ _PKG_DIR = Path(__file__).resolve().parent.parent
 _MODULE_PATH = _PKG_DIR / "openral_foxglove_bringup" / "bucket2_markers.py"
 
 
-def _load_bucket2() -> object:
+def _load_bucket2() -> ModuleType:
     import sys
 
     spec = importlib.util.spec_from_file_location("_bucket2_markers", _MODULE_PATH)
@@ -40,7 +42,7 @@ def _load_bucket2() -> object:
 
 
 _b2 = _load_bucket2()
-occupied_voxel_centers = _b2.occupied_voxel_centers  # type: ignore[attr-defined]
+occupied_voxel_centers = _b2.occupied_voxel_centers
 
 
 # ---------------------------------------------------------------------------
@@ -201,15 +203,18 @@ class TestOccupiedVoxelCentersFromTheWire:
 # attachment_markers — AttachmentState → MarkerArray
 # ---------------------------------------------------------------------------
 
-attachment_markers = _b2.attachment_markers  # type: ignore[attr-defined]
-parse_attach_link_tf_frames = _b2.parse_attach_link_tf_frames  # type: ignore[attr-defined]
+attachment_markers = _b2.attachment_markers
+parse_attach_link_tf_frames = _b2.parse_attach_link_tf_frames
 
 # The OpenArm cell's vendor TF name for the manifest's attach link (scene tf_frames).
 _TF_FRAMES = {"openarm_right_link7": "openarm_right_ee_base_link"}
 _BASE = "openarm_base"
 
+# reason: ROS IDL message instances are untyped (no stubs; importorskip'd at runtime).
+_Msg: TypeAlias = Any
 
-def _msgs() -> tuple[object, object, object]:
+
+def _msgs() -> tuple[ModuleType, ModuleType, ModuleType]:
     """``(openral_msgs.msg, geometry_msgs.msg, visualization_msgs.msg)``, or skip without ROS."""
     return (
         pytest.importorskip("openral_msgs.msg", reason="needs a sourced openral_msgs install"),
@@ -218,54 +223,52 @@ def _msgs() -> tuple[object, object, object]:
     )
 
 
-def _pose(xyz: tuple[float, float, float], quat_xyzw: tuple[float, ...] = (0, 0, 0, 1)) -> object:
+def _pose(xyz: tuple[float, float, float], quat_xyzw: tuple[float, ...] = (0, 0, 0, 1)) -> _Msg:
     _, gm, _ = _msgs()
-    p = gm.Pose()  # type: ignore[attr-defined]
+    p = gm.Pose()
     p.position.x, p.position.y, p.position.z = xyz
     p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = quat_xyzw
     return p
 
 
-def _primitive(
-    shape: int, dims: list[float], xyz: tuple[float, float, float] = (0, 0, 0)
-) -> object:
+def _primitive(shape: int, dims: list[float], xyz: tuple[float, float, float] = (0, 0, 0)) -> _Msg:
     om, _, _ = _msgs()
-    prim = om.AttachedCollisionPrimitive()  # type: ignore[attr-defined]
+    prim = om.AttachedCollisionPrimitive()
     prim.shape_type = shape
     prim.shape_dimensions = dims
     prim.pose_in_object = _pose(xyz)
     return prim
 
 
-def _object(**fields: object) -> object:
+def _object(**fields: object) -> _Msg:
     om, _, _ = _msgs()
-    obj = om.AttachedCollisionObject()  # type: ignore[attr-defined]
+    obj = om.AttachedCollisionObject()
     for k, v in fields.items():
         setattr(obj, k, v)
     return obj
 
 
-def _region(xyz: tuple[float, float, float], half: tuple[float, float, float]) -> object:
+def _region(xyz: tuple[float, float, float], half: tuple[float, float, float]) -> _Msg:
     om, gm, _ = _msgs()
-    region = om.PlaceRegion()  # type: ignore[attr-defined]
+    region = om.PlaceRegion()
     region.frame_id = _BASE
     region.pose = _pose(xyz)
-    region.half_extents = gm.Vector3(x=half[0], y=half[1], z=half[2])  # type: ignore[attr-defined]
+    region.half_extents = gm.Vector3(x=half[0], y=half[1], z=half[2])
     region.evidence_ref = "head_seg+voxels:cell:pick_box"
     return region
 
 
-def _state(objects: list[object] | None = None) -> object:
+def _state(objects: list[_Msg] | None = None) -> _Msg:
     om, _, _ = _msgs()
-    state = om.AttachmentState()  # type: ignore[attr-defined]
+    state = om.AttachmentState()
     state.header.frame_id = _BASE
     state.header.stamp.sec = 42
     state.objects = objects or []
     return state
 
 
-def _adds(array: object, ns: str) -> list[object]:
-    return [m for m in array.markers if m.ns == ns]  # type: ignore[attr-defined]
+def _adds(array: _Msg, ns: str) -> list[_Msg]:
+    return [m for m in array.markers if m.ns == ns]
 
 
 class TestAttachmentMarkers:
@@ -274,13 +277,13 @@ class TestAttachmentMarkers:
         _, _, vm = _msgs()
         array = attachment_markers(_state(), _TF_FRAMES)
         assert len(array.markers) == 1
-        assert array.markers[0].action == vm.Marker.DELETEALL  # type: ignore[attr-defined]
+        assert array.markers[0].action == vm.Marker.DELETEALL
 
     def test_a_region_payload_box_rides_the_attach_links_tf_frame(self) -> None:
         """The grasp-target leg's handover: one box, posed pose_in_link ∘ pose_in_object,
         on the vendor TF frame the manifest link is renamed to."""
         om, _, vm = _msgs()
-        mk = vm.Marker  # type: ignore[attr-defined]
+        mk = vm.Marker
         quarter_z = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))  # +90° yaw
         obj = _object(
             object_id="cell:pick_box",
@@ -289,7 +292,7 @@ class TestAttachmentMarkers:
             primitives=[
                 _primitive(
                     om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03, 0.02, 0.05], (0.02, 0, 0)
-                )  # type: ignore[attr-defined]
+                )
             ],
             evidence_kind="grasp_target_region",
             evidence_ref="grasp_target_region:cell:pick_box:seg@1",
@@ -323,7 +326,7 @@ class TestAttachmentMarkers:
             object_id="cell:pick_box",
             attach_link=_BASE,
             pose_in_link=_pose((0.45, -0.2, 0.3)),
-            primitives=[_primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03, 0.03, 0.03])],  # type: ignore[attr-defined]
+            primitives=[_primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03, 0.03, 0.03])],
             evidence_kind="vision_segmentation",
             evidence_ref="vision_segmentation:wrist_right@7|frozen_release",
             support_contact_valid=True,
@@ -336,13 +339,13 @@ class TestAttachmentMarkers:
         assert (cube.color.r, cube.color.g, cube.color.b) == pytest.approx((0.0, 0.8, 1.0))
         (label,) = _adds(array, "attached_label")
         assert label.text == "pick_box · vision_segmentation · support · released"
-        assert array.markers[0].action == vm.Marker.DELETEALL  # type: ignore[attr-defined]
+        assert array.markers[0].action == vm.Marker.DELETEALL
 
     def test_capsule_and_sphere_primitives(self) -> None:
         """A capsule is a cylinder plus end caps along its local +Z; a sphere is one sphere."""
         om, _, vm = _msgs()
-        mk = vm.Marker  # type: ignore[attr-defined]
-        acp = om.AttachedCollisionPrimitive  # type: ignore[attr-defined]
+        mk = vm.Marker
+        acp = om.AttachedCollisionPrimitive
         obj = _object(
             object_id="sim:mug",
             attach_link="openarm_right_link7",
@@ -370,14 +373,14 @@ class TestAttachmentMarkers:
         """An active grasp region (green) and a retracted place region (grey), each a box,
         12 wireframe edges and a target label in the region's own frame."""
         _, _, vm = _msgs()
-        mk = vm.Marker  # type: ignore[attr-defined]
+        mk = vm.Marker
         state = _state()
-        state.grasp_declaration_valid = True  # type: ignore[attr-defined]
-        g = state.grasp_declaration  # type: ignore[attr-defined]
+        state.grasp_declaration_valid = True
+        g = state.grasp_declaration
         g.target_id, g.active, g.region_valid = "cell:pick_box", True, True
         g.region = _region((0.5, -0.2, 0.1), (0.04, 0.03, 0.05))
-        state.place_declaration_valid = True  # type: ignore[attr-defined]
-        pl = state.place_declaration  # type: ignore[attr-defined]
+        state.place_declaration_valid = True
+        pl = state.place_declaration
         pl.target_id, pl.active, pl.region_valid = "surface:shelf_2", False, True
         pl.region = _region((0.6, 0.1, 0.4), (0.2, 0.1, 0.01))
 
@@ -407,9 +410,9 @@ class TestAttachmentMarkers:
     def test_a_declaration_without_a_measured_region_draws_nothing(self) -> None:
         """Dispatch's own declaration carries no region; nothing is invented for it."""
         state = _state()
-        state.grasp_declaration_valid = True  # type: ignore[attr-defined]
-        state.grasp_declaration.target_id = "cell:pick_box"  # type: ignore[attr-defined]
-        state.grasp_declaration.active = True  # type: ignore[attr-defined]
+        state.grasp_declaration_valid = True
+        state.grasp_declaration.target_id = "cell:pick_box"
+        state.grasp_declaration.active = True
         assert len(attachment_markers(state, _TF_FRAMES).markers) == 1
 
     def test_a_malformed_primitive_is_refused(self) -> None:
@@ -418,7 +421,7 @@ class TestAttachmentMarkers:
             object_id="x",
             attach_link=_BASE,
             pose_in_link=_pose((0, 0, 0)),
-            primitives=[_primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03])],  # type: ignore[attr-defined]
+            primitives=[_primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.03])],
         )
         with pytest.raises(ValueError, match="dimension"):
             attachment_markers(_state([obj]))
@@ -429,8 +432,8 @@ class TestWorkspaceAndMeasuredMarkers:
         """#349: the grasp declaration's search box and workspace are drawn — grey while
         only declared, amber once the producer has confirmed the workspace region."""
         state = _state()
-        state.grasp_declaration_valid = True  # type: ignore[attr-defined]
-        g = state.grasp_declaration  # type: ignore[attr-defined]
+        state.grasp_declaration_valid = True
+        g = state.grasp_declaration
         g.target_id, g.active = "cell:carton_led2308c2_b", True
         g.search_box_valid, g.search_box = True, _region((0.16, -0.09, -0.49), (0.1, 0.08, 0.06))
         g.workspace_box_valid = True
@@ -454,7 +457,7 @@ class TestWorkspaceAndMeasuredMarkers:
         """A box with a stage-2 refinement: the first three DOP axes are the measured box
         the kernel checks payload-vs-robot with, drawn inside the padded one."""
         om, _, vm = _msgs()
-        prim = _primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.05, 0.04, 0.06], (0.0, 0, 0))  # type: ignore[attr-defined]
+        prim = _primitive(om.AttachedCollisionPrimitive.SHAPE_BOX, [0.05, 0.04, 0.06], (0.0, 0, 0))
         prim.tight_dop_lo = [-0.03, -0.02, -0.06] + [-1.0] * 10
         prim.tight_dop_hi = [0.05, 0.02, 0.02] + [1.0] * 10
         obj = _object(
@@ -465,7 +468,7 @@ class TestWorkspaceAndMeasuredMarkers:
             evidence_kind="grasp_target_region",
         )
         (inner,) = _adds(attachment_markers(_state([obj])), "attached_measured")
-        assert inner.type == vm.Marker.CUBE  # type: ignore[attr-defined]
+        assert inner.type == vm.Marker.CUBE
         assert (inner.scale.x, inner.scale.y, inner.scale.z) == pytest.approx((0.08, 0.04, 0.08))
         p = inner.pose.position
         assert (p.x, p.y, p.z) == pytest.approx((0.51, 0.0, 0.18))
@@ -505,8 +508,8 @@ class TestStaticGeometryMarkers:
 
     def test_boxes_and_meshes_in_the_base_frame(self, tmp_path: Path) -> None:
         _, _, vm = _msgs()
-        mk = vm.Marker  # type: ignore[attr-defined]
-        array = _b2.static_geometry_markers(str(self._cell(tmp_path)), _BASE)  # type: ignore[attr-defined]
+        mk = vm.Marker
+        array = _b2.static_geometry_markers(str(self._cell(tmp_path)), _BASE)
         assert array.markers[0].action == mk.DELETEALL
         wall, shelf = array.markers[1:]
         assert wall.type == mk.CUBE and wall.header.frame_id == _BASE
@@ -528,7 +531,7 @@ class TestStaticGeometryMarkers:
         path = self._cell(tmp_path)
         (tmp_path / "shelf.npz").unlink()
         with pytest.raises(ROSConfigError, match=r"shelf\.npz"):
-            _b2.static_geometry_markers(str(path), _BASE)  # type: ignore[attr-defined]
+            _b2.static_geometry_markers(str(path), _BASE)
 
 
 class TestParseAttachLinkTfFrames:
@@ -548,7 +551,7 @@ def test_module_docstring_examples_run() -> None:
     """Every ``Example`` in the module's docstrings executes (CLAUDE.md §2)."""
     import doctest
 
-    results = doctest.testmod(_b2, verbose=False)  # type: ignore[arg-type]
+    results = doctest.testmod(_b2, verbose=False)
     assert results.attempted > 0
     assert results.failed == 0
 
@@ -568,10 +571,10 @@ def test_voxels_inside_a_declared_box_fixture_are_not_drawn(tmp_path: Path) -> N
             }
         )
     )
-    boxes = _b2.static_boxes(str(path))  # type: ignore[attr-defined]
+    boxes = _b2.static_boxes(str(path))
     # Inside, within one cell of the face, clear in y, clear in x.
     centers = np.array([[0.3, -0.55, 0], [0.3, -0.585, 0.1], [0.3, -0.40, 0], [0.6, -0.55, 0]])
-    keep = _b2.outside_boxes(centers, boxes, 0.015)  # type: ignore[attr-defined]
+    keep = _b2.outside_boxes(centers, boxes, 0.015)
     assert keep.tolist() == [False, False, True, True]
 
 
@@ -580,12 +583,12 @@ def test_malformed_static_yaml_raises_the_value_error_the_viewer_catches(tmp_pat
     path = tmp_path / "static.yaml"
     path.write_text("static_geometry: [unclosed\n")
     with pytest.raises(ValueError, match="not valid YAML"):
-        _b2.static_boxes(str(path))  # type: ignore[attr-defined]
+        _b2.static_boxes(str(path))
 
 
 def test_a_stop_voxel_index_maps_back_to_its_cell_centre() -> None:
     """The kernel names a voxel by index; the marker goes to that cell's centre."""
-    centre = _b2.voxel_center(  # type: ignore[attr-defined]
+    centre = _b2.voxel_center(
         1 + 4 * (2 + 3 * 1), (1.0, 2.0, 3.0), 0.02, (4, 3, 2), (0.0, 0.0, 0.0, 1.0)
     )
     assert centre == pytest.approx((1.03, 2.05, 3.03))
@@ -593,9 +596,7 @@ def test_a_stop_voxel_index_maps_back_to_its_cell_centre() -> None:
 
 def test_stops_are_red_spheres_with_labels() -> None:
     pytest.importorskip("visualization_msgs")
-    array = _b2.collision_markers(  # type: ignore[attr-defined]
-        [("openarm_base", (0.1, 0.2, 0.3), "STOP openarm_left_link7")]
-    )
+    array = _b2.collision_markers([("openarm_base", (0.1, 0.2, 0.3), "STOP openarm_left_link7")])
     sphere, label = array.markers
     assert sphere.pose.position.x == pytest.approx(0.1) and sphere.color.r == 1.0
     assert sphere.color.g == 0.0 and label.text == "STOP openarm_left_link7"

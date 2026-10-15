@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+from collections.abc import Callable
 
 import pytest
 from openral_core.exceptions import ROSConfigError
@@ -38,7 +39,7 @@ def test_query_scene_tool_schema_round_trips() -> None:
     from openral_core import QuerySceneTool, ReasonerToolCall
     from pydantic import TypeAdapter
 
-    parsed = TypeAdapter(ReasonerToolCall).validate_python(
+    parsed: ReasonerToolCall = TypeAdapter(ReasonerToolCall).validate_python(
         {"tool": "query_scene", "question": "Has the robot grasped the mug?", "camera": "wrist"}
     )
     assert isinstance(parsed, QuerySceneTool)
@@ -86,7 +87,9 @@ def test_query_scene_independent_of_detector_available() -> None:
     assert "query_scene" not in names
 
 
-def test_qwen_vlm_extra_declares_sidecar_client_deps(expand_dependency_group) -> None:
+def test_qwen_vlm_extra_declares_sidecar_client_deps(
+    expand_dependency_group: Callable[..., list[str]],
+) -> None:
     """The node-side ZMQ client transport is a declared dependency.
 
     Regression guard: ``QwenSceneVlm`` lazily imports ``zmq`` + ``msgpack``;

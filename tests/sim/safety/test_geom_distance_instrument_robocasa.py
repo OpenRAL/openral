@@ -26,10 +26,13 @@ own manifest.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import yaml
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 pytest.importorskip("openral_sim")
 pytest.importorskip("mujoco")
@@ -108,7 +111,9 @@ def kitchen() -> tuple[Any, Any]:
         )
     )
     sim.reset(seed=deploy.seed)
-    env = getattr(sim._env, "unwrapped", sim._env)
+    robocasa = cast("_RoboCasaSim", sim)  # the deploy scene is a RoboCasa kitchen
+    assert robocasa._env is not None, "RoboCasa sim has no live robosuite env"
+    env = getattr(robocasa._env, "unwrapped", robocasa._env)
     return env.sim.model._model, env.sim.data._data
 
 
@@ -227,14 +232,13 @@ def test_the_shipped_probe_reports_the_certified_number_and_attests_it(
     )
 
     assert coverage["uncertified_pairs"] == 0
-    assert coverage["certified_pairs"] == len(records) or coverage["certified_pairs"] >= len(
-        records
-    )
+    certified = cast(int, coverage["certified_pairs"])
+    assert certified == len(records) or certified >= len(records)
     assert coverage["distance_instrument"] == "openral_hal.convex_distance.convex_geom_distance"
 
     pair = next(r for r in records if r["geom_a"] == _LINK_GEOM and r["geom_b"] == _DOOR_GEOM)
     assert pair["distance_certified"] is True
-    assert float(pair["distance_m"]) == pytest.approx(_TRUE_GAP_M, abs=1e-9)
+    assert float(cast(float, pair["distance_m"])) == pytest.approx(_TRUE_GAP_M, abs=1e-9)
     assert "witness_a_xyz" in pair and "witness_b_xyz" in pair
     # And the record survives a strict JSON round-trip, which is how a round
     # replays it.

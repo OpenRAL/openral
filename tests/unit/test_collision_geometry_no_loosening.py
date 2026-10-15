@@ -26,6 +26,7 @@ import pytest
 pytest.importorskip("yourdfpy")
 
 from openral_cli.collision import (
+    GeometryLoosening,
     _lowered_text,
     collision_primitive_envelope,
     geometry_loosening,
@@ -57,9 +58,9 @@ def _copy_manifest(name: str, tmp_path: Path) -> Path:
     return dst
 
 
-def _lowering(manifest: Path) -> tuple[str, str, list[object]]:
+def _lowering(manifest: Path) -> tuple[str, str, list[GeometryLoosening]]:
     try:
-        return _lowered_text(manifest, acm_only=False, geometry_only=False)  # type: ignore[return-value]  # reason: the third element is list[GeometryLoosening]
+        return _lowered_text(manifest, acm_only=False, geometry_only=False)
     except (ValueError, FileNotFoundError) as exc:
         pytest.skip(f"{manifest}: {exc}")
 

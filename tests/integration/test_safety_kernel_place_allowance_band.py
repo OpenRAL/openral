@@ -65,6 +65,7 @@ import re
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -211,7 +212,9 @@ _COLLISION_LINE = re.compile(r"safety\.collision .*place_allowance_active=(\d)")
 
 
 def test_place_allowance_band_accepts_only_with_a_live_declaration(
-    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+    publish_occupancy_grid: Callable[..., None],
+    publish_carriage_joint_state: Callable[..., None],
+    reset_kernel_estop: Callable[..., None],
 ) -> None:
     """The allowance decides a verdict, and discloses itself when it does not.
 
@@ -529,7 +532,9 @@ _W_Q_LIFT = _W_Q_REST + 3 * _W_RES
 
 
 def test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift(
-    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+    publish_occupancy_grid: Callable[..., None],
+    publish_carriage_joint_state: Callable[..., None],
+    reset_kernel_estop: Callable[..., None],
 ) -> None:
     """The region payload's witness, built by the producer's own ``region_attachment``.
 
@@ -771,7 +776,9 @@ _C_Q_UP_FAR = _C_Q_MEAS + 0.020
 
 
 def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
-    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+    publish_occupancy_grid: Callable[..., None],
+    publish_carriage_joint_state: Callable[..., None],
+    reset_kernel_estop: Callable[..., None],
 ) -> None:
     """Isaac i50 on the real kernel: the region payload is the box the kernel latched.
 

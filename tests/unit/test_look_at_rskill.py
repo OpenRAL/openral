@@ -13,6 +13,7 @@ import math
 import pathlib
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import RobotDescription, SensorSpec
 from openral_core.exceptions import ROSConfigError
@@ -58,7 +59,9 @@ def test_resolve_camera_sensor_lists_available_on_miss() -> None:
         resolve_camera_sensor(None, "wrist")
 
 
-def _rotate(quat_xyzw: tuple[float, float, float, float], vec: tuple[float, float, float]):
+def _rotate(
+    quat_xyzw: tuple[float, float, float, float], vec: tuple[float, float, float]
+) -> npt.NDArray[np.float64]:
     m = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), quat_xyzw)
     return m[:3, :3] @ np.asarray(vec, dtype=np.float64)
 

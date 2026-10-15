@@ -19,8 +19,11 @@ about its own origin and so cannot tell a placed payload from a misplaced one.
 
 from __future__ import annotations
 
+from typing import Any  # reason: mujoco ships no stubs, so MjModel/MjData handles are Any
+
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import JointState
 from openral_hal.depth_cloud import robot_self_body_ids
 from openral_hal.sim_sensor_bridge import estop_ground_truth_snapshot
@@ -65,18 +68,18 @@ _PAYLOAD_GEOMS = ("mug_cup", "mug_handle")
 _RECONSTRUCTION_TOL_M = 1e-5
 
 
-def _quat_wxyz(rpy: tuple[float, float, float]) -> np.ndarray:
+def _quat_wxyz(rpy: tuple[float, float, float]) -> NDArray[np.float64]:
     """Roll-pitch-yaw → MuJoCo ``(w, x, y, z)``, via MuJoCo's own conversion."""
     quat = np.zeros(4, dtype=np.float64)
     mujoco.mju_euler2Quat(quat, np.asarray(rpy, dtype=np.float64), "xyz")
     return quat
 
 
-def _model() -> object:
+def _model() -> Any:
     return mujoco.MjModel.from_xml_string(_MJCF)
 
 
-def _place_payload(model: object, data: object, xyz: object, quat_wxyz: object) -> None:
+def _place_payload(model: Any, data: Any, xyz: object, quat_wxyz: object) -> None:
     """Put ``mug_main`` at a world pose through its free joint, then settle FK."""
     jid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "mug_joint"))
     adr = int(model.jnt_qposadr[jid])
@@ -85,12 +88,12 @@ def _place_payload(model: object, data: object, xyz: object, quat_wxyz: object) 
     mujoco.mj_forward(model, data)
 
 
-def _geom_xpos(model: object, data: object, name: str) -> np.ndarray:
+def _geom_xpos(model: Any, data: Any, name: str) -> NDArray[np.float64]:
     gid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name))
     return np.asarray(data.geom_xpos[gid], dtype=np.float64).copy()
 
 
-def _joint_state(model: object, data: object) -> JointState:
+def _joint_state(model: Any, data: Any) -> JointState:
     jid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "robot0_joint7"))
     return JointState(
         name=["robot0_joint7"],
@@ -101,7 +104,7 @@ def _joint_state(model: object, data: object) -> JointState:
     )
 
 
-def _carried_snapshot() -> tuple[object, dict[str, object], dict[str, np.ndarray]]:
+def _carried_snapshot() -> tuple[object, dict[str, object], dict[str, NDArray[np.float64]]]:
     """Compile, carry the mug at ``_CARRIED_*``, and snapshot that stop."""
     model = _model()
     data = mujoco.MjData(model)
@@ -120,7 +123,7 @@ def _carried_snapshot() -> tuple[object, dict[str, object], dict[str, np.ndarray
     return model, snapshot, truth
 
 
-def _payload_record(snapshot: dict[str, object]) -> dict[str, object]:
+def _payload_record(snapshot: dict[str, object]) -> dict[str, Any]:
     bodies = snapshot["attached_bodies"]
     assert isinstance(bodies, list) and len(bodies) == 1
     record = bodies[0]

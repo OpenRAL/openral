@@ -21,6 +21,7 @@ sidecar venv (RTX GPU). CI without those skips (§1.12).
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 import numpy as np
 import pytest
@@ -56,12 +57,12 @@ def env():
     rollout.close()
 
 
-def test_action_surface_is_11d(env) -> None:
+def test_action_surface_is_11d(env: Any) -> None:
     # 7 arm joint-deltas + 1 gripper + 3 base twist (vx, vy, wyaw).
     assert env.action_dim == 11
 
 
-def test_reset_obs_has_11_joints_and_base_pose(env) -> None:
+def test_reset_obs_has_11_joints_and_base_pose(env: Any) -> None:
     obs = env.reset()
     assert "base_pose" in obs
     assert np.asarray(obs["base_pose"]).shape == (3,)
@@ -69,7 +70,7 @@ def test_reset_obs_has_11_joints_and_base_pose(env) -> None:
     assert joints.shape == (11,)  # 3 base + 7 arm + 1 gripper
 
 
-def test_reset_obs_has_all_manifest_cameras(env) -> None:
+def test_reset_obs_has_all_manifest_cameras(env: Any) -> None:
     # panda_mobile declares 4 RGB sensors → camera1/2/3 (by vla_feature_key) plus
     # `head` (no feature key, keyed by name), each a real RTX frame.
     obs = env.reset()
@@ -81,7 +82,7 @@ def test_reset_obs_has_all_manifest_cameras(env) -> None:
         assert arr.dtype == np.uint8
 
 
-def test_reset_obs_has_depth_cloud_in_front(env) -> None:
+def test_reset_obs_has_depth_cloud_in_front(env: Any) -> None:
     # panda_mobile declares a depth sensor (front_depth) → an (N, 3) base_link
     # cloud the bridge publishes as PointCloud2. Never fabricated for a robot
     # without a depth SensorSpec. The forward-facing depth camera sees the ground
@@ -98,7 +99,7 @@ def test_reset_obs_has_depth_cloud_in_front(env) -> None:
     assert float(np.min(cloud[:, 2])) < 0.5  # reaches down toward the ground
 
 
-def test_reset_obs_has_lidar_scan_seeing_obstacles(env) -> None:
+def test_reset_obs_has_lidar_scan_seeing_obstacles(env: Any) -> None:
     # panda_mobile declares base_scan (lidar_2d, 360 beams) → a real PhysX
     # raycast fan. The scene seeds static obstacles, so some beams return a hit
     # (range < range_max) while the rest read max. Never a fabricated scan.
@@ -113,7 +114,7 @@ def test_reset_obs_has_lidar_scan_seeing_obstacles(env) -> None:
     assert hits > 10  # not an all-max (empty-world) fan
 
 
-def test_base_twist_moves_the_kinematic_base(env) -> None:
+def test_base_twist_moves_the_kinematic_base(env: Any) -> None:
     env.reset()
     # Hold the arm/gripper still; drive the base forward (vx = +0.6 m/s).
     forward = np.zeros(11, dtype=np.float32)
@@ -130,7 +131,7 @@ def test_base_twist_moves_the_kinematic_base(env) -> None:
     assert joints[0] == pytest.approx(base_pose[0], abs=1e-5)  # base_x
 
 
-def test_arm_joint_delta_drives_articulation(env) -> None:
+def test_arm_joint_delta_drives_articulation(env: Any) -> None:
     env.reset()
     start = np.asarray(env.reset()["joint_positions"], dtype=float)[3:10]  # arm slots
     delta = np.zeros(11, dtype=np.float32)
@@ -138,5 +139,6 @@ def test_arm_joint_delta_drives_articulation(env) -> None:
     last = None
     for _ in range(8):
         last = env.step(delta)
-    end = np.asarray(last.observation["joint_positions"], dtype=float)[3:10]
+    assert last is not None
+    end = np.asarray(last.observation["joint_positions"], dtype=np.float64)[3:10]
     assert float(np.max(np.abs(end - start))) > 1e-3

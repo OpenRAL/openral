@@ -33,6 +33,7 @@ from openral_hal.galaxea_a1 import (
     _SocketTransport,
 )
 from openral_hal.protocol import HAL, HALHealthProvider, LifecycleEStopHAL
+from openral_runner.backends.galaxea_a1_camera_bridge import GalaxeaA1CameraBridgeReader
 from openral_runner.backends.galaxea_a1_ipc import RuntimeLocalClient, runtime_socket_path
 from openral_runner.factory import SENSOR_BACKEND_REGISTRY, make_sensor_readers
 from openral_sim.policies.lingbot_va_a1 import (
@@ -261,6 +262,8 @@ def test_camera_bridge_batch_shares_one_paired_session() -> None:
 
     front, wrist = make_sensor_readers(configs)
 
+    assert isinstance(front, GalaxeaA1CameraBridgeReader)
+    assert isinstance(wrist, GalaxeaA1CameraBridgeReader)
     assert front._session is wrist._session
 
 
@@ -340,7 +343,7 @@ def test_sidecar_pins_every_vendor_topic_in_launch_commands() -> None:
 class _FakeSidecarPublisher:
     def __init__(self, topic: str) -> None:
         self.topic = topic
-        self.messages: list[object] = []
+        self.messages: list[Any] = []  # the sidecar's own rospy message objects
 
     def publish(self, message: object) -> None:
         self.messages.append(message)
