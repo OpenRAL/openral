@@ -224,6 +224,24 @@ class TestDeviceInfo:
 
 
 @pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed")
+@pytest.mark.parametrize(
+    ("module", "cls"),
+    [
+        ("openral_rskill.runtime_pytorch", "PyTorchRuntime"),
+        ("openral_rskill.runtime_onnx", "ONNXRuntime"),
+    ],
+)
+def test_backend_runtime_starts_unloaded_on_its_device(module: str, cls: str) -> None:
+    """Shared by every backend runtime: CPU device, nothing loaded, ``infer`` refuses."""
+    import importlib
+
+    rt = getattr(importlib.import_module(module), cls)(device="cpu")
+    assert rt.device == "cpu"
+    assert rt.is_loaded is False
+    with pytest.raises(ROSRuntimeError, match="no model loaded"):
+        rt.infer({})
+
+
 class TestPyTorchRuntime:
     """Tests that do not require real checkpoint files."""
 
@@ -232,23 +250,10 @@ class TestPyTorchRuntime:
 
         return PyTorchRuntime(device="cpu")
 
-    def test_device_property(self) -> None:
-        rt = self._rt()
-        assert rt.device == "cpu"  # type: ignore[union-attr]
-
-    def test_initial_not_loaded(self) -> None:
-        rt = self._rt()
-        assert rt.is_loaded is False  # type: ignore[union-attr]
-
     def test_load_nonexistent_raises(self) -> None:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="not found"):
             rt.load("/nonexistent/path/model.pt")  # type: ignore[union-attr]
-
-    def test_infer_before_load_raises(self) -> None:
-        rt = self._rt()
-        with pytest.raises(ROSRuntimeError, match="no model loaded"):
-            rt.infer({})  # type: ignore[union-attr]
 
     def test_quantize_before_load_raises(self) -> None:
         rt = self._rt()
@@ -419,14 +424,6 @@ class TestONNXRuntime:
 
         return ONNXRuntime(device=device)
 
-    def test_device_property(self) -> None:
-        rt = self._rt()
-        assert rt.device == "cpu"  # type: ignore[union-attr]
-
-    def test_initial_not_loaded(self) -> None:
-        rt = self._rt()
-        assert rt.is_loaded is False  # type: ignore[union-attr]
-
     def test_mps_raises_on_init(self) -> None:
         from openral_rskill.runtime_onnx import ONNXRuntime
 
@@ -442,11 +439,6 @@ class TestONNXRuntime:
         rt = self._rt()
         with pytest.raises(ROSRuntimeError, match="offline"):
             rt.quantize(QuantizationConfig())  # type: ignore[union-attr]
-
-    def test_infer_before_load_raises(self) -> None:
-        rt = self._rt()
-        with pytest.raises(ROSRuntimeError, match="no model loaded"):
-            rt.infer({})  # type: ignore[union-attr]
 
     def test_full_lifecycle_with_exported_model(self, tmp_path: pathlib.Path) -> None:
         pytest.importorskip("torch", reason="torch required to export ONNX")
