@@ -2069,8 +2069,10 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
         executor.add_node(sub_node)
 
         # Let the latched map land + the reasoner consume it before the query.
-        settle = time.monotonic() + 2.0
-        while time.monotonic() < settle:
+        # Wait on both, not a fixed 2 s: TRANSIENT_LOCAL delivery waits on DDS
+        # discovery with map_server, which outlasts 2 s on a loaded host.
+        settle = time.monotonic() + 10.0
+        while time.monotonic() < settle and not (maps and reasoner._occupancy_grid is not None):
             executor.spin_once(timeout_sec=0.1)
 
         msg = PromptStamped()
