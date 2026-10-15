@@ -311,7 +311,9 @@ and the freshness window.
   onsets ≤ 0.16 m/s). The next step, the speed between consecutive commanded rows (row 0 from the
   previously accepted command), let the exemption fire (2–5 tolerated pairs per run, 4/4 runs) but
   every stop inside the workspace still read 0.91–1.10 m/s with a 3.0–3.7 cm lead: the chunk
-  executor's non-RTC prefetch jumps 0.5–1 rad at chunk boundaries, spikes the arm smooths. The
+  executor's non-RTC prefetch jumps 0.5–1 rad at chunk boundaries, spikes the arm smooths
+  (the executor can now stitch those boundaries upstream of the kernel — opt-in
+  `policy_extras.chunk_boundary_blend`, openral/openral#378 — which this bound does not rely on). The
   bound is about impact energy, so it uses the measured velocity; a commanded jump into an
   obstacle is caught by the lead bound. The commanded speed stayed as the fallback until the
   #349 review (B): with the brake turning a speed-only violation into a creep, the larger of the

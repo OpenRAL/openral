@@ -835,6 +835,60 @@ def rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bo
     return cfg is not None and bool(cfg.enabled)
 
 
+_CHUNK_BOUNDARY_BLEND_KEYS = frozenset({"steps", "dims"})
+
+
+def _parse_chunk_boundary_blend(
+    spec_extra: dict[str, Any], *, adapter_name: str
+) -> tuple[int, tuple[int, ...] | None]:
+    """Parse the YAML shape of ``policy_extras.chunk_boundary_blend`` into ``(steps, dims)``.
+
+    The block is ``{steps: K, dims: [i, ...]}``: ``steps`` (required, ``>= 1`` — omit
+    the block to disable blending) is how many rows of each new chunk carry the fading
+    offset from the last served action; ``dims`` (required) names the action indices
+    that are blended — list the arm joints and leave out a gripper or any delta-action
+    dim. There is no all-dims default in a manifest: fading a binarized gripper or a
+    delta-action channel would serve commands the policy never emitted. Only the shape
+    is checked here; the rules (``steps`` below the chunk size and the rows a
+    pre-fetched chunk keeps, distinct non-negative ``dims``, not with RTC) live in
+    ``openral_rskill.executor._check_boundary_blend``, which ``build_chunk_executor``
+    applies with this block's key in the messages.
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict.
+        adapter_name: Adapter label for error messages.
+
+    Returns:
+        ``(0, None)`` without a block, else ``(steps, dims)`` with ``dims`` a tuple.
+
+    Raises:
+        ROSConfigError: The block is not a mapping, has unknown keys, a ``steps``
+            that is not an integer ``>= 1``, or ``dims`` missing or not a list.
+    """
+    raw = spec_extra.get("chunk_boundary_blend")
+    if raw is None:
+        return 0, None
+    key = f"{adapter_name}: policy_extras.chunk_boundary_blend"
+    if not isinstance(raw, dict):
+        raise ROSConfigError(f"{key} must be a mapping {{steps: int, dims: [int, ...]}}")
+    unknown = set(raw) - _CHUNK_BOUNDARY_BLEND_KEYS
+    if unknown:
+        raise ROSConfigError(f"{key}: unknown keys {sorted(unknown)}")
+    steps = raw.get("steps")
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ROSConfigError(
+            f"{key}.steps must be an integer >= 1 (omit the block to disable blending); "
+            f"got {steps!r}"
+        )
+    dims_raw = raw.get("dims")
+    if not isinstance(dims_raw, list):
+        raise ROSConfigError(
+            f"{key}.dims must list the action indices to blend (the arm joints; leave out "
+            f"a gripper or delta-action dim); got {dims_raw!r}"
+        )
+    return steps, tuple(dims_raw)
+
+
 def build_chunk_executor(
     spec_extra: dict[str, Any],
     *,
@@ -862,6 +916,14 @@ def build_chunk_executor(
     an ``ActionQueue``. RTC needs a real overlap between chunks, so it refuses
     single-step policies and ``chunk_prefetch: false``.
 
+    A ``policy_extras.chunk_boundary_blend`` block (see
+    ``_parse_chunk_boundary_blend``) stitches non-RTC chunks: the executor fades
+    each new chunk's offset from the last served action over its first ``steps``
+    rows, on ``dims`` (required), so row 0 no longer jumps (openral/openral#378).
+    ``steps`` must be below the chunk size and, with ``chunk_prefetch``, below the
+    ``chunk_size - chunk_prefetch_at - 1`` rows a merged chunk keeps; the block is
+    refused together with an enabled ``rtc`` block and on single-step policies.
+
     Args:
         spec_extra: The ``VLASpec.extra`` dict.
         policy: lerobot-style policy (default chunk producer + reset target).
@@ -884,9 +946,13 @@ def build_chunk_executor(
         ROSConfigError: Non-positive chunk size, malformed ``chunk_prefetch`` /
             ``chunk_prefetch_at``, an invalid ``rtc`` block, or an ``rtc`` block
             enabled on a policy that cannot run it (chunk size 1, no
-            pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized).
+            pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized), or a
+            malformed ``chunk_boundary_blend`` block, a ``steps`` that would not
+            finish inside the entering chunk, or one combined with RTC or a
+            single-step policy.
     """
-    from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
+    # deferred: avoids import cycle
+    from openral_rskill.executor import ChunkedExecutor, _check_boundary_blend
 
     n = int(
         chunk_size
@@ -897,6 +963,22 @@ def build_chunk_executor(
         raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
     rtc_cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
     rtc_on = rtc_cfg is not None and bool(rtc_cfg.enabled)
+    blend_steps, blend_dims = _parse_chunk_boundary_blend(spec_extra, adapter_name=adapter_name)
+    blend_key = f"{adapter_name}: policy_extras.chunk_boundary_blend"
+
+    def check_blend(prefetch_at: int) -> None:
+        # Same rules, same order as ChunkedExecutor applies them — refused here first so
+        # an RTC policy is never mutated (init_rtc_processor) for a config that fails.
+        _check_boundary_blend(
+            blend_steps,
+            blend_dims,
+            chunk_size=n,
+            prefetch_at=prefetch_at,
+            rtc_enabled=rtc_on,
+            steps_name=f"{blend_key}.steps",
+            dims_name=f"{blend_key}.dims",
+        )
+
     if n == 1:
         # Never let an enabled rtc block fall through the single-step return below:
         # RTC blends a *previous chunk's* tail, which one-action inference never has.
@@ -905,6 +987,7 @@ def build_chunk_executor(
                 f"{adapter_name}: policy_extras.rtc requires chunked execution, but this "
                 "policy emits a single action per inference (chunk size 1)"
             )
+        check_blend(0)  # any block is refused: one-action chunks have no row K
         if chunk_fn is None:
             return None
     prefetch = spec_extra.get("chunk_prefetch", False)
@@ -922,6 +1005,7 @@ def build_chunk_executor(
                 f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
             )
         prefetch_at = min(raw_prefetch_at, n - 1)
+    check_blend(prefetch_at)
     if rtc_on:
         if prefetch_at < 1:
             raise ROSConfigError(
@@ -947,6 +1031,8 @@ def build_chunk_executor(
         prefetch_at=prefetch_at,
         rtc_config=rtc_cfg,
         postprocess_action=postprocess_action,
+        boundary_blend_steps=blend_steps,
+        blend_dims=blend_dims,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -957,6 +1043,7 @@ def build_chunk_executor(
         prefetch=prefetch,
         prefetch_at=prefetch_at,
         rtc=rtc_on,
+        boundary_blend_steps=blend_steps,
     )
     return executor
 
