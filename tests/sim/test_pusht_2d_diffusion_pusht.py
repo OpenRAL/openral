@@ -98,27 +98,6 @@ def skill_manifest():
     return rSkill.from_yaml(_LOCAL_MANIFEST)
 
 
-class TestDiffusionPushTManifest:
-    """Manifest contract — declared inputs match the PushT embodiment."""
-
-    def test_manifest_loads_and_declares_pusht(self, skill_manifest) -> None:
-        m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-diffusion-pusht-pusht-fp32"
-        assert "pusht" in m.embodiment_tags
-        assert m.role == "s1"
-
-    def test_manifest_declares_single_rgb_sensor(self, skill_manifest) -> None:
-        sensors = skill_manifest.manifest.sensors_required
-        assert len(sensors) == 1
-        assert sensors[0].modality == "rgb"
-        assert sensors[0].vla_feature_key == "observation.images.camera1"
-
-    def test_manifest_has_latency_budget(
-        self, skill_manifest, assert_manifest_has_latency_budget
-    ) -> None:
-        assert_manifest_has_latency_budget(skill_manifest.manifest)
-
-
 class TestDiffusionPushTIOContract:
     """Adapter IO shapes — verified through the canonical eval factory."""
 

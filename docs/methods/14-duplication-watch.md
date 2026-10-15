@@ -178,7 +178,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **Safety-kernel place-\* live test harness closures — three factory fixtures in `tests/integration/conftest.py`** (was item 32).
 - **`test_disconnect_idempotent` per real HAL — already covered by `test_hal_protocol_conformance`** (was item 33).
 - **`test_after_estop_send_action_fails` — parametrized in `test_hal_protocol_conformance`** (was item 34).
-- **`test_manifest_has_latency_budget` ×3 — `tests/sim/conftest.py::assert_manifest_has_latency_budget`** (was item 35).
+- **`test_manifest_has_latency_budget` ×3 — folded into `tests/unit/test_task_space_sweep.py::test_all_rskills_load` (every rSkill), with the per-skill sensor checks in `tests/unit/test_vla_sim_rskill_manifests.py`** (was item 35).
 - **`test_send_action_holds_zero_pose` / `test_hold_zero_pose` — `tests/sim/conftest.py::assert_send_action_holds_zero_pose`** (was item 36).
 - **`_expand` PEP 735 walker ×2 — `tests/unit/conftest.py::expand_dependency_group`** (was item 37).
 - **`_CaptureProcessor` shadow in `test_reasoner_core.py` — deleted, conftest one imported** (was item 38).
