@@ -1088,6 +1088,64 @@ class _RoboCasaSim:
             return None
         return model, data
 
+    def scene_ground_truth(self, *, base_body_id: int) -> dict[str, Any]:
+        """The task's objects and destination as boxes in ``base_body_id``'s frame (sim truth).
+
+        The RoboCasa side of the ground-truth hook ``tools/derive_scene_inputs.py``
+        derives a scene's grasp ``search_box`` / ``workspace_box`` from (Isaac:
+        ``IsaacManifestScene.scene_ground_truth``). ``objects``: every task object's
+        collision bound (``body_subtree_box``). ``placements``: one per candidate
+        destination of the graspable object cfg (the task object) — each registered
+        fixture ref that is not the fixture it is placed on, once even when registered
+        under two keys, its bound as ``target`` (``PickPlaceCounterToCabinet``: ``cab``).
+        Empty when the task registers no other fixture: nothing to ground.
+        """
+        import mujoco  # reason: optional sim dep
+
+        from openral_sim.backends.mujoco_geometry import body_subtree_box
+
+        handles = self.mujoco_handles()
+        env: Any = self._env
+        for _ in range(8):  # wrapper depth bound, as enable_continuous
+            if env is None or hasattr(env, "objects"):
+                break
+            env = getattr(env, "env", None)
+        if handles is None or env is None:
+            return {"frame": "base_frame", "objects": {}, "placements": []}
+        model, data = handles
+
+        def box(root: str) -> dict[str, Any] | None:
+            b = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root)
+            return body_subtree_box(model, data, [b], base_body_id=base_body_id) if b >= 0 else None
+
+        objects = {
+            name: bx
+            for name, obj in getattr(env, "objects", {}).items()
+            if (bx := box(str(obj.root_body))) is not None
+        }
+        placements = []
+        # fixture_refs values are a fixture or ``(fixture, full_depth_region)``.
+        refs = {
+            k: v[0] if isinstance(v, tuple) else v
+            for k, v in (getattr(env, "fixture_refs", {}) or {}).items()
+        }
+        for cfg in getattr(env, "object_cfgs", []) or []:
+            if not cfg.get("graspable") or cfg.get("name") not in objects:
+                continue
+            source = (cfg.get("placement") or {}).get("fixture")
+            seen: set[int] = set()
+            for fixture in refs.values():  # one placement per candidate destination
+                if fixture is source or id(fixture) in seen:  # a fixture under two keys
+                    continue
+                seen.add(id(fixture))
+                target = box(str(fixture.root_body))
+                if target is not None:
+                    placements.append(
+                        {"object": cfg["name"], "target": target, "target_name": fixture.name}
+                    )
+            break
+        return {"frame": "base_frame", "objects": objects, "placements": placements}
+
     def sim_time_ns(self) -> int | None:
         """Elapsed MuJoCo sim time in ns, or None.
 

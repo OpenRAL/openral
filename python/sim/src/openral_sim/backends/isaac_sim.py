@@ -451,9 +451,20 @@ class _IsaacSimSidecar(SidecarSimRollout):
         The sidecar ``static_colliders`` endpoint (``IsaacManifestScene.static_collider_boxes``):
         ``{"frame": "base_frame", "boxes": [{"path", "collision_enabled", "center_m",
         "rotation" (3x3 rows), "half_extents_m"}]}`` — each a superset of its collider.
-        ``tools/isaac_static_geometry.py`` turns them into a scene's declared static geometry.
+        ``tools/derive_scene_inputs.py`` turns them into a scene's declared static geometry.
         """
         return self._client.call("static_colliders")
+
+    def scene_ground_truth(self) -> dict[str, Any]:
+        """The declared objects and the active prompt's destinations as base-frame boxes.
+
+        The sidecar ``scene_ground_truth`` endpoint
+        (``IsaacManifestScene.scene_ground_truth``): ``{"frame": "base_frame",
+        "objects": {name: box}, "placements": [{"object", "target": box}]}``, each box
+        ``{"center_m", "rotation" (3x3 rows), "half_extents_m"}``. Call ``set_task``
+        first: the placements are the active prompt's.
+        """
+        return self._client.call("scene_ground_truth")
 
     def set_task(self, instruction: str) -> dict[str, Any]:
         """Make ``instruction`` the prompt the scene grades (``openral deploy sim``).
@@ -532,17 +543,13 @@ class _IsaacSimSidecar(SidecarSimRollout):
             }
         # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
         # the RGB-D streams a real driver publishes, for the vision attachment leg.
+        # One contract for every backend (``openral_sim.depth_frames``).
         frames = raw.get("depth_frames")
         if isinstance(frames, dict):
+            from openral_sim.depth_frames import depth_frame
+
             obs["depth_frames"] = {
-                str(k): {
-                    "depth": np.asarray(v["depth"], dtype=np.float32),
-                    "rgb": np.asarray(v["rgb"], dtype=np.uint8),
-                    "k": np.asarray(v["k"], dtype=np.float64).reshape(4),
-                    "optical_in_base": np.asarray(v["optical_in_base"], dtype=np.float64).reshape(
-                        4, 4
-                    ),
-                }
+                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
                 for k, v in frames.items()
                 if isinstance(v, dict)
             }

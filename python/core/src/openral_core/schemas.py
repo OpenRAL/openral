@@ -3922,7 +3922,10 @@ class GraspDeclaration(BaseModel):
         active: ``False`` retracts the declaration.
         region: Producer-measured oriented box around the target; ``None`` =
             no exemption. Dies with the declaration.
-        search_box: Optional box (in the voxel grid's base frame) the target
+        search_box: Optional box (in the voxel grid's base frame, or a fixed
+            tf2 frame such as ``odom`` / ``map`` that the producer re-expresses
+            in the grid frame every tick, so a scene's box stays put while a
+            mobile base moves) the target
             producer searches the occupancy map in for a seed: a search hint only,
             with no support semantics — the producer measures the support layer
             from the voxel map itself (the box is padded so that layer lies inside
@@ -3934,7 +3937,9 @@ class GraspDeclaration(BaseModel):
             measures a region.
         workspace_box: Optional manipulation workspace (issue #349,
             ``docs/reference/manipulation-workspace-contact.md``) in the voxel
-            grid's base frame — the box the task works in (the source tote's
+            grid's base frame, or a fixed tf2 frame like ``search_box`` (the
+            confirmed ``workspace_region`` is always in the grid's frame) — the
+            box the task works in (the source tote's
             interior for a pick). Like ``search_box`` a scene may *declare* it and
             dispatch passes it through unchanged; it arms nothing on its own.
             Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;
@@ -10879,9 +10884,9 @@ class DeployRuntime(BaseModel):
     out of the head camera's view still stops an arm (``docs/reference/
     manipulation-workspace-contact.md`` §3.1). Only ADDS occupancy, the fail-closed
     direction, so it needs no measurement and is allowed on real hardware; the launch
-    refuses it with the octomap leg off rather than drop declared walls. For an Isaac
-    scene, ``tools/isaac_static_geometry.py`` exports it from the stage's static
-    colliders. Backward-compatible addition."""
+    refuses it with the octomap leg off rather than drop declared walls. For a sim
+    scene, ``tools/derive_scene_inputs.py`` exports it from the static colliders (an
+    Isaac stage or a MuJoCo model). Backward-compatible addition."""
 
     @model_validator(mode="after")
     def _check_workspace_contact(self) -> Self:
