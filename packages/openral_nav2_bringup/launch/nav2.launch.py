@@ -6,9 +6,9 @@ Includes upstream ``nav2_bringup/launch/navigation_launch.py`` — brings up ``b
 ``velocity_smoother`` and ``lifecycle_manager_navigation`` (drives them to ``ACTIVE``). Params come
 from ``config/nav2_panda_mobile.yaml`` (a copy of upstream ``nav2_params.yaml``). With a
 ``robot_yaml`` arg, ``RewrittenYaml`` substitutes ``robot_radius`` (from ``footprint_radius``),
-costmap ``inflation_radius`` (footprint + clearance) and MPPI ``motion_model`` (from
+costmap ``inflation_radius`` (circumscribed footprint + clearance) and MPPI ``motion_model`` (from
 ``base_kinematics``) via ``RobotDescription.nav2_param_overrides()``, so one base file serves any
-mobile base. Base ships panda_mobile's values (``robot_radius: 0.35``, ``inflation_radius: 0.40``,
+mobile base. Base ships panda_mobile's values (``robot_radius: 0.35``, ``inflation_radius: 0.48``,
 ``motion_model: Omni``, ``vy_min: -0.5``) — a no-op rewrite for panda. Velocity bounds stay Nav2
 tuning in the base file, not robot identity.
 
@@ -132,7 +132,7 @@ def generate_launch_description() -> LaunchDescription:
                 "Path to the robot's robot.yaml. When set, the base "
                 "params_file is rewritten with the robot's "
                 "`RobotDescription.nav2_param_overrides()` (robot_radius + "
-                "inflation_radius from footprint_radius, motion_model from "
+                "inflation_radius from the footprint, motion_model from "
                 "base_kinematics) so one shared base file serves any mobile "
                 "base. Empty string uses params_file verbatim."
             ),
