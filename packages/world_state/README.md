@@ -88,7 +88,7 @@ snapshot consumed by S1 / S2.
   topics: fast/slow rate ratio (≥5:1), `DIAG_OK` under steady joint
   publication, `DIAG_STALE` on dropout, recovery to `DIAG_OK`, and
   parallel-array consistency under 8 concurrent publishers. CI runs
-  this via `hal.yml` after `colcon build`.
+  this in docker-build's live-ROS step (`scripts/ros_live_tests.sh`).
 
 ## Build
 

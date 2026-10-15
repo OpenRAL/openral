@@ -14,8 +14,8 @@ Five scenarios:
 4. Recovery → DIAG_OK once fresh updates resume.
 5. High-load: 8 concurrent publishers, every snapshot's joint_state.position length consistent.
 
-Skips if ROS 2 is not sourced. CI: ``hal-integration`` job (``.github/workflows/hal.yml``),
-colcon-builds ``openral_msgs`` / ``openral_world_state`` first.
+Skips if ROS 2 is not sourced. CI: docker-build's live-ROS step
+(``scripts/ros_live_tests.sh``), inside the colcon-built ``openral:x86`` image.
 """
 
 from __future__ import annotations
