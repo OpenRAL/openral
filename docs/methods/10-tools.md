@@ -546,11 +546,11 @@ Materialises a Python 3.10 venv, clones upstream RLDX-1, installs its dependenci
 
 ### `tools/xr1_sidecar.py` + `tools/_xr1_server.py`
 _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provisions its pinned dependency stack and execs the server, which loads the pinned MiBoT checkpoint (NF4 or BF16), recreates the benchmark-specific chat template, and serves `ping/reset/get_action/close` over the shared ZMQ/msgpack wire._
-- `main() -> int` (xr1_sidecar.py L98) — parse model/profile/quantization/host/port/home; `--export-dir` persists an NF4 checkpoint and exits, otherwise stamp sidecar identity and `os.execvpe` into `_xr1_server.py`.
+- `main() -> int` (xr1_sidecar.py L122) — parse model/profile/quantization/host/port/home; `--export-dir` persists an NF4 checkpoint and exits, otherwise stamp sidecar identity and `os.execvpe` into `_xr1_server.py`.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_xr1_server.py L17) — Marker key for the msgpack ndarray codec (mirrors `openral_sim.sidecar.encode_ndarray`'s `_NDARRAY_SENTINEL`, re-implemented here because the sidecar venv cannot import `openral_sim`).
 - `_STATE_DIM = 60` (_xr1_server.py L18) — XR-1's internal padded state width; `_pad_state` pads any frame/history up to this.
 - `_ACTION_DIMS = {"robocasa_mg": 7, "robocasa365": 12, "vlabench_choice": 7}` (_xr1_server.py L19) — Per-benchmark-profile action width the checkpoint processor decodes.
-- `main() -> int` (_xr1_server.py L341) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
+- `main() -> int` (_xr1_server.py L370) — ZMQ REP server loop entry point; loads the pinned checkpoint then answers `ping/reset/get_action/close`.
 - `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
 - `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
 - `class _XR1Policy` — Pinned `AutoModel`/`AutoProcessor` custom-code loader; NF4 uses a BF16 compute dtype, and `prequantized_nf4` reloads a saved packed checkpoint without re-quantizing. `export_pretrained` writes sharded packed safetensors plus quantization metadata.
@@ -641,13 +641,14 @@ _Boot helper + server for LingBot-VLA (v1 and v2), companion to `openral_sim.pol
 - `_VENV_ENV_V1: str` (L66) — `--venv` override env var name (v1).
 - `_REPO_ENV_V1: str` (L67) — repo-dir override env var name (v1).
 - `_SERVER: Path` (L69) — path to `_lingbot_vla2_server.py`, the `os.execvpe` target for both variants.
-- `_TORCH_PIN` (L84) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
-- `_TORCHVISION_PIN` (L85) — matching v2 torch-stack pin.
-- `_TORCHAUDIO_PIN` (L86) — matching v2 torch-stack pin.
-- `_TORCHCODEC_PIN` (L91) — matching v2 torch-stack pin (excluded on aarch64).
-- `_TRITON_PIN` (L92) — matching v2 torch-stack pin.
-- `_V2_OVERRIDES: tuple[str, ...]` (L93) — the override requirement files applied on top of upstream's v2 lock.
-- `main() -> int` (L317) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
+- `_AARCH64_PTXAS: str` (L74) — `nvidia-cuda-nvcc==13.0.88`, installed on aarch64 only so the MoE Triton kernels get a `ptxas` that targets both Thor (`sm_110`) and GB10 (`sm_121`); also part of the aarch64 venv spec, so a CUDA-12.9-ptxas venv is repaired.
+- `_TORCH_PIN` (L89) — v2's torch 2.9.1 pin, overridden from upstream's 2.8.0 so the sidecar provisions on aarch64.
+- `_TORCHVISION_PIN` (L90) — matching v2 torch-stack pin.
+- `_TORCHAUDIO_PIN` (L91) — matching v2 torch-stack pin.
+- `_TORCHCODEC_PIN` (L96) — matching v2 torch-stack pin (excluded on aarch64).
+- `_TRITON_PIN` (L97) — matching v2 torch-stack pin.
+- `_V2_OVERRIDES: tuple[str, ...]` (L98) — the override requirement files applied on top of upstream's v2 lock.
+- `main() -> int` (L325) — argparse (`--model`, `--host`, `--port`, `--home`, `--variant {v1,v2}`, quantization); provisions the matching variant's venv and `os.execvpe`s into the server.
 - `_NDARRAY_SENTINEL = "__ndarray__"` (_lingbot_vla2_server.py L47) — Marker key for the msgpack ndarray codec.
 - `_BNB_META_SUFFIXES` (_lingbot_vla2_server.py L319) — bitsandbytes `Params4bit` packed-stat suffixes written alongside each `.weight`; mirrors `openral_sim._quantization._BNB_META_SUFFIXES` so the on-disk pack format matches every other OpenRAL nf4 rSkill.
 - `main(argv: list[str]) -> int` (_lingbot_vla2_server.py L944) — Resolves the torch-version-dependent CUDA allocator env var from installed-package metadata before CUDA initializes, then serves either the v2 or v1 (`--variant v1`) policy.

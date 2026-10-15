@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 from pathlib import Path
 
 from openral_sim._sidecar_common import (
     ensure_pip_venv,
     make_isolated_env,
     run_cmd,
+    torch_backend,
     write_sidecar_identity,
 )
 
@@ -32,6 +34,10 @@ _SERVER = Path(__file__).resolve().parent / "_xr1_server.py"
 # Thor). 2.9.1+cu128 publishes manylinux_2_28_aarch64 and pulls triton 3.5.1,
 # which does too. See ``docs/reference/aarch64-support.md``.
 _XR1_TORCH_DEPS = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
+# aarch64 takes torch 2.10 on ``torch_backend()``'s cu130 index instead, the only
+# torch that has both ``sm_110`` kernels (Jetson Thor) and a flash-attn 2.8.3
+# aarch64 prebuilt. x86_64 keeps the 2.9.1 / cu128 stack above unchanged.
+_XR1_AARCH64_TORCH_DEPS = ("torch==2.10.0", "torchvision==0.25.0", "torchaudio==2.10.0")
 # Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor). torch's
 # own metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, whose newest supported
 # arch is sm_120, so any kernel torch compiles at runtime through the nvrtc
@@ -54,6 +60,21 @@ _XR1_RUNTIME_DEPS = (
     "bitsandbytes==0.49.2",
 )
 _XR1_ATTN_DEPS = ("flash-attn==2.8.3",)
+# The PyPI sdist's setup.py fetches its prebuilt wheel by a name it computes from
+# torch, but it maps every non-11 CUDA major to "12" — under torch 2.10+cu130 it asks
+# for a ``cu12torch2.10`` asset that does not exist and falls back to an hour-plus
+# nvcc build. So aarch64 names the real ``cu13torch2.10`` release asset directly.
+_XR1_AARCH64_ATTN_DEPS = (
+    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/"
+    "flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_aarch64.whl",
+)
+
+
+def _deps(machine: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ``(torch_deps, attn_deps)`` for ``machine`` (``None`` reads this host)."""
+    if (machine or platform.machine()) == "aarch64":
+        return _XR1_AARCH64_TORCH_DEPS, _XR1_AARCH64_ATTN_DEPS
+    return _XR1_TORCH_DEPS, _XR1_ATTN_DEPS
 
 
 def _ensure_venv(home: Path) -> Path:
@@ -63,6 +84,7 @@ def _ensure_venv(home: Path) -> Path:
         if not path.is_file():
             raise SystemExit(f"OPENRAL_XR1_SIDECAR_PYTHON={override!r} is not a file")
         return path
+    torch_deps, attn_deps = _deps()
 
     def _install(uv: str, py: Path) -> None:
         # Override rides on ALL THREE passes: uv re-resolves the whole env on
@@ -70,14 +92,16 @@ def _ensure_venv(home: Path) -> Path:
         # `nvidia-cuda-nvrtc-cu12==12.8.93` pin again and silently downgrades
         # an earlier pass's shim (same failure the LingBot sidecar hit).
         # Invariant: every uv pass that can re-resolve carries the override.
-        pip = [uv, "pip", "install", "--python", str(py), "--overrides", str(_NVRTC_OVERRIDE)]
-        # Deliberately cu128 on every arch, not ``torch_backend()``: flash-attn 2.8.3's only
-        # aarch64 prebuilts are cu12torch2.9 / cu13torch2.10, so torch 2.9.1+cu130 would
-        # force an hour-plus nvcc source build. So XR-1 does not run on Jetson Thor (sm_110)
-        # until torch moves to 2.10 on cu130. See docs/reference/aarch64-support.md.
-        run_cmd(_LABEL, [*pip, "--torch-backend=cu128", *_XR1_TORCH_DEPS])
+        # --no-config: launched from the repo root, uv would otherwise apply the root
+        # pyproject's [tool.uv] overrides, which on aarch64 swap torch for 2.13 (seen
+        # on Thor: torch 2.13.0 next to torchaudio 2.10.0, flash-attn's .so unloadable).
+        pip = [uv, "pip", "install", "--no-config", "--python", str(py)]
+        pip += ["--overrides", str(_NVRTC_OVERRIDE)]
+        # cu130 on aarch64 (Jetson Thor sm_110), cu128 on x86_64. See _deps() and
+        # docs/reference/aarch64-support.md.
+        run_cmd(_LABEL, [*pip, f"--torch-backend={torch_backend()}", *torch_deps])
         run_cmd(_LABEL, [*pip, *_XR1_RUNTIME_DEPS])
-        run_cmd(_LABEL, [*pip, "--no-build-isolation", *_XR1_ATTN_DEPS])
+        run_cmd(_LABEL, [*pip, "--no-build-isolation", *attn_deps])
 
     return ensure_pip_venv(
         label=_LABEL,
@@ -87,9 +111,9 @@ def _ensure_venv(home: Path) -> Path:
         override_env="OPENRAL_XR1_SIDECAR_VENV",
         sentinel_name=".xr1-nf4-deps-installed",
         spec=(
-            *_XR1_TORCH_DEPS,
+            *torch_deps,
             *_XR1_RUNTIME_DEPS,
-            *_XR1_ATTN_DEPS,
+            *attn_deps,
             _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
         ),
     )

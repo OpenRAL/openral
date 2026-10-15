@@ -124,6 +124,35 @@ def _is_metadata_asset(path: Path) -> bool:
     return path.is_file() and path.suffix != ".safetensors"
 
 
+def _attn_implementation(torch: Any) -> str:
+    """``flash_attention_2``, or ``eager`` when flash-attn has no kernel for this GPU.
+
+    flash-attn 2.8.3's ``cu13torch2.10`` aarch64 wheel carries ``sm_80/90/100/120``
+    SASS and no PTX, so on Jetson Thor (``sm_110``) every call dies with "no kernel
+    image is available". MiBoT does not declare SDPA support, so ``eager`` is the
+    only other implementation transformers accepts. Probed, not keyed on the arch,
+    so a wheel that gains ``sm_110`` goes back to flash-attn on its own.
+    """
+    # reason: flash-attn exists only inside the sidecar venv
+    from flash_attn import flash_attn_func  # type: ignore[import-not-found]
+
+    probe = torch.zeros(1, 1, 1, 64, device="cuda", dtype=torch.bfloat16)
+    try:
+        flash_attn_func(probe, probe, probe)
+    except RuntimeError as exc:
+        if "no kernel image" not in str(exc):
+            raise
+        major, minor = torch.cuda.get_device_capability(0)
+        print(
+            f"[xr1-sidecar] flash-attn has no kernel for sm_{major}{minor}; "
+            "attn_implementation=eager",
+            file=sys.stderr,
+            flush=True,
+        )
+        return "eager"
+    return "flash_attention_2"
+
+
 class _XR1Policy:
     def __init__(self, model: str, profile: str, quantization: str) -> None:
         import torch
@@ -145,7 +174,7 @@ class _XR1Policy:
         model_kwargs: dict[str, Any] = {
             "revision": revision,
             "trust_remote_code": True,
-            "attn_implementation": "flash_attention_2",
+            "attn_implementation": _attn_implementation(torch),
             "dtype": torch.bfloat16,
             "low_cpu_mem_usage": True,
         }
