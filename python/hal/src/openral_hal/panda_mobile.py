@@ -27,6 +27,7 @@ Example:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from openral_core import BODY_TWIST_DIM, RobotDescription
@@ -111,6 +112,11 @@ PANDA_MOBILE_JOINT_NAMES: list[str] = [
 # Tolerance for "must be zero" non-planar twist components.
 _PLANAR_TWIST_EPS = 1e-9
 
+# Control periods without a BODY_TWIST after which ``base_twist`` reads zero.
+# Each command moves the base by exactly one ``dt_s``; nothing moves it between
+# commands, so a stream that stopped means a still base.
+_TWIST_STALE_PERIODS = 2.0
+
 
 class PandaMobileHAL:
     """In-process digital-twin HAL for the panda_mobile embodiment.
@@ -175,7 +181,9 @@ class PandaMobileHAL:
         # Last commanded base body twist (vx, vy, vz, wx, wy, wz) in the
         # base_link frame — published as the /odom twist by the lifecycle
         # node. The base integrates this exactly, so it is the velocity.
-        # Zeroed on any non-BODY_TWIST action.
+        # Zeroed on any non-BODY_TWIST action, and read as zero once no
+        # BODY_TWIST arrived for ``_TWIST_STALE_PERIODS`` control periods.
+        self._last_twist_ns: int = 0
         self._last_body_twist: tuple[float, float, float, float, float, float] = (
             0.0,
             0.0,
@@ -199,7 +207,6 @@ class PandaMobileHAL:
         """Return a fresh 10-DoF ``JointState`` snapshot."""
         if not self._connected:
             raise ROSConfigError("PandaMobileHAL.read_state called before connect().")
-        import time  # noqa: PLC0415
 
         return JointState(
             name=list(self._joint_names),
@@ -296,8 +303,13 @@ class PandaMobileHAL:
         """Last commanded base body twist ``(vx, vy, vz, wx, wy, wz)``.
 
         In the ``base_link`` frame — published as the ``/odom`` twist.
-        Zeroed once a non-BODY_TWIST action is sent.
+        Zeroed once a non-BODY_TWIST action is sent, and reads zero once no
+        BODY_TWIST arrived for ``_TWIST_STALE_PERIODS`` control periods (the
+        base only moves on a command, so a stopped stream is a still base).
         """
+        stale_ns = _TWIST_STALE_PERIODS * self._dt_s * 1e9
+        if time.monotonic_ns() - self._last_twist_ns > stale_ns:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         return self._last_body_twist
 
     # ── Internals ───────────────────────────────────────────────────────
@@ -324,6 +336,7 @@ class PandaMobileHAL:
         vx_body, vy_body, _vz, _wx, _wy, wz = row
         # Latch the commanded twist for the /odom publisher (base_link frame).
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
+        self._last_twist_ns = time.monotonic_ns()
         import math  # noqa: PLC0415  # reason: stdlib defer
 
         yaw = self._qpos[2]

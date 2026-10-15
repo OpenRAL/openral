@@ -10,6 +10,7 @@ contract-tested without the full sim stack.
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 from openral_core import ROSConfigError
@@ -109,6 +110,35 @@ def test_base_twist_latches_command_then_clears_on_non_twist() -> None:
         )
     )
     assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def test_base_twist_reads_zero_once_twist_commands_stop() -> None:
+    """``base_twist`` must not report a velocity the stopped base no longer has.
+
+    Each BODY_TWIST moves the base by one ``dt_s`` of motion and nothing moves it
+    between commands, so once commands stop the pose is constant and the /odom
+    twist read from ``base_twist`` must fall to zero — previously it latched the
+    last command (0.3 m/s) until a non-twist action arrived.
+    """
+    dt_s = 0.01
+    hal = PandaMobileHAL(dt_s=dt_s)
+    hal.connect()
+    twist = Action(
+        control_mode=ControlMode.BODY_TWIST,
+        horizon=1,
+        body_twist=[[0.3, 0.0, 0.0, 0.0, 0.0, 0.0]],
+    )
+    hal.send_action(twist)
+    assert hal.base_twist == pytest.approx((0.3, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+    pose = hal.base_pose
+    time.sleep(5 * dt_s)  # commands stopped for several control periods
+    assert hal.base_pose == pose, "nothing moves the base between commands"
+    assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # A resumed stream reports the commanded velocity again.
+    hal.send_action(twist)
+    assert hal.base_twist == pytest.approx((0.3, 0.0, 0.0, 0.0, 0.0, 0.0))
 
 
 def test_body_twist_rejects_non_planar_components() -> None:

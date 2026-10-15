@@ -994,6 +994,31 @@ def test_base_twist_latches_command_for_odom() -> None:
     assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+def test_idle_step_clears_base_twist_for_odom() -> None:
+    """An idle HOLD step stops the base, so ``base_twist`` must read zero after it.
+
+    Previously ``idle_step`` left the latched twist alone, so after a twist skill
+    ended /odom kept reporting the last command while the pose stayed constant.
+    """
+    model, data = _build_planar_base_mjcf()
+    env = FakeSimEnv(action_dim=11, handles=(model, data))
+    hal = SimAttachedHAL(env, _two_dof_description(), body_twist_dt_s=0.05)
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            horizon=1,
+            body_twist=[[0.3, 0.0, 0.0, 0.0, 0.0, 0.0]],
+        )
+    )
+    assert hal.base_twist == pytest.approx((0.3, 0.0, 0.0, 0.0, 0.0, 0.0))
+
+    pose = hal.base_pose
+    assert hal.idle_step() is True
+    assert hal.base_pose == pose, "the idle HOLD step does not move the base"
+    assert hal.base_twist == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
 def test_body_twist_rejects_non_planar_components() -> None:
     """Non-zero linear-z / angular-x / angular-y in a 6-vec → ROSConfigError."""
     model, data = _build_planar_base_mjcf()
