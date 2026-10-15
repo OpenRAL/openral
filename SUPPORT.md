@@ -8,7 +8,7 @@
 - **[Documentation](https://openral.github.io/openral/)**: quick start,
   architecture, tutorials, API reference. Start with the
   [architecture overview](docs/architecture/overview.md).
-- **General enquiries** that don't fit Discord or an issue: hello@openral.dev.
+- **General enquiries** that don't fit Discord or an issue: hello@openral.com.
 
 ## I think I found a bug
 
@@ -25,7 +25,7 @@ For anything that crosses a layer boundary, expect to be asked for an ADR
 
 **Do not open a public issue.** Follow [SECURITY.md](SECURITY.md):
 use [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new)
-or email security@openral.dev. Physical-safety defects (E-stop bypass,
+or email security@openral.com. Physical-safety defects (E-stop bypass,
 actuation-path bugs, safety-kernel issues) are highest priority: put "[safety]"
 in the subject line and we route it to the Safety Working Group.
 

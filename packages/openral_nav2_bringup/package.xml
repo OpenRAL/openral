@@ -14,7 +14,7 @@
     Nav2's own lifecycle_manager (use_lifecycle_manager: true is the
     Nav2 convention — Nav2's bringup_launch.py wires it in-package).
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

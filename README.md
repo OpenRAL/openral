@@ -444,9 +444,9 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 ## Community & support
 
 - 💬 **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
-- 📧 **[hello@openral.dev](mailto:hello@openral.dev)** — general enquiries
-- 🔒 **Security & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.dev](mailto:security@openral.dev) — **never** a public issue
-- 📋 **Code of Conduct reports:** [conduct@openral.dev](mailto:conduct@openral.dev)
+- 📧 **[hello@openral.com](mailto:hello@openral.com)** — general enquiries
+- 🔒 **Security & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.com](mailto:security@openral.com) — **never** a public issue
+- 📋 **Code of Conduct reports:** [conduct@openral.com](mailto:conduct@openral.com)
 
 See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANCE.md](GOVERNANCE.md).
 

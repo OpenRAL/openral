@@ -8,7 +8,7 @@
     Aggregates tf2 + sensor topics into typed WorldState Pydantic snapshots
     at 30 Hz using openral_world_state.WorldStateAggregator.
   </description>
-  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <maintainer email="contact@openral.com">OpenRAL Contributors</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
