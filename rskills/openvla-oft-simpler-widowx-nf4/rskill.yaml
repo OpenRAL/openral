@@ -1,4 +1,4 @@
-# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood
 # Base:  Haozhan72/Openvla-oft-SFT-libero-goal-trajall (+ ManiSkill LoRA SFT + PPO)
 #

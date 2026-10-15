@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/smolvla_vlabench (Apache-2.0) — SmolVLA (~0.5 B) finetuned on
 #        VLABench (lerobot/vlabench_unified, 97 tasks).
 # Base:  lerobot/smolvla_base (arxiv:2506.01844)

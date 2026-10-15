@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/smolvla_libero (Apache-2.0)  — the paper-matching ckpt
 # Base:  lerobot/smolvla_base   (arxiv:2506.01844)
 #
@@ -67,8 +67,8 @@ min_vram_gb:
   bf16: 1.2
 # A VLA emits no success signal of its own, so it runs with a reward /
 # progress monitor resident alongside it as the model's completion signal.
-# Robometer (NF4, 3.6 GB) is the default; 1.2 + 3.6 = 4.8 GB fits an 8 GB
-# card with room to spare.
+# Robometer (NF4; robometer-4b declares min_vram_gb.int4 = 5.5 GB measured
+# sidecar footprint) is the default; 1.2 + 5.5 = 6.7 GB fits an 8 GB card.
 reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 # Update by re-running: tools/rskill_publisher.py --bump-revision

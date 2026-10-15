@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/smolvla_metaworld (Apache-2.0)
 # Base:  lerobot/smolvla_base  (arxiv:2506.01844)
 
@@ -81,7 +81,7 @@ latency_budget:
 # ── Provenance ─────────────────────────────────────────────────────────────
 # Headline success rate from rskills/smolvla-metaworld/eval/metaworld_mt50.json,
 # a locally reproduced `openral benchmark run --suite metaworld_mt50` rollout
-# (50 tasks, 1 episode/seed-0; 16/50 solved → avg 0.30). Raise n_episodes for a
+# (50 tasks, 1 episode/seed-0; 15/50 solved → avg 0.30). Raise n_episodes for a
 # paper-equivalent number.
 benchmarks:
   metaworld_mt50: 0.3
@@ -94,7 +94,7 @@ description: >
   SmolVLA (0.45 B) finetuned on MetaWorld MT50 — 50 manipulation tasks on a
   Rethink Sawyer arm (MuJoCo via lerobot). Runs the MT10/MT50 suites
   (benchmarks/metaworld_mt{10,50}.yaml) and 5 demo scenes
-  (scenes/benchmark/metaworld_*.yaml). Locally reproduced on MT50: 16/50
+  (scenes/benchmark/metaworld_*.yaml). Locally reproduced on MT50: 15/50
   solved at 1 ep/seed-0 (avg 0.30); see eval/metaworld_mt50.json. 4-D
   proprio / camera1 contract verified against the checkpoint (no adapter flip —
   lerobot's MetaworldEnv already corrects the corner camera's 180° inversion).

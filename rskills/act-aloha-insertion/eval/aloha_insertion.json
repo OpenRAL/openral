@@ -7,7 +7,7 @@
     "evaluated_by": "OpenRAL:openral benchmark run",
     "reproduced_locally": true,
     "reproduction_planned": null,
-    "reproduction_cli": "openral benchmark run --suite aloha_insertion --rskill act-aloha-insertion",
+    "reproduction_cli": "openral benchmark run --suite aloha --rskill act-aloha-insertion --out rskills/act-aloha-insertion/eval/aloha_insertion.json",
     "table": null,
     "status": "reproduced"
   },

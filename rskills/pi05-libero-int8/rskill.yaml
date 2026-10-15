@@ -1,4 +1,4 @@
-# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 rSkill packaging)
 # Wraps: lerobot/pi05_libero_finetuned_v044 with int8 runtime packing.
 # Base:  lerobot/pi05_base (Physical Intelligence π0.5)
 #
@@ -25,7 +25,7 @@
 # Older "0.5-0.7 at n=10" figure (still in eval/scene_libero_spatial.json) is
 # unusable, not wrong: binomial SD ~0.16 at that n covers most of the spread above.
 #
-# LICENSE (CLAUDE.md §7.4): code Apache-2.0; weights Physical Intelligence
+# LICENSE (CLAUDE.md §3 VLA license matrix): code Apache-2.0; weights Physical Intelligence
 # "permissive research" — commercial deployment needs a separate PI agreement.
 # Loader derives is_commercial_use_allowed=False from license=permissive_research;
 # activating commercially needs OPENRAL_ALLOW_NONCOMMERCIAL=1 + vendor agreement.
@@ -82,7 +82,7 @@ quantization:
   dtype: "int8"
   backend: "pytorch"
 # Informational VRAM ceilings (`ral skill check` / `openral doctor`); actual
-# dtype stays pinned by quantization.dtype (CLAUDE.md §11 forbids silent
+# dtype stays pinned by quantization.dtype (CLAUDE.md §1.4 forbids silent
 # downcast). Peak device memory for a full rollout, GB10, torch
 # max_memory_reserved (allocated in parens): int8 6.35 GB (5.90), bf16 8.06 GB
 # (7.91), fp32 16.10 GB (15.76) — matches the header's "bf16 OOMs on 8 GB".

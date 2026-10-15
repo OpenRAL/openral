@@ -11,7 +11,7 @@
     "reproduction_planned": "Requires a CUDA host; ~hours per LIBERO suite. Paper numbers stay until a full repro run lands.",
     "reproduction_cli": {
       "description": "Re-run this benchmark inside the OpenRAL repo. openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
-      "command": "openral benchmark run --suite libero_spatial --rskill molmoact2-libero",
+      "command": "openral benchmark run --suite libero_spatial --rskill molmoact2-libero-nf4",
       "status": "in-tree (libero_spatial); MolmoAct2 is ~5.5B params so a full LIBERO sweep needs a GPU host",
       "notes": [
         "The 'results' block is the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",

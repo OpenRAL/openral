@@ -1,6 +1,7 @@
 # rSkill manifest — RT-DETR COCO detector (kind: detector)
 #
-# Packages a PaddlePaddle RT-DETR-L model exported to ONNX for use as
+# Packages an RT-DETR r18vd model (hf://PekingU/rtdetr_r18vd_coco_o365)
+# exported to ONNX for use as
 # an OpenRAL perception producer. The skill runs on the camera tee and
 # publishes ObjectsMetadata to /openral/perception/objects.
 #
@@ -41,7 +42,7 @@ quantization:
   dtype: "fp32"
   backend: "onnx"
 
-# RT-DETR-L exported to ONNX. References the in-tree rSkill package.
+# RT-DETR r18vd exported to ONNX. References the in-tree rSkill package.
 # The loader resolves local:// to the local rskills/<id>/ directory.
 weights_uri: "local://rskills/rtdetr-coco-r18"
 
@@ -51,7 +52,7 @@ weights_uri: "local://rskills/rtdetr-coco-r18"
 # execution tick consistent with the camera frame rate.
 chunk_size: 1
 latency_budget:
-  # RT-DETR-L on an NVIDIA GPU is typically 15-30 ms; allow 50 ms budget
+  # RT-DETR r18vd on an NVIDIA GPU is typically 15-30 ms; allow 50 ms budget
   # to cover CPU fallback on smaller hosts.
   per_chunk_ms: 50.0
 
@@ -151,8 +152,8 @@ paper_url: "https://arxiv.org/abs/2304.08069"
 source_repo: "hf://PekingU/rtdetr_r18vd_coco_o365"
 
 description: >
-  RT-DETR-L (Real-Time DEtection TRansformer, large variant) trained on
-  COCO and exported to ONNX. Runs on the camera tee and publishes
+  RT-DETR (Real-Time DEtection TRansformer) with a ResNet-18vd backbone
+  (r18vd), trained on COCO and exported to ONNX. Runs on the camera tee and publishes
   ObjectsMetadata to /openral/perception/objects. 80 COCO categories.
   Apache-2.0 weights. Reference latency ~20 ms on GPU, ~45 ms on CPU.
   This is the detector rSkill kind contract.

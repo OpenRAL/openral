@@ -83,8 +83,8 @@ when the queue empties.
 | --- | --- | --- | --- |
 | in | `observation.images.camera1` | `(1, 3, H, W) float32 [0,1]` | overhead view (→ model `top`) |
 | in | `observation.images.camera2` | `(1, 3, H, W) float32 [0,1]` | wrist/side view (→ model `side`) |
-| in | `observation.state`           | `(1, 6)` float32                | SO-101 6-D joint positions (rad) |
-| out | action chunk                  | `(10, 6)` float32               | absolute joint-position targets |
+| in | `observation.state`           | `(1, 6)` float32                | SO-101 6-D joint positions: 5 arm joints in **degrees** + gripper in LeRobot `[0, 100]` (the runner's `PolicyIOCodec` converts from robot radians / `[0, 1]` per `action_contract.joint_units: degrees`, `gripper_scale: 100`) |
+| out | action chunk                  | `(10, 6)` float32               | absolute joint-position targets, same units as the state (converted back to radians / `[0, 1]` before the HAL) |
 
 **Camera aliases:** the manifest maps slot `camera1 → top` and
 `camera2 → side`; in the `so101_box` scene those slots are `oak_top` and `wrist`.

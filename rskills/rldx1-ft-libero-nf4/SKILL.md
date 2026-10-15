@@ -1,7 +1,7 @@
 ---
 name: rldx1-ft-libero-nf4
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs a Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream Action Transformer flow-matching head producing 16-step LIBERO action chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization on the Qwen3-VL backbone is required to fit on 8 GiB GPUs. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs a Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream Action Transformer flow-matching head producing 16-step LIBERO action chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization (Qwen3-VL backbone and MSAT head) is required to fit on 8 GiB GPUs. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -40,7 +40,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs a Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream Action Transformer flow-matching head producing 16-step LIBERO action chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization on the Qwen3-VL backbone is required to fit on 8 GiB GPUs.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs a Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream Action Transformer flow-matching head producing 16-step LIBERO action chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial). Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization (Qwen3-VL backbone and MSAT head) is required to fit on 8 GiB GPUs.
 
 ## Capabilities
 
