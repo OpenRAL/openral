@@ -82,6 +82,15 @@ def _drive_transition(
 ) -> None:
     req = ChangeState.Request()
     req.transition.id = transition_id
+    # Send the label as well. rclpy's lifecycle server resolves a labelled
+    # request through ``get_transition_by_label`` and answers an invalid one
+    # with ``success=False``; an id-only request goes straight to
+    # ``trigger_transition_by_id``, whose ``RCLError`` escapes the service
+    # callback and kills the target node's executor. So a transition made
+    # redundant by another activator between our state read and this call
+    # (e.g. ACTIVATE on a node already active) is now a refused request that
+    # the post-call state check below accepts, not a crashed node.
+    req.transition.label = transition_label
     future = change_state_client.call_async(req)
     # ``change_state`` runs on_<transition> synchronously on the single-
     # threaded executor, so the future resolves only when it returns.
