@@ -172,7 +172,7 @@ as well; the GB10 runs below have not been repeated on it.
 | `tools/qwen_vlm_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock` (`qwen_vlm-aarch64.lock` on aarch64). Live-verified on GB10: 3.29 GB VRAM, 90.7 s load. Without the override every query dies in `image_grid_thw.prod(-1)` (the nvrtc ceiling). |
 | `tools/locateanything_sidecar.py` | ✅ | ⚠️ resolves, not run | `torch==2.9.1` in `sidecar_requirements/locateanything.lock` (`locateanything-aarch64.lock` on aarch64). `decord` (x86_64-only) is required by the checkpoint's `trust_remote_code` processor, so aarch64 marker-swaps in `decord2`, an Apache-2.0 fork with `manylinux_2_28_aarch64` wheels that installs the same top-level package. |
 | `tools/da3_depth_sidecar.py` | ✅ | ⚠️ resolves, not run | `open3d` and `pycolmap` have no aarch64 wheel, so aarch64 uses a `--no-deps` install recipe plus the shared nvrtc override. Live-verified on GB10 (below). |
-| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ✅ run | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, installs with `uv pip install --no-config` (from the repo root uv otherwise applies the workspace's aarch64 `torch>=2.13` override and the resolve fails), and on aarch64 installs `nvidia-cuda-nvcc==13.0.88` (`_AARCH64_PTXAS`) for a `ptxas` that knows `sm_110` and `sm_121` (the only sidecar compiling its own Triton kernels). Live-verified on GB10 (with the earlier CUDA 12.9 `ptxas`): real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor (2026-10-15, run):** venv provisioned by `_ensure_venv` (`torch 2.9.1+cu130`, arch list `sm_80…sm_110, sm_120`, capability `(11, 0)`); triton 3.5.1's bundled CUDA 12.8 `ptxas` fails on a three-line kernel with `Value 'sm_110a' is not defined for option 'gpu-name'`, the venv's CUDA 13.0 one compiles it. NF4 checkpoint served from the HF snapshot in 74 s boot (6.86 GB on the GPU); `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` passes the finite 14-D action and multi-step chunk tests (its `nvidia-smi` 8 GiB check cannot read memory on Thor: `[N/A]`); `sample_actions` 7.3 s cold, 4.7 s warmed per chunk; the Triton cache holds `robby_moe`'s `_moe_gate_up_grouped_kernel` / `_moe_down_grouped_kernel` / `_moe_pack_selected_kernel` compiled for `arch: 110`, and no `robby_moe_forward failed` fallback warning was logged. |
+| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | ✅ run | Upstream pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper overrides to torch 2.9.1 / triton 3.5.1 (`_V2_OVERRIDES`) with torchcodec marker-scoped off aarch64, installs with `uv pip install --no-config` (from the repo root uv otherwise applies the workspace's aarch64 `torch>=2.13` override and the resolve fails), and on aarch64 installs `nvidia-cuda-nvcc==13.0.88` (`_AARCH64_PTXAS`) for a `ptxas` that knows `sm_110` and `sm_121` (the only sidecar compiling its own Triton kernels). Live-verified on GB10 (with the earlier CUDA 12.9 `ptxas`): real `(50, 14)` chunk bit-identical to the x86 baseline, 6.97 GB VRAM, 6.2 s warmed chunk. **Thor (2026-10-15, run):** venv provisioned by `_ensure_venv` (`torch 2.9.1+cu130`, arch list `sm_80…sm_110, sm_120`, capability `(11, 0)`); triton 3.5.1's bundled CUDA 12.8 `ptxas` fails on a three-line kernel with `Value 'sm_110a' is not defined for option 'gpu-name'`, the venv's CUDA 13.0 one compiles it. NF4 checkpoint served from the HF snapshot in 74 s boot (6.86 GB on the GPU); `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` passes the finite 14-D action and multi-step chunk tests (its `nvidia-smi` 8 GiB check cannot read memory on Thor: `[N/A]`); `sample_actions` 7.3 s cold, 4.7 s warmed per chunk; the Triton cache holds `robby_moe`'s `_moe_gate_up_grouped_kernel` / `_moe_down_grouped_kernel` / `_moe_pack_selected_kernel` compiled for `arch: 110`, and no `robby_moe_forward failed` fallback warning was logged. Re-run offline (`HF_HUB_OFFLINE=1`) without `OPENRAL_QWEN3VL_PATH`: same 2 passed / 1 skip. transformers 4.57.3's tokenizer load calls `huggingface_hub.model_info` for a Hub id and raises offline, so the server resolves the default `Qwen/Qwen3-VL-4B-Instruct` to its cached snapshot when offline (`_offline_snapshot`). |
 | `tools/xr1_sidecar.py` | ✅ (2.9.1 stack) | ✅ run | x86_64 unchanged (`torch 2.9.1+cu128`, flash-attn sdist). aarch64 takes `torch 2.10.0` / `torchvision 0.25.0` / `torchaudio 2.10.0` on `cu130` plus flash-attn 2.8.3's `cu13torch2.10cxx11abiTRUE-cp312` aarch64 release wheel, named by URL (the sdist's `setup.py` maps CUDA 13 to a `cu12` asset name and would build from source). That wheel has no `sm_110` SASS or PTX, so on Thor `_xr1_server.py` probes flash-attn and loads with `attn_implementation="eager"`. Run on Thor — see below. The GB10 runs predate the 2.10 move. |
 | `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; every torch with aarch64 wheels is outside that cap, and the matching `torchcodec==0.5` is x86-only. Lifting this means moving v1 off lerobot 0.4.2. |
 | `tools/rldx_sidecar.py` | ✅ | ⚠️ not resolved | `uv sync` dies on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>`: `torchcodec` and `flash-attn` marker-dropped, torch moved to 2.9.1. Live-verified on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (below). **Thor:** `cu130` has `torch 2.9.1` / `torchvision 0.24.1` cp310 aarch64 wheels, but the full `-e <source>` resolve needs the upstream checkout and was not run. |
@@ -265,7 +265,11 @@ itself has not been run on this host.
 Provisioned on Thor through `xr1_sidecar._ensure_venv` (2026-10-15), then the
 sidecar CLI served `OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564`
 (`prequantized_nf4`, profile `vlabench_choice`) to a client sending the
-manifest's shapes: three 480×480 RGB views, 7-D state.
+manifest's shapes: three 480×480 RGB views, 7-D state. The RoboCasa pack
+(`OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4@5e6c1ea`, profile `robocasa_mg`)
+ran the same way with its manifest's shapes: three 256×256 views, 8-D state,
+`crop_ratio` 0.95. Both served offline (`HF_HUB_OFFLINE=1`) from the manifest's
+`hf://…@sha` ref.
 
 ```
 torch 2.10.0+cu130  arch_list sm_80 sm_90 sm_100 sm_110 sm_120 compute_120
@@ -273,17 +277,23 @@ transformers 4.57.1  bitsandbytes 0.49.2 (NF4 Linear4bit fwd ok on sm_110)
 flash_attn 2.8.3+cu13torch2.10: cubins sm_80/90/100/120, no PTX → "no kernel image"
 [xr1-sidecar] flash-attn has no kernel for sm_110; attn_implementation=eager
 shards loaded in ~4 s; get_action (10, 7) finite; 1.42 s cold, 0.81 s warm
+robocasa_mg: get_action (10, 7) finite; 1.07 s cold, 0.44 s warm (budget 120 s)
 ```
 
 Three things this turned up. The repo root's `[tool.uv]` overrides
 (`torch>=2.13` on aarch64) leak into any `uv pip install` run from the repo,
 which put torch 2.13.0 beside torchaudio 2.10.0 and broke flash-attn's
 extension load until the installs got `--no-config`. MiBoT declares no SDPA
-support, so `eager` is the only fallback transformers accepts. And with
-`HF_HUB_OFFLINE=1` and an `hf://…@rev` ref, `AutoProcessor` silently returns
-the bare Qwen2 tokenizer (forward then fails on missing `state` /
-`action_mask`); the run used the local snapshot path. That last one is not
-Thor-specific and is not fixed here.
+support, so `eager` is the only fallback transformers accepts. And
+transformers 4.57.1's `AutoProcessor` drops `revision` from its config probes,
+so a repo id plus `revision=<sha>` looks the processor up on `main`. A pack
+fetched by sha has no `refs/main`, so offline it found nothing and silently fell
+back to the bare Qwen2 tokenizer; the forward then failed on missing `state` /
+`action_mask`. (The VLABench pack only worked because an earlier online call had
+cached `refs/main`.) Online it read `main`'s processor config, not the pinned
+one. `_xr1_server.py` now resolves the ref to its local snapshot directory
+first, and fails at load if the processor has no `decode_action`. None of this is
+Thor-specific.
 
 ### DA3 depth verified live on GB10
 
