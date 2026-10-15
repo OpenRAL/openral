@@ -479,6 +479,18 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         return self._client.call("set_task", {"instruction": instruction})
 
+    def set_object_position(self, name: str, xyz: tuple[float, float, float]) -> dict[str, Any]:
+        """Teleport scene object ``name`` (``objects`` / ``stage_objects``) to world ``xyz``.
+
+        The sidecar ``set_object_position`` endpoint: orientation kept, velocities
+        zeroed; the next step simulates from there. For scripted scenarios (a test that
+        places the task objects to check the grading); a policy rollout never calls it.
+        The reply: ``position``, the object's world position after the move.
+        """
+        return self._client.call(
+            "set_object_position", {"name": name, "xyz": [float(v) for v in xyz]}
+        )
+
     def _ping(self) -> None:
         """One ping caches ``action_dim`` and the time base together."""
         reply = self._client.call("ping")
@@ -825,6 +837,75 @@ class IsaacSceneObject(BaseModel):
     pose_noise: IsaacObjectPoseNoise | None = None
 
 
+class IsaacStageObject(BaseModel):
+    """A rigid body that already exists inside the environment USD, graded where it lies.
+
+    ``prim`` is its path below the environment's default prim (the stage is referenced
+    at ``/World/environment``), e.g. ``Orange001/Orange001`` for the USD's
+    ``/Root/Orange001/Orange001``. The prim must carry a rigid body; the scene
+    registers it with the World, so each reset returns it to its authored pose, and it
+    is a scene object like ``objects`` for ``placement_success`` and step ``info``.
+
+    Example:
+        >>> IsaacStageObject(name="plate", prim="Plate/Plate").prim
+        'Plate/Plate'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    prim: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+class IsaacDomeLight(BaseModel):
+    """A dome light for an environment USD that ships no lights (``dome_light``).
+
+    Example:
+        >>> IsaacDomeLight(intensity=3000.0, color=(0.75, 0.75, 0.75)).intensity
+        3000.0
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    intensity: float = Field(gt=0.0)
+    color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    @field_validator("color")
+    @classmethod
+    def _unit_rgb(cls, v: tuple[float, float, float]) -> tuple[float, float, float]:
+        if not all(0.0 <= c <= 1.0 for c in v):
+            raise ValueError(f"dome_light.color must be RGB in [0, 1]: {v}")
+        return v
+
+
+class IsaacEnvironmentArchive(BaseModel):
+    """A pinned zip holding the environment USD (``environment_archive``).
+
+    Downloaded once from ``url`` into the openral cache, checked against ``sha256``
+    and extracted; ``usd`` is the environment's path inside the archive. Replaces
+    ``scene.assets_uri`` for a stage that is only published as an archive.
+
+    Example:
+        >>> IsaacEnvironmentArchive(
+        ...     url="https://example.org/kitchen.zip", sha256="0" * 64, usd="kitchen/scene.usd"
+        ... ).usd
+        'kitchen/scene.usd'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(pattern=r"^https://\S+\.zip$")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    usd: str = Field(pattern=r"^[^/\\][^\\]*\.(usd|usda|usdc|usdz)$")
+
+    @field_validator("usd")
+    @classmethod
+    def _inside(cls, v: str) -> str:
+        if ".." in Path(v).parts:
+            raise ValueError(f"environment_archive.usd must stay inside the archive: {v!r}")
+        return v
+
+
 class IsaacCameraMount(BaseModel):
     """Where one manifest camera sits on the robot in the ``isaac_sim`` scene.
 
@@ -914,17 +995,26 @@ class IsaacCameraImagePost(BaseModel):
 
 
 class IsaacPlacementRegion(BaseModel):
-    """A world-frame box a placed object's centre must rest inside (``placement_success``).
+    """A box a placed object's centre must rest inside (``placement_success``).
+
+    World frame, unless ``relative_to`` names a scene object (``objects`` or
+    ``stage_objects``): the box is then an offset (world axes) from that object's
+    centre as it is at each graded step, so a region on a plate follows the plate.
 
     Example:
         >>> IsaacPlacementRegion(min_xyz=(0.1, 0.2, 0.4), max_xyz=(0.5, 0.35, 0.55)).max_xyz
         (0.5, 0.35, 0.55)
+        >>> IsaacPlacementRegion(
+        ...     min_xyz=(-0.1, -0.1, -0.07), max_xyz=(0.1, 0.1, 0.07), relative_to="plate"
+        ... ).relative_to
+        'plate'
     """
 
     model_config = ConfigDict(extra="forbid")
 
     min_xyz: tuple[float, float, float]
     max_xyz: tuple[float, float, float]
+    relative_to: str | None = None
 
     @model_validator(mode="after")
     def _ordered(self) -> IsaacPlacementRegion:
@@ -1088,6 +1178,16 @@ class IsaacSimOptions(BaseModel):
     boot_timeout_s: float = Field(default=_DEFAULT_BOOT_TIMEOUT_S, gt=0)
     timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0)
     objects: list[IsaacSceneObject] = Field(default_factory=list)
+    # Rigid bodies the environment USD already holds (IsaacStageObject), graded in place.
+    stage_objects: list[IsaacStageObject] = Field(default_factory=list)
+    # The environment USD from a pinned archive instead of scene.assets_uri.
+    environment_archive: IsaacEnvironmentArchive | None = None
+    # Environment-USD load fixes for stages authored for older Isaac releases (both opt-in,
+    # both logged): strip UsdPhysics.CollisionAPI from Xform prims (Isaac 6.1 PhysX rejects
+    # a collider that is no geometry, "Supplied PxGeometry is not valid"), and add a dome
+    # light to a stage that ships none (it would render black).
+    strip_xform_colliders: bool = False
+    dome_light: IsaacDomeLight | None = None
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
@@ -1183,7 +1283,7 @@ class IsaacSimOptions(BaseModel):
         Names key ``/World/objects/<name>`` and the World's registry, which
         already holds the scene's own ``robot`` / ``obstacle_<i>``.
         """
-        names = [o.name for o in self.objects]
+        names = [o.name for o in self.objects] + [o.name for o in self.stage_objects]
         dupes = sorted({n for n in names if names.count(n) > 1})
         reserved = [n for n in names if n == "robot" or re.fullmatch(r"obstacle_\d+", n)]
         if dupes or reserved:
@@ -1195,10 +1295,30 @@ class IsaacSimOptions(BaseModel):
 
     @model_validator(mode="after")
     def _placements_name_scene_objects(self) -> IsaacSimOptions:
-        """Every ``placement_success`` object must be a dynamic object of this scene."""
+        """Every ``placement_success`` object must be a dynamic object of this scene.
+
+        A stage object is a rigid body by definition. A region ``relative_to`` must name
+        a scene object, and not the object placed in it (it would always be inside).
+        """
         if self.placement_success is None:
             return self
         dynamic = {o.name: o.dynamic for o in self.objects}
+        dynamic |= {o.name: True for o in self.stage_objects}
+        regions = self.placement_success.regions
+        unknown_refs = sorted(
+            {r.relative_to for r in regions.values() if r.relative_to} - set(dynamic)
+        )
+        if unknown_refs:
+            raise ValueError(
+                f"placement_success regions are relative_to {unknown_refs}, which are not "
+                f"scene objects: {sorted(dynamic)}"
+            )
+        for ps in self.placement_success.tasks.values():
+            for p in ps:
+                if any(regions[r].relative_to == p.object for r in (p.target, *p.adjacent)):
+                    raise ValueError(
+                        f"placement_success places {p.object!r} in a region relative_to itself"
+                    )
         placed = {p.object for ps in self.placement_success.tasks.values() for p in ps}
         unknown = sorted(placed - set(dynamic))
         if unknown:
@@ -2042,9 +2162,15 @@ def _resolve_placement_rubric(
 ) -> dict[str, Any]:
     """One prompt's placements with regions resolved to boxes, plus the shared rubric."""
 
-    def box(name: str) -> dict[str, list[float]]:
+    def box(name: str) -> dict[str, Any]:
         r = placement_success.regions[name]
-        return {"min": [float(v) for v in r.min_xyz], "max": [float(v) for v in r.max_xyz]}
+        out: dict[str, Any] = {
+            "min": [float(v) for v in r.min_xyz],
+            "max": [float(v) for v in r.max_xyz],
+        }
+        if r.relative_to:
+            out["relative_to"] = r.relative_to
+        return out
 
     return {
         "placements": [
@@ -2075,11 +2201,14 @@ def _write_robot_spec(
     gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
     gripper_finger_coupling_rad: float | None = None,
     placement_success: dict[str, Any] | None = None,
+    environment_spec: dict[str, Any] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
-    Returns the temp file path passed to the sidecar via ``--robot-spec`` (the
-    caller unlinks it after connecting) and the robot's description.
+    ``environment_spec`` (``_environment_spec``) carries the environment-USD load
+    options into the spec. Returns the temp file path passed to the sidecar via
+    ``--robot-spec`` (the caller unlinks it after connecting) and the robot's
+    description.
     """
     from openral_sim.registry import ROBOTS
 
@@ -2137,6 +2266,7 @@ def _write_robot_spec(
         # The graded placements (`_placement_success_robot_spec`): the active rubric
         # and, under deploy sim, one per prompt for the sidecar's `set_task`.
         **(placement_success or {"placement_success": None}),
+        **(environment_spec or {}),
     )
     spec["robot_material_colors"] = {k: list(v) for k, v in (robot_material_colors or {}).items()}
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
@@ -2207,6 +2337,75 @@ def _write_robot_spec(
     return path, desc
 
 
+def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
+    """The robot spec's environment-USD load fields (``stage_objects`` and the fixes).
+
+    Example:
+        >>> _environment_spec(IsaacSimOptions())
+        {'stage_objects': [], 'strip_xform_colliders': False, 'dome_light': None}
+    """
+    return opts.model_dump(
+        mode="json", include={"stage_objects", "strip_xform_colliders", "dome_light"}
+    )
+
+
+def _environment_cache_root() -> Path:
+    """Where pinned environment archives are extracted (``$OPENRAL_CACHE_DIR`` honoured)."""
+    base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
+    return base / "isaac-environments"
+
+
+def fetch_environment_archive(archive: IsaacEnvironmentArchive) -> str:
+    """The local environment USD of a pinned archive, downloading it on first use.
+
+    Extracted under ``<cache>/isaac-environments/<sha256[:16]>/``; a completed
+    extraction is marked and reused. The download is announced (CLAUDE.md §1.4) and
+    its sha256 checked before anything is extracted.
+
+    Raises:
+        ROSConfigError: the download fails, its digest differs, or the archive has no
+            ``archive.usd``.
+    """
+    import shutil
+    import urllib.request
+    import zipfile
+
+    root = _environment_cache_root() / archive.sha256[:16]
+    usd = root / archive.usd
+    marker = root / ".extracted"
+    if marker.is_file() and marker.read_text().strip() == archive.sha256 and usd.is_file():
+        return str(usd)
+    print(f"[isaac-sim] fetching pinned environment archive {archive.url} -> {root}", flush=True)
+    root.mkdir(parents=True, exist_ok=True)
+    part = root.with_name(root.name + ".zip.part")
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(archive.url, timeout=60) as resp, part.open("wb") as fh:
+            while chunk := resp.read(1 << 20):
+                digest.update(chunk)
+                fh.write(chunk)
+    except OSError as exc:
+        part.unlink(missing_ok=True)
+        raise ROSConfigError(f"environment_archive {archive.url}: download failed: {exc}") from exc
+    if digest.hexdigest() != archive.sha256:
+        part.unlink(missing_ok=True)
+        raise ROSConfigError(
+            f"environment_archive {archive.url}: sha256 {digest.hexdigest()} differs from the "
+            f"pinned {archive.sha256}."
+        )
+    shutil.rmtree(root)
+    with zipfile.ZipFile(part) as zf:
+        zf.extractall(root)  # zipfile drops absolute and ".." member paths
+    part.unlink()
+    if not usd.is_file():
+        raise ROSConfigError(
+            f"environment_archive {archive.url} has no {archive.usd!r} "
+            f"(top level: {sorted(p.name for p in root.iterdir())})."
+        )
+    marker.write_text(archive.sha256)
+    return str(usd)
+
+
 def provision_isaac_sim() -> None:
     """Build the Isaac sidecar venv — the slow half of a first run.
 
@@ -2237,8 +2436,20 @@ def provision_isaac_sim() -> None:
 def _placement(
     env_cfg: SimEnvironment, opts: IsaacSimOptions
 ) -> tuple[str, str | None, tuple[float, float, float, float], str, str]:
-    """``(layout, environment_usd, spawn, objects_json, world_key)`` for a scene."""
-    environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
+    """``(layout, environment_usd, spawn, objects_json, world_key)`` for a scene.
+
+    The environment is ``scene.assets_uri`` or, exclusively, the USD inside
+    ``backend_options.environment_archive`` (fetched into the cache on first use).
+    """
+    if opts.environment_archive is not None:
+        if env_cfg.scene.assets_uri:
+            raise ROSConfigError(
+                "scene.assets_uri and backend_options.environment_archive both name the "
+                "environment USD; give one."
+            )
+        environment_usd: str | None = fetch_environment_archive(opts.environment_archive)
+    else:
+        environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
     spawn = _spawn_pose(env_cfg.base_pose)
     objects_json = _objects_json(opts.objects) if opts.objects else ""
     layout = opts.layout
@@ -2263,6 +2474,9 @@ def _placement(
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
             "placement_success",
+            "stage_objects",
+            "strip_xform_colliders",
+            "dome_light",
         },
         exclude_defaults=True,
     )
@@ -2377,6 +2591,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.gripper_joint_curve,
         opts.gripper_finger_coupling_rad,
         placement_success=_placement_success_robot_spec(opts.placement_success, env_cfg.task),
+        environment_spec=_environment_spec(opts),
     )
     launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()

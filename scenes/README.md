@@ -317,6 +317,32 @@ A dynamic object without physics gets a rigid body and convex-hull colliders;
 `object_positions` and `robot_position` (simulator ground truth, not a policy
 observation).
 
+**Objects the stage already holds** (rigid bodies authored inside the
+environment USD) are named, not spawned, in `backend_options.stage_objects`:
+`{name, prim}`, the prim's path below the USD's default prim (the stage is
+referenced at `/World/environment`). The prim must carry a rigid body (the boot
+fails otherwise); each reset returns it to its authored pose, and it is a scene
+object for `placement_success` and step `info` like `objects`. A placement region
+may follow one: `relative_to: plate` makes `min_xyz` / `max_xyz` offsets (world
+axes) from the plate's centre at each graded step.
+
+**Stages from older Isaac releases or other tools** may need two opt-in load
+fixes, both logged at boot: `strip_xform_colliders: true` removes
+`UsdPhysics.CollisionAPI` from `Xform` prims of the environment (Isaac 6.1 PhysX
+rejects a collider that is no geometry: "Supplied PxGeometry is not valid"), and
+`dome_light: {intensity, color}` lights a stage that ships no lights. A stage
+published only as a zip comes from `environment_archive: {url, sha256, usd}`
+instead of `scene.assets_uri`: downloaded once into
+`~/.cache/openral/isaac-environments/` (`$OPENRAL_CACHE_DIR`), checked against the
+pinned sha256, extracted; never committed. Shipped:
+[`sim/isaac_leisaac_pick_orange.yaml`](sim/isaac_leisaac_pick_orange.yaml), LeIsaac's
+(LightwheelAI, Apache-2.0) PickOrange kitchen built for Isaac 4.5–5.1, with the SO-101
+at LeIsaac's spawn, its oranges and plate graded in place, and LeIsaac's front and
+wrist cameras as `camera_mounts` (Isaac Lab ROS-convention offsets, `axes: ros`; the
+field of view `hfov_deg = 2·atan(horizontal_aperture / (2·focal_length))` of its
+`PinholeCameraCfg`). Not reproduced: LeIsaac's per-episode object and camera
+randomization, and the arm-at-rest term of its success check.
+
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
 1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at
 that aspect, no wider than `observation_width`) with their FOV. Each is mounted

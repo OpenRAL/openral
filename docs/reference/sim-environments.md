@@ -140,7 +140,10 @@ grade differently. The episode takes its worst object's grade. Reaching the firs
 grade terminates the episode with `success`; otherwise the episode's
 `total_reward` is its final grade's score, and every step's
 `info["placement_grade"]` reports the grade so far. Without the block an Isaac
-scene has no task reward.
+scene has no task reward. A region with `relative_to: <object>` is an offset box
+around that scene object's centre as it is at each graded step (a plate's
+surface), and a graded object may be one the environment USD already holds
+(`backend_options.stage_objects`, see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot)).
 
 Under `openral deploy sim` the scene is task-less (`<scene>/_hal_deploy_noop`, empty
 instruction), so no rubric is active at boot and every prompt's rubric ships to the
@@ -185,6 +188,7 @@ scene:
 | [`xr1_robocasa_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa_pnp.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | `robocasa/PickPlaceCounterToCabinet/0` | XR-1 observation/action integration check; not Xiaomi's RoboCasa v0.2 benchmark |
 | [`xr1_robocasa365_open_drawer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa365_open_drawer.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/OpenDrawer` | `robocasa/OpenDrawer/0` | 200-step XR-1 RoboCasa365 review rollout, not the target50 evaluation |
 | [`xr1_robocasa365_close_blender_lid.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_robocasa365_close_blender_lid.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/CloseBlenderLid` | `robocasa/CloseBlenderLid/0` | 150-step XR-1 RoboCasa365 approval rollout, not the target50 evaluation |
+| [`isaac_leisaac_pick_orange.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/isaac_leisaac_pick_orange.yaml) | `so101_follower` *(declared)* | `isaac_sim` | `isaac_sim/leisaac_pick_orange` | LeIsaac v0.1.0 PickOrange kitchen (Isaac 4.5–5.1 stage) on the Isaac 6.x backend: pinned stage archive, in-stage oranges + plate (`stage_objects`), success = every orange within the plate's ±0.10 m x/y, ±0.07 m z (LeIsaac's arm-at-rest term is not graded); LeIsaac's front/wrist cameras. Every in-repo SO-101 rSkill is degree-trained and `isaac_sim` converts no policy units, so `sim run` refuses them (compat error) |
 | [`xr1_vlabench_select_fruit.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/xr1_vlabench_select_fruit.yaml) | `franka_panda` *(scene-fixed)* | `vlabench` | `vlabench/select_fruit` | Short XR-1 wiring check (front/base/wrist camera order, NF4 rSkill); not a benchmark score |
 
 ## BenchmarkScene catalogue (`scenes/benchmark/`)

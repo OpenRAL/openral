@@ -83,6 +83,7 @@ _SIM_STEMS: list[str] = [
     "aloha_transfer_cube",
     "behavior_turning_on_radio",
     "franka_tabletop_push",
+    "isaac_leisaac_pick_orange",
     "libero_spatial",
     "openarm_tabletop",
     "pusht",
