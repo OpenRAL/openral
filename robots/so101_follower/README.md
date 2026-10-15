@@ -105,10 +105,9 @@ the one loaded into the motors. It sends no position command — no `send_action
 `reset_to_pose` — then validates the terminal E-stop disconnects the motor bus;
 run it attended with the physical power switch within reach. It skips with a reason when the arm is unplugged or its
 12 V supply is off (the USB-serial adapter enumerates on 5 V alone, so the
-port looks healthy while every servo is dark). Running it from CI is manual
-dispatch only (Actions tab → "Run workflow") and needs a
-`[self-hosted, lab-so101]` runner listening; see
-[`docs/contributing/development.md`](../../docs/contributing/development.md#registering-a-lab-so101-hil-runner).
+port looks healthy while every servo is dark). It runs by hand on the bench
+host, not in CI; see
+[`docs/contributing/development.md`](../../docs/contributing/development.md#running-the-so-101-hil-gate).
 
 Motion on this arm — `openral deploy run` — is an attended operation. The
 deploy graph launches the action-stream deadman watchdog and the dashboard /
