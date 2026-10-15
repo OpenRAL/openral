@@ -130,7 +130,8 @@ no `MobileBaseBridge`, so nothing in-tree consumes its `/cmd_vel`.
 `‖ω‖` by the manifest's `max_base_*_speed` (veto + E-stop) and forwards on
 `/openral/safe_action`. After `cmd_vel_timeout_s` (0.5 s, wall clock) of silence
 following motion it publishes one zero twist. It refuses a `base_joints`
-manifest (the bypass above is unchanged) and adds only a speed bound and the
+manifest (the bypass above is unchanged) and a manifest missing either
+`max_base_*_speed` bound (the kernel skips an unset bound), and adds only a speed bound and the
 E-stop latch, not path checking: Nav2's costmap is still the base's only
 collision avoidance. Off by default; `deploy_e2e.launch.py` does not set it.
 

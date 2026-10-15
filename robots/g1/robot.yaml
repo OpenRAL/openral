@@ -452,6 +452,13 @@ safety:
   max_force_n: 100.0
   max_torque_nm: 88.0
   deadman_required: true
+  # BODY_TWIST kernel bounds (issue #405). The ADR-0087 glide integrates any
+  # twist uncapped, so these come from the ADR-0089 walking policy's trained
+  # command box (mujoco_playground g1/joystick.py @ 43d180a2: vx ±1.0, vy ±0.5,
+  # yaw ±1.0). The kernel bounds the Euclidean ‖(vx, vy)‖, so 0.5 is the largest
+  # disk that stays inside the trained vy range.
+  max_base_linear_speed_m_s: 0.5
+  max_base_angular_speed_rad_s: 1.0
 
 # `sdk_kind: open` because the menagerie MJCF + the `mujoco` Python
 # package are both Apache-2.0; the sim HAL needs no closed driver.

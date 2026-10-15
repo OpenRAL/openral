@@ -24,8 +24,9 @@ watchdog, not sim time) after a non-zero command, the relay publishes ONE zero t
 so a dead Nav2 cannot leave a latching base HAL driving on its last command.
 
 Refuses to start (``ROSConfigError``, process exits) when the manifest declares ``base_joints``
-(``MobileBaseBridge`` already consumes ``/cmd_vel``; both would double-actuate) or omits
-``body_twist`` (the kernel would reject every chunk).
+(``MobileBaseBridge`` already consumes ``/cmd_vel``; both would double-actuate), omits
+``body_twist`` (the kernel would reject every chunk), or leaves either ``max_base_*`` bound
+unset (the kernel skips an unset bound, so the relay would add no speed limit).
 
 Nav2 Jazzy publishes ``geometry_msgs/Twist`` (``enable_stamped_cmd_vel`` defaults false and the
 shipped configs leave it unset); Kilted flips that default to ``TwistStamped``.
@@ -96,6 +97,18 @@ def main(args: Any = None) -> None:
             if ControlMode.BODY_TWIST not in description.capabilities.supported_control_modes:
                 raise ROSConfigError(
                     f"twist_to_action_relay: {description.name!r} does not support body_twist"
+                )
+            safety = description.safety
+            if (
+                safety.max_base_linear_speed_m_s is None
+                or safety.max_base_angular_speed_rad_s is None
+            ):
+                # The kernel skips an unset bound, so the relay would add no speed limit at all
+                # (hazard-log Entry 060 Amendment 1, ruling 1).
+                raise ROSConfigError(
+                    f"twist_to_action_relay: {description.name!r} does not declare both "
+                    "safety.max_base_linear_speed_m_s and safety.max_base_angular_speed_rad_s; "
+                    "the kernel would not bound the relayed twist"
                 )
 
             self._base_frame = description.base_frame
