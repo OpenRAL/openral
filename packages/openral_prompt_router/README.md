@@ -1,7 +1,7 @@
 # `openral_prompt_router`
 
-Single ROS 2 lifecycle node that fans in operator prompts from any
-external source into a normalised `openral_msgs/PromptStamped` stream
+Lifecycle node that fans in operator prompts from any source into a
+normalised `openral_msgs/PromptStamped` stream
 on `/openral/prompt`.
 
 ## Topology
@@ -12,11 +12,10 @@ on `/openral/prompt`.
 /openral/prompt_in/auto       /
 ```
 
-Each registered source listens on `/openral/prompt_in/<source>` and the
-router republishes the message onto `/openral/prompt` after stamping
-`{"source": "<source>", "priority": <int>}` onto the
-`metadata_json`. The F4 reasoner consumes `/openral/prompt`
-exclusively — sources never publish there directly.
+Each source listens on `/openral/prompt_in/<source>`; the router stamps
+`{"source": "<source>", "priority": <int>}` into `metadata_json` and
+republishes on `/openral/prompt`. The F4 reasoner consumes only
+`/openral/prompt`; sources never publish there directly.
 
 ## v1 adapters
 
@@ -33,9 +32,8 @@ the "per-source allowlist in deployment YAML").
 ## QoS
 
 `/openral/prompt` and every `/openral/prompt_in/<source>` use
-`RELIABLE + VOLATILE + KEEP_LAST=10`. No silent drops
-— a saturated subscriber surfaces as a structlog warning, not a
-swallowed message.
+`RELIABLE + VOLATILE + KEEP_LAST=10`. A saturated subscriber surfaces as a
+structlog warning, never a silently dropped message.
 
 ## Synopsis
 

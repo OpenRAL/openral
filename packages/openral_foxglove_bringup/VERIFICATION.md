@@ -1,6 +1,5 @@
 # Prototype verification record
 
-Prototype verification spike.
 Verified 2026-06-16 on ROS 2 Jazzy, `foxglove_bridge` 3.2.6.
 
 ## What was proven (real, end-to-end)
@@ -24,9 +23,9 @@ publisher dies, and the topic later reappears from a new publisher, the
 (client subscribes, gets zero messages, no error). Restarting the bridge after
 the publishers are steady fixes it immediately (verified: 0 → 20 Hz delivery).
 
-**Implication for the port:** launch `foxglove_bridge` *after* the OpenRAL
-topic producers are up, or restart it if the topic graph churns (e.g. a sim
-relaunch). Worth tracking as an upstream bridge robustness issue.
+**Implication:** launch `foxglove_bridge` *after* the OpenRAL topic producers
+are up, or restart it if the topic graph churns (e.g. a sim relaunch). This is
+an upstream bridge robustness issue.
 
 ## Reproduce
 
@@ -72,9 +71,8 @@ ACTIVE). Pointed the bridge at it.
 
 ### Idle-stepping is fixed (cameras stream with no skill running)
 
-Earlier I wrongly concluded cameras need a skill to step the sim — that was a
-premature reading taken seconds after boot. **Corrected:** master has an
-autonomous idle-step timer (`sim_sensor_bridge.py`, idle-stepper
+Cameras do not need a skill to step the sim (an earlier reading, taken seconds
+after boot, wrongly concluded they did). Master has an autonomous idle-step timer (`sim_sensor_bridge.py`, idle-stepper
 amendment) gated **only** on the HAL exposing `idle_step`, *not* on the
 graph clock origin. Empirically, the idle OpenArm graph (no skill, reasoner
 unable to dispatch — no LLM) streamed cameras (base ~6 Hz, wrists ~1-2 Hz) and
@@ -191,8 +189,8 @@ It also confirms the write-capable panel set the read-only guard must exclude:
 `Teleop`, `Publish`, `Parameters`, `ServiceCall` — the last of which the guard
 was missing (it listed `CallService`) and now covers under both spellings.
 
-**The SDK is NOT authoritative for the panel type prefixes**, and this is the
-trap worth writing down: it is a *different serialisation*. The SDK emits a
+**The SDK is NOT authoritative for the panel type prefixes**: it is a
+*different serialisation*. The SDK emits a
 nested `{"type":"panel","panelType":…}` tree; this layout uses the app's
 `configById` format keyed `"<PanelType>!<id>"`, and the two disagree — the SDK
 writes the 3D panel as **`ThreeDee`** where every real `configById` layout

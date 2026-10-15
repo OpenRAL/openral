@@ -50,8 +50,8 @@ bowl is grasped and placed:
 > **[`media/progress.mp4`](media/progress.mp4)** (20 frames, downloadable).
 >
 > Runs the lerobot 0.6.0 in-tree `RobometerRewardModel` (plain `transformers`,
-> no `robometer` git package, no `transformers==4.57.1` pin) — a lighter
-> native-integration path than the original vendored-loader recipe (amended).
+> no `robometer` git package, no `transformers==4.57.1` pin), lighter than the
+> original vendored-loader recipe.
 
 ## Quick Start
 
@@ -79,21 +79,20 @@ trajectory-comparison **preference** loss for global ordering. Given a task
 instruction and a rollout video, it predicts per-frame progress (continuous
 values over time) and per-frame success probability.
 
-This rSkill declares `kind: reward` and `role: s2`: it is a pure perception
-**consumer** operating at S2 (slow-reasoning) rate (~0.2–1 Hz), not an S1 fast
-policy. It runs **in parallel with a `kind: vla` policy**, continuously
-ingesting the VLA's camera frames into a rolling window, and the Reasoner
-queries it on demand — *"how is success doing now / over the last X seconds?"* —
-to decide whether to continue, escalate to a scene VLM (`query_scene`), advance
-to the next subgoal, or enter the replanning ladder. It **never drives
-`ros2_control` joints** and never gates motors (CLAUDE.md §1.1).
+It is `kind: reward`, `role: s2`: a pure perception **consumer** at S2
+(slow-reasoning) rate (~0.2–1 Hz), not an S1 fast policy. It runs **in parallel
+with a `kind: vla` policy**, ingesting the VLA's camera frames into a rolling
+window, and the Reasoner queries it on demand (*"how is success doing now / over
+the last X seconds?"*) to decide whether to continue, escalate to a scene VLM
+(`query_scene`), advance to the next subgoal, or enter the replanning ladder. It
+**never drives `ros2_control` joints** and never gates motors (CLAUDE.md §1.1).
 
 ## Why a reward model alongside the VLA
 
-A VLA policy emits actions but has no notion of whether it is *succeeding*.
-Robometer closes that loop: it turns the camera stream into a normalized
-per-frame progress + success signal the Reasoner can act on, so a stalled or
-failing rollout triggers replanning instead of running to a timeout.
+A VLA policy emits actions but cannot tell whether it is *succeeding*. Robometer
+turns the camera stream into a normalized per-frame progress + success signal,
+so a stalled or failing rollout triggers replanning instead of running to a
+timeout.
 
 ## Architecture
 
@@ -142,15 +141,13 @@ End-to-end on an **NVIDIA RTX 4070 Laptop (8 GB)**:
   headroom** for a co-resident small NF4 VLA.
 - **Working monitor**: streaming a real rollout video ("Put green stick in
   brown bowl") through the reward monitor, **progress ramped 0.21 → 0.88** and
-  **success spiked to 0.90 exactly at task completion**, then eased — exactly
-  the Reasoner signal intended.
+  **success spiked to 0.90 exactly at task completion**, then eased.
 
-Run with the expandable-segments allocator config set before the first CUDA
-allocation — `PYTORCH_ALLOC_CONF=expandable_segments:True` on torch ≥2.9,
+The expandable-segments allocator config must be set before the first CUDA
+allocation: `PYTORCH_ALLOC_CONF=expandable_segments:True` on torch ≥2.9,
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on older torch (renamed in
-2.9; the old name now logs a deprecation warning). The reward monitor sets this
-for you. The model loads via lerobot's in-tree Robometer module with plain
-`transformers`.
+2.9; the old name logs a deprecation warning). The reward monitor sets it for
+you.
 
 ## Benchmark Numbers
 
@@ -162,10 +159,9 @@ performance. See the paper for the full tables.
 
 ## Supported robots and embodiments
 
-This reward monitor is **embodiment-agnostic** — it scores camera frames + a
-task instruction and emits scalars, never actuator commands, so it imposes no
-kinematic requirement. The only hardware dependency is an RGB camera stream of
-at least 224×224. It pairs with any S1 VLA policy: the VLA acts, this model
+**Embodiment-agnostic**: it scores camera frames + a task instruction and
+emits scalars, never actuator commands, so the only hardware dependency is an
+RGB camera stream of at least 224×224. It pairs with any S1 VLA policy: the VLA acts, this model
 reports whether the task is progressing / has succeeded.
 
 ## Sensors and Observation Contract
@@ -202,5 +198,5 @@ The model emits no action chunks and has no proprioception contract.
 The rSkill package metadata and README are OpenRAL project files under
 Apache-2.0. The wrapped Robometer-4B weights are released under **Apache-2.0**,
 permitting commercial use. No `OPENRAL_ALLOW_NONCOMMERCIAL=1` flag is needed.
-The reward model now loads through lerobot's in-tree Robometer module with plain
+The model loads through lerobot's in-tree Robometer module with plain
 `transformers`; no pinned upstream `robometer` runtime package is executed.

@@ -42,21 +42,21 @@ contact):
   0.063) against the held (0.262, 0.078, −0.517) half (0.063, 0.042, 0.038), reached outside
   the named search box → `outside_named_search_box` → retracted (re-accepted 2 s later).
 
-Decision (maintainer-approved; the per-gate patching is replaced by one posture): **once a
-region is accepted and map-confirmed while a declaration is live, it is frozen for the life of
-that declaration.** Camera re-fits never shrink, move, grow or retract it. **Only the voxel map
-retracts it** — on every tick with a fresh grid, `map_confirms` of the held box on its measured
-support: `map_disagrees` (the grid no longer holds it: the object removed or moved off it) or
-`map_split` (a second body inside it, unless that body lies wholly in a declared hand's own
-space, whose own points can leak into the map: then a lost view and the freeze TTL runs; a
-foreign body such as a person's hand retracts even with the robot's hand over the box) — or the declaration ends, is
-retracted or expires, or the grid goes stale beyond `freeze_s` (a confirming grid re-stamps the
-box with its `source_stamp`; with no confirming grid it ages out `freeze_s` after the last one).
-Before the first acceptance nothing changes: every gate decides what is accepted. After it,
-re-fits keep running (diagnostics, the instance tracker) and their verdict is logged once per
-change of outcome, `grasp target re-fit ignored, region frozen (map-confirmed) — <the gate's
-reason>`. The camera path (no pre-measurement) is frozen the same way (§3.2). The attach,
-handover, payload and release paths are unchanged. Safety argument and what is given up: §3.7.
+Decision (maintainer-approved; the per-gate patching is replaced by one posture): **once a region is
+accepted and map-confirmed while a declaration is live, it is frozen for the life of that
+declaration.** Camera re-fits never shrink, move, grow or retract it. **Only the voxel map retracts
+it** — on every tick with a fresh grid, `map_confirms` of the held box on its measured support:
+`map_disagrees` (the grid no longer holds it: the object removed or moved off it) or `map_split` (a
+second body inside it, unless that body lies wholly in a declared hand's own space, whose own points
+can leak into the map: then a lost view and the freeze TTL runs; a foreign body such as a person's
+hand retracts even with the robot's hand over the box) — or the declaration ends, is retracted or
+expires, or the grid goes stale beyond `freeze_s` (a confirming grid re-stamps the box with its
+`source_stamp`; with no confirming grid it ages out `freeze_s` after the last one). Before the first
+acceptance nothing changes: every gate decides what is accepted. After it, re-fits keep running
+(diagnostics, the instance tracker) and their verdict is logged once per change of outcome, `grasp
+target re-fit ignored, region frozen (map-confirmed) — <the gate's reason>`. The camera path (no
+pre-measurement) is frozen the same way (§3.2). The attach, handover, payload and release paths are
+unchanged. Safety argument and what is given up: §3.7.
 
 ## 1. Problem
 
@@ -142,10 +142,10 @@ box holds `min_cells` occupied cells above its lowest layer, or a named search b
 2. **Held — frozen (Revision 4).** Every tick, `_map_hold` runs `map_confirms` on the held box and
    its measured support: `map_disagrees` retracts; `map_split` retracts unless every second body
    lies in a declared contact link's own space (`_hand_boxes`: its TCP grown by voxel + occluder
-   margin, reaching the approach distance below; `map_confirms(own=…)`), where it is a lost view (the freeze
-   TTL runs from the box's stamp, nothing re-stamps it); confirmed, the same box is re-accepted
-   stamped with the grid's `source_stamp` — never moved, never grown. A newer re-fit of the
-   instance still runs every gate of step 1 against the held box (`_gate_instance`, tracking,
+   margin, reaching the approach distance below; `map_confirms(own=…)`), where it is a lost view
+   (the freeze TTL runs from the box's stamp, nothing re-stamps it); confirmed, the same box is
+   re-accepted stamped with the grid's `source_stamp` — never moved, never grown. A newer re-fit of
+   the instance still runs every gate of step 1 against the held box (`_gate_instance`, tracking,
    `occluded_refit`, `target_moved`, `unoccluded_refit`), but only its outcome is logged
    (`_refit_ignored`, once per change).
 
@@ -248,11 +248,11 @@ posture (not yet assigned an id); until then it inherits the parameter's default
 
 The prototype crosses no layer boundary (the HAL already consumes `/openral/world_voxels` and owns
 the `SegmentInView` client). It changes two recorded safety judgements, both in the producer, not
-the kernel: the region may be accepted from a camera fit made **before** the arming (bounded by
-the freeze TTL from that fit), and once accepted the map alone **holds** it for the
-declaration's life (Revision 4: camera re-fits are logged, never applied). **An ADR amendment and hazard-log rows are required before the parameter is turned
-on in any committed scene**, Safety-WG reviewed; the kernel is untouched. Draft text for the
-private management log (`OpenRAL/management`, `adr/`):
+the kernel: the region may be accepted from a camera fit made **before** the arming (bounded by the
+freeze TTL from that fit), and once accepted the map alone **holds** it for the declaration's life
+(Revision 4: camera re-fits are logged, never applied). **An ADR amendment and hazard-log rows are
+required before the parameter is turned on in any committed scene**, Safety-WG reviewed; the kernel
+is untouched. Draft text for the private management log (`OpenRAL/management`, `adr/`):
 
 > **ADR-0116 — Pre-measured camera instances as the grasp-target region source (amends ADR-0115).**
 > *Context.* ADR-0115 measures the grasp region from one unoccluded `SegmentInView` fit gated
@@ -293,13 +293,14 @@ private management log (`OpenRAL/management`, `adr/`):
 - `GraspTargetLeg(premeasure=True)`: `_premeasure` (prune, one prompt, `_request` with no
   declaration), `_on_instance_reply` (`_fit` → `map_confirms` → tracker), `_tick_instances` (the
   armed region from the instances, `_gate_instance` → `_gate_refit(complete=False)`; once held,
-  `_map_hold` and `_refit_ignored`). The camera path's freeze: `_hold_frozen`, `_refuse_refit`. Every request is a
-  pre-measurement in this mode; `kernel_region`, `fill`, the handover, the payload and the support
-  witness are untouched.
+  `_map_hold` and `_refit_ignored`). The camera path's freeze: `_hold_frozen`, `_refuse_refit`.
+  Every request is a pre-measurement in this mode; `kernel_region`, `fill`, the handover, the
+  payload and the support witness are untouched.
 - Parameter chain: `VisionAttachmentRuntime.grasp_target_premeasure` (scene) →
-  `vision_attachment_grasp_target_premeasure` (HAL param, `deploy_sim._vision_attachment_hal_params`)
-  → `VisionAttachmentConfig.grasp_target_premeasure` → the leg. Default off everywhere; needs
-  `grasp_target_enabled`; the approach-armed path also needs `grasp_target_approach_m`.
+  `vision_attachment_grasp_target_premeasure` (HAL param,
+  `deploy_sim._vision_attachment_hal_params`) → `VisionAttachmentConfig.grasp_target_premeasure` →
+  the leg. Default off everywhere; needs `grasp_target_enabled`; the approach-armed path also needs
+  `grasp_target_approach_m`.
 - Tests: `tests/unit/test_object_primitives.py` (the committed Isaac warehouse scene's three props
   on the pallet deck at 15 mm cells, ray-cast into the manifest's `head_zed` —
   `tests/unit/_head_camera_render.py`: each prop one confirmed instance in the kernel's contract,

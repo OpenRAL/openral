@@ -35,15 +35,14 @@ surfacing, latency budgets, and local registry integration. It does **not**
 copy model weights.
 
 > **Runtime status.** The manifest, license posture, and `model_family: gr00t`
-> are wired and tested, and the runtime adapter has landed —
-> `openral_sim.policies.gr00t` runs GR00T N1.7 **in-process** under the
-> workspace's Python 3.12 via lerobot 0.6.0's native `GrootPolicy`
-> (backbone-only NF4 quantization), the same pattern as the SmolVLA/π0.5
-> adapters — not the out-of-process sidecar originally planned; there is no
-> `tools/gr00t_sidecar.py`. (`tools/behavior_groot_sidecar.py` is unrelated:
-> it drives the separate, external Python 3.10 `wensi-ai/Isaac-GR00T` runtime
-> for the official 2026 BEHAVIOR-1K organizer checkpoint, not this rSkill.)
-> `eval/libero_spatial.json` carries `reproduced_locally: true`.
+> are wired and tested. `openral_sim.policies.gr00t` runs GR00T N1.7
+> **in-process** under the workspace's Python 3.12 via lerobot 0.6.0's native
+> `GrootPolicy` (backbone-only NF4 quantization), like the SmolVLA/π0.5
+> adapters; there is no out-of-process sidecar and no `tools/gr00t_sidecar.py`.
+> (`tools/behavior_groot_sidecar.py` is unrelated: it drives the external
+> Python 3.10 `wensi-ai/Isaac-GR00T` runtime for the official 2026 BEHAVIOR-1K
+> organizer checkpoint.) `eval/libero_spatial.json` carries
+> `reproduced_locally: true`.
 
 ## Upstream model, architecture & training
 

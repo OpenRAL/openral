@@ -1,12 +1,11 @@
 # `so101_follower` — Robot description
 
 Canonical `RobotDescription` manifest for the **LeRobot SO-101 follower
-arm** — the hardware revision of the SO-100. Same 6-DoF kinematic
-chain (5-DoF arm + 1-DoF parallel jaw) driven over a USB serial bus
-by Feetech STS3215 servos; updated Onshape-derived mechanical design
-and calibration. The lerobot SDK driver is unchanged (the SO-100 +
-SO-101 share `SO100FollowerHAL` / `SO100DigitalTwin` on the serial
-side); only the MJCF mesh set differs.
+arm**, the hardware revision of the SO-100: the same 6-DoF chain (5-DoF arm +
+1-DoF parallel jaw) on Feetech STS3215 servos over a USB serial bus, with an
+updated Onshape-derived mechanical design and calibration. The lerobot SDK
+driver is unchanged (both share `SO100FollowerHAL` / `SO100DigitalTwin` on the
+serial side); only the MJCF mesh set differs.
 
 ## At a glance
 
@@ -38,8 +37,8 @@ acceleration ≤ 2.0 m/s². Deadman required.
 | `wrist_roll`    | revolute | ±2.7925 | 4.5 | 3.35 |
 | `gripper`       | revolute | 0 — 1 (normalised, **not** rad) | 4.5 | 3.35 |
 
-The gripper row is the one exception to the "Limits (rad)" heading: that
-channel carries a normalised `[0 = closed, 1 = open]` jaw fraction, and
+The gripper channel is not in rad: it carries a normalised
+`[0 = closed, 1 = open]` jaw fraction, and
 `position_limits` declares the unit the safety envelope and the runner's
 pre-clamp compare against. The jaw's mechanical `[−0.1745, 1.7453] rad`
 range lives in `sim.grippers[].ctrl_range` and the URDF (issue #62).
@@ -47,18 +46,16 @@ range lives in `sim.grippers[].ctrl_range` and the URDF (issue #62).
 MJCF reference: `robot_descriptions:so_arm101_mj_description` —
 `TheRobotStudio/SO-ARM100/Simulation/SO101/so101_new_calib.xml`
 (Apache-2.0). The MJCF declares its hinge joints as numeric names
-(`"1"`…`"6"`); `MujocoArmHAL._sim_kwargs_for` resolves them
-by index against `description.joints`, so the manifest's logical
-names (`shoulder_pan`, …, `gripper`) drive the user-facing contract
-while the MJCF stays as upstream ships it.
+(`"1"`…`"6"`); `MujocoArmHAL._sim_kwargs_for` resolves them by index against
+`description.joints`, so the manifest's names (`shoulder_pan`, …, `gripper`)
+form the user-facing contract while the MJCF stays as upstream ships it.
 
 ## Detect & deploy
 
-The SO-101 is electrically identical to the SO-100 over USB — the same Feetech
-controller and USB VID/PID — so the bus alone cannot tell them apart. The SO-101
-is the current revision, so a bare `openral detect` resolves to **this** manifest
-by default (no `--robot` flag needed; an SO-100 is selected with `--robot
-so100`). Use detection to validate/write robot-owned facts:
+The SO-101 is electrically identical to the SO-100 over USB (same Feetech
+controller and VID/PID), so the bus cannot tell them apart. As the current
+revision, it is what a bare `openral detect` resolves to; select an SO-100 with
+`--robot so100`. Use detection to validate/write robot-owned facts:
 
 ```bash
 openral connect --robot so101                    # smoke-test the serial link
@@ -92,21 +89,22 @@ discovers late — a declared serial port, a calibration file that actually
 exists (the "has no calibration registered" failure), and a `deploy_binding`
 per camera. The `top` / `wrist` bindings are per host, in
 `units/<unit>.yaml` (the bench laptop's is `units/bench_laptop.yaml`, which
-`so101_bench.yaml` selects with `robot_unit`; `OPENRAL_ROBOT_UNIT` overrides it). A
-second SO-101 host adds its own unit file instead of editing `robot.yaml`. A stale
-path is reported as a warning, and retuning the unit file against
-`ls -l /dev/v4l/by-id /dev/v4l/by-path` is the fix. Never bind a raw `/dev/videoN` — USB enumeration order renumbers
-them on replug.
+`so101_bench.yaml` selects with `robot_unit`; `OPENRAL_ROBOT_UNIT` overrides
+it). A second SO-101 host adds its own unit file instead of editing
+`robot.yaml`. A stale path is reported as a warning; fix it by retuning the unit
+file against `ls -l /dev/v4l/by-id /dev/v4l/by-path`. Never bind a raw
+`/dev/videoN`: USB enumeration renumbers them on replug.
 
 `just hil-so101` is the HIL gate. It opens the real serial bus, runs the
 pre-flight servo ping, and reads state back, asserting the joint names, shape,
 units and envelope against this manifest and that the committed calibration is
-the one loaded into the motors. It sends no position command — no `send_action`, no
-`reset_to_pose` — then validates the terminal E-stop disconnects the motor bus;
-run it attended with the physical power switch within reach. It skips with a reason when the arm is unplugged or its
-12 V supply is off (the USB-serial adapter enumerates on 5 V alone, so the
-port looks healthy while every servo is dark). It runs by hand on the bench
-host, not in CI; see
+the one loaded into the motors. It sends no position command (no
+`send_action`, no `reset_to_pose`), then validates that the terminal E-stop
+disconnects the motor bus; run it attended with the physical power switch
+within reach. It skips with a reason when the arm is unplugged or its 12 V
+supply is off (the USB-serial adapter enumerates on 5 V alone, so the port
+looks healthy while every servo is dark). It runs by hand on the bench host,
+not in CI; see
 [`docs/contributing/development.md`](../../docs/contributing/development.md#running-the-so-101-hil-gate).
 
 Motion on this arm — `openral deploy run` — is an attended operation. The

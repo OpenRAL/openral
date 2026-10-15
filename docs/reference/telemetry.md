@@ -1,12 +1,12 @@
 # Telemetry reference — spans, metrics, logs, instrumentation
 
 Everything OpenRAL reports at runtime, where it comes from, how often it fires,
-and where it surfaces. If a signal is not in this file, it does not exist; if it
-is here and marked **not emitted**, the name exists but nothing produces it.
+and where it surfaces. If a signal is not here, it does not exist; if it is marked
+**not emitted**, the name exists but nothing produces it.
 
-Names are normative and live in
-[`openral_observability.semconv`](https://github.com/OpenRAL/openral/blob/master/python/observability/src/openral_observability/semconv.py) —
-that module is the single source of truth, this page is its annotated index.
+Names are normative in
+[`openral_observability.semconv`](https://github.com/OpenRAL/openral/blob/master/python/observability/src/openral_observability/semconv.py);
+this page is its annotated index.
 
 **Contents:** [How it flows](#how-it-flows) · [Spans](#spans) ·
 [Span events](#span-events) · [Metrics](#metrics) · [Logs](#logs) ·
@@ -29,9 +29,9 @@ that endpoint is the **in-tree dashboard**, which is itself an OTLP receiver:
    └──────────────▶ otel-collector ──▶ Jaeger (traces) / Prometheus (metrics)
 ```
 
-So spans, metrics **and every log line** land in the same store that feeds the
-operator's Event Log. That is why the banding rules below matter as much as the
-signals themselves: without them the panel is unreadable.
+So spans, metrics and every log line land in the same store that feeds the
+operator's Event Log, which is why the banding rules below matter: without them
+the panel is unreadable.
 
 With `--no-dashboard` and no `OTEL_EXPORTER_OTLP_ENDPOINT`, the whole SDK is a
 no-op — no providers, no exporters, and structlog falls back to its console
@@ -230,9 +230,9 @@ Rough shape of the deploy-relevant call sites: ~199 `info`, ~197 `warning`,
 ### The deploy-sim task-success signal
 
 `openral deploy sim` runs its backend continuously, which suppresses the
-simulator's own per-step task evaluation — so nothing in the deploy stack used
-to state whether the scene's task (e.g. "cup placed in the sink") had actually
-been completed. `SimAttachedHAL` therefore polls the backend's own predicate
+simulator's own per-step task evaluation. So that the deploy stack can still state
+whether the scene's task (e.g. "cup placed in the sink") was completed,
+`SimAttachedHAL` polls the backend's own predicate
 (RoboCasa's per-task `env._check_success()`; `openral_sim.rollout.SimRollout`'s
 optional `task_success` extension) once per `env.step` and reports it:
 
@@ -280,9 +280,6 @@ validation run's artifacts.
 Observability only: the verdict reaches the log and nothing else. It never
 feeds termination, reset, reward, or the action path (CLAUDE.md §1.4).
 
-`ROSSafetyViolation` is never caught except at the safety-supervisor boundary,
-where it triggers E-stop plus a structured incident log (CLAUDE.md §5).
-
 ### The E-stop ground-truth signals
 
 `SimSensorBridge` records every kernel stop, carried payload or not. Three lines,
@@ -301,22 +298,6 @@ reported `horizon_step`, serialized at `max_digits10` so it round-trips exactly.
 For a *predicted* step that configuration exists in no other artifact, so
 without it such a stop can only be adjudicated against the measured joints,
 which is a different pose.
-
-### Graded velocity scaling
-
-Off by default (`collision_scale_proximity_m: 0.0`). When armed, an **accepted**
-chunk near an obstacle is republished with its rate columns scaled, and that is
-disclosed three ways:
-
-| Signal | Where | Carries |
-|---|---|---|
-| `safety.velocity_scale` | `safety.check` span attribute | the scale in `(0, 1]` applied to this chunk |
-| `safety.scale_slack_m` | `safety.check` span attribute | clearance above the gate margin that produced it |
-| `safety.collision_scaled` | kernel log, **transition-gated** | scale, slack, band, control mode, `rskill_id` — emitted when the scale moves by ≥ 0.1 or the band is cleared, not per chunk (the accept path runs at 30–200 Hz) |
-| `scaled` | `/diagnostics` key-value, 1 Hz | count of chunks republished slower. A subset of `passed`, never of `dropped` — a scaled chunk *was* accepted and executed. |
-
-The `/diagnostics` counter is the continuous signal; the log line is the
-transition. Reading only the log undercounts, by design.
 
 Each pair inside `nearest_*_pairs` carries its own **proof**, not just a number:
 `distance_m`, `distance_certified`, `distance_method`, `witness_a_xyz` /
@@ -346,6 +327,22 @@ that stop is still at the initial configuration.
 Diagnostics only (CLAUDE.md §1.4). The stop itself is correct and is neither
 suppressed, delayed, nor altered — an initial pose that interpenetrates the
 scene is exactly what the kernel exists to refuse. All the line does is name it.
+
+### Graded velocity scaling
+
+Off by default (`collision_scale_proximity_m: 0.0`). When armed, an **accepted**
+chunk near an obstacle is republished with its rate columns scaled, and that is
+disclosed three ways:
+
+| Signal | Where | Carries |
+|---|---|---|
+| `safety.velocity_scale` | `safety.check` span attribute | the scale in `(0, 1]` applied to this chunk |
+| `safety.scale_slack_m` | `safety.check` span attribute | clearance above the gate margin that produced it |
+| `safety.collision_scaled` | kernel log, **transition-gated** | scale, slack, band, control mode, `rskill_id` — emitted when the scale moves by ≥ 0.1 or the band is cleared, not per chunk (the accept path runs at 30–200 Hz) |
+| `scaled` | `/diagnostics` key-value, 1 Hz | count of chunks republished slower. A subset of `passed`, never of `dropped` — a scaled chunk *was* accepted and executed. |
+
+The `/diagnostics` counter is the continuous signal; the log line is the
+transition. Reading only the log undercounts, by design.
 
 ### The RoboCasa scene composition
 
@@ -450,7 +447,8 @@ no longer true**, and the replacement is deliberately a different signal
 rather than a revival of this one. Distance-graded velocity scaling *does*
 modify a commanded value: an accepted chunk near an obstacle is republished
 with its rate columns multiplied by a scale in `(0, 1]`, reported by
-`safety.velocity_scale` / `safety.scale_slack_m` (below), which carry *how
+`safety.velocity_scale` / `safety.scale_slack_m` (see
+[Graded velocity scaling](#graded-velocity-scaling)), which carry *how
 much* and *why* — `safety.clamped` carried only a boolean. The envelope layer
 still never clamps; a second, separately-named mechanism now sits beside it.
 

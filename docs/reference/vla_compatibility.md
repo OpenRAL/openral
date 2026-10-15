@@ -1,17 +1,16 @@
 # VLA × Robot × Simulation Compatibility Matrix
 
-This document is the canonical reference for which Vision-Language-Action models run on which robots under which simulators in the OpenRAL ecosystem. It is derived from upstream model cards, published papers, and checkpoint inspection. Entries marked **TBD** have not been locally verified; contributions welcome via PRs that include checkpoint inspection evidence.
+Canonical reference for which Vision-Language-Action models run on which robots under which simulators, derived from upstream model cards, papers, and checkpoint inspection. **TBD** entries are not locally verified; PRs that fill them must include checkpoint-inspection evidence.
 
-See also: `CLAUDE.md §7.4` for the normative license matrix and `CLAUDE.md §6.4` for the rSkill packaging format.
+The normative license matrix and the rSkill packaging format are in [`CLAUDE.md`](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §3.
 
 ---
 
 ## 1. Robots (primary reference embodiments)
 
-The full set of **18** integrated `RobotDescription` manifests — with HAL
-modules and per-robot status — lives in
-[docs/reference/robots.md](robots.md). The two rows below detail the
-observation/action **control contract** for the two most-exercised sim
+The full set of **18** integrated `RobotDescription` manifests, with HAL
+modules and per-robot status, is in [robots.md](robots.md). The rows below give
+the observation/action control contract for the two most-exercised sim
 embodiments; every other robot follows the same pattern.
 
 | Robot | Embodiment tags | DoF | Control mode | HAL module | Sim env |
@@ -55,16 +54,10 @@ Embodiment tags are short strings that appear in `rskill.yaml` under `embodiment
 
 ## 3. VLA Compatibility Matrix
 
-Columns:
-- **VLA (HF ID)** — canonical Hugging Face model ID
-- **Sim env** — benchmark / simulator
-- **Robot tag** — required embodiment tag(s)
-- **State dim** — observation state vector
-- **Cameras** — image inputs (resolution + any pre-processing)
-- **Norm stats in checkpoint** — whether normalisation statistics are bundled
-- **rSkill** — local skill stub path (if exists)
-- **License** — SPDX expression for the *weights* (code license may differ)
-- **Notes**
+Column notes: **Cameras** = image inputs (resolution + pre-processing); **Norm
+stats** = whether normalisation statistics are bundled in the checkpoint;
+**rSkill** = local skill path, if any; **License** = SPDX expression for the
+*weights* (code license may differ). ✓ = locally verified.
 
 ### 3.1 LIBERO (Franka Panda, MuJoCo via robosuite)
 
@@ -242,9 +235,9 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **Checkpoint normalisation requires `snapshot_download`**: `lerobot/smolvla_libero` bundles normalisation statistics in `policy_preprocessor_step_5_normalizer_processor.safetensors`. A bare `from_pretrained` call that only fetches `model.safetensors` + `config.json` will fail at inference time. Use `snapshot_download(repo_id="lerobot/smolvla_libero")` or `hf_hub_download` for the preprocessor file explicitly.
 
-- **GR00T weights — license is version-specific**: GR00T **N1 / N1.5 / N1.6** ship under the NVIDIA OneWay Noncommercial License. Any checkpoint that builds on those bases (e.g., `ar0s/groot_libero`) inherits the non-commercial restriction even if the fine-tune layer is Apache-2.0 — the rSkill manifest sets `license: nvidia_non_commercial` and the loader requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` for a commercial deployment. GR00T **N1.7+** ship under the **NVIDIA Open Model License**, which permits commercial use — those manifests set `license: nvidia_open_model` (e.g., `rskills/gr00t-n17-libero`) and load without the guard. GR00T N1.7 runs **in-process** under the workspace's Python 3.12 via lerobot 0.6.0's native `GrootPolicy` with backbone-only NF4; the older Python-3.10 ZMQ sidecar is deleted. RLDX-1 (a GR00T-N1.5 finetune) still runs on its own ZMQ sidecar.
+- **GR00T weights — license is version-specific**: N1 / N1.5 / N1.6 ship under the NVIDIA OneWay Noncommercial License, and any checkpoint built on them (e.g. `ar0s/groot_libero`) inherits it even if the fine-tune layer is Apache-2.0: the manifest sets `license: nvidia_non_commercial` and the loader requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` for a commercial deployment. N1.7+ ship under the NVIDIA Open Model License (commercial OK): manifests set `license: nvidia_open_model` (e.g. `rskills/gr00t-n17-libero`) and load without the guard. The older Python-3.10 GR00T ZMQ sidecar is deleted (runtime posture in §6). RLDX-1 (a GR00T-N1.5 finetune) still runs on its own ZMQ sidecar.
 
-- **π0 / π0.5 weights are "permissive research", not full Apache-2.0**: The code under `lerobot/` is Apache-2.0; the *weights* for `pi0` and `pi05` checkpoints carry a Physical Intelligence permissive-research license that is not equivalent to Apache-2.0 for commercial deployment. The corresponding rSkill manifests set `commercial_use_allowed: false`. See `CLAUDE.md §7.4` for the full VLA license matrix.
+- **π0 / π0.5 weights are "permissive research", not full Apache-2.0**: The code under `lerobot/` is Apache-2.0; the *weights* for `pi0` and `pi05` checkpoints carry a Physical Intelligence permissive-research license that is not equivalent to Apache-2.0 for commercial deployment. The corresponding rSkill manifests set `commercial_use_allowed: false`.
 
 - **Reward monitor (`rskills/robometer-4b`) co-residency on 8 GB**: The Robometer-4B reward monitor (`kind: reward`) runs in parallel with a VLA to score per-frame progress/success. At NF4 it is ~3.33 GB resident / 3.56 GB peak (8-frame window) on the 8 GB reference GPU, leaving ~4.4 GB — enough for a **small NF4 VLA** (e.g. SmolVLA ≈ 1.5–2 GB) but **not** a 3–4 GB π0.5/GR00T checkpoint simultaneously. When the VLA already saturates the card, run the reward monitor on CPU, a second GPU, or a cloud host, or shrink the reward `frame_window_s` / `num_bins` (activation peak scales with both). It is an **S2-cadence** monitor (~0.2–1 Hz over a frame window), not a per-control-step signal, and is **advisory-only** (never gates motors). In `deploy-sim`, the signal is only available on camera-rendering robots (the monitor needs `sensor_msgs/Image` frames). Apache-2.0; commercially usable.
 
@@ -268,7 +261,7 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **π0.5 requires ≥8 GB VRAM**: The PaliGemma-3B backbone requires more memory than the 7-class GPU can provide in typical shared use. Use `--device cpu` for slow inference or a dedicated A100/H100 for production eval.
 
-- **MetaWorld uses Sawyer, not Franka**: Despite the `franka_panda` embodiment tag in the lerobot metaworld dataset metadata, MetaWorld MT50 uses the Sawyer arm. The tag refers to the broader manipulation skill class, not the physical robot. Do not use smolvla_metaworld weights on a real Franka without re-training.
+- **MetaWorld uses Sawyer, not Franka** (see §3.3): the `franka_panda` tag in the lerobot metaworld dataset metadata refers to the broader manipulation skill class. Do not use smolvla_metaworld weights on a real Franka without re-training.
 
 - **LIBERO `~/.libero/config.yaml` must point at the data files**: After installing `hf-libero` via pip, the config file at `~/.libero/config.yaml` pins absolute paths computed at first import and is never refreshed when you switch venv / workspace path. The next `just sim-libero` / `just sim-xvla-libero` / `just sim-pi05-libero` run then crashes inside `lerobot.envs.libero.get_task_init_states` with a `FileNotFoundError` on `<stale-path>/init_files/<task>.pruned_init`. The `_ensure-libero-config` private recipe (chained off every libero `just sim-*` target) invokes [`tools/fix_libero_config.py`](https://github.com/OpenRAL/openral/blob/master/tools/fix_libero_config.py) to detect + rewrite the file when stale; idempotent. Run it manually any time with `uv run --group libero python tools/fix_libero_config.py --verbose`, or set `LIBERO_CONFIG_PATH` to a project-local dir to bypass `~/.libero` entirely.
 

@@ -1,9 +1,8 @@
 # `openral_hal`
 
-Hardware Abstraction Layer for **OpenRAL** — Layer 0 in the seven-layer
-architecture (CLAUDE.md §3). This package owns the `HAL` Protocol
-that every robot adapter must satisfy and ships concrete adapters for the
-robots OpenRAL targets today.
+Hardware Abstraction Layer, Layer 0 of the seven-layer architecture
+(CLAUDE.md §3): the `HAL` Protocol every robot adapter satisfies, plus the
+concrete adapters for the robots OpenRAL targets today.
 
 ## Synopsis
 
@@ -24,8 +23,8 @@ hal.disconnect()
 ```
 
 The `HAL` Protocol is **structural**: any class with `connect / disconnect /
-read_state / send_action / estop` and an `embodiment_tag: str` field
-satisfies it. There is no inheritance requirement.
+read_state / send_action / estop` and an `embodiment_tag: str` field satisfies
+it, without inheriting from anything.
 
 ## What's in here
 
@@ -47,7 +46,7 @@ satisfies it. There is no inheritance requirement.
 | `sawyer_real.py` | `SawyerRealHAL` + `SAWYER_DESCRIPTION` (sim baseline) + `SAWYER_REAL_DESCRIPTION` — real-hardware adapter over `sawyer_robot` / `intera_sdk` (issue #57). |
 | `aloha.py` | `AlohaHAL` + `ALOHA_DESCRIPTION` (sim baseline) + `ALOHA_REAL_DESCRIPTION` (real HW; Trossen ALOHA via `interbotix_xs_sdk` — not `ros2_control`/`controller_manager`, issue #58; `AlohaHAL.connect()` does not yet wire a real hardware transport) **and** `AlohaMujocoHAL` (MuJoCo digital twin via the gym-aloha bimanual MJCF, same 14-DoF action layout as `AlohaHAL`). |
 | `g1.py` | `G1MujocoHAL` + `G1_DESCRIPTION` — Unitree G1 humanoid (29-DoF) MuJoCo digital twin. ADR-0087 glide is the default; `walking_enabled=True` uses ADR-0089's pinned Apache-2.0 MuJoCo Playground ONNX policy + matching MJCF for gravity-on sim walking. |
-| `h1.py` | `H1MujocoHAL` + `H1_DESCRIPTION` — Unitree H1 humanoid (19-DoF, predecessor to the G1) MuJoCo digital twin on the `mujoco_menagerie/unitree_h1` MJCF. Same contract-validator scope as the G1; falls without gravity disabled. First HAL whose underlying MJCF uses torque actuators rather than position actuators — runs a software PD position loop every `mj_step` via the `MujocoArmHAL._per_step_update` hook so the public action contract stays "position targets in radians". |
+| `h1.py` | `H1MujocoHAL` + `H1_DESCRIPTION` — Unitree H1 humanoid (19-DoF, predecessor to the G1) MuJoCo digital twin on the `mujoco_menagerie/unitree_h1` MJCF. First HAL whose MJCF uses torque rather than position actuators: a software PD position loop runs every `mj_step` via the `MujocoArmHAL._per_step_update` hook, so the public action contract stays "position targets in radians". |
 | `flexiv_rizon4.py` | `Rizon4MujocoHAL` + `RIZON4_DESCRIPTION` — Flexiv Rizon 4 cobot (7-DoF, whole-body force sensitivity) MuJoCo digital twin on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper, no floating base. Real-HW path wrapping `flexivrobotics/flexiv_rdk` is a planned follow-up. |
 | `openarm.py` | `OpenArmMujocoHAL` + `OPENARM_DESCRIPTION` — Enactic OpenArm v2 bimanual humanoid arm (16-DoF: 7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF. Fresh `HALBase` subclass — v2 ships native `<position>` actuators with per-class PD gains baked into the MJCF, so the HAL just writes target → ctrl and steps. v2 MJCF fetched lazily via `openral_hal._openarm_v2_assets` (the `robot_descriptions` package still pins to a pre-v2 commit; helper drops out when upstream bumps). |
 | `openarm_real.py` | `OpenArmRealHAL` + `OPENARM_REAL_DESCRIPTION` — real Enactic OpenArm v2 over `openarm_bringup`'s `ros2_control` stack, sharing `OPENARM_DESCRIPTION` with the twin. Not Python-side CAN: the OpenArm loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++, so the chain is `Action` → four command topics → `controller_manager` → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors. Fans one 16-DoF action across the four controllers the bimanual bringup spawns (per-side arm + gripper), reads `/joint_states` by joint name, and refuses to `connect()` over a CAN link that is down. |
@@ -82,7 +81,7 @@ in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
 | Unitree G1 (MuJoCo digital twin) | `G1MujocoHAL` | ✓ sim (`tests/sim/test_g1_hal_mujoco.py`) | 29-DoF humanoid: stock Menagerie contract twin + ADR-0087 glide, or explicit ADR-0089 gravity-on walking with the pinned MuJoCo Playground ONNX controller. Real-HW G1 still requires the M2 C++ S0 controller. |
 | Unitree H1 (MuJoCo digital twin) | `H1MujocoHAL` | ✓ sim (`tests/sim/test_h1_hal_mujoco.py`) | 19-DoF humanoid (G1's predecessor) on the `mujoco_menagerie/unitree_h1` MJCF. Same contract-validator scope as G1; falls without gravity disabled. Software PD position loop wraps the MJCF's torque actuators (mirrors `unitree_sdk2` on hardware). Real-HW H1 also planned under M2. |
 | Flexiv Rizon 4 (MuJoCo digital twin) | `Rizon4MujocoHAL` | ✓ sim (`tests/sim/test_rizon4_hal_mujoco.py`) | 7-DoF cobot with whole-body force sensitivity (0.1 N) on the `mujoco_menagerie/flexiv_rizon4` MJCF. Drop-in `MujocoArmHAL` subclass — position actuators, no gripper. Real-HW Rizon 4 path wraps `flexivrobotics/flexiv_rdk` (Python + C++ SDK; closed-with-api per CLAUDE.md §7.4). |
-| Enactic OpenArm v2 (MuJoCo digital twin) | `OpenArmMujocoHAL` | ✓ sim (`tests/sim/test_openarm_hal_mujoco.py`) | 16-DoF bimanual (7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF (PR #19 on master). v2's native `<position>` actuators with per-class PD baked in let the HAL just write target → ctrl. Shares `OPENARM_DESCRIPTION` with the real adapter below. |
+| Enactic OpenArm v2 (MuJoCo digital twin) | `OpenArmMujocoHAL` | ✓ sim (`tests/sim/test_openarm_hal_mujoco.py`) | 16-DoF bimanual (7 arm + 1 gripper per side) on the `enactic/openarm_mujoco` **v2** bimanual MJCF (PR #19 on master). Shares `OPENARM_DESCRIPTION` with the real adapter below. |
 | Enactic OpenArm v2 (real-HW) | `OpenArmRealHAL` | ✓ unit + live CAN HIL | `openarm_bringup` `ros2_control` (4 controllers, 16-DoF) over the C++ `openarm_hardware` SystemInterface and two Damiao CAN FD buses (1 Mbit/s nominal, 5 Mbit/s data), one per arm. `connect()` preflights both SocketCAN links. `sdk_kind: open` — `openarm_can` and `openarm_ros2` are Apache-2.0, so unlike UR / Franka there is no closed vendor runtime in the path. Lab-gated HIL via `tests/hil/test_openarm_can_live.py`. |
 | Anvil OpenARM 2.0 (MuJoCo digital twin) | `AnvilOpenArmV2MujocoHAL` | ✓ sim (`tests/sim/test_anvil_openarm_v2_hal_mujoco.py`) | 16-DoF bimanual on the standard v2 MJCF plus Anvil's documented deltas (J1 ±135 deg; J6 -45..+70 deg radial deviation via the wrist support bracket, shipped as visual-only CAD meshes). Same native `<position>` actuators as the Enactic v2 twin — thin manifest-driven HAL, no PD workarounds. Real-HW path wraps Anvil's driver stack (`anvil-robotics/openarm`). |
 | Universal Robots UR5e (sim) | `UR5eHAL` | ✓ sim | MuJoCo-backed. |
@@ -219,14 +218,12 @@ parameters and topic names.
   `tests/sim/test_g1_hal_mujoco.py`,
   `tests/sim/test_h1_hal_mujoco.py`.
 - Sim (cross-HAL integration): `tests/sim/test_all_hals_via_runner.py`
-  drives **every** HAL twin through the production `DeployRunner`
-  with a real `WorldStateAggregator` + a trivial echo-current-pose
-  skill. Catches any joint-indexing / units / lifecycle / aggregator
-  / safety wiring breakage at the integration boundary — every
-  per-robot sim test could pass while this one still fails.
-- One-line full sweep: `just hal-twin-sweep` runs both the per-HAL
-  contract suite and the cross-HAL `DeployRunner` integration
-  suite (~200 tests covering 7 robot families) with the ROS 2
+  drives **every** HAL twin through the production `DeployRunner` with a
+  real `WorldStateAggregator` and an echo-current-pose skill, catching
+  joint-indexing / units / lifecycle / aggregator / safety wiring breaks
+  that per-robot sim tests miss.
+- Full sweep: `just hal-twin-sweep` runs the per-HAL contract suite and the
+  cross-HAL `DeployRunner` suite (~200 tests, 7 robot families) with the ROS 2
   plugin workaround baked in.
 - HIL: `tests/hil/test_franka_panda.py`,
   `tests/hil/test_sawyer.py`, `tests/hil/test_aloha.py`,
@@ -234,25 +231,19 @@ parameters and topic names.
   `tests/hil/test_galaxea_a1.py` — lab runners only
   (`UR5E_HOST` / `UR10E_HOST` env vars + `[self-hosted, lab-ur*]` runner labels for the UR pair).
 - HIL transport bridges (lab-only): `tests/hil/_ros_control_transport.py`
-  exposes `RosControlHILTransport` + `make_hil_transport` for the
-  single-controller real-HW HALs (UR5e / UR10e / Franka Panda / Sawyer);
-  `tests/hil/_aloha_ros_transport.py` exposes `AlohaHILTransport` +
-  `make_aloha_hil_transport` for the bimanual ALOHA fan-out (4
-  controllers). Both raise at import time if `rclpy` is not installed,
-  so HIL tests guard with `importlib.util.find_spec("rclpy")` before
-  importing them.
-
-Doctest coverage: every adapter file is in `Justfile::test-doctest`'s
-curated `DOCTEST_TARGETS`; run `just test-doctest` to exercise the
-docstring examples.
+  (`RosControlHILTransport` + `make_hil_transport`) for the single-controller
+  real-HW HALs (UR5e / UR10e / Franka Panda / Sawyer);
+  `tests/hil/_aloha_ros_transport.py` (`AlohaHILTransport` +
+  `make_aloha_hil_transport`) for the bimanual ALOHA fan-out (4 controllers).
+  Both raise at import if `rclpy` is missing, so HIL tests guard with
+  `importlib.util.find_spec("rclpy")` first.
+- Doctests: every adapter file is in `Justfile::test-doctest`'s
+  `DOCTEST_TARGETS`; run `just test-doctest`.
 
 ## See also
 
-- `openral_core.RobotDescription`, `JointSpec`, `Action`,
-  `JointState`, `SafetyEnvelope` — the typed contract this package
-  consumes and emits.
-- `robots/<robot_id>/robot.yaml` — canonical description manifests.
-- `packages/openral_hal_node/README.md` — the ROS 2 lifecycle node docs.
-- CLAUDE.md §3 (architecture discipline) and §5 (exception hierarchy:
-  `ROSConfigError` / `ROSRuntimeError` / `ROSSafetyViolation` are the
-  only exceptions a HAL adapter raises).
+- `openral_core.RobotDescription`, `JointSpec`, `Action`, `JointState`,
+  `SafetyEnvelope`: the typed contract this package consumes and emits.
+- CLAUDE.md §3 (architecture) and §5 (exceptions: `ROSConfigError` /
+  `ROSRuntimeError` / `ROSSafetyViolation` are the only ones a HAL adapter
+  raises).

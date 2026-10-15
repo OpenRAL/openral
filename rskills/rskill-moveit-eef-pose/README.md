@@ -24,13 +24,10 @@ inference: false
 > **OpenRAL rSkill** — wraps the upstream `moveit_msgs/action/MoveGroup`
 > action server so the Reasoner can dispatch a collision-free Cartesian
 > end-effector pose goal (position + orientation) through the same
-> `ExecuteRskill` path used by VLA skills. No model weights — the manifest
-> is the entire artefact. New under
-> the
-> `rskill-moveit-*` family.
+> `ExecuteRskill` path used by VLA skills. No model weights: the manifest
+> is the entire artefact. Part of the `rskill-moveit-*` family.
 
-This package uses `kind: ros_action` — a discriminator
-on `RSkillManifest.kind` that selects the
+`kind: ros_action` (a discriminator on `RSkillManifest.kind`) selects the
 [`ROSActionRskill`](../../python/rskill/src/openral_rskill/ros_action_rskill.py)
 engine at resolve time, with `ros_integration.goal_builder: pose` selecting
 the [`PoseGoalRskill`](../../python/rskill/src/openral_rskill/pose_goal_rskill.py)
@@ -220,7 +217,7 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 - **Reachability is the planner's call.** A pose outside the arm's dexterous
   workspace simply fails to plan — there is no base-repositioning fallback
   here (that is the navigate rung of the ladder).
-- **OpenRAL safety supervisor does not do collision checking.** We trust
+- **OpenRAL safety supervisor does not do collision checking.** It trusts
   MoveIt's internal FCL pass; the per-joint envelope check still runs per
   waypoint. Kernel-side collision checking is a separate ADR + multi-PR effort.
 - **No velocity / jerk bound at the supervisor.** Same posture as
@@ -231,8 +228,8 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 
 The rSkill package itself (this manifest + README) is **Apache-2.0**. The
 wrapped MoveIt code (`moveit_msgs` IDL, `moveit2` planners) is **BSD-3-Clause**
-and lives outside this repository — installed via `ros-${ROS_DISTRO}-moveit`.
-Both postures are commercial-use-permissive.
+and lives outside this repository, installed via `ros-${ROS_DISTRO}-moveit`.
+Both are commercial-use-permissive.
 
 ## See also
 

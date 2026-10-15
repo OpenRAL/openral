@@ -1,6 +1,6 @@
 # Roadmap
 
-Live status of OpenRAL development. For detailed architecture and module-by-module canvas, see [`../architecture/repo-state-map.html`](../architecture/repo-state-map.html).
+Live status of OpenRAL development. Per-module status and cross-layer dependencies: [repo state map](../architecture/repo-state-map.html).
 
 ---
 
@@ -42,5 +42,3 @@ Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
 - **M3** — HIL bring-up on lab runners. Exercised on real hardware today, by hand on a lab host: **OpenArm v2** (`tests/hil/test_openarm_can_live.py` — CAN transport + a read-only motor round-trip; commanded motion is still an unrun gate) and **Galaxea A1** (`tests/hil/test_galaxea_a1*.py` — observation, hold, bounded joint and gripper round trips, and `candidate_action` → C++ kernel → `safe_action` → real HAL). Adapters and `tests/hil/` files landed but never met a physical arm: UR5e/UR10e/Franka/Sawyer/ALOHA — there is no physical Franka, Sawyer or ALOHA to validate against, and the UR pair is gated on `UR5E_HOST` / `UR10E_HOST` with no recorded run. Blocked on runners: no workflow runs `tests/hil/` at all, so no HIL gate is enforced in CI. The SO-100/SO-101 and RealSense (D435) HIL gates were removed until matching lab hardware exists.
 - **v0.3** — spatial-memory ROS feeder + sqlite-vec persistence.
 - **v1.0** — Failure-anticipation as first-class; C++ safety-kernel sim/HIL hardening + LTTng; certifiable build.
-
-See [repo state map](../architecture/repo-state-map.html) for detailed per-module status and cross-layer dependencies.

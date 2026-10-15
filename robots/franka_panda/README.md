@@ -3,7 +3,7 @@
 Canonical `RobotDescription` manifest for the **Franka Emika Panda**
 7-DoF cobot (3 kg payload, 0.855 m reach, joint torque sensors,
 parallel gripper). Mirrors the in-code `FRANKA_PANDA_DESCRIPTION`
-(`python/hal/src/openral_hal/franka_panda.py:168`); drift between
+(`python/hal/src/openral_hal/franka_panda.py`); drift between
 the two is guarded by
 [`tests/unit/test_robot_manifests_match_hal_constants.py`](../../tests/unit/test_robot_manifests_match_hal_constants.py).
 
@@ -21,22 +21,20 @@ the two is guarded by
 | `hal.sim` | `openral_hal.franka_panda:FrankaPandaHAL` (`deploy sim`) |
 | `hal.real` | `openral_hal.franka_panda_real:FrankaPandaRealHAL` (`deploy run`) |
 
-The synthetic `panda_gripper` joint is reported as a normalised value in
-`[0, 1]` (0 = fully closed, 1 = fully open). The HAL's
-`MujocoArmHAL` translates to/from the underlying MJCF tendon actuator.
+The synthetic `panda_gripper` joint reports a normalised `[0, 1]` value
+(0 = fully closed, 1 = fully open); `MujocoArmHAL` translates to/from the MJCF
+tendon actuator.
 
 ## Why "physical robot only"
 
-This manifest describes the **physical Franka Panda only** — kinematic
-chain, actuator limits, end-effector, capabilities, safety envelope.
-Sim-imposed observation/action contracts (LIBERO's 8-D
-`eef_pos+axisangle+gripper_qpos` state, 7-D delta-EEF action, 180°
-image flip; RoboCasa's variants; etc.) live in the matching scene
-adapter under
+This manifest describes the **physical Franka Panda only**: kinematic chain,
+actuator limits, end-effector, capabilities, safety envelope. Sim-imposed
+observation/action contracts (LIBERO's 8-D `eef_pos+axisangle+gripper_qpos`
+state, 7-D delta-EEF action, 180° image flip; RoboCasa's variants; etc.) live
+in the matching scene adapter under
 [`python/sim/src/openral_sim/backends/`](../../python/sim/src/openral_sim/backends/),
-not here. This follows the robot/sim split convention —
-the previous `robots/libero_franka/` manifest conflated the two and
-has been retired.
+per the robot/sim split convention (the retired `robots/libero_franka/`
+manifest conflated the two).
 
 ## Wiring
 
@@ -79,4 +77,4 @@ Evidence: `tests/unit/test_franka_panda_real.py::TestSafety`,
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.
 - [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
 - The robot/sim split convention — design decision behind this manifest.
-- `FRANKA_PANDA_DESCRIPTION` constant: [`python/hal/src/openral_hal/franka_panda.py:168`](../../python/hal/src/openral_hal/franka_panda.py).
+- `FRANKA_PANDA_DESCRIPTION` constant: [`python/hal/src/openral_hal/franka_panda.py`](../../python/hal/src/openral_hal/franka_panda.py).

@@ -30,31 +30,30 @@ This package wraps
 [`robbyant/lingbot-vla-v2-6b`](https://huggingface.co/robbyant/lingbot-vla-v2-6b)
 (upstream code: [`github.com/robbyant/lingbot-vla-v2`](https://github.com/robbyant/lingbot-vla-v2)
 @ `69729b4`) with an `rskill.yaml` manifest that adds capability checking, license
-surfacing, latency budgets, and local registry integration. Its `weights_uri`
-points at that fp32 upstream checkpoint (25.5 GB, 6 shards) and the sidecar packs
-the backbone to NF4 in place during the build. It previously pointed at an
-OpenRAL pre-quantized mirror (`OpenRAL/lingbot-vla-v2-6b-nf4`, ~6.8 GB packed)
-that was never published, so every load 404'd; the measured numbers below were
-taken on that pack. Republishing it is worthwhile -- a deploy would download a
-quarter of the bytes and skip the per-boot conversion -- and needs no change here
-beyond repointing `weights_uri`, since `_detect_prequantized` picks the fast path
-from the pack's own `quantization_metadata.json` sentinel. NF4 needs a **CUDA
-GPU** either way (bitsandbytes has no CPU 4-bit kernel); for a CPU / bf16 or
-≥16 GB-card bf16 load, run the `--quantization none` path over the same weights
+surfacing, latency budgets, and local registry integration. `weights_uri` points
+at the fp32 upstream checkpoint (25.5 GB, 6 shards); the sidecar packs the
+backbone to NF4 in place during the build.
+
+The measured numbers below were taken on an OpenRAL pre-quantized mirror
+(`OpenRAL/lingbot-vla-v2-6b-nf4`, ~6.8 GB packed) that was never published, so
+`weights_uri` no longer points at it (every load 404'd). Publishing it would cut
+the download to a quarter and skip the per-boot conversion; only `weights_uri`
+would change, since `_detect_prequantized` picks the fast path from the pack's
+`quantization_metadata.json` sentinel. NF4 needs a **CUDA GPU** either way
+(bitsandbytes has no CPU 4-bit kernel); for a CPU or ≥16 GB-card bf16 load, run
+the `--quantization none` path over the same weights
 (`OPENRAL_LINGBOT_VLA2_DEVICE=cpu`).
 
-> ⚠️ **Zero-shot status — this is a pre-training *foundation* checkpoint, not a
-> task policy.** `robbyant/lingbot-vla-v2-6b` is the LingBot-VLA 2.0 **pre-trained
-> foundation model** (per the upstream card: "from large-scale pre-training toward
-> reliable real-world applications", ~60,000 h across 20 robot configs). Run
-> **zero-shot** on a specific RoboTwin task it does **not** produce coherent
-> task actions — its action chunks collapse toward the action-distribution mean
-> (see [Zero-shot action quality](#zero-shot-action-quality-measured) below). The
-> **intended usage is post-training on RoboTwin data** before deployment; the
-> paper's success numbers are **post-trained** results. This is a model/checkpoint
-> property, **not** an OpenRAL serving or quantization bug — the serving path is
-> verified correct (open-loop A/B: NF4 and bf16 identical; normalization bounds
-> match the data; MoE + attention backends exonerated).
+> ⚠️ **Foundation checkpoint, not a task policy.** `robbyant/lingbot-vla-v2-6b`
+> is the LingBot-VLA 2.0 pre-trained foundation model (upstream card: "from
+> large-scale pre-training toward reliable real-world applications", ~60,000 h
+> across 20 robot configs). Zero-shot on a RoboTwin task it does **not** produce
+> coherent actions: chunks collapse toward the action-distribution mean (see
+> [Zero-shot action quality](#zero-shot-action-quality-measured)). Post-train on
+> RoboTwin data before deployment; the paper's success numbers are post-trained.
+> This is a checkpoint property, not an OpenRAL serving or quantization bug: the
+> serving path is verified (open-loop A/B: NF4 and bf16 identical; normalization
+> bounds match the data; MoE + attention backends exonerated).
 
 ## What this skill does
 
@@ -75,11 +74,10 @@ before re-inferring (matching the upstream `--use_length 25` deploy).
 ![RoboTwin 2.0 aloha_agilex observation — head + left/right wrist views](media/preview.png)
 
 > **Preview.** A real RoboTwin 2.0 (SAPIEN, `aloha_agilex`) render of the three
-> 256×256 RGB views this skill consumes — head (left), left wrist, right wrist. A
-> model-in-the-loop rollout clip is not shipped because the 6.9 GB NF4 model and
-> the 1.9 GB SAPIEN env cannot co-reside on the 8 GB reference GPU (see
-> [Evaluation](#evaluation)); the model path itself is verified live (real NF4
-> forward pass + passing sim test, below).
+> 256×256 RGB views this skill consumes: head (left), left wrist, right wrist. No
+> model-in-the-loop rollout clip: model and env cannot co-reside on the 8 GB
+> reference GPU (see [Evaluation](#evaluation)); the model path is verified live
+> (real NF4 forward pass + passing sim test, below).
 
 ## Upstream model / how it works
 
@@ -95,13 +93,13 @@ steps per re-inference.
 The upstream `lingbotvla` package pins `torch==2.8.0` / `transformers==4.57.3` /
 `triton==3.4.0` and ships custom Triton MoE kernels, which cannot coexist with the
 OpenRAL `transformers>=5` runtime (CLAUDE.md §3). The model therefore runs in an
-**auto-provisioned Python 3.12 + torch-2.9.1 ZMQ sidecar** — the boot helper
+**auto-provisioned Python 3.12 + torch-2.9.1 ZMQ sidecar**; the boot helper
 overrides upstream's torch 2.8.0 / triton 3.4.0, neither of which publishes a
-linux-aarch64 wheel ([aarch64 support](../../docs/reference/aarch64-support.md))
-(`tools/lingbot_vla2_sidecar.py` clones the pinned upstream repo + builds the venv;
-`tools/_lingbot_vla2_server.py` serves `ping`/`reset`/`get_action`/`close`). Because
-`flash-attn` is not installed, the server coerces the upstream `flash_attention_2`
-hardcode to `sdpa` (or `eager`).
+linux-aarch64 wheel ([aarch64 support](../../docs/reference/aarch64-support.md)).
+`tools/lingbot_vla2_sidecar.py` clones the pinned upstream repo and builds the
+venv; `tools/_lingbot_vla2_server.py` serves `ping`/`reset`/`get_action`/`close`.
+`flash-attn` is not installed, so the server coerces the upstream
+`flash_attention_2` hardcode to `sdpa` (or `eager`).
 
 ### Sensors / observation contract
 
@@ -129,27 +127,25 @@ sidecar reply is a finite `(50, 14)` chunk; the adapter replays 25 steps.
 | Action chunk | `(50, 14)` finite; adapter replays 25 |
 
 The pre-quantized pack skips the fp32 read (6.8 GB vs 25.5 GB download) and the
-~30 s on-line bitsandbytes pack; wall-clock cold load is dominated by the 6.38 B
-graph construction + cold torch/transformers import, so it is comparable to the
-fp32 path rather than dramatically faster. The overlaid backbone weights
+~30 s on-line bitsandbytes pack, but cold load is dominated by the 6.38 B graph
+construction + cold torch/transformers import, so it is only modestly faster. The overlaid backbone weights
 dequantize **bitwise-identically** (`max|Δ| = 0`) to a fresh on-line
 `.to("cuda")` pack of the same fp32 source (verified on sampled modules).
 
 Reproduced by `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` (3 real
 inferences: finite 14-D action, multi-step chunk, VRAM < 8 GiB) — all passing.
 
-> The table above verifies the **serving path** (a finite, correctly-shaped,
-> in-range `(50, 14)` chunk at the stated VRAM/latency). It does **not** claim the
-> zero-shot actions solve the task — they do not; see below.
+> This verifies the **serving path** (a finite, correctly-shaped, in-range
+> `(50, 14)` chunk at the stated VRAM/latency), not task success; see below.
 
 ## Zero-shot action quality (measured)
 
-Open-loop evaluation against **real, in-distribution** RoboTwin 2.0 `lift_pot`
-(`aloha-agilex_clean`) ground truth — the recorded head + wrist frames, 14-D
+Open-loop against real, in-distribution RoboTwin 2.0 `lift_pot`
+(`aloha-agilex_clean`) ground truth: the recorded head + wrist frames, 14-D
 proprio state, and `joint_action/vector` from
-[`TianxingChen/RoboTwin2.0`](https://huggingface.co/datasets/TianxingChen/RoboTwin2.0),
-fed frame-by-frame through this rSkill's sidecar and compared to the recorded
-actions. **The zero-shot foundation checkpoint does not track the task:**
+[`TianxingChen/RoboTwin2.0`](https://huggingface.co/datasets/TianxingChen/RoboTwin2.0)
+are fed frame-by-frame through the sidecar and compared to the recorded actions.
+**The zero-shot checkpoint does not track the task:**
 
 | Signal (ep0, t ∈ {0,20,40,60,80}) | This checkpoint (zero-shot) | GT reference |
 | --- | --- | --- |
@@ -158,12 +154,12 @@ actions. **The zero-shot foundation checkpoint does not track the task:**
 | `action[0]` vs current state (absolute-action model → should ≈ state) | **decoupled** (closer to the global action *mean* than to the state at every probed step) | `action[0] = state` |
 | Grippers | pinned mid-range (~0.3–0.5), ignore the GT open→close transition | follow the task |
 
-The predicted arm joints cluster at the **norm-stats mean pose** (e.g. joint 2
-≈ 1.1–1.6 rad regardless of a state ranging 0 → 2.55 rad) — the classic signature
-of a flow-matching policy whose conditioning is too weak to overcome the marginal
-action prior, i.e. an un-adapted foundation model on an unseen task/embodiment.
+Predicted arm joints cluster at the **norm-stats mean pose** (e.g. joint 2
+≈ 1.1–1.6 rad while the state ranges 0 → 2.55 rad): conditioning too weak to
+overcome the marginal action prior, typical of an un-adapted foundation model on
+an unseen task/embodiment.
 
-**Ruled out as causes** (so this is not fixable by changing the OpenRAL wrapper):
+**Ruled out** (so changing the OpenRAL wrapper will not fix it):
 
 - **Quantization** — GPU NF4 and CPU bf16 give the *same* mean-collapse and MAE
   (NF4 jitter is if anything slightly *lower*), so it is not the 4-bit backbone.
@@ -202,8 +198,8 @@ as the rSkill's `weights_uri`. Reproduce the probe with
 
 LingBot-VLA 2.0 is Robbyant's second-generation VLA, described in *"From
 Foundation to Application: Improving VLA Models in Practice"*. This rSkill is a
-thin wrapper; the runtime weights are the upstream checkpoint itself, NF4-packed at
-load (no re-train, and no OpenRAL-hosted copy -- the mirror below is unpublished).
+thin wrapper: the runtime weights are the upstream checkpoint, NF4-packed at load
+(no re-train, no OpenRAL-hosted copy; the mirror below is unpublished).
 
 | Field | Value |
 | --- | --- |
@@ -269,27 +265,23 @@ openral benchmark run --suite robotwin --rskill rskills/lingbot-vla2-robotwin
 
 ## Evaluation
 
-No locally-reproduced RoboTwin numbers are shipped — `eval/` is empty
-(`.gitkeep`). **A full sim eval is infeasible on the 8 GB reference GPU**: the NF4
-model is ~6.9 GB resident and the RoboTwin SAPIEN env is ~1.9 GB (both measured),
-so the two cannot co-reside (6.9 + 1.9 = 8.8 GB > 8.0 GB), and SAPIEN's ray-traced
-rendering has no CPU fallback. Producing `eval/robotwin.json` therefore needs a
-≥12 GB card (or CPU-rendered SAPIEN); the command below closes the loop there and
-writes `reproduced_locally: true`:
+No locally-reproduced RoboTwin numbers: `eval/` is empty (`.gitkeep`). A full
+sim eval is infeasible on the 8 GB reference GPU: the NF4 model (~6.9 GB
+resident) and the RoboTwin SAPIEN env (~1.9 GB), both measured, cannot co-reside
+(8.8 GB > 8.0 GB), and SAPIEN's ray-traced rendering has no CPU fallback.
+`eval/robotwin.json` needs a ≥12 GB card (or CPU-rendered SAPIEN); there the
+`openral benchmark run` command under [Reproduction](#reproduction) writes
+`reproduced_locally: true`.
 
-```bash
-openral benchmark run --suite robotwin --rskill rskills/lingbot-vla2-robotwin
-```
+Verified live on 8 GB: the model path (see
+[Verified performance](#verified-performance-rtx-4070-laptop-8-gb)), i.e. a real
+NF4 `(50, 14)` forward pass, the e2e adapter wire (ping/reset/get_action/close),
+and a passing sim test.
 
-What *was* verified live on 8 GB: the model path (see
-[Verified performance](#verified-performance-rtx-4070-laptop-8-gb)) — a real NF4
-`(50, 14)` forward pass, the e2e adapter wire (ping/reset/get_action/close), and a
-passing sim test.
-
-Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**). These are
-**post-trained** numbers (the paper fine-tunes the foundation checkpoint per
-benchmark); they are **not** achievable zero-shot from the released weights this
-rSkill wraps — see [Zero-shot action quality](#zero-shot-action-quality-measured):
+Paper-cited results (GM-100, `reproduced_locally: false`) are **post-trained**
+(the paper fine-tunes the foundation checkpoint per benchmark), **not**
+achievable zero-shot from the wrapped weights; see
+[Zero-shot action quality](#zero-shot-action-quality-measured):
 
 | Benchmark | Embodiment | Success | `reproduced_locally` | Source |
 | --- | --- | --- | --- | --- |

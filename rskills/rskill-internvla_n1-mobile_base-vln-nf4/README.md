@@ -28,11 +28,10 @@ registry integration. It does **not** copy model weights.
 
 Third-person capture of a real `openral deploy sim` closed-loop run in the
 RoboCasa `NavigateKitchen` scene, instruction *"navigate through the kitchen to
-reach the sink"*: the skill is dispatched via `/openral/execute_rskill`, the NF4
-model runs inference in the deploy loop reading the forward **head** camera, and
-`SimAttachedHAL` drives the panda_mobile base from the emitted `BODY_TWIST`
-commands. The base spawns by an appliance and navigates across the kitchen to
-the sink counter.
+reach the sink"*. The skill is dispatched via `/openral/execute_rskill`, the NF4
+model reads the forward **head** camera in the deploy loop, and `SimAttachedHAL`
+drives the panda_mobile base from the emitted `BODY_TWIST` commands, from an
+appliance across the kitchen to the sink counter.
 
 | Start | Middle | End |
 | :---: | :---: | :---: |
@@ -40,11 +39,9 @@ the sink counter.
 
 Full third-person clip: [media/demo.mp4](media/demo.mp4).
 
-**Model's-eye view.** The forward `head` camera the policy actually consumes —
-a MuJoCo free camera ahead of the mobile base looking down its travel direction
-(synthesized by the robocasa sim backend; on real hardware it is the robot's
-forward nav camera). This is the egocentric RGB the System-2 grounder sees, not
-the arm-mounted manipulation cameras:
+**Model's-eye view.** The forward `head` camera the policy consumes (the
+egocentric RGB the System-2 grounder sees; see
+[Sensors](#sensors--observation-contract)):
 
 ![head camera](media/head_view.png)
 
@@ -72,7 +69,7 @@ Vision-and-Language Navigation". A **dual-system** design:
   pixel goal into a **metric trajectory** using the depth image + camera
   intrinsics, which the adapter converts to a base velocity.
 
-The two systems run **asynchronously** — System-1 keeps the base moving between
+The two systems run **asynchronously**: System-1 keeps the base moving between
 System-2 replans, giving smooth motion and dynamic obstacle avoidance. Trained
 in simulation only (`InternData-N1`, 3k+ scenes, 830k VLN samples) yet
 generalizes zero-shot to real Unitree Go2 / H1.
@@ -97,34 +94,33 @@ on Unitree Go2 / H1 / Booster T1 with per-robot locomotion policies downstream.
 | Instruction | task string | natural-language navigation goal |
 
 The `head` camera is a **forward-facing egocentric** view down the base's
-travel direction — not an arm-mounted manipulation camera. On `panda_mobile`
-in RoboCasa it is synthesized by the sim backend as a MuJoCo free camera just
-ahead of the mobile base — `openral deploy sim` sets the backend's
-`OPENRAL_ROBOCASA_HEAD_CAM=1` opt-in automatically whenever this skill is in
-the capability-matched palette, so no manual export is needed; on real hardware it
-is the robot's forward nav camera. The arm-workspace cameras
-(`agentview` / `eye_in_hand`) are useless for VLN and are not consumed.
+travel direction, not an arm-mounted manipulation camera. On `panda_mobile` in
+RoboCasa the sim backend synthesizes it as a MuJoCo free camera just ahead of
+the mobile base; `openral deploy sim` sets the backend's
+`OPENRAL_ROBOCASA_HEAD_CAM=1` opt-in automatically whenever this skill is in the
+capability-matched palette. On real hardware it is the robot's forward nav
+camera. The arm-workspace cameras (`agentview` / `eye_in_hand`) are useless for
+VLN and are not consumed.
 
 **Output:** one 6-D `BODY_TWIST` action `[vx, vy, vz, wx, wy, wz]` per step in
 `base_link` (only forward `vx` + yaw `wz` are non-zero for a planar base).
 
 ### Depth: derived from DA3, not a robot sensor
 
-The robot only needs **one forward RGB camera**. Metric depth is produced
-monocularly by the **DA3 sidecar** (`depth-anything/DA3-SMALL`) — the same model
-OpenRAL's SLAM/nvblox stack already runs — from the same RGB frame the policy
-sees. So depth works **identically in sim and on real hardware** (no MuJoCo
-depth render, no physical depth camera). The adapter reuses a running DA3
+The robot only needs **one forward RGB camera**. The **DA3 sidecar**
+(`depth-anything/DA3-SMALL`, the model OpenRAL's SLAM/nvblox stack already runs)
+produces metric depth monocularly from the policy's RGB frame, so depth works
+**identically in sim and on real hardware** (no MuJoCo depth render, no physical
+depth camera). The adapter reuses a running DA3
 sidecar (SLAM's) via a ping when present, else auto-spawns its own (~0.27 GB,
 ~27 Hz on an 8 GB card).
 
 > **DualVLN doesn't actually use depth.** This checkpoint's System-1 is
-> `nextdit_async` — RGB + System-2-latent conditioned; its trajectory head never
-> reads the depth tensor (verified against the InternNav model source). So depth
-> is inert here and you can set `OPENRAL_INTERNVLA_N1_DEPTH=none` to skip DA3
-> entirely (a unit-metre placeholder is sent, which the model ignores). DA3 is
-> wired as the default so the `internvla_n1` family stays correct for a
-> depth-consuming `navdp`-System-1 checkpoint.
+> `nextdit_async` (RGB + System-2-latent conditioned); its trajectory head never
+> reads the depth tensor (verified against the InternNav model source). Set
+> `OPENRAL_INTERNVLA_N1_DEPTH=none` to skip DA3 (a unit-metre placeholder is
+> sent, which the model ignores). DA3 stays the default so the `internvla_n1`
+> family is correct for a depth-consuming `navdp`-System-1 checkpoint.
 
 ## Runtime / manifest summary
 
@@ -162,11 +158,10 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   torch 2.9.1+cu128 on py3.11, model on the GPU at **6.06 GB** (8499 MiB
   process), 106.5 s load, 21 real steps over the ZMQ wire from this rSkill's own
   recorded head-camera frames + real DA3 depth, every reply a finite 6-D
-  `BODY_TWIST` (15.00 °/s yaw — the same output the RTX 4070 run recorded),
-  1.0–2.7 s per System-2 replan. Until this, the sidecar pinned `torch==2.6.0`
-  with no `--torch-backend`, which on aarch64 resolves the CPU-only wheel — and
-  the server's default `--device cuda:0` cannot run on it at all
-  (`Torch not compiled with CUDA enabled`).
+  `BODY_TWIST` (15.00 °/s yaw, the same output the RTX 4070 run recorded),
+  1.0–2.7 s per System-2 replan. (The earlier `torch==2.6.0` pin with no
+  `--torch-backend` resolved the CPU-only wheel on aarch64, where the default
+  `--device cuda:0` fails with `Torch not compiled with CUDA enabled`.)
   See [`docs/reference/aarch64-support.md`](../../docs/reference/aarch64-support.md).
 - Schema / adapter / manifest / DA3 wiring / robot-compat / dispatch chain:
   validated (unit tests + `check_compatibility` against `panda_mobile`; full unit
@@ -177,7 +172,7 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   `BODY_TWIST` (`control_mode=7`, yaw 15°/s) on `/openral/candidate_action`, and
   `SimAttachedHAL` drove the panda_mobile base (odom moved ~33 mm + rotated ~9°);
   goal `success: true`. On an 8 GB card render robocasa on CPU
-  (`MUJOCO_GL=osmesa`) so the whole GPU is the sidecar's — co-hosting the 6 GB
+  (`MUJOCO_GL=osmesa`) so the whole GPU is the sidecar's; co-hosting the 6 GB
   sidecar with a GPU render OOMs the Qwen2.5-VL-7B generate peak.
 - `deploy run` on physical hardware: requires a real mobile base + one RGB
   camera (DA3 supplies depth); verified to the HAL boundary.

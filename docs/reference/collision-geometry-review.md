@@ -349,14 +349,12 @@ Reading:
 ### 8.3 Kernel changes this review recommends (not done; WG + ADR)
 
 - **Follower-joint finger.** The OpenArm's second finger is equality-coupled to the first; the
-  lowering folds it into `finger_pair`, swept over 9 stroke samples. The enclosure test allows a
-  swept link 1 mm outside between samples. A kernel joint kind "follower of dof i with
-  q = c0 + c1·q_i" would let the finger be its own link with exact geometry. Needs a new
-  `JointKind` in `collision.hpp` and the envelope loader. **Done in #349**: `RobotDescription.mimic_joints`
-  + `JointKind::kMimicRevolute` / `kMimicPrismatic`; the follower is `openarm_<side>_finger_follower`,
-  rigid, posed at the gripper's commanded value — kernel finger excess 84.2 → 16.9 mm max,
-  66.8 → 16.9 mm mean ([`finger-mimic-geometry.md`](finger-mimic-geometry.md); ADR draft and owed
-  hazard row there).
+  lowering folded it into `finger_pair`, swept over 9 stroke samples (the enclosure test allows a
+  swept link 1 mm outside between samples). A kernel joint kind "follower of dof i with
+  q = c0 + c1·q_i" would let the finger be its own link with exact geometry. **Done in #349**
+  (mimic joints; kernel finger excess 84.2 → 16.9 mm max): see
+  [`finger-mimic-geometry.md`](finger-mimic-geometry.md), which holds the design, the ADR draft
+  and the owed hazard row.
 - **Hull against capsule.** A refined box against a capsule link is checked on the box
   (`box_capsule_distance`, 669 ns). A GJK hull ↔ capsule (the capsule is `segment ⊕ ball`,
   exactly what `convex_distance` already solves in Python) would let one refined link pay off
@@ -488,9 +486,8 @@ which MuJoCo compiles convex, measured with the certified GJK/SAT of
 The real-contact count is the same because it is the robot's; everything else was slop, and
 95 % of it is gone. The remaining slop is the finger pair against link0/link1 of either arm
 (hull ↔ hull at the swept finger's hull, which covers the whole stroke). Measured before #349
-split the fingers; self-collision now checks each finger's own exact hull, the follower on its mimic
-joint ([`finger-mimic-geometry.md`](finger-mimic-geometry.md) §2-3: follower ↔ link5/link6 checked,
-never tripping over 500 poses; follower ↔ leader and ↔ link7 auto-exempt).
+split the fingers; for the split model's self-collision see
+[`finger-mimic-geometry.md`](finger-mimic-geometry.md) §2-3.
 
 **Exemption margins** (`openarm.srdf`, same instrument, minimum and 1st percentile over 1500
 poses):

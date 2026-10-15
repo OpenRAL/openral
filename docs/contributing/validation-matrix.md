@@ -14,24 +14,23 @@ All four are [`tools/validation_matrix.py`](https://github.com/OpenRAL/openral/b
 Every round it produces feeds the evidence ledger,
 [`collision-validation-evidence.md`](../reference/collision-validation-evidence.md).
 
-Exit codes: **0** clean · **2** usage · **3** a guardrail refused, and nothing
-was written — not even the round directory · **4** the round ran but at least
+Exit codes: **0** clean · **2** usage · **3** a guardrail refused and nothing
+was written, not even the round directory · **4** the round ran but at least
 one scene bucketed `harness-error`.
 
 ---
 
 ## 1. Why this exists
 
-Before the harness, the four-scene matrix was driven by shell scripts that lived
-only in `~/openral-runs/<date>-<name>/scripts/` on a single machine. Rounds were
-not reproducible by anyone but their operator, results were not queryable,
-several rounds were never written up at all, and each round re-derived its
-tooling with drift.
+Before the harness, the four-scene matrix ran from shell scripts in
+`~/openral-runs/<date>-<name>/scripts/` on a single machine. Only their operator
+could reproduce a round, results were not queryable, several rounds were never
+written up, and each round re-derived its tooling with drift.
 
 The harness versions the tooling, makes the round write its own notes, types the
 verdict, and refuses the conditions that lost rounds. Which rule closed which
-round is recorded in the evidence ledger — see the 2026-09-22 entry, `harness
-rules and the rounds that produced them`.
+round is in the evidence ledger's 2026-09-22 entry, `harness rules and the
+rounds that produced them`.
 
 ## 2. What a round is
 
@@ -49,34 +48,34 @@ Four RoboCasa scenes, one seed, one policy, one stack:
 `seed: 1` does not identify a kitchen. RoboCasa draws layout, style, fixtures,
 which drawer the task resolves, the door-open amounts and the robot spawn
 deviation from one shared `env.rng` inside `Kitchen._load_model`, **on every
-reset** — so any upstream change to the draw order silently reshuffles the scene
+reset**, so any upstream change to the draw order silently reshuffles the scene
 at the same seed.
 
-For `fridge` that is not merely a reproducibility problem: unpinned, most of
-this task's kitchens spawn a robot link inside the kernel's world model, and the
-run E-stops before applying a single action chunk. The pin is `[47]`. For
-`utensil` the pin is reproducibility only — that scene has no
-initial-configuration defect at any of the layouts measured.
+For `fridge` it is worse than reproducibility: unpinned, most of this task's
+kitchens spawn a robot link inside the kernel's world model, and the run
+E-stops before applying a single action chunk. The pin is `[47]`. For `utensil`
+the pin is reproducibility only; that scene has no initial-configuration defect
+at any layout measured.
 
 Each scene file carries the full measurement record for its own pin in its
 header comments and is the source of truth for it; the per-layout census is
 [`robocasa-start-state-census.md`](../reference/robocasa-start-state-census.md).
-Do not restore a layout that a scene file records as refuted — some are clear on
+Do not restore a layout that a scene file records as refuted: some are clear on
 the ideal grid and stop live.
 
 Every reset records the kitchen it actually composed as
 `robocasa_scene_composition` in the run artifacts
 ([telemetry.md](../reference/telemetry.md)), and a pin the env cannot honour is
-a `ROSConfigError` rather than a silent substitution — so a round can no longer
-report a layout it did not run.
+a `ROSConfigError`, not a silent substitution, so a round cannot report a layout
+it did not run.
 
 ### The two control surfaces the stack is pinned on
 
 The tracked scenes are **never modified**. Each round materialises a *resolved
-copy* beside its artifacts, and launches that.
+copy* beside its artifacts and launches that.
 
-Seven of the eight pinned knobs have a CLI flag, and are pinned there, because
-the deploy CLI's precedence is *explicit flag > scene `runtime:` > default*:
+Seven of the eight pinned knobs have a CLI flag and are pinned there (the deploy
+CLI's precedence is *explicit flag > scene `runtime:` > default*):
 
 ```
 --enable-slam --enable-nav2 --enable-octomap --enable-octomap-kernel-check
@@ -95,12 +94,10 @@ runtime:
   enable_reasoner: false
 ```
 
-`verdicts` records both halves — `stack_argv` and `scene_pins` — so a round's
-metadata states the whole stack rather than half of it.
-
-The splice is verified, not assumed: the copy is re-parsed and refused unless it
-carries the pins and the seed, and it is diffed against the tracked scene so a
-safety key cannot ride along (§3).
+`verdicts` records both halves, `stack_argv` and `scene_pins`, so a round's
+metadata states the whole stack. The splice is verified: the copy is re-parsed
+and refused unless it carries the pins and the seed, and diffed against the
+tracked scene so a safety key cannot ride along (§3).
 
 The reasoner is **off**, so nothing would issue a goal;
 [`tools/_validation_matrix_dispatch.py`](https://github.com/OpenRAL/openral/blob/master/tools/_validation_matrix_dispatch.py)
@@ -110,10 +107,8 @@ records the attachment / voxel / witness stream alongside it.
 
 ## 3. Guardrails, and the round each one closes
 
-`run` **refuses** — exit code 3, no partial round — rather than warning. Every
-one of these has already cost a round; which round, and when, is the
-2026-09-22 entry of the evidence ledger, `harness rules and the rounds that
-produced them`.
+`run` **refuses** (exit code 3, no partial round) rather than warning. Every
+one of these has already cost a round (see §1 for where that is recorded).
 
 | Guardrail | Refuses when | Why |
 | --- | --- | --- |
@@ -128,8 +123,8 @@ produced them`.
 
 ### Which scene keys are safety-relevant
 
-The scene guard is deliberately precise, because pinning *stack composition* is
-the entire point of the harness and must stay possible:
+The scene guard is precise, because pinning *stack composition* is the point of
+the harness and must stay possible:
 
 | Refused (safety) | Pinnable (composition) |
 | --- | --- |
@@ -142,16 +137,15 @@ files, a safety key may not.
 
 Every round's `metadata.json` records the executed SHA, worktree cleanliness,
 the overlay's build time, the resolved launcher path and `OPENRAL_REPO_ROOT`,
-the robot manifest, the sync group set, and the exact stack argv — so a reader
+the robot manifest, the sync group set, and the exact stack argv, so a reader
 can answer "what ran" without asking the operator.
 
 ## 4. The verdict contract
 
 Each round writes `verdicts.json`, a
 [`ValidationRoundVerdicts`](../reference/schemas/ValidationRoundVerdicts.json)
-(defined in `openral_core.schemas`), plus a human-readable `NOTES.md`. A round
-cannot end without a written summary, because the summary is a by-product of
-running rather than something someone remembers to write.
+(defined in `openral_core.schemas`), plus a human-readable `NOTES.md`, so no
+round ends without a written summary.
 
 Per scene, one `outcome`:
 
@@ -163,7 +157,7 @@ Per scene, one `outcome`:
 | `estop-collision-within-quantization` | The kernel was conservative by an amount that gap accounts for. Correct behaviour, not a defect. |
 | `estop-collision-unadjudicated` | The ground-truth probe was truncated or absent, no budget was known, or the probe does not attest that both of its sides were collidability-filtered. **Not** a synonym for "fine"; `ground_truth.unadjudicated_reason` says which. |
 | `estop-initial-configuration` | The stop landed before any action reached the HAL, so the refused configuration is the one the scene reset produced. A scene-config defect; no margin change can clear it. Outranks the ground-truth adjudication. |
-| `deadline-after-grasp` / `deadline-no-grasp` | No stop and no success — the run ran out of deadline, with or without a grasp. **Read `deadline-no-grasp` as an instrument symptom first**: it is defined by absence (no success, no stop), which is exactly what a silently dead graph produces. Check the run's delivered chunk count before reading it as a policy property (#256). |
+| `deadline-after-grasp` / `deadline-no-grasp` | No stop and no success: the run ran out of deadline, with or without a grasp. **Read `deadline-no-grasp` as an instrument symptom first**: it is defined by absence (no success, no stop), which is exactly what a silently dead graph produces. Check the run's delivered chunk count before reading it as a policy property (#256). |
 | `harness-error` | The run produced no usable artifact set. Never read as a clean deadline. |
 
 ### What counts as "no usable artifact set"
@@ -171,32 +165,32 @@ Per scene, one `outcome`:
 `bool(deploy_lines)` is not the test, because click's usage error *is* lines. A
 scene is a `harness-error` when
 
-1. the runner wrote `<stem>_launch_failed.txt` — `/openral/execute_rskill` never
-   appeared, so nothing was ever dispatched;
-2. the deploy log carries `[ERROR] [launch]: Caught exception in launch` —
+1. the runner wrote `<stem>_launch_failed.txt`: `/openral/execute_rskill` never
+   appeared, so nothing was dispatched;
+2. the deploy log carries `[ERROR] [launch]: Caught exception in launch`:
    `ros2 launch` threw and unwound. This one has **no marker file and no usage
-   banner**: the nodes launch had already spawned keep running and keep logging,
-   so the log is long and looks like a run;
-3. the deploy log's first line is a `Usage: openral …` banner — the CLI rejected
+   banner**; the nodes launch had already spawned keep running and logging, so
+   the log is long and looks like a run;
+3. the deploy log's first line is a `Usage: openral …` banner: the CLI rejected
    its own argv before the graph started;
-4. `<stem>_goal.log` has output but no JSON status line — the dispatcher raised
+4. `<stem>_goal.log` has output but no JSON status line: the dispatcher raised
    before any goal reached a terminal state. Every raising path in
    `_validation_matrix_dispatch.py` is a harness failure; a genuine deadline
    overrun still prints `{"status": -1, …}`, and stays a deadline;
 5. there is no deploy log at all; or
 6. Nav2's `lifecycle_manager_navigation` lost a managed server's bond heartbeat
-   early in the run and tore the **whole** navigation stack down. This is the
-   one that leaves a *healthy-looking* log: no traceback, nothing exits
-   non-zero, the graph simply goes inert and idles out its deadline. The same
+   early in the run and tore the **whole** navigation stack down. This leaves a
+   *healthy-looking* log: no traceback, nothing exits non-zero, the graph goes
+   inert and idles out its deadline. The same
    message also appears late in runs that did their work, so the test is *when*:
    the threshold sits in a measured 99 s gap, and is declined outright on a
    `_deploy_excerpt.log`, which begins mid-run. `BOND_TIMEOUT_S` in
    `openral_nav2_bringup/launch/nav2.launch.py` raises Nav2's 4 s default to
    30 s, which makes the trigger itself much rarer; or
-7. a lifecycle node never completed a transition — `RuntimeError: transition
+7. a lifecycle node never completed a transition (`RuntimeError: transition
    'configure' on '/openral_hal_panda_mobile' did not advance the FSM within
-   300.0s` — so the graph never came up at all. Loud, but it still produces
-   absence, which is why it needs its own test.
+   300.0s`), so the graph never came up. Loud, but it still produces absence,
+   hence its own test.
 
 The reason is recorded in the verdict's `harness_error_reason`, named in
 `NOTES.md`, and the round exits **4**.
@@ -215,29 +209,29 @@ turns conservative, correct stops into false positives. It survives as
 `quantization_budget_m`, the fallback for a snapshot recorded before the HAL
 published a budget; `budget_source` says which was applied.
 
-**That fallback is asymmetric, and deliberately so.** The voxel term is a strict
-*lower bound* on the admissible gap — the real gap adds `corner_slop(link)`,
+**That fallback is deliberately asymmetric.** The voxel term is a strict
+*lower bound* on the admissible gap: the real gap adds `corner_slop(link)`,
 which is the larger of the two on every panda link (45–88 mm against 21.7 mm).
 So on a snapshot with no published budget:
 
 | | sound? | verdict |
 |---|---|---|
-| `discrepancy <= voxel term` | yes — within the smaller bound implies within the true one | `within-quantization` |
-| `discrepancy > voxel term` | **no** — proves nothing about the true gap | `unadjudicated` |
+| `discrepancy <= voxel term` | yes: within the smaller bound implies within the true one | `within-quantization` |
+| `discrepancy > voxel term` | **no**: proves nothing about the true gap | `unadjudicated` |
 
 `adjudication_budget` landed in #144, so no `false-positive` call from a round
 before it can be re-derived from its own artifacts (ledger, "Standing caveats"
 §6). Then, in order:
 
-1. Any probed pair at or below 0 m → `real-contact`. Note this is deliberately
+1. Any probed pair at or below 0 m → `real-contact`. This is deliberately
    *not* keyed to the body the kernel named: if the kernel says `panda_link7`
    and the probe finds `robot0_link6` at 0.000 m, the configuration really is
    unsafe and the stop stands. It **is** keyed to the pair being solid on both
-   sides — see below.
+   sides (below).
 2. Otherwise the tripping party's clearance is compared against the kernel's
    reported depth. Beyond the gap → `false-positive`; within it →
    `within-quantization`. **Beyond a `grid-quantization` gap → `unadjudicated`,
-   not `false-positive`** — see the asymmetry above.
+   not `false-positive`** (the asymmetry above).
 3. A truncated probe, a missing snapshot, an unknown budget or an unattested
    probe → `unadjudicated`, with `ground_truth.unadjudicated_reason` naming
    which.
@@ -251,12 +245,12 @@ filters every side to solid geoms and discloses the counts as
 recorded before it are `unadjudicated` rather than trusted, because they really
 did rank visual geometry first.
 
-**A very early stop can be unadjudicable, and the notes say so — but so can a
-deaf monitor, and the notes say that separately.** The grid resolution is read
-from the monitor's first `world_voxels` record, so a scene that trips before the
-monitor has seen a grid has no voxel term to fall back on. The monitor attaches
-as early as it can, but **not** before the deploy's DDS clean — `openral deploy
-sim` unlinks the stale `/dev/shm/fastrtps_*` files immediately before spawning
+**A very early stop can be unadjudicable, and so can a deaf monitor; the notes
+report the two separately.** The grid resolution is read from the monitor's
+first `world_voxels` record, so a scene that trips before the monitor has seen a
+grid has no voxel term to fall back on. The monitor attaches as early as it can,
+but **not** before the deploy's DDS clean: `openral deploy sim` unlinks the
+stale `/dev/shm/fastrtps_*` files immediately before spawning
 `ros2 launch`. Until 2026-09-24 that purge took every such file this user owned,
 so a participant created earlier lost its segments silently and received nothing
 for the whole scene; it now keeps any file a live process has open, mapped or
@@ -264,7 +258,7 @@ locked. The monitor is still gated on the CLI's own `dds_transport_ready:` line,
 printed after the clean and before `ros2 launch`; the gate's outcome is recorded
 per scene in `<stem>_monitor_gate.txt`.
 
-Both causes read identically in `verdicts.json` — `grid_resolution_m: null` —
+Both causes read identically in `verdicts.json` (`grid_resolution_m: null`),
 so `monitor_records` counts what the monitor actually received (its own
 start/stop pair excluded) and `NOTES.md` lists them under **separate**
 headings: "Monitor received nothing" (a harness fault; the scene's evidence is
@@ -275,7 +269,7 @@ reason.
 Two things the snapshot itself insists on, and the harness honours:
 
 - **A zero MuJoCo contact count is not an emptiness test.** `contype`/
-  `conaffinity` exclusions suppress contacts at real interpenetration — a scene
+  `conaffinity` exclusions suppress contacts at real interpenetration: a scene
   can report `payload_contacts == 0` alongside a link at 0.000 m. Adjudicate
   from the distance probes, never the contact list.
 - **An untruncated probe that returns no pair is not missing data.** It proves
@@ -285,8 +279,8 @@ Two things the snapshot itself insists on, and the harness honours:
 ### Exemptions and the allowance
 
 `ValidationStopEvidence.exemption_active` is `sweep_min_distance_m` strictly
-deeper than `min_distance_m` — the sweep found a deeper cell than the one
-reported, which means a support-contact witness exempted it. That inequality is
+deeper than `min_distance_m`: the sweep found a deeper cell than the one
+reported, so a support-contact witness exempted it. That inequality is
 the authoritative "was an exemption live at the trip" evidence; the kernel's
 arm/separate transitions are recorded alongside it, and a disagreement between
 the two is itself a finding. `place_allowance_active` is transcribed from the
@@ -310,14 +304,14 @@ ros_domain_id: "77"
 ros_automatic_discovery_range: "LOCALHOST"
 ```
 
-An empty string means the variable was unset — i.e. domain 0 with subnet-wide
+An empty string means the variable was unset, i.e. domain 0 with subnet-wide
 discovery, the combination that let a simulation read a live OpenArm's joints.
 `validation_matrix.py diff` surfaces a change in either field between rounds.
 
 ### Adjudicating a payload-vs-link self stop
 
 A stop whose payload side is the *carried object* and whose other side is a
-**robot link** — `a=attached:sim:obj_main b=panda_link1`, `kind=self` — is not a
+**robot link** (`a=attached:sim:obj_main b=panda_link1`, `kind=self`) is not a
 world stop and must not be scored against world geometry. The rule branches on
 **who the other side is**, not on `involves_payload`:
 
@@ -332,7 +326,7 @@ The attached-payload self budget is the link's corner slop plus the payload's
 The coverage block moves with the pair set for the same reason the pairs do: an
 untruncated *robot-world* probe must not be allowed to assert "nothing within
 `distmax`" about a *payload-robot* probe that was never consulted. Absence of
-the right pair set is a missing instrument, not evidence — such a stop is
+the right pair set is a missing instrument, not evidence: such a stop is
 `unadjudicated`, never scored off whichever pairs happen to be present.
 
 ### Adjudicating a link-vs-link self stop
@@ -353,7 +347,7 @@ mesh, sampled by `tools/generate_tight_geometry.py` and published per link in
 The hull term is **per link, never maxed or doubled** the way the box term is
 (a consumer has both link names in hand): a link with no stage-2 hull, or a
 hull with no source mesh on disk to sample, ships no `hull_overhang_m` at all
-— never a silent `0` — and the pair it is part of stays `unadjudicated`.
+(never a silent `0`), and the pair it is part of stays `unadjudicated`.
 Charging the box budget instead would forgive a real overlap by up to twice
 the OBB corner slop, which on `panda_mobile` is 172 mm; the hull budget is
 two orders of magnitude tighter (tenths of a millimetre on every panda link
@@ -376,11 +370,10 @@ $ just validation-matrix-diff outputs/validation-matrix/<new> outputs/validation
 
 Equal `executed_sha` **and** equal `seed` on both sides makes it a
 **reproducibility** comparison; anything else is a **before/after**. The seed is
-part of the test because it decides the scene's initial configuration — a
+part of the test because it decides the scene's initial configuration: a
 seed-1-vs-seed-2 pair at one SHA compares two different scenes.
 
-The distinction matters: the policy is stochastic across runs even at a pinned
-scene seed (`first_chunk_s` 90.96 vs 34.23, 1285 vs 632 steps, same scene and
+The policy is stochastic across runs even at a pinned scene seed (`first_chunk_s` 90.96 vs 34.23, 1285 vs 632 steps, same scene and
 tip), so per-run trajectories are not comparable between rounds — **only failure
 classes are.** Diff outcomes and tripping pairs; do not read a step count as a
 regression.
@@ -430,21 +423,20 @@ imported …/2026-08-22-master-1 as 2026-08-22-master-1:
 ```
 
 It writes `metadata.json`, then derives `verdicts.json` + `NOTES.md` in place,
-after which `verdicts` and `diff` treat the round like any other — the mapping
-and the stem are recorded in `scene_dirs` / `artifact_stem`, so nobody repeats
-them. Unrecognised layouts take `--scene-alias <scene>=<dir>`.
+after which `verdicts` and `diff` treat the round like any other (the mapping
+and the stem are recorded in `scene_dirs` / `artifact_stem`). Unrecognised layouts take `--scene-alias <scene>=<dir>`.
 
 What it **derives from the artifacts**, never asks for:
 
-- `stack_argv` — the stack tokens of the deploy log's own resolved
-  `argv: … launch …` echo, which is the only record of what the CLI resolved.
+- `stack_argv`: the stack tokens of the deploy log's own resolved
+  `argv: … launch …` echo, the only record of what the CLI resolved.
   The head varies (older rounds echo a bare `ros2 launch`, newer ones the
   venv-wrapped `<venv>/bin/python …/ros2 launch`), so the line is found by its
   `argv: ` prefix and a `launch` token; only `key:=value` tokens are read.
   Scenes that disagree are refused: two stacks are two rounds.
-- `started_at` — the first ROS timestamp in the log.
-- `repo_root`, `robot_id`, `robot_manifest_path` — from the argv's `robot_yaml:=`.
-- `scene_configs` — the per-round scene YAML kept beside the artifacts.
+- `started_at`: the first ROS timestamp in the log.
+- `repo_root`, `robot_id`, `robot_manifest_path`: from the argv's `robot_yaml:=`.
+- `scene_configs`: the per-round scene YAML kept beside the artifacts.
 
 What it stores **as given**, because no artifact states it: the executed SHA
 (from the round's own NOTES/build log), the hostname, the GPU, the sync groups.
@@ -473,22 +465,20 @@ Etiquette:
 - **Check `nvidia-smi` before you start.** The harness refuses when other
   compute processes are resident; `--force-shared-gpu` only if you know they are
   yours. Do not evict someone else's run.
-- **`~/.local/bin` goes on the END of `PATH`, never the front.** Both facts
-  matter: `just` itself lives *only* there, so without it on `PATH` no recipe
-  runs at all — and `~/.local/bin/openral` is a wrapper that hardcodes
-  `_OPENRAL_DIR=~/workspace/openral` and execs the **parent** checkout's venv,
-  overlay and `robots/` manifests. Append it after activating the venv, so the
-  venv's `openral` still wins. The harness also invokes its launcher by absolute
-  path, so a mis-ordered `PATH` cannot silently decide which code runs — but the
-  ordering still decides it for everything else you type.
-- **Sync deliberately, and only when you mean to.** All the `just
-  validation-matrix*` recipes use `uv run --no-sync`: a bare `uv run` re-resolves
-  the environment on every invocation, and a mid-round re-resolve has already
-  cost a round.
+- **`~/.local/bin` goes on the END of `PATH`, never the front.** `just` lives
+  *only* there, so without it no recipe runs; and `~/.local/bin/openral` is a
+  wrapper that hardcodes `_OPENRAL_DIR=~/workspace/openral` and execs the
+  **parent** checkout's venv, overlay and `robots/` manifests. Append it after
+  activating the venv so the venv's `openral` wins. The harness invokes its
+  launcher by absolute path, but the ordering still decides which code runs for
+  everything else you type.
+- **Sync deliberately.** All `just validation-matrix*` recipes use
+  `uv run --no-sync`: a bare `uv run` re-resolves the environment on every
+  invocation, and a mid-round re-resolve has already cost a round.
 - **One round at a time.** Four scenes at ~7 min each plus teardown is roughly
   half an hour of exclusive GPU.
 - **Copy the round off the host** and re-derive verdicts anywhere with
-  `just validation-matrix-verdicts` — it is offline and side-effect free.
+  `just validation-matrix-verdicts` (offline, side-effect free).
 
 ## 9. Testing the harness
 
@@ -501,13 +491,11 @@ red.
 
 No run is faked, and no fixture is synthesized:
 
-- the two `master-1` rounds are the same code, the same scene and the same seed
-  with a different outcome, which makes the diff test a real round-over-round
-  comparison rather than an invented one. They keep their original pre-harness
-  layout, so reading them at all exercises the importer;
-- `2026-08-22-harness-1` is the harness's own first live round — four scenes of
-  click usage error — and is the fixture for "a launch failure is not a
-  deadline";
+- the two `master-1` rounds are the same code, scene and seed with a different
+  outcome, so the diff test is a real round-over-round comparison. They keep
+  their original pre-harness layout, so reading them exercises the importer;
+- `2026-08-22-harness-1`, the harness's first live round (four scenes of click
+  usage error), is the fixture for "a launch failure is not a deadline";
 - the flags in `STACK_ARGV` are checked against the **live** `openral deploy
   sim` parser, and the absence of a reasoner flag is asserted rather than
   assumed.

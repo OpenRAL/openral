@@ -1,10 +1,7 @@
 # openral_rskill_ros
 
-> **`rskill_runner_node` lifecycle node + `ExecuteRskill`
-> action server.**
-
-This package owns Layer 3 (rSkill) of the ROS 2 reasoner + supervisor
-graph. One node per robot.
+`rskill_runner_node` lifecycle node + `ExecuteRskill` action server: Layer 3
+(rSkill) of the ROS 2 reasoner + supervisor graph. One node per robot.
 
 ## Layer
 
@@ -29,8 +26,8 @@ chunks to the safety boundary.
 apply-wait blocks, the reported reason names the actual fault
 (`kind_collision`, `drop_envelope_unconfigured`, …) plus the publisher's
 `detail`, instead of collapsing every abort to `/openral/estop`. The
-`/openral/estop` latch is unchanged and still reported alongside it —
-belt and braces. Because the topic is latched, a runner that reconnects
+`/openral/estop` latch is unchanged and still reported alongside it.
+Because the topic is latched, a runner that reconnects
 mid-mission reads the current state immediately. Once a `SafetyStatus`
 has been seen, one that goes silent for more than 3 s (three missed 1 Hz
 liveness refreshes) is reported as *unknown, not safe* — hazard-log
@@ -43,9 +40,8 @@ and after the final slot of an atomic group. The same bounded wait therefore cat
 HAL for SmolVLA, ACT, diffusion, and multi-surface policies. The loop-level guard remains
 necessary before inference and for pre-goal waits that have no tick id to acknowledge.
 
-`_raise_if_safety_aborted(where)` is now the one guard every blocking
-wait on the dispatch path calls, all of them reading the same
-`_safety_abort_reason()` the HAL polls:
+`_raise_if_safety_aborted(where)` is the one guard every blocking wait on the
+dispatch path calls, all reading the same `_safety_abort_reason()` the HAL polls:
 
 | wait | what a stopped safety layer starves | used to report |
 |---|---|---|
@@ -54,11 +50,10 @@ wait on the dispatch path calls, all of them reading the same
 | `_wait_for_starting_pose` | a latched HAL stops publishing `/joint_states` | a timeout warning, then the policy started anyway |
 | `_run_approach_skill`, per MoveIt waypoint | every replayed waypoint dropped | approach "succeeded"; policy started from a pose the arm never reached |
 
-All of them now raise `ROSEStopRequested` naming the reason and the wait,
-and every one of those raises lands on a branch that stamps
-`failure_reason="safety_estop:…"` + `failure_kind=FAILURE_SAFETY_ESTOP`.
-Note the MoveIt approach in particular: `ROSEStopRequested` is a
-`ROSError`, so without an explicit re-raise it fell into
+All of them raise `ROSEStopRequested` naming the reason and the wait, and every
+such raise lands on a branch that stamps `failure_reason="safety_estop:…"` +
+`failure_kind=FAILURE_SAFETY_ESTOP`. The MoveIt approach needs an explicit
+re-raise: `ROSEStopRequested` is a `ROSError`, so without it it fell into
 `_dispatch_moveit_approach`'s planning branch and the goal reported
 `FAILURE_PLANNING_ERROR` — the ladder replanning around an "unreachable"
 pose while the kernel was in fact latched.
@@ -127,7 +122,7 @@ One generic launch file ships with this package:
   `OpaqueFunction`: `robot_yaml`, `envelope_file`, `hal_package`,
   `hal_executable`, `hal_node_name`, `hal_params_file`.
 
-  In practice you don't invoke this launch directly — use
+  Normally you use
   `openral deploy sim --config <SceneEnvironment.yaml>` (see
   `python/cli/src/openral_cli/deploy_sim.py`). The CLI:
   1. resolves the robot via the DeployScene's `robot_id` (or
@@ -137,15 +132,14 @@ One generic launch file ships with this package:
      package, run under the node name `openral_hal_<id>`);
   2. validates the manifest via
      `RobotDescription.validate_for_e2e_pipeline()`;
-  3. shells `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
+  3. runs `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
 
   The launch's `OpaqueFunction` then loads `robot.yaml`, calls
   `openral_safety.envelope_loader.compute_intersection(robot, None)`,
   and forwards each `EnvelopeIntersection` field as a ROS parameter
   on the C++ safety_kernel node. **No envelope YAML file is written
-  or read** — the C++ safety kernel grew a parameter-based loader
-  alongside the legacy `envelope_file:=PATH` path
-  (kept for HIL safety tests + `kernel_only.launch.py`).
+  or read**; the kernel's legacy `envelope_file:=PATH` loader is kept
+  for HIL safety tests + `kernel_only.launch.py`.
 
   Direct invocation (for debugging the launch itself):
 
@@ -222,9 +216,8 @@ the colcon-generated `FAILURE_*` constant set, `_failure_kind_for_exception`
 ### `failure_kind` — the typed dispatch outcome
 
 `ExecuteRskill.Result` carries `failure_kind` (uint8) alongside the
-free-text `failure_reason`. It is what a machine consumer — the
-reasoner's replanning ladder — classifies on, so it never substring-matches
-operator prose. The field is **additive** (CLAUDE.md §1.6): a consumer
+free-text `failure_reason`. Machine consumers (the reasoner's replanning
+ladder) classify on it, never by substring-matching operator prose. The field is **additive** (CLAUDE.md §1.6): a consumer
 reading only `success` / `failure_reason` is untouched, and a Result from a
 producer that predates the field decodes as `FAILURE_NONE`. A consumer
 must therefore read `failure_kind == FAILURE_NONE` on a failed result as

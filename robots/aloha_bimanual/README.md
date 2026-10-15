@@ -1,12 +1,11 @@
 # `aloha_bimanual` — Robot description
 
 Canonical `RobotDescription` manifest for the **Trossen ALOHA** bimanual
-teleop platform — two 7-DoF arms with parallel grippers (14-DoF action
-space), one top-down RGB camera. Two execution paths share the
-manifest: `AlohaHAL` for the real Interbotix XS hardware (via
-`interbotix_xs_sdk`, not `ros2_control`/`controller_manager`; hardware
-transport not yet wired in `connect()`) and `AlohaMujocoHAL` for the real-physics
-MuJoCo digital twin built on the
+teleop platform: two 7-DoF arms with parallel grippers (14-DoF action space)
+and one top-down RGB camera. Two execution paths share it: `AlohaHAL` for the
+real Interbotix XS hardware (via `interbotix_xs_sdk`, not
+`ros2_control`/`controller_manager`; hardware transport not yet wired in
+`connect()`) and `AlohaMujocoHAL`, the MuJoCo digital twin on the
 [`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF.
 
 ## At a glance
@@ -22,10 +21,10 @@ MuJoCo digital twin built on the
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `closed` (Trossen / `gym_aloha` MuJoCo bindings) |
 
-> **Note.** Joint kinematic detail is approximate — `gym-aloha` does not
-> expose the URDF through its gym API. The values are sufficient for
-> capability matching and `SafetyEnvelope` authoring; if a HAL adapter
-> ever drives a real ALOHA the URDF wins.
+> **Note.** Joint kinematics are approximate (`gym-aloha` does not expose the
+> URDF through its gym API), but sufficient for capability matching and
+> `SafetyEnvelope` authoring; if a HAL adapter ever drives a real ALOHA, the
+> URDF wins.
 
 ## Pair with
 

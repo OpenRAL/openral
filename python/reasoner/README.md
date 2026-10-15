@@ -1,18 +1,14 @@
 # openral-reasoner
 
-OpenRAL S2 reasoner — the event-driven slow planning loop (CLAUDE.md §3
-Layer 4). `ReasonerCore` consumes a `WorldState` snapshot plus rolling
+OpenRAL S2 reasoner (CLAUDE.md §3 Layer 4): the event-driven slow planning
+loop, with a ~0.2 Hz heartbeat, between the `WorldStateAggregator` and the S1
+skill executor. `ReasonerCore` consumes a `WorldState` snapshot plus rolling
 event buffers (failures, perception events, operator prompts) and emits
-**exactly one** typed `ReasonerToolCall` per tick via the LLM's
-structured tool-use API — no free-form JSON. The ROS-side
-`reasoner_node` (in [`packages/openral_reasoner_ros/`](../../packages/openral_reasoner_ros/))
-wraps this core with rclpy subscriptions and dispatch plumbing.
-
-## Layer
-
-CLAUDE.md §3 Layer 4 — S2 slow reasoning: event-driven with a ~0.2 Hz
-heartbeat, sitting between the `WorldStateAggregator` and the S1 skill
-executor. Dispatch is direct typed tool calls.
+**exactly one** typed `ReasonerToolCall` per tick via the LLM's structured
+tool-use API (no free-form JSON); dispatch is direct typed tool calls. The
+ROS-side `reasoner_node` (in
+[`packages/openral_reasoner_ros/`](../../packages/openral_reasoner_ros/)) wraps
+this core with rclpy subscriptions and dispatch plumbing.
 
 ## Design
 

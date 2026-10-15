@@ -111,9 +111,8 @@ completed. Integration claims are limited to schema and adapter validation.
 
 ## License
 
-The rSkill metadata and upstream XR-1 code/checkpoint are Apache-2.0. Loading
-requires `OPENRAL_ALLOW_REMOTE_CODE=1` because the HF repo ships executable
-custom Transformers code.
+The wrapper and upstream code/weights are Apache-2.0. Loading requires
+`OPENRAL_ALLOW_REMOTE_CODE=1` for the checkpoint's custom Transformers code.
 
 ## See also
 

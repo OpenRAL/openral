@@ -195,8 +195,8 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 
 The rSkill package itself (this manifest + README) is **Apache-2.0**. The
 wrapped MoveIt code (`moveit_msgs` IDL, `moveit2` planners) is **BSD-3-Clause**
-and is installed via `ros-${ROS_DISTRO}-moveit`, outside this repository. Both
-postures are commercial-use-permissive.
+and lives outside this repository, installed via `ros-${ROS_DISTRO}-moveit`.
+Both are commercial-use-permissive.
 
 ## See also
 

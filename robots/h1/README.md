@@ -1,15 +1,13 @@
 # `h1` — Robot description
 
-Canonical `RobotDescription` manifest for the **Unitree H1** humanoid —
-a 19-DoF bipedal robot (2 × 5 legs + 1 torso + 2 × 4 arms; no
-end-effectors on this menagerie variant). The same manifest covers
-the real Unitree H1 (over `unitree_sdk2`, M2 milestone) and the
-real-physics MuJoCo digital twin (`H1MujocoHAL` on the
-`mujoco_menagerie` MJCF).
+Canonical `RobotDescription` manifest for the **Unitree H1** humanoid, a
+19-DoF biped (2 × 5 legs + 1 torso + 2 × 4 arms; no end-effectors on this
+menagerie variant). One manifest covers the real H1 (over `unitree_sdk2`, M2
+milestone) and the MuJoCo digital twin (`H1MujocoHAL` on the `mujoco_menagerie`
+MJCF).
 
-The H1 is the **predecessor** to the Unitree G1 — bigger, taller,
-coarser-DoF (no wrists, no waist roll/pitch, single-DoF ankles). See
-the [`g1`](../g1/README.md) sibling for the newer humanoid.
+The H1 is the **predecessor** of the [`g1`](../g1/README.md): bigger, taller,
+coarser-DoF (no wrists, no waist roll/pitch, single-DoF ankles).
 
 ## Vendored URDF (`h1.urdf`)
 
@@ -22,17 +20,16 @@ with **only the joint names patched**: the upstream suffixes every joint with
 vendor-urdf h1 --upstream rd:h1_description --out robots/h1 --raw-text` strips
 the `_joint` suffix from joint names **on the raw URDF text** — link names,
 geometry, inertials and the `package://h1_description/...` mesh paths are
-byte-identical to upstream, per the vendored-URDF byte-identical import convention. End users need no xacro tooling and
-no joint-name reconciliation at runtime.
+byte-identical to upstream, per the vendored-URDF byte-identical import
+convention. End users need no xacro tooling and no joint-name reconciliation at
+runtime.
 
 ## What this is — and what it isn't
 
-The MuJoCo digital twin is a **HAL contract validator**, not a useful
-humanoid sim. The H1 has a floating base and no S0 cerebellar
-controller; left to its own devices it falls over under gravity. The
-closed-loop sim tests therefore run with `gravity_enabled=False`.
-
-The twin is the right tool for verifying:
+The MuJoCo twin is a **HAL contract validator**, not a useful humanoid sim:
+with a floating base and no S0 cerebellar controller it falls over under
+gravity, so the closed-loop sim tests run with `gravity_enabled=False`. It
+verifies:
 
 - 19-DoF joint-position action layout,
 - lifecycle wiring (`connect → read_state → send_action → estop`),
@@ -40,23 +37,19 @@ The twin is the right tool for verifying:
 - `RobotDescription` round-trip,
 - embodiment / VLA tag plumbing.
 
-It is **not** the tool for rolling out a humanoid policy that walks or
-balances. Balance + walking live under CLAUDE.md §6.2 — the C++ S0
-cerebellum tracked under the M2 milestone — and are explicitly out of
-scope here.
+It is **not** for rolling out a policy that walks or balances. Balance and
+walking belong to the C++ S0 cerebellum (CLAUDE.md §6.2, M2 milestone) and are
+out of scope here.
 
 ## Torque vs position actuators
 
-The H1 menagerie MJCF ships **torque** (`motor`) actuators rather
-than the position actuators the G1 / UR / Franka / SO-100 MJCFs use.
-Writing `ctrl[i] = x` applies `x` N·m directly, not "drive joint i to
-position x". `H1MujocoHAL` therefore runs a software PD position loop
-every physics step (`tau = kp * (target - q) - kv * dq` clamped to
-`ctrlrange`) so the public action contract stays "position targets in
-radians" — the same as every other `MujocoArmHAL` subclass. This
-mirrors how the real `unitree_sdk2` driver works on hardware: the
-bus is torque-mode but the user-facing API takes positions and runs
-Kp/Kd in the driver layer.
+The H1 menagerie MJCF ships **torque** (`motor`) actuators, unlike the
+position actuators of the G1 / UR / Franka / SO-100 MJCFs: `ctrl[i] = x`
+applies `x` N·m. `H1MujocoHAL` therefore runs a software PD position loop every
+physics step (`tau = kp * (target - q) - kv * dq` clamped to `ctrlrange`), so
+the public action contract stays "position targets in radians" like every other
+`MujocoArmHAL` subclass. The real `unitree_sdk2` driver works the same way: a
+torque-mode bus behind a position API with Kp/Kd in the driver layer.
 
 The PD gains are sized so a 1-rad position error roughly saturates
 each actuator at its peak torque (e.g. 300 N·m for the knees). These
@@ -117,31 +110,25 @@ menagerie MJCF and the `Action.joint_targets[i]` slot order):
 | 17 | `right_shoulder_yaw` | -4.45, 1.3 | 18 | right arm |
 | 18 | `right_elbow` | -1.25, 2.61 | 18 | right arm |
 
-Note the H1's H1-specific naming convention — no `_joint` suffix
-(unlike the G1's `left_hip_pitch_joint`). The H1 menagerie ships
-joints as `left_hip_pitch`, `left_knee`, etc.
-
-Position limits + effort limits come from the upstream
-`mujoco_menagerie` MJCF verbatim (the menagerie pins them to the
-published Unitree H1 spec sheet).
+Names carry no `_joint` suffix (the menagerie's `left_hip_pitch`, unlike the
+G1's `left_hip_pitch_joint`). Position and effort limits are the upstream
+`mujoco_menagerie` MJCF's verbatim, which pins them to the published Unitree H1
+spec sheet.
 
 ## Tests
 
-- Sim: `tests/sim/test_h1_hal_mujoco.py` exercises `H1MujocoHAL`
-  end-to-end against real MuJoCo physics on the Menagerie MJCF:
-  lifecycle, schema-drift guard (verifies the 19-joint order + the
-  motor-actuator alignment), per-section convergence on the legs,
-  torso, left arm, and right arm.
+- Sim: `tests/sim/test_h1_hal_mujoco.py` runs `H1MujocoHAL` against real
+  MuJoCo physics on the Menagerie MJCF: lifecycle, a schema-drift guard
+  (19-joint order + motor-actuator alignment), and per-section convergence on
+  legs, torso, left arm and right arm.
 - HIL: planned alongside the real-HW HAL under M2.
 
 ## Asymmetric joint conventions
 
-Like the G1, the H1 mirrors its arm conventions left vs right:
-`left_shoulder_roll` ∈ [-0.34, 3.11] but `right_shoulder_roll` ∈
-[-3.11, 0.34]. This means a "all joints at the same target value"
-command is invalid for one side or the other — physical reality,
-not a HAL bug. Tests deliberately validate each section
-independently rather than driving every joint to a uniform target.
+Like the G1, the H1 mirrors its arm conventions left vs right
+(`left_shoulder_roll` ∈ [-0.34, 3.11], `right_shoulder_roll` ∈ [-3.11, 0.34]),
+so one uniform target for all joints is invalid on one side: physical reality,
+not a HAL bug. Tests validate each section independently.
 
 ## See also
 

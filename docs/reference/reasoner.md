@@ -8,8 +8,7 @@ It decides *what to do next*; it never drives motors itself.
 
 - **Core (transport-agnostic):** [`openral_reasoner.ReasonerCore`](https://github.com/OpenRAL/openral/blob/master/python/reasoner/src/openral_reasoner/core.py)
 - **ROS 2 lifecycle node:** [`openral_reasoner_ros.reasoner_node`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/) — full contract in its [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
-- **Design:** covers the supervisor graph + tool-dispatch, active search, and the read-only query tools
-- **Design narrative (how it thinks):** [Reasoner Design & Decisions](reasoner-design.md) — the connective story across the decisions below, organized by logic problem (tick loop → grounding → decomposition → completion verdict → reward pairing → replanning → memory → LLM choice).
+- **Design (the why):** [Reasoner Design & Decisions](reasoner-design.md), organized by logic problem (tick loop → grounding → decomposition → completion verdict → reward pairing → replanning → memory → LLM choice).
 
 > **Authority boundary.** The reasoner **never** publishes `openral_msgs/ActionChunk`.
 > Actuation lives behind the S1 skill runner (`/openral/execute_rskill` action
@@ -20,15 +19,14 @@ It decides *what to do next*; it never drives motors itself.
 
 ## Cadence & event model
 
-As of the 2026-05-25 amendment,
-the reasoner is **event-driven with a slow heartbeat**:
+As of the 2026-05-25 amendment the reasoner is event-driven with a slow heartbeat:
 
 - **Heartbeat** — a periodic timer ticks at `tick_hz` (default **0.2 Hz**, one
   tick every 5 s). A heartbeat tick that sees no new event since the last
   successful tick is short-circuited inside `ReasonerCore` with
   `suppressed_reason="heartbeat_idle"` (no LLM call, no span).
-- **Event preemption** is the primary trigger, subject to a hard **100 ms
-  min-interval** between ticks:
+- **Event preemption** is the primary trigger, subject to a hard 100 ms
+  min-interval between ticks (`min_interval_s`):
 
 | Tier | Source | Preempts on |
 |---|---|---|
@@ -62,9 +60,9 @@ matching dispatch in `reasoner_node` (CLAUDE.md §3).
 
 ### Read-only query tools
 
-These hold **no actuation authority** — they read state and feed the result back
-to the LLM as a re-prompt. Each is gated by a `ToolPalette` flag and only offered
-when the corresponding service is present.
+No actuation authority: they read state and feed the result back to the LLM as a
+re-prompt. Each is gated by a `ToolPalette` flag and offered only when its service
+is present.
 
 | Tool (`tool=`) | Reads | Gate |
 |---|---|---|
@@ -80,8 +78,8 @@ expressions. `recall_object` *remembers*; `locate_in_view` *looks now*.
 
 ### Memory & mission tools
 
-These edit the reasoner's own state — its `MEMORY.md` file and its task ledger —
-never the robot. They are advisory and hold no actuation authority.
+These edit the reasoner's own state (its `MEMORY.md` and task ledger), never the
+robot; no actuation authority.
 
 | Tool (`tool=`) | Effect |
 |---|---|
@@ -92,8 +90,6 @@ never the robot. They are advisory and hold no actuation authority.
 ---
 
 ## Playbooks, memory & missions
-
-Three S2 capabilities layer on top of the tool surface:
 
 - **Playbooks (`kind: playbook`).** At palette-seed time the reasoner gathers
   installed, capability-matched playbook rSkills, reads their `PLAYBOOK.md`
@@ -132,13 +128,12 @@ installed rSkills by:
 - `role == "s1"` (S0/S2 excluded from the actuation palette),
 - license posture (commercial-deployment gate).
 
-The LLM sees **one tool per skill** (`execute_rskill__<slug>`) with
-a real description + action/object/scene discriminators, not one opaque tool with
-an enum. Continuous detectors are surfaced as `continuous_detectors` so the LLM is
-told *what is already tracked for free* and only reaches for `locate_in_view` on
-something outside that coverage.
+The LLM sees one tool per skill (`execute_rskill__<slug>`) with a real description
++ action/object/scene discriminators, not one opaque tool with an enum. Continuous
+detectors are surfaced as `continuous_detectors` so the LLM knows what is already
+tracked and reaches for `locate_in_view` only outside that coverage.
 
-**The palette is closed:** the LLM cannot dispatch a skill that isn't installed,
+The palette is closed: the LLM cannot dispatch a skill that isn't installed,
 capability-matched, and licensed.
 
 ---
@@ -242,11 +237,9 @@ Still in flight:
 
 ## See also
 
-- [Reasoner Design & Decisions](reasoner-design.md) — the **why** behind every mechanism on this page, organized by logic problem.
+- [Reasoner Design & Decisions](reasoner-design.md) — the why behind every mechanism on this page.
 - [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — full ROS wrapper contract, provider presets, baseline LLM configs.
-- The reasoner/supervisor graph + tool-dispatch design.
-- Reasoner-managed SLAM/Nav2 background services.
-- LLM task planning & active search.
-- Playbooks + self-maintained MEMORY.md.
-- Success-gating + sequential mission task queue.
+- Private decision log: the supervisor graph + tool-dispatch design, reasoner-managed
+  SLAM/Nav2 background services, LLM task planning & active search, playbooks +
+  self-maintained MEMORY.md, success-gating + sequential mission task queue.
 - [rSkills reference](rskills.md) — the `kind: detector` / `vlm` / `reward` / `ros_action` / `playbook` skills the reasoner reads and dispatches.

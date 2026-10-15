@@ -114,8 +114,8 @@ pinned and the full 50-trial protocol is run.
 
 ## License
 
-The wrapper and upstream code/weights are Apache-2.0. The checkpoint executes
-custom HF code and therefore requires `OPENRAL_ALLOW_REMOTE_CODE=1`.
+The wrapper and upstream code/weights are Apache-2.0. Loading requires
+`OPENRAL_ALLOW_REMOTE_CODE=1` for the checkpoint's custom Transformers code.
 
 ## See also
 

@@ -17,9 +17,9 @@ seven-layer model in the project docs.
 
 ## Usage
 
-`openral detect` is an always-interactive **custom `robot.yaml` builder**.
-There is no `--interactive`/`-i` flag — probing a rig and writing a manifest
-always walks the operator through naming the rig and binding its cameras.
+`openral detect` is an always-interactive **custom `robot.yaml` builder**
+(there is no `--interactive`/`-i` flag): writing a manifest always walks the
+operator through naming the rig and binding its cameras.
 
 ```bash
 # Build a custom robot.yaml (prompts for a rig name + per-camera sensor
@@ -52,13 +52,13 @@ Three transports, consulted strongest-evidence-first:
 
 DDS outranks CAN because a robot publishing those topics is already up and
 naming itself. CAN outranks USB because an interface name is a deliberate
-provisioning choice, while a USB controller chip is often shared across
-several arms (every Feetech-bus arm looks alike).
+provisioning choice, while one USB controller chip is often shared across arms
+(every Feetech-bus arm looks alike).
 
 CAN needs the udev rule because a CAN bus carries no vendor descriptor: the
-adapter identifies itself, the motors on the far side do not. A bare `can0`
-is therefore left unmatched on purpose — it is a kernel enumeration artefact,
-not a statement about what is plugged in.
+adapter identifies itself, the motors behind it do not. A bare `can0` is left
+unmatched on purpose; it is a kernel enumeration artefact, not a statement
+about what is plugged in.
 
 ```bash
 # What `openral detect` sees on a provisioned OpenArm cell:
@@ -68,19 +68,20 @@ not a statement about what is plugged in.
 openral detect --include can --no-write
 ```
 
-`ERROR-PASSIVE` on an otherwise healthy bus is worth knowing by name: frames
-are leaving the adapter and nothing is acknowledging them, which in practice
-means the motors are unpowered. The probe says so in a warning rather than
-leaving you to read the `state` field.
+`ERROR-PASSIVE` on an otherwise healthy bus means frames leave the adapter and
+nothing acknowledges them, in practice unpowered motors. The probe warns about
+it rather than leaving you to read the `state` field.
 
 ### Cameras without `v4l-utils`
 
 The V4L2 probe reads `/sys/class/video4linux` first and only falls back to
 `v4l2-ctl --list-devices`. sysfs is always present, needs no package and no
-root, and is the only source of the camera's *own* USB descriptor — which is
-what resolves a `usb_uvc` catalog signature, so a recognised camera arrives
-with real intrinsics instead of a generic placeholder. It also carries the
-serial, which is the only way to tell two identical cameras apart on one rig. The interactive flow is:
+root, and is the only source of the camera's *own* USB descriptor, which
+resolves a `usb_uvc` catalog signature so a recognised camera arrives with real
+intrinsics instead of a generic placeholder. It also carries the serial, the
+only way to tell two identical cameras apart on one rig.
+
+### Interactive flow
 
 1. Prompt for a custom robot name (default: the canonical rig's name). This
    becomes `RobotDescription.name`, and — unless `--output` is given — sets
@@ -118,15 +119,13 @@ serial, which is the only way to tell two identical cameras apart on one rig. Th
    (<https://huggingface.co/docs/lerobot/v0.6.0/en/so101#calibrate>); link an
    existing `<id>.json` into that directory or generate one there.
 
-Only `--no-write` short-circuits to probe-only inspection: no prompts,
-cameras are auto-enriched from the sensor catalog (real intrinsics via
+Only `--no-write` short-circuits to probe-only inspection (the CI-safe path):
+no prompts, cameras auto-enriched from the sensor catalog (real intrinsics via
 reverse lookup) instead of wizard-bound, and no `robot.yaml`/`DeployScene`
-is written. This is the CI-safe path. `--report <path>` is an orthogonal
-flag that always dumps the raw `DetectionReport` JSON to `path`; used
-*alone* (without `--no-write`) it does **not** make the run non-interactive
-— the full builder still prompts for a rig name, runs the camera wizard,
-and writes `robot.yaml`. For a headless/CI probe, pass `--no-write`
-(optionally together with `--report`).
+written. `--report <path>` is orthogonal: it always dumps the raw
+`DetectionReport` JSON to `path`, but alone it does **not** make the run
+non-interactive. For a headless probe, pass `--no-write` (optionally with
+`--report`).
 
 Bare Feetech USB detection defaults to `so101_follower` because SO-100 and
 SO-101 are electrically indistinguishable on the bus. Force the older arm with:
@@ -138,7 +137,7 @@ openral detect --robot so100
 `--deployment` writes a `DeployScene` shell: `robot_id` set to the custom
 name, the wizard's workcell camera bindings, and the HAL's `port` overridden
 with the serial device actually detected on this host (e.g. `/dev/ttyACM0`).
-The custom `robots/<name>/robot.yaml` this produces **is** read by
-`openral deploy run` (via `robot_id`/`--robot`) — it is not a throwaway
-inspection artifact. `--deployment` does not choose an rSkill; `deploy run`
-lets the reasoner pick from installed, capability-matched rSkills.
+`openral deploy run` reads the resulting `robots/<name>/robot.yaml` (via
+`robot_id`/`--robot`); it is not a throwaway artifact. `--deployment` does not
+choose an rSkill; `deploy run` lets the reasoner pick from installed,
+capability-matched rSkills.

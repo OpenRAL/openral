@@ -37,7 +37,7 @@ inference: false
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Franka Panda (LIBERO sim) | `franka_panda` (LIBERO embodiment tag) | ✓ sim | Native training target; closed-loop rollout reaches `is_success=True` on `libero_spatial/2` in ~91 steps on a single seed. |
+| Franka Panda (LIBERO sim) | `franka_panda` (LIBERO embodiment tag) | ✓ sim | Native training target; closed-loop spot-check under [Run](#run). |
 
 ## Sensors required
 
@@ -92,12 +92,11 @@ image_preprocessing:
     camera2: image2
 ```
 
-The `state_contract.dim: 8` declaration confirms the proprio width.
-Because the upstream training set is `HuggingFaceVLA/libero` — the same
-dataset the smolvla / pi05 / xvla LIBERO checkpoints in this repo were
-finetuned on — the state semantics (pos3 + axisangle3 + grip2) line up
-with OpenRAL's LIBERO backend end-to-end, with no quat-vs-axisangle
-mismatch.
+`state_contract.dim: 8` declares the proprio width. The upstream training set,
+`HuggingFaceVLA/libero`, is the dataset the smolvla / pi05 / xvla LIBERO
+checkpoints here were finetuned on, so the state semantics (pos3 + axisangle3 +
+grip2) match OpenRAL's LIBERO backend end-to-end (no quat-vs-axisangle
+mismatch).
 
 ## Benchmarks
 

@@ -1,10 +1,10 @@
 # openral-dataset
 
-**openral-dataset** — rosbag2 ↔ LeRobotDataset v3 bridge. Every skill execution (sim
-or hardware) becomes a row in a LeRobotDataset v3.0 (`codebase_version="3.0"`,
-`lerobot[dataset]>=0.6.0`). Successful and failed episodes are both persisted; the
-per-row `next.success` flag and the per-dataset `meta/info.json["metadata"]
-["dataset_success_rate"]` let downstream consumers filter.
+rosbag2 ↔ LeRobotDataset v3 bridge. Every skill execution (sim or hardware)
+becomes a row in a LeRobotDataset v3.0 (`codebase_version="3.0"`,
+`lerobot[dataset]>=0.6.0`). Successful and failed episodes are both persisted;
+consumers filter on the per-row `next.success` flag and the per-dataset
+`meta/info.json["metadata"]["dataset_success_rate"]`.
 
 ## Public API
 
@@ -55,13 +55,13 @@ with RolloutRecorder(
 - **`features_from_robot`** — pure `RobotDescription` → LeRobot v3 features
   dict mapping. No I/O, no lerobot import.
 
-The rest of the dataset-bridge PR series has since landed:
+Dataset-bridge PR series status:
 
 - **PR2** *(partial)* — `SensorRosPublisher` in `python/sensors/`
   (`ros_publisher.py`) ships and is tested. The wrapping
-  `packages/openral_sensors_ros/` lifecycle node specified by the
-  dataset-bridge design is **not yet built**, so feeding live camera topics
-  into a recorder on the hardware path is the one remaining gap.
+  `packages/openral_sensors_ros/` lifecycle node from the dataset-bridge design
+  is **not yet built**, so feeding live camera topics into a recorder on the
+  hardware path is the one remaining gap.
 - **PR3** ✅ — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
   / `openral_msgs/Episode` IDLs + explicit `episode_start` / `episode_end`
   API on `DeployRunner` (`bag.py`).
@@ -97,8 +97,7 @@ offline:
 
 **Deploy path** — `openral deploy sim --dataset-out PATH` attaches a
 `DatasetRecorderBridge` to the live graph (`compose_runtime`), writing the same
-`Rosbag2Sink` mcap for offline `from-bag` conversion. Two contract details the
-flag name does not carry:
+`Rosbag2Sink` mcap for offline `from-bag` conversion. Note:
 
 - `PATH` is a single **`.mcap` file**, not a rosbag2 bag *directory*. Its parent
   directory must already exist and the file must not (mcap refuses to
@@ -108,8 +107,7 @@ flag name does not carry:
   is rejected at goal acceptance opens no episode and writes no file. The
   bridge logs `dataset_recorder.armed` at startup and, at shutdown, either
   `dataset_recorder.summary` (episode + frame counts) or
-  `dataset_recorder.nothing_recorded` — the zero case is reported, never
-  silent.
+  `dataset_recorder.nothing_recorded`, so the zero case is never silent.
 
 ## Verification
 
@@ -125,11 +123,11 @@ End-to-end against a real `lerobot.datasets.LeRobotDataset` v3.0 round-trip:
 uv run pytest python/dataset/tests/test_sink_lerobot.py -v
 ```
 
-Per CLAUDE.md §1.11 (no mocks): every test loads the real SO-100
-`RobotDescription` from `robots/so100_follower/robot.yaml` and exercises the
-real `lerobot.datasets.LeRobotDataset` writer. Tests `pytest.skip` with a
-typed reason on hosts without `lerobot[dataset]>=0.6.0` installed (it lives behind
-the `libero` / `metaworld` dependency groups today).
+Per CLAUDE.md §1.11 (no mocks), every test loads the real SO-100
+`RobotDescription` (`robots/so100_follower/robot.yaml`) and the real
+`lerobot.datasets.LeRobotDataset` writer, and `pytest.skip`s with a typed reason
+on hosts without `lerobot[dataset]>=0.6.0` (today behind the `libero` /
+`metaworld` dependency groups).
 
 ### Coverage scope
 

@@ -111,7 +111,7 @@ Reasoner selection is **model-first** (ADR-0088). The primary knob is
 `OPENRAL_REASONER_MODEL`, a key in the curated
 [`openral_core.REASONER_MODELS`](../../python/core/src/openral_core/schemas.py)
 registry. Registry membership means the model has cleared OpenRAL's robotics
-tool-calling contract; there is deliberately no separate compatibility flag.
+tool-calling contract; there is no separate compatibility flag.
 The registry resolves the wire dialect, served model id, default endpoint,
 auth requirement, hosting mode, and local-compute floor.
 
@@ -154,12 +154,9 @@ export OPENRAL_REASONER_API_KEY=sk-or-...
 
 # Curated managed-local model
 export OPENRAL_REASONER_MODEL=cosmos3-edge
-
-# Uncurated escape hatch: explicit and warned by the factory + doctor
-export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-export OPENRAL_REASONER_DIALECT=openai
 ```
+
+For the uncurated escape hatch see "Uncurated local endpoint" below.
 
 `OPENRAL_REASONER_MAX_TOKENS` defaults to `16384` for the curated GPT-5.x
 entries so OpenRouter does not reserve their full output window and reject a
@@ -261,12 +258,11 @@ uv add anthropic --package openral-reasoner
 
 [Cosmos 3 Edge](../../docs/reference/cosmos3-edge-reasoner.md) (released
 2026-07-20) is the 4B on-device tier of NVIDIA's Cosmos 3 omnimodal
-world-model family, built for exactly this job: physical reasoning, task
-planning, and embodied decision making on Jetson Thor / RTX-class GPUs. Unlike
-the general-purpose LLM baselines above it is a *physical-AI-native* planner —
-trained on robotics/AV/warehouse data, with spatial grounding and
-physical-plausibility judgment — and its `describe_image` completion gate runs
-on the same local model (no separate cloud VLM). Weights are
+world-model family, built for physical reasoning, task planning, and embodied
+decision making on Jetson Thor / RTX-class GPUs. Unlike the general-purpose
+LLMs above it is trained on robotics/AV/warehouse data, with spatial grounding
+and physical-plausibility judgment, and its `describe_image` completion gate
+runs on the same local model (no separate cloud VLM). Weights are
 **OpenMDW-1.1** (commercial use OK). One env var is enough; the managed vLLM
 server auto-starts on the first tick (first boot downloads ~8 GB):
 
@@ -310,8 +306,8 @@ plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
 
 ### Uncurated local endpoint — explicit escape hatch
 
-Models outside `REASONER_MODELS` are not claimed compatible. They still work
-when the model id, endpoint, and dialect are explicit; the factory and doctor
+Models outside `REASONER_MODELS` are not claimed compatible. They work when the
+model id, endpoint, and dialect are explicit; the factory and `openral doctor`
 warn that robotics tool-calling reliability is unverified.
 
 ```bash
@@ -366,13 +362,6 @@ Spans are emitted via `opentelemetry-sdk`; a no-op (cost <1 µs) when
 `configure_observability` was not called (no provider installed). The
 `just docker-smoke-x86-reasoner` smoke installs a real provider so the
 round-trip can be observed end-to-end inside the deploy image.
-
-## CLAUDE.md amendment
-
-CLAUDE.md §3's dual-system pattern specifies **direct typed
-`ReasonerToolCall` dispatch** as the reasoner's output contract: the LLM
-picks exactly one typed tool call per tick and the node routes it onto the
-ROS graph.
 
 ## See also
 

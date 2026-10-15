@@ -1,8 +1,7 @@
 # OpenRAL Governance
 
-This document describes how the OpenRAL project is run and how decisions are
-made. It is intentionally lightweight and reflects the project's current,
-early-stage reality; it will grow as the community does.
+How OpenRAL is run and how decisions are made. Deliberately lightweight for an
+early-stage project; it will grow with the community.
 
 ## Roles
 
@@ -31,8 +30,7 @@ approvals. For hazard reports or coordinated safety disclosure, email security@o
 with "[safety]" in the subject line.
 
 ### Contributors
-Anyone who opens an issue or PR. You do not need to be a maintainer to
-contribute — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Anyone who opens an issue or PR; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How decisions are made
 
@@ -51,11 +49,10 @@ contribute — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licensing & contributions
 
-OpenRAL is licensed entirely under Apache-2.0 — there is no
-source-available or copy-left tier in this repo; see
-[`docs/decisions.md`](docs/decisions.md) for the licensing/commercial-tier
-boundary. Contributions are accepted under the Developer
-Certificate of Origin (DCO) — see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
+OpenRAL is licensed entirely under Apache-2.0, with no source-available or
+copy-left tier in this repo; [`docs/decisions.md`](docs/decisions.md) covers the
+licensing/commercial-tier boundary. Contributions are accepted under the
+Developer Certificate of Origin (DCO); see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
 
 ## Code of Conduct
 

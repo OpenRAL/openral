@@ -36,9 +36,9 @@ control, and `bridge_orig` normalization. The sibling Bridge tasks are not
 declared in `evaluated_tasks` until locally reproduced.
 
 **Why WidowX and not Panda/PickCube:** this checkpoint is a *bridge* policy. The
-ManiSkill3 Panda `PickCube-v1` scenes are a different embodiment and task; the
-task-data gate correctly refuses that pairing (it would produce a
-plausible-but-unsolvable rollout). See the OpenVLA / OpenVLA-OFT policy family
+ManiSkill3 Panda `PickCube-v1` scenes are a different embodiment and task, so the
+task-data gate refuses that pairing (it would produce a plausible-but-unsolvable
+rollout). See the OpenVLA / OpenVLA-OFT policy family
 notes below for the full rationale.
 
 ## How it works
@@ -103,12 +103,8 @@ OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run \
 
 ## Reproduction
 
-```bash
-# Single SimplerEnv WidowX scene (carrot-on-plate):
-OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run \
-  --suite simpler_env_widowx --task simpler_env/widowx_carrot_on_plate \
-  --rskill rskills/openvla-oft-simpler-widowx-nf4
-```
+The `openral benchmark run` command in [Quick start](#quick-start) runs the
+single SimplerEnv WidowX scene (carrot-on-plate) reported below.
 
 ## Evaluation
 

@@ -23,9 +23,8 @@ inference: false
 > **OpenRAL rSkill** — RT-DETR (Real-Time DEtection TRansformer) with a
 > ResNet-18vd backbone (r18vd), trained on COCO and exported to ONNX. Runs
 > as a perception producer on the camera tee and publishes `ObjectsMetadata`
-> to `/openral/perception/objects`. **No actuators.** This skill uses
-> `kind: detector`; it emits no `Action` chunks and drives no
-> `ros2_control` joints.
+> to `/openral/perception/objects`. **No actuators.** `kind: detector`: it
+> emits no `Action` chunks and drives no `ros2_control` joints.
 
 ## What it does
 
@@ -60,16 +59,15 @@ uv run --isolated --no-project \
     --model-id PekingU/rtdetr_r18vd_coco_o365
 ```
 
-> **Do NOT** run this via `uv sync --group onnx-export` — `uv sync` reconciles
+> **Do NOT** run this via `uv sync --group onnx-export`: `uv sync` reconciles
 > the project venv to the synced group set and prunes `pydantic`/`structlog`
 > (and other deps) the source-on-PYTHONPATH dev/test setup relies on, breaking
 > the unit tests.
 >
 > `--isolated --no-project` is required: a plain `uv run --with` overlays on the
 > project venv, whose `torchvision` is built against a different `torch` than the
-> overlay's — importing `RTDetrForObjectDetection` then dies with
-> `operator torchvision::nms does not exist`. The isolated form builds a clean
-> ephemeral env (project venv untouched). `transformers<5` keeps the stable
+> overlay's, so importing `RTDetrForObjectDetection` dies with
+> `operator torchvision::nms does not exist`. `transformers<5` keeps the stable
 > RTDetr `forward` (logits + pred_boxes) signature; `onnx`+`onnxscript` are
 > required by the torch ≥2.7 ONNX exporter. GPU footprint: ~0.2 GB at 640² fp32 —
 > runs on an 8 GB card, no quantization needed.
@@ -100,11 +98,9 @@ export above must match them on the same toolchain.
 
 ## Upstream model / training
 
-This rSkill packages an RT-DETR (Real-Time DEtection TRansformer) object
-detector with a **ResNet-18vd backbone (`r18vd`)**, exported to ONNX. It
-copies no PyTorch policy weights — the ONNX graph is produced from the
-upstream Transformers checkpoint by `tools/export_rtdetr_onnx.py` (see the
-**Weights** section above for the exact command and sha256 digests).
+No PyTorch weights are copied: `tools/export_rtdetr_onnx.py` produces the ONNX
+graph from the upstream Transformers checkpoint (command and sha256 digests
+under **Weights** above).
 
 | Field | Value |
 | --- | --- |
@@ -117,10 +113,10 @@ upstream Transformers checkpoint by `tools/export_rtdetr_onnx.py` (see the
 
 ## Supported robots / embodiments
 
-This detector is **embodiment-agnostic**: it consumes any RGB camera stream
-and emits `ObjectsMetadata`. All known embodiment tags are declared in the
-manifest; the `sensors_required` entry has no `vla_feature_key`, so the
-loader accepts any camera key — not just `camera1`.
+**Embodiment-agnostic**: it consumes any RGB camera stream. All known
+embodiment tags are declared in the manifest; the `sensors_required` entry has
+no `vla_feature_key`, so the loader accepts any camera key, not just
+`camera1`.
 
 ## Sensors / observation contract
 

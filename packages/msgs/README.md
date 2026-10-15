@@ -1,8 +1,7 @@
 # `openral_msgs`
 
-ROS 2 IDL — `.msg`, `.srv` and `.action` definitions for **OpenRAL**. This
-is the **normative** schema for everything that crosses the ROS 2
-boundary (CLAUDE.md §1 / Operating Principle 3, §6.1). Pydantic
+ROS 2 IDL (`.msg`, `.srv`, `.action`) for OpenRAL: the normative schema for
+everything that crosses the ROS 2 boundary (CLAUDE.md §1 / Operating Principle 3, §6.1). Pydantic
 counterparts live in `openral_core.schemas`; the two are kept in
 sync by hand and by the schema-export drift check
 (`tools/schema_export.py`).
@@ -16,7 +15,7 @@ ros2 interface show openral_msgs/msg/ActionChunk
 ros2 interface show openral_msgs/action/ExecuteRskill
 ```
 
-## What's in here
+## Definitions
 
 ### Messages — `msg/`
 

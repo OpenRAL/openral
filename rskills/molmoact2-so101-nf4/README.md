@@ -36,14 +36,14 @@ inference: false
 This package wraps `hf://OpenRAL/rskill-molmoact2-multi-so101-nf4` (an
 NF4-quantized mirror of `allenai/MolmoAct2-SO100_101`) with a `rskill.yaml`
 manifest that adds capability checking, license surfacing, latency budgets,
-and local registry integration. It does **not** copy model weights — they
+and local registry integration. It does **not** copy model weights; they
 live on the Hub.
 
-> **Required sim config knob:** this checkpoint uses normalization statistics
-> tagged `"so100_so101_molmoact2"`. Any `SimEnvironment` config that drives
-> this rSkill must set `vla.extra.norm_tag: "so100_so101_molmoact2"` —
-> omitting it silently applies the adapter's default `"libero"` norm stats and
-> produces garbage actions.
+> **Required sim config knob:** this checkpoint's normalization statistics are
+> tagged `"so100_so101_molmoact2"`. Every `SimEnvironment` config driving this
+> rSkill must set `vla.extra.norm_tag: "so100_so101_molmoact2"` (the adapter
+> reads it from there); omitting it silently applies the default `"libero"`
+> norm stats and produces garbage actions.
 
 ## What this skill does
 
@@ -76,9 +76,6 @@ RGB camera streams plus a 6-D proprio state go in; a `(chunk_size, 6)` absolute
 joint-position chunk comes out, replayed one step at a time and re-inferred
 when the queue empties.
 
-The adapter reads `norm_tag` from `vla.extra.norm_tag`; this rSkill requires
-`"so100_so101_molmoact2"` — set it explicitly in every `SimEnvironment` config.
-
 ### Observation → action contract
 
 | Direction | Key | Shape | Notes |
@@ -93,11 +90,11 @@ Override per-scene via `vla.extra` if your scene uses different camera names.
 
 ## Upstream model / training
 
-The wrapped weights come from Ai2's `allenai/MolmoAct2-SO100_101` checkpoint —
-the base `allenai/MolmoAct2` foundation model finetuned on the SO-100/SO-101
-teleop dataset mixture with absolute joint-pose control and annotated language
-instructions. This rSkill repackages an NF4-quantized mirror of those weights;
-it does **not** retrain or copy the full-precision weights.
+The weights come from Ai2's `allenai/MolmoAct2-SO100_101`: the base
+`allenai/MolmoAct2` foundation model finetuned on the SO-100/SO-101 teleop
+mixture with absolute joint-pose control and annotated language instructions.
+This rSkill repackages an NF4-quantized mirror; it does **not** retrain or copy
+the full-precision weights.
 
 | Field | Value |
 | --- | --- |
@@ -170,22 +167,21 @@ vla:
 ```
 
 > **Memory note (measured on an 8 GiB RTX 4070, transformers 5.x).** NF4 makes
-> the model ~6.0 GiB resident (the bf16 vocab embeddings + vision tower
-> dominate; the nf4 Linears are ~3.5 GiB) and it peaks **~7.63 GiB** during a
-> chunk — right at the edge of an 8 GiB card (which exposes only ~7.6 GiB
-> usable). The decisive enabler is the **CUDA expandable-segments allocator**:
-> without it the first forward's ~1.5 GiB embedding `cat` cannot be placed
-> contiguously and OOMs. The molmoact2 adapter defaults the allocator to
-> `expandable_segments:True` (via `default_expandable_segments`) before its
-> first CUDA allocation — on non-Jetson hosts, and only when the allocator
-> variable is unset; export it yourself if other GPU work in the process
-> allocates before the policy loads — as `PYTORCH_ALLOC_CONF` on torch ≥2.9,
-> `PYTORCH_CUDA_ALLOC_CONF` on older torch (the var was renamed in 2.9 and the
-> old name now logs a deprecation warning).
-> `image_max_crops` (pinned to 4 here) is a *secondary* lever — it bounds the
-> vision tile count but does **not** by itself decide the 8 GiB fit on these
-> checkpoints, and transformers 5.x's fast image processor largely ignores it.
-> Leave ~0.4 GiB of headroom: don't run other GPU processes alongside it.
+> the model ~6.0 GiB resident (bf16 vocab embeddings + vision tower dominate;
+> the nf4 Linears are ~3.5 GiB) and it peaks **~7.63 GiB** during a chunk, at
+> the edge of an 8 GiB card (~7.6 GiB usable). The decisive enabler is the
+> **CUDA expandable-segments allocator**: without it the first forward's
+> ~1.5 GiB embedding `cat` cannot be placed contiguously and OOMs. The adapter
+> defaults it to `expandable_segments:True` (via `default_expandable_segments`)
+> before its first CUDA allocation, on non-Jetson hosts and only when the
+> variable is unset. If other GPU work in the process allocates before the
+> policy loads, export it yourself: `PYTORCH_ALLOC_CONF` on torch ≥2.9,
+> `PYTORCH_CUDA_ALLOC_CONF` on older torch (renamed in 2.9; the old name logs a
+> deprecation warning).
+> `image_max_crops` (pinned to 4 here) is a *secondary* lever: it bounds the
+> vision tile count but does **not** by itself decide the 8 GiB fit, and
+> transformers 5.x's fast image processor largely ignores it. Leave ~0.4 GiB of
+> headroom: don't run other GPU processes alongside it.
 
 ## Reproduction
 
@@ -210,17 +206,16 @@ HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
 
 ## Evaluation
 
-`eval/so101.json::status` is **pending** — no locally-reproduced benchmark
-numbers are available yet. Run the reproduction command in
-`eval/so101.json::source.reproduction_cli` to populate.
+`eval/so101.json::status` is **pending**: no locally-reproduced numbers yet.
+Run `eval/so101.json::source.reproduction_cli` to populate.
 
 ## License
 
 This rSkill package (`rskill.yaml`, `README.md`, `eval/so101.json`) is
 **Apache-2.0**. The wrapped weights at
 `hf://OpenRAL/rskill-molmoact2-multi-so101-nf4` (NF4 mirror of
-`allenai/MolmoAct2-SO100_101`) are also released under **Apache-2.0** by Ai2 —
-commercial use is permitted; review the upstream LICENSE before deployment.
+`allenai/MolmoAct2-SO100_101`) are also **Apache-2.0** (Ai2); commercial use
+is permitted. Review the upstream LICENSE before deployment.
 
 ## See also
 

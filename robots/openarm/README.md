@@ -1,17 +1,15 @@
 # `openarm_v2` — Robot description
 
-Canonical `RobotDescription` manifest for the **Enactic OpenArm v2** —
-an open-hardware bimanual humanoid arm platform (each side: 7 revolute
-arm + 1 hinge-jaw gripper). Originally designed by Enactic with
-LeRobot upstream integration; fully open-source CAD + firmware +
-control software (`enactic/openarm` on GitHub, project page at
+Canonical `RobotDescription` manifest for the **Enactic OpenArm v2**, an
+open-hardware bimanual humanoid arm platform (per side: 7 revolute arm joints +
+1 hinge-jaw gripper). Designed by Enactic with upstream LeRobot integration;
+CAD, firmware and control software are open source (`enactic/openarm`,
 [openarm.dev](https://openarm.dev/)).
 
-The same manifest covers the real OpenArm (`OpenArmRealHAL` over
-`openarm_bringup`'s `ros2_control` stack and the Damiao CAN FD buses —
-not lerobot's upstream driver) and the real-physics MuJoCo digital twin
-(`OpenArmMujocoHAL` on the `enactic/openarm_mujoco` **v2** bimanual
-MJCF — PR #19 on master).
+One manifest covers the real OpenArm (`OpenArmRealHAL` over `openarm_bringup`'s
+`ros2_control` stack and the Damiao CAN FD buses, not lerobot's upstream
+driver) and the MuJoCo digital twin (`OpenArmMujocoHAL` on the
+`enactic/openarm_mujoco` **v2** bimanual MJCF, PR #19 on master).
 
 ## At a glance
 
@@ -27,40 +25,34 @@ MJCF — PR #19 on master).
 | Supported VLA embodiments | `openarm_v2`, `openarm` |
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `open` (Enactic OpenArm + upstream MJCF) |
-| `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), per the scene-composition / robot-manifest separation convention. The robot / scene / rSkill are separate. |
+| `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), per the scene-composition / robot-manifest separation convention. |
 | `hal.real` | `openral_hal.openarm_real:OpenArmRealHAL` (`deploy run`) |
 
 ## What v2 fixes vs the v1 era
 
-The upstream `enactic/openarm_mujoco` **v2** MJCF replaces v1's
-draft-quality actuator setup with a production-ready one:
+The upstream `enactic/openarm_mujoco` **v2** MJCF replaces v1's draft
+actuator setup:
 
-- **Native `<position>` actuators** with per-class PD gains baked
-  into the MJCF (DM8009: kp=230 kv=2.7; DM4340: kp=190 kv=2.2;
-  DM4310: kp=30 kv=1.5; fingers: kp=30 kv=0.2). The OpenRAL HAL
-  drops the v1-era software PD loop entirely — `send_action` just
+- **Native `<position>` actuators** with per-class PD gains in the MJCF
+  (DM8009: kp=230 kv=2.7; DM4340: kp=190 kv=2.2; DM4310: kp=30 kv=1.5;
+  fingers: kp=30 kv=0.2). The HAL has no software PD loop; `send_action`
   writes target → ctrl and steps.
-- **Proper `ctrlrange` and `forcerange`** on every actuator. No more
-  `ctrlrange=[0, 0]` workaround.
-- **Symmetric LEFT / RIGHT finger gains** (both kp=30, kv=0.2). The
-  v1 era's asymmetric-gain bug (LEFT gain=1, RIGHT gain=100) doesn't
-  exist in v2.
-- **Single driven finger per side** (not two finger actuators). The
-  follower finger tracks via an `<equality>` constraint inside the
-  MJCF — kinematically symmetric, but only one actuator slot per
-  gripper from the HAL's perspective. Total: 16 actuators.
-- **Hinge grippers** instead of v1's prismatic ones — the upstream
-  mechanism rotates jaws rather than translating fingers.
+- **Proper `ctrlrange` and `forcerange`** on every actuator (no
+  `ctrlrange=[0, 0]` workaround).
+- **Symmetric LEFT / RIGHT finger gains** (kp=30, kv=0.2), fixing v1's
+  asymmetric-gain bug (LEFT gain=1, RIGHT gain=100).
+- **One driven finger per side.** The follower tracks via an `<equality>`
+  constraint in the MJCF, so the HAL sees one actuator slot per gripper;
+  16 actuators total.
+- **Hinge grippers** (rotating jaws) instead of v1's prismatic fingers.
 
 ## v2 fetch path
 
-`robot_descriptions` still pins `enactic/openarm_mujoco` to a pre-v2
-commit, so `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf`
-maintains a parallel clone under `$OPENRAL_CACHE_DIR/openarm_v2/`
-pinned to a known-good v2 SHA. The helper goes away once
-`robot_descriptions` bumps its pin past PR #19 (then
-`OpenArmMujocoHAL` switches to a regular
-`from robot_descriptions import openarm_v2_mj_description`).
+`robot_descriptions` still pins `enactic/openarm_mujoco` to a pre-v2 commit,
+so `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` keeps a clone under
+`$OPENRAL_CACHE_DIR/openarm_v2/` pinned to a known-good v2 SHA. Once
+`robot_descriptions` bumps its pin past PR #19, the helper goes and
+`OpenArmMujocoHAL` uses `from robot_descriptions import openarm_v2_mj_description`.
 
 ## Pair with
 
@@ -104,11 +96,11 @@ controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
 graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
 
 Real deploys use `scenes/deploy/openarm_bench.yaml`, which starts the ZED
-driver and — the part that is easy to get silently wrong — pins
-`runtime.octomap_cloud_topic` to the topic the ZED SDK actually publishes.
-`head_zed` in `robot.yaml` auto-enables the octomap leg, but the topic keeps a
-sim-only launch default unless the scene sets it, and the result is an empty
-octree behind a graph where every node reports healthy.
+driver and pins `runtime.octomap_cloud_topic` to the topic the ZED SDK actually
+publishes. This is easy to get silently wrong: `head_zed` in `robot.yaml`
+auto-enables the octomap leg, but the topic keeps a sim-only launch default
+unless the scene sets it, giving an empty octree behind a graph where every
+node reports healthy.
 
 > **Bringup moves both arms.** `OpenArmHW::on_activate` calls `enable_all()`
 > and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
@@ -298,22 +290,24 @@ the unit overlay, `units/<unit>.yaml`) into the one description every consumer r
 | 14 | `right_joint7` | rad | ±1.571 |
 | 15 | `right_gripper` | rad | -0.7854, 0 (mirrored: closed → open) |
 
-The asymmetric arm ranges (LEFT joint1/2 negative-leaning, RIGHT
-mirrored positive-leaning) and the asymmetric gripper ranges (LEFT
-positive jaw, RIGHT negative jaw) come from the v2 MJCF — the
-physical mechanism mirrors across the centreline, and the actuator
-ctrlranges reflect that.
+### Asymmetric joint conventions
+
+The v2 mechanism mirrors across the centreline, and the MJCF ctrlranges
+reflect it: arm ranges mirror L/R (`left_joint1` ∈ [-3.49, 1.40] vs
+`right_joint1` ∈ [-1.40, 3.49]; LEFT joint1/2 lean negative, RIGHT positive),
+and the LEFT jaw closes via positive rotation, the RIGHT via negative. The same
+numeric value on LEFT and RIGHT homologous slots is therefore a mirrored pose,
+not a HAL bug. Tests validate each side independently or use sign-aware
+sentinels.
 
 ## Tests
 
-`tests/sim/test_openarm_hal_mujoco.py` exercises `OpenArmMujocoHAL`
-end-to-end against real MuJoCo physics on the **v2** MJCF: full
-lifecycle, upstream schema-drift guard (verifies all 16 actuators
-remain `<position>` mode with symmetric L/R finger gains), exact
-closed-loop convergence on every arm and gripper slot, multi-joint
-simultaneous targets, the `<equality>` follower-finger tracking
-invariant, and a per-slot identity sweep with alternating signs to
-catch wiring slips.
+`tests/sim/test_openarm_hal_mujoco.py` runs `OpenArmMujocoHAL` against real
+MuJoCo physics on the **v2** MJCF: full lifecycle, an upstream schema-drift
+guard (all 16 actuators remain `<position>` with symmetric L/R finger gains),
+exact closed-loop convergence on every arm and gripper slot, simultaneous
+multi-joint targets, the `<equality>` follower-finger invariant, and a per-slot
+identity sweep with alternating signs to catch wiring slips.
 
 HIL for the real arm lives in `tests/hil/`: `test_openarm_can_live.py`
 (CAN transport gates plus a read-only motor round-trip — it never
@@ -338,16 +332,6 @@ the silent `octomap_cloud_topic` failure the bench scene exists to pin. The
 scene's `drivers:` block brought the ZED up as part of the graph, so there
 was no second terminal. The gate's teardown E-stop latched the HAL
 (`hal.estop`) as designed.
-
-## Asymmetric joint conventions
-
-OpenArm v2 mirrors arm joint ranges across L/R (e.g.
-`left_joint1` ∈ [-3.49, 1.40] vs `right_joint1` ∈ [-1.40, 3.49]) and
-gripper rotation direction (LEFT jaw closes via positive rotation,
-RIGHT jaw via negative). Commanding the same numeric value to LEFT
-and RIGHT homologous slots is therefore inherently a kinematically
-mirrored pose — not a HAL bug. Tests validate each side
-independently or use sign-aware sentinels.
 
 ## E-stop and recovery
 

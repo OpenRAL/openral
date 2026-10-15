@@ -3,12 +3,11 @@
 An **rSkill** is OpenRAL's packaging format for a robot skill: a Hugging Face
 Hub repo containing an `rskill.yaml` manifest, a `README.md`, optional
 `eval/<benchmark>.json` results, and (usually) a pointer to model weights that
-live in an upstream repo. The manifest adds capability checking, license
-surfacing, latency budgets, and local-registry integration on top of raw
-weights — so installing a skill is as repeatable as installing a model.
+live in an upstream repo. On top of raw weights, the manifest adds capability
+checking, license surfacing, latency budgets, and local-registry integration,
+so installing a skill is as repeatable as installing a model.
 
-This tutorial takes you from nothing to a published, installable rSkill. It
-uses only real commands; nothing here is a mock.
+This tutorial goes from nothing to a published, installable rSkill.
 
 ## Prerequisites
 
@@ -18,15 +17,14 @@ just bootstrap && just sync   # toolchain + Python workspace (always `just sync`
 openral doctor                # confirm the CLI and GPU/runtime
 ```
 
-You'll also want a Hugging Face account and a write token (`HF_TOKEN`) if you
-intend to publish.
+Publishing also needs a Hugging Face account and a write token (`HF_TOKEN`).
 
 ## 1. Scaffold the package
 
 `openral rskill new` copies the canonical template in
 [`rskills/template/`](https://github.com/OpenRAL/openral/blob/master/rskills/template/)
 and round-trips it through the schema, so a malformed scaffold fails
-immediately rather than on first load. There are three modes:
+immediately rather than on first load. Three modes:
 
 ```bash
 # (a) Most intuitive — introspect a published checkpoint and pre-fill
@@ -49,7 +47,7 @@ tag some `robots/*/robot.yaml` declares, or `any` / `custom` / `multi`
 
 ## 2. Fill in the manifest
 
-Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
+Open `rskills/<id>/rskill.yaml`. The fields that matter most to consumers
 (modeled on the in-tree
 [`rskills/pi05-libero-int8/rskill.yaml`](https://github.com/OpenRAL/openral/blob/master/rskills/pi05-libero-int8/rskill.yaml)):
 
@@ -71,22 +69,21 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 
 The full schema is
 [`openral_core.schemas.RSkillManifest`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py).
-Strip the pi0.5-shaped knobs (`image_preprocessing`, `state_contract`,
-`processors`) if your policy is a simpler ACT/Diffusion model that doesn't
-need them.
+A simpler ACT/Diffusion policy can drop the pi0.5-shaped knobs
+(`image_preprocessing`, `state_contract`, `processors`).
 
 For a normalized Cartesian controller, declare
 `action_contract.cartesian_delta_scale` as its per-axis physical range.
-Predictive safety applies `clip(raw, -1, 1) * scale`, while the unchanged raw
-command continues to the native controller. RoboSuite `OSC_POSE` uses
+Predictive safety applies `clip(raw, -1, 1) * scale`; the unchanged raw
+command goes to the native controller. RoboSuite `OSC_POSE` uses
 `[0.05, 0.05, 0.05, 0.5, 0.5, 0.5]` (metres, then radians). Omit the field
 when the policy already emits physical deltas.
 
 Declare `action_contract.control_freq_hz` when the checkpoint was trained at a
 known rate (DROID 15 Hz, ALOHA 50 Hz, …). The skill runner executes one chunk
 row per tick at the robot's `action_spec.control_freq_hz` and has no resampler,
-so it rejects the goal when the two differ instead of running the policy at the
-wrong speed. Omit it only if the rate is genuinely unknown.
+so it rejects the goal when the two differ rather than run the policy at the
+wrong speed. Omit it only if the rate is unknown.
 
 ### Naming convention
 
@@ -107,21 +104,20 @@ plain `split("-")`. Two shapes:
 | `<task>` | **author-chosen**, validated by shape `^[a-z0-9][a-z0-9_]*$` only | `libero_spatial`, `pen`, `pick_place_pen`, `locator` |
 | `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` (schema `int4` → `nf4`); **omitted** for weightless ROS wrappers | `bf16`, `int8`, `nf4` |
 
-For a VLA the `<model>` token must be consistent with `model_family` (e.g. a
-`smolvla` checkpoint can't be named `pi05`). A ROS-wrapper skill
-(`ros_action`/`ros_service`) has no weights, so it drops the quant segment
-entirely, e.g. `OpenRAL/rskill-moveit-multi-eef_pose`.
+For a VLA the `<model>` token must match `model_family` (a `smolvla`
+checkpoint can't be named `pi05`). A ROS-wrapper skill (`ros_action` /
+`ros_service`) has no weights and drops the quant segment, e.g.
+`OpenRAL/rskill-moveit-multi-eef_pose`.
 
-The `<task>` segment is **yours to choose** — it is validated by shape, not by
-equality against `evaluated_tasks`, so two skills that share a benchmark can
-still carry distinct task slugs (e.g. `pen` vs `pick_place_pen`). The other
+`<task>` is validated by shape, not against `evaluated_tasks`, so two skills on
+one benchmark can carry distinct slugs (`pen` vs `pick_place_pen`). The other
 segments must use canonical tokens. Example:
 `OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
 
-Validation is `openral_core.schemas.repo_name_is_canonical`; the publisher
-prints a suggested name (from `expected_repo_name`) on a mismatch. To migrate an
-existing manifest in one step, let the tool rewrite it — then refine the
-suggested `<task>` slug if you want a better one:
+Validation is `openral_core.schemas.repo_name_is_canonical`; on a mismatch the
+publisher prints a suggested name (from `expected_repo_name`). To rewrite an
+existing manifest in one step (then refine the suggested `<task>` slug if you
+like):
 
 ```bash
 uv run python tools/rskill_publisher.py rskills/<id>/ --fix-name
@@ -133,10 +129,10 @@ are out of publisher scope. Recommended non-enforced shape:
 
 ## 3. Write the README
 
-The scaffolded `README.md` is full of `<TODO>` / `TEMPLATE_ID` markers. These
+The scaffolded `README.md` is full of `<TODO>` / `TEMPLATE_ID` markers. They
 are **publish-blocking**: the documentation validator
 (`openral_cli._rskill_doc_validator.validate_rskill_docs`) refuses to upload a
-README that still contains them. Fill in every section — what the skill does,
+README that still contains them. Fill in every section: what the skill does,
 the observation→action contract, how it was trained, supported robots, sensors
 required, and the license posture (keep `commercial_use_allowed` consistent
 with `rskill.yaml::license`).
@@ -148,17 +144,15 @@ openral detect                           # auto-provisions ./robot.yaml
 openral rskill check pi05-pick-cube --robot robot.yaml
 ```
 
-`rskill check` prints a per-section breakdown — embodiment, capability flags,
-GPU runtime, GPU dtype, sensors, actuators — and tells you whether the skill
-will run on the current host. Run `openral rskill check` with no id to walk
-every in-tree and installed rSkill.
+`rskill check` prints a per-section breakdown (embodiment, capability flags,
+GPU runtime, GPU dtype, sensors, actuators) and whether the skill will run on
+this host. With no id it walks every in-tree and installed rSkill.
 
 ## 5. (Optional) Produce reproducible eval results
 
-`eval/<benchmark>.json` is written by the **benchmark** tier, not by
-`openral sim run`. `sim run` is a single ad-hoc rollout: it prints a summary
-and writes one to `--save-dir`, but it never touches your rSkill package.
-Use it to smoke-test the pairing, then produce the number with one of:
+`eval/<benchmark>.json` is written by the **benchmark** tier. `openral sim run`
+is an ad-hoc rollout that never touches your rSkill package; use it to check
+the pairing, then produce the number with one of:
 
 ```bash
 # Multi-scene suite (the canonical producer) — writes
@@ -171,31 +165,21 @@ openral benchmark scene --config scenes/benchmark/<your-scene>.yaml \
   --rskill rskills/pi05-pick-cube
 ```
 
-Both also write the resulting `avg_success_rate` back into your manifest at
-`benchmarks.<id>` (a surgical, comment-preserving edit). Two opt-outs:
-
-- `--no-update-manifest` — still write the eval JSON, leave the manifest alone.
-  Use it for read-only paper-number runs.
-- `--no-write-eval` (`benchmark scene` only) — fully non-mutating: the rollout
-  runs and prints its score, nothing is written to the package. Implies
-  `--no-update-manifest`.
-
+Both also write the resulting `avg_success_rate` into your manifest at
+`benchmarks.<id>` (a surgical, comment-preserving edit); `--no-update-manifest`
+skips that, and `--no-write-eval` (`benchmark scene` only) writes nothing.
 Results validate against
 [`openral_core.RSkillEvalResult`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-(search for `class RSkillEvalResult`). Locally-produced results carry
-`reproduced_locally: true`, and a `trace_id` deep-linking to the rollout's
-trace when the run had somewhere to export spans (`--dashboard` or
-`OTEL_EXPORTER_OTLP_ENDPOINT`). Paper-cited numbers you haven't reproduced locally are allowed with
-`reproduced_locally: false` plus a `reproduction_cli` so others can rerun them.
+(search for `class RSkillEvalResult`). Roll them up with
+`openral benchmark report [--json]`.
 
-Roll every skill's results up with `openral benchmark report [--json]`.
-The full walkthrough — suite invariants, the `evaluated_tasks` gate, and what
-`reproduced_locally` commits you to — is in
-[Run a benchmark](../benchmark/run-a-benchmark.md).
+[Run a benchmark](../benchmark/run-a-benchmark.md) covers the opt-outs, suite
+invariants, the `evaluated_tasks` gate, `trace_id`, and what
+`reproduced_locally: true` / `false` + `reproduction_cli` commit you to.
 
 ## 6. Publish to the Hub
 
-Validate first (dry-run is the default — no upload):
+Validate first (dry-run is the default; no upload):
 
 ```bash
 python tools/rskill_publisher.py rskills/pi05-pick-cube/
@@ -211,27 +195,23 @@ python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish
 python tools/rskill_publisher.py rskills/pi05-pick-cube/ --publish --bump-revision
 ```
 
-Two things to know:
-
-- **Repos are created private.** The publisher always creates the Hub repo as
-  private; you flip it public on the Hub when you're ready. This is deliberate
-  for license-restricted weights.
+- **Repos are created private.** You flip it public on the Hub when ready;
+  this is deliberate for license-restricted weights.
 - **Provenance is not yet signed.** Sigstore signing/verification is the
   *planned* control but is **not implemented**. Until it lands,
   `rSkill.from_pretrained` / `from_yaml` emit an `rskill.unverified_provenance`
   warning. Consumers can fail closed with `OPENRAL_REQUIRE_SIGNED_SKILLS=1`.
   `*.pt` weights are treated as untrusted pickle and need
-  `OPENRAL_ALLOW_UNSAFE_PICKLE=1` to load — prefer `model.safetensors`. Do not
+  `OPENRAL_ALLOW_UNSAFE_PICKLE=1` to load; prefer `model.safetensors`. Do not
   describe your skill as "signed" or "verified" until the control exists.
 - **Publishing is what makes it discoverable.** The publisher stamps the
   `OpenRAL` + `rskill` tags into the model card front matter; `openral rskill
   search` lists the `OpenRAL` org filtered on the `rskill` tag, so a repo
-  only shows up in search results once it carries that tag *and* is public
-  on the Hub (flip it public per the point above).
+  shows up only once it carries that tag *and* is public.
 
 ## 7. Install and use it
 
-Anyone (including you, on another host) can now install it like a model:
+Anyone, on any host, can now install it like a model:
 
 ```bash
 openral rskill search pick_cube          # discover it on the OpenRAL Hub org
@@ -239,27 +219,25 @@ openral rskill install <owner>/rskill-pi05-franka_panda-pick_cube-bf16
 openral rskill list                      # see it in the local registry
 ```
 
-Note the two different identifiers. `pi05-pick-cube` was only ever the **local
-directory** under `rskills/` — a convenience name you chose in §1. What you
-install is the **Hub repo id**, which is the manifest's `name` field and must be
-canonical: `<owner>/rskill-<model>-<robot>-<task>-<quant>`, with hyphens as the
-only separators and underscores inside each token
-([Naming convention](#naming-convention)). For the running example that is
-`rskill-pi05-franka_panda-pick_cube-bf16`, not `rskill-pi05-pick-cube` — the
-latter parses as a four-segment ROS-wrapper name and drops the embodiment.
+Two identifiers: `pi05-pick-cube` is only the **local directory** under
+`rskills/` you chose in §1. You install the **Hub repo id**, the manifest's
+canonical `name` ([Naming convention](#naming-convention)). For the running
+example that is `rskill-pi05-franka_panda-pick_cube-bf16`, not
+`rskill-pi05-pick-cube`, which parses as a four-segment ROS-wrapper name and
+drops the embodiment.
 
-`rskill install` needs the full `owner/name` id — a bare name fails fast with an
-`OpenRAL/…` suggestion. Use
-`rskill search [QUERY] [--kind/--role/--embodiment/--license/--family/--limit/--json]`
-when you don't already know the id — `QUERY` is matched locally and
+`rskill install` needs the full `owner/name` id; a bare name fails fast with an
+`OpenRAL/…` suggestion. To find an id, use
+`rskill search [QUERY] [--kind/--role/--embodiment/--license/--family/--limit/--json]`.
+`QUERY` is matched locally and
 case-insensitively (every whitespace-separated token must appear somewhere
 in the repo id, manifest name/description, family, kind, role, embodiment
 tags, or Hub tags), so `rskill search pick cube` and `rskill search
 pi05-pick-cube` both work.
 
-Run it by passing the bare rSkill reference to `--rskill` on the CLI — scene YAMLs
-reject a `vla:` block (`_reject_legacy_vla_block` raises `ROSConfigError`); policy
-always travels on the CLI (see the
+Run it by passing the bare rSkill reference to `--rskill`. The policy always
+travels on the CLI: scene YAMLs reject a `vla:` block
+(`_reject_legacy_vla_block` raises `ROSConfigError`; see the
 [deploy tutorial](../deploy/deploy-run-and-dashboard.md)).
 
 ## See also

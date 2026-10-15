@@ -29,8 +29,7 @@ uv run ruff format .            # format
 
 ## Managing the Python environment & dependency groups
 
-Read this before touching the venv — these are the rules that keep a working
-tree, in priority order.
+Read before touching the venv. The rules, in priority order:
 
 **1. Always `just sync`, never bare `uv sync`.** The Justfile `sync` recipe
 wraps [`scripts/repair_hf_libero_install.py`](https://github.com/OpenRAL/openral/blob/master/scripts/repair_hf_libero_install.py)
@@ -45,10 +44,6 @@ do not include the metadata required to uninstall safely.
 which aborts the resolve and leaves the venv half-broken (missing `h5py`,
 `transformers`, `scipy`, …). `just sync` is idempotent and safe on every host.
 
-```bash
-just sync                       # the only correct full-workspace sync
-```
-
 **On aarch64 Linux, `just sync` needs `download.pytorch.org` reachable.** PyPI's
 aarch64 torch wheel is CPU-only, so the root `pyproject.toml` pins torch +
 torchvision to the `cu128` index (and raises `nvidia-cuda-nvrtc-cu12`) under a
@@ -58,15 +53,15 @@ contacts that host.
 
 Upgrading an *existing* aarch64 venv also needs a one-time
 `uv sync --frozen --reinstall-package torchvision`, because both torchvision
-builds share the version string. Full detail →
+builds share the version string. Details:
 [aarch64 CUDA hosts](../reference/aarch64-support.md).
 
 **2. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
-`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers>=5.4.0,<5.6.0`,
-`scipy`, `opencv`, robosuite — live in these groups, **not** in the core deps.
-A default sync (no `--group`) deliberately *removes* them, so for any VLA / sim
-work you need at least the `sim` group:
+`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps (`transformers>=5.4.0,<5.6.0`,
+`scipy`, `opencv`, robosuite) live in these groups, **not** in the core deps.
+A default sync (no `--group`) deliberately *removes* them, so VLA / sim work
+needs at least the `sim` group:
 
 ```bash
 just sync --group sim           # minimum working VLA / sim baseline
@@ -76,17 +71,17 @@ just sync --group metaworld     # MetaWorld
 just sync --group maniskill3    # ManiSkill3 / SAPIEN
 ```
 
-`just sync --group robocasa` is exactly `uv sync --all-packages --group robocasa`
-— the wrapper supplies `--all-packages` so the editable `openral-*` members are
-never silently uninstalled (a bare `uv sync --group <x>` drops them and the next
-`openral …` can't `import openral_core`).
+`just sync --group robocasa` is exactly `uv sync --all-packages --group robocasa`:
+the wrapper supplies `--all-packages` so the editable `openral-*` members are
+never silently uninstalled (see the `openral_core` entry under
+[Tooling self-help](#tooling-self-help)).
 
 **3. The libero ↔ robocasa conflict — swap groups per task.** LIBERO pins
 `robosuite==1.4` + a specific MuJoCo; RoboCasa needs `robosuite>=1.5` + a
 different MuJoCo. They are declared mutually exclusive in `pyproject.toml`
-(`[tool.uv] conflicts`) and **cannot** coexist in one resolution — a
-`uv sync --group libero --group robocasa` fails by design. You **swap** the
-active group per task:
+(`[tool.uv] conflicts`) and **cannot** coexist in one resolution:
+`uv sync --group libero --group robocasa` fails by design. **Swap** the active
+group per task:
 
 ```bash
 just sync --group robocasa      # before a RoboCasa run
@@ -99,8 +94,8 @@ kitchen fork (a GitHub repo, no PyPI release) is git-cloned and
 `uv pip install -e --no-deps`'d by
 `openral_sim._deps.ensure_backend_deps('robocasa_kitchen')`, which the
 deploy-sim HAL triggers from `on_configure`. Auto-install is **on by default**
-(`OPENRAL_AUTO_INSTALL_DEPS` unset or `=1`; set `=0` to prompt instead). So the
-correct way to run a RoboCasa scene is to let the HAL provision it:
+(`OPENRAL_AUTO_INSTALL_DEPS` unset or `=1`; `=0` prompts instead). Let the HAL
+provision it:
 
 ```bash
 OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
@@ -111,12 +106,11 @@ OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
 dynamically from the in-tree `rskills/` palette at `on_configure`. The scene
 YAML is the only policy input.
 
-Do **not** hand-install `robocasa` / `robosuite` yourself — that pulls the wrong
-robosuite and wrecks the managed env.
+Do **not** hand-install `robocasa` / `robosuite`: that pulls the wrong robosuite
+and wrecks the managed env.
 
-**5. Pre-build to skip the in-`on_configure` install window.** Provision the
-RoboCasa clone once, ahead of time, so the lifecycle transition doesn't stall
-on a first-run build:
+**5. Pre-build to skip the in-`on_configure` install window,** so the lifecycle
+transition doesn't stall on a first-run build:
 
 ```bash
 OPENRAL_AUTO_INSTALL_DEPS=1 just sync --group robocasa
@@ -126,9 +120,9 @@ OPENRAL_AUTO_INSTALL_DEPS=1 python -c \
 
 **6. Never `uv sync --all-packages` to "repair" the RoboCasa env.** Once the
 runtime-editable RoboCasa install is in place, a plain `uv sync --all-packages`
-*uninstalls* it (and the matching robosuite) and breaks the env. Repair with the
-group re-applied — `just sync --group robocasa` — and, if RoboCasa itself was
-evicted, re-run the `ensure_backend_deps('robocasa_kitchen')` line from point 5.
+*uninstalls* it (and the matching robosuite). Repair with
+`just sync --group robocasa` and, if RoboCasa itself was evicted, re-run the
+`ensure_backend_deps('robocasa_kitchen')` line from point 5.
 
 ## ROS 2
 
@@ -142,25 +136,24 @@ source install/setup.bash       # after build
 
 **Adding a Python node? Commit it mode 100755.** `just ros2-build` passes
 `--symlink-install`, so `install(PROGRAMS …)` *symlinks* the node into
-`install/lib/<pkg>/` instead of copying it — which means CMake's "make it
-executable on install" never happens and the libexec entry inherits the source
-file's mode. `launch_ros` resolves `executable=` with `shutil.which()` over that
-directory, gets `None` for a 0644 file, and raises `executable '<name>' not
-found on the libexec directory` — abandoning the **entire** launch description,
-not just the one node.
+`install/lib/<pkg>/`; CMake's "make it executable on install" never happens and
+the entry inherits the source file's mode. `launch_ros` resolves `executable=`
+with `shutil.which()` over that directory, gets `None` for a 0644 file, and
+raises `executable '<name>' not found on the libexec directory`, abandoning the
+**entire** launch description, not just the one node.
 
-A `chmod +x` alone is not enough (it leaves a 100644 blob
-in the commit); use `git update-index --chmod=+x <file>`.
-`tests/unit/test_ros_node_exec_bits.py` enforces this for every package.
+`chmod +x` alone leaves a 100644 blob in the commit; use
+`git update-index --chmod=+x <file>`. `tests/unit/test_ros_node_exec_bits.py`
+enforces this for every package.
 
 ## GPU motion planning — cuMotion (optional)
 
 NVIDIA Isaac ROS **cuMotion** is a CUDA-accelerated MoveIt planning pipeline
 (backed by cuRobo). The `rskill-moveit-*` family uses it automatically when the
-host clears the GPU floor — `RobotCapabilities.supports_cumotion()`: **Ampere+
-(compute capability ≥ 8.0), CUDA ≥ 13, ~8 GB VRAM** — by setting
-`MotionPlanRequest.pipeline_id`; otherwise MoveIt keeps **OMPL**. No new rSkill,
-no `move_group` re-launch — it is a per-request pipeline choice.
+host clears the GPU floor in `RobotCapabilities.supports_cumotion()` (**Ampere+,
+compute capability ≥ 8.0, CUDA ≥ 13, ~8 GB VRAM**), by setting
+`MotionPlanRequest.pipeline_id`; otherwise MoveIt keeps **OMPL**. It is a
+per-request pipeline choice: no new rSkill, no `move_group` re-launch.
 
 ```bash
 just bootstrap                  # auto-installs cuMotion when a capable NVIDIA GPU
@@ -193,10 +186,10 @@ from the link's collision **and** visual geometry, by least mean protrusion
 The loosening guard still applies: delete the old entries first when the fit
 is larger.
 
-Isaac ROS 4.4+ cuMotion is a **self-contained C++/CUDA apt package** (ships a
-native `libcumotion.so.1` and uses the CUDA 13 runtime) — there is **no Python
-cuRobo to install** and no `uv`/`pip` group. The apt packages are the supported
-path on OpenRAL's Python 3.12 + Jazzy stack. cuMotion never bypasses the safety
+Isaac ROS 4.4+ cuMotion is a **self-contained C++/CUDA apt package** (native
+`libcumotion.so.1`, CUDA 13 runtime): **no Python cuRobo** and no `uv`/`pip`
+group. The apt packages are the supported path on OpenRAL's Python 3.12 + Jazzy
+stack. cuMotion never bypasses the safety
 kernel: planned trajectories still replay through `/openral/candidate_action`
 and are validated waypoint-by-waypoint.
 
@@ -230,19 +223,17 @@ just schema-export              # regenerate JSON Schema (CI compares)
 
 ## CLI (`openral`)
 
-`just quickstart` automatically installs a `~/.local/bin/openral` wrapper so you can run `openral` (or `openral <cmd>`) from any terminal without `just`. To install or re-install it independently (e.g. after moving the repo):
+`just quickstart` installs a `~/.local/bin/openral` wrapper, so `openral` runs from any terminal without `just`. To (re-)install it alone, e.g. after moving the repo:
 
 ```bash
 just install-cli
 ```
 
-The wrapper sources the ROS 2 distro overlay and the colcon workspace overlay before delegating to `.venv/bin/openral`, so ROS 2 node/topic/action commands work transparently. Pure-Python commands (`openral doctor`, `openral detect`, etc.) still work even if ROS 2 is not yet built.
+The wrapper sources the ROS 2 distro overlay and the colcon workspace overlay, then delegates to `.venv/bin/openral`, so ROS 2 node/topic/action commands just work. Pure-Python commands (`openral doctor`, `openral detect`, …) work before ROS 2 is built.
 
 ### Which checkout does `openral` run? (`OPENRAL_REPO_ROOT`)
 
-The wrapper bakes in the checkout that generated it. That is the right default for a single clone, but it is a **provenance hazard** the moment you have two — a git worktree used for validation, say. Without an override the wrapper would exec the *generating* checkout's venv, colcon overlay and `robots/` manifests no matter where you invoked it from, so a run could be attributed to the wrong branch with nothing in the log to show it.
-
-`OPENRAL_REPO_ROOT` is the escape hatch, and the behaviour is:
+The wrapper bakes in the checkout that generated it. Right for a single clone, but a **provenance hazard** once you have two (say, a validation worktree): it execs the *generating* checkout's venv, colcon overlay and `robots/` manifests wherever you invoke it, so a run can be attributed to the wrong branch with nothing in the log to show it. `OPENRAL_REPO_ROOT` overrides it:
 
 | Situation | What runs | What you see |
 | --- | --- | --- |
@@ -258,7 +249,7 @@ export OPENRAL_REPO_ROOT=$(git rev-parse --show-toplevel)
 openral deploy sim --config …          # stderr records the root that ran
 ```
 
-…or re-run `just install-cli` from that worktree to re-bake the default. The stderr line is deliberate: it means a captured run log always names the tree that produced it.
+…or re-run `just install-cli` from that worktree to re-bake the default. The stderr line is deliberate: a captured run log always names the tree that produced it.
 
 Bare `openral` (no args) drops into an interactive REPL where subcommands run without the prefix (`sim run --config …`); pass a subcommand for one-shot mode in scripts/CI.
 
@@ -285,13 +276,13 @@ openral estop reset              # clear every e-stop latch: kernel reset, then 
 ## Tooling self-help
 
 - **`openral` prints `AMENT_TRACE_SETUP_FILES: unbound variable` and exits?** Your `~/.local/bin/openral` predates the fix that sources the (not-`set -u`-safe) ROS 2 overlays with nounset disabled. Re-run `just install-cli` to regenerate it.
-- **`openral` seems to run the wrong branch / wrong `robots/` manifests?** You are almost certainly in a second checkout while `~/.local/bin/openral` is baked to the first. Recent wrappers print a `WARNING: cwd is inside the OpenRAL checkout …` line for exactly this; fix it with `export OPENRAL_REPO_ROOT=$(git rev-parse --show-toplevel)` or by re-running `just install-cli` from the checkout you mean. If you see no warning at all, your wrapper predates the fix — regenerate it with `just install-cli`.
+- **`openral` seems to run the wrong branch / wrong `robots/` manifests?** You are in a second checkout while `~/.local/bin/openral` is baked to the first (see [`OPENRAL_REPO_ROOT`](#which-checkout-does-openral-run-openral_repo_root)). No `WARNING: cwd is inside the OpenRAL checkout …` line means your wrapper predates that check; regenerate it with `just install-cli`.
 - **Python import unclear?** `uv run python -c 'import openral_<pkg>; print(openral_<pkg>.__file__)'`.
 - **ROS 2 topic missing?** `ros2 topic list -t` in a `source install/setup.bash`-ed shell.
 - **Schema diff?** `just schema-export` and check `git diff python/openral_core/schemas/`.
 - **CI flake?** Re-run once. If it flakes again, triage with the `flake` label and don't merge.
 - **Hardware test fails on a runner?** Check the runner's e-stop log first. Never push a "fix" that makes a hardware test pass without understanding why it failed.
 - **Out of GPU memory?** Lower batch / quantize / use a smaller skill variant — never silently downcast or skip frames.
-- **`uv sync` fails with "Unable to uninstall `hf-libero==0.1.3`. distutils-installed distributions..."?** The PyPI sdist for `hf-libero` drops a spurious top-level `*.egg-info` FILE next to the proper `.dist-info/` directory; uv then misclassifies the install as distutils-built. Run **`just sync <flags>`** instead of `uv sync <flags>` — the wrapper pre/post-runs `scripts/repair_hf_libero_install.py` to strip the bogus file + RECORD line. Idempotent and safe on every host.
+- **`uv sync` fails with "Unable to uninstall `hf-libero==0.1.3`. distutils-installed distributions..."?** The PyPI sdist for `hf-libero` drops a spurious top-level `*.egg-info` FILE next to the proper `.dist-info/` directory, and uv misclassifies the install as distutils-built. Run **`just sync <flags>`**: it pre/post-runs `scripts/repair_hf_libero_install.py` to strip the bogus file + RECORD line.
 - **`ModuleNotFoundError: No module named 'cv2'` after switching groups?** `opencv-python` (pulled by some groups) and `opencv-python-headless` (an `openral-cli` dependency) both install into `cv2/`; uninstalling the former deletes the shared directory while the latter still reads as installed. `just sync` detects the missing `cv2` and reinstalls `opencv-python-headless` at its locked version.
-- **`No module named 'openral_core'` after switching dependency groups?** You ran bare `uv sync --group <x>`. Without `--all-packages` that syncs only the workspace root and **uninstalls every editable `openral-*` member**, so the next REPL / `openral deploy sim` can't import the workspace. Always use **`just sync`**, which forces `--all-packages` for you (unless you scoped to a single `--package`/`-p`) — `just sync --group robocasa` is equivalent to `uv sync --all-packages --group robocasa`. Repair an already-broken venv with `just sync --all-packages`.
+- **`No module named 'openral_core'` after switching dependency groups?** You ran bare `uv sync --group <x>`. Without `--all-packages` that syncs only the workspace root and **uninstalls every editable `openral-*` member**, so the next REPL / `openral deploy sim` can't import the workspace. `just sync` forces `--all-packages` (unless you scoped to a single `--package`/`-p`). Repair an already-broken venv with `just sync --all-packages`.

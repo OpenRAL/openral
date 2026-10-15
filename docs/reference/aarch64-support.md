@@ -1,9 +1,8 @@
 # aarch64 CUDA Hosts (GB10 / DGX Spark, Jetson Thor)
 
-OpenRAL's out-of-process policy sidecars each provision their own venv from
-their own pin set, so "does OpenRAL run on ARM?" is answered per sidecar, not
-once for the repo. This page is that per-sidecar answer, plus the wheel-index
-facts behind it.
+Each out-of-process policy sidecar provisions its own venv from its own pin set,
+so "does OpenRAL run on ARM?" is answered per sidecar. This page gives that
+answer, plus the wheel-index facts behind it.
 
 Scope: **Linux aarch64 with an NVIDIA CUDA GPU** — NVIDIA GB10 (DGX Spark),
 GB200/GH200 SBSA, Jetson Thor. It does not cover Apple Silicon (no CUDA) or
@@ -85,8 +84,8 @@ Check that list on any new aarch64 part rather than reading the warning as
 advisory. `cu130` carries `sm_110` and both parts work there — which is why the
 workspace root now routes aarch64 torch to that index (see below).
 
-The dangerous half on GB10 is silent: **anything compiled at *runtime* for the live
-device fails**, because the `cu128` wheels bundle CUDA 12.8 compilers that do
+The dangerous half on GB10 is silent: anything compiled at *runtime* for the live
+device fails, because the `cu128` wheels bundle CUDA 12.8 compilers that do
 not know `sm_121`. Two separate compilers, two separate failures:
 
 | compiler | shipped by | ceiling | symptom on GB10 |
@@ -318,11 +317,9 @@ other CUDA processes throughout, and the fused kernel is 12 elements. The reason
 to keep the fuser on is that leaving it off is a permanent behavioural change to
 dodge a stale assembler.
 
-Do not treat the `cuda capability 12.1` warning quoted above as a signal for
-any of this: it fires on the first CUDA call regardless, it is about SASS, and
-it is benign. The nvrtc/ptxas ceiling is a separate and completely silent
-limit — nothing is logged until a runtime-compiled op actually throws, which
-is why "the warning is harmless" is a trap rather than a reassurance.
+As noted [above](#compute-capability-gb10-sm_121-thor-sm_110), the `cuda capability
+12.1` warning is about SASS and says nothing about this: the nvrtc/ptxas ceiling
+logs nothing until a runtime-compiled op throws.
 
 ### InternVLA-N1 verified live on GB10
 

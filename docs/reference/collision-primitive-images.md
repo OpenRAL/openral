@@ -2,12 +2,12 @@
 
 > **Status: measurement only.** No kernel, manifest or schema change. This page
 > renders the geometry that
-> [the collision-primitive study](https://github.com/OpenRAL/openral/pull/157) (PR #157) argues in
+> [the collision-primitive study](collision-primitive-study.md) (PR #157) argues in
 > prose, and re-derives its fit numbers from the meshes independently.
 >
 > Everything below is `panda_mobile`'s `collision_geometry` — `panda_link1` …
 > `panda_link7`, the only links the C++ safety kernel places a primitive on.
-> There is no base box and no gripper box; see the study's §1 for why.
+> There is no base box and no gripper box (study §1).
 
 Ground truth is robosuite 1.5.2's `link<N>_collision` mesh geoms — the same
 meshes `sim_sensor_bridge._body_collision_points` samples — placed in the link
@@ -49,7 +49,7 @@ Each figure has three parts:
 | [`panda_link6`](images/collision-primitives/panda_link6-obb-vs-mesh.png) | **52.8 mm** | 1.69× | 0.132 mm |
 | [`panda_link7`](images/collision-primitives/panda_link7-obb-vs-mesh.png) | **28.3 mm** | 1.66× | 0.098 mm |
 
-Two things fall out of the pictures that the table cannot show.
+Two things the table cannot show:
 
 **The maximum is at an exact box corner on all seven links.** The face-distance
 panels show it: the faces are near-white (fitted tight to within tens of
@@ -97,7 +97,7 @@ seven links (0.083 / 0.055 / 0.088 / 0.083 / 0.083 / 0.132 / 0.098 mm), its
 **corner reaches exactly**, and its **sweep radii** to the resolution #157
 reported them. Same meshes, same manifest, same frames.
 
-The protrusion columns do not agree.
+The protrusion columns do not agree:
 
 | | link1 | link2 | link3 | link4 | link5 | link6 | link7 |
 |---|---|---|---|---|---|---|---|
@@ -141,7 +141,7 @@ study's §6 recovery analysis is untouched, because that argument runs on
 ## 5. Reproducing these
 
 Inputs, environment and method are as in
-[the study's §9](https://github.com/OpenRAL/openral/pull/157), with
+[the study's §9](collision-primitive-study.md#9-reproducing-the-numbers), with
 these differences, all of which move the numbers in the conservative direction:
 
 * **Mesh placement.** Vertices come from `mesh_vert` placed by the geom
@@ -168,7 +168,7 @@ is involved.
 
 ## See also
 
-* [Collision-primitive study (PR #157)](https://github.com/OpenRAL/openral/pull/157) — the geometry
+* [Collision-primitive study (PR #157)](collision-primitive-study.md) — the geometry
   argument, the full candidate table, and the cost/safety-WG analysis.
 * [Collision-stack validation evidence](collision-validation-evidence.md) — the
   failure census the three characterised stops come from.

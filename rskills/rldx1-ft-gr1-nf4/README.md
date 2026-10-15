@@ -29,15 +29,14 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 <!-- openral:rskill-readme-delegates-to: ../rldx1-ft-libero-nf4 -->
 
-This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4);
-that README owns the canonical architecture, license, auto-managed
-sidecar lifecycle, and NF4 quantization documentation for every member
-of the RLDX-1 family. Read it first. The sections below cover only
-this checkpoint's GR-1-specific contract.
+Sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4),
+whose README is canonical for the RLDX-1 family's architecture, license,
+auto-managed sidecar lifecycle, and NF4 quantization. Read it first. Below: only this checkpoint's
+GR-1-specific contract.
 
 ## Run
 
-The `rldx` adapter auto-spawns the sidecar (`--embodiment-tag GENERAL_EMBODIMENT`, the model card's own inference example) on first observation — single command:
+The `rldx` adapter auto-spawns the sidecar (`--embodiment-tag GENERAL_EMBODIMENT`, the model card's own inference example) on first observation:
 
 ```bash
 openral sim run \
@@ -69,7 +68,7 @@ RLDX-1-FT-GR1 is native to the Fourier GR-1 — the model card is explicit: *"RL
 
 The action chunk is the same 5-key layout; the openral adapter concatenates the per-group columns back into the 29-D BASIC vector (`[right_arm | left_arm | waist | right_hand | left_hand]`) for `openral sim run`. Camera key: `video.ego_view`. Language key: `annotation.human.coarse_action`.
 
-(Note: the FT-GR1 processor also carries `humanoid_everyday_g1` / `humanoid_everyday_h1` modality configs as cross-embodiment slots used during pretraining — those refer to NVIDIA's Unitree-G1/H1 "Humanoid Everyday" dataset and are **not** the deployment target. The `_g1` suffix tripped up an earlier version of this README.)
+(Note: the FT-GR1 processor also carries `humanoid_everyday_g1` / `humanoid_everyday_h1` modality configs as cross-embodiment slots used during pretraining — those refer to NVIDIA's Unitree-G1/H1 "Humanoid Everyday" dataset and are **not** the deployment target.)
 
 See `robots/gr1/robot.yaml` for the canonical openral embodiment manifest and `python/sim/src/openral_sim/backends/robocasa.py` for the scene contract.
 

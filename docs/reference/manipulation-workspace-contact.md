@@ -42,9 +42,9 @@ PhysX robot-vs-world contacts every step; 8 episodes, 3 placed completely):
   the neighbour to get the target out); the staging board under the cartons (0 mm, 8/8); tote walls
   and rims (0–0.5 mm, 4/8); shelf rails while placing (0 mm, 7/8).
 
-So exempting the target alone can never let the task complete, and a depth tolerance cannot either
-(commanded poses run 20–40 mm into soft cartons that physics blocks). What the data does show is a
-clean partition: **contact is needed only by the hand, only inside the volumes the task works in.**
+So neither exempting the target alone nor a depth tolerance can let the task complete
+(commanded poses run 20–40 mm into soft cartons that physics blocks). The data shows a clean
+partition: **contact is needed only by the hand, only inside the volumes the task works in.**
 
 **Contact speeds** (`EpisodeResult.contact_stats.onset_speed_mps` / `max_speed_mps`, link body
 speed over the control period; 16 sim-run episodes, 4 placed completely in the second batch):
@@ -227,46 +227,47 @@ point-in-OBB), the **hand speed** of that row is ≤ `workspace_contact_max_spee
                            − s · max_speed · control_period)         (row allowance;
                                                    0 while the measured hand touches)
 
-with Δ, θ the translation and rotation of link l's frame between the two configurations and
-reach_l the radius of its collision geometry about its origin — an upper bound on how far any
-point of the hand moved. The lead holds the jaw joints (`workspace_contact_jaw_joints`, the
-manifest's `role: gripper` joints) at their measured value: it bounds the arm's push. A jaw still
-closing on a held object has the rest of its stroke as commanded-minus-measured, which is a grasp
-squeeze bounded by the gripper's effort limit, not by the arm (p_mix02: 72–80 mm follower "lead"
-while the leader read 32 mm, stopped at 80.2 mm against the 80 mm bound, fingers on the target).
-The measured hand speed likewise leaves out the jaw joints' velocity (p4_mix00: a jaw squeezed past
-its closed limit jittered the fingertip speed 0.11 → 0.38 m/s within a second while the arm was
-slow); the commanded fallback keeps it, reading faster, never slower.
-Row s runs s control periods from now, so a free hand may legitimately be s periods of travel at
-the speed bound away from where it is measured; only the lead past that allowance is a push. Row 0
-and the measured state get none: a blocked hand is re-judged against the fresh measured pose at
-every chunk. A hand that **already touches** at the measured pose (any hand-link or payload pair
-within the margin, or any hit) gets no allowance on any row (#349 review A): a blocked hand does not
-travel with its command, and one open-loop chunk could otherwise push it `max_lead + s · v · T`
-(≈ 0.18 m) past measured. A hand free now that meets something mid-chunk keeps the allowance until
-the next chunk's re-check sees it touching: that push is bounded by one chunk's allowance. Why the allowance: r30/r31 mix07
-braked 50–77 times per run with `creep` 0.03–0.17 on a plain carry to the shelf — a 50-row chunk
-at 30 Hz is 1.7 s of motion, its last row led 0.48 m at 0.29 m/s, and the whole chunk was
-compressed into one period's travel; the policy stalled and 0/4 placed where the kernel-free
-baseline placed 2/4 at 26 s. The WARN carries the allowance (`lead_allow_m=`).
-Hazard-log assumption owed: the gripper's effort limit bounds the squeeze on real hardware.
+with Δ, θ the translation and rotation of link l's frame between the two configurations and reach_l
+the radius of its collision geometry about its origin — an upper bound on how far any point of the
+hand moved. The lead holds the jaw joints (`workspace_contact_jaw_joints`, the manifest's `role:
+gripper` joints) at their measured value: it bounds the arm's push. A jaw still closing on a held
+object has the rest of its stroke as commanded-minus-measured, which is a grasp squeeze bounded by
+the gripper's effort limit, not by the arm (p_mix02: 72–80 mm follower "lead" while the leader read
+32 mm, stopped at 80.2 mm against the 80 mm bound, fingers on the target). The measured hand speed
+likewise leaves out the jaw joints' velocity (p4_mix00: a jaw squeezed past its closed limit
+jittered the fingertip speed 0.11 → 0.38 m/s within a second while the arm was slow); the commanded
+fallback keeps it, reading faster, never slower. Row s runs s control periods from now, so a free
+hand may legitimately be s periods of travel at the speed bound away from where it is measured; only
+the lead past that allowance is a push. Row 0 and the measured state get none: a blocked hand is
+re-judged against the fresh measured pose at every chunk. A hand that **already touches** at the
+measured pose (any hand-link or payload pair within the margin, or any hit) gets no allowance on any
+row (#349 review A): a blocked hand does not travel with its command, and one open-loop chunk could
+otherwise push it `max_lead + s · v · T` (≈ 0.18 m) past measured. A hand free now that meets
+something mid-chunk keeps the allowance until the next chunk's re-check sees it touching: that push
+is bounded by one chunk's allowance. Why the allowance: r30/r31 mix07 braked 50–77 times per run
+with `creep` 0.03–0.17 on a plain carry to the shelf — a 50-row chunk at 30 Hz is 1.7 s of motion,
+its last row led 0.48 m at 0.29 m/s, and the whole chunk was compressed into one period's travel;
+the policy stalled and 0/4 placed where the kernel-free baseline placed 2/4 at 26 s. The WARN
+carries the allowance (`lead_allow_m=`). Hazard-log assumption owed: the gripper's effort limit
+bounds the squeeze on real hardware.
 
 **Measured velocity.** `/joint_states` `velocity[i]`, stored per dof with the message's arrival
-time. A message naming a joint without a finite velocity entry (no `velocity` field, a shorter
-one, NaN) forgets that joint's velocity. The measured speed is used iff every FK-relevant dof has a
+time. A message naming a joint without a finite velocity entry (no `velocity` field, a shorter one,
+NaN) forgets that joint's velocity. The measured speed is used iff every FK-relevant dof has a
 velocity at most `collision_state_deadline_ms` old (the positions' deadline); else the commanded
-speed below governs alone. It is computed once per candidate: FK at q_meas, FK at q_meas + dq_meas · period.
+speed below governs alone. It is computed once per candidate: FK at q_meas, FK at q_meas + dq_meas ·
+period.
 
-**Row −1** of the commanded speed (row 0's previous row), per joint the row commands: that joint's **previously accepted
-command** — the last row of the last JOINT_POSITION chunk the kernel *accepted* that commanded it,
-from any earlier tick or slot — while it is **fresh**, else the joint's **measured** value. Fresh
-means: held, not cleared since, its last row due (acceptance + (horizon − 1) control periods) at or
-before now, and due at most `kWorkspaceCommandFreshPeriods` = **2** control periods ago (node
-clock). Held commands are **cleared** on any refused chunk (every drop path: an
-`unavailable`, an advisory or a latching refusal — detected once per candidate from the drop
-counter), an external E-stop latch, an E-stop reset, configure, activate, cleanup, and whenever the
-live workspace declaration is armed or dropped (a new or ended declaration starts the chain
-afresh). Joints the row does not command keep the value the check places them at (the measured
+**Row −1** of the commanded speed (row 0's previous row), per joint the row commands: that joint's
+**previously accepted command** — the last row of the last JOINT_POSITION chunk the kernel
+*accepted* that commanded it, from any earlier tick or slot — while it is **fresh**, else the
+joint's **measured** value. Fresh means: held, not cleared since, its last row due (acceptance +
+(horizon − 1) control periods) at or before now, and due at most `kWorkspaceCommandFreshPeriods` =
+**2** control periods ago (node clock). Held commands are **cleared** on any refused chunk (every
+drop path: an `unavailable`, an advisory or a latching refusal — detected once per candidate from
+the drop counter), an external E-stop latch, an E-stop reset, configure, activate, cleanup, and
+whenever the live workspace declaration is armed or dropped (a new or ended declaration starts the
+chain afresh). Joints the row does not command keep the value the check places them at (the measured
 state; for the tick-partner check, the partner's committed target), so they add no phantom motion.
 Why: the runner sends `horizon = 1` slot rows, so with the measured state as row −1 every row 0
 compared the command with an arm that trails it by several control periods — the measured Isaac
@@ -279,17 +280,17 @@ One max over all hand links (both hands of a bimanual robot), so a fast or far-l
 revokes the exemption for both: conservative.
 
 **Fail-closed (today's stop):** feature off; no live declaration (retracted, `timeout_s` lapsed,
-future stamp; a **retired** identity — `handover_exit`, `released` — ends the grasp region only,
-not the workspace, since p12: carry, place and regrasp share it); a declaration whose grasp part
-the kernel **refused** as a producer error (e.g. a contact link off the allowlist; not a stale
-region measurement) — `safety.workspace_region_rejected reason=grasp_refused` (#349 review E); a
-declaration retired because its grasp claim was wrong (`handover_object_mismatch`,
-`latch_mismatch`) — `reason=grasp_claim_wrong`, and its heartbeat does not re-arm it; no `workspace_region`; a
+future stamp; a **retired** identity — `handover_exit`, `released` — ends the grasp region only, not
+the workspace, since p12: carry, place and regrasp share it); a declaration whose grasp part the
+kernel **refused** as a producer error (e.g. a contact link off the allowlist; not a stale region
+measurement) — `safety.workspace_region_rejected reason=grasp_refused` (#349 review E); a
+declaration retired because its grasp claim was wrong (`handover_object_mismatch`, `latch_mismatch`)
+— `reason=grasp_claim_wrong`, and its heartbeat does not re-arm it; no `workspace_region`; a
 workspace in another frame, with geometry, a non-unit quaternion, over the caps, or confirmed longer
-ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline;
-a stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above
-its bound or non-finite. A missing or stale measured velocity is not a refusal: the commanded
-speed governs alone. Arm links, cells outside the box, self-collision and the attached checks unchanged.
+ago than `grasp_region_max_age_s` (also between messages); a world-state stream past its deadline; a
+stale or incomplete measured state; any control mode but JOINT_POSITION; a speed or lead above its
+bound or non-finite. A missing or stale measured velocity is not a refusal: the commanded speed
+governs alone. Arm links, cells outside the box, self-collision and the attached checks unchanged.
 
 **Disclosure.** Tolerated pairs within the margin are counted per check
 (`CollisionHit::workspace_pairs`); `safety.workspace_contact link= cell= depth_mm= speed_mps=
@@ -299,23 +300,25 @@ speed_source= max_mps= lead_m= lead_allow_m= max_lead_m= pairs= step= target=` W
 `max_speed_source`, max lead, both bounds) when the workspace drops; span attributes
 `safety.workspace_contact_active` / `_pairs` / `_max_depth_m` / `safety.workspace_hand_speed_mps` /
 `safety.workspace_hand_speed_source` / `safety.workspace_hand_lead_m`; and the `safety.collision`
-stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d> workspace_denied=<0..4>` (why the live workspace did not tolerate the reported pair: 1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box; `CollisionHit::workspace_denied`)
-hand_speed_source=<measured|commanded>`. The configure WARN states both bounds
-and the freshness window.
+stop line carries `workspace_contact_active=<0|1> hand_speed_mps=<v> hand_lead_m=<d>
+workspace_denied=<0..4> hand_speed_source=<measured|commanded>` (`workspace_denied`, from
+`CollisionHit::workspace_denied`, says why the live workspace did not tolerate the reported
+pair: 1 not a hand link, 2 over speed, 3 over lead, 4 cell outside the box). The configure WARN
+states both bounds and the freshness window.
 
 **Deviations from the plan above, and why.**
 - *Measured hand speed, not checked-row-vs-measured over one period, nor commanded speed.* The
-  measured-relative form divides tracking lag (several control periods on a position-controlled
-  arm) by one period: in Isaac every stop inside the workspace read 0.99–1.20 m/s against the 0.35
-  bound while PhysX had the hands at ≤ 0.66 m/s, even carrying a carton (force-bearing contact
-  onsets ≤ 0.16 m/s). The next step, the speed between consecutive commanded rows (row 0 from the
-  previously accepted command), let the exemption fire (2–5 tolerated pairs per run, 4/4 runs) but
-  every stop inside the workspace still read 0.91–1.10 m/s with a 3.0–3.7 cm lead: the chunk
-  executor's non-RTC prefetch jumps 0.5–1 rad at chunk boundaries, spikes the arm smooths
-  (the executor can now stitch those boundaries upstream of the kernel — opt-in
-  `policy_extras.chunk_boundary_blend`, openral/openral#378 — which this bound does not rely on). The
-  bound is about impact energy, so it uses the measured velocity; a commanded jump into an
-  obstacle is caught by the lead bound. The commanded speed stayed as the fallback until the
+  measured-relative form divides tracking lag (several control periods on a position-controlled arm)
+  by one period: in Isaac every stop inside the workspace read 0.99–1.20 m/s against the 0.35 bound
+  while PhysX had the hands at ≤ 0.66 m/s, even carrying a carton (force-bearing contact onsets ≤
+  0.16 m/s). The next step, the speed between consecutive commanded rows (row 0 from the previously
+  accepted command), let the exemption fire (2–5 tolerated pairs per run, 4/4 runs) but every stop
+  inside the workspace still read 0.91–1.10 m/s with a 3.0–3.7 cm lead: the chunk executor's non-RTC
+  prefetch jumps 0.5–1 rad at chunk boundaries, spikes the arm smooths (the executor can now stitch
+  those boundaries upstream of the kernel — opt-in `policy_extras.chunk_boundary_blend`,
+  openral/openral#378 — which this bound does not rely on). The bound is about impact energy, so it
+  uses the measured velocity; a commanded jump into an obstacle is caught by the lead bound. The
+  commanded speed stayed as the fallback until the
   #349 review (B): with the brake turning a speed-only violation into a creep, the larger of the
   two now governs, so a fast command from rest no longer reads slow.
 - *A dedicated period param* (`workspace_contact_control_period_s`): the kernel's only other dt
@@ -344,42 +347,42 @@ robot itself (`check_attached_self_collision`) is unchanged.
 links whose link origins both lie inside the box does not trip while the hands are slow (same speed
 and lead predicate), counted and disclosed as `link=self@<a> cell=<b index>`. Why: across the place
 batches at least 6 stops were the two OpenArm hands touching inside the tote/shelf workspace, real
-on the MuJoCo meshes (0.07–1.9 mm overlap) at 0.10–0.20 m/s — Isaac runs with self-collision off,
-so PhysX cannot see them. Arm links, and hands outside the box, stop as before. A carried payload
-against the OTHER hand's links gets the same rule on its attach link (`check_attached_self_collision`,
-`link=payload-self@<attach link>`; p8_mix04); against its own arm's links it still stops.
+on the MuJoCo meshes (0.07–1.9 mm overlap) at 0.10–0.20 m/s — Isaac runs with self-collision off, so
+PhysX cannot see them. Arm links, and hands outside the box, stop as before. A carried payload
+against the OTHER hand's links gets the same rule on its attach link
+(`check_attached_self_collision`, `link=payload-self@<attach link>`; p8_mix04); against its own
+arm's links it still stops.
 
 **Brake instead of stop (sim):** `workspace_contact_brake_enabled` (the launch sets it with the
 rule; it needs a fresh measured velocity). A JOINT_POSITION chunk that trips as-is but passes with
 the measured hand speed AND lead read as within bound — every exemption and every other check
-unchanged, and the measured pose itself passing — has speed and/or push as its ONLY reasons to stop. The kernel then publishes the chunk
-with every commanded non-jaw joint set to its measured value: a hold, i.e. a controlled stop with
-power kept and no latch (the jaws keep their command so the payload is not dropped); the next chunk
-is judged afresh. WARN `safety.workspace_brake` ≤ 1 Hz with a running count. Why: across 9 place
-batches the most common remaining stop was contact at 0.35–0.41 m/s while 809 tolerated contact
-samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while tolerated contact had p99 63 mm
-— both the tail, which a hold answers (no motion, no push) and higher bounds would not (follow-up 3,
-PACS-style braking). The checks run first as a dry run, so the no-trip case costs what it did. Any
-other reason (arm link, outside the box, no measured velocity) stops as before — on the dry run's
-own first trip, recorded as (kind, geometry indices, step, hit, configuration, hand readings)
-without building strings and reported as recorded, not re-checked (#349 review F: no third pass,
-no second disclosure; text is formatted only for the report and the rate-limited WARNs). The
-decision on a refused chunk (relaxed pass, hold check, creep scan, jaw hold) runs before any
-report, log or publish and allocates nothing (`TheWorkspaceBrakeDecisionDoesNotAllocate`, counted
-through the `workspace_brake_probe` test seam).
+unchanged, and the measured pose itself passing — has speed and/or push as its ONLY reasons to stop.
+The kernel then publishes the chunk with every commanded non-jaw joint set to its measured value: a
+hold, i.e. a controlled stop with power kept and no latch (the jaws keep their command so the
+payload is not dropped); the next chunk is judged afresh. WARN `safety.workspace_brake` ≤ 1 Hz with
+a running count. Why: across 9 place batches the most common remaining stop was contact at 0.35–0.41
+m/s while 809 tolerated contact samples had p99 0.26 m/s, and the next was a lead of 80–96 mm while
+tolerated contact had p99 63 mm — both the tail, which a hold answers (no motion, no push) and
+higher bounds would not (follow-up 3, PACS-style braking). The checks run first as a dry run, so the
+no-trip case costs what it did. Any other reason (arm link, outside the box, no measured velocity)
+stops as before — on the dry run's own first trip, recorded as (kind, geometry indices, step, hit,
+configuration, hand readings) without building strings and reported as recorded, not re-checked
+(#349 review F: no third pass, no second disclosure; text is formatted only for the report and the
+rate-limited WARNs). The decision on a refused chunk (relaxed pass, hold check, creep scan, jaw
+hold) runs before any report, log or publish and allocates nothing
+(`TheWorkspaceBrakeDecisionDoesNotAllocate`, counted through the `workspace_brake_probe` test seam).
 
 **Creep instead of freeze (sim):** for a speed/lead-only stop the commanded rows are scaled toward
 the measured pose so the tightest row leads by one control period at the speed bound while the
 measured hand is over its speed bound, else by half the lead bound (r32: scaling a 0.12 m lead to
 one period, 0.017 m, stalled the policy as a hold did), plus its row allowance (none while the
-measured hand touches), and rows s ≥ 1 also so their row-to-row speed is within the bound —
-the arm keeps moving toward the policy's target at the
-bounded speed; the scaled rows
-must pass their own lead, speed and relaxed check; on an overshoot (the lead is not linear in
-the joint deltas) the creep halves and is re-checked, up to three times, else the measured pose is
-held (r41: a creep of 0 on every overshoot held the arm still). Why: r24/r25 runs logged 200–1700
-holds each — a frozen policy re-issues the same command and stalls (a 120 s deadline only reached
-the 70 s declaration timeout). WARN `creep=<factor>` (0 = held).
+measured hand touches), and rows s ≥ 1 also so their row-to-row speed is within the bound. The
+arm keeps moving toward the policy's target at the bounded speed. The scaled rows must pass their
+own lead, speed and relaxed check; on an overshoot (the lead is not linear in the joint deltas)
+the creep halves and is re-checked, up to three times, else the measured pose is held (r41: a
+creep of 0 on every overshoot held the arm still). Why: r24/r25 runs logged 200–1700 holds each —
+a frozen policy re-issues the same command and stalls (a 120 s deadline only reached the 70 s
+declaration timeout). WARN `creep=<factor>` (0 = held).
 
 **Payload vs the robot: the measured box (sim + real):** a box payload with a stage-2 refinement
 is checked against the robot's own links as the refinement's box (its 26-DOP's first three slabs);
@@ -389,11 +392,11 @@ r24–r29 cartons 1 cm from the torso read −15 to −40 mm against it with the
 like-for-like baseline (world-voxel check off, payload checks with it) placed 5/8 vs 3/24.
 
 **Hold a refused command (sim):** `workspace_contact_hold_max_consecutive` (launch: 2 s of chunks at
-the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose passes,
-the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's halt on
-an imminent collision), up to that many consecutive chunks; then today's latched stop. r20: the policy
-commanded the carried box from the shelf back toward the tote floor (lead 0.2–0.28 m) — refusing
-those rows was right, latching on them was not needed while the arm stood clear. WARN
+the control rate). When the relaxed pass still refuses the COMMANDED rows but the measured pose
+passes, the command is never executed and the kernel holds the measured pose instead (MoveIt Servo's
+halt on an imminent collision), up to that many consecutive chunks; then today's latched stop. r20:
+the policy commanded the carried box from the shelf back toward the tote floor (lead 0.2–0.28 m) —
+refusing those rows was right, latching on them was not needed while the arm stood clear. WARN
 `safety.workspace_brake ... reason=command_refused refused=<pair>`.
 
 **Not implemented:** a separate place-side box (`PlaceDeclaration.workspace_box`), velocity /
@@ -408,10 +411,10 @@ Cartesian control modes, the force/current contact layer.
   contact statistics show only hand links ever touch the world.
 - **Decision.** Add a second, declaration-scoped relaxation of the arm-vs-world voxel check: hand
   links (manifest-derived) vs cells centred in a scene-declared, producer-confirmed workspace box,
-  only while the hand's speed (the larger of the joint-state velocity's and the commanded
-  row-to-row speed) and its lead over the measured
-  pose (the push bound, which also catches a commanded jump) are each at most a calibrated bound. Default off, sim-only until this ADR is accepted, ADR-0115 keeps precedence,
-  every tolerated contact disclosed.
+  only while the hand's speed (the larger of the joint-state velocity's and the commanded row-to-row
+  speed) and its lead over the measured pose (the push bound, which also catches a commanded jump)
+  are each at most a calibrated bound. Default off, sim-only until this ADR is accepted, ADR-0115
+  keeps precedence, every tolerated contact disclosed.
 - **Layer impact.** Schema (Layer 0/2 boundary IDL: `GraspDeclaration`), HAL producer (Layer 0),
   safety kernel (Layer 5). No new layer dependency: the workspace rides the existing grasp
   declaration on the attachment envelope.

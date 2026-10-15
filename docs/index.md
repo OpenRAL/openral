@@ -1,6 +1,6 @@
 # OpenRAL
 
-An open-source operating layer for embodied AI, **OpenRAL** unifies fast policies, slow reasoning, and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
+**OpenRAL** is an open-source operating layer for embodied AI: one typed, traceable, safety-first runtime that unifies fast policies, slow reasoning, and classical control for deployable robot agents.
 
 ## Quick start
 
@@ -25,12 +25,11 @@ just test               # run the test suite
 **Get started**
 
 - [Quickstart — `openral doctor`](quickstart/index.md)
-- [Your first sim rollout](tutorials/sim/first-rollout.md) — a real policy driving a simulated robot, no GPU needed
 - [Development setup](contributing/development.md)
 
 **Tutorials**
 
-- [Your first sim rollout](tutorials/sim/first-rollout.md) — start here
+- [Your first sim rollout](tutorials/sim/first-rollout.md) — start here: a real policy driving a simulated robot, no GPU needed
 - [Create a sim environment](tutorials/sim/create-a-sim-environment.md) — author a scene, robot or adapter
 - [Run a benchmark](tutorials/benchmark/run-a-benchmark.md) — reproducible numbers, and what publishing one commits you to
 - [Write & publish an rSkill](tutorials/rskill/write-and-publish-an-rskill.md) — package a policy

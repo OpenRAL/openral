@@ -63,19 +63,19 @@ GUI element grounding, and point localization. The model card describes a hybrid
 mode that combines parallel box decoding with autoregressive fallback for format
 irregularity or spatial ambiguity.
 
-This rSkill declares `kind: detector` because it is a pure perception producer:
-it consumes camera frames and text/object queries, emits localization metadata,
-and never drives `ros2_control` joints.
+It is `kind: detector`: a pure perception producer that emits localization
+metadata and never drives `ros2_control` joints.
 
 ## Runtime Status
 
-The package is marked `runtime: pytorch` with NF4 metadata: OpenRAL's original
+The package is `runtime: pytorch` with NF4 metadata: OpenRAL's original
 camera-tee detector runner is ONNX/TensorRT-oriented, while upstream
 LocateAnything is a Transformers custom-code model needing `transformers==4.57.1`.
-The HF rSkill repo therefore contains the quantized PyTorch weights and upstream
-custom-code sidecars needed by `AutoModel.from_pretrained(..., trust_remote_code=True)`.
+The HF rSkill repo holds the quantized PyTorch weights and the upstream
+custom-code sidecars `AutoModel.from_pretrained(..., trust_remote_code=True)`
+needs.
 
-The OpenRAL adapter is **implemented and validated** (as of the 2026-06-09
+The OpenRAL adapter is **implemented and validated** (since the 2026-06-09
 detector-runner amendment): the `LocateAnythingDetector` backend
 (`openral_runner.backends.gstreamer`) runs the model out-of-process in an isolated
 `transformers==4.57.1` venv (`tools/locateanything_sidecar.py`) over a ZMQ +
@@ -87,8 +87,8 @@ query (manifest `labels`), a dynamic `/openral/perception/detector_query` overri
 for the continuous leg, and the read-only `locate_in_view` reasoner tool + service
 for one-shot on-demand checks.
 
-Two venvs are involved: the **sidecar** venv (`transformers==4.57.1`, holds the
-model — provision separately, point at it with `OPENRAL_LOCATEANYTHING_SIDECAR_VENV`)
+Two venvs: the **sidecar** venv (`transformers==4.57.1`, holds the model;
+provision separately and point at it with `OPENRAL_LOCATEANYTHING_SIDECAR_VENV`)
 and the **detector-node** venv (the deploy-sim runtime), which needs the `pyzmq`
 + `msgpack` ZMQ client from the `locateanything` dependency group
 (`uv sync --group locateanything`).
@@ -156,7 +156,7 @@ smaller heads stay in BF16. The manifest records this as `dtype: int4` plus
 `extra.scheme: nf4` because the schema enum represents storage dtype rather than
 bitsandbytes' named quantization scheme.
 
-Reproduce from this worktree:
+Reproduce from an OpenRAL checkout:
 
 ```bash
 cd <path/to/openral-checkout>
@@ -173,10 +173,10 @@ OPENRAL_TRUSTED_REMOTE_CODE_ORGS=nvidia \
   --keep-temp
 ```
 
-Use the private-only `tools/rskill_publisher.py` path, or an equivalent
-`HfApi.create_repo(..., private=True)` plus `upload_folder`, for publication.
-The quantizer's generic upload helper is not used for this package because this
-rSkill must remain private in the OpenRAL organization.
+Publish via the private-only `tools/rskill_publisher.py` path (or an equivalent
+`HfApi.create_repo(..., private=True)` plus `upload_folder`), not the quantizer's
+generic upload helper: this rSkill must remain private in the OpenRAL
+organization.
 
 ## License
 

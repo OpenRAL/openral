@@ -12,8 +12,8 @@
 **Do not open a public GitHub issue for security vulnerabilities.**
 
 Preferred: use GitHub's [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new)
-("Report a vulnerability" under the repository **Security** tab). This keeps the
-report private and lets us collaborate on a fix and coordinated disclosure in one place.
+("Report a vulnerability" under the repository **Security** tab), which keeps the
+fix and coordinated disclosure in one private place.
 
 Alternatively, email: security@openral.dev
 

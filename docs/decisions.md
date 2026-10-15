@@ -1,19 +1,15 @@
 # Design decisions
 
-OpenRAL records its architecture and design decisions as Architecture
-Decision Records (ADRs). The ADR log itself lives in the
-private [`OpenRAL/management`](https://github.com/OpenRAL/management) repo,
-under `adr/` — not in this public repo.
+OpenRAL records architecture and design decisions as Architecture Decision
+Records (ADRs). The ADR log lives in the private
+[`OpenRAL/management`](https://github.com/OpenRAL/management) repo, under
+`adr/`, not in this public repo.
 
-This public repo **does** cite individual decisions by number. Code
-comments, docstrings, tests, and docs carry bare `ADR-NNNN` identifiers as
-shorthand for the decision that fixed a contract. Those identifiers are
-deliberately **not links**: the record they name lives in the private repo,
-and a dead link would be worse than a bare id. Prose around a citation is
-written to stand on its own, so a reader without access can follow *what*
-the behavior is even when they cannot read *why it was chosen*.
-
-Two consequences:
+Code comments, docstrings, tests, and docs here cite decisions by bare
+`ADR-NNNN` identifiers. They are deliberately **not links**: the record is
+private, and a dead link is worse than a bare id. Prose around a citation
+stands on its own, so a reader without access can follow *what* the behavior
+is even without *why it was chosen*.
 
 - **The number is a handle, not a coordinate.** The ADR log is append-only
   but not gap-free, and cross-references inside it use filenames rather
@@ -22,45 +18,41 @@ Two consequences:
 - **Some cited numbers are not on the private repo's `main` either.**
   `ADR-0092`, `ADR-0094` and `ADR-0095` live on an unmerged draft branch
   (`safety/xr1-deploy-sim`) of `OpenRAL/management`, and `ADR-0093` on
-  `adr/0093-quantization-dtype-fp8`: the implementations they describe are
-  merged here on `master` while the decision records that name them are
-  not yet merged there. A maintainer resolving one of those four numbers
-  has to check that branch, not just `main`.
+  `adr/0093-quantization-dtype-fp8`. Their implementations are merged here
+  on `master`; the records are not yet merged there. To resolve one of
+  those four numbers, check that branch, not just `main`.
 
-Contributors without access to `OpenRAL/management` who want the full
-rationale, alternatives considered, or history behind a specific piece of
-behavior can ask by opening an issue in this repo, quoting the identifier.
+Without access to `OpenRAL/management`, ask for the rationale, alternatives,
+or history behind a decision by opening an issue here that quotes the
+identifier.
 
-The decision discipline is unchanged: adding, removing, renaming, or moving
-a responsibility between the seven architecture layers (§3 of
+Adding, removing, renaming, or moving a responsibility between the seven
+architecture layers (§3 of
 [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md))
-requires recording a decision in the private log, written before the code
-that implements it.
+requires a decision in the private log, written before the code that
+implements it.
 
 ## Licensing & commercial boundary
 
-Two of those decisions define OpenRAL's public/private boundary and are
-stated here in full — the maintainer wants this posture visible even though
-the decision record that established it is now private:
+Two decisions define OpenRAL's public/private boundary. They are stated here
+in full so the posture stays visible although the records are private:
 
 - **The public `OpenRAL/openral` repo is uniformly Apache-2.0.** Every
-  package in this repo ships under a single permissive license — no
-  source-available tier, no BSL, no per-package license drift. Copy-left
-  dependencies are rejected without TSC review.
+  package ships under that one license: no source-available tier, no BSL,
+  no per-package license drift. Copy-left dependencies are rejected without
+  TSC review.
 - **Commercial capabilities live in a separate, private monorepo**
   (`OpenRAL/openral-pro`), not in this repo. That includes the TensorRT/NVMM
   zero-copy runtime fast path, WAM (World Action Model) implementations,
-  fleet/cloud dispatch, and future premium rSkills. This repo retains the
-  protocols and extension seams those capabilities plug into; it does not
-  ship the implementations themselves.
+  fleet/cloud dispatch, and future premium rSkills. This repo keeps the
+  protocols and extension seams they plug into, not the implementations.
 - Third-party model **weights** (e.g. NVIDIA GR00T checkpoints) keep their
-  own upstream license, independent of OpenRAL's code license — this is
-  compliance for models OpenRAL doesn't own, not a statement about OpenRAL's
-  own code.
+  own upstream license, independent of OpenRAL's code license. This is
+  compliance for models OpenRAL doesn't own, not a statement about
+  OpenRAL's code.
 
-These two points were decided in separate decision records: the original
+The first two points come from separate records: the original
 uniform-Apache-2.0 posture, and a later decision establishing the OpenRAL
-Pro commercial tier that superseded that record's earlier "no commercial
-tier, ever" commitment while keeping the public-repo-is-Apache-2.0 posture.
-Full context, alternatives considered, and consequences are in the private
-decision log.
+Pro commercial tier. The later one superseded the original's "no commercial
+tier, ever" commitment and kept the public repo Apache-2.0. Context,
+alternatives, and consequences are in the private decision log.

@@ -1,18 +1,16 @@
 # Robot manifests (`robots/`)
 
-This directory holds one `RobotDescription` manifest (`robot.yaml`) per
-embodiment — the normative joint / sensor / capability / safety / HAL
-contract every other layer (rSkills, scenes, the eval registry, the HAL
-itself) validates against. `python/sim/src/openral_sim`'s robots adapter
-scans `robots/*/robot.yaml` at import time and auto-registers each one (no
-hand-maintained registry tuple); override the search path with
-`$OPENRAL_ROBOTS_DIR` for out-of-tree manifests.
+One `RobotDescription` manifest (`robot.yaml`) per embodiment: the normative
+joint / sensor / capability / safety / HAL contract every other layer (rSkills,
+scenes, the eval registry, the HAL itself) validates against. The
+`python/sim/src/openral_sim` robots adapter scans `robots/*/robot.yaml` at
+import time and auto-registers each one; `$OPENRAL_ROBOTS_DIR` overrides the
+search path for out-of-tree manifests.
 
-21 robot directories exist today. Each carries a `robot.yaml` and, for most,
-its own `README.md` with the manifest's specific provenance notes
-(kinematic source, MJCF wiring, sim-vs-real caveats). `hal.real` on the
-manifest is the source of truth for real-hardware support — `null`/absent
-means the embodiment is sim-only (no HAL, no HIL tests, no physical rig).
+There are 21 robot directories, each with a `robot.yaml` and most with a
+`README.md` of provenance notes (kinematic source, MJCF wiring, sim-vs-real
+caveats). `hal.real` is the source of truth for real-hardware support:
+`null`/absent means sim-only (no HAL, no HIL tests, no physical rig).
 `hal.sim` being `null` does **not** mean no sim support: several embodiments
 (`aloha_agilex`, `gr1`, `pusht_2d`, `so101_follower`, `r1pro`) drive a sim
 rollout through a scene-adapter's `fixed_robot=` binding or an out-of-process
@@ -28,7 +26,7 @@ YAML's `robot_id:` field instead.
 | `anvil_openarm_v2` | Bimanual Anvil OpenARM 2.0 arms | `openarm`, `anvil_openarm_v2`, `anvil`, `bimanual` | yes — `AnvilOpenArmV2MujocoHAL` | no (`hal.real` null) | [README.md](anvil_openarm_v2/README.md) |
 | `franka_panda` | 7-DoF collaborative arm (Franka Emika Panda); LIBERO's canonical embodiment | `franka_panda`, `franka`, `panda`, `libero` | yes — `FrankaPandaHAL` (mujoco_menagerie MJCF) | yes — `FrankaPandaRealHAL` (FCI) | [README.md](franka_panda/README.md) |
 | `g1` | Unitree G1 humanoid, floating base | `g1`, `unitree_g1`, `humanoid`, `mobile_base` | yes — `G1MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](g1/README.md) |
-| `galaxea_a1` | 6-DoF manipulator (Galaxea A1), joint/gripper-space real-hardware manifest | `galaxea_a1` | no (`hal.sim` null) | yes — `GalaxeaA1HAL` | no README |
+| `galaxea_a1` | 6-DoF manipulator (Galaxea A1), joint/gripper-space real-hardware manifest | `galaxea_a1` | no (`hal.sim` null) | yes — `GalaxeaA1HAL` | [README.md](galaxea_a1/README.md) |
 | `google_robot` | Google Everyday Robot mobile manipulator (discontinued 2023; coarse kinematic approximation) | `google_robot`, `everyday_robot`, `rt1`, `rt2`, `oxe` | no today — no scene currently binds it; the `simpler_env/google_robot_*` benchmark suite was removed because the upstream ManiSkill3 GoogleRobot envs are unregistered (`NameNotFound`) | no (`hal.real` null) | [README.md](google_robot/README.md) |
 | `gr1` | Fourier GR-1 humanoid — arms + waist + Fourier dex hands (legs/head disabled) | `gr1`, `fourier_gr1`, `humanoid`, `robocasa` | yes — `fixed_robot="gr1"` scene adapter (RoboCasa GR1 Tabletop Tasks backend) | no (`hal.real` null) | no README |
 | `h1` | Unitree H1 humanoid, bipedal floating base | `h1`, `unitree_h1`, `humanoid` | yes — `H1MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](h1/README.md) |
@@ -52,11 +50,11 @@ openral detect         # probe the host and write robots/<name>/robot.yaml direc
 ```
 
 or author `robots/<name>/robot.yaml` by hand against the `RobotDescription`
-schema (`python/core/src/openral_core/schemas.py`) — see any manifest above
-for the shape (joints, `capabilities.embodiment_tags`, `safety`,
-`hal.{sim,real}`, optional `sim:` MuJoCo wiring). A new manifest is
-auto-registered on next import; no code change is needed to make it visible
-to `openral sim list` / `openral rskill check` / the eval registry.
+schema (`python/core/src/openral_core/schemas.py`), using any manifest above for
+the shape (joints, `capabilities.embodiment_tags`, `safety`, `hal.{sim,real}`,
+optional `sim:` MuJoCo wiring). A new manifest is auto-registered on next
+import, visible to `openral sim list` / `openral rskill check` / the eval
+registry with no code change.
 
 A manifest with `hal.real` set must declare every value the real path reads —
 the schema refuses it otherwise, naming each gap: `action_spec.control_freq_hz`,

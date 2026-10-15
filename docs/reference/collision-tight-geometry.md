@@ -138,7 +138,7 @@ including on the non-convex `link1`: a concavity costs something only when a
 world cell sits *inside* it. Six of the seven collision meshes already *are*
 their own convex hulls (#157).
 
-**Spherization is the worst option measured, and it saturates**, because the
+**Spherization is the worst option measured, and it saturates**: the
 Panda's links are flanged, flat-faced blocks and a union of balls cannot
 represent a flat face without an unbounded number of them. It must also be fitted
 to the **volume** (§11); fitted to *surface* triangle clusters it is
@@ -156,8 +156,8 @@ grid's rather than cancelling it.
 ## 4. Containment — the proof obligation, per candidate
 
 A tighter envelope is a **smaller** envelope, so every candidate owes a
-containment proof, not a sample. Measured minimum inward margin of the mesh
-inside each candidate:
+containment proof, not a sample. Minimum inward margin of the mesh inside each
+candidate:
 
 | candidate | proof | measured margin |
 |---|---|---|
@@ -567,8 +567,7 @@ utensil-scene state, where `link1` *is* the stopping link, is the adverse case.
 
 The scan dominating does not make staging unnecessary: an always-on GJK path
 crosses over at 9–23 cells and is at 79 % of budget in moderate clutter.
-**Staging is what makes exact geometry affordable**, from the cheapest
-conservative stage available:
+**Staging makes exact geometry affordable**:
 
 * **Stage 1 — 26-DOP SAT (62.8 ns).** A lower bound on the DOP distance, and the
   DOP contains the hull, so `DOP_SAT > margin` ⟹ the cell is certainly clear. It
@@ -594,9 +593,8 @@ cells in an 11 568-cell window **99.83 % of the scan is wasted work**, and it is
 65 % of the total cost. A hierarchical occupancy summary — a coarse per-block
 "any occupied?" bitmap, an octree, or run-length skipping — would cut the
 dominant term directly, and it is a change to the *world* representation with no
-envelope-shrinking safety argument at all. **Both the recovery ceiling and the
-cost bottleneck are on the world side, not the link side**: the strongest single
-result in this document.
+envelope-shrinking safety argument at all. This is the strongest single result in
+this document (§1).
 
 ### 9.3 Measurement caveats
 
@@ -692,11 +690,11 @@ re-lowering workflow, but it can no longer loosen a shipped envelope silently.
 8. ~~**Issue #155 is fixed first, or the ACM is not regenerated**~~ (#157 §7.3
    item 6) — **discharged**: a regeneration reproduces all 10 shipped ACMs
    byte-identically. What it found raises this document's stakes:
-   `panda_link5`↔`panda_link7` is a **real** self-collision (up to 48.3 mm of mesh
-   interpenetration across a 39.6° band of `joint6`) that the box envelopes cannot
-   separate from an artifact at *any* margin — real collisions reach a box gap of
-   −9.97 mm, collision-free poses −40.07 mm. It ships exempt under a residual-risk
-   SRDF row; tightening `link5`/`link6`/`link7` is the only thing that retires it.
+   `panda_link5`↔`panda_link7` is a **real** self-collision the box envelopes cannot
+   separate from an artifact at *any* margin
+   ([primitive study §5](collision-primitive-study.md)). It ships exempt under a
+   residual-risk SRDF row; tightening `link5`/`link6`/`link7` is the only thing that
+   retires it.
 
 ---
 
