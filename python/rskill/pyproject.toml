@@ -1,7 +1,7 @@
 [project]
 name = "openral-rskill"
 version = "0.3.1"  # x-release-please-version
-description = "OpenRAL Skill base class — lifecycle state machine and mock skill"
+description = "OpenRAL rSkill runtime — lifecycle base class, rSkill manifest loader, skill adapters, and inference runtimes"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
@@ -12,7 +12,7 @@ dependencies = [
     "openral-world-state==0.3.1",     # reason: LookAtRskill — compute_gaze_pose / rotation_to_quat_wxyz / homogeneous_from_quat_xyz
     # x-release-please-end
     "huggingface_hub>=0.20",       # reason: rSkill.from_pretrained downloads manifests + weights from HF Hub
-    "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
+    "structlog>=24.1",             # reason: structured logging per CLAUDE.md §2
 ]
 
 [build-system]
