@@ -512,9 +512,9 @@ corrects an earlier comment: the ~0.364 m circumscribed radius came from
 `robot_radius`, but the costmaps use the *polygon*, whose padded farthest
 vertex is 0.444 m, independent of the flag.)
 
-Raising `inflation_radius` above 0.444 m would restore the cheap gate for the
-bare chassis; nothing restores it while carrying (the payload's circumscribed
-radius is most of the 3 m local costmap), so it is left at 0.40 m.
+Raising `inflation_radius` above 0.444 m restores the cheap gate for the bare
+chassis (done for issue #405: 0.48 m, see below); nothing restores it while
+carrying (the payload's circumscribed radius is most of the 3 m local costmap).
 
 ### MEASURED 2026-08-28: the full cycle fits with the flag on
 
@@ -562,9 +562,14 @@ Flipped together:
 The polygon it scores is the bare chassis, a 0.70 × 0.50 m rectangle that
 routinely parks with less clearance than its own 0.444 m circumscribed radius.
 
-`inflation_radius` is deliberately left at 0.40 m: raising it to ≥ 0.444 m
-would restore CostCritic's cheap gate (now well-defined with no payload
-growth), but that is a separate navigation-behaviour decision, not made here.
+`inflation_radius` was left at 0.40 m here as a separate navigation-behaviour
+decision. Issue #405's PR made it: `nav2_param_overrides()` now derives
+`inflation_radius` from the circumscribed radius of the footprint the costmaps
+actually use (the farthest `footprint_polygon` vertex, not `footprint_radius`)
+plus the 0.05 m clearance, so panda is 0.48 m, Nav2's `inflation radius is
+smaller than the circumscribed radius` error is gone for the bare chassis, and
+CostCritic's cheap gate is back. The cost halo widens from 0.40 m to 0.48 m;
+RoboCasa nav behaviour has not been re-measured since.
 
 ### What is still open (issue #108)
 

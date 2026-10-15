@@ -2130,15 +2130,16 @@ def test_nav2_param_overrides_from_robot_yaml() -> None:
     )
     assert description.footprint_radius == pytest.approx(0.35)
     assert description.base_kinematics == "omni"
-    # inflation_radius = footprint_radius (0.35) + NAV2_INFLATION_CLEARANCE_M
-    # (0.05) = 0.40, kept >= the costmap-discretised circumscribed radius.
+    # inflation_radius = the polygon's circumscribed radius hypot(0.35, 0.25)
+    # (0.430, > footprint_radius) + NAV2_INFLATION_CLEARANCE_M (0.05) = 0.480,
+    # >= the 0.444 m padded circumscribed radius Nav2 computes.
     assert description.nav2_param_overrides() == {
         # The measured outline, not the circle: only a polygon can be grown to
         # cover a carried payload, which is what openral_nav2_bringup's
         # footprint publisher pushes onto the costmaps at runtime.
         "footprint": "[[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]",
         "robot_radius": "0.35",
-        "inflation_radius": "0.400",
+        "inflation_radius": "0.480",
         "motion_model": "Omni",
     }
 

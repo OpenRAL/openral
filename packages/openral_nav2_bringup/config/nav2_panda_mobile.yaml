@@ -175,7 +175,8 @@ controller_server:
         # 50 ms budget); 500-501 cycles/25 s every arm (20 Hz, none dropped). See
         # docs/reference/robocasa-carry-survey.md (differs from `cost_critic_footprint_bench.cpp`'s
         # +8.1 ms estimate; live number governs). Footprint scored = bare chassis (Nav2 is
-        # base-only; kernel owns arm/payload). Restore the cheap gate: `inflation_radius >= 0.444 m`.
+        # base-only; kernel owns arm/payload). The cheap gate needs `inflation_radius >= 0.444 m`
+        # (it is 0.48 m, see `inflation_layer`).
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -236,18 +237,18 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # 0.40 m is BELOW this costmap's circumscribed radius: Nav2 derives it from the `footprint`
+        # Must be >= this costmap's circumscribed radius: Nav2 derives it from the `footprint`
         # POLYGON, farthest padded vertex = hypot(0.36, 0.26) = 0.444 m
         # (`calculateMinAndMaxDistances`, verified against Jazzy in `cost_critic_footprint_bench.cpp`),
-        # regardless of `consider_footprint`. With it on, `findCircumscribedCost` returns 0.0 and the
-        # full check runs on every sampled point (+0.53 ms/50 ms cycle); raising past 0.444 m would
-        # restore the cheap gate — left at 0.40 m as a deliberate nav-behaviour choice.
-        # Below the INSCRIBED radius (0.26 m) Nav2 cannot use the potential field and logs an error.
+        # regardless of `consider_footprint`. Below it Nav2 logs an error, `findCircumscribedCost`
+        # returns 0.0 and the full check runs on every sampled point (+0.53 ms/50 ms cycle). Was 0.40 m
+        # (derived from `robot_radius`, not the polygon) until issue #405's PR; 0.48 m =
+        # hypot(0.35, 0.25) + NAV2_INFLATION_CLEARANCE_M restores the cheap gate.
         # `cost_scaling_factor: 3.0` keeps a soft gradient (LETHAL only inside the inscribed radius),
         # so the base threads tight aisles but prefers the centreline. Local matches global so the
         # controller's neighbourhood agrees with the planner. Also emitted by
         # `RobotDescription.nav2_param_overrides()`; equals panda's value here, so a no-op.
-        inflation_radius: 0.40
+        inflation_radius: 0.48
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -371,10 +372,9 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # Matches local_costmap, including its measured correction: 0.40 m is
-        # BELOW the polygon's 0.444 m circumscribed radius, above its 0.26 m
-        # inscribed one. See that comment for the full rationale.
-        inflation_radius: 0.40
+        # Matches local_costmap: 0.48 m clears the polygon's 0.444 m padded
+        # circumscribed radius. See that comment for the full rationale.
+        inflation_radius: 0.48
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.

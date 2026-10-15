@@ -266,14 +266,16 @@ UINT8_TO_CONTROL_MODE: dict[int, ControlMode] = {v: k for k, v in CONTROL_MODE_T
 # 6-vec twist payloads; matches ``Action.body_twist`` (a 6-tuple).
 BODY_TWIST_DIM = 6
 
-# Obstacle-clearance buffer added to a circular base's ``footprint_radius``
-# to derive the Nav2 costmap ``inflation_radius`` (see
+# Obstacle-clearance buffer added to the base's circumscribed radius (the
+# larger of ``footprint_radius`` and the farthest ``footprint_polygon``
+# vertex) to derive the Nav2 costmap ``inflation_radius`` (see
 # ``RobotDescription.nav2_param_overrides``). Nav2 requires
-# ``inflation_radius >= the costmap-discretised circumscribed radius``,
-# which exceeds ``footprint_radius`` by up to one cell; a small buffer
-# clears that and gives a thin obstacle-avoidance halo without blocking
-# tight aisles. 0.05 m = one cell at the default 0.05 m costmap
-# resolution.
+# ``inflation_radius >= the circumscribed radius of the padded footprint``,
+# else it logs an error and drops the cheap circumscribed-cost gate. The
+# default 0.01 m ``footprint_padding`` moves a vertex out by at most
+# 0.01·√2 m, and the radius is rounded up to the cell, so a 0.05 m buffer
+# (one cell at the default resolution) clears both and gives a thin
+# obstacle-avoidance halo.
 NAV2_INFLATION_CLEARANCE_M = 0.05
 
 
@@ -3161,11 +3163,13 @@ class RobotDescription(BaseModel):
         hand-vendoring a per-robot ``nav2_<robot>.yaml``, the launch
         rewrites a shared base param file with these key→value
         substitutions. Maps ``footprint_radius`` → ``robot_radius``
-        (collision envelope) **and** the costmap ``inflation_radius``
-        (``footprint_radius`` + ``NAV2_INFLATION_CLEARANCE_M``, so it
-        stays ≥ the inscribed/circumscribed radius Nav2 derives from the
-        footprint — otherwise Nav2 errors and falls back to slow
-        full-footprint collision checks), ``footprint_polygon`` →
+        (collision envelope), the costmap ``inflation_radius`` (the
+        circumscribed radius — ``footprint_radius`` or the farthest
+        ``footprint_polygon`` vertex, whichever is larger — plus
+        ``NAV2_INFLATION_CLEARANCE_M``, so it stays ≥ the circumscribed
+        radius Nav2 derives from the footprint it actually uses —
+        otherwise Nav2 errors and falls back to slow full-footprint
+        collision checks), ``footprint_polygon`` →
         the costmap ``footprint`` polygon (see
         ``nav2_footprint_param``), and ``base_kinematics`` →
         the MPPI ``motion_model``. Returns an empty dict for fixed-base
@@ -3178,11 +3182,13 @@ class RobotDescription(BaseModel):
             # leaving the key unrewritten would hand that robot whatever
             # polygon the shared base file happens to ship.
             overrides["footprint"] = self.nav2_footprint_param()
+            circumscribed = max(
+                [self.footprint_radius or 0.0]
+                + [math.hypot(x, y) for x, y in self.footprint_polygon or []]
+            )
+            overrides["inflation_radius"] = f"{circumscribed + NAV2_INFLATION_CLEARANCE_M:.3f}"
         if self.footprint_radius is not None:
             overrides["robot_radius"] = str(self.footprint_radius)
-            overrides["inflation_radius"] = (
-                f"{self.footprint_radius + NAV2_INFLATION_CLEARANCE_M:.3f}"
-            )
         if self.base_kinematics is not None:
             overrides["motion_model"] = {
                 "omni": "Omni",
