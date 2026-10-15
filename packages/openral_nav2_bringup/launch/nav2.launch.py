@@ -252,24 +252,41 @@ def _cap_speeds(
 
     ``velocity_smoother`` is the gate: controller_server and behavior_server both publish into it
     (``cmd_vel_nav``) and it is the only producer upstream of ``collision_monitor`` → ``/cmd_vel``.
-    It clamps each axis independently, so its ``(vx, vy)`` corner is scaled onto the bound's
-    disk. MPPI's ``vx_max`` / ``wz_max`` are clamped too, so the controller does not plan what the
-    smoother then cuts.
+    It clamps each axis independently, so the reachable ``(vx, vy)`` set is the box spanned by
+    ``min_velocity``/``max_velocity``; one common scale puts all four corners of that box (mixed
+    signs included) on or inside the bound's disk. MPPI's ``vx_max`` / ``wz_max`` are clamped too,
+    so the controller does not plan what the smoother then cuts.
+
+    Raises:
+        ROSConfigError: a bound is set but ``params`` lacks the MPPI ``FollowPath`` or
+            ``velocity_smoother`` limits it must cap — never launch without a verified cap.
     """
-    follow_path = params["controller_server"]["ros__parameters"]["FollowPath"]
-    smoother = params["velocity_smoother"]["ros__parameters"]
+    from openral_core.exceptions import ROSConfigError  # reason: launch-time only
+
+    try:
+        follow_path = params["controller_server"]["ros__parameters"]["FollowPath"]
+        smoother = params["velocity_smoother"]["ros__parameters"]
+        vx_max, wz_max = float(follow_path["vx_max"]), float(follow_path["wz_max"])
+        hi = [float(v) for v in smoother["max_velocity"]]
+        lo = [float(v) for v in smoother["min_velocity"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            "nav2.launch: cannot cap Nav2 speeds to the manifest's max_base_* bounds; the params "
+            "file needs controller_server FollowPath.vx_max / wz_max (MPPI) and velocity_smoother "
+            f"max_velocity / min_velocity [vx, vy, wz] (missing or malformed: {exc})"
+        ) from exc
     if max_linear_m_s is not None:
-        follow_path["vx_max"] = min(float(follow_path["vx_max"]), max_linear_m_s)
+        follow_path["vx_max"] = min(vx_max, max_linear_m_s)
+        corner = math.hypot(max(abs(hi[0]), abs(lo[0])), max(abs(hi[1]), abs(lo[1])))
+        if corner > max_linear_m_s:
+            scale = max_linear_m_s / corner
+            hi[:2] = [v * scale for v in hi[:2]]
+            lo[:2] = [v * scale for v in lo[:2]]
     if max_angular_rad_s is not None:
-        follow_path["wz_max"] = min(float(follow_path["wz_max"]), max_angular_rad_s)
-    for key in ("max_velocity", "min_velocity"):
-        vx, vy, wz = (float(v) for v in smoother[key])
-        if max_linear_m_s is not None and math.hypot(vx, vy) > max_linear_m_s:
-            scale = max_linear_m_s / math.hypot(vx, vy)
-            vx, vy = vx * scale, vy * scale
-        if max_angular_rad_s is not None:
-            wz = math.copysign(min(abs(wz), max_angular_rad_s), wz)
-        smoother[key] = [vx, vy, wz]
+        follow_path["wz_max"] = min(wz_max, max_angular_rad_s)
+        hi[2] = math.copysign(min(abs(hi[2]), max_angular_rad_s), hi[2])
+        lo[2] = math.copysign(min(abs(lo[2]), max_angular_rad_s), lo[2])
+    smoother["max_velocity"], smoother["min_velocity"] = hi, lo
 
 
 def _speed_capped_params_file(
