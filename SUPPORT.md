@@ -5,7 +5,7 @@
 - **[Discord](https://discord.gg/3paXT2bVyB)**: the fastest way to get help, ask
   "how do I…?", share what you're building, or float a design idea before
   opening an issue.
-- **[Documentation](https://openral.github.io/openral/)**: quick start,
+- **[Documentation](https://docs.openral.com/)**: quick start,
   architecture, tutorials, API reference. Start with the
   [architecture overview](docs/architecture/overview.md).
 - **General enquiries** that don't fit Discord or an issue: hello@openral.com.

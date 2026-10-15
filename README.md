@@ -14,11 +14,11 @@
 [![lerobot](https://img.shields.io/badge/lerobot-0.6.0-FF6F00)](https://github.com/huggingface/lerobot)
 [![CUDA](https://img.shields.io/badge/CUDA-supported-76B900?logo=nvidia&logoColor=white)](docker/inference/Dockerfile.x86)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](docker/inference/Dockerfile.x86)
-[![Docs](https://img.shields.io/badge/📖%20Docs-developing-2088FF)](https://openral.github.io/openral/)
+[![Docs](https://img.shields.io/badge/📖%20Docs-developing-2088FF)](https://docs.openral.com/)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
-[Quick start](#quick-start) · [Tutorials](docs/tutorials/sim/first-rollout.md) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Telemetry](docs/reference/telemetry.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
+[Quick start](#quick-start) · [Tutorials](docs/tutorials/sim/first-rollout.md) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Telemetry](docs/reference/telemetry.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://docs.openral.com/)
 
 </div>
 
@@ -147,7 +147,7 @@ just quickstart         # bootstrap → just sync → ros2-build → openral REP
 
 New to OpenRAL? [**Your first sim rollout**](docs/tutorials/sim/first-rollout.md)
 goes from this clone to a real policy driving a simulated robot in one command,
-on a CPU-only host. More tutorials are in the [docs](https://openral.github.io/openral/).
+on a CPU-only host. More tutorials are in the [docs](https://docs.openral.com/).
 
 Or step-by-step:
 
