@@ -483,10 +483,10 @@ class VisionAttachmentEvidenceProducer:
         description: The robot manifest, read for the gripper's parent link and
             the finger links that are allowed to touch the payload.
         gripper_joint: One gripper-role joint this producer serves: its
-            ``parent_link`` is the attach link and its ``child_link`` the one
-            touch link. A bimanual robot builds one producer per hand. ``None``
-            serves every gripper joint at once, which needs them to share one
-            parent link.
+            ``parent_link`` is the attach link; its ``child_link`` and any
+            ``mimic_joints`` follower of it are the touch links. A bimanual
+            robot builds one producer per hand. ``None`` serves every gripper
+            joint at once, which needs them to share one parent link.
         config: Gate thresholds. Every one is a calibration point — see
             ``VisionGateConfig``.
 
@@ -499,7 +499,7 @@ class VisionAttachmentEvidenceProducer:
         >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> left = VisionAttachmentEvidenceProducer(d, gripper_joint="left_gripper")
         >>> left.attach_link, left.touch_links
-        ('openarm_left_link7', ('openarm_left_finger_pair',))
+        ('openarm_left_link7', ('openarm_left_finger_pair', 'openarm_left_finger_follower'))
     """
 
     def __init__(
