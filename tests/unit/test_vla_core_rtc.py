@@ -7,6 +7,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill._vla_core import (
     _parse_rtc_config,
     build_chunk_executor,
+    relative_rtc_prefix_fn,
     rtc_enabled_in_extra,
 )
 
@@ -219,3 +220,29 @@ def test_build_chunk_executor_rtc_refuses_bnb_quantized_policy() -> None:
             policy=_QuantizedFlowPolicy(),
             adapter_name="smolvla",
         )
+
+
+def test_build_chunk_executor_rtc_refuses_relative_policy_without_prefix_fn() -> None:
+    """Refused before init_rtc_processor, so the policy is left untouched."""
+    policy = _FlowPolicyStub()
+    policy.config.use_relative_actions = True
+    with pytest.raises(ROSConfigError, match="use_relative_actions"):
+        build_chunk_executor(
+            {"chunk_prefetch": True, "rtc": {}}, policy=policy, adapter_name="pi05"
+        )
+    assert policy.config.rtc_config is None
+    assert policy.rtc_processor is None
+
+
+def test_relative_rtc_prefix_fn_only_for_enabled_relative_step() -> None:
+    import torch
+    from lerobot.processor import PolicyProcessorPipeline, RelativeActionsProcessorStep
+    from openral_core.exceptions import ROSRuntimeError
+
+    absolute = PolicyProcessorPipeline(steps=[RelativeActionsProcessorStep(enabled=False)])
+    relative = PolicyProcessorPipeline(steps=[RelativeActionsProcessorStep(enabled=True)])
+    assert relative_rtc_prefix_fn(absolute, device="cpu") is None
+    hook = relative_rtc_prefix_fn(relative, device="cpu")
+    assert hook is not None
+    with pytest.raises(ROSRuntimeError, match="no observation\\.state cached"):
+        hook(torch.zeros(2, 3))  # the preprocessor never ran: nothing to anchor to

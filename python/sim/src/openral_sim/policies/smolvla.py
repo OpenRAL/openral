@@ -30,6 +30,7 @@ from openral_rskill._vla_core import (
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
+    relative_rtc_prefix_fn,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -730,5 +731,6 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         policy=policy,
         adapter_name="smolvla",
         postprocess_action=adapter._finished_action,
+        rtc_prefix_fn=relative_rtc_prefix_fn(preprocessor, device=device),
     )
     return adapter
