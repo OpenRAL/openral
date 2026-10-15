@@ -87,6 +87,13 @@ def test_repo_has_no_dead_tests() -> None:
     assert report.shadowed == []
 
 
+def test_duplicate_members_are_distinct_ids() -> None:
+    """Same-named methods in two classes must not render as one repeated id."""
+    report = audit_tests.build_report(audit_tests.collect(REPO_ROOT))
+    for group in report.duplicate_groups:
+        assert len(set(group.members)) == len(group.members), group.members
+
+
 def test_shadowing_is_detected() -> None:
     """Two same-named methods in ONE class → the first is reported as dead."""
     records = audit_tests.collect(REPO_ROOT)

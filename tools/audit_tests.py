@@ -248,7 +248,7 @@ def build_report(records: list[TestFuncInfo]) -> AuditReport:
     duplicate_groups = [
         DuplicateGroup(
             body_hash=h,
-            members=sorted(f"{r.path}::{r.name}" for r in group),
+            members=sorted(f"{r.path}::{r.qualname}" for r in group),
         )
         for h, group in by_hash.items()
         # Ignore trivial bodies here — they are reported separately and a
@@ -328,7 +328,7 @@ def render_markdown(report: AuditReport) -> str:
     lines.append("")
     if report.trivial:
         for r in report.trivial:
-            lines.append(f"- `{r.path}::{r.name}` (line {r.lineno})")
+            lines.append(f"- `{r.path}::{r.qualname}` (line {r.lineno})")
     else:
         lines.append("_None — no placeholder / `pass`-only tests in the tree._")
     lines.append("")
@@ -368,7 +368,7 @@ def render_markdown(report: AuditReport) -> str:
     lines.append("")
     if report.no_assertion:
         for r in report.no_assertion:
-            lines.append(f"- `{r.path}::{r.name}` (line {r.lineno})")
+            lines.append(f"- `{r.path}::{r.qualname}` (line {r.lineno})")
     else:
         lines.append("_None._")
     lines.append("")
