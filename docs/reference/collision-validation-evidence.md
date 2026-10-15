@@ -732,8 +732,11 @@ and penetrating boxes, spheres, capsules, cylinders; 448 randomly rotated box
 pairs where GJK and the Minkowski-hull oracle agree to `1.1e-16 m` and the
 certificate closes to `9.8e-15 m`.
 
-**Cost: ~2–4 ms per solved pair against `mj_geomDistance`'s ~9 µs** — three
-orders of magnitude. It is affordable because a **certified** window rejection
+**Cost: ~2–4 ms per pair actually solved inside the ground-truth snapshot probe,
+against ~9 µs for `mj_geomDistance`** — three orders of magnitude. This is the
+in-probe figure; the module docstring's ~1 ms vs ~0.8 µs is a different
+measurement (a mesh↔box pair for `convex_geom_distance`; the ~0.8 µs is the
+pre-#170 probe's 4096 `mj_geomDistance` calls in ~3.3 ms). It is affordable because a **certified** window rejection
 (a separating-axis bound that *proves* a pair is outside `distmax_m`) thins
 74–259 candidates down to the 1–24 that are genuinely inside, leaving a whole
 three-probe snapshot at ~0.1–0.7 s, once, at a terminal event. Nothing on the
@@ -2577,7 +2580,9 @@ and the answer is in them.
 **The reconstruction reproduces the published headline**, which is what makes
 the rest trustworthy: re-deriving each run's outcome from its
 `run_deploy.log` alone gives 14 completions in the gate-off arm and 1 in the
-gate-on arm, against the published 14/45 and 1/43. Bucketing the
+gate-on arm, against the published 14/45 and 1/43. (The table below counts 46 valid gate-off runs
+where the 09-07 entry published 45; the extra run can no longer be identified,
+because the battery's artifacts are gone from spark.) Bucketing the
 non-completions is what the original never did:
 
 | gate | completed | e-stop | deadline-**after**-grasp | deadline-**no**-grasp | valid |
@@ -2664,7 +2669,8 @@ artifacts):
 | world-voxel gate **ON** | 25 | 1 | **4.0 %** |
 
 **A 62.7-point gap**, against the published 29. Fisher *strengthens* rather
-than weakens: `p = 2.4e-04 → 5.8e-06`. 25 runs are voided out of the off arm
+than weakens: two-sided `p = 3.5e-04 → 5.8e-06` (14/45 vs 1/43 as published, against
+14/21 vs 1/25 re-adjudicated). 25 runs are voided out of the off arm
 and 18 out of the on arm, so the filter is not arm-biased, and it removes **no**
 completion from either.
 

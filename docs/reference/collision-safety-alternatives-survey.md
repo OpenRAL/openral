@@ -1208,7 +1208,9 @@ adjudication or permission path.** The requirement is real — the 26-DOP → hu
 mm-scale regression oracle — but the instrument exists in-tree:
 **`openral_hal.convex_distance.convex_geom_distance`**, which *proves* each answer (separating-axis
 certificate when separated, exact SAT when overlapping, bracketing for round types, explicit refusal
-otherwise) at ~1 ms per mesh↔box pair against ~0.8 µs, and adds **no** dependency.
+otherwise) at ~1 ms per mesh↔box pair against `mj_geomDistance`'s ~0.8 µs per call (the module
+docstring's figures; inside the ground-truth probe the ledger records ~2–4 ms per solved pair
+against ~9 µs), and adds **no** dependency.
 `mj_geomDistance` keeps one legitimate use: as the *subject* of the two regression tests asserting
 the defect still reproduces (`tests/sim/safety/test_geom_distance_instrument_robocasa.py`,
 `tests/sim/safety/test_support_probe_instrument_robocasa.py`).

@@ -13,15 +13,14 @@ keeping that authority accountable to the principles in
 
 ### Maintainers
 Maintainers review and merge PRs, triage issues, and own areas of the codebase
-via [`.github/CODEOWNERS`](.github/CODEOWNERS). Today the project lead is the
-sole maintainer and every CODEOWNERS path routes to @AdrianLlopart; the
-`@openral/<wg>` teams return once there is more than one maintainer. New
-maintainers are nominated by an existing maintainer after a sustained track
-record of high-quality contributions and confirmed by the project lead.
+via [`.github/CODEOWNERS`](.github/CODEOWNERS). They are listed in the
+`@openral/maintainers` team. New maintainers are nominated by an existing
+maintainer after a sustained track record of high-quality contributions and
+confirmed by the project lead.
 
 ### Safety Working Group
 Because OpenRAL drives physical actuators, the **Safety Working Group**
-has mandatory review authority over everything under
+(`@openral/safety`) has mandatory review authority over everything under
 `packages/openral_safety/` and `cpp/openral_safety_kernel/`. A safety-WG
 reviewer, an update to the safety hazard log (private `OpenRAL/management`
 repo), and tests proving the change is *at least as conservative* are
@@ -36,9 +35,7 @@ Anyone who opens an issue or PR; see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## How decisions are made
 
 1. **Day-to-day changes** (bug fixes, features, docs) are decided by normal PR
-   review: the maintainer reviews and merges, required checks green, review
-   threads resolved (with one maintainer the ruleset requires 0 approvals; see
-   [Review policy](docs/contributing/development.md#review-policy)).
+   review: at least one maintainer approval, CODEOWNERS satisfied, CI green.
 2. **Architectural changes that cross a layer boundary** require an
    **Architecture Decision Record**, authored in the private `OpenRAL/management`
    repo (see [`docs/decisions.md`](docs/decisions.md)), before implementation
