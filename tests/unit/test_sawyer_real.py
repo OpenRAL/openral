@@ -22,7 +22,7 @@ from openral_core import (
     ROSEStopRequested,
     ROSRuntimeError,
 )
-from openral_core.schemas import EmbodimentKind, JointState
+from openral_core.schemas import EmbodimentKind
 from openral_hal.sawyer_real import (
     SAWYER_DESCRIPTION,
     SAWYER_REAL_DESCRIPTION,
@@ -162,18 +162,9 @@ class TestProtocolConformance:
     # tests/unit/test_hal_protocol_conformance.py::test_hal_read_state_before_connect_raises
     # (parametrized over HAL_BUILDERS, "SawyerRealHAL" included).
 
-    def test_send_action_before_connect_raises(self, hal: SawyerRealHAL) -> None:
-        with pytest.raises(ROSRuntimeError):
-            hal.send_action(_hold_action())
-
-    def test_connect_then_read_state(self, hal: SawyerRealHAL) -> None:
-        hal.connect()
-        try:
-            state = hal.read_state()
-            assert isinstance(state, JointState)
-            assert state.name == [j.name for j in SAWYER_DESCRIPTION.joints]
-        finally:
-            hal.disconnect()
+    # test_send_action_before_connect_raises / test_connect_then_read_state moved to
+    # tests/unit/test_hal_protocol_conformance.py (parametrized over HAL_BUILDERS,
+    # "SawyerRealHAL" included).
 
     # test_disconnect_idempotent moved to
     # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent

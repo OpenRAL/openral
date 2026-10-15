@@ -29,7 +29,7 @@ from openral_core import (
     ROSPerceptionStale,
     ROSRuntimeError,
 )
-from openral_core.schemas import EmbodimentKind, Hand, JointState
+from openral_core.schemas import EmbodimentKind, Hand
 from openral_hal.aloha import ALOHA_DESCRIPTION, ALOHA_REAL_DESCRIPTION, AlohaHAL
 from openral_hal.sim_transport import SimTransport
 
@@ -154,9 +154,9 @@ class TestProtocolConformance:
     # tests/unit/test_hal_protocol_conformance.py::test_hal_read_state_before_connect_raises
     # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
 
-    def test_send_action_before_connect_raises(self, hal: AlohaHAL) -> None:
-        with pytest.raises(ROSRuntimeError):
-            hal.send_action(_zero_action())
+    # test_send_action_before_connect_raises moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_send_action_before_connect_raises
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
 
     def test_double_connect_raises(self, hal: AlohaHAL) -> None:
         hal.connect()
@@ -166,15 +166,8 @@ class TestProtocolConformance:
         finally:
             hal.disconnect()
 
-    def test_connect_then_read_state(self, hal: AlohaHAL) -> None:
-        hal.connect()
-        try:
-            state = hal.read_state()
-            assert isinstance(state, JointState)
-            assert state.name == [j.name for j in ALOHA_DESCRIPTION.joints]
-            assert len(state.position) == _N_JOINTS
-        finally:
-            hal.disconnect()
+    # test_connect_then_read_state moved to tests/unit/test_hal_protocol_conformance.py
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
 
     # test_disconnect_idempotent moved to
     # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent
