@@ -7,7 +7,9 @@ panda test with a parametrized fleet check. Real manifests, no mocks (§1.11);
 robots whose URDF/SRDF is unavailable on this host SKIP rather than fake.
 
 Gated on the `[lowering]` group (yourdfpy). On CI runners without it, the whole
-module skips — the guard runs on dev hosts and the lowering CI lane.
+module skips. It is not in the lowering CI lane either: qhull's hulls differ at
+~1e-9 across hosted-runner CPUs, so the byte-for-byte comparison only holds on
+the reference host — the guard runs on dev hosts.
 """
 
 from __future__ import annotations
