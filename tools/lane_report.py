@@ -124,7 +124,11 @@ def read_junit(paths: list[Path]) -> tuple[int, int, list[str]]:
         root = ElementTree.parse(path).getroot()
         for case in root.iter("testcase"):
             skipped = case.find("skipped")
-            if skipped is not None:
+            if skipped is not None and skipped.get("type") == "pytest.xfail":
+                # junit records an xfail as <skipped>, but the test ran and failed
+                # as declared; a strict xfail that passes is a <failure> instead.
+                passed += 1
+            elif skipped is not None:
                 reasons.append(_skip_reason(skipped))
             elif case.find("failure") is not None or case.find("error") is not None:
                 failed += 1

@@ -332,8 +332,8 @@ _Opt-in lane accounting — decides, records and attests what each dependency la
 - `class LaneRecord(BaseModel)` (L68) — One lane's accounted outcome: `lane` / `status` (`ran` / `declared-not-run` / `failed`) / `passed` / `failed` / `declared_skips` (gap → count) / `undeclared_skips` / `note`.
   - `declared_total` (L80) — How many tests were not run because of a declared capability gap; sum of `declared_skips.values()`.
 - `read_junit(paths) -> tuple[int, int, list[str]]` (L111) — Aggregate junit XML reports into `(passed, failed, skip_reasons)`; a lane may emit a batched report plus one per isolated file.
-- `build_record(lane, *, passed, failed, skip_reasons, config, exit_code=None, from_exit_code=False) -> LaneRecord` (L136) — Apply the lane policy: declared capability gaps are allowed and attributed, every other skip fails, an all-gated lane is `declared-not-run` and an empty one fails.
-- `main(argv=None) -> int` (L351) — CLI; `lane` (account one lane's reports) / `attest` (cross-check the ledger against the selection, write the job summary).
+- `build_record(lane, *, passed, failed, skip_reasons, config, exit_code=None, from_exit_code=False) -> LaneRecord` (L140) — Apply the lane policy: declared capability gaps are allowed and attributed, every other skip fails, an all-gated lane is `declared-not-run` and an empty one fails.
+- `main(argv=None) -> int` (L355) — CLI; `lane` (account one lane's reports) / `attest` (cross-check the ledger against the selection, write the job summary).
 
 ### `tools/heavy_lanes_trigger.py`
 _Starts the required `heavy-lanes` check on a PR (fork PRs included) automatically once the PR is ready — no approval, no label — and keeps the `heavy-lanes` commit status on the PR head saying what it waits for. Run by `.github/workflows/heavy-lanes-trigger.yml`. See [`docs/contributing/development.md`](../contributing/development.md#review-policy)._
