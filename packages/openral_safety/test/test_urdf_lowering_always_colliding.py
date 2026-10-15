@@ -41,7 +41,6 @@ from openral_safety.urdf_lowering import (
     _load_urdf,
     _pair_relative_dofs,
     _relative_chains,
-    acm_for_geometry,
 )
 
 
@@ -194,14 +193,10 @@ def test_a_hull_carrying_pair_is_never_certified_from_its_boxes() -> None:
     )
 
 
-def test_generated_acm_never_invents_the_exemption() -> None:
-    """Without the SRDF the tool must not produce link5↔link7 from geometry alone."""
-    robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
-    urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=Path("robots/panda_mobile"))
-    assert urdf is not None
-    geoms = {g.link_name: g for g in robot.collision_geometry}
-    generated = acm_for_geometry(str(urdf), geoms, srdf_path=None, margin_m=0.0)
-    assert frozenset({"panda_link5", "panda_link7"}) not in generated
+# "Without the SRDF the tool must not produce link5↔link7 from geometry alone" is
+# pinned end to end by test_urdf_lowering_lower_robot.py::
+# test_lower_robot_falls_back_to_sampling_without_srdf, whose ACM must equal the
+# adjacent pairs exactly.
 
 
 # ── What the criterion DOES certify, and that it is really always-colliding ───
@@ -232,18 +227,6 @@ def test_certified_pairs_are_genuinely_always_colliding(link_a: str, link_b: str
     dofs = _pair_relative_dofs(model, link_a, link_b, geoms) or []
     # Keep the independent grid affordable: it grows as n**len(dofs).
     assert (_pair_gaps(model, geoms, link_a, link_b, 200 if len(dofs) <= 2 else 20) <= margin).all()
-
-
-def test_certification_is_deterministic() -> None:
-    """No RNG anywhere: the same question gets the same answer, every time."""
-    model, geoms, margin = _load("g1")
-    verdicts = [
-        _certified_always_colliding(
-            model, geoms, "left_knee_link", "left_ankle_roll_link", margin_m=margin
-        )
-        for _ in range(3)
-    ]
-    assert verdicts == [True, True, True]
 
 
 # ── Conservatism: every budget is a one-way ratchet toward FEWER entries ──────

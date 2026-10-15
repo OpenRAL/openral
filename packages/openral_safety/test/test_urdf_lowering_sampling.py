@@ -12,7 +12,6 @@ mocks (§1.11).
 from __future__ import annotations
 
 from itertools import pairwise
-from pathlib import Path
 
 import pytest
 from openral_core.assets import resolve_asset
@@ -32,7 +31,18 @@ def _resolve_urdf_path(ref: str) -> str | None:
     return None if p is None else str(p)
 
 
-_PANDA_SRDF = Path("/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf")
+@pytest.fixture(scope="module")
+def panda_urdf() -> str:
+    urdf = _resolve_urdf_path(_PANDA)
+    assert urdf is not None
+    return urdf
+
+
+@pytest.fixture(scope="module")
+def panda_acm(panda_urdf: str) -> set[frozenset[str]]:
+    """One sampling pass (~10 s) shared by every assertion below; the result is a
+    pure function of the URDF, which `test_sampling_is_deterministic` pins."""
+    return sample_acm_from_urdf(panda_urdf)
 
 
 def _arm_only(pairs: set[frozenset[str]]) -> set[frozenset[str]]:
@@ -42,7 +52,7 @@ def _arm_only(pairs: set[frozenset[str]]) -> set[frozenset[str]]:
     }
 
 
-def test_sampling_is_deterministic() -> None:
+def test_sampling_is_deterministic(panda_urdf: str, panda_acm: set[frozenset[str]]) -> None:
     """Reproducible across runs — the `--check` linchpin.
 
     There is no seed to pin any more: the always-colliding verdict is a proof over
@@ -51,43 +61,27 @@ def test_sampling_is_deterministic() -> None:
     the joint set, which is how the box under-approximation (issue #155) stayed
     invisible for so long.
     """
-    urdf = _resolve_urdf_path(_PANDA)
-    assert urdf is not None
-    assert sample_acm_from_urdf(urdf) == sample_acm_from_urdf(urdf)
+    assert sample_acm_from_urdf(panda_urdf) == panda_acm
 
 
-def test_adjacent_links_always_disabled() -> None:
-    urdf = _resolve_urdf_path(_PANDA)
-    assert urdf is not None
-    pairs = sample_acm_from_urdf(urdf)
+def test_adjacent_links_always_disabled(panda_acm: set[frozenset[str]]) -> None:
+    pairs = panda_acm
     # Every directly joint-connected arm pair on the panda chain.
     chain = ("0", "1", "2", "3", "4", "5", "6", "7")
     for a, b in pairwise(chain):
         assert frozenset({f"panda_link{a}", f"panda_link{b}"}) in pairs
 
 
-def test_sampler_does_not_disable_a_never_collide_pair() -> None:
-    """Without an SRDF, a 'never-collide' pair stays CHECKED (the conservative rule).
-
-    Geometry can prove a pair *always* collides; it cannot prove one *never* does
-    without mesh ground truth. So link1↔link4 — which the Franka SRDF marks
-    "Never" — must stay checked on this path rather than be auto-disabled.
-    """
-    urdf = _resolve_urdf_path(_PANDA)
-    assert urdf is not None
-    pairs = sample_acm_from_urdf(urdf)
-    assert frozenset({"panda_link1", "panda_link4"}) not in pairs
-
-
-def test_sampled_acm_keeps_never_collide_pairs_checked() -> None:
+def test_sampled_acm_keeps_never_collide_pairs_checked(panda_acm: set[frozenset[str]]) -> None:
     """The safe conservative fallback: known 'never-collide' far pairs stay checked.
 
     Exempt only what provably must be (adjacent + certified always-colliding); a
     geometric 'never-collide' verdict is not trusted without mesh ground truth.
+    Geometry can prove a pair *always* collides; it cannot prove one *never* does
+    without mesh ground truth. So link1↔link4 — which the Franka SRDF marks
+    "Never" — must stay checked on this path rather than be auto-disabled.
     """
-    urdf = _resolve_urdf_path(_PANDA)
-    assert urdf is not None
-    sampled = _arm_only(sample_acm_from_urdf(urdf))
+    sampled = _arm_only(panda_acm)
     # SRDF "Never" pairs (kinematically far) must NOT be auto-disabled by sampling.
     for never in (("panda_link1", "panda_link4"), ("panda_link2", "panda_link4")):
         assert frozenset(never) not in sampled, f"{never} unsafely disabled by sampling"
