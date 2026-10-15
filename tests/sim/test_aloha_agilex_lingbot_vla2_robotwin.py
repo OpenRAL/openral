@@ -84,7 +84,8 @@ def _gpu_available() -> bool:
         return False
 
 
-def _gpu_mem_used_mib() -> int:
+def _gpu_mem_used_mib() -> int | None:
+    """Device memory in use, or None where nvidia-smi reports ``[N/A]`` (Jetson unified memory)."""
     out = (
         subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -95,9 +96,10 @@ def _gpu_mem_used_mib() -> int:
         .stdout.strip()
         .splitlines()[0]
     )
-    return int(out)
+    return None if out == "[N/A]" else int(out)
 
 
+_RSKILL_DIR = Path(__file__).resolve().parents[2] / "rskills" / "lingbot-vla2-robotwin"
 _SIDECAR_PY = _sidecar_python()
 _REPO = _repo_checkout()
 _CKPT = _checkpoint()
@@ -150,7 +152,13 @@ def lingbot_adapter():
         robot_id="aloha_agilex",
         scene=scene,
         task=task,
-        vla=VLASpec(id="lingbot_vla2", weights_uri=str(_CKPT), extra={"model_id": str(_CKPT)}),
+        # weights_uri names the in-tree rSkill (its manifest loads); extra.model_id wins for
+        # the weights, so the sidecar still loads the local checkpoint.
+        vla=VLASpec(
+            id="lingbot_vla2",
+            weights_uri=str(_RSKILL_DIR),
+            extra={"model_id": str(_CKPT)},
+        ),
     )
     adapter = POLICIES.get("lingbot_vla2")(env_cfg)  # connect() -> ping
     yield adapter
@@ -177,4 +185,7 @@ def test_sidecar_returns_multistep_chunk(lingbot_adapter) -> None:
 def test_nf4_fit_under_8gib(lingbot_adapter) -> None:
     lingbot_adapter.reset()
     lingbot_adapter.step(_robotwin_obs(), "pick up the block and place it on the plate")
-    assert _gpu_mem_used_mib() < _VRAM_CEILING_MIB
+    used = _gpu_mem_used_mib()
+    if used is None:
+        pytest.skip("nvidia-smi reports no device memory figure on unified-memory Jetson boards")
+    assert used < _VRAM_CEILING_MIB

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 import pytest
-from openral_sim._sidecar_common import sidecar_port_for_key, torch_backend
+from openral_sim._sidecar_common import sidecar_port_for_key, torch_backend, venv_ptxas
 
 
 def test_isaac_sim_port_matches_original_implementation() -> None:
@@ -145,3 +145,18 @@ def test_torch_backend_routes_aarch64_to_cu130() -> None:
     assert torch_backend("aarch64") == "cu130"
     assert torch_backend("x86_64") == "cu128"
     assert torch_backend() in {"cu128", "cu130"}
+
+
+def test_venv_ptxas_finds_both_wheel_layouts_and_prefers_cuda13(tmp_path: Path) -> None:
+    # CUDA 13 (`nvidia-cuda-nvcc`) is the only ptxas that targets Jetson Thor
+    # (sm_110); the cu12 layout is still honoured for venvs provisioned before it.
+    site = tmp_path / "lib" / "python3.12" / "site-packages"
+    assert venv_ptxas(tmp_path) is None
+    cu12 = site / "nvidia" / "cuda_nvcc" / "bin" / "ptxas"
+    cu12.parent.mkdir(parents=True)
+    cu12.touch()
+    assert venv_ptxas(tmp_path) == cu12
+    cu13 = site / "nvidia" / "cu13" / "bin" / "ptxas"
+    cu13.parent.mkdir(parents=True)
+    cu13.touch()
+    assert venv_ptxas(tmp_path) == cu13

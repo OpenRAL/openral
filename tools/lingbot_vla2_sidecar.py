@@ -67,6 +67,11 @@ _VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
 _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 
 _SERVER = Path(__file__).resolve().parent / "_lingbot_vla2_server.py"
+# aarch64 ptxas for the MoE Triton kernels (`venv_ptxas` finds it). Triton
+# 3.5.1's bundled ptxas tops out below sm_121 (GB10) and sm_110 (Jetson Thor);
+# CUDA 12.9's knows sm_121 but not sm_110 (12.x calls Thor sm_101). CUDA 13.0's
+# knows both, and matches the cu130 torch + the R580 (CUDA 13.0) Jetson driver.
+_AARCH64_PTXAS = "nvidia-cuda-nvcc==13.0.88"
 # Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor); shared
 # with the other sidecars, see that file's header. Passed as a SECOND
 # ``--overrides`` alongside the generated torch-stack overrides below.
@@ -247,6 +252,10 @@ def _ensure_venv(
                 uv,
                 "pip",
                 "install",
+                # --no-config: launched from the repo root, uv would otherwise apply
+                # the root pyproject's [tool.uv] overrides (aarch64: torch>=2.13)
+                # and fail against this venv's torch==2.9.1 override.
+                "--no-config",
                 "--python",
                 str(py),
                 # cu130 on aarch64: the cu128 wheels have no Jetson Thor (sm_110) kernels.
@@ -260,25 +269,24 @@ def _ensure_venv(
             ],
         )
         # pyzmq (wire) + bitsandbytes (NF4) — neither is in requirements.txt.
-        # aarch64 also gets a CUDA 12.9 ptxas: this sidecar runs its own Triton
-        # kernels (lingbotvla's MoE), and triton 3.5.1's bundled CUDA 12.8
-        # ptxas can't target sm_121 ("Value 'sm_121a' is not defined for
-        # option 'gpu-name'"); `make_isolated_env` sets TRITON_PTXAS_PATH.
+        # aarch64 also gets a CUDA 13 ptxas (_AARCH64_PTXAS): this sidecar runs
+        # its own Triton kernels (lingbotvla's MoE), which triton 3.5.1's
+        # bundled ptxas can't target on GB10 or Thor; `make_isolated_env` sets
+        # TRITON_PTXAS_PATH.
         # The override goes on THIS pass too — uv re-resolves on every `pip
         # install`, so a pass without it re-downgrades
         # `nvidia-cuda-nvrtc-cu12==12.8.93`. Invariant: every re-resolving
         # pass carries it.
         extras = ["pyzmq", "bitsandbytes"]
         if platform.machine() == "aarch64":
-            # CUDA 12.9 ptxas knows sm_121 (GB10) but not sm_110 (Jetson Thor;
-            # 12.x calls it sm_101), so Triton kernels still fail on Thor even on cu130.
-            extras.append("nvidia-cuda-nvcc-cu12==12.9.86")
+            extras.append(_AARCH64_PTXAS)
         run_cmd(
             _LABEL,
             [
                 uv,
                 "pip",
                 "install",
+                "--no-config",
                 "--python",
                 str(py),
                 "--overrides",
@@ -308,7 +316,7 @@ def _ensure_venv(
                 "bitsandbytes",
                 # aarch64 only, so a cu128 -> cu130 move repairs those venvs
                 # without invalidating every x86_64 one.
-                *((torch_backend(),) if platform.machine() == "aarch64" else ()),
+                *((torch_backend(), _AARCH64_PTXAS) if platform.machine() == "aarch64" else ()),
             )
         ),
     )
