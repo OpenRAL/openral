@@ -6,9 +6,12 @@ name: heavy-lanes-trigger
 #   * green on every other check (and `select-and-test`, `quality`,
 #     `Verify Signed-off-by` have all reported),
 #   * free of unresolved review threads,
-#   * not a draft, and from a branch of this repo (not a fork),
-# and no heavy-lanes run exists for that commit yet. Until then the required
-# `heavy-lanes` check stays "Expected — waiting".
+#   * not a draft,
+# and no heavy-lanes run exists for that commit yet. Until then it keeps a
+# pending `heavy-lanes` commit status on the PR head that says what it is
+# waiting for; heavy-lanes.yml's gate job replaces it with the result. Fork
+# PRs run the base branch's heavy-lanes.yml on the fork commit, from a
+# `heavy-lanes/fork-<pr>` branch this job maintains (see heavy-lanes.yml).
 #
 # Triggers:
 #   * workflow_run — the moment one of the PR workflows finishes, so a PR that
@@ -19,7 +22,9 @@ name: heavy-lanes-trigger
 #   * workflow_dispatch — run a sweep now.
 #
 # Security: every trigger here runs THIS file from the default branch, never
-# PR code. It only reads PR state and calls the workflow_dispatch API; the
+# PR code. It only reads PR state, posts the `heavy-lanes` commit status,
+# points `heavy-lanes/fork-*` branches at copies of the base tree (never at
+# fork commits) and calls the workflow_dispatch API; the
 # dispatched heavy-lanes run executes the PR branch's code with the same
 # read-only token a pull_request run would. workflow_dispatch is also the one
 # event a GITHUB_TOKEN call is allowed to trigger (a label or push made with
@@ -48,9 +53,9 @@ concurrency:
 permissions:
   actions: write        # POST .../workflows/heavy-lanes.yml/dispatches
   checks: read
-  contents: read
+  contents: write       # heavy-lanes/fork-* branches (base-tree copies only)
   pull-requests: read   # PR list + review threads (GraphQL)
-  statuses: read
+  statuses: write       # the `heavy-lanes` waiting/running status
 
 jobs:
   # A workflow_run-triggered run posts THIS job's check on the triggering PR's

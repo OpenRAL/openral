@@ -27,14 +27,18 @@ if str(REPO_ROOT) not in sys.path:
 from tools.heavy_lanes_trigger import (  # noqa: E402
     DEFAULT_REQUIRED_CHECKS,
     OWN_CHECK_NAMES,
+    RUNNING,
+    STATUS_CONTEXT,
+    WAITING,
     CheckRunState,
     LaneRunState,
     PullRequestState,
+    StatusState,
     Verdict,
     readiness,
 )
 
-MODELS = (CheckRunState, LaneRunState, PullRequestState, Verdict)
+MODELS = (CheckRunState, LaneRunState, PullRequestState, StatusState, Verdict)
 
 REQUIRED = list(DEFAULT_REQUIRED_CHECKS)
 
@@ -115,10 +119,29 @@ def test_ready_pr_is_ready() -> None:
     ("overrides", "reason"),
     [
         ({"draft": True}, "draft PR"),
-        ({"same_repo": False}, "fork PR"),
         ({"behind_by": 3}, "3 commit(s) behind master"),
         ({"unresolved_threads": 2}, "2 unresolved review thread(s)"),
-        ({"statuses": ["success", "pending"]}, "a commit status is pending"),
+        (
+            {
+                "statuses": [
+                    StatusState(context="CodeRabbit", state="success"),
+                    StatusState(context="ci/other", state="pending"),
+                ]
+            },
+            "commit status 'ci/other' is pending",
+        ),
+        (
+            {
+                "statuses": [
+                    StatusState(context=STATUS_CONTEXT, state="pending", description=RUNNING)
+                ]
+            },
+            "already started",
+        ),
+        (
+            {"statuses": [StatusState(context=STATUS_CONTEXT, state="failure")]},
+            "already started",
+        ),
         ({"lane_runs": [LaneRunState(status="in_progress")]}, "already started"),
         (
             {"lane_runs": [LaneRunState(status="completed", conclusion="failure")]},
@@ -160,9 +183,54 @@ def test_own_checks_and_cancelled_runs_do_not_block() -> None:
     assert verdict.ready, verdict.reasons
 
 
+def test_fork_pr_is_ready() -> None:
+    """Fork PRs run the lanes too (from a base-tree branch), under the same conditions."""
+    verdict = readiness(_ready_pr(same_repo=False), REQUIRED)
+    assert verdict.ready, verdict.reasons
+
+
+@pytest.mark.parametrize(
+    ("state", "description"),
+    [
+        ("pending", WAITING + "1 unresolved review thread(s)"),
+        # posted by the gate job when the run was cancelled: start it again
+        ("error", "Cancelled — heavy-lanes-trigger starts it again"),
+    ],
+)
+def test_own_waiting_or_cancelled_status_does_not_block(state: str, description: str) -> None:
+    """The trigger's own pending status must not read as "a check is pending"."""
+    status = StatusState(context=STATUS_CONTEXT, state=state, description=description)
+    verdict = readiness(_ready_pr(statuses=[status]), REQUIRED)
+    assert verdict.ready, verdict.reasons
+
+
+def test_gate_job_reports_the_status_the_trigger_reads() -> None:
+    """heavy-lanes.yml's gate posts STATUS_CONTEXT, and only it may write statuses."""
+    jobs = _workflow("heavy-lanes.yml")["jobs"]
+    gate = jobs["heavy-lanes"]
+    assert gate["permissions"]["statuses"] == "write"
+    report = gate["steps"][-1]
+    assert report["if"] == "always()"
+    assert f"context={STATUS_CONTEXT}" in report["run"]
+    assert "Cancelled" in report["run"], "a cancelled run must post a non-blocking state"
+    assert all("permissions" not in job for name, job in jobs.items() if name != "heavy-lanes")
+
+
+def test_fork_code_never_runs_in_the_status_writing_job() -> None:
+    """Lane jobs test `inputs.sha`; the gate checks out the workflow's own ref."""
+    jobs = _workflow("heavy-lanes.yml")["jobs"]
+    for name in ("lanes-select", "lane"):
+        checkout = next(s for s in jobs[name]["steps"] if "actions/checkout" in s.get("uses", ""))
+        assert checkout["with"]["ref"] == "${{ inputs.sha || github.sha }}"
+    gate_checkout = next(
+        s for s in jobs["heavy-lanes"]["steps"] if "actions/checkout" in s.get("uses", "")
+    )
+    assert "ref" not in gate_checkout.get("with", {})
+
+
 @pytest.mark.parametrize("model", MODELS)
 def test_model_json_schema(
-    model: type[CheckRunState | LaneRunState | PullRequestState | Verdict],
+    model: type[CheckRunState | LaneRunState | PullRequestState | StatusState | Verdict],
 ) -> None:
     assert model.model_json_schema()["type"] == "object"
 
@@ -175,6 +243,11 @@ def test_check_run_state_round_trip(state: CheckRunState) -> None:
 @given(st.builds(LaneRunState))
 def test_lane_run_state_round_trip(run: LaneRunState) -> None:
     assert LaneRunState.model_validate_json(run.model_dump_json()) == run
+
+
+@given(st.builds(StatusState))
+def test_status_state_round_trip(status: StatusState) -> None:
+    assert StatusState.model_validate_json(status.model_dump_json()) == status
 
 
 @given(st.builds(PullRequestState))

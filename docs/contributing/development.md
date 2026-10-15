@@ -480,31 +480,44 @@ not automated from this repo. On the host with the arm attached:
 2. Make your changes. Run `just lint && just test` before pushing.
 3. If you changed a Pydantic schema, run `just schema-export` and commit the updated JSON files.
 4. Open a PR. The title should follow [Conventional Commits](https://www.conventionalcommits.org/) — e.g. `feat(core): add FooSchema`.
-5. If your PR comes from a fork, the first push waits for a maintainer to
-   click "Approve and run" on the workflow run before any check starts —
-   that's a GitHub setting (`all_external_contributors`), not something you
-   can skip.
+5. PRs from forks run CI on every push, like any other PR. The one exception
+   is a brand-new GitHub account's first PR, which waits for a maintainer to
+   click "Approve and run" (GitHub setting
+   `first_time_contributors_new_to_github`, the lowest GitHub offers).
 6. Every push runs two fast required checks: `quality` (lint/type/schema/docs,
    <3 min) and `select-and-test` (the pytest targets your diff actually
    touches — see [Selective testing](selective-testing.md), usually a few
    minutes). A third required check, `heavy-lanes`, runs the opt-in
    dependency lanes (LIBERO, RoboCasa, GR00T, …) your diff selected — it
    starts by itself once the PR is ready, see [Review policy](#review-policy).
-7. All required checks must be green, and the PR needs one approving review
-   from a code owner, before it can merge. See `.github/workflows/` for what
-   each workflow runs.
+7. All required checks must be green and every review thread resolved before
+   it can merge, and only a maintainer can merge — see
+   [Review policy](#review-policy). See `.github/workflows/` for what each
+   workflow runs.
 
 The full PR checklist is in the repo-root `CLAUDE.md` (not linked from docs — open it directly in your editor).
 
 ### Review policy
 
-The branch ruleset on `master` requires one approving review from a
+Every change reaches `master` through a PR that the maintainer reviews and
+merges. Anyone can open issues and PRs (from a fork — pushing a branch here
+needs write access, as on any public GitHub repo), but merging also needs
+write access, and today the sole
 [`CODEOWNERS`](https://github.com/OpenRAL/openral/blob/master/.github/CODEOWNERS)
-reviewer, with stale approvals dismissed on every push. GitHub does not allow
-a PR author to approve their own PR, so with today's single code owner the
-maintainer's own PRs merge via the ruleset's `OrganizationAdmin` bypass
-instead of a satisfying review — expected, not a workaround; a second code
-owner would remove the need for it.
+maintainer is the only account with it. So the maintainer's merge *is* the
+review.
+
+The branch ruleset on `master` therefore requires a PR, the four green checks
+(`quality`, `select-and-test`, `heavy-lanes`, `Verify Signed-off-by`) and
+every review thread resolved, but **0 approving reviews**: GitHub does not
+let a PR author approve their own PR, so a required approval would only force
+the maintainer to bypass the ruleset — checks included — on every merge. With
+0, the maintainer's own PRs merge with the normal button once CI is green.
+Only `OrganizationAdmin` can bypass the ruleset, as an emergency route.
+
+**When a second account gets write access, set the required approvals back to
+1 (with code-owner review) the same day** — otherwise that account could
+merge its own PRs unreviewed.
 
 `heavy-lanes` (the opt-in dependency lanes: LIBERO, RoboCasa, GR00T,
 ManiSkill3, …) starts **automatically**, with no approval or label, once the
@@ -513,22 +526,31 @@ PR's head commit is:
 - up to date with `master` (0 commits behind — rebase or merge `master` in);
 - green on every other check;
 - free of unresolved review threads;
-- not a draft, and from a branch of this repo.
+- not a draft (fork PRs included).
 
 [`heavy-lanes-trigger`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes-trigger.yml)
 re-checks each open PR whenever a PR workflow finishes and every 10 minutes
 (GitHub has no event for "thread resolved" or "`master` moved", so those two
 can take up to ~10 min to be noticed). It starts the lanes once per head
-commit; a new push waits for the conditions again. Until then the check shows
-"Expected — waiting" and blocks the merge. A failed lane is re-run from its
-Actions run page.
+commit; a new push waits for the conditions again. The PR shows where it is
+as the `heavy-lanes` commit status: pending with what it is waiting for
+("Waiting: 2 commit(s) behind master — rebase first"), pending "Running" once
+dispatched, then passed / failed with a link to the run. A failed lane is
+re-run from its Actions run page.
 
-**Fork PRs:** `workflow_dispatch` cannot target a fork branch, so nothing can
-post `heavy-lanes` on a fork head and the check stays "Expected — waiting". A
-maintainer runs the lanes by pushing the fork's head commit to a branch of this
-repository (`git push origin <sha>:refs/heads/fork/<pr>`) and dispatching
-**heavy-lanes** on that branch — the check lands on the same commit SHA, so the
-PR picks it up — or merges through the ruleset bypass.
+The result is a commit status, not the run's own check: a `workflow_dispatch`
+run's check runs are not linked to any PR, so the PR would otherwise show
+"Expected — waiting" forever, pass or fail.
+
+**Fork PRs** get the lanes automatically too. `workflow_dispatch` cannot target
+a fork branch, and a fork's copy of `heavy-lanes.yml` is not trusted, so the
+trigger points a `heavy-lanes/fork-<pr>` branch at a copy of `master`'s tree and
+dispatches there with the fork head as the commit to test. The workflow file
+is therefore always `master`'s; the lane jobs run the fork's code with a
+read-only token and no secrets (what a fork `pull_request` run gets); the
+branch is its own cache scope, so fork code cannot plant a cache `master`
+restores; and the only job that can write statuses never checks out fork code.
+The branch is deleted once the PR closes.
 
 This keeps the expensive lanes — 19 parallel jobs — for PRs that are otherwise
 mergeable, instead of paying for them on every push.
