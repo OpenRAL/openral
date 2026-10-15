@@ -9,9 +9,9 @@
 #
 # Joint limits / velocities / efforts come from the public Rethink Sawyer
 # data sheet (the company dissolved in 2018; community forks of intera_sdk
-# remain the reference). A real-HW HAL (sdk_kind: closed_with_api,
-# hal.real: openral_hal.sawyer_real:SawyerRealHAL) is tracked by
-# issue #57; today the MetaWorld MJCF is the only execution path.
+# remain the reference). The real-HW HAL is
+# openral_hal.sawyer_real:SawyerRealHAL (issue #57, ros2_control over the
+# community sawyer_robot fork); sim runs through the MetaWorld MJCF only.
 #
 # Joint naming follows the upstream sawyer_robot URDF.
 
@@ -209,7 +209,7 @@ sensors:
 sdk_kind: "closed_with_api"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 # Sawyer has no MuJoCo sim HAL today → sim: null (build_hal(mode="sim") raises
-# ROSCapabilityMismatch). Real-only via the intera_sdk adapter.
+# ROSCapabilityMismatch). Real-only via SawyerRealHAL.
 # Control rate: the skill runner ticks at it (`rate_hz` ROS param 0 = read
 # this), the dataset recorder stamps it as fps, and the real HAL sets every
 # trajectory point's time_from_start = horizon / control_freq_hz (issue #303).
