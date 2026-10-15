@@ -176,7 +176,7 @@ class RosImagePublisher:
         from rclpy.node import Node  # noqa: PLC0415
 
         self._node = Node(self._node_name)
-        # Camera streams: BEST_EFFORT + VOLATILE + KEEP_LAST per CLAUDE.md §5.3.
+        # Camera streams: BEST_EFFORT + VOLATILE + KEEP_LAST per CLAUDE.md §2.
         qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=self._qos_depth,

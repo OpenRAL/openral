@@ -620,7 +620,7 @@ left_arm 7 + right_hand 6 + left_hand 6 = 29.
 
 Kept in sync with ``openral_sim.policies.rldx._GR1_BASIC_DIM`` (same
 value, duplicated to keep the backend / policy layers
-import-independent per CLAUDE.md §6.1)."""
+import-independent per CLAUDE.md §3)."""
 
 
 # Gymnasium >= 0.26 reset returns ``(obs, info)``; older robosuite envs

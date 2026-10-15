@@ -212,7 +212,7 @@ except ImportError:  # pragma: no cover
 
 __all__ = ["ReasonerNode"]
 
-# QoS profiles per the reasoner+supervisor design §1 + CLAUDE.md §5.3
+# QoS profiles per the reasoner+supervisor design §1 + CLAUDE.md §2
 _QOS_WORLD_STATE = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,

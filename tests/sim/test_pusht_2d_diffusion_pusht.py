@@ -12,7 +12,7 @@ What is asserted
 * Closed-loop rollout completes with finite rewards and a non-zero agent
   displacement (pymunk dynamics propagate).
 * Mean per-step latency stays within ``manifest.latency_budget.per_chunk_ms``
-  with the canonical ``tolerance_pct=100`` (CLAUDE.md §5.4).
+  with the canonical ``tolerance_pct=100`` (CLAUDE.md §2).
 * Peak VRAM during one chunk denoise stays under 2.0 GiB (catches load
   regressions; baseline 1.64 GiB).
 

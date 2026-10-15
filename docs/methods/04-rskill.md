@@ -308,7 +308,7 @@ _The one policy <-> robot I/O codec (joint order, deg<->rad, gripper scale, clam
 - private: `_effective_perm(robot_to_policy, n) -> list[int]` — Identity unless a valid length-`n` permutation, so unit conversion runs on the no-reorder path too. (L60)
 
 ### `python/rskill/src/openral_rskill/testing.py`
-_Test helpers for skill latency-budget enforcement (CLAUDE.md §5.4)._
+_Test helpers for skill latency-budget enforcement (CLAUDE.md §2)._
 
 - `class LatencyBudgetExceededError(AssertionError)` — Raised by `assert_within_budget` on overrun; a plain `AssertionError` subclass (not `ROSRuntimeError`) so pytest reports a crisp failure with the budget delta rather than the operational exception the safety supervisor would catch. (L42)
   - `__init__(*, stage, measured_ms, budget_ms, rskill_id=None)` — Builds the failure message and stores `stage`/`measured_ms`/`budget_ms`/`rskill_id` on the instance. (L56)

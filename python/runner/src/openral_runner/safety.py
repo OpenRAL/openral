@@ -13,7 +13,7 @@ Contract: ``SafetyClient.check_action`` returns ``None`` on pass
 or ``ROSEStopRequested``) on rejection. No implementation raises
 ``ROSForceLimitExceeded``: nothing checks a force against
 ``SafetyEnvelope.max_force_n`` yet (issue #373), and the only shipped
-implementation, ``NullSafetyClient``, never raises. Per CLAUDE.md §10 this is never
+implementation, ``NullSafetyClient``, never raises. Per CLAUDE.md §5 this is never
 silently caught; the runner catches it at its supervisor boundary
 (``DeployRunner``), records into
 ``TickResult.safety_violations``, flips
@@ -66,7 +66,7 @@ class SafetyClient(Protocol):
             ROSSafetyViolation: When the action is rejected. The runner's
                 supervisor boundary catches this and records the
                 incident; the exception is not silently swallowed
-                (CLAUDE.md §10).
+                (CLAUDE.md §5).
         """
         ...
 

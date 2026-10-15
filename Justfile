@@ -265,7 +265,7 @@ test:
         echo "skipping gstreamer tests: PyGObject not installed (pip install openral-runner[gstreamer] or use docker/inference/Dockerfile)"; \
     fi
 
-# Run docstring examples on the curated set of packages (CLAUDE.md §5.4).
+# Run docstring examples on the curated set of packages (CLAUDE.md §2).
 # Update tests/unit/test_doctest_runner.py::DOCTEST_TARGETS when adding more.
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
 # `just test` — the launch_testing pytest plugin silently aborts

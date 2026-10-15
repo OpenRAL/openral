@@ -3,7 +3,7 @@
 Covers the manifest-resolution helper that replaced per-adapter
 ``_load_manifest_for_spec`` copies in pi05/rldx/smolvla, and the dtype helpers
 moved out of ``pi05.py`` into ``openral_sim._quantization``. Per CLAUDE.md
-§1.11/§5.4 every fixture is a real ``RSkillManifest`` loaded from on-disk YAMLs
+§1.11/§2 every fixture is a real ``RSkillManifest`` loaded from on-disk YAMLs
 under ``rskills/``.
 
 ``torch`` is imported via ``pytest.importorskip`` so a bare ``openral-sim``

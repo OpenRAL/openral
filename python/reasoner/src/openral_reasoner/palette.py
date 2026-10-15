@@ -431,7 +431,7 @@ def build_tool_palette(
     2. ``skill.embodiment_tags`` intersects
        ``robot_capabilities.embodiment_tags``.
     3. ``role == "s1"`` — only S1 skills are dispatchable via
-       ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots have
+       ``ExecuteRskillTool`` per CLAUDE.md §3 dual-system pattern (S0/S2 slots have
        separate dispatch paths) — and ``kind not in {"detector",
        "segmenter"}``: both are S1-rate perception producers, not
        ExecuteRskill-dispatchable; they activate as the perception ROS

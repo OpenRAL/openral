@@ -150,7 +150,7 @@ safety:
 # `sdk_kind: open` because the menagerie MJCF is freely usable
 # (BSD-style); a future `Rizon4RealHAL` wrapping the Flexiv RDK would
 # flip this to `closed_with_api` (the RDK is BSD-licensed but
-# vendor-distributed per CLAUDE.md §7.4) and set hal.real to
+# vendor-distributed per CLAUDE.md §1.9) and set hal.real to
 # `openral_hal.flexiv_rizon4_real:Rizon4RealHAL`.
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).

@@ -9,7 +9,7 @@ Two tiers:
 * **Real end-to-end** (gated): boot the actual sidecar, run NF4 Qwen3.5-4B on a
   real image fixture, and assert a text answer comes back over ZMQ. Skipped
   unless a sidecar venv is provisioned (``OPENRAL_QWEN_VLM_SIDECAR_VENV``) and a
-  GPU is present — the legitimate CI skip path (CLAUDE.md §12).
+  GPU is present — the legitimate CI skip path (CLAUDE.md §1.12).
 """
 
 from __future__ import annotations

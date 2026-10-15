@@ -7,7 +7,7 @@ the production sibling of the MuJoCo-backed
 ``FRANKA_PANDA_DESCRIPTION`` so upper layers see one normative robot
 regardless of where the joints physically live.
 
-License posture (CLAUDE.md §7.4): the Franka FCI/``libfranka`` stack is
+License posture (CLAUDE.md §1.9): the Franka FCI/``libfranka`` stack is
 closed but permissive (vendor-licensed binaries, free for research/
 commercial); ``franka_ros2`` is Apache-2.0. The manifest declares
 ``sdk_kind: "closed_with_api"`` and sets ``hal.real`` to this adapter.

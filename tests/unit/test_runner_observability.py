@@ -2,7 +2,7 @@
 
 Covers the wiring added in PR ``feat(runner): wire tick/safety metrics
 and record exceptions on rskill.tick``. Tests use the real OTel SDK
-and an in-memory exporter — no mocks per CLAUDE.md §1.11 / §5.4.
+and an in-memory exporter — no mocks per CLAUDE.md §1.11 / §2.
 """
 
 from __future__ import annotations

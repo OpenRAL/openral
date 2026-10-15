@@ -85,7 +85,7 @@ _REQUIRED_FILES = ["rskill.yaml"]
 def public_visibility_error(manifest: RSkillManifest, public: bool) -> str | None:  # type: ignore[name-defined]  # noqa: F821
     """Return an error message if ``--public`` is not allowed, else ``None``.
 
-    Enforces the license-lineage posture (CLAUDE.md §9): a non-commercial-licensed
+    Enforces the license-lineage posture (CLAUDE.md §1.9): a non-commercial-licensed
     skill (e.g. NVIDIA GR00T / LocateAnything) must not be published to a public
     repo. Commercially-licensed weights (Apache-2.0 / MIT / NVIDIA Open Model …)
     may be public. Pure (no network) so the guard is unit-testable and fails fast
@@ -102,7 +102,7 @@ def public_visibility_error(manifest: RSkillManifest, public: bool) -> str | Non
         return (
             f"--public refused: {manifest.name!r} has a non-commercial license "
             f"({manifest.license.value}); only commercially-licensed weights may be made "
-            "public (CLAUDE.md §9). Publish privately instead (drop --public)."
+            "public (CLAUDE.md §1.9). Publish privately instead (drop --public)."
         )
     return None
 
@@ -598,10 +598,10 @@ def main() -> None:
     # ── Cross-layer task-space check (TaskSpace-contract Phase 2, warn-only) ────
     _validate_task_space(manifest, skill_dir)
 
-    # ── Validate README + manifest documentation (CLAUDE.md §6.4) ──────────────
+    # ── Validate README + manifest documentation (CLAUDE.md §3 rSkill packaging) ───
     doc_report = _validate_docs(skill_dir, manifest)
 
-    # ── License gate for --public (CLAUDE.md §9), before any network call ───────
+    # ── License gate for --public (CLAUDE.md §1.9), before any network call ─────
     public_error = public_visibility_error(manifest, args.public)
     if public_error:
         log.error("rskill_publisher.public_refused", error=public_error)

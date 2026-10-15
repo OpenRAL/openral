@@ -15,7 +15,7 @@ Environment:
     SAWYER_STATE_TOPIC: Override for the joint-state topic
         (defaults to ``/robot/joint_states`` — Rethink intera_sdk lineage).
 
-Safety rules (from CLAUDE.md §7.3) mirror tests/hil/test_franka_panda.py.
+Safety rules (from CLAUDE.md §2 Tests, §3 Safety) mirror tests/hil/test_franka_panda.py.
 """
 
 from __future__ import annotations

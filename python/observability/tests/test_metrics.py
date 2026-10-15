@@ -1,6 +1,6 @@
 """Metric instruments record on the in-memory reader.
 
-Real SDK, in-memory exporter — no mocks (CLAUDE.md §1.11 / §5.4).
+Real SDK, in-memory exporter — no mocks (CLAUDE.md §1.11 / §2).
 """
 
 from __future__ import annotations

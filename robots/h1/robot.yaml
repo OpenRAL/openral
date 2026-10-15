@@ -5,7 +5,7 @@
 # effort caps come verbatim from the upstream Unitree H1 URDF / mujoco_menagerie.
 #
 # `H1MujocoHAL` is the only execution path today; real-HW HAL over
-# `unitree_sdk2` is the M2 milestone (CLAUDE.md §6.2), needs a C++ S0
+# `unitree_sdk2` is the M2 milestone (CLAUDE.md §3 dual-system pattern), needs a C++ S0
 # cerebellar controller first. Without S0 balance the digital twin is a
 # contract validator only (falls over under gravity) — tests/sim/test_h1_hal_mujoco.py
 # runs with gravity_enabled=False for that reason.
@@ -299,13 +299,13 @@ safety:
 
 # `sdk_kind: open` because the menagerie MJCF + the `mujoco` Python
 # package are both Apache-2.0.  A future `H1RealHAL` over
-# `unitree_sdk2` (BSD-3, closed-with-api per CLAUDE.md §7.4) will
+# `unitree_sdk2` (BSD-3, closed-with-api per CLAUDE.md §1.9) will
 # derive its `RobotDescription` from this sim baseline via
 # `make_real_description` and flip the sdk_kind (hal is shared); that's
-# tracked under the M2 milestone (CLAUDE.md §6.2).
+# tracked under the M2 milestone (CLAUDE.md §3 dual-system pattern).
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
-# Sim-only → real: null until the M2 C++ S0 cerebellum (CLAUDE.md §6.2).
+# Sim-only → real: null until the M2 C++ S0 cerebellum (CLAUDE.md §3 dual-system pattern).
 hal:
   sim: "openral_hal.h1:H1MujocoHAL"
   real: null

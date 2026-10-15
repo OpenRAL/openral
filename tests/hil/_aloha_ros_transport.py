@@ -17,7 +17,7 @@ fan-out: four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
    ``motor_config`` groups have been read off the robot (#250).
 
 HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
-(CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between).
+(CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between).
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class AlohaHILTransport(_PolledJointStateMixin):
     grippers) plus one ``JointState`` subscriber on the aggregated
     ``joint_state_topic``.  Dispatch is by topic-string match against the
     four constructor topics — unknown topics raise ``ValueError`` so that
-    a HAL-side contract drift fails loudly (CLAUDE.md §10).
+    a HAL-side contract drift fails loudly (CLAUDE.md §5).
 
     Args:
         node: A live ``rclpy`` node owned by the test (cleanup is the test's

@@ -1,7 +1,7 @@
 """rSkill loader — HF Hub download, manifest validation, license guard, local registry.
 
 This module provides ``rSkill``: the packaged, capability-tagged
-distribution format for a robot skill (CLAUDE.md §6.4 / RFC §1.4, §8.7).
+distribution format for a robot skill (CLAUDE.md §3 rSkill packaging / RFC §1.4, §8.7).
 
 .. warning::
    Cryptographic signature verification of skills (sigstore) is **not yet
@@ -140,7 +140,7 @@ class InstalledRSkillEntry(BaseModel):
 # ── rSkill ─────────────────────────────────────────────────────────────────────
 
 
-class rSkill:  # noqa: N801  # reason: rSkill is the official package-format name (CLAUDE.md §6.4)
+class rSkill:  # noqa: N801  # reason: rSkill is the official package-format name (CLAUDE.md §3)
     """Packaged, capability-tagged robot skill from the HF Hub.
 
     .. warning::
@@ -827,7 +827,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
     @staticmethod
     def _check_license(manifest: RSkillManifest, *, commercial_use: bool) -> None:
-        """Enforce license posture guards (CLAUDE.md §7.4, §12).
+        """Enforce license posture guards (CLAUDE.md §1.9).
 
         Hard-blocks **any** non-commercial weight posture — NVIDIA OneWay
         Noncommercial (GR00T N1-N1.6), RLWRLD Model License (RLDX-1), and
@@ -874,7 +874,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
                 raise ROSConfigError(
                     f"rSkill '{manifest.name}' uses non-commercial weights "
                     f"(license posture '{lic.value}'). "
-                    "Commercial deployment is blocked per CLAUDE.md §7.4, §12. "
+                    "Commercial deployment is blocked per CLAUDE.md §1.9. "
                     f"For research use only, set: export {_ALLOW_NONCOMMERCIAL_ENV}=1"
                 )
             log.warning(
@@ -929,7 +929,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     def _validate_eval_jsons(skill_dir: Path) -> None:
         """Validate every ``<skill_dir>/eval/*.json`` against ``RSkillEvalResult``.
 
-        CLAUDE.md §6.4 lists ``eval/`` as required packaging for an rSkill;
+        CLAUDE.md §3 rSkill packaging lists ``eval/`` as required packaging for an rSkill;
         this guard turns a malformed benchmark JSON into a typed
         ``ROSConfigError`` at load time instead of a downstream surprise
         when ``openral benchmark report`` walks the same files.

@@ -1,6 +1,6 @@
 """OpenRAL S2 reasoner — typed LLM tool dispatch.
 
-The reasoner is the slow planning loop (CLAUDE.md §6.2 — S2;
+The reasoner is the slow planning loop (CLAUDE.md §3 dual-system pattern — S2;
 event-driven with a 0.2 Hz heartbeat since the 2026-05-25 amendment)
 that consumes a ``WorldState`` snapshot, a rolling
 buffer of ``FailureEventRecord`` / ``PerceptionEventRecord``

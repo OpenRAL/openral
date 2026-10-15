@@ -166,7 +166,7 @@ class ReasonerCore:
             reasoner may select the **identical tool call** (same tool +
             same arguments, ``rationale`` excluded) before being
             suppressed by ``retry_cap``. Defaults to 3 — matches the
-            replanning ladder guidance in CLAUDE.md §7.6. Keying on the
+            replanning ladder guidance in CLAUDE.md §3 Reasoner & dispatch. Keying on the
             full call identity (rather than the bare tool kind) means a
             healthy sequence of *different* skills — navigate → pick →
             place, all ``execute_rskill`` — never trips the cap, while a

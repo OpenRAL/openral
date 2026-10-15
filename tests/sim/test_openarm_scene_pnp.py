@@ -4,7 +4,7 @@ Loads the scene end-to-end (real MJCF compile, real MjSim, real OSC),
 resets it, runs a handful of zero-action steps, and asserts the
 observation dict matches the rSkill manifest's IO contract (16-D state,
 3 RGB cameras keyed top/wrist_left/wrist_right, task instruction
-present). No mocks, no stubs — CLAUDE.md §1.11 / §5.4.
+present). No mocks, no stubs — CLAUDE.md §1.11 / §2.
 
 Skipped automatically when ``robosuite`` is not installed (CI without
 the ``robocasa`` extras group).

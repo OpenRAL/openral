@@ -13,7 +13,7 @@ Closes Gap 1 + Gap 3 of the rSkill self-containment audit. Verifies:
   ``make_pre_post_processors``.
 
 Mocks are scoped to the ``huggingface_hub`` network boundary (CLAUDE.md
-§5.4). Everything else runs for real.
+§2). Everything else runs for real.
 """
 
 from __future__ import annotations

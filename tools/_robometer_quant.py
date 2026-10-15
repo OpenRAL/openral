@@ -10,7 +10,7 @@ Used by both:
   * ``tools/_robometer_scorer.py`` — loads that checkpoint directly as 4-bit (no
     bf16 materialization, no requantize) via the meta device.
 
-Determinism (CLAUDE.md §8): the reward ramp must be byte-stable across process
+Determinism (CLAUDE.md §1.8): the reward ramp must be byte-stable across process
 launches. Unpinned, ``scaled_dot_product_attention`` picks flash/mem-efficient
 kernels by process-warmup state (warmed vs cold drifts ~0.006), so the math SDP
 kernel + deterministic algorithms are forced. With that pinned, the meta

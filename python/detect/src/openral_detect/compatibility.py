@@ -349,7 +349,7 @@ def _evaluate_sections(
         sections.append(_section_fail("sensors", str(exc), _classify(str(exc))))
 
     # Informational only — the manifest does not declare per-joint
-    # requirements today (see plan §4 / CLAUDE.md §6.1 for the ADR
+    # requirements today (see plan §4 / CLAUDE.md §3 for the ADR
     # gating any new joint-matching schema).
     joint_count = len(robot.joints)
     actuator_reason = (

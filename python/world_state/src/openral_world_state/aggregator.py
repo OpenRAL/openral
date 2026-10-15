@@ -316,7 +316,7 @@ class WorldStateAggregator:
         Unlike ``update_image`` (topic ref only), stores the actual
         ``SensorFrame`` so ``snapshot`` carries pixels inline via
         ``WorldState.image_frames`` — the path a Skill uses without its
-        own ROS subscription (CLAUDE.md §6.1, Layer 1→2→3). Accepts sensor
+        own ROS subscription (CLAUDE.md §3, Layer 1→2→3). Accepts sensor
         names not declared in ``RobotDescription.sensor_bundles``: synthetic
         digital-twin cameras live in the active MJCF, not the robot manifest.
 

@@ -1,14 +1,14 @@
 """HAL Protocol conformance — parametrized contract test for every concrete HAL.
 
 Pins the runtime contract ``openral_hal.protocol.HAL`` declares
-(CLAUDE.md §5.1: "types are the contract") so a signature drift in any HAL
+(CLAUDE.md §1.3: "types are the contract") so a signature drift in any HAL
 implementation fails the unit lane immediately. One parametrized test per
 contract point, one entry in ``HAL_BUILDERS`` per HAL, so a Protocol
 change touches this file only instead of N HAL-specific ones.
 
 The five real-HW adapters (Franka FCI, Sawyer, ALOHA, UR5e, UR10e) run
 against an injected ``SimTransport`` (a
-recorded RTDE-shaped fixture, CLAUDE.md §5.4); their HIL counterparts are
+recorded RTDE-shaped fixture, CLAUDE.md §2); their HIL counterparts are
 ``tests/hil/test_{franka_panda,sawyer,aloha,ur5e,ur10e}.py``, gated by lab
 runner labels.
 """
@@ -303,7 +303,7 @@ def test_hal_disconnect_is_idempotent(hal_name: str) -> None:
 
 @pytest.mark.parametrize("hal_name", list(HAL_BUILDERS.keys()))
 def test_hal_estop_always_raises_estoprequested(hal_name: str) -> None:
-    """``estop`` always raises ``ROSEStopRequested`` (CLAUDE.md §10 / Protocol docstring).
+    """``estop`` always raises ``ROSEStopRequested`` (CLAUDE.md §5 / Protocol docstring).
 
     Must be a ``ROSSafetyViolation`` subclass so the safety supervisor catches it
     at the boundary; asserted structurally in the next test.

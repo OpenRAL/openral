@@ -254,7 +254,7 @@ def compose_runtime(
         transitions.
     """
     # Deferred import — keeps the module import-safe on hosts without
-    # rclpy (matches CLAUDE.md §1.11 / §5.4 "real component or skip").
+    # rclpy (matches CLAUDE.md §1.11 / §2 "real component or skip").
     import rclpy
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
 

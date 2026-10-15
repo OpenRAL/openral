@@ -12,7 +12,7 @@
 # Position limits use mujoco_menagerie ranges (mechanical-stop bounds); elbow
 # joint is half the others' range, matching real hardware.
 #
-# License (CLAUDE.md §7.4): ur_robot_driver is BSD-3 (open); closed sdk_kind
+# License (CLAUDE.md §1.9): ur_robot_driver is BSD-3 (open); closed sdk_kind
 # flags the runtime dependency on real UR hardware + the URCap
 # "external_control" program on the teach pendant, not a restrictive license.
 

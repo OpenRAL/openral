@@ -286,7 +286,7 @@ async def test_subscriber_queue_receives_ingest_payload(
 # ─────────────────────────── POST /api/prompt ────────────────────────────────
 #
 # These tests exercise the real subprocess-spawn path. Per CLAUDE.md §1.11 /
-# §5.4 we do not mock `subprocess` / `asyncio.create_subprocess_exec`; instead
+# §2 we do not mock `subprocess` / `asyncio.create_subprocess_exec`; instead
 # we shadow `openral` on PATH with a tiny real script that records its argv to
 # a log file. That gives us a green test only if the production code actually
 # spawns a child with the expected args.

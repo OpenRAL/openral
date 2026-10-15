@@ -91,7 +91,7 @@ def test_default_goal_is_stay_in_place_identity() -> None:
 
 
 def test_readme_documents_result_only_mode_and_safety_caveat() -> None:
-    """The README (required packaging, CLAUDE.md §6.4) states the exact
+    """The README (required packaging, CLAUDE.md §3 rSkill packaging) states the exact
     safety implication the manifest's own comments describe: Nav2 bypasses
     the OpenRAL safety supervisor for velocity commands."""
     readme = (_SKILL_DIR / "README.md").read_text(encoding="utf-8")

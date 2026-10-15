@@ -350,7 +350,7 @@ def render_robot_context_prompt(
 
     The block is deterministic (fixed field order, sorted tag lists) so a
     given robot always renders the same prompt — reproducibility per
-    CLAUDE.md §8. ``capabilities is None`` returns ``base_prompt``
+    CLAUDE.md §1.8. ``capabilities is None`` returns ``base_prompt``
     unchanged (the reasoner has no robot wired yet).
 
     Args:

@@ -15,7 +15,7 @@ dependencies = [
     "openral-world-state==0.3.1",     # reason: WorldStateAggregator is the runner's WorldState producer
     # x-release-please-end
     "msgpack>=1.1",            # reason: native A1 Runtime local service framing
-    "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
+    "structlog>=24.1",             # reason: structured logging per CLAUDE.md §2
 ]
 
 [project.optional-dependencies]

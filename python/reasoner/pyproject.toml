@@ -11,7 +11,7 @@ dependencies = [
     "openral-observability==0.3.1",   # reason: future inference_span wraps the LLM call (deferred to first concrete LLMClient PR)
     # x-release-please-end
     "pydantic>=2.5",           # reason: Plan / ToolCall structured-output schemas
-    "structlog>=24.1",         # reason: structured logging per CLAUDE.md §5.1
+    "structlog>=24.1",         # reason: structured logging per CLAUDE.md §2
     "anthropic>=0.40",         # reason: AnthropicToolUseClient — provider="anthropic" path
     "openai>=1.40",            # reason: OpenAICompatibleToolUseClient — provider in {openai-compatible, openrouter, ollama}
 ]

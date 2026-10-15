@@ -15,7 +15,7 @@ Responsibilities
   ``PrintLoggerFactory`` writes those records to *stdout*, which breaks
   doctest matching for any docstring example that constructs one of these
   objects.  Production deployments configure structlog with an OTel handler
-  per CLAUDE.md §5.1; tests deserve the same explicit configuration so that
+  per CLAUDE.md §2; tests deserve the same explicit configuration so that
   test stdout reflects only the test's own assertions.
 
 This conftest is intentionally narrow — Rich console neutering still lives
@@ -54,7 +54,7 @@ for _pkg in (
     if _pkg_dir.is_dir() and str(_pkg_dir) not in sys.path:
         sys.path.insert(0, str(_pkg_dir))
 
-# Filter out anything below WARNING.  CLAUDE.md §5.4 forbids logging at INFO
+# Filter out anything below WARNING.  CLAUDE.md §2 forbids logging at INFO
 # at module import; this also keeps construction / connect / disconnect
 # records out of test stdout, where they would race doctest expected output.
 structlog.configure(

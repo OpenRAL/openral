@@ -10,7 +10,7 @@ Two tiers:
   run NF4 LocateAnything-3B on the real ``coco_sample.jpg`` fixture, and assert a
   ``person`` ``ObjectsMetadata`` comes back over ZMQ. Skipped unless a sidecar
   venv is provisioned (``OPENRAL_LOCATEANYTHING_SIDECAR_VENV``) and a GPU is
-  present — the legitimate CI skip path (CLAUDE.md §12).
+  present — the legitimate CI skip path (CLAUDE.md §1.12).
 """
 
 from __future__ import annotations

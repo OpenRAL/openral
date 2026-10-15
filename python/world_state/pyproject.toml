@@ -11,7 +11,7 @@ dependencies = [
     "openral-observability==0.3.1", # reason: world_state.snapshot span + components_stale metric
     # x-release-please-end
     "numpy>=1.26",  # reason: voxel-frustum lift geometry
-    "structlog>=24.1",  # reason: structured logging per CLAUDE.md §5.1
+    "structlog>=24.1",  # reason: structured logging per CLAUDE.md §2
     "opentelemetry-api>=1.27",  # reason: trace.get_tracer for snapshot span
 ]
 

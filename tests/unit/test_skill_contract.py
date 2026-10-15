@@ -1,6 +1,6 @@
 """Skill ABC contract — parametrized contract test for every concrete Skill.
 
-CLAUDE.md §5.1: "types are the contract". Pins the runtime contract
+CLAUDE.md §1.3: "types are the contract". Pins the runtime contract
 ``openral_rskill.Skill`` declares so a signature drift in any Skill
 subclass fails the unit lane immediately instead of waiting for a sim or HIL
 run. A new Skill subclass author verifies the Protocol by appending a

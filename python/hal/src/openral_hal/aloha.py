@@ -36,7 +36,7 @@ ALOHA bring-up launches two robot namespaces; we expose a single 14-DoF
 action by interleaving left arm + left gripper, then right arm + right
 gripper, in the same order as ``ALOHA_DESCRIPTION.joints``.
 
-Per CLAUDE.md §7.4 the Trossen Interbotix XS SDK is BSD-3 / Apache-2.0
+Per CLAUDE.md §1.9 the Trossen Interbotix XS SDK is BSD-3 / Apache-2.0
 (fully compatible) but ships as vendor-distributed packages, so the
 real-hardware manifest (``ALOHA_REAL_DESCRIPTION``, derived from
 ``ALOHA_DESCRIPTION`` via ``make_real_description``) declares

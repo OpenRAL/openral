@@ -3,7 +3,7 @@
 These tests exercise the real-hardware UR HAL adapters against an injected
 ``SimTransport`` (a closed-loop in-memory
 ``ros2_control`` transport) — no ``rclpy``, no MuJoCo, no live robot.  Per
-CLAUDE.md §5.4: real component or ``pytest.skip``; ``SimTransport`` is the
+CLAUDE.md §1.11: real component or ``pytest.skip``; ``SimTransport`` is the
 real RTDE-shaped fixture used here, not a mock.
 
 The conformance test
@@ -183,7 +183,7 @@ class TestURRealHALStaleness:
 
 
 class TestRobotManifestMetadata:
-    """The YAML manifests record the BSD-3 license posture (CLAUDE.md §7.4)."""
+    """The YAML manifests record the BSD-3 license posture (CLAUDE.md §1.9)."""
 
     @pytest.mark.parametrize(
         "manifest_path",

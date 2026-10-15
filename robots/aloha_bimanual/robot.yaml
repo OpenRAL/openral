@@ -244,7 +244,7 @@ safety:
   joint_state_staleness_limit_s: 0.2
 
 # Trossen Interbotix XS SDK + interbotix_ros_manipulators ROS 2 driver are
-# BSD-3 / Apache-2.0 (compatible per CLAUDE.md §7.4) but ship as
+# BSD-3 / Apache-2.0 (compatible per CLAUDE.md §1.9) but ship as
 # vendor-distributed packages, so the manifest declares closed_with_api
 # and sets hal.real to the real-hardware HAL adapter (issue #58).
 #

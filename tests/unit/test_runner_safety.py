@@ -6,7 +6,7 @@ the ``safety.check`` OTel span and its attributes (``safety.control_mode``,
 ``safety.horizon``, ``safety.envelope_max_ee_speed_m_s``,
 ``safety.envelope_max_force_n``, ``safety.severity``, ``safety.check_name``),
 and that a raised ``ROSSafetyViolation`` propagates rather than being
-silently caught (CLAUDE.md §10).
+silently caught (CLAUDE.md §5).
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ def test_safety_span_carries_envelope_attributes(
     assert span.attributes["safety.envelope_max_force_n"] == 33.0
 
 
-# ── Rejection contract (CLAUDE.md §10) ───────────────────────────────────────
+# ── Rejection contract (CLAUDE.md §5) ────────────────────────────────────────
 
 
 class _AlwaysRejectSafetyClient:

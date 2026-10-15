@@ -14,7 +14,7 @@ the 19-DoF joint-position action layout, lifecycle wiring
 ``RobotDescription`` round-trip, and embodiment/VLA tag plumbing
 (CLAUDE.md §1.11) the same way the future ``H1RealHAL`` will see them.
 Balance, walking, and useful humanoid control are C++ S0 cerebellum
-territory (CLAUDE.md §6.2, M2 milestone) — out of scope here.
+territory (CLAUDE.md §3 dual-system pattern, M2 milestone) — out of scope here.
 
 Joint inventory: the menagerie MJCF has 20 joints (19 actuated + 1
 floating base, not exposed on ``RobotDescription`` — implicit world
@@ -338,7 +338,7 @@ class H1MujocoHAL(MujocoArmHAL):
     .. warning::
 
        This HAL does **not** provide balance.  Without an S0
-       cerebellar controller (CLAUDE.md §6.2, M2 milestone) the robot
+       cerebellar controller (CLAUDE.md §3 dual-system pattern, M2 milestone) the robot
        will fall over under gravity.  The closed-loop convergence
        tests run with ``gravity_enabled=False`` for that reason.  Use
        this HAL to validate the action contract / joint indexing /
