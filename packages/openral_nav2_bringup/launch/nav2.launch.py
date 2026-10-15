@@ -9,8 +9,9 @@ from ``config/nav2_panda_mobile.yaml`` (a copy of upstream ``nav2_params.yaml``)
 costmap ``inflation_radius`` (circumscribed footprint + clearance) and MPPI ``motion_model`` (from
 ``base_kinematics``) via ``RobotDescription.nav2_param_overrides()``, so one base file serves any
 mobile base. Base ships panda_mobile's values (``robot_radius: 0.35``, ``inflation_radius: 0.48``,
-``motion_model: Omni``, ``vy_min: -0.5``) — a no-op rewrite for panda. Velocity bounds stay Nav2
-tuning in the base file, not robot identity.
+``motion_model: Omni``, ``vy_min: -0.5``) — a no-op rewrite for panda. Velocity limits stay Nav2
+tuning in the base file, but are clamped to the manifest's kernel ``BODY_TWIST`` bounds
+(``_cap_speeds``) so Nav2 never commands a twist the safety kernel would E-stop.
 
 Unlike slam_toolbox (idles until the Reasoner activates it), Nav2 is always-on: each sub-node is a
 ``LifecycleNode`` driven by ``lifecycle_manager_navigation`` (``autostart=true``). The Reasoner
@@ -23,8 +24,10 @@ Composed into ``packages/openral_rskill_ros/launch/deploy_e2e.launch.py`` when `
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
+from typing import Any
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -239,6 +242,59 @@ def _cmd_vel_relay_nodes(*, robot_yaml: str) -> list[object]:
     ]
 
 
+def _cap_speeds(
+    params: dict[str, Any], max_linear_m_s: float | None, max_angular_rad_s: float | None
+) -> None:
+    """Clamp Nav2's velocity limits in ``params`` (in place) to the kernel ``BODY_TWIST`` bounds.
+
+    The kernel vetoes + E-stops a twist with ``‖(vx, vy)‖`` or ``|wz|`` over the manifest's
+    ``max_base_*`` bound (issue #405), so Nav2 must not command one. Only ever lowers a limit.
+
+    ``velocity_smoother`` is the gate: controller_server and behavior_server both publish into it
+    (``cmd_vel_nav``) and it is the only producer upstream of ``collision_monitor`` → ``/cmd_vel``.
+    It clamps each axis independently, so its ``(vx, vy)`` corner is scaled onto the bound's
+    disk. MPPI's ``vx_max`` / ``wz_max`` are clamped too, so the controller does not plan what the
+    smoother then cuts.
+    """
+    follow_path = params["controller_server"]["ros__parameters"]["FollowPath"]
+    smoother = params["velocity_smoother"]["ros__parameters"]
+    if max_linear_m_s is not None:
+        follow_path["vx_max"] = min(float(follow_path["vx_max"]), max_linear_m_s)
+    if max_angular_rad_s is not None:
+        follow_path["wz_max"] = min(float(follow_path["wz_max"]), max_angular_rad_s)
+    for key in ("max_velocity", "min_velocity"):
+        vx, vy, wz = (float(v) for v in smoother[key])
+        if max_linear_m_s is not None and math.hypot(vx, vy) > max_linear_m_s:
+            scale = max_linear_m_s / math.hypot(vx, vy)
+            vx, vy = vx * scale, vy * scale
+        if max_angular_rad_s is not None:
+            wz = math.copysign(min(abs(wz), max_angular_rad_s), wz)
+        smoother[key] = [vx, vy, wz]
+
+
+def _speed_capped_params_file(
+    params_file: str, max_linear_m_s: float | None, max_angular_rad_s: float | None
+) -> str:
+    """Return ``params_file``, or a temp copy with ``_cap_speeds`` applied when a bound is set.
+
+    A copy, not ``RewrittenYaml`` keys: Jazzy's ``RewrittenYaml`` cannot set a list element
+    (``velocity_smoother.max_velocity``) and stringifies a whole-list value.
+    """
+    if max_linear_m_s is None and max_angular_rad_s is None:
+        return params_file
+    import tempfile  # reason: launch-time only
+
+    import yaml  # reason: launch-time only
+
+    params = yaml.safe_load(Path(params_file).read_text())
+    _cap_speeds(params, max_linear_m_s, max_angular_rad_s)
+    with tempfile.NamedTemporaryFile(
+        "w", prefix="nav2_speed_capped_", suffix=".yaml", delete=False
+    ) as out:
+        yaml.safe_dump(params, out)
+    return out.name
+
+
 def _nav2_include_with_robot_overrides(context: object) -> list[object]:
     """Rewrite the base Nav2 params with per-robot overrides, then include.
 
@@ -270,7 +326,13 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
             RobotDescription,  # reason: defer schema import to launch time
         )
 
-        rewrites = RobotDescription.from_yaml(robot_yaml).nav2_param_overrides()
+        description = RobotDescription.from_yaml(robot_yaml)
+        rewrites = description.nav2_param_overrides()
+        params_file = _speed_capped_params_file(
+            params_file,
+            description.safety.max_base_linear_speed_m_s,
+            description.safety.max_base_angular_speed_rad_s,
+        )
 
     resolved_params = RewrittenYaml(
         source_file=params_file,

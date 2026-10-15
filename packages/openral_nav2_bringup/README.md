@@ -50,7 +50,7 @@ ros2 launch openral_nav2_bringup nav2.launch.py slam_backend:=visual   # /map
 |---|---|---|
 | `slam_backend` | `lidar` | `lidar`/`none` → `nav2_panda_mobile.yaml`; `visual` → `nav2_visual.yaml` |
 | `params_file` | `""` | Explicit Nav2 params file; empty selects by `slam_backend` |
-| `robot_yaml` | `""` | Rewrites the params with `RobotDescription.nav2_param_overrides()` (footprint, radius, inflation, motion model) and enables the scan filter's self half |
+| `robot_yaml` | `""` | Rewrites the params with `RobotDescription.nav2_param_overrides()` (footprint, radius, inflation, motion model), clamps Nav2's velocity limits to the manifest's `max_base_*` bounds, and enables the scan filter's self half |
 | `payload_scan_filter` | `true` | Run `payload_scan_filter_node` (lidar backend only) |
 | `cmd_vel_relay` | `false` | Run `twist_to_action_relay_node.py` (below) |
 | `use_sim_time` / `autostart` / `use_composition` | `true` / `true` / `False` | Passed to Nav2 |
@@ -120,6 +120,16 @@ now does). Nav2 publishes `geometry_msgs/Twist`;
 `/openral/candidate_action`, so the kernel never sees, bounds, or vetoes it.
 Velocity caps on this path are Nav2's own `velocity_smoother`. The bridge's
 module docstring says the same.
+
+**Nav2's speed limits never exceed the manifest's.** With `robot_yaml`, the
+launch clamps `velocity_smoother.max_velocity`/`min_velocity` and MPPI
+`vx_max`/`wz_max` to `safety.max_base_linear_speed_m_s` /
+`max_base_angular_speed_rad_s` (`_cap_speeds`; only ever lowers a limit). The
+smoother clamps each axis separately, so its `(vx, vy)` corner is scaled onto the
+kernel's `‖(vx, vy)‖` disk. Every `/cmd_vel` producer (controller and behavior
+servers) passes through the smoother, so on the relay path Nav2 slows to the
+bound instead of tripping the kernel's E-stop. g1 runs at 0.5 m/s / 1.0 rad/s,
+r1pro at 0.5 m/s (the base file's `vx`) / 0.3 rad/s.
 
 **Opt-in supervised relay, for bases without `base_joints`.** A robot that
 advertises `body_twist` but declares no `base_joints` (today `g1`, `r1pro`) gets

@@ -406,3 +406,50 @@ def test_cmd_vel_relay_without_a_manifest_fails_the_launch() -> None:
         mod._cmd_vel_relay_nodes(robot_yaml="")
     (node,) = mod._cmd_vel_relay_nodes(robot_yaml="robots/r1pro/robot.yaml")
     assert node.node_executable == "twist_to_action_relay_node.py"
+
+
+_REPO_ROOT = _PKG_DIR.parents[1]
+
+
+@pytest.mark.parametrize("config", [_CONFIG_PATH, _VISUAL_CONFIG_PATH], ids=["lidar", "visual"])
+@pytest.mark.parametrize("robot", ["g1", "r1pro", "panda_mobile"])
+def test_nav2_never_commands_a_twist_the_kernel_would_estop(robot: str, config: Path) -> None:
+    """Rewritten Nav2 limits sit inside the manifest's ``max_base_*`` bounds (issue #405).
+
+    Runs on the shipped base files. The smoother's per-axis box must
+    fit the kernel's ``‖(vx, vy)‖`` disk; a limit already inside the bound must not be raised.
+    """
+    mod = _import_launch_module()
+    import math
+
+    from openral_core import RobotDescription
+
+    safety = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot / "robot.yaml")).safety
+    linear, angular = safety.max_base_linear_speed_m_s, safety.max_base_angular_speed_rad_s
+    assert linear is not None and angular is not None
+    capped = mod._speed_capped_params_file(str(config), linear, angular)
+    base = yaml.safe_load(config.read_text())
+    out = yaml.safe_load(Path(capped).read_text())
+    Path(capped).unlink()
+
+    def mppi(d: dict) -> dict:  # type: ignore[type-arg]
+        return d["controller_server"]["ros__parameters"]["FollowPath"]
+
+    def smoother(d: dict) -> dict:  # type: ignore[type-arg]
+        return d["velocity_smoother"]["ros__parameters"]
+
+    assert mppi(out)["vx_max"] == pytest.approx(min(mppi(base)["vx_max"], linear))
+    assert mppi(out)["wz_max"] == pytest.approx(min(mppi(base)["wz_max"], angular))
+    for key in ("max_velocity", "min_velocity"):
+        vx, vy, wz = smoother(out)[key]
+        # Doubles, or velocity_smoother rejects the parameter type.
+        assert all(isinstance(v, float) for v in (vx, vy, wz)), smoother(out)[key]
+        assert math.hypot(vx, vy) <= linear + 1e-9
+        assert abs(wz) <= angular + 1e-9
+        bvx, bvy, bwz = smoother(base)[key]
+        assert abs(vx) <= abs(bvx) and abs(vy) <= abs(bvy) and abs(wz) <= abs(bwz)
+    # Everything but the clamped keys survives the copy.
+    for d in (base, out):
+        del mppi(d)["vx_max"], mppi(d)["wz_max"]
+        del smoother(d)["max_velocity"], smoother(d)["min_velocity"]
+    assert out == base
