@@ -2062,10 +2062,10 @@ def test_a_detach_that_finds_nothing_latched_still_completes_the_pick() -> None:
 
 def _attachment_publisher(live: _LiveLeg) -> None:
     """The bridge's real ``/openral/attachment_state`` publisher (``setup`` creates it)."""
-    from openral_msgs.msg import AttachmentState
+    attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
 
     live.bridge._attachment_pub = live.node.create_publisher(
-        AttachmentState, "/openral/attachment_state", 10
+        attachment_state, "/openral/attachment_state", 10
     )
 
 
