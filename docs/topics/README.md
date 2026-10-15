@@ -21,7 +21,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
 | `/clock` | `rosgraph_msgs/Clock` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
-| `/cmd_vel` | `geometry_msgs/Twist` | — | python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) |
+| `/cmd_vel` | `geometry_msgs/Twist` | — | packages/openral_nav2_bringup/openral_nav2_bringup/twist_to_action_relay_node.py (main.TwistToActionRelayNode.__init__) [param `cmd_vel_topic`]<br>python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) |
 | `/collision_markers` | `MarkerArray` | tools/viz_collision.py (_run_rviz) | — |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>python/observability/src/openral_observability/diagnostics.py (DiagnosticsHeartbeat.create_publisher) | — |
 | `/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/cloud_transport_probe.py (run_pub) [param `--joint-topic`]<br>tools/viz_collision.py (_run_rviz) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_octomap_bridge/src/robot_self_filter.hpp [param `joint_states_topic`]<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `joint_states_topic`]<br>python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__)<br>python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |

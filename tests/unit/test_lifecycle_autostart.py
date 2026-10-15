@@ -21,6 +21,10 @@ the whole module skips when ROS 2 isn't installed.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -189,3 +193,63 @@ def test_drive_transition_raises_on_genuine_failure() -> None:
             transition_label="configure",
             transition_timeout_s=300.0,
         )
+
+
+_TARGET_NODE = textwrap.dedent(
+    """
+    import rclpy
+    from rclpy.lifecycle import LifecycleNode
+
+    rclpy.init()
+    rclpy.spin(LifecycleNode("autostart_redundant_target"))
+    """
+)
+
+
+def test_redundant_activate_does_not_crash_a_real_lifecycle_node() -> None:
+    """A transition the target can no longer take is refused, not fatal.
+
+    rclpy's ``change_state`` server turns an invalid *labelled* request into
+    ``success=False``, but an id-only request reaches
+    ``trigger_transition_by_id`` unguarded and its ``RCLError`` kills the
+    target's executor. The tool sent ids only, so an ACTIVATE that another
+    activator had already made redundant crashed the node it was starting
+    (reproduced against this real node: exit 1, "Transition is not
+    registered"). It now sends the label too, and the post-call state check
+    accepts the already-active node.
+    """
+    import rclpy
+    from lifecycle_msgs.msg import Transition
+    from lifecycle_msgs.srv import ChangeState, GetState
+
+    from tests.sim.safety._kernel_subprocess import isolated_domain_id
+
+    mod = _load_tool()
+    domain = isolated_domain_id()
+    target = subprocess.Popen(
+        [sys.executable, "-c", _TARGET_NODE], env={**os.environ, "ROS_DOMAIN_ID": str(domain)}
+    )
+    ctx_started = False
+    try:
+        rclpy.init(domain_id=domain)
+        ctx_started = True
+        node = rclpy.create_node("autostart_redundant_driver")
+        name = "/autostart_redundant_target"
+        cs = mod._wait_for_service(node, f"{name}/change_state", 20.0, ChangeState)
+        gs = mod._wait_for_service(node, f"{name}/get_state", 20.0, GetState)
+        for tid, label in (
+            (Transition.TRANSITION_CONFIGURE, "configure"),
+            (Transition.TRANSITION_ACTIVATE, "activate"),
+        ):
+            mod._drive_transition(node, name, cs, gs, tid, label, 10.0)
+        # A second activator: ACTIVATE again on a node that is already active.
+        mod._drive_transition(node, name, cs, gs, Transition.TRANSITION_ACTIVATE, "activate", 10.0)
+        assert mod._read_state(node, name, gs) == "active"
+        with pytest.raises(subprocess.TimeoutExpired):
+            target.wait(timeout=0.5)
+        node.destroy_node()
+    finally:
+        if ctx_started:
+            rclpy.shutdown()
+        target.kill()
+        target.wait()

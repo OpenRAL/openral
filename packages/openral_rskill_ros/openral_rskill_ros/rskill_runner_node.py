@@ -1588,8 +1588,8 @@ if _ROS2_AVAILABLE:
                         step_result = skill.step(snapshot)
                     except ROSRskillGoalSatisfied as completion:
                         # Wrapped-ROS rSkills (kind: ros_action / ros_service)
-                        # raise this AFTER the last waypoint has been emitted
-                        # (trajectory mode) or AFTER the wrapped server's
+                        # raise this AFTER the measured joints reached the last
+                        # waypoint (trajectory mode) or AFTER the wrapped server's
                         # result has been awaited (result-only mode, e.g.
                         # Nav2). It is a success signal, not an error — break
                         # the loop and let the caller close the goal with
@@ -1937,9 +1937,10 @@ if _ROS2_AVAILABLE:
 
             Mirrors the inner loop of ``_run_until_done_or_deadline`` but for the pre-skill
             approach: ``ROSActionRskill`` plans on the first ``step()`` (blocking, own result
-            deadline) then emits one ``JOINT_POSITION`` waypoint per ``step()`` — replayed via
-            ``self._hal.send_action`` onto ``/openral/candidate_action`` — raising
-            ``ROSRskillGoalSatisfied`` once the planned trajectory is exhausted.
+            deadline) then emits the due ``JOINT_POSITION`` waypoint per ``step()`` — ticked at
+            the control rate and replayed via ``self._hal.send_action`` onto
+            ``/openral/candidate_action`` — raising ``ROSRskillGoalSatisfied`` once the measured
+            joints reach the last waypoint.
 
             Each waypoint is gated on the safety seam first: a ``JOINT_POSITION`` waypoint
             carries no ``tick_group_size``, so ``ROSPublishingHAL`` never blocks on an apply-ack
@@ -1955,8 +1956,13 @@ if _ROS2_AVAILABLE:
 
             assert self._hal is not None
             assert self._aggregator is not None
+            # The replay holds a waypoint until it is due / reached, so it must be ticked at
+            # the control rate like the main loop, not spun.
+            period_s = 1.0 / max(self._control_rate_hz(), 1.0)
+            next_tick_deadline = time.perf_counter()
             try:
                 for _ in range(_MAX_APPROACH_WAYPOINTS):
+                    next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
                     self._raise_if_safety_aborted("replaying the MoveIt approach to starting_pose")
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         return False

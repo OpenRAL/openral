@@ -2346,7 +2346,8 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
        so ``on_shutdown`` does not fire.
     2. After ``grace_s`` escalate to SIGKILL on the launch's process
        group (``_terminate_launch_group``).
-    3. Sweep by argv signature (``_kill_orphan_openral_graph_processes``).
+    3. Sweep by argv signature (``_kill_orphan_openral_graph_processes``),
+       unless ``OPENRAL_SKIP_ORPHAN_REAP=1`` (a sibling's graph would match).
        This is the bulletproof backstop: ``ros2 launch`` spawns its nodes
        in their OWN process groups (and the rldx sidecar in its own
        session), so neither ``killpg`` reaches them directly — under a
@@ -2378,10 +2379,14 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
         # launch process itself exits, leaving the nodes (and the
         # own-session rldx sidecar) orphaned. Sweep by argv signature as
         # the bulletproof backstop: it matches every graph process
-        # regardless of parentage or process group. Safe because two
-        # deploy graphs can't coexist (they collide on DDS/ports), so on
-        # exit the only matching processes are this run's survivors.
-        _kill_orphan_openral_graph_processes()
+        # regardless of parentage or process group. The sweep cannot tell
+        # this run's survivors from a concurrent sibling's live graph, so
+        # ``OPENRAL_SKIP_ORPHAN_REAP=1`` (parallel workers on one host, each
+        # on its own ROS_DOMAIN_ID) skips it here too, exactly as at startup;
+        # those harnesses reap by domain instead (``_reap_domain`` in
+        # ``tools/_ceiling_probe.py``).
+        if os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") != "1":
+            _kill_orphan_openral_graph_processes()
     return proc.returncode if proc.returncode is not None else 0
 
 

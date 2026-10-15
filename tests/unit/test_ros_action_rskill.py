@@ -12,7 +12,9 @@ cleanly when they aren't, per CLAUDE.md §1.11.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,10 +23,12 @@ from openral_core import (
     ControlMode,
     ControlModeSemantics,
     JointSpec,
+    JointState,
     JointType,
     RobotCapabilities,
     RobotDescription,
     ROSConfigError,
+    ROSDeadlineMissed,
     RosIntegration,
     ROSRskillGoalSatisfied,
     RSkillAction,
@@ -33,6 +37,7 @@ from openral_core import (
     RSkillManifest,
     RSkillState,
     SafetyEnvelope,
+    WorldState,
 )
 from openral_rskill.ros_action_rskill import (
     ROSActionRskill,
@@ -227,7 +232,7 @@ def _make_skill(manifest: RSkillManifest, description: RobotDescription | None) 
 
 
 def test_trajectory_mode_replays_waypoints_then_signals_completion() -> None:
-    """Three-point trajectory → three Actions, then ``ROSRskillGoalSatisfied``."""
+    """Untimed three-point trajectory → one waypoint per call, then success once reached."""
     skill = _make_skill(_trajectory_manifest(), _two_dof_robot())
     # Inject the wrapped trajectory we'd otherwise obtain from
     # ActionClient.get_result_async() so the test stays hermetic.
@@ -237,22 +242,29 @@ def test_trajectory_mode_replays_waypoints_then_signals_completion() -> None:
         [0.3, 0.4],
         [0.5, 0.6],
     ]
+    skill._planned_joints = [(0, "j_a"), (1, "j_b")]
     # Drive into ACTIVE state so step() doesn't reject the call.
     skill._info = skill._info.model_copy(update={"state": RSkillState.ACTIVE})
+    at_final = WorldState(
+        stamp_ns=0, joint_state=JointState(name=["j_a", "j_b"], position=[0.5, 0.6], stamp_ns=0)
+    )
 
-    a0 = skill.step(world_state=None)  # type: ignore[arg-type]
+    a0 = skill.step(at_final)
     assert a0.control_mode is ControlMode.JOINT_POSITION
     assert a0.horizon == 1
     assert a0.joint_targets == [[0.1, 0.2]]
 
-    a1 = skill.step(world_state=None)  # type: ignore[arg-type]
+    a1 = skill.step(at_final)
     assert a1.joint_targets == [[0.3, 0.4]]
 
-    a2 = skill.step(world_state=None)  # type: ignore[arg-type]
+    a2 = skill.step(at_final)
     assert a2.joint_targets == [[0.5, 0.6]]
 
-    with pytest.raises(ROSRskillGoalSatisfied, match="emitted all 3 waypoints"):
-        skill.step(world_state=None)  # type: ignore[arg-type]
+    # No measured joint state: never "reached", the final waypoint is held.
+    assert skill.step(world_state=None).joint_targets == [[0.5, 0.6]]  # type: ignore[arg-type]
+
+    with pytest.raises(ROSRskillGoalSatisfied, match="reached the final of 3 waypoints"):
+        skill.step(at_final)
 
 
 def test_dispatch_and_cache_reorders_joints_into_robot_order() -> None:
@@ -543,3 +555,122 @@ def test_merge_nested_flattened_override_surfaces_bad_keys() -> None:
     override = {"pose": {"position": {"x": 3.5}, "orientation": {"w": 1.0}}}
     merged = _merge_nested(default, override)
     assert sorted(merged["pose"]) == ["header", "orientation", "pose", "position"]
+
+
+# ── Trajectory replay: paced by time_from_start, done only once reached ──────
+#
+# Regression for the MoveIt replay reporting success as soon as the last
+# waypoint was *sent*: the runner ticks ``step()`` at its control rate, the
+# adapter advanced one waypoint per call regardless of the plan's
+# ``time_from_start`` or the measured joints, and raised
+# ``ROSRskillGoalSatisfied`` one tick after the last waypoint went out — with the
+# arm nowhere near it (DsslRobot/openral 1d5b739a7: tool 0.6 m from the goal).
+# Real in-tree manifest + robot, real ``trajectory_msgs`` / ``builtin_interfaces``
+# IDL for the planned trajectory; the MoveGroup result envelope arrives through
+# the ``_FakeActionClient`` graph-boundary double above (``moveit_msgs`` is not
+# required).
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PANDA_ARM = [f"panda_joint{i}" for i in range(1, 8)]
+#: ``rskills/rskill-moveit-joints`` default joint goal (Franka home).
+_PANDA_HOME = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+_TICK_S = 1.0 / 30.0  # the runner's default control rate
+
+
+def _panda_world_state(robot: RobotDescription, positions: list[float]) -> WorldState:
+    """A measured snapshot in ``robot.joints`` order (what the runner hands ``step``)."""
+    return WorldState(
+        stamp_ns=0,
+        joint_state=JointState(
+            name=[j.name for j in robot.joints], position=list(positions), stamp_ns=0
+        ),
+    )
+
+
+def _moveit_replay_skill(times_s: list[float]) -> tuple[ROSActionRskill, RobotDescription]:
+    """``rskill-moveit-joints`` on the Franka, the wrapped server answering a timed plan.
+
+    The plan moves the 7 arm joints linearly from all-zero to ``_PANDA_HOME``,
+    waypoint ``k`` at ``times_s[k]`` — the shape MoveIt's time parameterisation
+    returns.
+    """
+    trajectory_msgs = pytest.importorskip("trajectory_msgs.msg")
+    builtin_interfaces = pytest.importorskip("builtin_interfaces.msg")
+    manifest = RSkillManifest.from_yaml(
+        str(_REPO_ROOT / "rskills/rskill-moveit-joints/rskill.yaml")
+    )
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/franka_panda/robot.yaml"))
+    jt = trajectory_msgs.JointTrajectory(joint_names=_PANDA_ARM)
+    for k, t in enumerate(times_s):
+        frac = k / (len(times_s) - 1)
+        point = trajectory_msgs.JointTrajectoryPoint(positions=[frac * g for g in _PANDA_HOME])
+        point.time_from_start = builtin_interfaces.Duration(
+            sec=int(t), nanosec=round((t - int(t)) * 1e9)
+        )
+        jt.points.append(point)
+    result = _FakeMoveGroupResult(planned_trajectory=_FakePlannedTrajectory(joint_trajectory=jt))
+    skill = ROSActionRskill(
+        manifest=manifest,
+        ros_node=None,  # no node → the replay is timed on time.monotonic()
+        robot_description=robot,
+        prompt="move to home",
+        prompt_metadata_json="",
+    )
+    skill._interface_kind = "action"
+    skill._interface_type = type("_FakeIDL", (), {"Goal": dataclass(type("Goal", (), {}))})
+    skill._client = _FakeActionClient(_FakeResultWrapper(status=4, result=result))
+    skill._goal_dict = {}
+    skill._info = skill._info.model_copy(update={"state": RSkillState.ACTIVE})
+    return skill, robot
+
+
+def test_replay_never_reports_goal_satisfied_while_the_arm_has_not_moved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drives that never follow → a typed deadline failure, never ``GoalSatisfied``.
+
+    On the pre-fix adapter the fourth ``step()`` of a three-waypoint plan raised
+    ``ROSRskillGoalSatisfied("emitted all 3 waypoints")`` while every measured
+    joint still sat at the start, up to 2.356 rad from the final waypoint.
+    """
+    from openral_rskill import ros_action_rskill
+
+    monkeypatch.setattr(ros_action_rskill, "_REPLAY_SETTLE_TIMEOUT_S", 0.3, raising=False)
+    skill, robot = _moveit_replay_skill([0.0, 0.2, 0.4])
+    stuck = _panda_world_state(robot, [0.0] * len(robot.joints))  # the arm never moves
+    t0 = time.monotonic()
+    with pytest.raises(ROSDeadlineMissed, match="final waypoint"):
+        for tick in range(300):
+            try:
+                skill.step(stuck)
+            except ROSRskillGoalSatisfied as exc:
+                pytest.fail(
+                    f"goal satisfied on tick {tick} with every arm joint still at 0.0 "
+                    f"(final waypoint up to 2.356 rad away): {exc}"
+                )
+            time.sleep(_TICK_S)
+    # Not before the plan's 0.4 s plus the 0.3 s settle bound.
+    assert time.monotonic() - t0 >= 0.7
+
+
+def test_replay_paces_by_time_from_start_and_completes_once_reached() -> None:
+    """An arm that tracks every command: waypoints go out on schedule, then success."""
+    times_s = [0.0, 0.3, 0.6]
+    skill, robot = _moveit_replay_skill(times_s)
+    measured = _panda_world_state(robot, [0.0] * len(robot.joints))
+    emitted: list[tuple[float, list[float]]] = []
+    t0 = time.monotonic()
+    with pytest.raises(ROSRskillGoalSatisfied, match="reached the final of 3 waypoints"):
+        for _ in range(300):
+            action = skill.step(measured)
+            emitted.append((time.monotonic() - t0, action.joint_targets[0]))
+            measured = _panda_world_state(robot, action.joint_targets[0])  # drives follow
+            time.sleep(_TICK_S)
+    waypoints = skill._waypoints
+    order = [waypoints.index(target) for _, target in emitted]
+    assert order == sorted(order), "replay went backwards"
+    assert sorted(set(order)) == [0, 1, 2], "every waypoint must reach the drives"
+    for elapsed, target in emitted:
+        assert elapsed >= times_s[waypoints.index(target)], "waypoint sent before it was due"
+    # Held, not streamed: ~0.6 s of plan at 30 Hz is far more than 3 ticks.
+    assert len(emitted) >= 10

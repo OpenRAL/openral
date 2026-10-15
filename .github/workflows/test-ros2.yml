@@ -8,17 +8,17 @@ name: test-ros2
 # had no CI coverage of any kind: a kernel-only PR gets a green
 # `select-and-test` that ran zero tests. This file is that missing half.
 #
-# Auto-triggers disabled: out of GitHub Actions credits. Re-enable PR/push
-# triggers once billing is restored — see "Re-enabling on PRs" below. Until then this is the documented,
-# reproducible way to run the kernel suite in CI on demand, and the local
-# equivalent is `just ros2-build && just ros2-test`.
+# Runs on every PR to master (and on demand via workflow_dispatch). It was
+# dispatch-only during the GitHub Actions credits freeze, which left the safety
+# kernel with no PR coverage at all while quality.yml and test-selective.yml
+# already ran on PRs. The local equivalent is `just ros2-build && just ros2-test`.
 #
 # Cost, measured rather than guessed. On a 16-core dev host, a cold
 # `--packages-up-to openral_safety_kernel openral_octomap_bridge` is 4 packages
 # in 2 min 21 s: openral_msgs 29 s, openral_octomap_bridge 29 s,
 # opentelemetry_cpp_vendor 1 min 2 s, openral_safety_kernel 1 min 19 s. Expect
 # meaningfully longer on a 4-core hosted runner, but this is minutes, not tens
-# of minutes — cheaper than assumed when the credits freeze was applied.
+# of minutes.
 #
 # `opentelemetry_cpp_vendor` git-clones and builds upstream otel-cpp from source
 # via ExternalProject_Add (there is no `ros-jazzy-opentelemetry-cpp-vendor`
@@ -27,22 +27,24 @@ name: test-ros2
 #
 # It deliberately builds a SUBSET, not `just ros2-build`'s full 28 packages:
 # these two are the ones the Python selector cannot cover. Widen via the
-# `packages` input when a run needs more.
+# `packages` input when a dispatched run needs more.
 #
-# Re-enabling on PRs — replace the `on:` block with:
-#     on:
-#       workflow_dispatch:
-#       pull_request:
-#         branches: [master]
-# and add `test-ros2` to the `required_status_checks` of the
-# protect_default_branch ruleset, or a kernel PR still merges unverified.
+# For a kernel PR to be unable to merge unverified, `colcon build + ctest —
+# Jazzy` must also be a required status check in the protect_default_branch
+# ruleset (a repo setting, not this file).
 on:
+  pull_request:
+    branches: [master]
   workflow_dispatch:
     inputs:
       packages:
         description: "colcon --packages-up-to targets (space-separated)"
         required: false
         default: "openral_safety_kernel openral_octomap_bridge"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -88,7 +90,9 @@ jobs:
       # The colcon build points -DPython3_EXECUTABLE at this venv, so it has to
       # exist before the build, not just before the tests.
       - name: Sync the Python environment
-        run: uv sync --frozen --all-packages || uv sync --all-packages
+        run: |
+          uv lock --check
+          uv sync --frozen --all-packages
 
       - name: Declared-dependency check
         run: bash scripts/check_ros_build_deps.sh

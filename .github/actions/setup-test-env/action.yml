@@ -55,8 +55,8 @@ runs:
     - name: Install Python dependencies
       shell: bash
       run: |
-        uv sync --frozen --all-packages --extra lerobot \
-          || uv sync --all-packages --extra lerobot
+        uv lock --check
+        uv sync --frozen --all-packages --extra lerobot
 
     # Asset fetchers lazily `git clone` a shared cache the first time a
     # description is resolved: `robot_descriptions` (rd: refs, cached under

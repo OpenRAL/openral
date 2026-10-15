@@ -2034,6 +2034,34 @@ def test_reap_is_skipped_when_parallel_workers_share_the_host(
     assert called == ["reap"], "the default is still to reap"
 
 
+def test_exit_sweep_spares_a_concurrent_siblings_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_run_launch``'s exit sweep honours ``OPENRAL_SKIP_ORPHAN_REAP=1`` too.
+
+    The startup reap honoured the flag, but the sweep that runs when a launch
+    exits did not: the first battery worker to finish SIGKILLed every other
+    worker's live graph. A real sibling process carrying a graph needle in its
+    argv must survive a real ``_run_launch`` that exits while the flag is set.
+    """
+    sibling = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", "deploy_e2e.launch.py"]
+    )
+    try:
+        cmdline = Path(f"/proc/{sibling.pid}/cmdline")
+        deadline = time.monotonic() + 5.0
+        while b"deploy_e2e" not in cmdline.read_bytes() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        monkeypatch.setenv("OPENRAL_SKIP_ORPHAN_REAP", "1")
+        assert deploy_sim._run_launch(["true"], dict(os.environ), grace_s=1.0) == 0
+        # SIGKILL lands asynchronously; give it time to show before asserting.
+        with pytest.raises(subprocess.TimeoutExpired):
+            sibling.wait(timeout=0.5)
+    finally:
+        sibling.kill()
+        sibling.wait()
+
+
 def test_scan_params_derived_from_robot_yaml_lidar() -> None:
     """Single source — deploy_sim maps the panda_mobile
     robot.yaml ``lidar_2d`` sensor onto the HAL ``scan_*`` ROS params

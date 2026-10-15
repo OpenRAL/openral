@@ -152,6 +152,17 @@ def generate_launch_description() -> LaunchDescription:
                 "its polygon statically from the manifest (see the README)."
             ),
         ),
+        DeclareLaunchArgument(
+            "cmd_vel_relay",
+            default_value="false",
+            description=(
+                "Opt-in: run `twist_to_action_relay_node.py`, which republishes Nav2's "
+                "`/cmd_vel` as BODY_TWIST chunks on `/openral/candidate_action` so the safety "
+                "kernel bounds them. Only for a manifest WITHOUT `base_joints` that supports "
+                "`body_twist` (the node refuses otherwise; `MobileBaseBridge` owns `/cmd_vel` "
+                "for base_joints robots, ADR-0040/0099). Requires `robot_yaml`."
+            ),
+        ),
     ]
 
     # ``OpaqueFunction`` (upstream ``launch.actions``) defers the callback
@@ -196,6 +207,36 @@ def _payload_scan_filter_nodes(
         )
     )
     return nodes
+
+
+def _cmd_vel_relay_nodes(*, robot_yaml: str) -> list[object]:
+    """The opt-in ``/cmd_vel`` -> ``/openral/candidate_action`` relay.
+
+    ``robot_yaml`` is required: the relay reads the base limits and frame from it. Without one
+    the launch fails here, rather than starting Nav2 with a relay that exits on its first line
+    and leaves ``/cmd_vel`` unconsumed.
+
+    Raises:
+        ROSConfigError: ``robot_yaml`` is empty.
+    """
+    if not robot_yaml:
+        from openral_core.exceptions import (
+            ROSConfigError,  # reason: defer schema import to launch time
+        )
+
+        raise ROSConfigError("cmd_vel_relay:=true requires robot_yaml:=<path to robot.yaml>")
+    from launch_ros.actions import Node  # reason: launch-time only
+
+    # Wall clock on purpose: its staleness timer is a transport watchdog.
+    return [
+        Node(
+            package="openral_nav2_bringup",
+            executable="twist_to_action_relay_node.py",
+            name="openral_nav2_twist_to_action_relay",
+            output="screen",
+            parameters=[{"robot_yaml": robot_yaml}],
+        )
+    ]
 
 
 def _nav2_include_with_robot_overrides(context: object) -> list[object]:
@@ -271,6 +312,9 @@ def _nav2_include_with_robot_overrides(context: object) -> list[object]:
                 use_sim_time=use_sim_time.strip().lower() in ("true", "1", "yes"),
             )
         )
+    cmd_vel_relay = LaunchConfiguration("cmd_vel_relay").perform(context)  # type: ignore[attr-defined]
+    if cmd_vel_relay.strip().lower() in ("true", "1", "yes"):
+        actions.extend(_cmd_vel_relay_nodes(robot_yaml=robot_yaml))
     return actions
 
 

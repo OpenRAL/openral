@@ -198,12 +198,25 @@ def test_moveit_joints_rskill_plans_with_cumotion_pipeline() -> None:
                 assert first.horizon == 1
                 assert len(first.joint_targets[0]) == len(description.joints)
 
+                # No HAL here: the measured joints echo each commanded waypoint (a
+                # perfectly tracking arm), ticked at 30 Hz so the paced replay runs
+                # its planned duration before reporting the final waypoint reached.
+                from openral_core import JointState, WorldState
+
+                names = [j.name for j in description.joints]
+                commanded = list(first.joint_targets[0])
                 waypoint_count = 1
                 for _ in range(10_000):
+                    time.sleep(1.0 / 30.0)
+                    measured = WorldState(
+                        stamp_ns=0,
+                        joint_state=JointState(name=names, position=commanded, stamp_ns=0),
+                    )
                     try:
-                        nxt = skill.step(world_state=None)  # type: ignore[arg-type]
+                        nxt = skill.step(measured)
                     except ROSRskillGoalSatisfied:
                         break
+                    commanded = list(nxt.joint_targets[0])
                     waypoint_count += 1
                     assert nxt.control_mode is ControlMode.JOINT_POSITION
                     assert len(nxt.joint_targets[0]) == len(description.joints)
