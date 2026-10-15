@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import pathlib
+from typing import cast
 
 import pytest
 from openral_core import (
@@ -379,9 +380,9 @@ class TestKernelParamsFromEnvelope:
         robot = _toy_robot(pos_limits=None, velocity_limit=None, effort_limit=None)
         intersection = compute_intersection(robot, None)
         params = kernel_params_from_envelope(intersection)
-        for v in params["joint_position_max"]:  # type: ignore[union-attr]
+        for v in cast(list[float], params["joint_position_max"]):
             assert math.isinf(v) and v > 0
-        for v in params["joint_position_min"]:  # type: ignore[union-attr]
+        for v in cast(list[float], params["joint_position_min"]):
             assert math.isinf(v) and v < 0
 
     def test_workspace_box_omitted_when_unset(self) -> None:
@@ -407,8 +408,8 @@ class TestKernelParamsFromEnvelope:
         robot = _toy_robot()  # no max_cartesian_step_* declared
         intersection = compute_intersection(robot, None)
         params = kernel_params_from_envelope(intersection)
-        assert math.isinf(params["max_cartesian_step_m"])  # type: ignore[arg-type]
-        assert math.isinf(params["max_cartesian_step_rad"])  # type: ignore[arg-type]
+        assert math.isinf(cast(float, params["max_cartesian_step_m"]))
+        assert math.isinf(cast(float, params["max_cartesian_step_rad"]))
 
 
 # ── gripper channels: per end effector, in its own convention ────────────────

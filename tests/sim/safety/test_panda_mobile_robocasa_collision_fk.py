@@ -52,7 +52,7 @@ def panda_mobile_hal() -> Iterator[Any]:
     from openral_hal import build_hal
 
     hal = build_hal(
-        RobotDescription.from_yaml(_ROBOT),
+        RobotDescription.from_yaml(str(_ROBOT)),
         mode="sim",
         sim_env_yaml=str(_SCENE),
     )
@@ -155,6 +155,7 @@ def test_depth_extrinsic_places_the_cloud_where_tf_says_it_does(panda_mobile_hal
     assert len(points) > 100, "the depth raster returned nothing to check"
 
     base_body = resolve_base_frame_body_name(model, description=description)
+    assert base_body is not None, "no base-frame body in the composed MJCF"
     xyz, quat = camera_optical_tf_to_base(
         model=model, data=data, camera_name=kwargs["camera_name"], base_body_name=base_body
     )

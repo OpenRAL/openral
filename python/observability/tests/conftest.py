@@ -66,8 +66,8 @@ def memory_exporter() -> Iterator[InMemorySpanExporter]:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     # opentelemetry-api guards against re-setting the global provider once
     # it has been set; bypass that by writing through the private holder.
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(provider)
     try:
         yield exporter
@@ -87,8 +87,8 @@ def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
     provider = MeterProvider(metric_readers=[reader])
     # Same private-holder dance as TracerProvider — the API enforces
     # set-once semantics that get in the way of per-test isolation.
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    metrics_internal._METER_PROVIDER_SET_ONCE._done = False
+    metrics_internal._METER_PROVIDER = None
     metrics.set_meter_provider(provider)
 
     # The metrics module caches instruments per ``id(meter)``; swapping the

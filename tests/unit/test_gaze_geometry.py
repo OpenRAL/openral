@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -33,7 +34,7 @@ _VIEW_VECTORS: dict[ViewAxis, tuple[float, float, float]] = {
 
 def _rotate_wxyz(
     quat_wxyz: tuple[float, float, float, float], vec: tuple[float, float, float]
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     w, x, y, z = quat_wxyz
     m = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), (x, y, z, w))
     return np.asarray(m[:3, :3] @ np.asarray(vec, dtype=np.float64))

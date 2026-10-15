@@ -15,7 +15,7 @@ from openral_core.schemas import DetectedObject, Pose6D
 from openral_world_state import WorldStateAggregator
 
 
-def _desc():
+def _desc() -> RobotDescription:
     return RobotDescription(
         name="t",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
@@ -32,7 +32,7 @@ def _desc():
     )
 
 
-def _obj():
+def _obj() -> DetectedObject:
     return DetectedObject(
         label="cup",
         confidence=0.9,

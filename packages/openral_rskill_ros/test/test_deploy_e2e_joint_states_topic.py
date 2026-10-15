@@ -66,7 +66,7 @@ def _runtime_params(robot_id: str, hal_mode: str, **extra: str) -> dict[str, obj
         if isinstance(e, Node) and getattr(e, "_Node__node_executable", None) == "runtime_node"
     )
     merged: dict[str, object] = {}
-    for params in evaluate_parameters(ctx, runtime._Node__parameters):  # type: ignore[attr-defined]
+    for params in evaluate_parameters(ctx, runtime._Node__parameters):
         if isinstance(params, dict):
             merged.update(params)
     return merged

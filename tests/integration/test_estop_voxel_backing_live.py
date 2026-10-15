@@ -206,7 +206,7 @@ def test_an_evidence_voxel_index_becomes_a_position_on_the_live_graph(capfd: Any
         from openral_hal.sim_sensor_bridge import voxel_backing_record
 
         model, data = node._hal.mujoco_handles()
-        record = voxel_backing_record(
+        record: dict[str, Any] = voxel_backing_record(
             model,
             data,
             voxel_index=int(located["index"]),

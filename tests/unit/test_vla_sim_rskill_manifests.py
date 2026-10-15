@@ -47,4 +47,4 @@ def test_vla_sim_rskill_declares_its_rgb_inputs(
     assert embodiment_tag in m.embodiment_tags
     assert m.role == "s1"
     assert {s.modality for s in m.sensors_required} == {"rgb"}
-    assert sorted(s.vla_feature_key for s in m.sensors_required) == feature_keys
+    assert sorted(str(s.vla_feature_key) for s in m.sensors_required) == feature_keys

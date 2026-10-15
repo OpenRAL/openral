@@ -36,6 +36,7 @@ import itertools
 import os
 import time
 import uuid
+from typing import Any
 
 import pytest
 
@@ -49,6 +50,7 @@ pytest.importorskip("openral_msgs")
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
+from numpy.typing import ArrayLike  # noqa: E402
 from openral_core import RobotDescription  # noqa: E402
 from openral_safety.envelope_loader import (  # noqa: E402
     collision_params_from_description,
@@ -119,7 +121,7 @@ def _kernel_params(*, band_m: float) -> dict[str, object]:
     return params
 
 
-def _wall_grid(wall_x: float):  # ROS message type, imported lazily
+def _wall_grid(wall_x: float) -> Any:  # OccupancyVoxels: ROS message, imported lazily
     """An occupancy grid holding a thin wall slab whose near face is ``wall_x``.
 
     A slab rather than a filled half-space: geometrically identical for a
@@ -281,7 +283,7 @@ def _write_video(armed: list[dict[str, float]], disabled: list[dict[str, float]]
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "approach.mp4"
 
-    frames = []
+    frames: list[ArrayLike] = []
     for i in range(len(armed)):
         fig, (ax_scene, ax_plot) = plt.subplots(
             2, 1, figsize=(6.4, 6.4), height_ratios=[1, 1.1], dpi=100
@@ -335,7 +337,9 @@ def _write_video(armed: list[dict[str, float]], disabled: list[dict[str, float]]
         fig.suptitle("#188 graded velocity scaling — real kernel, panda_mobile", fontsize=11)
         fig.tight_layout()
         fig.canvas.draw()
-        frames.append(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy())
+        # The Agg canvas (matplotlib.use("Agg") above) has buffer_rgba; the base stub does not.
+        rgba = np.asarray(fig.canvas.buffer_rgba())  # type: ignore[attr-defined]  # reason: Agg-only method
+        frames.append(rgba[..., :3].copy())
         plt.close(fig)
 
     imageio.mimsave(path, frames, fps=2, macro_block_size=1)

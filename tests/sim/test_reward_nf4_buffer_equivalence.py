@@ -27,8 +27,15 @@ from __future__ import annotations
 import gc
 import pathlib
 import sys
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+    from torch import Tensor
+    from torch.nn import Module
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("lerobot")
@@ -44,12 +51,12 @@ _TOPREWARD = "OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a local GPU")
 
 
-def _buffers(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+def _buffers(model: Module) -> dict[str, Tensor]:
     # remove_duplicate=False: an aliased buffer (original_inv_freq) must still show.
     return {n: b.detach().cpu() for n, b in model.named_buffers(remove_duplicate=False)}
 
 
-def _assert_same_buffers(got: dict[str, torch.Tensor], ref: dict[str, torch.Tensor]) -> None:
+def _assert_same_buffers(got: dict[str, Tensor], ref: dict[str, Tensor]) -> None:
     assert got.keys() == ref.keys(), got.keys() ^ ref.keys()
     for name, r in ref.items():
         assert got[name].dtype == r.dtype, (name, got[name].dtype, r.dtype)
@@ -61,7 +68,7 @@ def _free_cuda() -> None:
     torch.cuda.empty_cache()
 
 
-def _clip(n_frames: int = 8) -> tuple[object, str]:
+def _clip(n_frames: int = 8) -> tuple[NDArray[np.uint8], str]:
     """Real LIBERO success-demo frames (RGB uint8, T x H x W x 3) + their task."""
     import numpy as np
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -127,7 +134,9 @@ def test_topreward_load_buffers_match_real_init() -> None:
     from transformers import AutoConfig, Qwen3VLForConditionalGeneration
 
     with init_empty_weights(include_buffers=False):
-        ref = Qwen3VLForConditionalGeneration._from_config(AutoConfig.from_pretrained(_TOPREWARD))
+        ref = Qwen3VLForConditionalGeneration._from_config(  # type: ignore[no-untyped-call,unused-ignore]  # reason: unannotated where transformers is installed, Any where absent
+            AutoConfig.from_pretrained(_TOPREWARD)
+        )
     monitor = TOPRewardMonitor(model_id="topreward", weights_source=_TOPREWARD)
     try:
         monitor._ensure_ready()

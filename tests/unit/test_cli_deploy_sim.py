@@ -125,7 +125,7 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
         "scene_composition_json": expected_composition.model_dump_json(),
     }
     # The composer + the overview camera pose come from the scene, not robot.yaml.
-    _comp = json.loads(invocation.hal_params["scene_composition_json"])
+    _comp = json.loads(str(invocation.hal_params["scene_composition_json"]))
     assert _comp["composer"].endswith("compose_openarm_tabletop_mjcf")
     assert _comp["params"]["top_camera_pos"] == [0.20, 0.0, 0.95]
     assert "sim_env_yaml" not in invocation.hal_params
@@ -1123,9 +1123,9 @@ def test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir(tmp_path: 
 @pytest.fixture()
 def _just_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend `just` is installed: the install path refuses up front without it (CI lacks it)."""
-    real_which = deploy_sim.shutil.which
+    real_which = shutil.which
     monkeypatch.setattr(
-        deploy_sim.shutil,
+        shutil,
         "which",
         lambda name, *a, **kw: "/usr/bin/just" if name == "just" else real_which(name, *a, **kw),
     )
@@ -1315,7 +1315,7 @@ def test_bh_preflight_refuses_when_just_is_missing(
     monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
     monkeypatch.setattr(
-        deploy_sim.shutil, "which", lambda name: None if name == "just" else "/usr/bin/" + name
+        shutil, "which", lambda name: None if name == "just" else "/usr/bin/" + name
     )
 
     with pytest.raises(ROSConfigError) as ei:
@@ -1446,7 +1446,6 @@ def test_bh_preflight_auto_installs_when_env_set(
     import sys as _sys
     import types
 
-    from openral_cli import deploy_sim as _ds
     from openral_sim import policy_deps as _pd
 
     # franka_panda has rSkills with concrete model families → install_cmd built.
@@ -1470,7 +1469,7 @@ def test_bh_preflight_auto_installs_when_env_set(
 
     monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "1")
     monkeypatch.setattr(_pd, "can_import_policy_family", fake_can_import)
-    monkeypatch.setattr(_ds.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
@@ -1492,7 +1491,6 @@ def test_bh_preflight_auto_install_failure_exits_with_code(
     import types
 
     import typer
-    from openral_cli import deploy_sim as _ds
     from openral_sim import policy_deps as _pd
 
     # franka_panda has rSkills with concrete model families → install_cmd built
@@ -1511,7 +1509,7 @@ def test_bh_preflight_auto_install_failure_exits_with_code(
     monkeypatch.setattr(
         _pd, "can_import_policy_family", lambda _family: (False, "forced miss for test")
     )
-    monkeypatch.setattr(_ds.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
@@ -1757,16 +1755,16 @@ def test_deploy_run_preflight_reaps_orphans_and_checks_the_overlay(
     )
     called: list[str] = []
 
+    def _reap(*_a: object, **_kw: object) -> int:
+        called.append("reap")
+        return 0
+
     monkeypatch.setattr(
         _ds,
         "assert_ros2_packages_discoverable",
         lambda *_a, **_kw: called.append("overlay_check"),
     )
-    monkeypatch.setattr(
-        _ds,
-        "_kill_orphan_openral_graph_processes",
-        lambda *_a, **_kw: (called.append("reap"), 0)[1],
-    )
+    monkeypatch.setattr(_ds, "_kill_orphan_openral_graph_processes", _reap)
     monkeypatch.setattr(
         _ds,
         "_preflight_palette_deps",
@@ -2911,7 +2909,7 @@ def test_default_detector_is_downgraded_when_no_camera_publishes_on_a_real_deplo
     assert invocation.enable_object_detector is False
 
 
-def _vslam_scene(tmp_path: Path, runtime_edits: dict[str, str]) -> Path:
+def _vslam_scene(tmp_path: Path, runtime_edits: dict[str, str | None]) -> Path:
     """``robocasa_vslam.yaml`` with some ``runtime:`` keys rewritten or dropped (value None)."""
     text = (_REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam.yaml").read_text(encoding="utf-8")
     for key, value in runtime_edits.items():

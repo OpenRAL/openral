@@ -6,6 +6,7 @@ import math
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core.schemas import DetectedObject, IntrinsicsPinhole, ObjectDetection2D, Pose6D
 from openral_world_state.object_lift import (
     ObjectsLiftError,
@@ -127,10 +128,13 @@ _INTR = IntrinsicsPinhole(
 )
 
 
-def _cluster(center_xyz, n=5, spread=0.02):
+def _cluster(
+    center_xyz: tuple[float, float, float], n: int = 5, spread: float = 0.02
+) -> NDArray[np.float64]:
     offs = np.linspace(-spread, spread, n)
     pts = np.array([[cx, cy, cz] for cx in offs for cy in offs for cz in offs])
-    return pts + np.asarray(center_xyz)
+    out: NDArray[np.float64] = pts + np.asarray(center_xyz)
+    return out
 
 
 def test_lift_single_object_center_at_cluster_centroid():

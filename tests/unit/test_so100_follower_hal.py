@@ -213,7 +213,7 @@ class TestSO100FollowerHALLifecycle:
         hal = SO100FollowerHAL()  # no robot= injection → will try to import lerobot
         with (
             patch.dict(sys.modules, {"lerobot.robots.so_follower": None}),
-            pytest.raises(ROSConfigError, match="lerobot"),  # type: ignore[dict-item]
+            pytest.raises(ROSConfigError, match="lerobot"),
         ):
             hal.connect()
 
@@ -434,7 +434,8 @@ class TestSO100FollowerHALResetToPose:
 
         def _recording(action: dict[str, float]) -> dict[str, float]:
             seen.append(action["shoulder_pan.pos"])
-            return original(action)
+            sent_back: dict[str, float] = original(action)
+            return sent_back
 
         monkeypatch.setattr(twin, "send_action", _recording)
         hal.reset_to_pose([1.0, 0.0, 0.0, 0.0, 0.0, 0.5])
@@ -449,7 +450,12 @@ class TestSO100FollowerHALResetToPose:
     ) -> None:
         current = hal.read_state().position
         calls: list[object] = []
-        monkeypatch.setattr(twin, "send_action", lambda a: calls.append(a) or a)
+
+        def _record(a: dict[str, float]) -> dict[str, float]:
+            calls.append(a)
+            return a
+
+        monkeypatch.setattr(twin, "send_action", _record)
         hal.reset_to_pose(current)
         assert calls == []
 
@@ -485,7 +491,13 @@ class TestJointValuesToLerobot:
 
         sent: list[dict[str, float]] = []
         original = twin.send_action
-        monkeypatch.setattr(twin, "send_action", lambda a: sent.append(a) or original(a))
+
+        def _record(a: dict[str, float]) -> dict[str, float]:
+            sent.append(a)
+            sent_back: dict[str, float] = original(a)
+            return sent_back
+
+        monkeypatch.setattr(twin, "send_action", _record)
 
         hal.reset_to_pose(target)
         ramp_final = sent[-1]

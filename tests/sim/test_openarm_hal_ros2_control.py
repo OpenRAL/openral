@@ -218,7 +218,8 @@ def test_a_command_reaches_a_real_controller_and_state_comes_back(
 
         def _arrived() -> bool:
             reached = hal.read_state()
-            return max(abs(a - b) for a, b in zip(reached.position, target, strict=True)) < 1e-3
+            gap = max(abs(a - b) for a, b in zip(reached.position, target, strict=True))
+            return bool(gap < 1e-3)
 
         assert wait_until(spin, _arrived, 10.0), (
             f"Commanded {target} but the controller reports "

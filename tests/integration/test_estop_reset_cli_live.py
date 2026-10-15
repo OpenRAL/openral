@@ -127,13 +127,14 @@ def test_estop_reset_cli_clears_kernel_then_runner_and_rejection_is_loud(
         assert _wait_until(future.done), "the runner never answered the goal"
         assert future.result().accepted is False
         logged: list[str] = []
-        assert _wait_until(
-            lambda: (
-                (logged.append(capfd.readouterr().err) or True)
-                and "rskill_runner.goal_rejected: e-stop latched" in "".join(logged)
-            ),
-            timeout_s=5.0,
-        ), "a latched rejection must log a WARNING naming the latch"
+
+        def rejection_logged() -> bool:
+            logged.append(capfd.readouterr().err)
+            return "rskill_runner.goal_rejected: e-stop latched" in "".join(logged)
+
+        assert _wait_until(rejection_logged, timeout_s=5.0), (
+            "a latched rejection must log a WARNING naming the latch"
+        )
         line = next(ln for ln in "".join(logged).splitlines() if "e-stop latched" in ln)
         assert "WARN" in line and "openral estop reset" in line, line
 

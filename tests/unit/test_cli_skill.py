@@ -16,13 +16,16 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
 from huggingface_hub.errors import EntryNotFoundError
 from openral_cli.main import app
 from openral_rskill.loader import InstalledRSkillEntry, rSkill
 from typer.testing import CliRunner
+
+if TYPE_CHECKING:
+    from click.testing import Result
 
 runner = CliRunner()
 
@@ -161,7 +164,7 @@ class TestSkillInstall:
         hub: _FakeHub,
         tmp_path: Path,
         *args: str,
-    ) -> CliRunner.Result:
+    ) -> Result:
         reg = tmp_path / "rskills.json"
         env = dict(os.environ)
         env.pop("OPENRAL_ALLOW_NONCOMMERCIAL", None)
@@ -297,7 +300,7 @@ class TestSkillSearch:
         tmp_path: Path,
         recorded_ids: list[str] | None = None,
         capture: dict[str, object] | None = None,
-    ) -> CliRunner.Result:
+    ) -> Result:
         recorded = recorded_ids if recorded_ids is not None else self._RECORDED_IDS
         cap = capture if capture is not None else {}
 

@@ -22,7 +22,12 @@ belongs to the ros2_control stack (CLAUDE.md §1.5), not to a pytest process.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core.can import CanInterface
 
 _LEFT = "openarm_left"
 _RIGHT = "openarm_right"
@@ -36,7 +41,7 @@ _GRIPPER_SEND_ID = 0x08
 _GRIPPER_RECV_ID = 0x18
 
 
-def _openarm_links() -> dict[str, object]:
+def _openarm_links() -> dict[str, CanInterface]:
     """Return the OpenArm's CAN interfaces by name, if the host has them."""
     from openral_cli.autodetect import enumerate_can_interfaces
 

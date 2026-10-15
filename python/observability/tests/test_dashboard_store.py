@@ -89,7 +89,7 @@ def _make_span(_attrs: Callable[[dict[str, object]], list[KeyValue]]) -> Callabl
             start_time_unix_nano=start,
             end_time_unix_nano=end,
             attributes=_attrs(attrs or {}),
-            status=Status(code=status_code),
+            status=Status(code=Status.StatusCode.ValueType(status_code)),
             events=span_events,
         )
 
@@ -128,7 +128,7 @@ def _make_log(
     ) -> LogRecord:
         return LogRecord(
             time_unix_nano=time.time_ns(),
-            severity_number=severity_number,
+            severity_number=SeverityNumber.ValueType(severity_number),
             severity_text=severity_text,
             body=av(body),
             attributes=_attrs(attrs or {}),

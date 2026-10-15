@@ -35,6 +35,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 _LIVE_ROS_REASON = (
@@ -67,7 +68,7 @@ def _wait_until(predicate: Any, *, timeout_s: float = 10.0) -> bool:
     return False
 
 
-def _rot_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
+def _rot_rpy(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
     """Fixed-axis RPY (tf2 / URDF convention): Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
     cr, sr, cp, sp, cy, sy = (
         math.cos(roll),
@@ -80,17 +81,18 @@ def _rot_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
     rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
     ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    return rz @ ry @ rx
+    rot: NDArray[np.float64] = rz @ ry @ rx
+    return rot
 
 
-def _homogeneous(rot: np.ndarray, xyz: Any) -> np.ndarray:
+def _homogeneous(rot: NDArray[np.float64], xyz: Any) -> NDArray[np.float64]:
     t = np.eye(4)
     t[:3, :3] = rot
     t[:3, 3] = xyz
     return t
 
 
-def _quat_xyzw(rot: np.ndarray) -> tuple[float, float, float, float]:
+def _quat_xyzw(rot: NDArray[np.float64]) -> tuple[float, float, float, float]:
     """Rotation matrix -> unit quaternion (w-major; enough for the rotations used here)."""
     w = math.sqrt(max(0.0, 1.0 + rot[0, 0] + rot[1, 1] + rot[2, 2])) / 2.0
     if w > 1e-6:
@@ -104,7 +106,7 @@ def _quat_xyzw(rot: np.ndarray) -> tuple[float, float, float, float]:
     return (x, (rot[0, 1] + rot[1, 0]) / (4 * x), (rot[0, 2] + rot[2, 0]) / (4 * x), 0.0)
 
 
-def _tf_msg(parent: str, child: str, t: np.ndarray) -> Any:
+def _tf_msg(parent: str, child: str, t: NDArray[np.float64]) -> Any:
     from geometry_msgs.msg import TransformStamped
 
     msg = TransformStamped()
@@ -119,7 +121,7 @@ def _tf_msg(parent: str, child: str, t: np.ndarray) -> Any:
     return msg
 
 
-def _pixel(point: np.ndarray, k: tuple[float, float, float, float]) -> tuple[float, float]:
+def _pixel(point: NDArray[np.float64], k: tuple[float, float, float, float]) -> tuple[float, float]:
     fx, fy, cx, cy = k
     return fx * point[0] / point[2] + cx, fy * point[1] / point[2] + cy
 
@@ -406,7 +408,7 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
 
 _RACE_SERVICE = "/openral/perception/segment_in_view_race_itest"
 _RACE_SHAPE = (_FULL[0] // 2, _FULL[1] // 2)
-_RACE_K = tuple(value / 2.0 for value in _THOR_K)
+_RACE_K = (_THOR_K[0] / 2.0, _THOR_K[1] / 2.0, _THOR_K[2] / 2.0, _THOR_K[3] / 2.0)
 _PERIOD_NS = 33_333_333  # 30 Hz joint states
 
 
@@ -593,6 +595,7 @@ def test_every_grasp_event_supersedes_the_segmentation_in_flight() -> None:
             ),
             half_extents=(0.03, 0.03, 0.03),
         )
+        assert bridge._grasp_target is not None
         tracker = bridge._grasp_target.tracker
         tracker.on_declaration(
             GraspDeclaration(

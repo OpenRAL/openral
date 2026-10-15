@@ -292,6 +292,7 @@ def test_read_state_matches_the_manifest_and_is_plausible_radians(
 
     for joint, value in zip(manifest.joints, state.position, strict=True):
         assert math.isfinite(value), f"{joint.name} read {value!r}"
+        assert joint.position_limits is not None
         low, high = joint.position_limits
         assert low - _CALIB_TAIL_RAD <= value <= high + _CALIB_TAIL_RAD, (
             f"{joint.name} rests at {value:.4f} — outside the manifest envelope "
@@ -316,6 +317,7 @@ def test_the_committed_calibration_is_the_one_the_servos_are_running(
     """
     # Private reach: the HAL deliberately exposes no lerobot handle, and there
     # is no public surface for "what calibration is in the servos".
+    assert live_hal._robot is not None
     bus = live_hal._robot.bus
     on_motors = bus.read_calibration()
     committed = json.loads(_bench_calibration_file().read_text())

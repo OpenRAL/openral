@@ -94,7 +94,7 @@ def test_relay_routes_cmd_vel_through_the_kernel(tmp_path: Path) -> None:
 
     kernel_name = f"relay_kernel_{uuid.uuid4().hex[:8]}"
     kernel = start_kernel(
-        RobotDescription.from_yaml(_R1PRO), kernel_name, log_path=tmp_path / "kernel.log"
+        RobotDescription.from_yaml(str(_R1PRO)), kernel_name, log_path=tmp_path / "kernel.log"
     )
     relay = _relay(_R1PRO, tmp_path / "relay.log")
     rclpy.init()

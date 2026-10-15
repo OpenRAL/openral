@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+from typing import Any
 
 import jsonschema
 import pytest
@@ -36,11 +37,12 @@ _FIND_OBJECT_FIXTURE = _REPO_ROOT / "rskills" / "find-object" / "rskill.yaml"
 _VLA_FIXTURE = _REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml"
 
 
-def _load(path: pathlib.Path) -> dict:
-    return yaml.safe_load(path.read_text())
+def _load(path: pathlib.Path) -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load(path.read_text())
+    return data
 
 
-def _playbook_manifest_dict() -> dict:
+def _playbook_manifest_dict() -> dict[str, Any]:
     """A known-good playbook manifest dict, freshly copied per test to mutate."""
     return copy.deepcopy(_load(_FIND_OBJECT_FIXTURE))
 

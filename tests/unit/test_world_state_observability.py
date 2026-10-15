@@ -131,7 +131,9 @@ def test_first_stale_tick_emits_staleness_latched_event(
     assert len(spans) == 3
     transition_events = [e for e in spans[1].events if e.name == semconv.EVENT_STALENESS_LATCHED]
     persisted_events = [e for e in spans[2].events if e.name == semconv.EVENT_STALENESS_LATCHED]
-    transition_components = {e.attributes[semconv.WORLD_STATE_COMPONENT] for e in transition_events}
+    transition_components = {
+        (e.attributes or {})[semconv.WORLD_STATE_COMPONENT] for e in transition_events
+    }
     assert transition_components == {"joint_state", "cam0"}
     assert persisted_events == []
 
@@ -187,7 +189,7 @@ def test_component_latches_after_it_has_been_fresh(
 
     spans = memory_exporter.get_finished_spans()
     latched = {
-        e.attributes[semconv.WORLD_STATE_COMPONENT]
+        (e.attributes or {})[semconv.WORLD_STATE_COMPONENT]
         for e in spans[2].events
         if e.name == semconv.EVENT_STALENESS_LATCHED
     }
@@ -209,7 +211,7 @@ def test_error_latched_event_fires_once(memory_exporter: InMemorySpanExporter) -
     err_events_tick2 = [e for e in spans[1].events if e.name == semconv.EVENT_ERROR_LATCHED]
     err_events_tick3 = [e for e in spans[2].events if e.name == semconv.EVENT_ERROR_LATCHED]
     assert len(err_events_tick2) == 1
-    assert err_events_tick2[0].attributes[semconv.WORLD_STATE_COMPONENT] == "joint_state"
+    assert (err_events_tick2[0].attributes or {})[semconv.WORLD_STATE_COMPONENT] == "joint_state"
     assert err_events_tick3 == []
 
 
@@ -236,8 +238,8 @@ def test_staleness_histogram_records_per_component(
                     hist = metric
     assert hist is not None
     components = {
-        point.attributes[semconv.LABEL_COMPONENT]
-        for point in hist.data.data_points  # type: ignore[attr-defined]
+        (point.attributes or {})[semconv.LABEL_COMPONENT]
+        for point in hist.data.data_points
         if isinstance(point, HistogramDataPoint)
     }
     assert components == {"joint_state", "cam0"}
@@ -273,7 +275,7 @@ def test_components_stale_up_down_counter(
                 if metric.name == semconv.METRIC_WORLD_STATE_COMPONENTS_STALE:
                     udc = metric
     assert udc is not None
-    points = list(udc.data.data_points)  # type: ignore[attr-defined]
+    points = list(udc.data.data_points)
     assert len(points) == 1
     point = points[0]
     assert isinstance(point, NumberDataPoint)

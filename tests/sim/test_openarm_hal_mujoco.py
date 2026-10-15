@@ -56,7 +56,7 @@ try:
         raise FileNotFoundError(f"missing MJCF at {_OPENARM_MJCF}")
     _MJCF_ERROR: str | None = None
 except Exception as exc:
-    _OPENARM_MJCF = ""  # type: ignore[assignment]
+    _OPENARM_MJCF = ""
     _MJCF_ERROR = str(exc)
 
 from openral_core import (
@@ -267,7 +267,9 @@ class TestReadState:
         assert len(state.velocity) == 16
         assert state.stamp_ns > 0
 
-    def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
+    def test_perception_starvation_warns_not_latch_when_old(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
 
         Deploy-sim regression: ``read_state`` reads live in-process ``MjData``
@@ -771,7 +773,9 @@ def test_one_action_is_one_control_period_on_the_twin() -> None:
     hal = OpenArmMujocoHAL(gravity_enabled=False)
     hal.connect()
     try:
-        model, data = hal.mujoco_handles()
+        handles = hal.mujoco_handles()
+        assert handles is not None
+        model, data = handles
         assert hal.sim_dt_per_tick_s == pytest.approx(1 / 30, rel=1e-9)
         assert hal._settle_steps * float(model.opt.timestep) == pytest.approx(1 / 30, rel=1e-9)
         assert hal._step_while_active is False

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import pathlib
+from typing import cast
 
 import pytest
 import yaml
@@ -109,7 +110,7 @@ def test_real_so100_envelope_round_trips_to_kernel_params() -> None:
     assert params["robot_name"] == "so100_follower"
     # n_dof matches the SO-100 manifest (5 arm + 1 gripper = 6).
     assert params["n_dof"] == 6
-    assert len(params["joint_position_min"]) == 6  # type: ignore[arg-type]
+    assert len(cast("list[float]", params["joint_position_min"])) == 6
     assert intersection.n_dof == 6
 
 

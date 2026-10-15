@@ -6,7 +6,12 @@ from openral_core.schemas import DetectedObject, Pose6D
 from openral_world_state.object_memory import ObjectMemory
 
 
-def _obj(label, xyz, box, conf=0.9):
+def _obj(
+    label: str,
+    xyz: tuple[float, float, float],
+    box: tuple[float, float, float, float, float, float],
+    conf: float = 0.9,
+) -> DetectedObject:
     return DetectedObject(
         label=label,
         confidence=conf,

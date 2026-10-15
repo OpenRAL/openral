@@ -130,7 +130,9 @@ def test_drop_property_helper_idempotent() -> None:
     once = _drop_property(schema, "rskill_id")
     twice = _drop_property(once, "rskill_id")
     assert twice == once
-    assert "rskill_id" not in once.get("properties", {})
+    once_props = once.get("properties", {})
+    assert isinstance(once_props, dict)
+    assert "rskill_id" not in once_props
 
 
 # ── id-only palette path ──────────────────────────────────────────────────────
@@ -191,6 +193,7 @@ def test_decode_overrides_llm_supplied_skill_id_with_lookup() -> None:
         arguments={"rskill_id": "openral/some-other-skill", "prompt": ""},
         palette=palette,
     )
+    assert isinstance(call, ExecuteRskillTool)
     assert call.rskill_id == entry.rskill_id
 
 
@@ -210,7 +213,7 @@ def test_decode_unknown_per_skill_tool_raises() -> None:
 # ── goal_params_schema surfaced to LLM tool palette ───────────────────────────
 
 
-def _palette_with_schema_for_skill(skill_id: str, schema: dict) -> ToolPalette:
+def _palette_with_schema_for_skill(skill_id: str, schema: dict[str, object]) -> ToolPalette:
     """Build a single-skill palette whose entry carries ``goal_params_schema``."""
     from openral_reasoner.palette import RSkillToolEntry
 
@@ -229,7 +232,7 @@ def test_anthropic_tool_input_schema_substitutes_per_skill_goal_params() -> None
     """When the entry declares ``goal_params_schema``, the per-skill
     tool's ``goal_params_json`` property is replaced with the structured schema.
     """
-    nav_schema = {
+    nav_schema: dict[str, object] = {
         "type": "object",
         "properties": {
             "pose": {
@@ -251,7 +254,7 @@ def test_anthropic_tool_input_schema_substitutes_per_skill_goal_params() -> None
     }
     palette = _palette_with_schema_for_skill("openral/test-nav", nav_schema)
     tools = _tool_palette_to_anthropic_tools(palette)
-    per_skill = next(t for t in tools if t["name"].startswith(_PER_SKILL_TOOL_PREFIX))
+    per_skill = next(t for t in tools if str(t["name"]).startswith(_PER_SKILL_TOOL_PREFIX))
     schema = per_skill["input_schema"]
     assert isinstance(schema, dict)
     props = schema["properties"]
@@ -272,7 +275,7 @@ def test_anthropic_tool_keeps_string_schema_when_no_goal_params_schema_declared(
     )
     palette = ToolPalette(skills=(entry,))
     tools = _tool_palette_to_anthropic_tools(palette)
-    per_skill = next(t for t in tools if t["name"].startswith(_PER_SKILL_TOOL_PREFIX))
+    per_skill = next(t for t in tools if str(t["name"]).startswith(_PER_SKILL_TOOL_PREFIX))
     schema = per_skill["input_schema"]
     assert isinstance(schema, dict)
     props = schema["properties"]
@@ -305,6 +308,7 @@ def test_decode_serialises_structured_goal_params_back_to_string() -> None:
     import json as _json
 
     # The wire-format str carries the canonical re-serialised JSON.
+    assert isinstance(call, ExecuteRskillTool)
     parsed = _json.loads(call.goal_params_json)
     assert parsed == {"pose": {"position": {"x": 1.5, "y": -2.0}}}
 
@@ -320,4 +324,5 @@ def test_decode_passes_through_string_goal_params_unchanged() -> None:
         arguments={"prompt": "", "goal_params_json": raw, "deadline_s": 0.0},
         palette=palette,
     )
+    assert isinstance(call, ExecuteRskillTool)
     assert call.goal_params_json == raw

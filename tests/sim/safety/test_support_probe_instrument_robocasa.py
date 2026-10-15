@@ -61,10 +61,13 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import yaml
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 pytest.importorskip("openral_sim")
 pytest.importorskip("mujoco")
@@ -179,7 +182,9 @@ def recorded_stop() -> tuple[Any, Any, dict[str, Any]]:
         )
     )
     sim.reset(seed=deploy.seed)
-    env = getattr(sim._env, "unwrapped", sim._env)
+    robocasa = cast("_RoboCasaSim", sim)  # the deploy scene is a RoboCasa kitchen
+    assert robocasa._env is not None, "RoboCasa sim has no live robosuite env"
+    env = getattr(robocasa._env, "unwrapped", robocasa._env)
     model, data = env.sim.model._model, env.sim.data._data
 
     # The manifest owns the URDF-joint -> MJCF-joint mapping (`sim_joint_name`);

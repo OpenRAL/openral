@@ -51,6 +51,7 @@ from openral_hal import (
     UR5eHAL,
     UR10eHAL,
 )
+from openral_hal._mujoco_arm import MujocoArmHAL
 
 pytestmark = [
     pytest.mark.sim,
@@ -82,13 +83,16 @@ _HAL_CLASSES = [
 
 def _make_hal(hal_class: type[HAL]) -> HAL:
     """Factory to instantiate each HAL with appropriate defaults."""
+    # Every listed class is a MujocoArmHAL subclass taking these kwargs; the
+    # ``HAL`` Protocol itself declares no constructor.
+    ctor: Callable[..., HAL] = hal_class
     if issubclass(hal_class, (G1MujocoHAL, H1MujocoHAL)):
         # Humanoids settle longer; gravity off so the free-standing floating base
         # doesn't collapse during the settle steps and perturb the contract check.
-        return hal_class(gravity_enabled=False, settle_steps=1000)
+        return ctor(gravity_enabled=False, settle_steps=1000)
     else:
         # Manipulators: gravity_enabled=False so position controllers converge exactly.
-        return hal_class(gravity_enabled=False, settle_steps=2000)
+        return ctor(gravity_enabled=False, settle_steps=2000)
 
 
 def _missing_optional_dep(exc: BaseException) -> bool:
@@ -321,6 +325,7 @@ class TestMujocoModelContracts:
     ) -> None:
         """connect() loads the robot's MJCF with the actuator count its HAL expects."""
         hal = _make_hal_or_skip(hal_class)
+        assert isinstance(hal, MujocoArmHAL)
         hal.connect()
         try:
             assert hal._connected is True
@@ -336,6 +341,7 @@ class TestMujocoModelContracts:
     def test_connect_seeds_ctrl_from_qpos(self, hal_class: type[HAL]) -> None:
         """connect() seeds every actuator's ctrl with its joint's current qpos."""
         hal = _make_hal_or_skip(hal_class)
+        assert isinstance(hal, MujocoArmHAL)
         hal.connect()
         try:
             assert hal._data is not None

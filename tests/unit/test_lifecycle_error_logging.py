@@ -45,7 +45,7 @@ def test_raising_configure_logs_traceback_and_returns_failure(
     from openral_observability import log_lifecycle_errors
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
-    class _RaisingNode(LifecycleNode):
+    class _RaisingNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         @log_lifecycle_errors
         def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
             raise ValueError("synthetic configure failure")
@@ -77,7 +77,7 @@ def test_successful_configure_passes_through_unchanged(capfd: pytest.CaptureFixt
     from openral_observability import log_lifecycle_errors
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
-    class _OkNode(LifecycleNode):
+    class _OkNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         @log_lifecycle_errors
         def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
             return TransitionCallbackReturn.SUCCESS
@@ -120,11 +120,11 @@ def test_transition_emits_a_bringup_span_with_node_and_transition() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # test-only reset
+    trace._TRACER_PROVIDER = None  # test-only reset
     trace.set_tracer_provider(provider)
 
-    class _TimedNode(LifecycleNode):
+    class _TimedNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         @log_lifecycle_errors
         def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
             return TransitionCallbackReturn.SUCCESS
@@ -163,11 +163,11 @@ def test_a_failed_transition_marks_the_bringup_span_error() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # test-only reset
+    trace._TRACER_PROVIDER = None  # test-only reset
     trace.set_tracer_provider(provider)
 
-    class _FailingNode(LifecycleNode):
+    class _FailingNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         @log_lifecycle_errors
         def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
             return TransitionCallbackReturn.FAILURE

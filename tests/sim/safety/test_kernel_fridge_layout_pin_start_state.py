@@ -88,7 +88,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -374,7 +374,7 @@ def _build_grid(model: Any, data: Any, robot_bodies: frozenset[int]) -> tuple[An
             base_frame_body=_BASE_FRAME_BODY,
             rays_per_axis=_RAYS_PER_AXIS,
         )
-        if "solid_world" in (record.get("classes") or []):
+        if "solid_world" in cast("list[str]", record.get("classes") or []):
             occupancy[index] = 1
     return origin, size, occupancy, int(occupancy.sum())
 
@@ -404,7 +404,7 @@ def _kernel_params(desc: RobotDescription, margin_m: float) -> dict[str, object]
 
 def _kernel_verdict(
     state: _StartState, *, margin_m: float, all_occupied: bool = False
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Publish ``state`` to a real kernel and return what it did with a zero chunk."""
     import rclpy
     from geometry_msgs.msg import Point, Quaternion

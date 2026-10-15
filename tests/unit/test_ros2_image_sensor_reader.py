@@ -23,6 +23,8 @@ publishes ``/openral/...``-shaped images is exactly the kind that must not.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from typing import Any
 
 import numpy as np
 import pytest
@@ -46,7 +48,7 @@ _SETTLE_TIMEOUT_S = 10.0
 
 
 @pytest.fixture
-def isolated_ros(monkeypatch: pytest.MonkeyPatch):
+def isolated_ros(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:  # reason: rclpy is untyped
     """A private DDS domain, LOCALHOST-only, torn down after the test."""
     monkeypatch.setenv("ROS_DOMAIN_ID", _TEST_DOMAIN)
     monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
@@ -56,7 +58,7 @@ def isolated_ros(monkeypatch: pytest.MonkeyPatch):
     context.try_shutdown()
 
 
-def _publisher(context, topic: str):
+def _publisher(context: Any, topic: str) -> tuple[Any, Any]:  # reason: rclpy is untyped
     from rclpy.node import Node
 
     node = Node("ros2_image_test_pub", context=context)
@@ -104,7 +106,7 @@ def _depth32f_msg(values: list[list[float]]) -> Image:
 
 
 class TestLiveRoundTrip:
-    def test_an_rgb_image_crosses_dds_into_a_sensor_frame(self, isolated_ros) -> None:
+    def test_an_rgb_image_crosses_dds_into_a_sensor_frame(self, isolated_ros: Any) -> None:
         topic = "/test_zed/left/image_rect_color"
         node, publisher = _publisher(isolated_ros, topic)
         sub_node = _sub_node(isolated_ros)
@@ -122,7 +124,9 @@ class TestLiveRoundTrip:
             sub_node.destroy_node()
             node.destroy_node()
 
-    def test_a_bgra8_frame_loses_its_alpha_instead_of_being_refused(self, isolated_ros) -> None:
+    def test_a_bgra8_frame_loses_its_alpha_instead_of_being_refused(
+        self, isolated_ros: Any
+    ) -> None:
         """The ZED's colour topic is `bgra8`, and refusing it looks like a dead camera.
 
         `zed_wrapper` publishes `bgra8` on `rgb/color/rect/image`. Before the
@@ -149,7 +153,7 @@ class TestLiveRoundTrip:
             sub_node.destroy_node()
             node.destroy_node()
 
-    def test_zed_style_32fc1_depth_arrives_as_depth16_millimetres(self, isolated_ros) -> None:
+    def test_zed_style_32fc1_depth_arrives_as_depth16_millimetres(self, isolated_ros: Any) -> None:
         """The stream the ZED bundle declares and nothing could previously read."""
         topic = "/test_zed/depth/depth_registered"
         node, publisher = _publisher(isolated_ros, topic)
@@ -163,6 +167,7 @@ class TestLiveRoundTrip:
             frame = reader.read_latest(max_age_ms=5_000)
             assert frame.encoding is FrameEncoding.DEPTH16
             assert frame.channels == 1
+            assert frame.data is not None
             mm = np.frombuffer(frame.data, dtype="<u2").reshape(2, 2)
             assert mm.tolist() == [[1500, 0], [250, 15000]]
         finally:
@@ -170,7 +175,7 @@ class TestLiveRoundTrip:
             sub_node.destroy_node()
             node.destroy_node()
 
-    def test_a_pitch_aligned_row_stride_is_sliced_off(self, isolated_ros) -> None:
+    def test_a_pitch_aligned_row_stride_is_sliced_off(self, isolated_ros: Any) -> None:
         """`step` > the packed row length is a real publisher, not a malformed one.
 
         Isaac/NITROS hand out pitch-aligned buffers and an ROI crop keeps its
@@ -199,13 +204,20 @@ class TestLiveRoundTrip:
             node.destroy_node()
 
 
-def _sub_node(context):
+def _sub_node(context: Any) -> Any:  # reason: rclpy is untyped
     from rclpy.node import Node
 
     return Node("ros2_image_test_sub", context=context)
 
 
-def _pump_until_frame(reader, sub_node, pub_node, publisher, msg, context) -> None:
+def _pump_until_frame(  # reason: rclpy handles are untyped
+    reader: Ros2ImageSensorReader,
+    sub_node: Any,
+    pub_node: Any,
+    publisher: Any,
+    msg: Image,
+    context: Any,
+) -> None:
     """Republish + spin both nodes until the reader buffers a frame.
 
     BEST_EFFORT drops anything published before discovery completes, so a
@@ -279,7 +291,7 @@ class TestStalenessContract:
         with pytest.raises(RuntimeError, match="closed reader"):
             reader.read_latest()
 
-    def test_no_frame_yet_names_the_qos_trap(self, isolated_ros) -> None:
+    def test_no_frame_yet_names_the_qos_trap(self, isolated_ros: Any) -> None:
         """The message must name the QoS mismatch — it reads like a dead camera."""
         sub_node = _sub_node(isolated_ros)
         reader = Ros2ImageSensorReader(sensor_id="x", topic="/never_published", node=sub_node)
@@ -295,7 +307,7 @@ class TestStalenessContract:
 class TestTeardown:
     """`close` releases what `open` built, including from a failed `open`."""
 
-    def test_close_releases_a_node_from_an_open_that_failed_late(self, isolated_ros) -> None:
+    def test_close_releases_a_node_from_an_open_that_failed_late(self, isolated_ros: Any) -> None:
         """`open` sets `is_open` last, so a late failure leaves it false.
 
         An `is_open` early return in `close` would then skip teardown entirely

@@ -168,7 +168,9 @@ class TestReadState:
         gripper = state.position[-1]
         assert 0.0 <= gripper <= 1.0
 
-    def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
+    def test_perception_starvation_warns_not_latch_when_old(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
 
         Deploy-sim regression: ``read_state`` reads live in-process ``MjData``

@@ -25,6 +25,8 @@ faking the components (CLAUDE.md §1.11).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 # Use try/except → boolean + `pytestmark.skipif` rather than module-level
@@ -58,7 +60,7 @@ try:
     _ = _so100_desc.MJCF_PATH  # triggers lazy clone / cache lookup
     _MJCF_ERROR: str | None = None
 except Exception as exc:
-    _so100_desc = None  # type: ignore[assignment]
+    _so100_desc = None
     _MJCF_ERROR = str(exc)
 
 # `openral_sim.backends.so100_robosuite.model` imports `register_gripper`
@@ -179,7 +181,7 @@ def env():
 class TestEnvBasics:
     """Confirm the env round-trips reset/step and exposes the right shapes."""
 
-    def test_env_reset_returns_full_obs(self, env) -> None:
+    def test_env_reset_returns_full_obs(self, env: Any) -> None:
         obs = env.reset()
         # Cube + robot state must be present (no camera obs in this fixture).
         for key in ("cube_pos", "cube_quat", "robot0_eef_pos", "robot0_joint_pos"):
@@ -187,14 +189,14 @@ class TestEnvBasics:
         # OSC_POSITION (3 Cartesian deltas) + GRIP (1 jaw torque) = 4 dims.
         assert env.action_dim == 4
 
-    def test_zero_step_does_not_raise(self, env) -> None:
+    def test_zero_step_does_not_raise(self, env: Any) -> None:
         env.reset()
         action = np.zeros(env.action_dim, dtype=np.float32)
         _obs, reward, done, _info = env.step(action)
         assert isinstance(reward, (float, np.floating))
         assert isinstance(done, (bool, np.bool_))
 
-    def test_cube_initially_above_table(self, env) -> None:
+    def test_cube_initially_above_table(self, env: Any) -> None:
         obs = env.reset()
         table_top_z = float(env.model.mujoco_arena.table_offset[2])
         assert obs["cube_pos"][2] > table_top_z, (
@@ -206,7 +208,7 @@ class TestEnvBasics:
 
 
 def _run_policy(
-    env, *, max_steps: int = 280, settle_steps: int = 20
+    env: Any, *, max_steps: int = 280, settle_steps: int = 20
 ) -> tuple[list[PolicyTelemetry], dict[str, float]]:
     """Run the scripted policy and collect per-step telemetry + summary.
 
@@ -287,21 +289,27 @@ class TestScriptedPolicy:
             e.close()
         return telemetry, summary
 
-    def test_policy_runs_all_phases(self, rollout) -> None:
+    def test_policy_runs_all_phases(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         telemetry, _summary = rollout
         phases = {t.phase for t in telemetry}
         assert phases == {"approach", "descend", "close", "lift"}, (
             f"policy did not visit every phase; got {sorted(phases)}"
         )
 
-    def test_policy_completes_without_runtime_error(self, rollout) -> None:
+    def test_policy_completes_without_runtime_error(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         telemetry, _summary = rollout
         # _run_policy raises if env.step ever does; reaching here implies
         # the full rollout completed. We additionally assert we collected
         # the expected number of steps.
         assert len(telemetry) >= 200
 
-    def test_eef_reaches_near_the_cube(self, rollout) -> None:
+    def test_eef_reaches_near_the_cube(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         _telemetry, summary = rollout
         # robosuite's stock OSC_POSITION drives the eef to within ~3
         # cm of the cube on the SO-100; tighter tracking would need
@@ -312,7 +320,9 @@ class TestScriptedPolicy:
             f"gripper never got close to the cube: min dist {summary['min_eef_to_cube_m']:.3f} m"
         )
 
-    def test_gripper_closes_during_close_phase(self, rollout) -> None:
+    def test_gripper_closes_during_close_phase(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         _telemetry, summary = rollout
         # The Jaw joint range is [-0.174, 0.5] (see ``_assets``). Under the
         # scripted open(+1) command the jaw rests near ~0.10 (not the -0.174
@@ -328,7 +338,9 @@ class TestScriptedPolicy:
             f"(min={summary['min_jaw_qpos']:.3f}, max={summary['max_jaw_qpos']:.3f})"
         )
 
-    def test_close_phase_commands_negative_gripper(self, rollout) -> None:
+    def test_close_phase_commands_negative_gripper(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         telemetry, _summary = rollout
         # During the close phase the policy must drive the gripper
         # command negative (the convention that drives the SO-100 jaw
@@ -340,7 +352,9 @@ class TestScriptedPolicy:
             f"got min cmd {min(close_cmds) if close_cmds else 'EMPTY'}"
         )
 
-    def test_lift_phase_commands_negative_gripper(self, rollout) -> None:
+    def test_lift_phase_commands_negative_gripper(
+        self, rollout: tuple[list[PolicyTelemetry], dict[str, float]]
+    ) -> None:
         telemetry, _summary = rollout
         # Lift must hold the gripper closed; a positive command would
         # release whatever was grasped.

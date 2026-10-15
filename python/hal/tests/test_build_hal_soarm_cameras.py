@@ -50,8 +50,10 @@ def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
 
     desc = RobotDescription.from_yaml(robot_yaml)
     # No transport / no composition: the HAL rigs cameras from sim_placement.
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
     hal = build_hal(desc, mode="sim")
-    assert type(hal).__name__ == "MujocoArmHAL"
+    assert isinstance(hal, MujocoArmHAL)
     hal.connect()
     try:
         frames = hal.read_images()
@@ -70,8 +72,10 @@ def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
         assert a.dtype == np.uint8
         # Each camera renders at ITS OWN declared intrinsics, not a shared max
         # across sensors (so a 256x256 wrist isn't upsized to a 640x480 overhead).
-        assert a.shape[:2] == (intr[name].height, intr[name].width), (
-            f"{name} rendered {a.shape[:2]} != intrinsics {(intr[name].height, intr[name].width)}"
+        cam_intr = intr[name]
+        assert cam_intr is not None
+        assert a.shape[:2] == (cam_intr.height, cam_intr.width), (
+            f"{name} rendered {a.shape[:2]} != intrinsics {(cam_intr.height, cam_intr.width)}"
         )
         # The staging floor + fill light guarantee a non-black frame (a forward
         # wrist camera over a bare arm with no floor would otherwise be void).
@@ -88,8 +92,10 @@ def test_estop_closes_the_render_contexts() -> None:
     the live-ROS exit 139 (tracked in #381).
     """
     from openral_core.exceptions import ROSEStopRequested
+    from openral_hal._mujoco_arm import MujocoArmHAL
 
     hal = build_hal(RobotDescription.from_yaml(_SOARM[0]), mode="sim")
+    assert isinstance(hal, MujocoArmHAL)
     hal.connect()
     try:
         try:
@@ -98,7 +104,7 @@ def test_estop_closes_the_render_contexts() -> None:
             pytest.skip(f"offscreen MuJoCo render unavailable: {exc}")
         if not frames:
             pytest.skip("offscreen MuJoCo render produced no frames (no GL context)")
-        renderers = list(hal._renderers.values())  # type: ignore[attr-defined]  # reason: white-box GL handle
+        renderers = list(hal._renderers.values())
         assert renderers
 
         with pytest.raises(ROSEStopRequested):

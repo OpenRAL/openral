@@ -54,6 +54,7 @@ import pathlib
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 
 import pytest
 
@@ -119,7 +120,9 @@ _Q_DEEP = 0.0950  # d_body = −15 mm: past the band, latched
 
 
 def test_the_declared_targets_geometry_decides_the_verdict_and_names_the_body(
-    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+    publish_occupancy_grid: Callable[..., None],
+    publish_carriage_joint_state: Callable[..., None],
+    reset_kernel_estop: Callable[..., None],
 ) -> None:
     """Same payload, same grid, same margin, same declaration — geometry or not.
 

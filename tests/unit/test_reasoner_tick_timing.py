@@ -79,7 +79,8 @@ def test_llm_duration_recorded_when_the_call_fails(exporter: InMemorySpanExporte
     assert result.error is not None
     (span,) = exporter.get_finished_spans()
     assert span.attributes is not None
-    assert span.attributes[semconv.REASONER_LLM_S] >= LLM_DELAY_S
+    llm_s = span.attributes[semconv.REASONER_LLM_S]
+    assert isinstance(llm_s, (int, float)) and llm_s >= LLM_DELAY_S
 
 
 def test_prompt_tokens_are_recorded_when_the_client_reports_usage(

@@ -29,7 +29,7 @@ for _p in _HERE.parents:
 def _require_root() -> Path:
     if _REPO_ROOT is None:
         pytest.skip("No repo root found (wheel install?)")
-    return _REPO_ROOT  # type: ignore[return-value]
+    return _REPO_ROOT
 
 
 # ── RewardContract default values ─────────────────────────────────────────────

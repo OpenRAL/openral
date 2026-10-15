@@ -28,9 +28,14 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from rclpy.executors import Executor
 
 # ── Guards ───────────────────────────────────────────────────────────────────
 
@@ -61,12 +66,12 @@ _CAMERA_TIMEOUT_S = 10.0
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _spin_until(executor: object, condition: object, timeout_s: float) -> bool:
+def _spin_until(executor: Executor, condition: Callable[[], object], timeout_s: float) -> bool:
     """Spin *executor* until *condition()* is truthy or *timeout_s* elapses."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        executor.spin_once(timeout_sec=0.02)  # type: ignore[union-attr]
-        if condition():  # type: ignore[operator]
+        executor.spin_once(timeout_sec=0.02)
+        if condition():
             return True
     return False
 
@@ -91,7 +96,7 @@ def test_franka_tabletop_push_joint_states() -> None:
       panda joint names within ``_JOINT_STATE_TIMEOUT_S`` seconds.
     """
     import rclpy
-    from openral_hal.lifecycle import _ManifestHALLifecycleNode  # type: ignore[attr-defined]
+    from openral_hal.lifecycle import _ManifestHALLifecycleNode
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -216,7 +221,7 @@ def test_franka_libero_milk_camera_image() -> None:
         pytest.skip("openral_sim.registry not importable")
 
     import rclpy
-    from openral_hal.lifecycle import _ManifestHALLifecycleNode  # type: ignore[attr-defined]
+    from openral_hal.lifecycle import _ManifestHALLifecycleNode
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.parameter import Parameter
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy

@@ -50,7 +50,7 @@ def _mock_env(**overrides: object) -> SimEnvironment:
         "vla": VLASpec(id="zero", weights_uri="mock://noop", extra={"action_dim": 7}),
     }
     base.update(overrides)
-    return SimEnvironment(**base)  # type: ignore[arg-type]
+    return SimEnvironment(**base)
 
 
 # ── make_env / make_policy error paths ──────────────────────────────────────
@@ -138,7 +138,7 @@ def test_make_robot_returns_description_when_registered() -> None:
         assert got.name == "factory_robot"
     finally:
         # Clean up the registry mutation so other tests are unaffected.
-        ROBOTS._items.pop(robot_id, None)  # type: ignore[attr-defined]
+        ROBOTS._items.pop(robot_id, None)
 
 
 # ── Protocol runtime conformance ────────────────────────────────────────────

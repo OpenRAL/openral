@@ -37,7 +37,9 @@ def test_splices_world_and_body_cameras() -> None:
     cams = re.findall(r'<camera[^>]*name="([^"]+)"', xml)
     assert set(cams) == {"front", "wrist"}
     # world camera lands in worldbody; wrist camera lands inside the gripper body.
-    body = re.search(r'<body name="gripper">(.*?)</body>', xml, re.DOTALL).group(1)
+    body_match = re.search(r'<body name="gripper">(.*?)</body>', xml, re.DOTALL)
+    assert body_match is not None
+    body = body_match.group(1)
     assert 'name="wrist"' in body
     assert 'name="front"' not in body
     # staging added: visual-only floor + fill light.
@@ -77,7 +79,9 @@ def test_fovy_derived_from_intrinsics() -> None:
         sim_placement=CameraSimPlacement(pos=(0.0, 0.0, 0.5), target=(0.0, 0.0, 0.0)),
     )
     xml, _ = rig_cameras_into_mjcf(_BARE, [s])
-    fovy = float(re.search(r'name="front"[^>]*fovy="([0-9.]+)"', xml).group(1))
+    fovy_match = re.search(r'name="front"[^>]*fovy="([0-9.]+)"', xml)
+    assert fovy_match is not None
+    fovy = float(fovy_match.group(1))
     # 2*atan(480/(2*480)) = 53.13 deg
     assert abs(fovy - 53.13) < 0.1
 

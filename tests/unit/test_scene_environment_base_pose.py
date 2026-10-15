@@ -182,6 +182,6 @@ def test_base_pose_directly_raises_on_invalid_quaternion_count() -> None:
     with pytest.raises(ValidationError):
         Pose6D(
             xyz=(0.0, 0.0, 0.0),
-            quat_xyzw=(0.0, 0.0, 1.0),  # type: ignore[arg-type] # reason: testing rejection of wrong shape
+            quat_xyzw=(0.0, 0.0, 1.0),
             frame_id="world",
         )

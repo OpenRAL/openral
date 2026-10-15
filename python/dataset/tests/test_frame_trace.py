@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_dataset import LeRobotDatasetSink, RolloutRecorder, read_frame_trace
@@ -38,7 +39,10 @@ pytest.importorskip(
 
 @pytest.fixture
 def _write_traced_dataset(
-    _zero_frame: Callable[[RobotDescription], tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]],
+    _zero_frame: Callable[
+        [RobotDescription],
+        tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]],
+    ],
 ) -> Callable[[Path, RobotDescription], list[tuple[str, str]]]:
     def _write_traced_dataset(root: Path, robot: RobotDescription) -> list[tuple[str, str]]:
         """Write a 1-episode, 2-frame dataset; return per-frame (trace_id, span_id)."""

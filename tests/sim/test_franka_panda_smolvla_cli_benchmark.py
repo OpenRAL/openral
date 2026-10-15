@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -169,4 +170,4 @@ def test_bh_benchmark_run_libero_smolvla_end_to_end(tmp_path: Path) -> None:
     assert eval_result.results["n_tasks"] == 1
     assert eval_result.results["n_episodes_total"] == 1
     # Real physics produces a mean-step latency; mock scenes leave it None.
-    assert eval_result.results.get("mean_step_latency_ms_avg", 0.0) > 0.0
+    assert cast(float, eval_result.results.get("mean_step_latency_ms_avg", 0.0)) > 0.0

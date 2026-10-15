@@ -15,6 +15,7 @@ depth ``SensorSpec`` into a ``sensor_msgs/PointCloud2`` for octomap_server:
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core.schemas import IntrinsicsPinhole, SensorSpec
 from openral_hal.depth_cloud import (
@@ -675,7 +676,7 @@ def test_resampled_real_sam_mask_back_projects_to_the_same_centroid() -> None:
     )
     assert wrist is not None
 
-    def centroid(m: np.ndarray, h: int, w: int) -> np.ndarray:
+    def centroid(m: npt.NDArray[np.bool_], h: int, w: int) -> npt.NDArray[np.float64]:
         pts, frac = backproject_masked_depth(
             m,
             np.full((h, w), 0.15),
@@ -685,7 +686,8 @@ def test_resampled_real_sam_mask_back_projects_to_the_same_centroid() -> None:
         )
         assert frac == 1.0
         assert len(pts) > 0
-        return pts.mean(axis=0)
+        mean: npt.NDArray[np.float64] = pts.mean(axis=0)
+        return mean
 
     half = resample_mask_nearest(mask, (height // 2, width // 2))
     assert half.shape == (height // 2, width // 2)

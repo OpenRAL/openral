@@ -118,7 +118,8 @@ def _two_boards(c: NDArray[np.float64]) -> NDArray[np.bool_]:
 
 
 def _blob(c: NDArray[np.float64], centre: tuple[float, float, float]) -> NDArray[np.bool_]:
-    return np.all(np.abs(c - np.asarray(centre)) <= 0.03, axis=1)
+    mask: NDArray[np.bool_] = np.all(np.abs(c - np.asarray(centre)) <= 0.03, axis=1)
+    return mask
 
 
 @cache

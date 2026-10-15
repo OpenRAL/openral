@@ -96,8 +96,7 @@ def _run(
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
-    sys.path.insert(0, str(Path(__file__).parent))
-    from fakes.fake_da3_sidecar import FakeDa3Sidecar
+    from tests.integration.fakes.fake_da3_sidecar import FakeDa3Sidecar
 
     # The focal DA3 "sees" at its raster: the camera's, or a rectified lens's pinhole.
     focal_raster = focal_raster if focal_raster is not None else _F * _RASTER[1] / _W

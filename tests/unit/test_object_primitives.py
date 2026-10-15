@@ -50,6 +50,7 @@ _HEIGHT = 0.12
 def _scene() -> tuple[list[tuple[float, float]], float]:
     """The props' xy and the deck top, in ``openarm_base``, from the committed fixtures."""
     scene = DeployScene.from_yaml(str(_SCENE))
+    assert scene.base_pose is not None
     base = scene.base_pose.xyz
     urdf = RobotDescription.from_yaml(str(_ROBOT)).assets.urdf
     assert urdf is not None and urdf.base_to_root_xyz_rpy is not None

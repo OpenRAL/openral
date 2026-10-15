@@ -19,6 +19,7 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 from _renderer_probe import requires_renderer
+from numpy.typing import NDArray
 from openral_hal.sim_sensor_bridge import should_idle_step
 
 
@@ -71,7 +72,7 @@ def _build_libero_hal() -> object:
     return hal
 
 
-def _first_frame(images: dict[str, object]) -> np.ndarray:
+def _first_frame(images: dict[str, object]) -> NDArray[np.generic]:
     for arr in images.values():
         a = np.asarray(arr)
         if a.ndim == 3:

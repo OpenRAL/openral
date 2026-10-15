@@ -70,7 +70,7 @@ def _description(**overrides: object) -> RobotDescription:
         "action_spec": ActionSpec(dim=2, control_freq_hz=30.0),
     }
     fields.update(overrides)
-    return RobotDescription(**fields)  # type: ignore[arg-type]  # reason: test builder over a typed mapping
+    return RobotDescription(**fields)
 
 
 # ── Every committed manifest already honours it ───────────────────────────────
@@ -139,7 +139,7 @@ def test_each_kernel_read_safety_field_must_be_declared(field: str) -> None:
     declared = {k: getattr(_FULL_SAFETY, k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS}
     del declared[field]
     with pytest.raises(ValidationError, match=rf"safety\.{field}") as excinfo:
-        _description(safety=SafetyEnvelope(**declared))  # type: ignore[arg-type]  # reason: mapping of the model's own fields
+        _description(safety=SafetyEnvelope(**declared))
     others = set(RobotDescription.REAL_HARDWARE_SAFETY_FIELDS) - {field}
     assert not any(f"safety.{o}" in str(excinfo.value) for o in others)
 
@@ -150,7 +150,7 @@ def test_the_error_says_which_required_fields_are_not_yet_enforced(field: str) -
     declared = {k: getattr(_FULL_SAFETY, k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS}
     del declared[field]
     with pytest.raises(ValidationError) as excinfo:
-        _description(safety=SafetyEnvelope(**declared))  # type: ignore[arg-type]  # reason: mapping of the model's own fields
+        _description(safety=SafetyEnvelope(**declared))
     unenforced = field in RobotDescription.UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS
     assert ("not yet enforced by the safety kernel" in str(excinfo.value)) is unenforced
 
@@ -169,7 +169,7 @@ def test_an_explicit_value_equal_to_the_default_counts_as_declared() -> None:
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
         joint_state_staleness_limit_s=0.5,
-        **{k: getattr(SafetyEnvelope(), k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS},  # type: ignore[arg-type]  # reason: mapping of the model's own fields
+        **{k: getattr(SafetyEnvelope(), k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS},
     )
     assert _description(safety=explicit).safety.contact_force_threshold_n == 30.0
 

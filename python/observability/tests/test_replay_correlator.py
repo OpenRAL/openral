@@ -62,7 +62,7 @@ def _write_bag(
                 publish_time=1_000_000_000 + i * 1_000_000,
                 data=payload,
             )
-        w.finish()
+        w.finish()  # type: ignore[no-untyped-call]  # reason: mcap's Writer.finish is unannotated upstream
 
 
 @pytest.fixture

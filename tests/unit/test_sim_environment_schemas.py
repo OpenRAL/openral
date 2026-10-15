@@ -29,7 +29,7 @@ def _ok_env(**overrides: object) -> SimEnvironment:
         "vla": VLASpec(id="zero", weights_uri="mock://noop"),
     }
     base.update(overrides)
-    return SimEnvironment(**base)  # type: ignore[arg-type]
+    return SimEnvironment(**base)
 
 
 def test_scene_spec_defaults() -> None:

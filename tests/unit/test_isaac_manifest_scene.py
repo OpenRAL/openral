@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
 from openral_sim.backends.isaac_sim import _build_robot_spec, _sensor_dict
@@ -30,7 +31,7 @@ from openral_sim.backends.isaac_sim import _build_robot_spec, _sensor_dict
 
 def test_thor_brown_calibration_survives_sidecar_serialization() -> None:
     path = _repo_root() / "robots/openarm/robot.yaml"
-    robot = RobotDescription.from_yaml(path)
+    robot = RobotDescription.from_yaml(str(path))
     sensors = apply_sensor_overlays(
         robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
     )
@@ -459,7 +460,7 @@ def test_object_rpy_is_the_urdf_order(_manifest_scene_mod: object) -> None:
 # ── finger friction (Isaac i58/i59) ───────────────────────────────────────────
 
 
-def _robot_stage() -> object:
+def _robot_stage() -> Any:  # pxr ships no stubs: a Usd.Stage
     """A real in-memory USD stage: two finger joints driving links with collision geometry,
     an arm link with its own, and a finger-named visual that no joint drives."""
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -616,7 +617,9 @@ def test_isaac_gripper_command_follows_the_end_effector_convention(
     for g in spec["grippers"]:
         opening = open_cmd
         if opening is None:  # OpenArm: the open end of this jaw's command_range
-            opening = max(ranges[g["name"]], key=abs)
+            command_range = ranges[g["name"]]
+            assert command_range is not None
+            opening = max(command_range, key=abs)
         assert to_urdf(g, closed_cmd) == pytest.approx(g["closed"])
         assert to_urdf(g, opening) == pytest.approx(g["open"])
         assert g["open"] != pytest.approx(g["closed"])
@@ -779,10 +782,13 @@ def test_the_rational_extension_reaches_the_corners_and_keeps_the_brown_interior
     mod = _manifest_scene_mod
     mod.check_radial_reaches_corners("top", _ZED_TOP_K, _ZED_TOP_RATIONAL)  # type: ignore[attr-defined]
 
-    def radial(c: list[float], r: np.ndarray) -> np.ndarray:
+    def radial(c: list[float], r: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
         k1, k2, _, _, k3, k4, k5, k6 = (c + [0.0] * 8)[:8]
         r2 = r * r
-        return r * (1 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / (1 + k4 * r2 + k5 * r2**2 + k6 * r2**3)
+        out: npt.NDArray[np.floating[Any]] = (
+            r * (1 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / (1 + k4 * r2 + k5 * r2**2 + k6 * r2**3)
+        )
+        return out
 
     r = np.linspace(0.0, 0.8, 200)  # well inside the Brown fit's valid range
     px = np.abs(radial(_ZED_TOP_RATIONAL, r) - radial(_ZED_TOP_BROWN, r)) * _ZED_TOP_K["fx"]
@@ -792,7 +798,7 @@ def test_the_rational_extension_reaches_the_corners_and_keeps_the_brown_interior
 def test_the_thor_wrist_calibrations_pass_the_corner_check(_manifest_scene_mod: object) -> None:
     """Real fixtures: the committed wrist Arducam calibrations are monotonic to their corners."""
     path = _repo_root() / "robots/openarm/robot.yaml"
-    robot = RobotDescription.from_yaml(path)
+    robot = RobotDescription.from_yaml(str(path))
     sensors = apply_sensor_overlays(
         robot.sensors, resolve_sensor_overlays(path, "thor", required=True)
     )
@@ -826,7 +832,7 @@ def test_blur_softens_without_shifting_or_darkening(_manifest_scene_mod: object)
     dot = np.zeros((11, 11, 3), dtype=np.uint8)
     dot[5, 5] = 255
     peak = np.unravel_index(np.argmax(blur(dot, 1.0)[..., 0]), (11, 11))
-    assert peak == (5, 5)
+    assert tuple(int(i) for i in peak) == (5, 5)
 
 
 def test_image_blur_option_is_bounded() -> None:
@@ -1022,7 +1028,7 @@ def test_object_pose_noise_is_seeded_truncated_and_collision_free(
             assert status == "sampled"
             assert abs(x - obj["xyz"][0]) <= 0.02 + 1e-12  # type: ignore[index]
             assert abs(y - obj["xyz"][1]) <= 0.02 + 1e-12  # type: ignore[index]
-            assert abs(yaw - obj["yaw"]) <= np.radians(20) + 1e-12  # type: ignore[operator]
+            assert abs(yaw - obj["yaw"]) <= np.radians(20) + 1e-12
         assert not overlap(quads[0], quads[1], 0.002)
         for q in quads[:2]:
             assert np.all(q >= np.add(tote[0], 0.002)) and np.all(q <= np.subtract(tote[1], 0.002))
@@ -1081,7 +1087,7 @@ def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
     from openral_sim.backends.isaac_sim import _render_desc
 
     path = _repo_root() / "robots/openarm/robot.yaml"
-    desc = RobotDescription.from_yaml(path)
+    desc = RobotDescription.from_yaml(str(path))
     desc = desc.model_copy(
         update={
             "sensors": apply_sensor_overlays(
@@ -1114,7 +1120,7 @@ def test_render_options_are_validated() -> None:
     with pytest.raises(ValueError, match="camera_render_height"):
         IsaacSimOptions(camera_render_height={"top": 8})
     with pytest.raises(ValueError, match="physics_substeps"):
-        IsaacSimOptions(physics_substeps=2)  # derived from the control rate, not a knob
+        IsaacSimOptions(physics_substeps=2)  # type: ignore[call-arg]  # reason: asserts the removed knob is rejected
 
 
 def test_joint_drive_gains_become_importer_pattern_dicts(_manifest_scene_mod: object) -> None:
@@ -1194,7 +1200,10 @@ def test_finger_coupling_holds_the_free_finger_at_the_stalled_one(
     g = next(g for g in spec["grippers"] if g["name"] == "right_gripper")
     f = g["followers"][0]
     idx = {g["leader"]: 0, f["dof"]: 1}
-    mirror = lambda lead: f["multiplier"] * lead + f["offset"]  # noqa: E731
+
+    def mirror(lead: float) -> float:
+        return float(f["multiplier"] * lead + f["offset"])
+
     closed, opened = g["closed"], g["open"]
     cmd = np.array([closed, mirror(closed)], dtype=np.float32)
     # Leader stalled near open on the object, follower already nearly shut: follower held.
@@ -1244,7 +1253,7 @@ def test_reset_renders_after_the_warmup_hook(_manifest_scene_mod: object) -> Non
         def step(self, render: bool = False) -> None:
             calls.append(("step", render))
 
-    class Scene(_isaac_scene_base.IsaacSceneBase):  # type: ignore[misc,name-defined]
+    class Scene(_isaac_scene_base.IsaacSceneBase):  # type: ignore[misc]  # reason: Any-typed tools base
         warmup_steps = 2
 
         def _after_warmup(self) -> None:

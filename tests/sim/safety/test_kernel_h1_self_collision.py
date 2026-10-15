@@ -24,6 +24,7 @@ import json
 import os
 import time
 import uuid
+from typing import Any, cast
 
 import pytest
 
@@ -61,20 +62,22 @@ def _geom_distance(model: object, data: object, g1: int, g2: int) -> float:
     return measured.distance_m
 
 
-def _first_collidable_geom(model: object, body_id: int) -> int | None:
-    for gi in range(int(model.ngeom)):  # type: ignore[attr-defined]
-        if int(model.geom_bodyid[gi]) != body_id:  # type: ignore[attr-defined]
+# mujoco ships no stubs; model/data are untyped MjModel/MjData handles.
+def _first_collidable_geom(model: Any, body_id: int) -> int | None:
+    for gi in range(int(model.ngeom)):
+        if int(model.geom_bodyid[gi]) != body_id:
             continue
-        if int(model.geom_contype[gi]) == 0 and int(model.geom_conaffinity[gi]) == 0:  # type: ignore[attr-defined]
+        if int(model.geom_contype[gi]) == 0 and int(model.geom_conaffinity[gi]) == 0:
             continue
-        if int(model.geom_type[gi]) == 0:  # plane  # type: ignore[attr-defined]
+        if int(model.geom_type[gi]) == 0:  # plane
             continue
         return gi
     return None
 
 
-# reason: mujoco ships no stubs; model/data are untyped MjModel/MjData handles
-def _find_arm_cross_pose(model, data, joint_names, le_geom, re_geom):  # type: ignore[no-untyped-def]
+def _find_arm_cross_pose(
+    model: Any, data: Any, joint_names: list[str], le_geom: int, re_geom: int
+) -> list[float] | None:
     """Search a small grid of shoulder/elbow angles for a left↔right elbow overlap."""
     idx = {name: i for i, name in enumerate(joint_names)}
     base = [0.0] * len(joint_names)
@@ -136,7 +139,7 @@ def test_h1_arm_cross_self_collision_triggers_kernel() -> None:
     assert params["self_collision_enabled"] is True
     # Multi-capsule-per-link: H1's torso/ankles carry several collision geoms, so
     # there are more capsules than distinct capsuled links.
-    cap_links = params["collision_capsule_link"]
+    cap_links = cast("list[object]", params["collision_capsule_link"])
     assert len(cap_links) > len(set(cap_links)), "expected ≥1 link with multiple capsules"
 
     node_name = f"safety_kernel_h1_{uuid.uuid4().hex[:8]}"

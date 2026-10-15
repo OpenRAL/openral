@@ -294,7 +294,7 @@ def test_contact_list_is_empty_while_the_arm_is_deep_inside_the_door() -> None:
     """`ncon == 0` is not "nothing touching": contype/conaffinity suppress contacts."""
     model, data = _model_data(door_x=_ARM_IN_DOOR_X)
     scope = kernel_checked_body_ids(model, _panda_mobile())
-    snapshot = estop_ground_truth_snapshot(
+    snapshot: dict[str, Any] = estop_ground_truth_snapshot(
         model,
         data,
         robot_body_ids=_robot_bodies(model),
@@ -303,11 +303,7 @@ def test_contact_list_is_empty_while_the_arm_is_deep_inside_the_door() -> None:
 
     # The door's bitmasks don't meet the robot's — MuJoCo reports no contact at
     # all, yet the arm is 17 mm inside a solid door.
-    assert not [
-        c
-        for c in snapshot["robot_world_contacts"]  # type: ignore[union-attr]
-        if c["body_b"] == "freezer_door"
-    ]
+    assert not [c for c in snapshot["robot_world_contacts"] if c["body_b"] == "freezer_door"]
     pairs = snapshot["nearest_robot_world_pairs"]
     assert isinstance(pairs, list)
     assert pairs[0]["distance_m"] == pytest.approx(_ARM_PENETRATION_M, abs=1e-3)

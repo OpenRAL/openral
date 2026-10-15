@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 
 
@@ -52,7 +53,10 @@ def aloha_robot(repo_root: Path) -> RobotDescription:
     return RobotDescription.from_yaml(str(repo_root / "robots" / "aloha_bimanual" / "robot.yaml"))
 
 
-_ZeroFrame = Callable[[RobotDescription], tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
+_ZeroFrame = Callable[
+    [RobotDescription],
+    tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]],
+]
 
 
 @pytest.fixture
@@ -65,10 +69,13 @@ def _zero_frame() -> _ZeroFrame:
 
     def _zero_frame(
         robot: RobotDescription,
-    ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+    ) -> tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]]:
+        assert robot.observation_spec is not None
+        assert robot.action_spec is not None
+        assert robot.action_spec.dim is not None
         state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
         action = np.zeros(robot.action_spec.dim, dtype=np.float32)
-        images = {
+        images: dict[str, NDArray[np.uint8]] = {
             "camera1": np.zeros((256, 256, 3), dtype=np.uint8),
             "camera2": np.zeros((256, 256, 3), dtype=np.uint8),
         }

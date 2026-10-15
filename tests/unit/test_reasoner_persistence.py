@@ -56,8 +56,9 @@ def test_round_trip_resumes_exactly(tmp_path: pathlib.Path) -> None:
     ]
     assert tasks[0].last_verdict == "progress=0.91"
     assert tasks[0].last_trace_id == "00-abc"
-    assert restored.mission.active() is not None
-    assert restored.mission.active().task_id == "t2.1"
+    active = restored.mission.active()
+    assert active is not None
+    assert active.task_id == "t2.1"
 
 
 def test_no_mission_round_trips_as_none(tmp_path: pathlib.Path) -> None:
@@ -94,7 +95,7 @@ def test_missing_version_loads_as_none(tmp_path: pathlib.Path) -> None:
 
 def test_invalid_mission_loads_as_none(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "ladder.json"
-    valid = {
+    valid: dict[str, object] = {
         "schema_version": "0.1",
         "subdivide_offered": [],
         "collective_nudges": {},
@@ -118,7 +119,7 @@ def test_invalid_mission_loads_as_none(tmp_path: pathlib.Path) -> None:
 
 def test_invalid_boundary_fields_load_as_none(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "ladder.json"
-    valid = {
+    valid: dict[str, object] = {
         "schema_version": "0.1",
         "mission": None,
         "subdivide_offered": [],
@@ -143,4 +144,5 @@ def test_save_is_atomic_no_tmp_left_behind(tmp_path: pathlib.Path) -> None:
     assert sorted(p.name for p in path.parent.iterdir()) == ["ladder.json"]
     restored = load_ladder_state(path)
     assert restored is not None and restored.mission is not None
-    assert restored.mission.active().text == "place the butter"
+    active = restored.mission.active()
+    assert active is not None and active.text == "place the butter"

@@ -25,7 +25,7 @@ read from the real shipped rSkill manifest.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import NoReturn
 
 import pytest
 import yaml
@@ -51,7 +51,7 @@ def _shipped_contract() -> StateContract:
     return contract
 
 
-def _tf_lookup(_target: str, _source: str) -> Any:
+def _tf_lookup(target_frame: str, source_frame: str) -> NoReturn:
     """A TF lookup that must never be reached — the joint guard precedes it."""
     raise AssertionError("tf_lookup must not be consulted when joints are missing")
 

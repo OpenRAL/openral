@@ -26,14 +26,14 @@ from openral_core import RobotDescription, ValidationStopEvidence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
-import validation_matrix as vm  # type: ignore[import-not-found]  # reason: sibling script, no stub
+import validation_matrix as vm
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
 def panda() -> RobotDescription:
-    return RobotDescription.from_yaml(REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
+    return RobotDescription.from_yaml(str(REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"))
 
 
 def test_the_shipped_manifest_still_has_a_link_with_no_stage2_hull(
@@ -74,7 +74,8 @@ def _budget(link_a: dict[str, Any], link_b: dict[str, Any], *, box_m: float) -> 
             "collision_model_slop": {"links": {"panda_link1": link_a, "panda_link7": link_b}},
         }
     }
-    return vm.hal_admissible_gap_m(snapshot, stop)
+    gap: float | None = vm.hal_admissible_gap_m(snapshot, stop)
+    return gap
 
 
 def test_a_link_with_no_stage2_hull_is_charged_the_box_budget() -> None:

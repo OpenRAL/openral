@@ -214,7 +214,7 @@ def test_endpoint_up_short_circuits_spawn(monkeypatch: pytest.MonkeyPatch) -> No
     def _boom(*_a: object, **_k: object) -> None:  # pragma: no cover — must not run
         raise AssertionError("spawn must not happen when the endpoint is up")
 
-    monkeypatch.setattr(cosmos3.subprocess, "Popen", _boom)
+    monkeypatch.setattr("openral_reasoner.cosmos3.subprocess.Popen", _boom)
     _install_fake_openai(
         monkeypatch,
         arguments=(
@@ -240,12 +240,12 @@ def test_live_child_is_reused_not_respawned(monkeypatch: pytest.MonkeyPatch) -> 
         return probes["n"] >= 3  # down for the pre-check + first loop probe, then up
 
     monkeypatch.setattr(cosmos3, "_endpoint_is_up", _up)
-    monkeypatch.setattr(cosmos3.time, "sleep", lambda _s: None)
+    monkeypatch.setattr("openral_reasoner.cosmos3.time.sleep", lambda _s: None)
 
     def _boom(*_a: object, **_k: object) -> None:  # pragma: no cover — must not run
         raise AssertionError("must not spawn a duplicate while the child is alive")
 
-    monkeypatch.setattr(cosmos3.subprocess, "Popen", _boom)
+    monkeypatch.setattr("openral_reasoner.cosmos3.subprocess.Popen", _boom)
 
     class _LiveChild:
         returncode = None
@@ -278,7 +278,8 @@ def test_boot_timeout_keeps_child_for_next_attempt(
     with pytest.raises(ROSConfigError) as excinfo:
         client._ensure_server()
     assert "not ready within" in str(excinfo.value)
-    assert client._child is child  # preserved, not replaced or dropped
+    child_obj: object = child
+    assert client._child is child_obj  # preserved, not replaced or dropped
 
 
 def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,7 +292,7 @@ def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         def poll(self) -> int:
             return 3
 
-    monkeypatch.setattr(cosmos3.subprocess, "Popen", lambda *_a, **_k: _DeadChild())
+    monkeypatch.setattr("openral_reasoner.cosmos3.subprocess.Popen", lambda *_a, **_k: _DeadChild())
     client = Cosmos3ToolUseClient(auto_start=True, boot_timeout_s=5.0)
     with pytest.raises(ROSConfigError) as excinfo:
         client.select_tool(context_text="go", palette=_empty_palette())
@@ -368,8 +369,8 @@ def test_concurrent_ensure_server_spawns_exactly_one_sidecar(
 
     # Endpoint is down until a spawn happened; up right after (instant boot).
     monkeypatch.setattr(cosmos3, "_endpoint_is_up", lambda _url: bool(spawns))
-    monkeypatch.setattr(cosmos3.subprocess, "Popen", _fake_popen)
-    monkeypatch.setattr(cosmos3.atexit, "register", lambda _fn: None)
+    monkeypatch.setattr("openral_reasoner.cosmos3.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("openral_reasoner.cosmos3.atexit.register", lambda _fn: None)
 
     errors: list[BaseException] = []
 

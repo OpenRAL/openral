@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import (
     BoxShape,
@@ -48,6 +49,7 @@ def _load(name: str) -> tuple[object, dict[str, list[LinkCollisionGeometry]], fl
     """(yourdfpy model, primitives by link, the robot's own self-collision margin)."""
     robot = RobotDescription.from_yaml(f"robots/{name}/robot.yaml")
     manifest_dir = Path(f"robots/{name}")
+    assert robot.assets.urdf is not None
     urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
     assert urdf is not None
     geoms: dict[str, list[LinkCollisionGeometry]] = {}
@@ -57,7 +59,13 @@ def _load(name: str) -> tuple[object, dict[str, list[LinkCollisionGeometry]], fl
     return _load_urdf(str(urdf)), geoms, margin
 
 
-def _pair_gaps(model: object, geoms: dict, a: str, b: str, n_per_axis: int) -> np.ndarray:
+def _pair_gaps(
+    model: object,
+    geoms: dict[str, list[LinkCollisionGeometry]],
+    a: str,
+    b: str,
+    n_per_axis: int,
+) -> npt.NDArray[np.float64]:
     """Kernel surface gaps over a dense grid of the pair's relative-DoF subspace.
 
     Folded over the two links' primitives as the kernel folds them.
@@ -70,7 +78,10 @@ def _pair_gaps(model: object, geoms: dict, a: str, b: str, n_per_axis: int) -> n
     axes = [np.linspace(lo, hi, n_per_axis) for _, _, (lo, hi) in dofs]
     grids = np.meshgrid(*axes, indexing="ij")
     flat = [g.ravel() for g in grids]
-    values = {str(j.name): flat[i] for i, (j, _, _) in enumerate(dofs)}
+    values: dict[str, npt.NDArray[np.float64]] = {
+        str(j.name): flat[i]  # type: ignore[attr-defined]  # reason: yourdfpy joint typed object
+        for i, (j, _, _) in enumerate(dofs)
+    }
     n = int(flat[0].size)
     t_a = _chain_transforms(chain_a, values, n)
     t_b = _chain_transforms(chain_b, values, n)
@@ -90,7 +101,10 @@ def test_pair_moves_only_with_the_joints_between_the_links() -> None:
     model, geoms, _ = _load("panda_mobile")
     dofs = _pair_relative_dofs(model, "panda_link5", "panda_link7", geoms)
     assert dofs is not None
-    assert [str(j.name) for j, _, _ in dofs] == ["panda_joint6", "panda_joint7"]
+    assert [str(j.name) for j, _, _ in dofs] == [  # type: ignore[attr-defined]  # reason: yourdfpy joint typed object
+        "panda_joint6",
+        "panda_joint7",
+    ]
     # Every other joint really is irrelevant: pin joints 6/7 and sweep the rest.
     base = _pair_gaps(model, geoms, "panda_link5", "panda_link7", 2)
     assert base.shape == (4,)

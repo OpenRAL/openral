@@ -22,7 +22,7 @@ resolves on any workcell wiring a ZED into the octomap leg.
 from __future__ import annotations
 
 import pathlib
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 import yaml
@@ -42,7 +42,7 @@ _OVERRIDE_YAML = """\
 
 
 class _Scene(NamedTuple):
-    doc: dict[str, object]
+    doc: dict[str, Any]  # reason: parsed YAML scene document
     path: pathlib.Path
 
 
@@ -137,7 +137,7 @@ def test_the_zed_override_keeps_positional_tracking_off(_scene: _Scene) -> None:
     failure this override exists to prevent.
     """
     override = next(
-        (d["args"]["ros_params_override_path"] for d in _scene.doc["drivers"] if "args" in d),  # type: ignore[index]  # reason: shape asserted above
+        (d["args"]["ros_params_override_path"] for d in _scene.doc["drivers"] if "args" in d),
         None,
     )
     assert override is not None, "the ZED driver must pin its parameter override"
@@ -204,7 +204,7 @@ def test_relative_path_args_are_resolved_against_the_scene() -> None:
 def test_a_scene_without_drivers_is_valid() -> None:
     """Most workcells open their cameras directly and need no driver."""
     core = pytest.importorskip("openral_core")
-    assert core.DeployScene.model_fields["drivers"].default_factory() == []  # type: ignore[misc]  # reason: pydantic FieldInfo
+    assert core.DeployScene.model_fields["drivers"].default_factory() == []
 
 
 def test_an_unresolvable_driver_package_says_what_to_do() -> None:

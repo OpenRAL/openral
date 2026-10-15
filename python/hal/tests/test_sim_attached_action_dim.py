@@ -64,7 +64,7 @@ def test_libero_action_dim_is_seven() -> None:
         robot_id_fallback="franka_panda",
     )
     # The backend exposes its true action width (LIBERO OSC_POSE = 7).
-    assert env.action_dim == 7
+    assert env.action_dim == 7  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
 
     # And the HAL's probe picks it up (not the robosuite-mobile fallback of 11).
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
@@ -95,7 +95,7 @@ def test_send_action_surfaces_terminal_guard_without_reset() -> None:
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
     hal.connect()
 
-    robosuite_env = hal._env._robosuite_env()
+    robosuite_env = hal._env._robosuite_env()  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
     robosuite_env.ignore_done = False
     robosuite_env.done = True
 
@@ -136,7 +136,7 @@ def test_so101_box_action_dim_is_six() -> None:
         "scenes/sim/so101_tube_insertion.yaml", robot_id_fallback="so101_follower"
     )
     # The backend exposes its true action width (SO-101 = 6 joint targets).
-    assert env.action_dim == 6
+    assert env.action_dim == 6  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
 
     # And the HAL's probe picks it up with no explicit env_action_dim override.
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
@@ -160,12 +160,12 @@ def test_tabletop_push_action_dim_matches_robot_actuator_count() -> None:
     # Robot-agnostic scene: the action width is the compiled model's actuator
     # count (the robot's nu). The scene adds no actuators, so for the so101
     # flag this is the SO-101's 6.
-    assert env.action_dim == 6
+    assert env.action_dim == 6  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
 
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
     hal.connect()
-    assert hal._env_action_dim == env.action_dim
+    assert hal._env_action_dim == env.action_dim  # type: ignore[attr-defined]  # reason: on the backend, not SimRollout
 
 
 # NB: the openarm_tabletop_pnp counterpart of the two tests above deliberately

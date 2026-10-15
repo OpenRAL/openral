@@ -60,7 +60,7 @@ def env() -> Iterator[Any]:
     sim_env.close()
 
 
-def _steps(env: Any, action: np.ndarray, n: int) -> Any:
+def _steps(env: Any, action: np.ndarray[Any, Any], n: int) -> Any:
     result = None
     for _ in range(n):
         result = env.step(action)
@@ -310,9 +310,9 @@ def test_each_image_carries_the_sim_time_it_shows(env: Any) -> None:
     env.reset(seed=0)
     hold = np.full(env.action_dim, np.nan, dtype=np.float32)
     # (sim time after the step, {cam: frame time}, {cam: image})
-    rows: list[tuple[int, dict[str, int], dict[str, np.ndarray]]] = []
+    rows: list[tuple[int, dict[str, int], dict[str, np.ndarray[Any, Any]]]] = []
 
-    def record(action: np.ndarray) -> Any:
+    def record(action: np.ndarray[Any, Any]) -> Any:
         obs = env.step(action).observation
         assert "image_time_ns" in obs, "the Isaac observation carries no image_time_ns"
         rows.append(

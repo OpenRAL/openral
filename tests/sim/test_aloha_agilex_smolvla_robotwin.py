@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -91,7 +92,7 @@ def robotwin_rollout():
     rollout.close()
 
 
-def test_reset_returns_populated_observation(robotwin_rollout) -> None:
+def test_reset_returns_populated_observation(robotwin_rollout: Any) -> None:
     obs = robotwin_rollout.reset(seed=0)
     assert set(obs) >= {"images", "state", "task"}
     # All three RoboTwin cameras re-keyed to the scene's camera1/2/3.
@@ -103,7 +104,7 @@ def test_reset_returns_populated_observation(robotwin_rollout) -> None:
     assert obs["state"].size > 0
 
 
-def test_random_step_returns_finite_reward_and_success_key(robotwin_rollout) -> None:
+def test_random_step_returns_finite_reward_and_success_key(robotwin_rollout: Any) -> None:
     robotwin_rollout.reset(seed=1)
     rng = np.random.default_rng(0)
     action = (rng.standard_normal(robotwin_rollout.action_dim) * 0.1).astype(np.float32)

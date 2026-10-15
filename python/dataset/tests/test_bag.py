@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_dataset import RolloutRecorder, Rosbag2Sink
@@ -41,11 +42,16 @@ def _read_bag(bag_path: Path) -> list[tuple[str, dict[str, object]]]:
     return out
 
 
-def _zero_frame(robot: RobotDescription) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+def _zero_frame(
+    robot: RobotDescription,
+) -> tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]]:
     """Build (state, images, action) of the shapes the SO-100 expects."""
+    assert robot.observation_spec is not None
+    assert robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
-    images = {
+    images: dict[str, NDArray[np.uint8]] = {
         "camera1": np.zeros((16, 16, 3), dtype=np.uint8),
         "camera2": np.zeros((16, 16, 3), dtype=np.uint8),
     }
@@ -164,8 +170,14 @@ def test_bag_round_trip_one_episode(so100_robot: RobotDescription, tmp_path: Pat
     # Per-tick rewards + inline observation/action arrays survive the round-trip.
     assert non_image[1][1]["reward"] == 0.0
     assert non_image[2][1]["reward"] == pytest.approx(0.7)
-    assert len(non_image[1][1]["observation_state"]) == so100_robot.observation_spec.state_shape[0]
-    assert len(non_image[1][1]["action"]) == so100_robot.action_spec.dim
+    assert so100_robot.observation_spec is not None
+    assert so100_robot.action_spec is not None
+    tick_state = non_image[1][1]["observation_state"]
+    tick_action = non_image[1][1]["action"]
+    assert isinstance(tick_state, list)
+    assert isinstance(tick_action, list)
+    assert len(tick_state) == so100_robot.observation_spec.state_shape[0]
+    assert len(tick_action) == so100_robot.action_spec.dim
 
 
 def test_bag_round_trip_multiple_episodes(so100_robot: RobotDescription, tmp_path: Path) -> None:

@@ -33,10 +33,16 @@ import importlib.util
 import math
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from openral_core import CameraTopicKind, camera_topic
+
+if TYPE_CHECKING:
+    from rclpy.executors import Executor
+    from rclpy.lifecycle import LifecycleNode
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -133,17 +139,17 @@ pytestmark = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _spin_until(executor: object, condition: object, timeout_s: float) -> bool:
+def _spin_until(executor: Executor, condition: Callable[[], object], timeout_s: float) -> bool:
     """Spin *executor* (rclpy) until *condition()* is truthy or *timeout_s* elapses."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        executor.spin_once(timeout_sec=0.05)  # type: ignore[union-attr]
-        if condition():  # type: ignore[operator]
+        executor.spin_once(timeout_sec=0.05)
+        if condition():
             return True
     return False
 
 
-def _drive_configure(node: object, executor: object, timeout_s: float) -> bool:
+def _drive_configure(node: LifecycleNode, executor: Executor, timeout_s: float) -> bool:
     """Call trigger_configure and spin until SUCCESS or timeout.
 
     The configure transition calls ``build_sim_env_from_yaml`` which in turn
@@ -154,20 +160,20 @@ def _drive_configure(node: object, executor: object, timeout_s: float) -> bool:
 
     Returns True on SUCCESS.
     """
-    from rclpy.lifecycle import TransitionCallbackReturn  # type: ignore[import-untyped]
+    from rclpy.lifecycle import TransitionCallbackReturn
 
     result_box: list[TransitionCallbackReturn] = []
 
     import threading
 
     def _do_configure() -> None:
-        result_box.append(node.trigger_configure())  # type: ignore[union-attr]
+        result_box.append(node.trigger_configure())
 
     t = threading.Thread(target=_do_configure, daemon=True)
     t.start()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        executor.spin_once(timeout_sec=0.1)  # type: ignore[union-attr]
+        executor.spin_once(timeout_sec=0.1)
         if result_box:
             break
         if not t.is_alive():
@@ -202,16 +208,16 @@ def test_panda_mobile_robocasa_sensor_bridge_regression() -> None:
     """
     # Import rclpy only inside the function body — the module-level skip guards
     # above prevent reaching this point without ROS 2 available.
-    import rclpy  # type: ignore[import-untyped]
-    from nav_msgs.msg import Odometry  # type: ignore[import-untyped]
-    from rclpy.lifecycle import TransitionCallbackReturn  # type: ignore[import-untyped]
-    from rclpy.parameter import Parameter  # type: ignore[import-untyped]
-    from rclpy.qos import (  # type: ignore[import-untyped]
+    import rclpy
+    from nav_msgs.msg import Odometry
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
         QoSDurabilityPolicy,
         QoSProfile,
         QoSReliabilityPolicy,
     )
-    from sensor_msgs.msg import LaserScan, PointCloud2  # type: ignore[import-untyped]
+    from sensor_msgs.msg import LaserScan, PointCloud2
 
     # ── Import the generic manifest-driven node (issue #191 Phase 3) ─────────
     try:
@@ -226,7 +232,7 @@ def test_panda_mobile_robocasa_sensor_bridge_regression() -> None:
     # ── Guard: robocasa/NavigateKitchen registered in openral_sim ────────────
     try:
         from openral_sim.registry import (
-            SCENES,  # type: ignore[import-untyped]  # reason: optional dep
+            SCENES,
         )
 
         if "robocasa/NavigateKitchen" not in SCENES:

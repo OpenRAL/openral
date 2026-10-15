@@ -193,7 +193,7 @@ def test_moveit_joints_rskill_plans_with_cumotion_pipeline() -> None:
                 assert skill._goal_dict["request"]["pipeline_id"] == CUMOTION_PIPELINE_ID
                 skill.activate()
 
-                first = skill.step(world_state=None)  # type: ignore[arg-type]
+                first = skill.step(world_state=None)
                 assert first.control_mode is ControlMode.JOINT_POSITION
                 assert first.horizon == 1
                 assert len(first.joint_targets[0]) == len(description.joints)

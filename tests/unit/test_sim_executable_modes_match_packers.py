@@ -121,7 +121,7 @@ def _representative_action(mode: ControlMode) -> Action:
     # of tripping its earlier ``not joint_targets`` empty-payload guard.
     fields: dict[str, object] = {"joint_targets": [[0.0] * 7]}
     fields.update(payloads[mode])
-    return Action(control_mode=mode, **fields)  # type: ignore[arg-type]  # reason: per-mode payload kwargs
+    return Action(control_mode=mode, **fields)
 
 
 def _bare_sim_hal(description: RobotDescription) -> SimAttachedHAL:

@@ -117,6 +117,7 @@ def test_tick_safety_violations_increment_counter(
     assert len(points) == 1
     point = points[0]
     assert isinstance(point, NumberDataPoint)
+    assert point.attributes is not None
     assert point.attributes[semconv.LABEL_CHECK_NAME] == "runtime"
     assert point.attributes[semconv.LABEL_SEVERITY] == "violation"
     assert point.value == 2
@@ -167,6 +168,6 @@ def test_safety_violation_exception_recorded_on_tick_span() -> None:
     client = NullSafetyClient()
     action = Action(control_mode=ControlMode.JOINT_POSITION)
     # NullSafetyClient is always permissive — never raises.
-    assert client.check_action(action) is None
+    client.check_action(action)
     # The exception family hierarchy is the contract used by the runner.
     assert issubclass(ROSWorkspaceViolation, ROSSafetyViolation)

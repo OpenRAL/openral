@@ -14,7 +14,7 @@ Three behaviours added by the supervision-loop fixes:
 
 from __future__ import annotations
 
-from openral_core import EmitPromptTool, ObjectDetection2D, ObjectsMetadata
+from openral_core import EmitPromptTool, ObjectDetection2D, ObjectsMetadata, ReasonerToolCall
 from openral_reasoner import ContextRenderer, ReasonerCore
 from openral_reasoner.palette import ToolPalette
 
@@ -63,7 +63,9 @@ def test_heartbeat_stays_live_while_a_skill_is_inflight() -> None:
     # A non-empty palette (a sensor id suffices) so the palette_empty
     # short-circuit does not mask the gate under test.
     palette = ToolPalette(execute_rskill_ids=frozenset(), sensor_ids=frozenset({"top"}))
-    responses = [EmitPromptTool(target_topic="/openral/prompt", text=f"t{i}") for i in range(3)]
+    responses: list[ReasonerToolCall] = [
+        EmitPromptTool(target_topic="/openral/prompt", text=f"t{i}") for i in range(3)
+    ]
     client = FakeToolUseClient(responses=responses)
     core = ReasonerCore(client=client, min_interval_s=0.0)
     r = ContextRenderer()

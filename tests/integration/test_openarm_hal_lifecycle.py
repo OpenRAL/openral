@@ -59,8 +59,8 @@ def captured_spans() -> Iterator[InMemorySpanExporter]:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     # opentelemetry-api guards against re-setting the global provider once it
     # has been set; bypass that for the test by zeroing the set-once flag.
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(provider)
     yield exporter
     exporter.clear()
@@ -243,7 +243,7 @@ def test_publish_joint_state_emits_hal_read_state_span(
         _spin_for(executor, 0.3)
     spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.read_state"]
     assert spans, "no hal.read_state span emitted by openral_hal_openarm timer"
-    attrs = dict(spans[0].attributes or {})
+    attrs: dict[str, Any] = dict(spans[0].attributes or {})
     assert attrs.get("openral.hal.adapter") == "mujocoarmhal"
     assert attrs.get("openral.hal.robot.model"), "openral.hal.robot.model must be set"
     assert attrs.get("openral.tick.idx") == 0
@@ -297,7 +297,7 @@ def test_on_safe_action_emits_hal_send_action_span(
 
     spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.send_action"]
     assert spans, "no hal.send_action span emitted after /openral/safe_action publish"
-    attrs = dict(spans[0].attributes or {})
+    attrs: dict[str, Any] = dict(spans[0].attributes or {})
     assert attrs.get("openral.hal.adapter") == "mujocoarmhal"
     assert attrs.get("openral.hal.control_mode") == "joint_position"
     next_row = list(attrs.get("openral.hal.action.next") or [])

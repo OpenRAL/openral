@@ -18,7 +18,7 @@ from openral_core import (
 )
 from pydantic import TypeAdapter, ValidationError
 
-ADAPTER = TypeAdapter(PerceptionEventMetadata)
+ADAPTER: TypeAdapter[PerceptionEventMetadata] = TypeAdapter(PerceptionEventMetadata)
 
 
 def test_motion_round_trip() -> None:

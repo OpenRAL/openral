@@ -37,7 +37,7 @@ def test_save_world_mp4_writes_square_video(tmp_path: Path) -> None:
         size=256,
     )
     assert out.exists()
-    reader = iio.get_reader(out, format="ffmpeg")
+    reader = iio.get_reader(out, format="ffmpeg")  # type: ignore[arg-type]  # reason: imageio stub types format as Format, str is the documented form
     try:
         frame = reader.get_data(0)  # first frame
     finally:
@@ -92,9 +92,9 @@ def test_write_world_grid_tiles_every_episode_keeping_aspect(tmp_path: Path) -> 
     ]
     episodes[2].total_reward = 0.25
     out = write_world_grid(episodes, tmp_path / "grid.mp4", tile_height=90, fps=10)
-    reader = iio.get_reader(out, format="ffmpeg")
+    reader = iio.get_reader(out, format="ffmpeg")  # type: ignore[arg-type]  # reason: imageio stub types format as Format, str is the documented form
     try:
-        n_frames, first = reader.count_frames(), reader.get_data(0)
+        n_frames, first = reader.count_frames(), reader.get_data(0)  # type: ignore[attr-defined]  # reason: ffmpeg plugin Reader method, absent from the base stub
     finally:
         reader.close()
     # 3 clips -> 2 columns x 2 rows of 160 x 90 tiles; the shortest clips hold their
@@ -115,7 +115,7 @@ def test_write_world_grid_rounds_an_odd_tile_height_to_even(tmp_path: Path) -> N
     out = write_world_grid(
         [_result_with_frames(2, 64, 96, success=True)], tmp_path / "odd.mp4", tile_height=91
     )
-    reader = iio.get_reader(out, format="ffmpeg")
+    reader = iio.get_reader(out, format="ffmpeg")  # type: ignore[arg-type]  # reason: imageio stub types format as Format, str is the documented form
     try:
         assert reader.get_data(0).shape[0] == 90
     finally:
@@ -218,6 +218,7 @@ def test_sim_run_videos_play_at_the_robot_control_rate() -> None:
         str(Path(__file__).parents[2] / "robots/openarm/robot.yaml")
     )
     assert openarm.action_spec is not None
+    assert openarm.action_spec.control_freq_hz is not None
     assert _robot_control_rate_hz("openarm") == float(openarm.action_spec.control_freq_hz) == 30.0
     assert _control_rate_hz(openarm.model_copy(update={"action_spec": None})) == 30.0
     assert _robot_control_rate_hz(None) == 30.0

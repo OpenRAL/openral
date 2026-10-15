@@ -133,7 +133,9 @@ class TestReadState:
         assert len(state.velocity) == 6
         assert state.stamp_ns > 0
 
-    def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
+    def test_perception_starvation_warns_not_latch_when_old(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
 
         Deploy-sim regression: ``read_state`` reads live in-process ``MjData``

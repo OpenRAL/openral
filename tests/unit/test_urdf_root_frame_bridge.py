@@ -34,6 +34,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ROBOTS = _REPO_ROOT / "robots"
 
 
+def _attr(element: ET.Element, child: str, key: str) -> str:
+    """``element.find(child).get(key)``, asserted present."""
+    found = element.find(child)
+    assert found is not None, child
+    value = found.get(key)
+    assert value is not None, key
+    return value
+
+
 def _file_urdf_manifests() -> list[tuple[str, Path, Path]]:
     """Every manifest whose ``assets.urdf.ref`` is an in-tree ``file:`` URDF."""
     found: list[tuple[str, Path, Path]] = []
@@ -123,12 +132,12 @@ def test_openarm_bridge_matches_the_offset_in_its_urdf() -> None:
     joints = {j.get("name"): j for j in root.findall("joint")}
 
     arm_mount = joints["openarm_left_base_link_mount_joint"]
-    assert arm_mount.find("parent").get("link") == "openarm_body_link0"
-    pedestal_z = float(arm_mount.find("origin").get("xyz").split()[2])
+    assert _attr(arm_mount, "parent", "link") == "openarm_body_link0"
+    pedestal_z = float(_attr(arm_mount, "origin", "xyz").split()[2])
 
     body_mount = joints["openarm_body_link0_mount_joint"]
-    assert body_mount.find("parent").get("link") == "world"
-    assert [float(v) for v in body_mount.find("origin").get("xyz").split()] == [0.0, 0.0, 0.0]
+    assert _attr(body_mount, "parent", "link") == "world"
+    assert [float(v) for v in _attr(body_mount, "origin", "xyz").split()] == [0.0, 0.0, 0.0]
 
     asset = description.assets.urdf
     assert asset is not None

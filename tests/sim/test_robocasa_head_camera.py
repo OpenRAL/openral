@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_sim.backends.robocasa import _RoboCasaSim
 
 _HAVE_ROBOSUITE = importlib.util.find_spec("robosuite") is not None
 pytestmark = pytest.mark.skipif(
@@ -25,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _build_navigate_kitchen():
+def _build_navigate_kitchen() -> _RoboCasaSim:
     from openral_core.schemas import (
         PhysicsBackend,
         SceneSpec,

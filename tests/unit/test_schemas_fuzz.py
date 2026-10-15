@@ -542,7 +542,7 @@ _FUZZ_SETTINGS = settings(
 )
 
 
-def _round_trip_and_validate(cls: type, instance: object) -> None:  # type: ignore[type-arg]
+def _round_trip_and_validate(cls: type, instance: object) -> None:
     """Serialize → deserialize and JSON Schema validate."""
     serialized = instance.model_dump_json()  # type: ignore[attr-defined]
     reloaded = cls.model_validate_json(serialized)  # type: ignore[attr-defined]

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import tomllib
@@ -33,7 +34,7 @@ PACKAGE_DIRS = sorted(
 _SIBLING_RE = re.compile(r"^(openral-[a-z0-9-]+)(\[[a-z0-9,-]+\])?(.*)$")
 
 
-def _pyproject(path: Path) -> dict:
+def _pyproject(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
@@ -90,8 +91,11 @@ def test_every_package_is_in_the_publish_matrix() -> None:
     )
 
 
-def _release_please_config() -> dict:
-    return json.loads((REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+def _release_please_config() -> dict[str, Any]:
+    config: dict[str, Any] = json.loads(
+        (REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8")
+    )
+    return config
 
 
 def test_every_package_is_an_extra_file() -> None:

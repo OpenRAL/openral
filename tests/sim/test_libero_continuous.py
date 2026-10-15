@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_sim.backends.libero import _LiberoSim
 
 _REQUIRED = ("robosuite", "libero", "mujoco")
 _MISSING = tuple(m for m in _REQUIRED if importlib.util.find_spec(m) is None)
@@ -42,7 +46,7 @@ pytestmark = [
 ]
 
 
-def _build(max_steps: int):
+def _build(max_steps: int) -> _LiberoSim:
     from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
     from openral_sim.backends.libero import _build_libero_scene
 

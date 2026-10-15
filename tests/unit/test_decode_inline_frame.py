@@ -9,6 +9,7 @@ inline pixels.
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 from openral_core.schemas import FrameEncoding, SensorFrame
 from openral_runner.dataset_recorder_bridge import decode_inline_frame
 
@@ -44,7 +45,7 @@ def test_truncated_or_padded_payloads_are_skipped_not_raised() -> None:
     assert short is None and padded is None and half_depth is None
 
 
-def _encoded(fmt: str, rgb: np.ndarray) -> bytes:
+def _encoded(fmt: str, rgb: npt.NDArray[np.uint8]) -> bytes:
     import io
 
     from PIL import Image

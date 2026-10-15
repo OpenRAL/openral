@@ -155,8 +155,10 @@ def test_the_ros2_image_reader_spin_thread_ends_quietly_on_shutdown() -> None:
     try:
         reader.open()
         rclpy.shutdown()
-        reader._spin_thread.join(timeout=5.0)  # reason: the thread under test
-        assert not reader._spin_thread.is_alive()
+        spin = reader._spin_thread  # reason: the thread under test
+        assert spin is not None
+        spin.join(timeout=5.0)
+        assert not spin.is_alive()
         assert errors == []
     finally:
         threading.excepthook = previous  # type: ignore[assignment]  # reason: restoring the saved hook

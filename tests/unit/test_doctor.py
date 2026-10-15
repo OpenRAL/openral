@@ -6,7 +6,7 @@ import json
 import sys
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +26,15 @@ from openral_cli.main import (
     app,
 )
 from typer.testing import CliRunner
+
+if TYPE_CHECKING:
+    from openral_detect.report import (
+        AppleSiliconInfo,
+        GpuBackend,
+        GpuProbeResult,
+        JetsonInfo,
+        NvidiaGpuInfo,
+    )
 
 runner = CliRunner()
 
@@ -137,7 +146,13 @@ def test_check_colcon_absent() -> None:
 # ── _check_gpu ────────────────────────────────────────────────────────────────
 
 
-def _gpu_probe_stub(*, nvidia=None, jetson=None, apple_silicon=None, backend="none"):
+def _gpu_probe_stub(
+    *,
+    nvidia: list[NvidiaGpuInfo] | None = None,
+    jetson: JetsonInfo | None = None,
+    apple_silicon: AppleSiliconInfo | None = None,
+    backend: GpuBackend = "none",
+) -> GpuProbeResult:
     from openral_detect.report import GpuProbeResult
 
     return GpuProbeResult(

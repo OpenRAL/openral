@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core.schemas import (
@@ -43,7 +44,7 @@ VSLAM_MANIFEST = REPO_ROOT / "robots" / "panda_mobile_vslam" / "robot.yaml"
 pytest.importorskip("numpy", reason="numpy is required to check mesh containment")
 
 
-def _mesh_tools():
+def _mesh_tools() -> Any:  # tools/generate_tight_geometry (not on mypy_path)
     """Import the generator + its mesh dependencies, or skip."""
     pytest.importorskip("mujoco", reason="mujoco is the mesh source for the containment proof")
     robosuite = pytest.importorskip(
@@ -70,7 +71,7 @@ def _mesh_tools():
 
 @pytest.fixture(scope="module")
 def panda() -> RobotDescription:
-    return RobotDescription.from_yaml(PANDA_MANIFEST)
+    return RobotDescription.from_yaml(str(PANDA_MANIFEST))
 
 
 def _declared(robot: RobotDescription) -> list[LinkCollisionGeometry]:

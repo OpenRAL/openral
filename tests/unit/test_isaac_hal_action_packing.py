@@ -22,13 +22,19 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import Action, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import ControlMode
 from openral_sim.backends.isaac_sim import IsaacActionLayout, pack_isaac_action
+
+if TYPE_CHECKING:
+    from openral_hal.sim_attached import SimAttachedHAL
+    from openral_sim.rollout import SimRollout
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FAKE_SIDECAR = _REPO_ROOT / "tests" / "unit" / "fakes" / "isaac_sidecar_no_kit.py"
@@ -38,7 +44,7 @@ def _desc(robot: str) -> RobotDescription:
     return RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot / "robot.yaml"))
 
 
-def _nan_eq(got: np.ndarray, want: list[float]) -> None:
+def _nan_eq(got: npt.ArrayLike, want: list[float]) -> None:
     np.testing.assert_array_equal(np.isnan(got), np.isnan(np.asarray(want)))
     np.testing.assert_allclose(np.nan_to_num(got), np.nan_to_num(np.asarray(want)), atol=1e-6)
 
@@ -150,7 +156,7 @@ def recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return out
 
 
-def _hal(robot: str, scene: str):
+def _hal(robot: str, scene: str) -> tuple[SimAttachedHAL, SimRollout]:
     import openral_sim.backends  # noqa: F401 — registers the isaac_sim scene
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_bringup import build_sim_env_from_yaml
@@ -208,7 +214,7 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
         return [row]
 
     def slot(**kw: object) -> Action:
-        return Action(tick_index=1, tick_group_size=4, **kw)  # type: ignore[arg-type]
+        return Action(tick_index=1, tick_group_size=4, **kw)
 
     hal, env = _hal("openarm", "isaac_openarm_warehouse.yaml")
     try:

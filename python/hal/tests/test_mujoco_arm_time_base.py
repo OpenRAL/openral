@@ -7,7 +7,13 @@ relied on the wall-time idle stepper to keep its clock moving.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import Action
+    from openral_hal._mujoco_arm import MujocoArmHAL
 
 pytest.importorskip("mujoco")
 
@@ -25,7 +31,7 @@ def _connected(**kwargs: object):  # type: ignore[no-untyped-def]  # reason: tes
     return hal
 
 
-def _hold(hal):  # type: ignore[no-untyped-def]  # reason: test helper
+def _hold(hal: MujocoArmHAL) -> Action:
     from openral_core import Action, ControlMode
 
     return Action(

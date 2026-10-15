@@ -17,7 +17,7 @@ import math
 import numpy as np
 import pytest
 from openral_core import ROSConfigError, StateContractBindings
-from openral_state_adapter._protocol import TransformView
+from openral_state_adapter._protocol import TfLookup, TransformView
 from openral_state_adapter.layouts.libero_eef8d import (
     _quat_xyzw_to_axisangle,
     assemble_libero_eef8d,
@@ -30,7 +30,7 @@ _WORLD_FRAME = "world"
 _GRIPPER_2 = ["panda_finger_joint1", "panda_finger_joint2"]
 
 
-def _tf(pos: tuple[float, float, float], quat_xyzw: tuple[float, float, float, float]):
+def _tf(pos: tuple[float, float, float], quat_xyzw: tuple[float, float, float, float]) -> TfLookup:
     def _lookup(target_frame: str, source_frame: str) -> TransformView:
         assert target_frame == _WORLD_FRAME
         assert source_frame == _EEF_FRAME

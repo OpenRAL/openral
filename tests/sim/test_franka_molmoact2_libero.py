@@ -25,8 +25,13 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import SimEnvironment
+    from openral_sim.policies.molmoact2 import _MolmoAct2Adapter
 
 from tests.sim.conftest import _libero_robosuite_conflict
 
@@ -77,7 +82,7 @@ def env_cfg():
 class TestMolmoAct2LiberoMigratedAdapter:
     """The migrated adapter loads the in-tree class and emits a valid action."""
 
-    def test_loads_intree_class_and_steps(self, env_cfg) -> None:
+    def test_loads_intree_class_and_steps(self, env_cfg: SimEnvironment) -> None:
         import numpy as np
         from openral_sim import make_env, make_policy
 
@@ -92,7 +97,7 @@ class TestMolmoAct2LiberoMigratedAdapter:
 
         torch.cuda.reset_peak_memory_stats()
         env = make_env(env_cfg)
-        policy = make_policy(env_cfg)
+        policy = cast("_MolmoAct2Adapter", make_policy(env_cfg))
         try:
             # The model graph must be lerobot's in-tree MolmoAct2 class, not a
             # transformers_modules.* remote-code class.

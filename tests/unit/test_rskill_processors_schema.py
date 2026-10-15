@@ -99,7 +99,7 @@ class TestControlModeSemantics:
 
     def test_unknown_mode_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            ControlModeSemantics(mode="random")  # type: ignore[arg-type]
+            ControlModeSemantics(mode="random")
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -136,7 +136,7 @@ class TestActuatorRequirementSemanticsRules:
             kind=ControlMode.GRIPPER_POSITION,
             control_mode_semantics=ControlModeSemantics(
                 mode="absolute",
-                gripper_convention=convention,  # type: ignore[arg-type]
+                gripper_convention=convention,
             ),
         )
         assert a.control_mode_semantics.gripper_convention == convention
@@ -249,7 +249,7 @@ class TestProcessorsRequiredForModernFamilies:
         if family == "rldx":
             kwargs["embodiment_tags"] = ["franka_panda"]
         with pytest.raises(ValidationError, match="processors"):
-            RSkillManifest(**kwargs)  # type: ignore[arg-type]
+            RSkillManifest(**kwargs)
 
     @pytest.mark.parametrize(
         "family",
@@ -259,7 +259,7 @@ class TestProcessorsRequiredForModernFamilies:
         kwargs = _minimal_modern_manifest_kwargs(family)
         if family == "rldx":
             kwargs["embodiment_tags"] = ["franka_panda"]
-        m = RSkillManifest(**kwargs, processors=_processors())  # type: ignore[arg-type]
+        m = RSkillManifest(**kwargs, processors=_processors())
         assert m.processors is not None
         assert m.processors.preprocessor_uri.endswith("preprocessor.json")
 
@@ -269,7 +269,7 @@ class TestProcessorsRequiredForModernFamilies:
         """
         kwargs = _minimal_modern_manifest_kwargs("act")
         kwargs["embodiment_tags"] = ["aloha"]
-        m = RSkillManifest(**kwargs)  # type: ignore[arg-type]
+        m = RSkillManifest(**kwargs)
         assert m.processors is None
 
     def test_act_family_with_processors_accepted_modern_path(self) -> None:
@@ -277,5 +277,5 @@ class TestProcessorsRequiredForModernFamilies:
         by ``rskills/act-libero`` whose upstream ships JSON sidecars)."""
         kwargs = _minimal_modern_manifest_kwargs("act")
         kwargs["embodiment_tags"] = ["aloha"]
-        m = RSkillManifest(**kwargs, processors=_processors())  # type: ignore[arg-type]
+        m = RSkillManifest(**kwargs, processors=_processors())
         assert m.processors is not None

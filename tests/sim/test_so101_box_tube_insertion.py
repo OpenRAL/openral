@@ -15,9 +15,14 @@ from __future__ import annotations
 
 import math
 import os
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core.schemas import SimEnvironment
+    from openral_sim.backends.so101_box.env import _So101BoxRollout
 
 # Force EGL (off-screen) rendering so CI hosts without a display don't abort.
 # The classic renderer calls glXOpenDisplay() and raises SIGABRT on headless
@@ -67,7 +72,7 @@ pytestmark = [
 
 
 @pytest.fixture
-def env_cfg():
+def env_cfg() -> SimEnvironment:
     """Build a real ``SimEnvironment`` for the so101_box scene."""
     from openral_core.schemas import (
         SceneSpec,
@@ -133,11 +138,9 @@ def test_so101_box_mjcf_compiles() -> None:
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, n) >= 0, f"missing site {n!r}"
 
 
-def test_so101_box_reset_observation_shapes(env_cfg) -> None:
+def test_so101_box_reset_observation_shapes(env_cfg: SimEnvironment) -> None:
     """``reset`` returns an observation with the expected image keys + shapes."""
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     obs = rollout.reset(seed=0)
     assert set(obs.keys()) == {"images", "state", "task"}
     assert set(obs["images"].keys()) == {"oak_top", "oak_top_depth", "wrist"}
@@ -152,15 +155,14 @@ def test_so101_box_reset_observation_shapes(env_cfg) -> None:
     rollout.close()
 
 
-def test_so101_box_step_runs_and_reports_failure(env_cfg) -> None:
+def test_so101_box_step_runs_and_reports_failure(env_cfg: SimEnvironment) -> None:
     """5 zero-action steps run without raising; success stays False."""
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     rollout.reset(seed=0)
     action = np.zeros(6, dtype=np.float32)
     for _ in range(5):
         res = rollout.step(action)
+    assert env_cfg.task.success_key is not None
     assert res.info[env_cfg.task.success_key] is False
     assert res.terminated is False
     assert isinstance(res.reward, float)
@@ -175,7 +177,7 @@ def test_so101_box_scene_has_fill_light() -> None:
     assert "<headlight" in xml, "expected an injected fill headlight in the scene"
 
 
-def test_so101_box_wrist_camera_sees_lit_scene(env_cfg) -> None:
+def test_so101_box_wrist_camera_sees_lit_scene(env_cfg: SimEnvironment) -> None:
     """The wrist camera frames a lit scene, not a dark box wall.
 
     Regression: the wrist camera used to aim along gripper-local -Y (sideways
@@ -183,9 +185,7 @@ def test_so101_box_wrist_camera_sees_lit_scene(env_cfg) -> None:
     near-uniform frame (mean luminance ~45). Re-aimed along the approach axis
     (-X) + fill light, the gripper + workspace are in frame and lit.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     obs = rollout.reset(seed=0)
     wrist = np.asarray(obs["images"]["wrist"], dtype=np.float64).mean(axis=2)
     rollout.close()
@@ -194,16 +194,14 @@ def test_so101_box_wrist_camera_sees_lit_scene(env_cfg) -> None:
     )
 
 
-def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg) -> None:
+def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg: SimEnvironment) -> None:
     """The wrist camera matches the static-finger-mounted, inverted phone pose.
 
     The pose replicates the real lerobot SO-101 wrist rig (Cornito/so101_test2):
     mounted on the static finger face, rolled 180° (``up = (0, 0, -1)``) and
     pitched so the open jaws hang into the bottom ~20% of the frame.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     rollout.reset(seed=0)
     model, data = rollout.mujoco_handles()
     cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
@@ -224,7 +222,7 @@ def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg) -> None:
     assert float(np.dot(cam_up_local, expected_up)) > 0.999
 
 
-def test_so101_box_nonzero_action_moves_arm(env_cfg) -> None:
+def test_so101_box_nonzero_action_moves_arm(env_cfg: SimEnvironment) -> None:
     """A non-zero joint-position target actually moves the arm.
 
     Regression: the upstream MJCF's <position> actuators declare no
@@ -233,31 +231,35 @@ def test_so101_box_nonzero_action_moves_arm(env_cfg) -> None:
     all joints to zero — the arm never moved regardless of the policy.
     The clip now uses the joint position limits.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     q0 = np.asarray(rollout.reset(seed=0)["state"], dtype=np.float64)
     target = np.array([0.4, 0.6, 0.4, 0.3, -0.3, 0.4], dtype=np.float32)  # rad, within limits
     res = None
     for _ in range(80):
         res = rollout.step(target)
+    assert res is not None
     q1 = np.asarray(res.observation["state"], dtype=np.float64)
     assert np.max(np.abs(q1 - q0)) > 0.1, "arm did not move toward the commanded target"
     rollout.close()
 
 
-def _env_with_backend_options(env_cfg, **opts):
+def _rollout(env: SimEnvironment) -> _So101BoxRollout:
+    """Build the so101_box rollout, typed as the concrete class (tests reach its internals)."""
+    from openral_sim import SCENES
+
+    return cast("_So101BoxRollout", SCENES.get("so101_box")(env))
+
+
+def _env_with_backend_options(env_cfg: SimEnvironment, **opts: object) -> SimEnvironment:
     """Clone ``env_cfg`` with ``scene.backend_options`` overrides."""
     return env_cfg.model_copy(
         update={"scene": env_cfg.scene.model_copy(update={"backend_options": dict(opts)})},
     )
 
 
-def test_so101_box_degrees_units_roundtrip(env_cfg) -> None:
+def test_so101_box_degrees_units_roundtrip(env_cfg: SimEnvironment) -> None:
     """``joint_units: degrees`` reports state in degrees and accepts degree actions."""
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(_env_with_backend_options(env_cfg, joint_units="degrees"))
+    rollout = _rollout(_env_with_backend_options(env_cfg, joint_units="degrees"))
     obs = rollout.reset(seed=0)
     # Arm channels report degrees == degrees(raw radian qpos); the gripper
     # channel is normalised [0, 100] over the jaw range, not degrees.
@@ -283,22 +285,20 @@ def test_so101_box_degrees_units_roundtrip(env_cfg) -> None:
     rollout.close()
 
 
-def test_so101_box_invalid_joint_units_rejected(env_cfg) -> None:
+def test_so101_box_invalid_joint_units_rejected(env_cfg: SimEnvironment) -> None:
     """An unknown joint_units value fails loudly at build time."""
     from openral_core.exceptions import ROSConfigError
-    from openral_sim import SCENES
 
     bad = _env_with_backend_options(env_cfg, joint_units="gradians")
     with pytest.raises(ROSConfigError, match="joint_units"):
-        SCENES.get("so101_box")(bad)
+        _rollout(bad)
 
 
-def test_so101_box_calibration_affine_offsets_state(env_cfg) -> None:
+def test_so101_box_calibration_affine_offsets_state(env_cfg: SimEnvironment) -> None:
     """joint_offsets_deg shifts the reported state by the per-joint offset."""
-    from openral_sim import SCENES
 
     offsets = [3.0, 123.0, 124.0, 58.0, -11.0, 9.0]
-    rollout = SCENES.get("so101_box")(
+    rollout = _rollout(
         _env_with_backend_options(env_cfg, joint_units="degrees", joint_offsets_deg=offsets)
     )
     obs = rollout.reset(seed=0)
@@ -311,16 +311,14 @@ def test_so101_box_calibration_affine_offsets_state(env_cfg) -> None:
     rollout.close()
 
 
-def test_so101_box_calibration_affine_action_roundtrip(env_cfg) -> None:
+def test_so101_box_calibration_affine_action_roundtrip(env_cfg: SimEnvironment) -> None:
     """An action equal to the reported state holds the pose (affine inverts cleanly).
 
     state→model uses ``signs*deg+offset``; action→sim must invert it, so
     commanding the current reported state as the target should drive the joints
     back to (approximately) their current qpos rather than somewhere else.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(
+    rollout = _rollout(
         _env_with_backend_options(
             env_cfg,
             joint_units="degrees",
@@ -341,16 +339,16 @@ def test_so101_box_calibration_affine_action_roundtrip(env_cfg) -> None:
     )
 
 
-def test_so101_box_gripper_channel_is_lerobot_normalised_not_degrees(env_cfg) -> None:
+def test_so101_box_gripper_channel_is_lerobot_normalised_not_degrees(
+    env_cfg: SimEnvironment,
+) -> None:
     """The gripper obs/action channel is lerobot [0, 100] jaw travel, not degrees.
 
     The old degrees mapping reported the closed jaw as degrees(qpos) ≈ -10 (the
     MJCF jaw range starts at -10°) and clipped commanded values ≥ 100 "degrees"
     to the jaw's radian limit — the channel was unusable for grasping.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(_env_with_backend_options(env_cfg, joint_units="degrees"))
+    rollout = _rollout(_env_with_backend_options(env_cfg, joint_units="degrees"))
     try:
         obs = rollout.reset(seed=0)
         state = np.asarray(obs["state"], dtype=np.float32)
@@ -368,7 +366,7 @@ def test_so101_box_gripper_channel_is_lerobot_normalised_not_degrees(env_cfg) ->
         rollout.close()
 
 
-def test_so101_box_one_step_advances_a_full_control_period(env_cfg) -> None:
+def test_so101_box_one_step_advances_a_full_control_period(env_cfg: SimEnvironment) -> None:
     """``step()`` advances 1/control_hz of SIM TIME, not one 2 ms physics tick.
 
     A 30 FPS-trained checkpoint's absolute joint targets each assume ~33 ms of
@@ -376,9 +374,7 @@ def test_so101_box_one_step_advances_a_full_control_period(env_cfg) -> None:
     1/17th of that, so the arm never reaches any target and the policy
     re-issues near-home commands forever.
     """
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     try:
         rollout.reset(seed=0)
         model, data = rollout.mujoco_handles()
@@ -394,23 +390,21 @@ def test_so101_box_one_step_advances_a_full_control_period(env_cfg) -> None:
         rollout.close()
 
 
-def test_so101_box_invalid_joint_signs_rejected(env_cfg) -> None:
+def test_so101_box_invalid_joint_signs_rejected(env_cfg: SimEnvironment) -> None:
     """joint_signs entries other than ±1 fail loudly."""
     from openral_core.exceptions import ROSConfigError
-    from openral_sim import SCENES
 
     bad = _env_with_backend_options(env_cfg, joint_signs=[1, 1, 1, 1, 1, 2])
     with pytest.raises(ROSConfigError, match="joint_signs"):
-        SCENES.get("so101_box")(bad)
+        _rollout(bad)
 
 
-def test_so101_box_random_spawn_varies_with_seed(env_cfg) -> None:
+def test_so101_box_random_spawn_varies_with_seed(env_cfg: SimEnvironment) -> None:
     """Two different seeds produce two different spawn poses."""
-    from openral_sim import SCENES
 
     seeds_to_poses: dict[int, tuple[tuple[float, float], tuple[float, float]]] = {}
     for s in (0, 1, 2):
-        rollout = SCENES.get("so101_box")(env_cfg)
+        rollout = _rollout(env_cfg)
         rollout.reset(seed=s)
         model, data = rollout.mujoco_handles()
         block_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "slot_block")
@@ -433,11 +427,9 @@ def test_so101_box_random_spawn_varies_with_seed(env_cfg) -> None:
         ("horizontal", False),
     ],
 )
-def test_so101_box_insertion_geometry(env_cfg, case: str, expected: bool) -> None:
+def test_so101_box_insertion_geometry(env_cfg: SimEnvironment, case: str, expected: bool) -> None:
     """Geometric success check fires only when the tube is centred, vertical, and deep."""
-    from openral_sim import SCENES
-
-    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout = _rollout(env_cfg)
     rollout.reset(seed=0)
     model, data = rollout.mujoco_handles()
     block_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "slot_block")

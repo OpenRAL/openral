@@ -8,6 +8,8 @@ robot.yaml's joint count when no rSkill resolves.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
@@ -40,7 +42,7 @@ def test_state_dim_uses_fallback_when_rskill_unresolvable() -> None:
     )
 
 
-def test_state_dim_from_rskill_state_contract(tmp_path) -> None:
+def test_state_dim_from_rskill_state_contract(tmp_path: Path) -> None:
     """A real on-disk rSkill manifest's ``state_contract.dim`` wins over fallback.
 
     Builds a minimal openarm rskill.yaml (16-D state == 16-D action, matching
@@ -101,7 +103,7 @@ def test_state_dim_matches_openarm_robot_joint_count() -> None:
     assert _resolve_state_dim(weights_uri=None, fallback=len(desc.joints)) == 16
 
 
-def test_state_dim_rejects_state_action_mismatch(tmp_path) -> None:
+def test_state_dim_rejects_state_action_mismatch(tmp_path: Path) -> None:
     """A rSkill that declares state_contract.dim != action_contract.dim
     is rejected — the openarm backend feeds the action vector through
     the observation.state slot, so they must agree.

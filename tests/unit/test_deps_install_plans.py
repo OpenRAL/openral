@@ -18,12 +18,17 @@ GPU host.
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
+import typer
 from openral_core.exceptions import ROSConfigError
 from openral_sim import _deps
 from openral_sim._deps import (
@@ -259,7 +264,7 @@ class TestLiberoReadinessProbe:
 
     def test_non_1_4_robosuite_is_not_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A >=1.5 robosuite (robocasa-provisioned) → LIBERO not ready, no raise."""
-        monkeypatch.setattr(_deps.importlib.metadata, "version", lambda _pkg: "1.5.1")
+        monkeypatch.setattr(importlib.metadata, "version", lambda _pkg: "1.5.1")
         assert _deps._has_libero() is False
 
     def test_missing_robosuite_metadata_is_not_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,12 +273,12 @@ class TestLiberoReadinessProbe:
         def _raise(_pkg: str) -> str:
             raise importlib.metadata.PackageNotFoundError(_pkg)
 
-        monkeypatch.setattr(_deps.importlib.metadata, "version", _raise)
+        monkeypatch.setattr(importlib.metadata, "version", _raise)
         assert _deps._has_libero() is False
 
     def test_1_4_robosuite_is_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The LIBERO-pinned robosuite 1.4 series → ready."""
-        monkeypatch.setattr(_deps.importlib.metadata, "version", lambda _pkg: "1.4.0")
+        monkeypatch.setattr(importlib.metadata, "version", lambda _pkg: "1.4.0")
         assert _deps._has_libero() is True
 
 
@@ -705,7 +710,7 @@ class TestEnsureBackendDepsLock:
                 with active_lock:
                     active -= 1
 
-        monkeypatch.setattr(deps_mod.typer, "confirm", fake_confirm)
+        monkeypatch.setattr(typer, "confirm", fake_confirm)
         # Suppress the Rich banner in test output.
         monkeypatch.setattr(deps_mod, "_display_install_banner", lambda plan: None)
 
@@ -766,28 +771,32 @@ class TestRobocasaImportVerification:
     test venv.
     """
 
-    def test_import_succeeds_maps_returncode(self, monkeypatch) -> None:
+    def test_import_succeeds_maps_returncode(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The helper's verdict is exactly the subprocess exit status: a clean
         # exit (0) → functional → True; a non-zero exit (the import-time
         # version-assert / a missing dep) → not functional → False.
         for rc, expected in ((0, True), (1, False)):
             monkeypatch.setattr(
-                _deps.subprocess,
+                subprocess,
                 "run",
                 lambda *_a, _rc=rc, **_k: SimpleNamespace(returncode=_rc),
             )
             assert _robocasa_import_succeeds() is expected
 
-    def test_import_succeeds_false_on_subprocess_error(self, monkeypatch) -> None:
+    def test_import_succeeds_false_on_subprocess_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # A subprocess/OS error (e.g. interpreter missing) is treated as
         # not-functional, never as a crash propagated to the caller.
-        def _boom(*_a, **_k):
+        def _boom(*_a: object, **_k: object) -> NoReturn:
             raise OSError("simulated spawn failure")
 
-        monkeypatch.setattr(_deps.subprocess, "run", _boom)
+        monkeypatch.setattr(subprocess, "run", _boom)
         assert _robocasa_import_succeeds() is False
 
-    def test_has_robocasa_kitchen_false_when_import_fails(self, monkeypatch) -> None:
+    def test_has_robocasa_kitchen_false_when_import_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # The false-positive guard: even if find_spec + the filesystem +
         # runtime-dep checks all pass, a failing `import robocasa` (returns
         # False) must make the probe report "not present" so ensure_backend_deps
@@ -802,14 +811,14 @@ class TestRobocasaImportVerification:
         class _Spec:
             origin = "/fake/robocasa/__init__.py"
 
-        monkeypatch.setattr(_deps.importlib.util, "find_spec", lambda _n: _Spec())
-        monkeypatch.setattr(
-            _deps.Path, "is_file", lambda self: "download_kitchen_assets" in str(self)
-        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _n: _Spec())
+        monkeypatch.setattr(Path, "is_file", lambda self: "download_kitchen_assets" in str(self))
         assert _has_robocasa_kitchen() is False
 
 
-def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(monkeypatch) -> None:
+def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A backend may not re-pin a distribution this interpreter already imported.
 
     LIBERO pins ``robosuite==1.4`` (``robosuite.models.mounts``) while RoboCasa /
@@ -847,7 +856,9 @@ def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(monkeypatch)
     assert ran == [], "the guard must refuse BEFORE mutating the venv"
 
 
-def test_live_swap_guard_allows_a_clean_process_and_unrelated_backends(monkeypatch) -> None:
+def test_live_swap_guard_allows_a_clean_process_and_unrelated_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The guard is narrow: it only trips on an ALREADY-IMPORTED repinned module.
 
     The normal path — a fresh `openral sim run` that auto-installs LIBERO
@@ -907,7 +918,9 @@ def _echoing_step(stdout_text: str, stderr_text: str, code: int) -> _deps.Instal
     return _deps.InstallStep(description="probe step", argv=[sys.executable, "-c", prog])
 
 
-def test_failing_install_step_surfaces_the_child_stderr(monkeypatch, capsysbinary) -> None:
+def test_failing_install_step_surfaces_the_child_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
     """The raised ROSConfigError quotes what the child actually said."""
     real_uv_error = (
         "error: Distribution `torchcodec==0.4.0` can't be installed because it "
@@ -937,7 +950,9 @@ def test_failing_install_step_surfaces_the_child_stderr(monkeypatch, capsysbinar
     assert b"Resolved 210 packages" in capsysbinary.readouterr().err
 
 
-def test_install_step_streams_output_while_it_runs(capsysbinary) -> None:
+def test_install_step_streams_output_while_it_runs(
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
     """A succeeding step writes through to stderr and raises nothing."""
     step = _echoing_step("to stdout\n", "to stderr\n", 0)
     _deps._run_install_step(step, dict(os.environ))
@@ -945,11 +960,13 @@ def test_install_step_streams_output_while_it_runs(capsysbinary) -> None:
     assert b"to stdout" in streamed and b"to stderr" in streamed
 
 
-def test_install_step_tail_keeps_the_end_of_a_long_log(capsysbinary) -> None:
+def test_install_step_tail_keeps_the_end_of_a_long_log(
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
     """Only the tail is quoted, so a chatty build cannot bury its own error."""
     noise = "".join(f"compiling module_{i}\n" for i in range(4000))
     step = _echoing_step(noise, "error: the last line is the real one\n", 1)
-    with pytest.raises(_deps.subprocess.CalledProcessError) as excinfo:
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
         _deps._run_install_step(step, dict(os.environ))
 
     detail = _deps._step_failure_detail(excinfo.value)
@@ -980,7 +997,7 @@ def _uv_only_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     builders (which resolve `uv` through `shutil.which`) keep working against
     the real tool while `just` is genuinely absent.
     """
-    uv = _deps.shutil.which("uv")
+    uv = shutil.which("uv")
     assert uv is not None, "uv must be on PATH to run this suite"
     (tmp_path / "uv").symlink_to(uv)
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -1044,8 +1061,8 @@ class TestRemediationIsRunnableWhereItPrinted:
         (uv present via setup-uv, `just` never installed).
         """
         _uv_only_path(monkeypatch, tmp_path)
-        assert _deps.shutil.which("just") is None
-        assert _deps.shutil.which("uv") is not None
+        assert shutil.which("just") is None
+        assert shutil.which("uv") is not None
         hint = _openarm_robosuite_plan().manual_hint
         text = _deps.remediation(hint)
         assert hint in text, "the canonical command stays, for hosts that do have just"

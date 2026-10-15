@@ -114,7 +114,7 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
         try:
             # First step: full plan + reorder. Bounded above by the
             # adapter's internal deadline (latency_budget * multiplier).
-            first = skill.step(world_state=None)  # type: ignore[arg-type]
+            first = skill.step(world_state=None)
             assert first.control_mode is ControlMode.JOINT_POSITION, first.control_mode
             assert first.horizon == 1
             assert len(first.joint_targets) == 1

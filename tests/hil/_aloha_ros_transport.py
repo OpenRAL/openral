@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 if importlib.util.find_spec("rclpy") is None:  # pragma: no cover
     raise RuntimeError(
@@ -174,7 +174,7 @@ class AlohaHILTransport(_PolledJointStateMixin):
         traj = JointTrajectory()
         traj.joint_names = list(joint_names)
         point = JointTrajectoryPoint()
-        point.positions = [float(position)]
+        point.positions = [float(cast(float, position))]
         point.time_from_start.sec = 0
         point.time_from_start.nanosec = 100_000_000
         traj.points.append(point)

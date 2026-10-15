@@ -20,10 +20,12 @@ The ATTACH-closes path and the published wire are covered live by
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from openral_core import AttachedCollisionObject, RobotDescription
+from numpy.typing import NDArray
+from openral_core import AttachedCollisionObject, FixedAttachment, JointSpec, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_hal._vision_attachment_evidence import VisionAttachmentEvidenceProducer
@@ -51,9 +53,10 @@ def description() -> RobotDescription:
     return RobotDescription.from_yaml(str(_OPENARM))
 
 
-def _hand_at_zero(description: RobotDescription) -> np.ndarray:
+def _hand_at_zero(description: RobotDescription) -> NDArray[np.float64]:
     """``openarm_base <- openarm_left_link7`` at q = 0: the manifest chain's origins composed."""
-    edges = {e.child_link: e for e in [*description.joints, *description.fixed_attachments]}
+    edges: dict[str, JointSpec | FixedAttachment] = {e.child_link: e for e in description.joints}
+    edges.update({e.child_link: e for e in description.fixed_attachments})
     t, link = np.eye(4), _HAND
     while link in edges:
         edge = edges[link]
@@ -70,7 +73,7 @@ def _held(description: RobotDescription) -> AttachedCollisionObject:
     held, _ = producer.on_grasp(
         masks=[],
         depth_m=np.zeros((0, 0)),
-        intrinsics=None,
+        intrinsics=None,  # type: ignore[arg-type]  # reason: no masks, so the fit never reads intrinsics
         t_link_from_cam=np.eye(4),
         tcp_in_link=joint.origin_xyz,
         object_id="grasped_payload:left_gripper",
@@ -80,7 +83,7 @@ def _held(description: RobotDescription) -> AttachedCollisionObject:
     return held
 
 
-def _lifted(t: np.ndarray, dz: float) -> np.ndarray:
+def _lifted(t: NDArray[np.float64], dz: float) -> NDArray[np.float64]:
     moved = t.copy()
     moved[2, 3] += dz
     return moved
@@ -119,9 +122,10 @@ def test_the_base_frame_is_proven_to_be_the_root(description: RobotDescription) 
 
 @pytest.mark.parametrize("field", ["release_clear_m", "release_timeout_s"])
 def test_non_positive_release_bounds_are_refused(description: RobotDescription, field: str) -> None:
+    overrides: dict[str, Any] = {field: 0.0}  # reason: Any — the field name is parametrized
     with pytest.raises(ROSConfigError, match="must be positive"):
         VisionAttachmentBridge(
-            None, description, config=VisionAttachmentConfig(camera="head_zed", **{field: 0.0})
+            None, description, config=VisionAttachmentConfig(camera="head_zed", **overrides)
         )
 
 
@@ -132,11 +136,14 @@ def test_box_gap_is_exact_on_a_face_and_never_above_the_true_distance() -> None:
     ) == (pytest.approx(0.03))
     rng = np.random.default_rng(7)
 
-    def rotation() -> np.ndarray:
+    def rotation() -> NDArray[np.float64]:
         q, r = np.linalg.qr(rng.normal(size=(3, 3)))
-        return q * np.sign(np.diag(r))
+        rot: NDArray[np.float64] = q * np.sign(np.diag(r))
+        return rot
 
-    def surface(box: tuple[np.ndarray, np.ndarray, np.ndarray], n: int) -> np.ndarray:
+    def surface(
+        box: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]], n: int
+    ) -> NDArray[np.float64]:
         centre, rot, half = box
         local = rng.uniform(-1.0, 1.0, size=(n, 3))
         face = rng.integers(0, 3, size=n)
@@ -197,7 +204,9 @@ def test_an_unknown_jaw_angle_is_never_clear_and_the_timeout_still_bounds_it(
     )
     far = _lifted(t_hand, 1.0)
     assert window.clearance_m(far, {}) is None
-    assert window.clearance_m(far, {"left_gripper": 0.0}) > _CLEAR_M
+    clearance = window.clearance_m(far, {"left_gripper": 0.0})
+    assert clearance is not None
+    assert clearance > _CLEAR_M
 
     def verdict(now_s: float) -> str:
         return window.close_reason(

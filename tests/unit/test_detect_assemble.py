@@ -8,6 +8,7 @@ real ``CATALOG`` populated by every vendor module on import.  No mocks.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from openral_core.schemas import (
@@ -176,7 +177,8 @@ class TestSensorEnrichment:
         )
         desc = assemble_robot_description(report)
         assert desc.sensor_bundles, "should still emit a bundle for follow-up"
-        assert any("no catalog entry" in w for w in desc.onboard_compute.get("detect_warnings", []))
+        warnings = cast(list[str], desc.onboard_compute.get("detect_warnings", []))
+        assert any("no catalog entry" in w for w in warnings)
 
     def test_v4l2_logitech_c920_detected_to_catalog_spec(self) -> None:
         report = _empty_report(
@@ -213,7 +215,8 @@ class TestSensorEnrichment:
         # Generic spec — no catalog hit.
         assert last.metadata["catalog_id"] == ""
         assert last.metadata["needs_calibration"] is True
-        assert any("no catalog entry" in w for w in desc.onboard_compute.get("detect_warnings", []))
+        warnings = cast(list[str], desc.onboard_compute.get("detect_warnings", []))
+        assert any("no catalog entry" in w for w in warnings)
 
 
 class TestComputeEnrichment:

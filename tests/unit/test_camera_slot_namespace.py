@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from openral_core import (
     ImagePreprocessing,
@@ -209,7 +210,7 @@ def test_molmoact2_libero_aliases_match_the_cached_norm_stats() -> None:
     assert set(_ckpt_keys("molmoact2-libero-nf4", "franka_panda")) == set(ckpt)
 
 
-def _frames(*slots: str) -> dict[str, np.ndarray]:
+def _frames(*slots: str) -> dict[str, npt.NDArray[np.uint8]]:
     return {s: np.full((8, 8, 3), i, dtype=np.uint8) for i, s in enumerate(slots)}
 
 

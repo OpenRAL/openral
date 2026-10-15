@@ -28,15 +28,17 @@ covers it from the URDF.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 mujoco = pytest.importorskip("mujoco", reason="needs mujoco (sim group) for the MJCF meshes")
 pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
 pytest.importorskip("trimesh")
 
-from openral_core import RobotDescription  # noqa: E402
+from openral_core import LinkCollisionGeometry, RobotDescription  # noqa: E402
 from openral_core.assets import AssetRefError, resolve_asset  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 
@@ -68,7 +70,7 @@ FK_RESIDUAL_M = 1e-6
 HULL_TOLERANCE_M = 1e-5
 
 
-def _rpy(r: float, p: float, y: float) -> np.ndarray:
+def _rpy(r: float, p: float, y: float) -> npt.NDArray[np.float64]:
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     return np.array(
         [
@@ -79,14 +81,14 @@ def _rpy(r: float, p: float, y: float) -> np.ndarray:
     )
 
 
-def _tf(xyzrpy: np.ndarray) -> np.ndarray:
+def _tf(xyzrpy: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     t = np.eye(4)
     t[:3, :3] = _rpy(*xyzrpy[3:])
     t[:3, 3] = xyzrpy[:3]
     return t
 
 
-def _axis_angle(axis: np.ndarray, q: float) -> np.ndarray:
+def _axis_angle(axis: npt.NDArray[np.float64], q: float) -> npt.NDArray[np.float64]:
     x, y, z = axis / np.linalg.norm(axis)
     c, s, t = np.cos(q), np.sin(q), 1 - np.cos(q)
     return np.array(
@@ -98,12 +100,12 @@ def _axis_angle(axis: np.ndarray, q: float) -> np.ndarray:
     )
 
 
-def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
+def _kernel_fk(params: dict[str, Any], q: npt.NDArray[np.float64]) -> list[npt.NDArray[np.float64]]:
     """The kernel's `forward_kinematics`: origin · joint motion, parent before child."""
     n = int(params["collision_n_links"])
     origin = np.asarray(params["collision_origin_xyzrpy"], dtype=float).reshape(n, 6)
     axis = np.asarray(params["collision_axis"], dtype=float).reshape(n, 3)
-    world: list[np.ndarray] = []
+    world: list[npt.NDArray[np.float64]] = []
     mult = params.get("collision_mimic_multiplier", [1.0] * n)
     off = params.get("collision_mimic_offset", [0.0] * n)
     for i in range(n):
@@ -123,10 +125,10 @@ def _kernel_fk(params: dict, q: np.ndarray) -> list[np.ndarray]:
     return world
 
 
-_GEOM_POINTS: dict[tuple[int, int, bool], np.ndarray] = {}
+_GEOM_POINTS: dict[tuple[int, int, bool], npt.NDArray[np.float64]] = {}
 
 
-def _geom_points(model: object, geom: int, *, hull_only: bool) -> np.ndarray:
+def _geom_points(model: object, geom: int, *, hull_only: bool) -> npt.NDArray[np.float64]:
     """A geom's vertices in its own frame (or just their convex hull's), cached per model."""
     import trimesh
     from openral_safety.urdf_lowering import _geom_local_mesh
@@ -142,7 +144,7 @@ def _geom_points(model: object, geom: int, *, hull_only: bool) -> np.ndarray:
 
 def _body_vertices_world(
     model: object, data: object, body: int, *, meshes_only: bool = False, hull_only: bool = False
-) -> np.ndarray | None:
+) -> npt.NDArray[np.float64] | None:
     """Every geom's bounding vertices of `body` (collision and visual), in the world frame.
 
     ``meshes_only`` keeps the mesh geoms (the CAD) and drops MuJoCo primitive
@@ -163,15 +165,21 @@ def _body_vertices_world(
     return np.vstack(parts) if parts else None
 
 
-def _signed_distance(local: np.ndarray, prim: tuple) -> np.ndarray:
+def _signed_distance(
+    local: npt.NDArray[np.float64], prim: tuple[Any, ...]
+) -> npt.NDArray[np.float64]:
     """Signed distance of primitive-frame points to one primitive (negative inside)."""
     _link, radius, half, half_extents, _origin = prim
     if half_extents is not None:
         q = np.abs(local) - half_extents
-        return np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(q.max(axis=1), 0.0)
+        box_d: npt.NDArray[np.float64] = np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(
+            q.max(axis=1), 0.0
+        )
+        return box_d
     z = np.clip(local[:, 2], -half, half)
     axial = local - np.column_stack([np.zeros_like(z), np.zeros_like(z), z])
-    return np.linalg.norm(axial, axis=1) - radius
+    round_d: npt.NDArray[np.float64] = np.linalg.norm(axial, axis=1) - radius
+    return round_d
 
 
 # Twins whose manifest leaves a twin body with geometry uncovered. Strict xfails
@@ -213,6 +221,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     robot = RobotDescription.from_yaml(str(manifest))
     params = collision_params_from_description(robot)
     names: list[str] = list(params["collision_link_names"])
+    assert robot.assets.mjcf is not None, robot_id
     try:
         mjcf = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest.parent)
     except AssetRefError as exc:
@@ -258,7 +267,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
         lo, hi = j.position_limits if j.position_limits else (-np.pi, np.pi)
         limits.append((float(lo), float(hi)))
 
-    def pose(q: np.ndarray) -> list[np.ndarray]:
+    def pose(q: npt.NDArray[np.float64]) -> list[npt.NDArray[np.float64]]:
         mujoco.mj_resetData(model, data)
         for d, adr in enumerate(dof_adr):
             data.qpos[adr] = q[d]
@@ -298,7 +307,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
 
     # Every primitive the kernel gets, grouped by link: capsules/spheres
     # (half-extents None) and boxes (radius/half-length None), with origins.
-    prims: dict[int, list[tuple]] = {}
+    prims: dict[int, list[tuple[Any, ...]]] = {}
     for link, r, h, o in zip(
         params.get("collision_capsule_link", []),
         params.get("collision_capsule_radius", []),
@@ -322,7 +331,7 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
     ]
     assert not uncovered, f"links with twin geometry but no primitive: {uncovered}"
 
-    refined: dict[str, list] = {}
+    refined: dict[str, list[LinkCollisionGeometry]] = {}
     for g in robot.collision_geometry:
         if g.tight_geometry is not None:
             refined.setdefault(g.link_name, []).append(g)
@@ -346,10 +355,10 @@ def test_every_twin_mesh_vertex_is_inside_its_links_primitives(robot_id: str) ->
                 )
                 for bb in bodies_of.get(ln, [])
             ]
-            verts = [v for v in verts if v is not None]
-            if not verts:
+            present = [v for v in verts if v is not None]
+            if not present:
                 continue
-            pts = np.vstack(verts)
+            pts = np.vstack(present)
             outside = np.full(len(pts), np.inf)
             for prim in link_prims:
                 placed = kw[link] @ _tf(prim[4])

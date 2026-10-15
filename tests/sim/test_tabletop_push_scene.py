@@ -13,9 +13,14 @@ production MjSpec composer, and a zero / hand-set action.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from openral_core import SimEnvironment, SimScene
+    from openral_sim.backends.tabletop_push.env import _TabletopPushRollout
 
 # Force EGL (off-screen) rendering so CI hosts without a display don't abort.
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -52,7 +57,12 @@ pytestmark = [
 ]
 
 
-def _make_env(robot_id: str, *, backend_options: dict | None = None, cameras=("top", "front")):
+def _make_env(
+    robot_id: str,
+    *,
+    backend_options: dict[str, Any] | None = None,
+    cameras: tuple[str, ...] = ("top", "front"),
+) -> SimEnvironment:
     """Build a real ``SimEnvironment`` for the tabletop_push scene."""
     from openral_core.schemas import SceneSpec, SimEnvironment, TaskSpec, VLASpec
 
@@ -75,20 +85,22 @@ def _make_env(robot_id: str, *, backend_options: dict | None = None, cameras=("t
     return SimEnvironment(robot_id=robot_id, scene=scene, task=task, vla=vla, seed=7)
 
 
-def _build_or_skip(robot_id: str, **env_kwargs):
+def _build_or_skip(robot_id: str, **env_kwargs: Any) -> _TabletopPushRollout:
     """Build the rollout, skipping if the robot's MJCF can't be fetched offline."""
     from openral_core.exceptions import ROSConfigError
     from openral_sim import SCENES
 
     try:
-        return SCENES.get("tabletop_push")(_make_env(robot_id, **env_kwargs))
+        return cast(
+            "_TabletopPushRollout", SCENES.get("tabletop_push")(_make_env(robot_id, **env_kwargs))
+        )
     except ROSConfigError as exc:
         if "robot_descriptions" in str(exc) or "could not load" in str(exc):
             pytest.skip(f"{robot_id} MJCF unavailable: {exc}")
         raise
 
 
-def _build_yaml_or_skip(path: str):
+def _build_yaml_or_skip(path: str) -> tuple[SimScene, _TabletopPushRollout]:
     """Build a rollout from a real SimScene YAML, preserving its backend options."""
     from openral_core import SimEnvironment, SimScene, VLASpec
     from openral_core.exceptions import ROSConfigError
@@ -105,7 +117,7 @@ def _build_yaml_or_skip(path: str):
         n_episodes=cfg.n_episodes,
     )
     try:
-        return cfg, SCENES.get(cfg.scene.id)(env)
+        return cfg, cast("_TabletopPushRollout", SCENES.get(cfg.scene.id)(env))
     except ROSConfigError as exc:
         if "robot_descriptions" in str(exc) or "could not load" in str(exc):
             pytest.skip(f"{cfg.robot_id} MJCF unavailable: {exc}")
@@ -211,6 +223,7 @@ def test_tabletop_push_nonzero_action_moves_arm() -> None:
     res = None
     for _ in range(80):
         res = rollout.step(target)
+    assert res is not None
     q1 = np.asarray(res.observation["state"], dtype=np.float64)
     rollout.close()
     assert np.max(np.abs(q1 - q0)) > 0.1, "arm did not move toward the commanded target"
@@ -352,7 +365,7 @@ def test_tabletop_push_bad_initial_joint_positions_rejected() -> None:
 
 def test_tabletop_push_random_spawn_varies_with_seed() -> None:
     """Different seeds produce different cube + goal spawns."""
-    poses: dict[int, tuple] = {}
+    poses: dict[int, tuple[Any, ...]] = {}
     for s in (0, 1, 2):
         rollout = _build_or_skip("so101_follower")
         rollout.reset(seed=s)
@@ -381,7 +394,8 @@ def test_tabletop_cube_push_yaml_places_workspace_on_initial_gripper_side() -> N
         gripper_y = float(data.xpos[gripper_id, 1])
         cube_y = float(data.qpos[rollout._cube_qpos_addr + 1])
         goal_y = float(model.site_pos[rollout._goal_site_id][1])
-        table_y = float(cfg.scene.backend_options["table_center_xy"][1])
+        table_xy = cast("list[float]", cfg.scene.backend_options["table_center_xy"])
+        table_y = float(table_xy[1])
 
         gripper_side = gripper_y - base_y
         assert abs(gripper_side) > 1e-3

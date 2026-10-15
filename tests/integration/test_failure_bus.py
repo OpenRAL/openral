@@ -54,10 +54,10 @@ def _bus_harness(
     where ``received_msgs`` is appended to by a subscription on the
     topic owned by ``bus_publisher`` (i.e. ``topic_for(source)``).
     """
-    import rclpy  # type: ignore[import-untyped]
-    from openral_msgs.msg import FailureTrigger  # type: ignore[import-untyped]
+    import rclpy
+    from openral_msgs.msg import FailureTrigger
     from openral_observability.failure_bus import FailureBusPublisher, topic_for
-    from rclpy.qos import (  # type: ignore[import-untyped]
+    from rclpy.qos import (
         QoSDurabilityPolicy,
         QoSProfile,
         QoSReliabilityPolicy,
@@ -145,7 +145,7 @@ def test_every_source_owns_a_namespaced_topic() -> None:
 def test_publish_payload_is_typed_uint8_and_evidence_round_trips() -> None:
     """uint8 ``kind`` / ``severity`` are wire-correct; ``evidence_json`` decodes."""
     from openral_core import FailureEvidence, ForceEvidence
-    from openral_msgs.msg import FailureTrigger  # type: ignore[import-untyped]
+    from openral_msgs.msg import FailureTrigger
     from openral_observability.failure_bus import (
         KIND_FORCE,
         SEVERITY_ABORT,
@@ -183,7 +183,7 @@ def test_publish_payload_is_typed_uint8_and_evidence_round_trips() -> None:
 def test_warn_severity_token_bucket_drops_excess_and_summary_publishes() -> None:
     """Burst of WARN events is rate-limited; a SUPPRESSED_SUMMARY rolls them up."""
     from openral_core import FailureEvidence, SuppressedSummaryEvidence, TimeoutEvidence
-    from openral_msgs.msg import FailureTrigger  # type: ignore[import-untyped]
+    from openral_msgs.msg import FailureTrigger
     from openral_observability.failure_bus import (
         KIND_SUPPRESSED_SUMMARY,
         KIND_TIMEOUT,
@@ -195,7 +195,7 @@ def test_warn_severity_token_bucket_drops_excess_and_summary_publishes() -> None
     adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
 
     # Tight bucket so the test stays fast: 2/s on WARN, summary at 5 Hz.
-    rate_limit = {SEVERITY_WARN: 2.0}
+    rate_limit: dict[int, float | None] = {SEVERITY_WARN: 2.0}
     summary_period = 0.2
 
     with _bus_harness(

@@ -89,7 +89,7 @@ def test_undeclared_skips_are_not_excused(reason: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def _record(lane: str, *, passed: int, skips: list[str]) -> object:
+def _record(lane: str, *, passed: int, skips: list[str]) -> lane_report.LaneRecord:
     return lane_report.build_record(
         lane, passed=passed, failed=0, skip_reasons=skips, config=CONFIG
     )
@@ -233,7 +233,13 @@ def test_reads_real_pytest_junit_including_module_level_skip(tmp_path: Path) -> 
 # --------------------------------------------------------------------------
 
 
-def _attest(tmp_path: Path, *, full_run: str, lanes: dict[str, list[str]], records: list) -> int:
+def _attest(
+    tmp_path: Path,
+    *,
+    full_run: str,
+    lanes: dict[str, list[str]],
+    records: list[lane_report.LaneRecord],
+) -> int:
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text("".join(r.model_dump_json() + "\n" for r in records), encoding="utf-8")
     selection = tmp_path / "selection.json"

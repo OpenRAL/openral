@@ -75,12 +75,13 @@ def _final_lines(captured: str) -> list[dict[str, Any]]:
 def _node(env: FakeSimEnv, name: str) -> Any:
     """A real lifecycle node whose HAL is a real SimAttachedHAL over ``env``."""
     from openral_hal.lifecycle import HALLifecycleNodeBase
+    from openral_hal.protocol import HAL
     from openral_hal.sim_attached import SimAttachedHAL
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
 
     class _SimHALNode(HALLifecycleNodeBase):
-        def _create_hal(self) -> object:
+        def _create_hal(self) -> HAL:
             return SimAttachedHAL(env, description)
 
     return _SimHALNode(name)

@@ -73,7 +73,7 @@ def test_execute_rskill_frees_vram_peer_before_dispatch_then_reactivates() -> No
     # server, so we can assert the deactivate→execute→activate ordering.
     events: list[tuple[str, float]] = []
 
-    class RecordingDetectorPeer(LifecycleNode):
+    class RecordingDetectorPeer(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
         """Active LifecycleNode stand-in for the GPU object detector."""
 
         def __init__(self) -> None:

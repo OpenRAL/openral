@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_dataset import LeRobotDatasetSink, RolloutRecorder
 
@@ -45,7 +46,10 @@ pytest.importorskip(
 )
 
 
-_ZeroFrame = Callable[[RobotDescription], tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
+_ZeroFrame = Callable[
+    [RobotDescription],
+    tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]],
+]
 
 
 def test_sink_round_trip_two_episodes(
@@ -184,6 +188,9 @@ def test_sink_rejects_camera_frame_shape_mismatch(
     root = tmp_path / "ds"
     sink = LeRobotDatasetSink(root=root, robot=so100_robot, fps=30.0)
     rec = RolloutRecorder(robot=so100_robot, task_string="t", fps=30.0, sinks=[sink])
+    assert so100_robot.observation_spec is not None
+    assert so100_robot.action_spec is not None
+    assert so100_robot.action_spec.dim is not None
     state = np.zeros(so100_robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(so100_robot.action_spec.dim, dtype=np.float32)
     wrong_shape_images = {
@@ -233,7 +240,8 @@ def _read_parquet_rows(root: Path) -> list[dict[str, object]]:
     assert files, f"no data parquet files under {root}/data"
     frames = [pd.read_parquet(f) for f in files]
     df = pd.concat(frames, ignore_index=True)
-    return df.to_dict(orient="records")
+    rows: list[dict[str, object]] = df.to_dict(orient="records")
+    return rows
 
 
 def test_sink_writes_per_frame_trace_and_span_ids(

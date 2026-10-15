@@ -879,7 +879,7 @@ def test_the_cell_closure_grows_sideways_by_the_cells_reach_and_up_only(
     closed, clamped = cell_closed_region(tight, _z_up_lattice(_RES), max_half_extent_m=0.2)
     assert not clamped
     hx, hy, hz = closed.half_extents
-    assert (hx, hy) == (pytest.approx(0.05 + grow), pytest.approx(0.03 + grow))
+    assert (hx, hy) == pytest.approx((0.05 + grow, 0.03 + grow))
     assert closed.pose.xyz[:2] == tight.pose.xyz[:2]
     assert closed.pose.quat_xyzw == tight.pose.quat_xyzw
     assert closed.pose.xyz[2] - hz == pytest.approx(0.2 - 0.04), "the bottom moved"
@@ -890,7 +890,8 @@ def test_the_cell_closure_is_clamped_at_the_cap_with_the_bottom_kept() -> None:
     tight = _yawed((0.3, 0.1, 0.2), (0.195, 0.03, 0.198), 0.0)
     closed, clamped = cell_closed_region(tight, _z_up_lattice(_RES), max_half_extent_m=0.2)
     assert clamped
-    assert closed.half_extents == (0.2, pytest.approx(0.04), 0.2)
+    assert closed.half_extents[0] == 0.2 and closed.half_extents[2] == 0.2
+    assert closed.half_extents[1] == pytest.approx(0.04)
     assert closed.pose.xyz[2] - 0.2 == pytest.approx(0.2 - 0.198)
 
 

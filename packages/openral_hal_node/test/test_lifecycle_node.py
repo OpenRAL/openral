@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import importlib.util
 import time
+from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -160,8 +162,8 @@ def test_lifecycle_emits_hal_read_state_span(captured_spans: InMemorySpanExporte
     assert attrs.get("openral.hal.adapter") == adapter
     assert str(attrs.get("openral.hal.robot.model"))
     assert attrs.get("openral.tick.idx") == 0
-    assert len(list(attrs.get("openral.hal.joint.names") or [])) == 6
-    assert len(list(attrs.get("openral.hal.joint.positions") or [])) == 6
+    assert len(list(cast("Sequence[object]", attrs.get("openral.hal.joint.names") or []))) == 6
+    assert len(list(cast("Sequence[object]", attrs.get("openral.hal.joint.positions") or []))) == 6
 
 
 def test_lifecycle_emits_hal_send_action_span(captured_spans: InMemorySpanExporter) -> None:
@@ -219,6 +221,8 @@ def test_lifecycle_emits_hal_send_action_span(captured_spans: InMemorySpanExport
     assert attrs.get("openral.hal.adapter") == adapter
     assert attrs.get("openral.hal.control_mode") == "joint_position"
     assert attrs.get("openral.hal.action.source") == "safe_action"
-    assert len(list(attrs.get("openral.hal.action.next") or [])) == n_joints
+    assert (
+        len(list(cast("Sequence[object]", attrs.get("openral.hal.action.next") or []))) == n_joints
+    )
     assert attrs.get("openral.hal.action.dim") == n_joints
     assert attrs.get("openral.hal.action.applied") is True

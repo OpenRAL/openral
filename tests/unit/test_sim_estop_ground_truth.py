@@ -14,6 +14,8 @@ MuJoCo contact), and carried payload (pre-existing case, unchanged).
 
 from __future__ import annotations
 
+from typing import Any  # reason: mujoco ships no stubs, so MjModel/MjData handles are Any
+
 import pytest
 from openral_core import JointState
 from openral_hal.depth_cloud import robot_self_body_ids
@@ -67,7 +69,7 @@ _CUP_CLEAR = "0.8 0.4 0.5"
 _CUP_IN_GRIPPER = "0 -0.06 0.5"
 
 
-def _model_data(*, counter_x: float, cup_pos: str) -> tuple[object, object]:
+def _model_data(*, counter_x: float, cup_pos: str) -> tuple[Any, Any]:
     """Compile the MJCF and settle kinematics + contacts at ``robot0_joint1=0.3``."""
     model = mujoco.MjModel.from_xml_string(_MJCF.format(counter_x=counter_x, cup_y_pos=cup_pos))
     data = mujoco.MjData(model)
@@ -77,12 +79,12 @@ def _model_data(*, counter_x: float, cup_pos: str) -> tuple[object, object]:
     return model, data
 
 
-def _robot_bodies(model: object) -> frozenset[int]:
+def _robot_bodies(model: Any) -> frozenset[int]:
     """The robot's own body ids, via the same helper the bridge's self-filter uses."""
     return robot_self_body_ids(model, ["robot0_joint1", "robot0_joint7", "gripper0_finger_joint"])
 
 
-def _joint_state(model: object, data: object) -> JointState:
+def _joint_state(model: Any, data: Any) -> JointState:
     """The measured joint vector the kernel seeds ``q_meas`` from, read off MuJoCo."""
     names = ["robot0_joint1", "robot0_joint7", "gripper0_finger_joint"]
     positions = []
@@ -100,7 +102,7 @@ def _joint_state(model: object, data: object) -> JointState:
     )
 
 
-def _body_ids(model: object, *names: str) -> frozenset[int]:
+def _body_ids(model: Any, *names: str) -> frozenset[int]:
     return frozenset(
         int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)) for name in names
     )
@@ -202,10 +204,9 @@ def test_attached_payload_stop_keeps_reporting_payload_contacts() -> None:
     world_contacts = snapshot["robot_world_contacts"]
     assert isinstance(world_contacts, list)
     assert all(c["body_b"] != "sink_cup" and c["body_a"] != "sink_cup" for c in world_contacts)
-    assert all(
-        p["body_a"] != "sink_cup" and p["body_b"] != "sink_cup"
-        for p in snapshot["nearest_robot_world_pairs"]  # type: ignore[union-attr]
-    )
+    pairs = snapshot["nearest_robot_world_pairs"]
+    assert isinstance(pairs, list)
+    assert all(p["body_a"] != "sink_cup" and p["body_b"] != "sink_cup" for p in pairs)
 
 
 def test_candidate_chunk_digest_reshapes_a_cartesian_delta_chunk() -> None:
@@ -308,7 +309,7 @@ _KITCHEN_MJCF_TAIL = """
 """
 
 
-def _kitchen_model_data(*, n_filler_geoms: int) -> tuple[object, object]:
+def _kitchen_model_data(*, n_filler_geoms: int) -> tuple[Any, Any]:
     """A real ``MjModel`` with RoboCasa's plane count and a panel 20 mm off link1.
 
     ``n_filler_geoms`` stands in for robosuite's base visual geoms — matters only
@@ -336,7 +337,7 @@ def _kitchen_model_data(*, n_filler_geoms: int) -> tuple[object, object]:
     return model, data
 
 
-def _kitchen_snapshot(model: object, data: object, *, max_calls: int) -> dict[str, object]:
+def _kitchen_snapshot(model: Any, data: Any, *, max_calls: int) -> dict[str, object]:
     return estop_ground_truth_snapshot(
         model,
         data,

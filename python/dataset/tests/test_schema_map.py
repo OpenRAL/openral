@@ -161,6 +161,8 @@ def test_every_robot_manifest_features_or_typed_error(any_robot_yaml: Path) -> N
     act_ok = robot.action_spec is not None and (robot.action_spec.dim or 0) > 0
 
     if obs_ok and act_ok:
+        assert robot.observation_spec is not None
+        assert robot.action_spec is not None
         feats = features_from_robot(robot, fps=30.0)
         # Sanity: every robot that binds must have the canonical
         # state + action + bookkeeping features, regardless of camera count.

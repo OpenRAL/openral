@@ -129,8 +129,8 @@ def _make_robot_desc() -> Any:
 
 def _make_voxels_msg(helper: Any) -> Any:
     """Build an OccupancyVoxels message with a solid 5×5×5 cube at (0,0,2)."""
-    from geometry_msgs.msg import Point, Quaternion  # type: ignore[import-untyped]
-    from openral_msgs.msg import OccupancyVoxels  # type: ignore[import-untyped]
+    from geometry_msgs.msg import Point, Quaternion
+    from openral_msgs.msg import OccupancyVoxels
 
     msg = OccupancyVoxels()
     msg.header.stamp = helper.get_clock().now().to_msg()
@@ -158,7 +158,7 @@ def _make_detection_msg(helper: Any) -> Any:
     produces a populated detection.
     """
     from openral_core.schemas import ObjectDetection2D, ObjectsMetadata
-    from openral_msgs.msg import PromptStamped  # type: ignore[import-untyped]
+    from openral_msgs.msg import PromptStamped
 
     md = ObjectsMetadata(
         sensor_id="head_rgb",
@@ -177,8 +177,8 @@ def _make_detection_msg(helper: Any) -> Any:
 
 def _publish_identity_tf(helper: Any, executor: Any) -> None:
     """Publish identity static transforms map←base_link and head_rgb_optical←base_link."""
-    import geometry_msgs.msg as gm  # type: ignore[import-untyped]
-    import tf2_ros  # type: ignore[import-untyped]
+    import geometry_msgs.msg as gm
+    import tf2_ros
 
     broadcaster = tf2_ros.StaticTransformBroadcaster(helper)
 
@@ -223,12 +223,12 @@ def _object_lift_harness(
 
     Yields ``(executor, node, helper, vox_pub, det_pub)``.
     """
-    import rclpy  # type: ignore[import-untyped]
-    from openral_msgs.msg import OccupancyVoxels, PromptStamped  # type: ignore[import-untyped]
+    import rclpy
+    from openral_msgs.msg import OccupancyVoxels, PromptStamped
     from openral_world_state import WorldStateAggregator
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
-    from rclpy.lifecycle import TransitionCallbackReturn  # type: ignore[import-untyped]
-    from rclpy.qos import (  # type: ignore[import-untyped]
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.qos import (
         QoSDurabilityPolicy,
         QoSProfile,
         QoSReliabilityPolicy,

@@ -162,8 +162,8 @@ def test_slot_group_commits_as_one_step_once_the_last_slot_lands(case: _Case) ->
         hal.send_action(group[-1])
         assert hal.last_committed_tick == 1
         after = hal.read_state().position
-        for slot in case.arm_slots:
-            for name in slot:
+        for slot_joints in case.arm_slots:
+            for name in slot_joints:
                 i = names.index(name)
                 assert after[i] == pytest.approx(case.target[i], abs=5e-3), name
     finally:

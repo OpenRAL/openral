@@ -60,20 +60,20 @@ def _lifecycle_harness(
     ``slow_msgs`` are appended to by subscriptions on the two F2 typed topics. Tears down
     cleanly on exit.
     """
-    import rclpy  # type: ignore[import-untyped]
-    from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
+    import rclpy
+    from openral_msgs.msg import WorldStateStamped
     from openral_world_state_ros.lifecycle_node import (
         TOPIC_FAST,
         TOPIC_SLOW,
         _WorldStateLifecycleNode,
     )
-    from rclpy.lifecycle import TransitionCallbackReturn  # type: ignore[import-untyped]
-    from rclpy.qos import (  # type: ignore[import-untyped]
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.qos import (
         QoSDurabilityPolicy,
         QoSProfile,
         QoSReliabilityPolicy,
     )
-    from sensor_msgs.msg import JointState as RosJointState  # type: ignore[import-untyped]
+    from sensor_msgs.msg import JointState as RosJointState
 
     rclpy.init()
     node = _WorldStateLifecycleNode()
@@ -127,7 +127,7 @@ def _spin_for(executor: Any, seconds: float) -> None:
 
 
 def _make_joint_msg(helper: Any, i: int, n_joints: int = 6) -> Any:
-    from sensor_msgs.msg import JointState as RosJointState  # type: ignore[import-untyped]
+    from sensor_msgs.msg import JointState as RosJointState
 
     msg = RosJointState()
     msg.header.stamp = helper.get_clock().now().to_msg()
@@ -198,7 +198,7 @@ def test_fast_topic_publishes_six_times_per_slow_topic() -> None:
 
 def test_30hz_pipeline_diagnostics_ok() -> None:
     """Publish /joint_states at 30 Hz → fast topic carries DIAG_OK for joint_state."""
-    from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
+    from openral_msgs.msg import WorldStateStamped
 
     with _lifecycle_harness(
         publish_rate_hz_fast=30.0,
@@ -241,7 +241,7 @@ def test_30hz_pipeline_diagnostics_ok() -> None:
 
 def test_joint_state_dropout_latches_stale() -> None:
     """Stop the publisher → diagnostic flips to DIAG_STALE within ~1 staleness window."""
-    from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
+    from openral_msgs.msg import WorldStateStamped
 
     staleness = 0.1
     with _lifecycle_harness(
@@ -280,7 +280,7 @@ def test_joint_state_dropout_latches_stale() -> None:
 
 def test_joint_state_recovery_restores_ok() -> None:
     """After dropout, fresh updates clear DIAG_STALE back to DIAG_OK."""
-    from openral_msgs.msg import WorldStateStamped  # type: ignore[import-untyped]
+    from openral_msgs.msg import WorldStateStamped
 
     staleness = 0.1
     with _lifecycle_harness(
@@ -405,8 +405,8 @@ def captured_spans() -> Iterator[InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(provider)
     yield exporter
     exporter.clear()
@@ -552,7 +552,7 @@ def test_dashboard_flip_180_never_touches_the_policy_frame(
         _spin_for(executor, 0.3)
 
         # (1) Policy path: the aggregated frame MUST be the raw bytes, unflipped.
-        frames = node._aggregator.snapshot().image_frames or {}  # type: ignore[union-attr]
+        frames = node._aggregator.snapshot().image_frames or {}
         assert "top" in frames, "world_state never stored the camera frame"
         assert bytes(frames["top"].data or b"") == raw_bytes, (
             "OPENRAL_DASHBOARD_FLIP_180 mutated the policy-bound frame — it must "

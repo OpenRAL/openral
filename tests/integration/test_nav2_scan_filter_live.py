@@ -29,7 +29,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -122,7 +122,7 @@ _COSTMAP_PARAMS_SELF_RETURNS = _COSTMAP_PARAMS_WITH_OBSTACLES.replace(
 
 
 def _spin_until(
-    executor: Any, predicate: Any, *, timeout_s: float = 20.0, each: Any = None
+    executor: Any, predicate: Callable[[], bool], *, timeout_s: float = 20.0, each: Any = None
 ) -> bool:
     """Spin until ``predicate()`` holds, running ``each()`` on every pass.
 

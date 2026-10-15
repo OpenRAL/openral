@@ -15,7 +15,7 @@ def test_sidecar_display_prefix_uses_xvfb_when_headless(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.setattr(rlbench.shutil, "which", _fake_xvfb)
+    monkeypatch.setattr("openral_sim.backends.rlbench.shutil.which", _fake_xvfb)
 
     assert rlbench._sidecar_display_prefix() == [
         "/usr/bin/xvfb-run",
@@ -28,6 +28,6 @@ def test_sidecar_display_prefix_preserves_existing_display(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DISPLAY", ":99")
-    monkeypatch.setattr(rlbench.shutil, "which", _fake_xvfb)
+    monkeypatch.setattr("openral_sim.backends.rlbench.shutil.which", _fake_xvfb)
 
     assert rlbench._sidecar_display_prefix() == []

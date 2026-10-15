@@ -163,7 +163,8 @@ def test_the_openarm_hand_links_are_both_jaws_the_carrier_and_the_wrist() -> Non
     from openral_safety.envelope_loader import collision_params_from_description
 
     names = collision_params_from_description(robot)["collision_link_names"]
-    assert set(robot.hand_links()) <= set(names)  # type: ignore[arg-type]
+    assert isinstance(names, list)
+    assert set(robot.hand_links()) <= set(names)
 
 
 # ── launch ────────────────────────────────────────────────────────────────────
@@ -201,6 +202,7 @@ def test_the_launch_derives_the_kernel_params_from_the_manifest(launch_module: A
         grasp_allowance_enabled=True,
         hal_mode="sim",
     )
+    assert robot.control_rate_hz is not None
     assert params == {
         "workspace_contact_enabled": True,
         "workspace_contact_links": list(robot.hand_links()),
@@ -324,12 +326,13 @@ def _leg(name: str) -> Iterator[Any]:
         rclpy.shutdown()
 
 
-def _published(leg: Any, now_ns: int) -> GraspDeclaration | None:
+def _published(leg: Any, now_ns: int) -> GraspDeclaration:
     from openral_msgs.msg import AttachmentState
 
     msg = AttachmentState()
     leg.fill(msg, now_ns=now_ns)
-    return GraspDeclaration.from_idl(msg.grasp_declaration) if msg.grasp_declaration_valid else None
+    assert msg.grasp_declaration_valid, "the leg published no grasp declaration"
+    return GraspDeclaration.from_idl(msg.grasp_declaration)
 
 
 def test_the_leg_confirms_the_declared_workspace_on_a_fresh_grid_and_publishes_it() -> None:

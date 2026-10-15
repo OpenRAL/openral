@@ -101,9 +101,11 @@ def test_reap_stale_kills_recorded_pid_and_returns_when_port_frees(
     import openral_sim.sidecar as sc
 
     monkeypatch.setattr(sc, "read_sidecar_identity", lambda port: {"pid": 4242})
-    monkeypatch.setattr(sc.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr("openral_sim.sidecar.os.getpgid", lambda pid: pid)
     killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(sc.os, "killpg", lambda pgid, signum: killed.append((pgid, signum)))
+    monkeypatch.setattr(
+        "openral_sim.sidecar.os.killpg", lambda pgid, signum: killed.append((pgid, signum))
+    )
     c = _client(auto_spawn=True)
     monkeypatch.setattr(c, "_is_port_busy", lambda: False)  # frees immediately
 
@@ -124,10 +126,10 @@ def test_reap_stale_raises_when_port_stays_busy(monkeypatch: pytest.MonkeyPatch)
             return self.t
 
     monkeypatch.setattr(sc, "read_sidecar_identity", lambda port: {"pid": 4242})
-    monkeypatch.setattr(sc.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(sc.os, "killpg", lambda *a: None)
-    monkeypatch.setattr(sc.time, "sleep", lambda *_a: None)
-    monkeypatch.setattr(sc.time, "monotonic", _Clock())
+    monkeypatch.setattr("openral_sim.sidecar.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("openral_sim.sidecar.os.killpg", lambda *a: None)
+    monkeypatch.setattr("openral_sim.sidecar.time.sleep", lambda *_a: None)
+    monkeypatch.setattr("openral_sim.sidecar.time.monotonic", _Clock())
     c = _client(auto_spawn=True)
     monkeypatch.setattr(c, "_is_port_busy", lambda: True)  # never frees
 

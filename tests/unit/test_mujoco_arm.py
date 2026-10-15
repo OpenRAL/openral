@@ -210,27 +210,27 @@ def test_connect_with_missing_mjcf_raises_rosconfigerror() -> None:
 
 def test_constructor_settle_steps_default_is_one() -> None:
     arm = _make_arm()
-    assert arm._settle_steps == 1  # type: ignore[attr-defined]  # reason: pinning private invariant
+    assert arm._settle_steps == 1
 
 
 def test_constructor_settle_steps_override_is_stored() -> None:
     arm = _make_arm(settle_steps=42)
-    assert arm._settle_steps == 42  # type: ignore[attr-defined]
+    assert arm._settle_steps == 42
 
 
 def test_constructor_gravity_enabled_default_is_true() -> None:
     arm = _make_arm()
-    assert arm._gravity_enabled is True  # type: ignore[attr-defined]
+    assert arm._gravity_enabled is True
 
 
 def test_constructor_gravity_enabled_override_is_stored() -> None:
     arm = _make_arm(gravity_enabled=False)
-    assert arm._gravity_enabled is False  # type: ignore[attr-defined]
+    assert arm._gravity_enabled is False
 
 
 def test_constructor_staleness_limit_default_is_half_second() -> None:
     arm = _make_arm()
-    assert arm._staleness_limit_s == 0.5  # type: ignore[attr-defined]
+    assert arm._staleness_limit_s == 0.5
 
 
 # ── _kinematic_group (shared by the G1/H1 humanoid adapters) ────────────────

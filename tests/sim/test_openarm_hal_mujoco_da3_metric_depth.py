@@ -53,7 +53,7 @@ _BOOT_S = 1200.0
 _RATIO_BAND = (0.75, 1.33)
 
 
-def _frames() -> tuple[np.ndarray, np.ndarray, Any]:
+def _frames() -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], Any]:
     """One registered (rgb, ray-cast depth, CameraInfo) of ``head_zed``."""
     import rclpy
     from openral_core import CameraTopicKind, DeployScene, RobotDescription, camera_topic

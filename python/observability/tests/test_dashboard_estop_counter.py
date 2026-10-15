@@ -53,7 +53,7 @@ def _estop_span(*, adapter: str = "SO100FollowerHAL") -> Span:
         name="hal.estop",
         start_time_unix_nano=start,
         end_time_unix_nano=start + 200_000,
-        status=Status(code=0),
+        status=Status(code=Status.STATUS_CODE_UNSET),
         events=[
             Span.Event(
                 name=semconv.EVENT_ESTOP_REQUESTED,
@@ -122,7 +122,7 @@ def test_the_estop_row_survives_a_flood_of_routine_traffic() -> None:
             name="hal.read_state",
             start_time_unix_nano=time.time_ns(),
             end_time_unix_nano=time.time_ns() + 1000,
-            status=Status(code=0),
+            status=Status(code=Status.STATUS_CODE_UNSET),
         )
         for i in range(400)  # twice the main ring
     ]
@@ -146,7 +146,7 @@ def test_no_estop_leaves_the_counter_absent() -> None:
                 name="hal.read_state",
                 start_time_unix_nano=time.time_ns(),
                 end_time_unix_nano=time.time_ns() + 1000,
-                status=Status(code=0),
+                status=Status(code=Status.STATUS_CODE_UNSET),
             )
         )
     )

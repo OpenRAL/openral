@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,7 @@ def launch_module() -> object:
     return module
 
 
-def _robot(robot_id: str) -> tuple[dict[str, object], list[tuple[float, float]], list[int]]:
+def _robot(robot_id: str) -> tuple[dict[str, object], list[tuple[float, float] | None], list[int]]:
     """The kernel's collision params, joint limits and base dofs for a real manifest."""
     pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
     from openral_core import RobotDescription
@@ -56,7 +57,7 @@ def _robot(robot_id: str) -> tuple[dict[str, object], list[tuple[float, float]],
 
 def _dense_reach(
     launch_module: object, robot_id: str, seed: int = 11
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """``(points, radii)`` of every moving primitive over 131 072 random configurations."""
     params, limits, base = _robot(robot_id)
     model = launch_module._ReachModel(params, limits, base)  # type: ignore[attr-defined]

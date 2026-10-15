@@ -32,7 +32,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 def _free_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 def _wait_ready(port: int, *, timeout: float = 5.0) -> None:
@@ -53,7 +54,8 @@ def _fetch_state(port: int) -> dict[str, Any]:
     import json
 
     raw = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2.0).read()
-    return json.loads(raw)
+    state: dict[str, Any] = json.loads(raw)
+    return state
 
 
 def _pynvml_available() -> bool:
@@ -64,7 +66,7 @@ def _pynvml_available() -> bool:
     driver both yield ``False``, and the assertion path is skipped.
     """
     try:
-        import pynvml  # type: ignore[import-not-found]  # reason: optional probe
+        import pynvml  # type: ignore[import-untyped]  # reason: no py.typed
     except ImportError:
         return False
     try:
@@ -115,7 +117,7 @@ def test_dashboard_receives_real_otlp_http_span() -> None:
         server.should_exit = True
         thread.join(timeout=5.0)
         # Reset the global tracer provider so other tests aren't poisoned.
-        trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+        trace._TRACER_PROVIDER = None
 
 
 def test_dashboard_receives_real_otlp_http_debug_log() -> None:
@@ -200,9 +202,9 @@ def test_dashboard_system_health_card_receives_gpu_cpu_ram() -> None:
     # so we aren't the victim of the previous one.
     from opentelemetry.metrics import _internal as metrics_internal
 
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER = None
+    metrics_internal._METER_PROVIDER_SET_ONCE._done = False
+    metrics_internal._METER_PROVIDER = None
 
     store = TelemetryStore()
     app = create_app(store)
@@ -272,11 +274,11 @@ def test_dashboard_system_health_card_receives_gpu_cpu_ram() -> None:
             else:
                 os.environ[key] = value
         # Reset the globals other tests rely on.
-        trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+        trace._TRACER_PROVIDER = None
         from opentelemetry.metrics import _internal as metrics_internal
 
-        metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-        metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+        metrics_internal._METER_PROVIDER_SET_ONCE._done = False
+        metrics_internal._METER_PROVIDER = None
         # Make sure the daemon sampler isn't left running between test files.
         assert system_metrics._thread is None, "shutdown should have stopped the sampler"
 
@@ -353,4 +355,4 @@ def test_dashboard_robot_state_card_receives_hal_read_state_joint_arrays() -> No
     finally:
         server.should_exit = True
         thread.join(timeout=5.0)
-        trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+        trace._TRACER_PROVIDER = None

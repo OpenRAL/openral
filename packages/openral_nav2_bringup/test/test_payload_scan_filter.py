@@ -17,9 +17,11 @@ the single invariant this suite pins.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 import yaml
 from openral_nav2_bringup._footprint_geometry import (
@@ -51,7 +53,7 @@ _RANGE_MIN = 0.05
 _RANGE_MAX = 12.0
 
 
-def _translation(x: float, y: float, z: float) -> np.ndarray:
+def _translation(x: float, y: float, z: float) -> npt.NDArray[np.float64]:
     m = np.eye(4)
     m[:3, 3] = (x, y, z)
     return m
@@ -66,7 +68,11 @@ def _beam_index(angle: float) -> int:
     return round((angle - _ANGLE_MIN) / _ANGLE_INCREMENT) % _N_BEAMS
 
 
-def _filter(ranges: list[float], placements: list, **kwargs: float) -> list[float]:
+def _filter(
+    ranges: list[float],
+    placements: Sequence[tuple[int, Sequence[float], npt.NDArray[np.float64]]],
+    **kwargs: float,
+) -> list[float]:
     return filter_scan_ranges(
         ranges,
         angle_min=_ANGLE_MIN,

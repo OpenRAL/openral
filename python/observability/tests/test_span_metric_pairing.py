@@ -17,17 +17,19 @@ produces the metric.
 from __future__ import annotations
 
 from openral_observability import inference_span, semconv
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricReader
 
 
 def _histogram_counts(reader: InMemoryMetricReader, name: str) -> int:
     data = reader.get_metrics_data()
+    assert data is not None
     total = 0
     for rm in data.resource_metrics:
         for sm in rm.scope_metrics:
             for m in sm.metrics:
                 if m.name == name:
                     for pt in m.data.data_points:
+                        assert isinstance(pt, HistogramDataPoint)
                         total += pt.count
     return total
 
@@ -68,10 +70,13 @@ def test_inference_metric_labels_stay_closed_set(
         pass
 
     labels: set[str] = set()
-    for rm in memory_metric_reader.get_metrics_data().resource_metrics:
+    data = memory_metric_reader.get_metrics_data()
+    assert data is not None
+    for rm in data.resource_metrics:
         for sm in rm.scope_metrics:
             for m in sm.metrics:
                 if m.name == semconv.METRIC_INFERENCE_DURATION:
                     for pt in m.data.data_points:
+                        assert pt.attributes is not None
                         labels |= set(dict(pt.attributes))
     assert labels == {semconv.LABEL_KIND}

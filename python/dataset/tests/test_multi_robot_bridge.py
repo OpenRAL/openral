@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_dataset import (
     RolloutRecorder,
@@ -57,15 +58,18 @@ pytest.importorskip(
 
 def _zero_frame_for(
     robot: RobotDescription,
-) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+) -> tuple[NDArray[np.float32], dict[str, NDArray[np.uint8]], NDArray[np.float32]]:
     """Build (state, images, action) of the shapes a given robot expects.
 
     Per-camera shape is taken from SensorSpec.intrinsics
     (the declared resolution), not a hardcoded test size.
     """
+    assert robot.observation_spec is not None
+    assert robot.action_spec is not None
+    assert robot.action_spec.dim is not None
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
-    images: dict[str, np.ndarray] = {}
+    images: dict[str, NDArray[np.uint8]] = {}
     for sensor in robot.sensors:
         if sensor.vla_feature_key is None or sensor.intrinsics is None:
             continue
@@ -122,6 +126,7 @@ def test_bridge_round_trip_per_robot(
 
     # 2 episodes (1 success + 1 failure) so dataset_success_rate = 0.5.
     sink = Rosbag2Sink(bag_path=bag_path)
+    assert robot.action_spec is not None
     rec = RolloutRecorder(
         robot=robot,
         task_string="generic-test-task",
@@ -163,6 +168,8 @@ def test_bridge_round_trip_per_robot(
     # declares. This is the failure mode if the bridge silently
     # truncated to a fixed dim.
     row0 = ds[0]
+    assert robot.observation_spec is not None
+    assert robot.action_spec is not None
     expected_state_dim = robot.observation_spec.state_shape[0]
     actual_state = row0["observation.state"]
     assert actual_state.numel() == expected_state_dim, (
@@ -196,6 +203,7 @@ def test_features_dict_has_every_declared_camera(
     from openral_dataset import features_from_robot
 
     robot = bridge_capable_robot
+    assert robot.action_spec is not None
     fps = robot.action_spec.control_freq_hz or 30.0
     feats = features_from_robot(robot, fps=fps)
     image_keys = sorted(k for k in feats if k.startswith("observation.images."))

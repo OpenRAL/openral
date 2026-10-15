@@ -32,6 +32,7 @@ def test_tick_duration_records_histogram(
     point = cast(HistogramDataPoint, points[0])
     assert point.count == 2
     assert point.sum > 0
+    assert point.attributes is not None
     assert point.attributes[semconv.LABEL_RSKILL_ID] == "demo"
 
 

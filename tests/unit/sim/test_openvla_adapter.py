@@ -9,6 +9,7 @@ provide.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -168,7 +169,6 @@ def test_prismatic_oft_compat_installs_constants_and_masks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
-    from openral_sim.policies import openvla
 
     for name in (
         "prismatic",
@@ -178,9 +178,9 @@ def test_prismatic_oft_compat_installs_constants_and_masks(
         "prismatic.vla.constants",
     ):
         monkeypatch.delitem(sys.modules, name, raising=False)
-    real_find_spec = openvla.importlib.util.find_spec
+    real_find_spec = importlib.util.find_spec
     monkeypatch.setattr(
-        openvla.importlib.util,
+        importlib.util,
         "find_spec",
         lambda name: None if name == "prismatic" else real_find_spec(name),
     )
@@ -229,6 +229,6 @@ def test_legacy_openvla_model_compat_ignores_new_tie_weights_kwargs() -> None:
 
     _install_legacy_openvla_model_compat(RemoteModel)
     model = RemoteModel()
-    model.tie_weights(recompute_mapping=False)
+    model.tie_weights(recompute_mapping=False)  # type: ignore[call-arg]  # reason: compat shim widens the signature at runtime
 
     assert model.tied is True

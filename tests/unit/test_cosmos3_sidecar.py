@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _SIDECAR = Path(__file__).resolve().parents[2] / "tools" / "cosmos3_reasoner_sidecar.py"
 _spec = importlib.util.spec_from_file_location("cosmos3_reasoner_sidecar", _SIDECAR)
 assert _spec is not None and _spec.loader is not None
@@ -259,7 +261,9 @@ def _edge_snapshot(tmp_path: Path) -> Path:
     return snapshot
 
 
-def test_native_vllm_serves_the_snapshot_dir_itself(tmp_path: Path, monkeypatch) -> None:
+def test_native_vllm_serves_the_snapshot_dir_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A vLLM with the native Edge model must NOT be handed the flat view.
 
     Observed on a Jetson AGX Thor with vLLM 0.28.0: the flattened view makes the
@@ -277,7 +281,9 @@ def test_native_vllm_serves_the_snapshot_dir_itself(tmp_path: Path, monkeypatch)
     assert not (tmp_path / "home").exists(), "no flattened view should be built"
 
 
-def test_fallback_vllm_still_gets_the_flat_view(tmp_path: Path, monkeypatch) -> None:
+def test_fallback_vllm_still_gets_the_flat_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without the native model the flattened view is still required."""
     snapshot = _edge_snapshot(tmp_path)
     monkeypatch.setattr("huggingface_hub.snapshot_download", lambda *a, **k: str(snapshot))

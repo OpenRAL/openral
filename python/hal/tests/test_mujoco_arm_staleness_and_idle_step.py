@@ -146,7 +146,9 @@ def test_reset_to_pose_preserves_normalized_so101_gripper() -> None:
     state = hal.read_state()
 
     assert state.position[-1] == pytest.approx(0.0195, abs=1e-4)
-    _, data = hal.mujoco_handles()
+    handles = hal.mujoco_handles()
+    assert handles is not None
+    _, data = handles
     low, high = desc.sim.grippers[0].ctrl_range  # type: ignore[union-attr]
     assert float(data.ctrl[5]) == pytest.approx(low + 0.0195 * (high - low), abs=1e-5)
 
@@ -172,7 +174,9 @@ def test_idle_step_advances_a_wall_time_slice() -> None:
     # One action is one control period since issue #358, so the bridge yields
     # the idle stepper to an active skill; idle ticks still advance wall slices.
     assert hal._step_while_active is False
-    model, data = hal.mujoco_handles()
+    handles = hal.mujoco_handles()
+    assert handles is not None
+    model, data = handles
     tick_s = 0.1  # the bridge's 10 Hz idle rate
 
     t0 = float(data.time)

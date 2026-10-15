@@ -33,7 +33,7 @@ def test_heartbeat_rejects_empty_hardware_id() -> None:
 
     with pytest.raises(ValueError, match=r"hardware_id"):
         DiagnosticsHeartbeat(
-            _Stub(),  # type: ignore[arg-type]
+            _Stub(),
             hardware_id="",
             component_name="safety",
             status_fn=_ok_status,
@@ -48,7 +48,7 @@ def test_heartbeat_rejects_empty_component_name() -> None:
 
     with pytest.raises(ValueError, match=r"component_name"):
         DiagnosticsHeartbeat(
-            _Stub(),  # type: ignore[arg-type]
+            _Stub(),
             hardware_id="openral_safety:so100",
             component_name="",
             status_fn=_ok_status,
@@ -64,7 +64,7 @@ def test_heartbeat_rejects_non_positive_rate() -> None:
     for bad in (0.0, -1.0):
         with pytest.raises(ValueError, match=r"rate_hz"):
             DiagnosticsHeartbeat(
-                _Stub(),  # type: ignore[arg-type]
+                _Stub(),
                 hardware_id="openral_safety:so100",
                 component_name="safety",
                 status_fn=_ok_status,
@@ -79,7 +79,7 @@ def test_heartbeat_construction_does_not_touch_ros() -> None:
         """Constructor MUST NOT touch this stub."""
 
     hb = DiagnosticsHeartbeat(
-        _Stub(),  # type: ignore[arg-type]
+        _Stub(),
         hardware_id="openral_safety:so100",
         component_name="safety",
         status_fn=_ok_status,
@@ -95,7 +95,7 @@ def test_heartbeat_start_before_create_publisher_raises() -> None:
         pass
 
     hb = DiagnosticsHeartbeat(
-        _Stub(),  # type: ignore[arg-type]
+        _Stub(),
         hardware_id="openral_safety:so100",
         component_name="safety",
         status_fn=_ok_status,

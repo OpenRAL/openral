@@ -96,7 +96,11 @@ def _make_adapter(client: _FakeClient, da3: Any = None) -> Any:
     from openral_sim.policies.internvla_n1 import _InternVLAN1Adapter
 
     return _InternVLAN1Adapter(
-        spec=None, device="cuda", _client=client, _camera_key="camera1", _da3=da3
+        spec=None,  # type: ignore[arg-type]  # reason: action mapping never reads the spec
+        device="cuda",
+        _client=client,  # type: ignore[arg-type]  # reason: in-process fake at the sidecar boundary
+        _camera_key="camera1",
+        _da3=da3,
     )
 
 

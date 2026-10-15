@@ -74,7 +74,7 @@ def _run(
 ) -> list[GraspEvent]:
     events = []
     for q in trace:
-        event = trigger.update(_state(openarm, **{trigger.joint_name: q}))
+        event = trigger.update(_state(openarm, stamp_ns=None, **{trigger.joint_name: q}))
         if event is not None:
             events.append(event)
     return events
@@ -218,7 +218,7 @@ def test_a_left_grasp_fires_only_the_left_trigger(openarm: RobotDescription) -> 
     right = PositionStallTrigger(openarm, joint_name="right_gripper")
     left.command(0.0)
     right.command(0.0)
-    fired = []
+    fired: list[GraspEvent] = []
     for q in _flat(0.2, 10):
         state = _state(openarm, left_gripper=q, right_gripper=-0.0116)
         fired.extend(e for e in (left.update(state), right.update(state)) if e)

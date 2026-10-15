@@ -106,7 +106,7 @@ def test_tick_drains_prompts_on_success() -> None:
     renderer = _renderer_with_prompt()
     assert len(renderer.prompts) == 1
     core.tick(world_state=None, renderer=renderer, palette=palette)
-    assert renderer.prompts == ()
+    assert len(renderer.prompts) == 0
 
 
 def test_min_interval_suppresses_back_to_back_tick() -> None:
@@ -576,11 +576,11 @@ def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
     A genuine loop cannot launder its streak through a read-only recall
     between repeats.
     """
-    from openral_core import RecallObjectTool
+    from openral_core import ReasonerToolCall, RecallObjectTool
 
     palette = _palette()
     same = EmitPromptTool(target_topic="/openral/prompt", text="same")
-    responses: list = []
+    responses: list[ReasonerToolCall] = []
     for _ in range(4):
         responses.append(same)
         responses.append(RecallObjectTool(query="milk"))

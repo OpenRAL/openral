@@ -49,8 +49,10 @@ _MIN_TRACKING_RATIO = 0.9
 def _base_xy_yaw(model: Any, data: Any, desc: RobotDescription) -> tuple[float, float, float]:
     import mujoco
 
+    base_joints = extract_base_sim_joint_names(desc)
+    assert base_joints is not None, "manifest declares no base sim joints"
     vals = []
-    for jname in extract_base_sim_joint_names(desc):
+    for jname in base_joints:
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
         assert jid >= 0, f"base joint {jname!r} missing from the composed MJCF"
         vals.append(float(data.qpos[int(model.jnt_qposadr[jid])]))

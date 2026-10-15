@@ -24,7 +24,11 @@ import numpy as np
 import pytest
 from openral_core import Pose6D
 from openral_core.exceptions import ROSConfigError
-from openral_sim.backends.isaac_sim import _resolve_environment_usd, _spawn_pose
+from openral_sim.backends.isaac_sim import (
+    _IsaacSimSidecar,
+    _resolve_environment_usd,
+    _spawn_pose,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WAREHOUSE_YAML = _REPO_ROOT / "scenes" / "deploy" / "isaac_panda_mobile_warehouse.yaml"
@@ -126,6 +130,7 @@ def test_warehouse_deploy_scene_boots_the_sidecar_with_stage_and_spawn(
         )
         # panda_mobile's 11-D contract (7 arm + gripper + 3 base twist) came back
         # over the identity-checked ping.
+        assert isinstance(env, _IsaacSimSidecar)
         assert env.action_dim == 11
     finally:
         env.close()
@@ -221,8 +226,10 @@ def test_openarm_isaac_open_target_swings_each_finger_outward(side: str) -> None
     joints = {el.attrib["name"]: el for el in root.iter("joint") if "type" in el.attrib}
     for name, q in angles.items():
         el = joints[name]
-        origin = np.array([float(v) for v in el.find("origin").attrib["xyz"].split()])
-        axis = np.array([float(v) for v in el.find("axis").attrib["xyz"].split()])
+        origin_el, axis_el = el.find("origin"), el.find("axis")
+        assert origin_el is not None and axis_el is not None, name
+        origin = np.array([float(v) for v in origin_el.attrib["xyz"].split()])
+        axis = np.array([float(v) for v in axis_el.attrib["xyz"].split()])
         assert abs(axis[0]) == pytest.approx(1.0), "OpenArm's jaw hinges about the hand's x"
         # Rotation by q about axis (+-x): a point 10 cm below the hinge moves in y by
         # -sin(q * axis_x) * (-0.10).

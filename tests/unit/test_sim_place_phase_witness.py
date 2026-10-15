@@ -18,12 +18,13 @@ together, on the declared target, produce a witness.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 import pytest
 from openral_core import (
     AttachmentEvidenceKind,
+    BoxShape,
     EndEffectorSpec,
     GraspDeclaration,
     JointSpec,
@@ -114,6 +115,19 @@ _MJCF = f"""
   </worldbody>
 </mujoco>
 """
+
+
+_T = TypeVar("_T")
+
+
+def _some(value: _T | None) -> _T:
+    assert value is not None
+    return value
+
+
+def _box(shape: object) -> BoxShape:
+    assert isinstance(shape, BoxShape)
+    return shape
 
 
 def _description() -> RobotDescription:
@@ -538,7 +552,7 @@ def test_the_region_is_measured_in_the_base_frame_not_the_world_frame() -> None:
     """
     rig = _Rig()
     rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
-    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)).region
 
     assert region is not None
     assert region.pose.xyz[0] == pytest.approx(_CABINET_X + 0.02 - _BASE_X, abs=1e-6)
@@ -604,7 +618,7 @@ def test_an_unresolvable_target_leaves_no_region_behind() -> None:
     """A refused declaration must not leave the previous one's region armed."""
     rig = _Rig()
     rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
-    assert rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region is not None
+    assert _some(rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)).region is not None
 
     with pytest.raises(ROSConfigError):
         rig.tracker.set_place_declaration(_declaration(target_id="sim:nope", stamp_ns=rig.tick))
@@ -719,13 +733,13 @@ def test_the_declared_targets_geometry_is_measured_and_posed_in_the_base_frame()
     """
     rig = _Rig()
     rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
-    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)).region
 
     assert region is not None
     assert len(region.geometry) == len(_TARGET_GEOMETRY_IN_BASE)
     measured = sorted(
         (
-            (primitive.pose_in_object.xyz, primitive.shape.half_extents_m)
+            (primitive.pose_in_object.xyz, _box(primitive.shape).half_extents_m)
             for primitive in region.geometry
         ),
         reverse=True,
@@ -754,7 +768,7 @@ def test_the_geometry_is_measured_in_the_base_frame_not_the_world_frame() -> Non
     """
     rig = _Rig()
     rig.tracker.set_place_declaration(_declaration(stamp_ns=rig.tick))
-    region = rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.place_declaration(rig.data, stamp_ns=rig.tick)).region
 
     assert region is not None
     shelf = min(region.geometry, key=lambda primitive: primitive.pose_in_object.xyz[2])
@@ -914,7 +928,7 @@ def test_the_grasp_region_follows_the_target_in_the_base_frame() -> None:
     rig = _Rig()
     rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
     rig.carry_to(x=0.2, z=0.5)
-    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
 
     assert region is not None
     np.testing.assert_allclose(
@@ -994,7 +1008,7 @@ def test_a_dispatch_supplied_grasp_region_is_replaced_by_the_measured_one() -> N
     rig.tracker.set_grasp_declaration(
         _grasp(stamp_ns=rig.tick).model_copy(update={"region": claimed})
     )
-    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
 
     assert region is not None
     assert region.evidence_ref == "mujoco_body_subtree:cup"
@@ -1067,7 +1081,7 @@ def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() 
     # Before attach: the region follows re-measurement.
     _move_cup(rig, x=0.02)
     rig.step()
-    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
     assert region is not None
     np.testing.assert_allclose(
         region.pose.xyz, (0.02 - _BASE_X, 0.0, _CARRY_Z - _BASE_Z + _LIFT_Z), atol=1e-6
@@ -1079,7 +1093,7 @@ def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() 
     attachment = rig.step()
     assert attachment and attachment[0].object_id == "sim:cup"
     attach_tick = rig.tick
-    frozen = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    frozen = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
     assert frozen is not None
     np.testing.assert_allclose(frozen.pose.xyz, _CUP_CENTRE_IN_BASE, atol=1e-6)
 
@@ -1089,13 +1103,13 @@ def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() 
     assert rig.step() is None, "still attached: no new attachment set"
     cup_after = rig.data.xpos[mujoco.mj_name2id(rig.model, mujoco.mjtObj.mjOBJ_BODY, "cup")]
     np.testing.assert_allclose(cup_after - cup_before, (0.2, 0.0, 0.09), atol=1e-6)
-    carried = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    carried = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
     assert carried == frozen
     assert carried is not None and carried.stamp_ns == attach_tick < rig.tick
 
     # A new declaration clears the freeze and re-measures at the live pose.
     rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
-    fresh = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    fresh = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
     assert fresh is not None
     np.testing.assert_allclose(
         fresh.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6
@@ -1109,7 +1123,7 @@ def test_an_attach_of_another_object_does_not_freeze_the_grasp_region() -> None:
     assert rig.step()
     rig.carry_to(x=0.2, z=0.55)
     rig.step()
-    region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
+    region = _some(rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)).region
     assert region is not None
     np.testing.assert_allclose(
         region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6

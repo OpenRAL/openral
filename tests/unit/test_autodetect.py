@@ -264,7 +264,7 @@ class TestEnumerateUsbDevices:
         }
 
         def fake_get(key: str, default: str = "") -> str:
-            return mock_dev.get(key, default)  # type: ignore[return-value]
+            return str(mock_dev.get(key, default))
 
         mock_udev_dev = MagicMock()
         mock_udev_dev.get.side_effect = fake_get

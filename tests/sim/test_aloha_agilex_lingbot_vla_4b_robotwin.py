@@ -31,6 +31,7 @@ import importlib.util
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -145,7 +146,7 @@ def lingbot_adapter():
     adapter.close()
 
 
-def test_step_returns_finite_14d_action(lingbot_adapter) -> None:
+def test_step_returns_finite_14d_action(lingbot_adapter: Any) -> None:
     lingbot_adapter.reset()
     action = lingbot_adapter.step(_robotwin_obs(), "lift the pot with both arms")
     assert action.shape == (_ACTION_DIM,), action.shape
@@ -153,14 +154,14 @@ def test_step_returns_finite_14d_action(lingbot_adapter) -> None:
     assert np.isfinite(action).all()
 
 
-def test_sidecar_returns_multistep_chunk(lingbot_adapter) -> None:
+def test_sidecar_returns_multistep_chunk(lingbot_adapter: Any) -> None:
     """Regression guard: use_length must not truncate the chunk to a single step."""
     lingbot_adapter.reset()
     lingbot_adapter.step(_robotwin_obs(), "lift the pot with both arms")
     assert len(lingbot_adapter._queue) >= 1
 
 
-def test_nf4_fit_under_8gib(lingbot_adapter) -> None:
+def test_nf4_fit_under_8gib(lingbot_adapter: Any) -> None:
     lingbot_adapter.reset()
     lingbot_adapter.step(_robotwin_obs(), "lift the pot with both arms")
     assert _gpu_mem_used_mib() < _VRAM_CEILING_MIB

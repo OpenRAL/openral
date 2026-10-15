@@ -10,10 +10,12 @@ and tiny inline URDFs), no mocks (CLAUDE.md §1.11).
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
-from openral_core import BoxShape, CapsuleShape, SphereShape
+from openral_core import BoxShape, CapsuleShape, LinkCollisionGeometry, SphereShape
 from openral_safety.urdf_lowering import (
     CAPSULE_HEADROOM_M,
     _xyzrpy_matrix,
@@ -29,7 +31,9 @@ needs_trimesh = pytest.mark.skipif(
 )
 
 
-def _point_in_capsule(p, shape: CapsuleShape, origin_xyz_rpy) -> bool:
+def _point_in_capsule(
+    p: npt.ArrayLike, shape: CapsuleShape, origin_xyz_rpy: tuple[float, ...]
+) -> bool:
     """True if world point ``p`` is inside the capsule (segment along +Z, length_m)."""
     from openral_safety.mjcf_lowering import _rpy_to_mat
 
@@ -78,12 +82,15 @@ def test_fit_capsule_diagonal_rod_containment() -> None:
     assert all(_point_in_capsule(p, shape, origin) for p in pts)
 
 
-def _capsule_local(pts, origin_xyz_rpy):
+def _capsule_local(
+    pts: npt.ArrayLike, origin_xyz_rpy: tuple[float, ...]
+) -> npt.NDArray[np.float64]:
     from openral_safety.mjcf_lowering import _rpy_to_mat
 
     x, y, z, roll, pitch, yaw = origin_xyz_rpy
     r = np.array(_rpy_to_mat(roll, pitch, yaw)).reshape(3, 3)
-    return (np.asarray(pts) - np.array([x, y, z])) @ r
+    local: npt.NDArray[np.float64] = (np.asarray(pts) - np.array([x, y, z])) @ r
+    return local
 
 
 @needs_trimesh
@@ -178,7 +185,7 @@ _CYLINDER_URDF = """<robot name="t">
 </robot>"""
 
 
-def _write_and_lower(tmp_path, urdf_text):
+def _write_and_lower(tmp_path: Path, urdf_text: str) -> list[LinkCollisionGeometry]:
     # lower_link_geometry loads the URDF via yourdfpy (optional dep, absent in the
     # base CI tier — its sibling test_urdf_lowering_*.py modules skip the same way).
     pytest.importorskip("yourdfpy")
@@ -187,7 +194,7 @@ def _write_and_lower(tmp_path, urdf_text):
     return lower_link_geometry(str(path))
 
 
-def test_box_collision_lowers_to_the_box_itself(tmp_path) -> None:
+def test_box_collision_lowers_to_the_box_itself(tmp_path: Path) -> None:
     """A box ``<collision>`` fits a box: it protrudes by the headroom alone.
 
     The fitter picks the candidate with the least mean protrusion, and the
@@ -215,7 +222,7 @@ def test_box_collision_lowers_to_the_box_itself(tmp_path) -> None:
     assert (np.abs(local) <= np.asarray(g.shape.half_extents_m) - 0.9 * CAPSULE_HEADROOM_M).all()
 
 
-def test_sphere_collision_maps_to_sphere(tmp_path) -> None:
+def test_sphere_collision_maps_to_sphere(tmp_path: Path) -> None:
     geoms = _write_and_lower(tmp_path, _SPHERE_URDF)
     assert len(geoms) == 1
     g = geoms[0]
@@ -224,7 +231,7 @@ def test_sphere_collision_maps_to_sphere(tmp_path) -> None:
     assert g.origin_xyz_rpy[0] == pytest.approx(0.05, abs=1e-6)
 
 
-def test_cylinder_collision_fits_capsule(tmp_path) -> None:
+def test_cylinder_collision_fits_capsule(tmp_path: Path) -> None:
     geoms = _write_and_lower(tmp_path, _CYLINDER_URDF)
     assert len(geoms) == 1
     g = geoms[0]
@@ -245,4 +252,5 @@ def test_lower_link_geometry_panda_arm_links() -> None:
     by_link = {g.link_name: g for g in geoms}
     assert any(name.startswith("panda_link") for name in by_link)
     for g in geoms:
+        assert not isinstance(g.shape, BoxShape)
         assert g.shape.radius_m > 0.0

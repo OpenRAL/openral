@@ -25,7 +25,7 @@ CLAUDE.md §1.11 — real manifests, real vendored models, no mocks.
 from __future__ import annotations
 
 import pathlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -58,7 +58,7 @@ _MJCF_FRAME_ROBOTS = {
 
 def _link_world_positions(params: dict[str, object]) -> dict[str, tuple[float, float, float]]:
     """Run the kernel's FK over the lowered params at the all-zero configuration."""
-    n = int(params["collision_n_links"])  # type: ignore[arg-type]  # reason: lowering always emits an int here
+    n = int(cast(int, params["collision_n_links"]))  # lowering always emits an int here
     parent = params["collision_parent"]
     origin = params["collision_origin_xyzrpy"]
     names = params["collision_link_names"]
@@ -80,6 +80,7 @@ def _link_world_positions(params: dict[str, object]) -> dict[str, tuple[float, f
 
 def _mjcf_body_positions(robot: RobotDescription, manifest_dir: pathlib.Path) -> dict[str, Any]:
     """World position of every named body in the robot's own MJCF at ``qpos = 0``."""
+    assert robot.assets.mjcf is not None, f"{robot.name} declares no MJCF"
     path = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest_dir)
     model = mujoco.MjModel.from_xml_path(str(path))
     data = mujoco.MjData(model)
@@ -215,7 +216,7 @@ def test_openarm_torso_sits_where_the_urdf_puts_it() -> None:
     torso, left = mounts["openarm_body_link0"], mounts["openarm_left_link0"]
     assert torso.parent_link == left.parent_link == "openarm_base"
 
-    def tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> np.ndarray:
+    def tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> np.ndarray[Any, Any]:
         from scipy.spatial.transform import Rotation
 
         m = np.eye(4)

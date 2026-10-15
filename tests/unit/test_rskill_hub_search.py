@@ -187,7 +187,7 @@ class TestSearchHubRSkills:
         ],
     )
     def test_facet_filters(
-        self, tmp_path: Path, kwargs: dict[str, str], expected: list[str]
+        self, tmp_path: Path, kwargs: dict[str, Any], expected: list[str]
     ) -> None:
         p1, p2 = _patch_hub([_ACT_ALOHA_ID, _OMDET_ID], _MANIFEST_FIXTURES)
         reg = tmp_path / "rskills.json"

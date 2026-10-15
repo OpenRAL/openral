@@ -61,7 +61,7 @@ def env() -> Iterator[Any]:
     sim_env.close()
 
 
-def _steps(env: Any, action: np.ndarray, n: int) -> Any:
+def _steps(env: Any, action: np.ndarray[Any, Any], n: int) -> Any:
     result = None
     for _ in range(n):
         result = env.step(action)

@@ -21,6 +21,7 @@ from openral_core import (
     CameraTopicKind,
     RobotDescription,
     SensorDeployBinding,
+    SensorFrame,
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
@@ -513,9 +514,9 @@ def test_slam_off_means_every_camera_is_capped() -> None:
 # thumbnail comes out, and a thumbnail failure never stops the aggregator feed.
 
 
-def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0):
+def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0) -> SensorFrame:
     """A real ``SensorFrame`` with inline RGB8 pixels (no mocks, §1.11)."""
-    from openral_core.schemas import FrameEncoding, SensorFrame
+    from openral_core.schemas import FrameEncoding
 
     return SensorFrame(
         sensor_id="top",
@@ -560,8 +561,8 @@ def test_no_exporter_means_no_encode_work(monkeypatch: pytest.MonkeyPatch) -> No
         raise AssertionError("thumbnail encoded for a span nobody records")
 
     monkeypatch.setattr(ral_producer, "encode_frame_thumbnail", _reached)
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._TRACER_PROVIDER = None
     trace.set_tracer_provider(trace.NoOpTracerProvider())
     _emit_frame_observability("top", _rgb_frame(), flip_180=True)
 
@@ -771,7 +772,7 @@ def test_topics_follow_the_sensor_modality(
 ) -> None:
     """A real depth sensor used to land on the RGB ``image`` kind, where no depth consumer looks."""
     desc = RobotDescription.from_yaml(
-        Path(__file__).resolve().parents[2] / "robots" / robot / "robot.yaml"
+        str(Path(__file__).resolve().parents[2] / "robots" / robot / "robot.yaml")
     )
     spec = next(s for s in desc.sensors if s.name == sensor)
     assert _sensor_topics(spec) == (
@@ -869,9 +870,9 @@ def test_native_wrist_publishes_capture_size_with_unscaled_k(tmp_path: Path) -> 
 
     video = _write_video(tmp_path / "wrist.avi", 960, 600)
     specs = []
-    for name, native in (("wrist_left", True), ("wrist_right", False)):
+    for name, is_native in (("wrist_left", True), ("wrist_right", False)):
         params: dict[str, object] = {"device": str(video), "width": 960, "height": 600, "fps": 30}
-        if native:
+        if is_native:
             params["topic_native"] = True
         # The clip ends after 10 frames; a long max_age keeps its last frame servable.
         specs.append(_with_binding(_openarm_wrist(name), backend_params=params, max_age_ms=60_000))

@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -212,7 +213,7 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
             time.sleep(0.1)
         assert "wrist" in node._frames, "the segmenter never cached the published wrist frame"
 
-        def _call(request: object) -> object:
+        def _call(request: object) -> Any:
             future = client.call_async(request)
             end = time.monotonic() + _CALL_TIMEOUT_S
             while not future.done() and time.monotonic() < end:

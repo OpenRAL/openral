@@ -78,7 +78,7 @@ def _make_span(
         start_time_unix_nano=start,
         end_time_unix_nano=start + int(duration_ms * 1_000_000),
         attributes=_attrs(attrs or {}),
-        status=Status(code=0),
+        status=Status(code=Status.STATUS_CODE_UNSET),
     )
 
 
@@ -607,7 +607,7 @@ def test_errored_per_tick_span_still_reports_error() -> None:
     """A failing read_state must NOT be hidden in the debug band."""
     store = TelemetryStore()
     span = _make_span("hal.read_state", attrs={"openral.hal.adapter": "so100"})
-    span.status.code = 2  # ERROR
+    span.status.code = Status.STATUS_CODE_ERROR
     store.ingest_spans(_wrap([span]))
     events = [e for e in store.snapshot()["events"] if e["kind"] == "hal.read_state"]
     assert events and events[0]["severity"] == "error"

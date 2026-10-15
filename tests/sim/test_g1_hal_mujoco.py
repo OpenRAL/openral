@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Iterator
 
 import pytest
 
@@ -246,7 +247,9 @@ class TestReadState:
         assert len(state.velocity) == 29
         assert state.stamp_ns > 0
 
-    def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
+    def test_perception_starvation_warns_not_latch_when_old(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
 
         Deploy-sim regression: ``read_state`` reads live in-process ``MjData``
@@ -515,7 +518,7 @@ class TestBodyTwistGlide:
     """Closed-loop glide behaviour — gravity ON (the pin is the point)."""
 
     @pytest.fixture()
-    def glide_hal(self) -> G1MujocoHAL:
+    def glide_hal(self) -> Iterator[G1MujocoHAL]:
         hal = G1MujocoHAL(settle_steps=50)  # gravity enabled (default)
         hal.connect()
         yield hal

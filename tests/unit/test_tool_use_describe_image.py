@@ -29,9 +29,7 @@ _CANNED_REASONING = "I reasoned that the object is in the target position."
 def _make_jpeg_bytes() -> bytes:
     """Return real 1×1 JPEG bytes via Pillow (real pixels, not b'fake')."""
     try:
-        from PIL import (
-            Image,  # type: ignore[import-untyped]  # reason: optional dep; skip if absent
-        )
+        from PIL import Image
     except ImportError:
         pytest.skip("Pillow not installed — cannot produce real JPEG fixture")
     buf = io.BytesIO()

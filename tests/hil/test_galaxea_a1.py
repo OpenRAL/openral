@@ -35,6 +35,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from typing import cast
 
 import pytest
 from openral_core import Action, ControlMode
@@ -81,13 +82,14 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
 
         expected_names = [joint.name for joint in GALAXEA_A1_DESCRIPTION.joints]
         defaults = GALAXEA_A1_DESCRIPTION.hal.parameters.defaults
-        feedback_tolerance = float(defaults["feedback_limit_tolerance_rad"])
+        feedback_tolerance = float(cast(float, defaults["feedback_limit_tolerance_rad"]))
         assert elapsed < 1.0, f"three cached A1 reads took {elapsed:.3f} s"
         for state in samples:
             assert state.name == expected_names
             assert len(state.position) == 6
             assert all(math.isfinite(value) for value in state.position)
             for value, joint in zip(state.position, GALAXEA_A1_DESCRIPTION.joints, strict=True):
+                assert joint.position_limits is not None
                 lower, upper = joint.position_limits
                 assert lower - feedback_tolerance <= value <= upper + feedback_tolerance
 
@@ -99,11 +101,14 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
             before = samples[-1]
             hold_target: list[float] = []
             for value, joint in zip(before.position, GALAXEA_A1_DESCRIPTION.joints, strict=True):
+                assert joint.position_limits is not None
                 lower, upper = joint.position_limits
                 projected = min(upper, max(lower, value))
                 assert abs(projected - value) <= feedback_tolerance
                 hold_target.append(projected)
-            relay_deadline = time.monotonic() + float(defaults["tracker_alignment_timeout_s"])
+            relay_deadline = time.monotonic() + float(
+                cast(float, defaults["tracker_alignment_timeout_s"])
+            )
             while time.monotonic() < relay_deadline:
                 hal.send_action(
                     Action(
@@ -138,7 +143,9 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
 
             if _ALLOW_NUDGE:
                 nudge_target = list(hold_target)
-                joint1_upper = GALAXEA_A1_DESCRIPTION.joints[0].position_limits[1]
+                joint1_limits = GALAXEA_A1_DESCRIPTION.joints[0].position_limits
+                assert joint1_limits is not None
+                joint1_upper = joint1_limits[1]
                 nudge_target[0] += _NUDGE_RAD
                 assert nudge_target[0] <= joint1_upper
 
@@ -170,12 +177,12 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
                     f"forwarded={last_report.fields['forwarded_position']}"
                 )
                 for state in nudge_samples:
-                    for index, (initial, current) in enumerate(
+                    for index, (initial, now) in enumerate(
                         zip(before.position, state.position, strict=True)
                     ):
-                        assert abs(current - initial) < _MAX_EXCURSION_RAD, (
+                        assert abs(now - initial) < _MAX_EXCURSION_RAD, (
                             f"A1 joint {index + 1} excursion "
-                            f"{abs(current - initial):.4f} rad exceeded "
+                            f"{abs(now - initial):.4f} rad exceeded "
                             f"{_MAX_EXCURSION_RAD:.4f} rad"
                         )
 
@@ -214,8 +221,8 @@ def test_galaxea_a1_observe_optional_hold_and_estop() -> None:
 
             if _ALLOW_GRIPPER:
                 initial_gripper = float(hal.health().fields["gripper_position_normalized"])
-                gripper_stroke = float(defaults["gripper_stroke_max_mm"]) - float(
-                    defaults["gripper_stroke_min_mm"]
+                gripper_stroke = float(cast(float, defaults["gripper_stroke_max_mm"])) - float(
+                    cast(float, defaults["gripper_stroke_min_mm"])
                 )
                 gripper_nudge = _GRIPPER_NUDGE_MM / gripper_stroke
                 gripper_tolerance = _GRIPPER_TOLERANCE_MM / gripper_stroke

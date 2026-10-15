@@ -35,7 +35,7 @@ def captured_spans() -> InMemorySpanExporter:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     # ``trace.set_tracer_provider`` only honours the first set; for tests
     # we go through the private hook to actually override.
-    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
     trace.set_tracer_provider(provider)
     return exporter
 
@@ -53,7 +53,7 @@ def test_null_safety_client_returns_none_on_check() -> None:
     """``check_action`` returns ``None`` (i.e. allows) for any action."""
     client = NullSafetyClient()
     action = Action(control_mode=ControlMode.JOINT_POSITION)
-    assert client.check_action(action) is None
+    client.check_action(action)
 
 
 def test_null_safety_client_default_envelope_is_populated() -> None:

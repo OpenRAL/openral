@@ -17,12 +17,13 @@ from collections.abc import Iterator
 from typing import Any, ClassVar
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 zmq = pytest.importorskip("zmq", reason="sidecar-wire group (pyzmq) not installed")
 msgpack = pytest.importorskip("msgpack", reason="sidecar-wire group (msgpack) not installed")
 
-from openral_core import RobotDescription, SceneSpec, TaskSpec  # noqa: E402
+from openral_core import RobotDescription, SceneSpec, SimEnvironment, TaskSpec  # noqa: E402
 from openral_core.schemas import PhysicsBackend  # noqa: E402
 from openral_hal.sim_attached import SimAttachedHAL  # noqa: E402
 from openral_sim.backends.isaac_sim import _IsaacSimSidecar  # noqa: E402
@@ -56,7 +57,7 @@ class _FakeSidecar:
         obs_width: int = 48,
         sim_dt_per_tick_s: float | None = None,
         null_time_base: bool = False,
-        obs_extra: dict | None = None,
+        obs_extra: dict[str, Any] | None = None,
         sim_time_ns: int | None = None,
     ) -> None:
         self.port = port
@@ -71,11 +72,11 @@ class _FakeSidecar:
         # the ``sim_time_ns`` reset/step replies carry (None = left out).
         self.obs_extra = obs_extra or {}
         self.sim_time_ns = sim_time_ns
-        self.last_action: np.ndarray | None = None
+        self.last_action: npt.NDArray[Any] | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._stop = threading.Event()
 
-    def _obs(self) -> dict:
+    def _obs(self) -> dict[str, Any]:
         return {
             "images": {
                 "camera1": np.full((self.obs_height, self.obs_width, 3), 7, dtype=np.uint8),
@@ -99,7 +100,7 @@ class _FakeSidecar:
             endpoint = req["endpoint"]
             data = req.get("data", {})
             if endpoint == "ping":
-                reply: dict = {"ok": True, "action_dim": 7}
+                reply: dict[str, Any] = {"ok": True, "action_dim": 7}
                 if self.sim_dt_per_tick_s is not None or self.null_time_base:
                     reply["sim_dt_per_tick_s"] = self.sim_dt_per_tick_s
             elif endpoint == "reset":
@@ -184,7 +185,7 @@ class TestNdarrayCodec:
             np.arange(12, dtype=np.int64).reshape(3, 4),
         ],
     )
-    def test_round_trip(self, arr: np.ndarray) -> None:
+    def test_round_trip(self, arr: npt.NDArray[Any]) -> None:
         packed = msgpack.packb({"a": arr}, default=encode_ndarray, use_bin_type=True)
         out = msgpack.unpackb(packed, object_hook=decode_ndarray, raw=False)
         np.testing.assert_array_equal(out["a"], arr)
@@ -330,8 +331,8 @@ class TestMockActionDimByLayout:
     one robot's width to another.
     """
 
-    def _env(self, layout: str | None, action_dim: int | None = None):
-        from openral_core import SimEnvironment, VLASpec
+    def _env(self, layout: str | None, action_dim: int | None = None) -> SimEnvironment:
+        from openral_core import VLASpec
 
         opts: dict[str, object] = {} if layout is None else {"layout": layout}
         if action_dim is not None:
@@ -487,6 +488,7 @@ class TestImageTime:
         hal = self._hal(sidecar.port)
         try:
             hal.connect()
+            assert hal._last_obs is not None
             assert "image_time_ns" not in hal._last_obs
             assert hal.read_image_times() == {}
         finally:
@@ -500,7 +502,9 @@ class TestImageTime:
                 hal._sim_time_offset_ns = 7 * 10**9  # as after an earlier episode
                 times = hal.read_image_times()
                 # Same domain as sim_time_ns, so the difference is the frame's age.
-                assert hal.sim_time_ns() - times["top"] == 4 * _TICK_NS
+                now_ns = hal.sim_time_ns()
+                assert now_ns is not None
+                assert now_ns - times["top"] == 4 * _TICK_NS
                 assert times["head_zed"] == 7 * 10**9 + _IMAGE_NS - _TICK_NS
             finally:
                 hal.env.close()

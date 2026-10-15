@@ -7,9 +7,10 @@ robot without one; the default must not make ``deploy sim`` fail for UR5e & co.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
-from openral_cli.deploy_sim import resolve_launch_invocation
+from openral_cli.deploy_sim import LaunchInvocation, resolve_launch_invocation
 from openral_core import RobotDescription
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -32,7 +33,7 @@ def _scene(tmp_path: Path) -> Path:
     return cfg
 
 
-def _invoke(cfg: Path, **kw: object):  # type: ignore[no-untyped-def]  # reason: test helper
+def _invoke(cfg: Path, **kw: Any) -> LaunchInvocation:  # kw: resolve_launch_invocation options
     return resolve_launch_invocation(
         config=cfg,
         robot_override=None,

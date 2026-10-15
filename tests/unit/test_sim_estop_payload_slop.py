@@ -107,13 +107,13 @@ def test_a_mesh_payload_is_charged_its_aabb_corner_slop() -> None:
     )
 
     entry = slop["objects"]["mesh_payload"]  # type: ignore[index]
-    assert entry["n_primitives"] == 1  # type: ignore[index]
-    assert entry["n_box_primitives"] == 1, "a mesh geom lowers to a box"  # type: ignore[index]
-    assert entry["collision_points_sampled"] == 6  # type: ignore[index]
+    assert entry["n_primitives"] == 1
+    assert entry["n_box_primitives"] == 1, "a mesh geom lowers to a box"
+    assert entry["collision_points_sampled"] == 6
     # The AABB half-extent is _R + 1e-4 (the producer's padding); the corner is
     # that times sqrt(2) from the nearest octahedron vertex.
     expected = (_R + 1e-4) * math.sqrt(2.0)
-    assert entry["corner_slop_m"] == pytest.approx(expected, abs=5e-5)  # type: ignore[index]
+    assert entry["corner_slop_m"] == pytest.approx(expected, abs=5e-5)
     assert float(slop["max_corner_slop_m"]) == pytest.approx(expected, abs=5e-5)  # type: ignore[arg-type]
     assert slop["unresolved_objects"] == []
 
@@ -131,7 +131,7 @@ def test_an_exactly_lowered_payload_is_charged_nothing() -> None:
     )
 
     entry = slop["objects"]["box_payload"]  # type: ignore[index]
-    assert entry["corner_slop_m"] == pytest.approx(0.0, abs=1e-9)  # type: ignore[index]
+    assert entry["corner_slop_m"] == pytest.approx(0.0, abs=1e-9)
     assert float(slop["max_corner_slop_m"]) == pytest.approx(0.0, abs=1e-9)  # type: ignore[arg-type]
 
 
@@ -163,9 +163,9 @@ def test_the_self_collision_budget_rides_with_a_payload_stop() -> None:
     self_block = budget["self_collision"]
     assert isinstance(self_block, dict)
     # The payload's share is real and is carried per object.
-    payload_term = float(self_block["max_payload_corner_slop_m"])  # type: ignore[arg-type]
+    payload_term = float(self_block["max_payload_corner_slop_m"])
     assert payload_term == pytest.approx((_R + 1e-4) * math.sqrt(2.0), abs=5e-5)
-    assert self_block["payload_slop"]["objects"]["mesh_payload"]  # type: ignore[index]
+    assert self_block["payload_slop"]["objects"]["mesh_payload"]
     # No voxel term: the world-voxel half is a separate block, and mixing them
     # is precisely the misreading this exists to stop.
     assert "voxel_half_diagonal_m" not in self_block
@@ -209,7 +209,7 @@ def test_the_probe_window_widens_to_the_self_collision_budget() -> None:
 
     budget = snapshot["adjudication_budget"]
     assert isinstance(budget, dict)
-    used = float(budget["probe_distmax_used_m"])  # type: ignore[arg-type]
+    used = float(budget["probe_distmax_used_m"])
     assert used == pytest.approx((_R + 1e-4) * math.sqrt(2.0), abs=5e-5)
     assert used > 0.001, "the window widened to the budget, it did not narrow"
 
@@ -264,7 +264,7 @@ def test_the_world_voxel_budget_is_the_models_overhang_not_the_boxs() -> None:
     assert box["model_overhang_m"] == pytest.approx(box["corner_slop_m"], abs=1e-9)
 
     assert slop["max_model_overhang_m"] == pytest.approx(
-        max(float(o["model_overhang_m"]) for o in objects.values()),  # type: ignore[index]
+        max(float(o["model_overhang_m"]) for o in objects.values()),
         abs=1e-9,
     )
 
@@ -290,13 +290,13 @@ def test_the_payload_world_budget_rides_with_a_payload_stop() -> None:
     assert isinstance(budget, dict)
     block = budget["payload_world_voxel"]
     assert isinstance(block, dict)
-    overhang = float(block["max_payload_model_overhang_m"])  # type: ignore[arg-type]
-    half = float(block["voxel_half_diagonal_m"])  # type: ignore[arg-type]
+    overhang = float(block["max_payload_model_overhang_m"])
+    half = float(block["voxel_half_diagonal_m"])
     assert block["admissible_gap_m"] == pytest.approx(overhang + half, abs=1e-6)
     # Strictly tighter than charging the box would have been.
     payload_slop = block["payload_slop"]
     assert isinstance(payload_slop, dict)
-    assert overhang < float(payload_slop["max_corner_slop_m"])  # type: ignore[arg-type]
+    assert overhang < float(payload_slop["max_corner_slop_m"])
 
 
 def test_a_payloadless_stop_carries_no_payload_world_block() -> None:

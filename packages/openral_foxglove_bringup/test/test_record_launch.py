@@ -17,6 +17,8 @@ import importlib.util
 import json
 import re
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 from openral_core import camera_topic
@@ -30,7 +32,7 @@ _LAYOUT = _PKG_DIR / "config" / "openral_layout.json"
 # ---------------------------------------------------------------------------
 
 
-def _load_topics() -> object:
+def _load_topics() -> ModuleType:
     """Load ``topics.py`` by path so the test runs without the ament package installed."""
     spec = importlib.util.spec_from_file_location(
         "_fxbringup_topics_rec", _PKG_DIR / "openral_foxglove_bringup" / "topics.py"
@@ -95,7 +97,7 @@ _EXPECTED_ALLOWED: set[str] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_record_launch() -> object:
+def _load_record_launch() -> ModuleType:
     """Import record.launch.py by path, injecting the bringup package shim."""
     # record.launch.py imports ``launch``, present only with ROS 2 sourced —
     # skip the launch-construction guards otherwise (CLAUDE.md §1.11).
@@ -138,10 +140,10 @@ def _load_record_launch() -> object:
 def test_record_launch_has_execute_process() -> None:
     """``generate_launch_description()`` must contain an ``ExecuteProcess``."""
     launch_mod = _load_record_launch()
-    ld = launch_mod.generate_launch_description()  # type: ignore[attr-defined]
+    ld = launch_mod.generate_launch_description()
     # Import lazily so the test file itself doesn't require ROS on the path
     # at collection time; the import is deferred to execution.
-    from launch.actions import ExecuteProcess  # type: ignore[import]
+    from launch.actions import ExecuteProcess
 
     execute_actions = [a for a in ld.entities if isinstance(a, ExecuteProcess)]
     assert execute_actions, "No ExecuteProcess found in the launch description"
@@ -154,10 +156,10 @@ def _flatten_cmd(ep: object) -> list[str]:
     items carry their literal text in ``.text``; ``LaunchConfiguration`` items are
     runtime-resolved and are skipped here (we only need to inspect literals).
     """
-    from launch.substitutions import TextSubstitution  # type: ignore[import]
+    from launch.substitutions import TextSubstitution
 
     tokens: list[str] = []
-    for sublist in ep.cmd:  # type: ignore[union-attr]
+    for sublist in ep.cmd:  # type: ignore[attr-defined]  # reason: launch has no stubs; ep is an ExecuteProcess
         parts: list[str] = []
         for item in sublist:
             if isinstance(item, TextSubstitution):
@@ -170,8 +172,8 @@ def _flatten_cmd(ep: object) -> list[str]:
 def test_record_command_is_ros2_bag_record_mcap() -> None:
     """The ``ExecuteProcess`` command must include ``ros2 bag record --storage mcap``."""
     launch_mod = _load_record_launch()
-    ld = launch_mod.generate_launch_description()  # type: ignore[attr-defined]
-    from launch.actions import ExecuteProcess  # type: ignore[import]
+    ld = launch_mod.generate_launch_description()
+    from launch.actions import ExecuteProcess
 
     ep: ExecuteProcess = next(a for a in ld.entities if isinstance(a, ExecuteProcess))
     cmd_tokens = _flatten_cmd(ep)
@@ -188,8 +190,8 @@ def test_record_command_is_ros2_bag_record_mcap() -> None:
 def test_record_scope_references_bucket1_patterns() -> None:
     """The regex alternation fed to --regex must contain the Bucket-1 patterns."""
     launch_mod = _load_record_launch()
-    ld = launch_mod.generate_launch_description()  # type: ignore[attr-defined]
-    from launch.actions import ExecuteProcess  # type: ignore[import]
+    ld = launch_mod.generate_launch_description()
+    from launch.actions import ExecuteProcess
 
     ep: ExecuteProcess = next(a for a in ld.entities if isinstance(a, ExecuteProcess))
     cmd_tokens = _flatten_cmd(ep)
@@ -228,7 +230,7 @@ def test_layout_bucket2_panel_present() -> None:
 def test_layout_bucket2_topics_referenced() -> None:
     """The Bucket-2 panel must reference the converter's voxel topic."""
     layout = json.loads(_LAYOUT.read_text())
-    panel_topics: dict = layout["configById"]["3D!bucket2"]["topics"]
+    panel_topics: dict[str, Any] = layout["configById"]["3D!bucket2"]["topics"]
     assert "/openral/world_voxels_cloud" in panel_topics, (
         "/openral/world_voxels_cloud not in 3D!bucket2 topics"
     )

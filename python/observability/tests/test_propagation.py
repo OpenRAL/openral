@@ -11,6 +11,7 @@ from openral_observability.propagation import (
 )
 from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
@@ -68,6 +69,7 @@ def test_inject_then_extract_links_child_to_parent(memory_exporter: InMemorySpan
             # Child inherits the parent's trace id.
             assert child_ctx.trace_id == producer_trace_id
             # Child's parent span id matches the producer's span id.
+            assert isinstance(child_span, ReadableSpan)
             assert child_span.parent is not None
             assert child_span.parent.span_id == producer_span_id
     finally:

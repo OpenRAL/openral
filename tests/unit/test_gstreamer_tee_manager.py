@@ -63,7 +63,7 @@ def _is_playing(pipeline: object) -> bool:
     of being read as "not playing".
     """
     ret, state, _pending = pipeline.get_state(Gst.SECOND)  # type: ignore[attr-defined]
-    return ret == Gst.StateChangeReturn.SUCCESS and state == Gst.State.PLAYING
+    return bool(ret == Gst.StateChangeReturn.SUCCESS and state == Gst.State.PLAYING)
 
 
 def test_init_raises_when_tee_absent() -> None:

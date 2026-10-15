@@ -12,6 +12,7 @@ import importlib.util
 import json
 import re
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from openral_core import CameraTopicKind, camera_topic
@@ -20,7 +21,7 @@ _PKG_DIR = Path(__file__).resolve().parent.parent
 _LAYOUT = _PKG_DIR / "config" / "openral_layout.json"
 
 
-def _load_topics() -> object:
+def _load_topics() -> ModuleType:
     """Load ``topics.py`` by path so the test runs without the ament package installed.
 
     This package is an ament_cmake ROS package (not a uv/pip workspace member), so
