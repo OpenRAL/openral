@@ -63,7 +63,6 @@ isolate_globs = [
   # selection that includes a forker still exits non-zero despite all-pass.)
   "tests/unit/test_smolvla_processor_fallback.py",
   "tests/unit/test_cli_dataset_push.py",
-  "tests/unit/test_hardware_runner_dataset_recording.py",
   # Records a rollout into a LeRobotDataset v3 then re-opens it via the real
   # lerobot reader (→ `compute_stats` fork). It lives under `tests/sim`, so a
   # broad diff folds it into the single `tests` partition alongside the
