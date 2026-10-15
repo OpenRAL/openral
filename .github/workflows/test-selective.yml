@@ -179,7 +179,9 @@ jobs:
     needs: select
     if: needs.select.outputs.full_run != 'true' && needs.select.outputs.any == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # A wide selection's main pytest block alone takes ~13 min (7358 tests),
+    # plus setup and the isolated files.
+    timeout-minutes: 25
     env:
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
