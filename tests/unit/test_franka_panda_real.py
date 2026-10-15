@@ -19,7 +19,6 @@ from openral_core import (
     ROSPerceptionStale,
     ROSRuntimeError,
 )
-from openral_core.schemas import JointState
 from openral_hal.franka_panda import FRANKA_PANDA_DESCRIPTION
 from openral_hal.franka_panda_real import (
     FRANKA_PANDA_REAL_DESCRIPTION,
@@ -113,19 +112,9 @@ class TestProtocolConformance:
     # tests/unit/test_hal_protocol_conformance.py::test_hal_read_state_before_connect_raises
     # (parametrized over HAL_BUILDERS, "FrankaPandaRealHAL" included).
 
-    def test_send_action_before_connect_raises(self, hal: FrankaPandaRealHAL) -> None:
-        with pytest.raises(ROSRuntimeError):
-            hal.send_action(_hold_action())
-
-    def test_connect_then_read_state(self, hal: FrankaPandaRealHAL) -> None:
-        hal.connect()
-        try:
-            state = hal.read_state()
-            assert isinstance(state, JointState)
-            assert state.name == [j.name for j in FRANKA_PANDA_REAL_DESCRIPTION.joints]
-            assert len(state.position) == _N_JOINTS
-        finally:
-            hal.disconnect()
+    # test_send_action_before_connect_raises / test_connect_then_read_state moved to
+    # tests/unit/test_hal_protocol_conformance.py (parametrized over HAL_BUILDERS,
+    # "FrankaPandaRealHAL" included).
 
     # test_disconnect_idempotent moved to
     # tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent
