@@ -70,8 +70,9 @@ in `map`, or a relative turn / drive in `base_link`) and sends it as
 | out | _none via OpenRAL_ | — | Nav2's behaviour tree publishes `/cmd_vel` directly to the base controller |
 
 **Safety implication.** No `ActionChunk` is published on
-`/openral/candidate_action`, so the OpenRAL safety kernel does NOT see
-Nav2's velocity commands: the HAL's
+`/openral/candidate_action`, so the OpenRAL safety supervisor does NOT see
+Nav2's velocity commands (neither the C++ kernel nor the Python supervisor
+node is in that path): the HAL's
 [`MobileBaseBridge`](../../python/hal/src/openral_hal/mobile_base_bridge.py)
 maps each `/cmd_vel` message to a `BODY_TWIST` action and applies it directly
 (Nav2's `velocity_smoother` caps velocity). Collision avoidance relies on
