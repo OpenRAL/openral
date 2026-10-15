@@ -2,8 +2,9 @@
 
 These cover the action de-normalization (BOUNDS_Q99) and the OpenVLA prompt
 template — the parts that need no GPU / weights, so they run in the unit tier.
-The full ``predict_action`` chunk path is exercised live in
-``tests/sim/test_widowx_openvla_simpler.py`` (GPU-gated).
+The full ``predict_action`` chunk path has no in-tree live test: the RLinf
+OpenVLA remote code needs ``transformers<5``, which the workspace lock cannot
+provide.
 """
 
 from __future__ import annotations
