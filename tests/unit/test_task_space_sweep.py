@@ -91,6 +91,9 @@ def test_all_rskills_load(path: str) -> None:
     # slots already passed ActionContract's coverage validator at load.
     if manifest.action_contract is not None:
         assert manifest.action_contract.dim > 0
+    # The latency budget is contractual (CLAUDE.md §3): every skill declares one.
+    assert manifest.latency_budget is not None
+    assert manifest.latency_budget.per_chunk_ms > 0
 
 
 def _robots() -> dict[str, RobotDescription]:

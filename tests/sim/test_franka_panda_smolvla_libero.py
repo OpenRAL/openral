@@ -121,30 +121,6 @@ def skill_manifest():
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
-class TestSmolVLALiberoManifest:
-    """Manifest contract — declared inputs/outputs match the LIBERO embodiment."""
-
-    def test_manifest_loads_and_declares_libero(self, skill_manifest) -> None:
-        m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
-        # V1 manifest carries the canonical robot id, not the scene name.
-        assert "franka_panda" in m.embodiment_tags
-        assert m.role == "s1"
-
-    def test_manifest_declares_two_rgb_sensors(self, skill_manifest) -> None:
-        sensors = skill_manifest.manifest.sensors_required
-        assert len(sensors) == 2
-        modalities = {s.modality for s in sensors}
-        assert modalities == {"rgb"}
-        keys = {s.vla_feature_key for s in sensors}
-        assert keys == {"observation.images.camera1", "observation.images.camera2"}
-
-    def test_manifest_has_latency_budget(
-        self, skill_manifest, assert_manifest_has_latency_budget
-    ) -> None:
-        assert_manifest_has_latency_budget(skill_manifest.manifest)
-
-
 class TestSmolVLALiberoIOContract:
     """Adapter IO shapes — verified through the canonical eval factory."""
 

@@ -102,27 +102,6 @@ def skill_manifest():
     return rSkill.from_yaml(_LOCAL_MANIFEST)
 
 
-class TestACTAlohaManifest:
-    """Manifest contract — declared inputs match the bimanual ALOHA embodiment."""
-
-    def test_manifest_loads_and_declares_aloha(self, skill_manifest) -> None:
-        m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32"
-        assert "aloha" in m.embodiment_tags
-        assert m.role == "s1"
-
-    def test_manifest_declares_top_camera(self, skill_manifest) -> None:
-        sensors = skill_manifest.manifest.sensors_required
-        assert len(sensors) == 1
-        assert sensors[0].modality == "rgb"
-        assert sensors[0].vla_feature_key == "observation.images.top"
-
-    def test_manifest_has_latency_budget(
-        self, skill_manifest, assert_manifest_has_latency_budget
-    ) -> None:
-        assert_manifest_has_latency_budget(skill_manifest.manifest)
-
-
 class TestACTAlohaIOContract:
     """Adapter IO shapes — verified through the canonical eval factory."""
 

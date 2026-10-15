@@ -279,25 +279,6 @@ def scene_env(_scene_config: Path) -> Any:
 
 
 @pytest.fixture
-def assert_manifest_has_latency_budget() -> Callable[[Any], None]:
-    """Factory: assert an ``RSkillManifest`` declares a positive per-chunk latency budget.
-
-    Shared by the VLA sim suites' ``test_manifest_has_latency_budget``
-    (pusht/diffusion, franka_panda/smolvla/libero, aloha/act) — same
-    one-line manifest contract, one body. Each caller keeps its own test
-    method (its file + class name already identifies the rSkill on
-    failure), only the assertion body is shared.
-    """
-
-    def _assert(manifest: Any) -> None:
-        budget = manifest.latency_budget
-        assert budget is not None
-        assert budget.per_chunk_ms > 0
-
-    return _assert
-
-
-@pytest.fixture
 def assert_send_action_holds_zero_pose() -> Callable[[Any, Any], None]:
     """Factory: assert a connected MuJoCo HAL holds zero pose after a zero-target ``send_action``.
 
