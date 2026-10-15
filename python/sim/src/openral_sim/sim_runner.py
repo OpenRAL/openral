@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from openral_core import RobotDescription, RSkillManifest, SimEnvironment
     from openral_dataset import RolloutRecorder
+    from openral_rskill._policy_io import PolicyIOCodec
 
     from openral_sim.policy import PolicyAdapter
     from openral_sim.rollout import Observation, SimRollout
@@ -403,6 +404,9 @@ class SimRunner(InferenceRunnerBase):
         self._obs: Observation = {}
         # Scene camera name -> VLA slot, applied to every obs (see `_policy_scene_cameras`).
         self._image_rekey: dict[str, str] = {}
+        # Policy<->robot codec the runner applies itself, on a ``robot_unit_io``
+        # scene only (see `_runner_policy_codec`); None = obs/actions pass verbatim.
+        self._codec: PolicyIOCodec | None = None
         self._viewer: Any = None
         # True when the scene adapter draws its own window inside env.step /
         # env.reset (e.g. gym_pusht with render_mode="human"). Suppresses
@@ -450,6 +454,9 @@ class SimRunner(InferenceRunnerBase):
         # Validate before the (expensive) env / policy build so misconfigs
         # fail fast without burning GPU time.
         self.manifest, self._env_cfg = _check_rskill_compatibility(self._env_cfg)
+        self._codec = _runner_policy_codec(
+            self.manifest, make_robot(self._env_cfg), str(self._env_cfg.scene.id)
+        )
         # SAPIEN-backed scenes (simpler-env/ManiSkill3) need `render_mode`
         # ='human' at gym.make() time to build a live viewer instead of an
         # offscreen target; the SCENES factory only sees `env_cfg`, so the
@@ -615,6 +622,15 @@ class SimRunner(InferenceRunnerBase):
 
     # ── Reset tick ──────────────────────────────────────────────────────────
 
+    def _policy_obs(self) -> Observation:
+        """The observation the policy sees: ``state`` in policy units under a runner codec."""
+        if self._codec is None or not isinstance(self._obs, dict) or "state" not in self._obs:
+            return self._obs
+        state = np.asarray(self._obs["state"], dtype=np.float32)
+        out: Observation = dict(self._obs)
+        out["state"] = self._codec.to_policy_state(state).astype(np.float32)
+        return out
+
     def _reset_tick(self, tick_idx: int) -> TickResult:
         """env.reset + policy.reset, plus finalising the prior episode if any."""
         assert self._env is not None
@@ -709,7 +725,7 @@ class SimRunner(InferenceRunnerBase):
                 obs_task=obs_task,
                 task_instruction=self._env_cfg.task.instruction,
             )
-            action = self._policy.step(self._obs, instruction)
+            action = self._policy.step(self._policy_obs(), instruction)
             # Debug-only obs/action capture — mirror of rskill_runner_node's
             # ``_dump_obs_to_disk`` so a deploy_sim pickle and a sim_run
             # pickle for the same tick can be diffed byte-for-byte.
@@ -721,6 +737,10 @@ class SimRunner(InferenceRunnerBase):
                 raw_policy_action=action,
                 prompt=instruction,
             )
+            if self._codec is not None:
+                action = self._codec.clamp(
+                    self._codec.to_robot_action(np.asarray(action, dtype=np.float32))
+                )
             inference_ms = (time.perf_counter() - t0) * 1000.0
             self._buf.latencies.append(inference_ms)
             step_span.set_attribute("policy_latency_ms", inference_ms)
@@ -966,13 +986,17 @@ def _check_policy_units_owned(
 ) -> None:
     """Fail loud when the policy needs a unit/order conversion no one on ``sim run`` does.
 
-    ``sim run`` applies no ``PolicyIOCodec``: a scene that converts (degrees,
-    gripper scale, joint order) declares ``SCENES.register(...,
-    converts_policy_units=True)`` and does it from ``scene.backend_options``;
-    every other scene hands the policy's action to the sim verbatim. A
-    non-identity codec on a non-converting scene would silently drive
-    degrees as radians, so it is a ``ROSConfigError`` here — not a
-    conversion (that would double-convert on the scenes that own it).
+    Two scene kinds take a non-identity ``PolicyIOCodec``. A scene whose
+    observation ``state`` and action are the robot's own units in manifest joint
+    order declares ``SCENES.register(..., robot_unit_io=True)`` (``isaac_sim``):
+    ``SimRunner`` then applies the SAME codec the deploy runner does (see
+    ``_runner_policy_codec``). A scene that converts itself (degrees, gripper
+    scale, joint order) declares ``converts_policy_units=True`` and does it from
+    ``scene.backend_options``; it cannot honor a manifest
+    ``action_contract.joint_calibration``, so that is refused there. Every
+    other scene hands the policy's action to the sim verbatim: a non-identity
+    codec there would silently drive degrees as radians, so it is a
+    ``ROSConfigError`` — not a conversion.
     A converting scene must also be configured for the checkpoint's units:
     its ``backend_options.joint_units`` (default ``radians``) has to match
     the codec, or degrees would still reach the sim as radians.
@@ -987,7 +1011,15 @@ def _check_policy_units_owned(
     from openral_sim.registry import SCENES
 
     codec = PolicyIOCodec.from_manifest(manifest, robot)
+    if SCENES.meta(scene_id).get("robot_unit_io") is True:
+        return
     if SCENES.meta(scene_id).get("converts_policy_units") is True:
+        if any(c is not None for c in codec.calibration):
+            raise ROSConfigError(
+                f"rSkill {manifest.name!r} declares action_contract.joint_calibration but "
+                f"scene {scene_id!r} converts policy units from its own backend_options and "
+                "would ignore it; run it on a robot_unit_io scene (isaac_sim)."
+            )
         scene_units = str((backend_options or {}).get("joint_units", "radians")).lower()
         if codec.joint_units_are_degrees == (scene_units == "degrees"):
             return
@@ -1008,6 +1040,38 @@ def _check_policy_units_owned(
         "the sim unconverted. Use a converting scene (e.g. so101_box with "
         "backend_options.joint_units) or a radians / unit-gripper checkpoint."
     )
+
+
+def _runner_policy_codec(
+    manifest: RSkillManifest | None, robot: RobotDescription | None, scene_id: str
+) -> PolicyIOCodec | None:
+    """The codec ``SimRunner`` applies itself, or ``None`` (obs/actions verbatim).
+
+    Only a ``robot_unit_io`` scene gets one, and only when it changes something:
+    such a scene's ``state`` is the manifest joint vector in robot units and its
+    action the absolute manifest targets, exactly what the deploy runner's codec
+    reads and writes, so ``sim run`` and ``deploy sim`` convert identically
+    (state into policy units, action back to robot units, then ``clamp``).
+    """
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    from openral_sim.registry import SCENES
+
+    if manifest is None or robot is None or SCENES.meta(scene_id).get("robot_unit_io") is not True:
+        return None
+    codec = PolicyIOCodec.from_manifest(manifest, robot)
+    if codec.is_identity:
+        return None
+    _log.info(
+        "sim_policy_codec_applied",
+        skill=manifest.name,
+        scene_id=scene_id,
+        joint_units_are_degrees=codec.joint_units_are_degrees,
+        gripper_scale=codec.gripper_scale,
+        robot_to_policy=codec.robot_to_policy,
+        calibration=codec.calibration,
+    )
+    return codec
 
 
 def _required_render_resolution(

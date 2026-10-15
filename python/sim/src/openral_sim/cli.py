@@ -643,7 +643,7 @@ def _maybe_build_recorder(args: SimpleNamespace, env_cfg: SimEnvironment) -> Any
         )
         return None
 
-    fps: float = _control_rate_hz(robot)
+    fps: float = _scene_control_rate_hz(env_cfg, _control_rate_hz(robot))
 
     # The sim-side state / action contract belongs on the
     # per-checkpoint rSkill manifest (state_contract / action_contract),
@@ -843,6 +843,18 @@ def _robot_control_rate_hz(robot_id: str | None) -> float:
     return _control_rate_hz(ROBOTS.get(robot_id)()) if robot_id else 30.0
 
 
+def _scene_control_rate_hz(env_cfg: SimEnvironment, robot_hz: float | None = None) -> float:
+    """The rate this scene steps: ``backend_options.control_freq_hz`` when set, else the robot's.
+
+    A scene may re-time the robot (the Isaac LeIsaac scene runs the SO-101 at 60 Hz,
+    ``IsaacSimOptions.control_freq_hz``); videos and datasets then play at that rate.
+    """
+    override = (env_cfg.scene.backend_options or {}).get("control_freq_hz")
+    if isinstance(override, int | float) and override > 0:
+        return float(override)
+    return robot_hz if robot_hz is not None else _robot_control_rate_hz(env_cfg.robot_id)
+
+
 def _write_videos(
     args: SimpleNamespace,
     results: list[Any],
@@ -890,7 +902,7 @@ def _write_debug_videos(
 
     title = f"{env_cfg.vla.id} on {env_cfg.task.id} (robot={env_cfg.robot_id})"
     # Real-time playback: one recorded frame per env step at the control rate.
-    fps = round(_robot_control_rate_hz(env_cfg.robot_id))
+    fps = round(_scene_control_rate_hz(env_cfg))
 
     for i, r in enumerate(results):
         if not r.frames and not r.vla_input_frames:
@@ -926,7 +938,7 @@ def _write_website_videos(
         rskill=Path(args.rskill).name if args.rskill else env_cfg.vla.id,
         section=Path(args.config).parent.name if args.config is not None else "sim",
         size=int(getattr(args, "video_size", 1024)),
-        fps=round(_robot_control_rate_hz(env_cfg.robot_id)),
+        fps=round(_scene_control_rate_hz(env_cfg)),
         grid=bool(getattr(args, "video_grid", False)),
     )
 

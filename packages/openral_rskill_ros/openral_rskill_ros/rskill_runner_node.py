@@ -3696,7 +3696,8 @@ def _make_policy_adapter_skill(
         f"(manifest) "
         f"perm={codec.robot_to_policy} "
         f"is_gripper={codec.policy_is_gripper} "
-        f"gripper_scale={codec.gripper_scale:g}",
+        f"gripper_scale={codec.gripper_scale:g} "
+        f"calibration={codec.calibration or None}",
         file=sys.stderr,
         flush=True,
     )

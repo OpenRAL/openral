@@ -1,0 +1,146 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps edge-inference/smolvla-so101-pick-orange (model card: license
+# apache-2.0): SmolVLA finetuned from lerobot/smolvla_base (arxiv:2506.01844;
+# 30k steps, batch 56, AdamW 1e-4, lerobot 0.4.5, expert-only) on
+# LightwheelAI/leisaac-pick-orange (60 episodes, 36 293 frames, ONE task
+# "Grab orange and place into plate"), teleoperated INSIDE LeIsaac's Isaac Sim
+# PickOrange kitchen. Two 640x480 cams: fixed `front` + `wrist`.
+#
+# UNITS — LeIsaac's own SO-101 map, not plain degrees
+# (leisaac utils/robot_utils.py convert_leisaac_action_to_lerobot, pinned
+# 24d3bcd): per joint lerobot = (deg - jl0) / (jl1 - jl0) * (ml1 - ml0) + ml0
+# with USD joint limits jl (deg) shoulder_pan (-110, 110), shoulder_lift
+# (-100, 100), elbow_flex (-100, 90), wrist_flex (-95, 95), wrist_roll
+# (-160, 160), gripper (-10, 100) and motor ranges ml (-100, 100) for the arm,
+# (0, 100) for the gripper. Observation state uses the same map. Folded into
+# `action_contract.joint_calibration` as policy = scale * robot + offset:
+#   arm (robot = rad):   scale = 200 / (jl1 - jl0) * 180 / pi,
+#                        offset = -jl0 * 200 / (jl1 - jl0) - 100;
+#   gripper (robot = the manifest's [0, 1] jaw fraction; the Isaac scene opens it
+#   over the URDF's 0 .. 1.74533 rad = 0 .. 100.0 deg):
+#                        scale = 100.0002 * 100 / 110, offset = 10 * 100 / 110.
+# robots/so101_follower's URDF carries the same so101_new_calib joints as
+# LeIsaac's so101_follower.usd (identical limits, zero pose = LeIsaac init),
+# so no sign / zero correction is folded in.
+#
+# TIME BASE — LeIsaac steps its env at the physics dt (Isaac Lab 1/60 s,
+# decimation 1) and records + evaluates ONE action per step; the dataset's
+# "fps: 30" label does not change that. Hence control_freq_hz: 60 below and the
+# scene's backend_options.control_freq_hz: 60.
+#
+# Weights: third-party repo, pinned to its commit SHA (CLAUDE.md §1.8); not
+# mirrored under OpenRAL/ (no write access from this change).
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+
+# Two RGB streams, trained at 640x480 (the policy letterboxes to 512x512).
+# robots/so101_follower maps top -> camera1, wrist -> camera2; the aliases
+# below rename those slots to the checkpoint's front / wrist keys. In
+# scenes/sim/isaac_leisaac_pick_orange.yaml `top` renders LeIsaac's `front`.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Home / starting pose ─────────────────────────────────────────────────
+# LeIsaac's init_state: every joint at 0 (gripper 0 = the closed end of the
+# normalized jaw). Joint order = robots/so101_follower joints.
+starting_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Same 450 M SmolVLA graph as rskills/rskill-smolvla-so101-eraser_place-bf16
+# (1.19 GiB peak measured there); not re-measured for this checkpoint.
+min_vram_gb:
+  bf16: 1.5
+weights_uri: "hf://edge-inference/smolvla-so101-pick-orange@71cf4a9d35ce317f6706efe1a9f9d4cbb2b8fb4d"
+
+processors:
+  preprocessor_uri: "hf://edge-inference/smolvla-so101-pick-orange@71cf4a9d35ce317f6706efe1a9f9d4cbb2b8fb4d/policy_preprocessor.json"
+  postprocessor_uri: "hf://edge-inference/smolvla-so101-pick-orange@71cf4a9d35ce317f6706efe1a9f9d4cbb2b8fb4d/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: false
+  aliases:
+    camera1: "front"
+    camera2: "wrist"
+state_contract:
+  dim: 6
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# SmolVLA chunk_size=50; LeIsaac's evaluation replays the whole chunk
+# synchronously (policy_action_horizon 50) before the next inference, so no
+# prefetch / RTC here.
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  per_chunk_ms: 400.0
+
+# The dataset's only task string, verbatim.
+default_prompt: "Grab orange and place into plate"
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2506.01844"
+dataset_uri: "hf://LightwheelAI/leisaac-pick-orange"
+source_repo: "hf://edge-inference/smolvla-so101-pick-orange"
+
+description: >
+  SmolVLA finetuned in LeIsaac (Isaac Sim) to pick three oranges off a kitchen
+  counter and put them on a plate with an SO-101 follower arm (Apache-2.0).
+  Emits 6-DoF absolute joint-position chunks (size 50) in LeIsaac's normalized
+  SO-101 motor units from two RGB views (fixed front + wrist), one action per
+  1/60 s simulation step. Trained on 60 sim teleop episodes of
+  LightwheelAI/leisaac-pick-orange; ONE task string — "Grab orange and place
+  into plate".
+
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+objects:
+  - "orange"
+  - "plate"
+scenes:
+  - "kitchen"
+
+action_contract:
+  dim: 6
+  representation: "joint_positions"
+  # Required for a joint-position contract; every channel is overridden by
+  # joint_calibration below (LeIsaac's motor units are a per-joint affine of
+  # degrees, not degrees).
+  joint_units: "degrees"
+  control_freq_hz: 60.0
+  joint_calibration:
+    shoulder_pan: {scale: 52.08707, offset: 0.0}
+    shoulder_lift: {scale: 57.29578, offset: 0.0}
+    elbow_flex: {scale: 60.31135, offset: 5.263158}
+    wrist_flex: {scale: 60.31135, offset: 0.0}
+    wrist_roll: {scale: 35.80986, offset: 0.0}
+    gripper: {scale: 90.90913, offset: 9.090909}

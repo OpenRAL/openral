@@ -92,6 +92,7 @@ depends on as an OpenRAL Pro plugin.
 | `smolvla-metaworld` | smolvla | sawyer |
 | `smolvla-robotwin` | smolvla | aloha_agilex |
 | `rskill-smolvla-so101-eraser_place-bf16` | smolvla | so101_follower |
+| `smolvla-so101-leisaac-pick-orange` | smolvla | so101_follower |
 | `smolvla-vlabench` | smolvla | franka_panda |
 | `xvla-libero` | xvla | franka_panda |
 

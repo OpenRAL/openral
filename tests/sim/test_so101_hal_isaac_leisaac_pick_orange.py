@@ -121,6 +121,8 @@ def test_t0_finds_the_stage_objects_and_grades_fail(env: Any) -> None:
         assert np.max(np.abs(orange[:2] - plate[:2])) > 0.10, (name, orange, plate)
     assert info["placement_grade"] == "fail"
     assert result.terminated is False
+    # LeIsaac's time base: one step = one 1/60 s physics step (backend_options.control_freq_hz).
+    assert env.sim_dt_per_tick_s == pytest.approx(1.0 / 60.0)
     # Fixed base, pinned at LeIsaac's spawn.
     assert np.linalg.norm(np.asarray(info["robot_position"]) - _SPAWN) < 1e-3
     image = result.observation["images"]["camera1"]
