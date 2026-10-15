@@ -318,3 +318,31 @@ def test_filter_depth_by_global_height_rejects_invalid_intrinsics() -> None:
             min_height_m=0.8,
             max_height_m=1.3,
         )
+
+
+def test_mimic_follower_is_placed_at_its_offset() -> None:
+    """A ``mimic_joints`` child sits at ``q = offset`` in the zero configuration.
+
+    OpenArm's follower fingers are posed only through ``mimic_joints`` (issue
+    #349), so without that edge the band refused the whole manifest. A
+    revolute follower with ``offset = pi`` about its x axis must come out turned
+    half a revolution relative to ``offset = 0`` — the closed form diag(1,-1,-1).
+    """
+    description = RobotDescription.from_yaml(str(_REPO_ROOT / "robots/openarm/robot.yaml"))
+    mimic = description.mimic_joints[0]
+    assert mimic.offset == 0.0 and tuple(mimic.axis_xyz) == (1.0, 0.0, 0.0)
+    child = str(mimic.child_link)
+    turned = description.model_copy(
+        update={
+            "mimic_joints": [
+                mimic.model_copy(update={"offset": math.pi}),
+                *description.mimic_joints[1:],
+            ]
+        }
+    )
+
+    r0, t0 = _link_transforms_at_zero(description)[child]
+    r1, t1 = _link_transforms_at_zero(turned)[child]
+
+    assert np.allclose(t0, t1)
+    assert np.allclose(np.array(r0).T @ np.array(r1), np.diag([1.0, -1.0, -1.0]), atol=1e-9)
