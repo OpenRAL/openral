@@ -641,7 +641,11 @@ class ChunkedExecutor:
                     "foreground",
                     rtc_kwargs={"inference_delay": 0, "prev_chunk_left_over": None},
                 )
-                self._rtc_merge(chunk, idx_before=self._rtc_queue.get_action_index())
+                self._rtc_merge(
+                    chunk,
+                    idx_before=self._rtc_queue.get_action_index(),
+                    served_before=self._popped,
+                )
                 action = self._rtc_queue.get()
             if action is None:
                 raise ROSRuntimeError("ChunkedExecutor: RTC queue empty after inference")
@@ -654,8 +658,12 @@ class ChunkedExecutor:
             return action.numpy()
         return action.unsqueeze(0)
 
-    def _rtc_merge(self, chunk: Any, *, idx_before: int) -> None:
-        """Replace the queue tail with a fresh chunk; delay = actions consumed meanwhile."""
+    def _rtc_merge(self, chunk: Any, *, idx_before: int, served_before: int) -> None:
+        """Replace the queue tail with a fresh chunk; delay = actions consumed meanwhile.
+
+        ``served_before`` is the served-action count when the chunk's inference was
+        launched; it anchors the logged ``merge_tick``.
+        """
         if not (hasattr(chunk, "dim") and chunk.dim() == _CHUNK_TENSOR_RANK):
             raise ROSRuntimeError(
                 "ChunkedExecutor: RTC mode needs a (batch, chunk, action) tensor producer, "
@@ -683,11 +691,13 @@ class ChunkedExecutor:
         self._rtc_queue.merge(actions, processed, real_delay, idx_before)
         # Where each chunk took over and how late: the switch points a bag of the
         # served actions cannot show on its own. Served action `merge_tick + 1`
-        # (1-based since start/reset) is the first one from this chunk.
+        # (1-based since start/reset) is the first one from this chunk. Counted as
+        # launch-time serves + the queue-measured delay: the foreground's _popped
+        # is bumped only after its get() returns, so reading it here can lag by one.
         log.debug(
             "chunked_executor.rtc_merge",
             chunk_index=self._chunk_index,
-            merge_tick=self._popped,
+            merge_tick=served_before + real_delay,
             rtc_delay=real_delay,
         )
 
@@ -807,8 +817,6 @@ class ChunkedExecutor:
                 # rows only cost a host->policy copy. Normalizing here also keeps the
                 # tail length independent of how early prefetch_at fires.
                 left_over = left_over[: self._rtc_horizon]
-            if self._rtc_prefix_fn is not None and left_over is not None and len(left_over):
-                left_over = self._rtc_prefix_fn(left_over)
             # The delay fed here is the *previous* merge's measured one, so the
             # first guided prefetch after a cold start or reset bootstraps with
             # 0 (the reset value): no merge has happened yet, so nothing has
@@ -820,13 +828,25 @@ class ChunkedExecutor:
                 "prev_chunk_left_over": left_over,
             }
 
+        served_before = self._popped
+
         def _run() -> None:
             try:
-                result = self._produce(batch, prefetch_index, "prefetch", rtc_kwargs=rtc_kwargs)
+                kwargs = rtc_kwargs
+                prefix = kwargs["prev_chunk_left_over"] if kwargs is not None else None
+                if self._rtc_prefix_fn is not None and prefix is not None and len(prefix):
+                    # In this thread, not on the tick: the re-anchor does tensor work and a
+                    # host->device copy, and a failure must reach the foreground through
+                    # _bg_error/_bg_event — raised before the thread starts, it would
+                    # leave _bg_pending set with nothing to ever clear it. The foreground
+                    # never runs the preprocessor while a prefetch is pending, so the
+                    # cached state it reads is still this batch's.
+                    kwargs = {**(kwargs or {}), "prev_chunk_left_over": self._rtc_prefix_fn(prefix)}
+                result = self._produce(batch, prefetch_index, "prefetch", rtc_kwargs=kwargs)
                 if self._rtc_enabled:
                     # Merge NOW — RTC's point is that the new chunk takes over
                     # immediately, not when the old buffer drains.
-                    self._rtc_merge(result, idx_before=idx_before)
+                    self._rtc_merge(result, idx_before=idx_before, served_before=served_before)
                     with self._bg_lock:
                         self._bg_pending = False
                 else:
