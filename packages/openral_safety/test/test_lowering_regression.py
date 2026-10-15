@@ -180,7 +180,12 @@ def _param(manifest: Path) -> object:
     return pytest.param(manifest, id=name)
 
 
-@pytest.mark.parametrize("manifest", [_param(p) for p in ROBOTS])
+# Only robots that commit a collision model: the rest have nothing to regress, and a
+# per-robot skip would read as an undeclared skip in the lowering CI lane.
+_WITH_GEOMETRY = [p for p in ROBOTS if "collision_geometry:" in p.read_text(encoding="utf-8")]
+
+
+@pytest.mark.parametrize("manifest", [_param(p) for p in _WITH_GEOMETRY])
 def test_lowering_output_unchanged(manifest: Path) -> None:
     """Re-lowering a robot reproduces its committed collision model exactly
     (via the standardized-description-asset resolver)."""
