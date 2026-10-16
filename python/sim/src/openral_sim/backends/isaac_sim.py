@@ -1188,6 +1188,26 @@ class IsaacPlacementSuccess(BaseModel):
                     )
         return self
 
+    def placements_for(self, prompt: str) -> list[tuple[str, str | None]]:
+        """``(object, destination object)`` per placement ``prompt`` asks for (issue #418).
+
+        The destination is the target region's ``relative_to`` (``None`` for a fixed
+        world-frame region such as a shelf slot). An unknown prompt places nothing.
+
+        Example:
+            >>> ps = IsaacPlacementSuccess(
+            ...     regions={
+            ...         "on_plate": IsaacPlacementRegion(
+            ...             min_xyz=(-0.1, -0.1, -0.1), max_xyz=(0.1, 0.1, 0.1), relative_to="plate"
+            ...         )
+            ...     },
+            ...     tasks={"pick it": [IsaacPlacement(object="orange_1", target="on_plate")]},
+            ... )
+            >>> ps.placements_for("pick it"), ps.placements_for("dance")
+            ([('orange_1', 'plate')], [])
+        """
+        return [(p.object, self.regions[p.target].relative_to) for p in self.tasks.get(prompt, [])]
+
 
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).

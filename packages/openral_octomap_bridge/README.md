@@ -434,6 +434,25 @@ attachment carries those kinds and every path above is unchanged.
   box are cleared **once**, at that tick, and never again (a cell re-observed after it
   stays). A re-associated track (`identity_inferred`) vacates nothing, and a stale or
   unusable set forgets every remembered box.
+- **Release window (grid every tick; octree on each period).** When the kernel's jaw-open
+  release (K5) freezes a tracked payload in the base frame, the camera re-marks the
+  object at the release pose and the frozen payload meets its own cells — a false stop.
+  So, on the tick a track the bridge cleared by identity on its previous tick turns up
+  `released` (the tracker's `release_track`: its box at the release pose, `floor_z` =
+  support + one cell), the bridge clears the cells centred in that box ⊕ half a cell
+  (`advance_release_clears`, `released_clear_pieces`, `clear_released_box`) — and keeps
+  doing so only while the set is usable, exactly one track carries the id, `released`,
+  same epoch, and exactly one attachment on the wire carries the id with
+  `evidence_kind == "tracked_object"` and that epoch (the kernel holds a frozen payload
+  only while the wire carries the binding; without it the box would be in neither the
+  map nor the payload). The window closes for good — reopened only by a new binding the
+  bridge clears — when the track leaves `released` (`confirmed` at epoch + 1, `lost`),
+  the wire drops the binding, or after `released_clear_timeout_s` (default 3.0 s,
+  range (0, 10], refused otherwise). **That parameter must equal the kernel's
+  `tracked_release_timeout_s`**: the bridge cannot see the kernel's window, and its own
+  opens when the tracker's RELEASED record first arrives, so it can trail the kernel's by
+  the tracker-vs-kernel trigger skew plus one world-state period. A `pinch_fallback` or
+  ambiguous binding never opens one (it was never cleared by identity).
 - **Exclusions, always.** Never a cell centred below the object's `floor_z`; never a
   cell within its circumradius of any **other** track's box, whatever that track's
   status (and, when vacating a free object, of its own new box); declared static
@@ -445,8 +464,17 @@ entering a vacated box while occluded, between the departure and its detection; 
 `clear_bbox` the server applies to a newer octree than the bridge's copy (a cell
 re-observed in between, or one octomap has since pruned into a 2x2x2 leaf); a straight
 chord between two pose samples at most 0.25 s apart; a bound object that slipped out
-of the hand unnoticed (its home box is vacated). Pinned by `test_identity_clearing`
-and `BridgeIdentitySweep.*`.
+of the hand unnoticed (its home box is vacated); a body entering a released box during
+its release window (at most `released_clear_timeout_s`), and the half cell around the
+tracker's box beyond the kernel's frozen payload. Pinned by `test_identity_clearing`
+(`ReleaseClear.*` for the window) and `BridgeIdentitySweep.*`.
+
+**After the window (kernel, not changed here).** The kernel checks a frozen released
+payload against world cells for as long as the wire carries its binding, whatever its
+release state: `check_attached_voxel_collision` iterates every attached object, frozen
+ones included (`attached_object_transform` returns the frozen pose for
+`attach_link < 0`). Once this window closes the object's re-marked cells meet that
+payload again; only the producer dropping the binding from the wire ends it.
 
 ### …except the attested support patch, which is the counter
 

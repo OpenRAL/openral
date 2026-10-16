@@ -12,7 +12,7 @@ import binascii
 import math
 import os
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import (
@@ -935,6 +935,23 @@ def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
     for j in grippers:
         hands.setdefault(_gripper_mount(parent_of, j.parent_link), []).append(j.child_link)
     return tuple(tuple(links) for links in hands.values())
+
+
+def hand_joint(description: RobotDescription, contact_links: Sequence[str]) -> str | None:
+    """The one gripper joint whose ``child_link`` a declaration names, else ``None``.
+
+    The ``ObjectQuery.hand`` hint (issue #418): a hand of several finger joints, or links
+    of no gripper joint, give no hint.
+
+    Example:
+        >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> hand_joint(so101, ["moving_jaw"])
+        'gripper'
+    """
+    names = [
+        j.name for j in description.joints if j.role == "gripper" and j.child_link in contact_links
+    ]
+    return names[0] if len(names) == 1 else None
 
 
 def _gripper_mount(parent_of: Mapping[str, str], link: str) -> str:

@@ -359,6 +359,14 @@ if _ROS2_AVAILABLE:
             # place allowance. Default off; the deploy launch turns it on with
             # the HAL's `vision_attachment_place_target_enabled`.
             self.declare_parameter("place_approach_enabled", False)
+            # Issue #418: the deploy's DeployRuntime.object_tracking (off | shadow | bind |
+            # on). Not "off": the declarations armed per goal also carry the standing
+            # `object_queries_json` (a JSON list of core.ObjectQuery — TARGET/CONTEXT ones
+            # become GraspDeclaration.target_queries, the DESTINATION one
+            # PlaceDeclaration.destination_query) for the Layer-2 object tracker. A goal's
+            # own queries win. "off" leaves both declarations exactly as before.
+            self.declare_parameter("object_tracking", "off")
+            self.declare_parameter("object_queries_json", "")
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -639,6 +647,9 @@ if _ROS2_AVAILABLE:
             from openral_msgs.msg import GraspDeclaration as _GraspDeclarationMsg
 
             self._grasp_declaration_msg_cls: Any = _GraspDeclarationMsg
+            from openral_msgs.msg import ObjectQuery as _ObjectQueryMsg
+
+            self._object_query_msg_cls: Any = _ObjectQueryMsg
             self._grasp_declaration_pub = self.create_publisher(
                 _GraspDeclarationMsg,
                 "/openral/grasp_declaration",
@@ -2263,7 +2274,9 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSConfigError
 
             try:
-                declaration = self._resolve_place_declaration(request)
+                declaration = self._with_queries(
+                    self._resolve_place_declaration(request), place=True
+                )
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.place_declaration_rejected: {exc!s}")
                 raise ROSConfigError(
@@ -2328,6 +2341,70 @@ if _ROS2_AVAILABLE:
             self._active_place_declaration = declaration if declaration.active else None
             return True
 
+        def _tracking_queries(self) -> tuple[Any, ...]:
+            """The standing ``ObjectQuery`` s this deploy tracks, ``()`` with tracking off.
+
+            Raises:
+                ValueError: ``object_queries_json`` does not validate.
+            """
+            from openral_core import ObjectQuery
+            from pydantic import TypeAdapter
+
+            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+            raw = self.get_parameter("object_queries_json").get_parameter_value().string_value
+            if (mode or "off") == "off" or not raw:
+                return ()
+            return tuple(TypeAdapter(list[ObjectQuery]).validate_json(raw))
+
+        def _with_queries(self, declaration: Any, *, place: bool) -> Any:
+            """``declaration`` with this deploy's tracking queries attached (issue #418).
+
+            A grasp declaration gets the TARGET/CONTEXT queries as ``target_queries`` (each
+            hinted with the declared hand's gripper joint when it names one), a place
+            declaration the DESTINATION one as ``destination_query``; a declaration that
+            already carries its own (a reasoner's goal) keeps them. With no declaration in
+            force the queries cannot ride, and that is logged, never armed implicitly: a
+            place declaration lets the sim attest a place witness.
+            """
+            from openral_core import ObjectRole
+
+            queries = self._tracking_queries()
+            if place:
+                queries = tuple(q for q in queries if q.role is ObjectRole.DESTINATION)
+            else:
+                queries = tuple(q for q in queries if q.role is not ObjectRole.DESTINATION)
+            if not queries:
+                return declaration
+            kind = "place" if place else "grasp"
+            if declaration is None:
+                self.get_logger().warning(
+                    f"rskill_runner.{kind}_queries_unarmed: object tracking names "
+                    f"{[q.label for q in queries]} but no {kind} declaration is in force "
+                    "for this goal, so the tracker gets no such query"
+                )
+                return None
+            if place:
+                if declaration.destination_query is not None:
+                    return declaration
+                return declaration.model_copy(update={"destination_query": queries[0]})
+            if declaration.target_queries:
+                return declaration
+            from openral_core import hand_joint
+
+            hand = (
+                hand_joint(self._description, declaration.contact_links)
+                if self._description is not None
+                else None
+            )
+            return declaration.model_copy(
+                update={
+                    "target_queries": tuple(
+                        q if q.hand is not None else q.model_copy(update={"hand": hand})
+                        for q in queries
+                    )
+                }
+            )
+
         def _resolve_grasp_declaration(self, request: Any) -> Any:
             """The grasp declaration in force for this goal, or ``None``.
 
@@ -2385,7 +2462,9 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSConfigError
 
             try:
-                declaration = self._resolve_grasp_declaration(request)
+                declaration = self._with_queries(
+                    self._resolve_grasp_declaration(request), place=False
+                )
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.grasp_declaration_rejected: {exc!s}")
                 return
@@ -2424,7 +2503,7 @@ if _ROS2_AVAILABLE:
         def _publish_grasp_declaration(self, declaration: Any) -> bool:
             """Put one grasp declaration on the wire and remember what is in force."""
             msg = self._grasp_declaration_msg_cls()
-            declaration.fill_idl(msg)
+            declaration.fill_idl(msg, query_factory=self._object_query_msg_cls)
             try:
                 if not self._publish_unless_shut_down(
                     self._grasp_declaration_pub, msg, "grasp declaration"

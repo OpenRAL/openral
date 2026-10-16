@@ -3,6 +3,7 @@
 // octree cell selection, on real IDL messages and a real octomap::OcTree.
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -235,6 +236,152 @@ TEST(IdentityOctree, OnlyAcceptedFinestLeavesAreClearedAndMerged) {
       tree, window, [](const tf2::Vector3&) { return true; }, 1, truncated);
   EXPECT_EQ(all.size(), 1U);
   EXPECT_TRUE(truncated) << "the cap leaves the rest in the octree";
+}
+
+// ── Release window (issue #418 F2) ──────────────────────────────────────────
+
+constexpr std::int64_t kS = 1000000000;
+
+// trk:1 RELEASED at x = 0.30 (away from the hand), the attachment still on the wire.
+WorldStateStamped released_state(const std::string& evidence = bridge::kTrackedObjectEvidence) {
+  auto s = bound_state(evidence);
+  auto& t = s.tracked_objects.objects.front();
+  t = track("trk:1", "released", 0.30, 0.08, 0.03);
+  return s;
+}
+
+const bridge::IdentityKeys kWasBound{{"trk:1", 2}};
+
+TEST(ReleaseClear, OpensOnlyForABindingTheBridgeWasClearing) {
+  bridge::ReleaseClears w;
+  const auto s = released_state();
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, s, "base_link", 0, 3.0).empty())
+      << "never bound by identity: nothing to clear";
+  EXPECT_TRUE(w.empty());
+  const auto open = bridge::advance_release_clears(w, kWasBound, s, "base_link", 0, 3.0);
+  ASSERT_EQ(open.size(), 1U);
+  EXPECT_EQ(open.front()->object_id, "trk:1");
+  // Next tick: no longer bound, the window carries it.
+  EXPECT_EQ(bridge::advance_release_clears(w, {}, s, "base_link", kS, 3.0).size(), 1U);
+}
+
+TEST(ReleaseClear, NothingWhileTheBindingLasts) {
+  bridge::ReleaseClears w;
+  EXPECT_TRUE(
+      bridge::advance_release_clears(w, kWasBound, bound_state(), "base_link", 0, 3.0).empty());
+  EXPECT_TRUE(w.empty());
+}
+
+TEST(ReleaseClear, ClosesOnReconfirmationAndNeverReopens) {
+  bridge::ReleaseClears w;
+  auto s = released_state();
+  ASSERT_EQ(bridge::advance_release_clears(w, kWasBound, s, "base_link", 0, 3.0).size(), 1U);
+  auto confirmed = s;
+  confirmed.tracked_objects.objects.front().status = "confirmed";
+  confirmed.tracked_objects.objects.front().epoch = 3;
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, confirmed, "base_link", kS, 3.0).empty());
+  EXPECT_TRUE(w.empty());
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, s, "base_link", kS, 3.0).empty())
+      << "released again without a binding the bridge cleared";
+  // A new epoch while still RELEASED is another object state: closed too.
+  ASSERT_EQ(bridge::advance_release_clears(w, kWasBound, s, "base_link", 0, 3.0).size(), 1U);
+  auto lost = s;
+  lost.tracked_objects.objects.front().status = "lost";
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, lost, "base_link", kS, 3.0).empty());
+  EXPECT_TRUE(w.empty());
+}
+
+TEST(ReleaseClear, ClosesOnTimeoutAndNeverReopens) {
+  bridge::ReleaseClears w;
+  const auto s = released_state();
+  ASSERT_EQ(bridge::advance_release_clears(w, kWasBound, s, "base_link", 0, 3.0).size(), 1U);
+  EXPECT_EQ(bridge::advance_release_clears(w, {}, s, "base_link", 3 * kS, 3.0).size(), 1U);
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, s, "base_link", 3 * kS + 1, 3.0).empty());
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, s, "base_link", 4 * kS, 3.0).empty());
+}
+
+TEST(ReleaseClear, OnlyWhileTheWireCarriesTheTrackedBinding) {
+  // The kernel's frozen payload exists only while the wire carries (id, epoch): without
+  // it, clearing the box would leave the object in neither the map nor the payload.
+  bridge::ReleaseClears w;
+  EXPECT_TRUE(bridge::advance_release_clears(
+                  w, kWasBound, released_state(bridge::kPinchFallbackEvidence), "base_link", 0, 3.0)
+                  .empty());
+  auto dropped = released_state();
+  dropped.attached_objects.clear();
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, dropped, "base_link", 0, 3.0).empty());
+  auto epoch = released_state();
+  epoch.attached_objects.front().epoch = 1;
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, epoch, "base_link", 0, 3.0).empty());
+  auto twice = released_state();
+  twice.attached_objects.push_back(twice.attached_objects.front());
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, twice, "base_link", 0, 3.0).empty());
+  // Open, then the wire drops it: closed.
+  ASSERT_EQ(
+      bridge::advance_release_clears(w, kWasBound, released_state(), "base_link", 0, 3.0).size(),
+      1U);
+  EXPECT_TRUE(bridge::advance_release_clears(w, {}, dropped, "base_link", kS, 3.0).empty());
+  EXPECT_TRUE(w.empty());
+}
+
+TEST(ReleaseClear, AnUnusableOrAmbiguousSetClearsNothing) {
+  bridge::ReleaseClears w;
+  auto dup = released_state();
+  dup.tracked_objects.objects.push_back(dup.tracked_objects.objects.front());
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, dup, "base_link", 0, 3.0).empty());
+  auto frame = released_state();
+  frame.tracked_objects.frame_id = "map";
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, frame, "base_link", 0, 3.0).empty());
+  auto floor = released_state();
+  floor.tracked_objects.objects.front().floor_z = std::nan("");
+  EXPECT_TRUE(bridge::advance_release_clears(w, kWasBound, floor, "base_link", 0, 3.0).empty());
+  EXPECT_TRUE(w.empty());
+}
+
+TEST(ReleaseClear, TheReleasedBoxIsClearedWithEveryExclusion) {
+  openral_msgs::msg::OccupancyVoxels grid;
+  grid.resolution = kRes;
+  grid.size_x = grid.size_y = grid.size_z = 30;
+  grid.orientation.w = 1.0;
+  grid.occupancy.assign(30 * 30 * 30, 1);
+  auto s = released_state();
+  auto& r = s.tracked_objects.objects.front();
+  r.box.pose.position.x = r.box.pose.position.y = 0.2;
+  r.floor_z = 0.06;
+  s.tracked_objects.objects.push_back(track("trk:2", "confirmed", 0.24, 0.08, 0.02));
+  s.tracked_objects.objects.back().box.pose.position.y = 0.2;
+  std::vector<bridge::IdentityPiece> pieces;
+  bridge::IdentityKeepOut keep;
+  ASSERT_TRUE(bridge::released_clear_pieces(s.tracked_objects, s.tracked_objects.objects.front(),
+                                            tf2::Transform::getIdentity(), pieces, keep));
+  ASSERT_GT(bridge::clear_identity_cells(grid, pieces, keep), 0U);
+  std::size_t inside_kept = 0;
+  for (std::size_t iz = 0; iz < 30; ++iz) {
+    for (std::size_t iy = 0; iy < 30; ++iy) {
+      for (std::size_t ix = 0; ix < 30; ++ix) {
+        const tf2::Vector3 c((ix + 0.5) * kRes, (iy + 0.5) * kRes, (iz + 0.5) * kRes);
+        const tf2::Vector3 d = c - tf2::Vector3(0.2, 0.2, 0.08);
+        const bool in_box = std::fabs(d.x()) <= 0.03 + 0.5 * kRes &&
+                            std::fabs(d.y()) <= 0.03 + 0.5 * kRes &&
+                            std::fabs(d.z()) <= 0.03 + 0.5 * kRes;
+        if (grid.occupancy[ix + 30 * (iy + 30 * iz)] != 0) {
+          const bool strictly_in =
+              std::fabs(d.x()) <= 0.03 && std::fabs(d.y()) <= 0.03 && std::fabs(d.z()) <= 0.03;
+          inside_kept += strictly_in && c.z() >= 0.06 && d.x() < 0.0 ? 1 : 0;
+          continue;
+        }
+        EXPECT_TRUE(in_box) << "cleared outside the released box + half a cell";
+        EXPECT_GE(c.z(), 0.06) << "cleared below floor_z";
+        const tf2::Vector3 n = c - tf2::Vector3(0.24, 0.2, 0.08);
+        const double outside = tf2::Vector3(std::max(std::fabs(n.x()) - 0.02, 0.0),
+                                            std::max(std::fabs(n.y()) - 0.02, 0.0),
+                                            std::max(std::fabs(n.z()) - 0.02, 0.0))
+                                   .length();
+        EXPECT_GT(outside, 0.5 * kRes * std::sqrt(3.0)) << "cleared into the neighbour's box";
+      }
+    }
+  }
+  EXPECT_EQ(inside_kept, 0U) << "the released box's far side was not cleared";
 }
 
 }  // namespace

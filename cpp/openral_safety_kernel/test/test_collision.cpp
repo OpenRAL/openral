@@ -6854,3 +6854,75 @@ TEST(TrackedBinding, ADegenerateOrNonFiniteBoxNeverMeets) {
   EXPECT_FALSE(rig.meets(0.10, std::numeric_limits<double>::infinity()));
   EXPECT_FALSE(rig.meets(0.10, 0.02, std::numeric_limits<double>::quiet_NaN()));
 }
+
+// ── Issue #418 K5: a payload frozen in the base frame ──────────────────────
+//
+// link 0 the hand (a capsule at x = 0.10, riding a revolute joint about z),
+// link 1 another link (a capsule at x = 0.10, y = -0.03, fixed). The payload, a
+// 10 mm sphere at (0.10, 0, 0), is frozen: attach_link -1, base-frame pose.
+namespace {
+
+struct FrozenRig {
+  osk::CollisionModel m;
+  osk::CollisionScratch s;
+  osk::AttachedModel att;
+  FrozenRig() {
+    m.n_links = 2;
+    m.parent = {-1, -1};
+    m.joint_kind = {osk::JointKind::kRevolute, osk::JointKind::kFixed};
+    m.dof_index = {0, -1};
+    m.origin = {osk::Transform{}, osk::Transform{}};
+    m.axis = {{0, 0, 1}, {0, 0, 1}};
+    m.capsule_link = {0, 1};
+    m.capsules = {osk::Capsule{0.005, 0.0, osk::transform_from_xyz_rpy(0.10, 0, 0, 0, 0, 0)},
+                  osk::Capsule{0.005, 0.0, osk::transform_from_xyz_rpy(0.10, -0.03, 0, 0, 0, 0)}};
+    s.link_world = {osk::Transform{}, osk::Transform{}};
+    att.objects.assign(1, osk::AttachedObject{});
+    att.primitives.assign(1, osk::AttachedPrimitive{});
+    att.touch_links.assign(1, 0);
+    att.primitives[0].radius = 0.01;
+    att.objects[0].attach_link = -1;
+    att.objects[0].pose_in_link = translate(0.10, 0.0, 0.0);
+    att.objects[0].prim_count = 1;
+    att.n_objects = 1;
+    att.n_primitives = 1;
+  }
+  void hand_at(double q) {
+    const double qs[1]{q};
+    osk::forward_kinematics(m, qs, 1, s);
+  }
+};
+
+}  // namespace
+
+TEST(TrackedRelease, AFrozenPayloadStaysPutAndExemptsOnlyTheReleasingHand) {
+  FrozenRig rig;
+  rig.hand_at(0.0);
+  // The hand inside the payload: a hit without the window, none with it.
+  EXPECT_TRUE(osk::check_attached_self_collision(rig.m, rig.att, rig.s, 0.01).hit);
+  rig.att.objects[0].release_hand_link = 0;
+  auto hit = osk::check_attached_self_collision(rig.m, rig.att, rig.s, 0.01);
+  EXPECT_FALSE(hit.hit) << "the hand is exempt during the window";
+  // The other link, 15 mm clear, still trips inside a 20 mm margin.
+  hit = osk::check_attached_self_collision(rig.m, rig.att, rig.s, 0.02);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, 1);
+  // Rotating the hand does not move the frozen payload: 0.1 m from the hand.
+  rig.hand_at(1.5707963267948966);
+  EXPECT_NEAR(osk::released_payload_clearance(rig.m, rig.s, rig.att, rig.att.objects[0]),
+              std::hypot(0.10, 0.10) - 0.015, 1e-9);
+}
+
+TEST(TrackedRelease, TheClearanceCountsOnlyTheExemptLinks) {
+  FrozenRig rig;
+  rig.hand_at(0.0);
+  EXPECT_EQ(osk::released_payload_clearance(rig.m, rig.s, rig.att, rig.att.objects[0]),
+            std::numeric_limits<double>::infinity())
+      << "nothing exempt: nothing to separate from";
+  rig.att.objects[0].touch_count = 1;
+  rig.att.touch_links[0] = 1;  // the other link, as a touch link
+  EXPECT_NEAR(osk::released_payload_clearance(rig.m, rig.s, rig.att, rig.att.objects[0]),
+              0.03 - 0.015, 1e-9);
+  rig.att.objects[0].release_hand_link = 0;
+  EXPECT_LT(osk::released_payload_clearance(rig.m, rig.s, rig.att, rig.att.objects[0]), 0.0);
+}

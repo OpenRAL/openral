@@ -980,6 +980,61 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   (`evidence_kind` other than `tracked_object`, `pinch_fallback` included) keep
   every rule above unchanged, the declaration-keyed retirement included; the two
   keys coexist. Nothing here exempts anything new: every change only refuses.
+* **Monotone bound geometry (issue #418 K4, draft — Safety-WG review pending).**
+  A `tracked_object` payload's geometry is the union the kernel holds for its
+  (`object_id`, `epoch`, attach link), in the frame of that binding's first
+  `pose_in_link` (a later message's primitives and support witness are
+  re-expressed into it). New geometry is **unioned** in, exact duplicates
+  dropped, never replacing what is held
+  (`…ATrackedBoundGeometryGrowsAndNeverShrinks`). A lower or equal
+  `geometry_revision` never removes anything; one that still carries geometry not
+  held (a producer that changed it without bumping the revision) is unioned too —
+  growth is the safe direction — and WARNed, `safety.tracked_geometry_unrevised`
+  (`…ALowerOrEqualGeometryRevisionNeverRemovesGeometry`). The union holds at most
+  16 primitives: an update past that is refused whole, the union stays, WARN
+  `safety.tracked_geometry_cap` at most 1 Hz
+  (`…AGeometryUpdatePastTheCapIsRefusedAndTheUnionStays`); a first revision already
+  past it is checked as published, with no union held. A new epoch starts fresh
+  (`…ANewEpochStartsAFreshBoundGeometry`). The table is fixed (32 bindings); an
+  entry survives a message that omits it, so a dropped-and-re-added record keeps
+  its union. The union also counts against `attached_max_primitives`: past it the
+  attachment message fails closed, as any over-cap payload does. Legacy payloads
+  are replaced per message exactly as before. Stricter only: a stale part of the
+  union can cost a false stop, never a missed one.
+* **Jaw-open release (issue #418 K5, draft — NOT monotone, hazard OT-7, needs an
+  explicit Safety-WG judgement).** Off unless `tracked_release_jaw_joints` names
+  the gripper joints (with `tracked_release_jaw_open_sign`, +1/-1 per joint: the
+  direction that opens it); empty is today's semantics, the payload rides the hand
+  until the producer detaches it. When on, configure refuses a sign that is not
+  ±1, an unknown joint, `tracked_release_gap` (joint units) or
+  `tracked_release_dwell_s` ≤ 0, `tracked_release_clear_m` outside (0, 0.1] (the
+  HAL's `MAX_RELEASE_CLEAR_M`) or `tracked_release_timeout_s` outside (0, 10]. A
+  `tracked_object` binding at the hand (K3) whose attach or touch link is driven
+  by one of those jaws (a mimic follower reads its leader's column) captures the
+  **measured** jaw at attach as its hold. Opened past hold + gap continuously for
+  the dwell, the kernel itself — no DETACH needed (t9 stayed attached at 0.988) —
+  freezes the payload in the base frame at its measured pose (`attach_link = -1`,
+  what the HAL's `freeze_released_attachment` does) and opens the
+  (`object_id`, `epoch`) release window: the hand (`release_hand_link`) and touch
+  links stay exempt against it until `released_payload_clearance` (kernel FK of
+  the measured state) exceeds the clearance — `safety.tracked_release_closed
+  reason=separation` — or the timeout elapses (`reason=timeout`). From then on it
+  is a **plain obstacle**: nothing is exempt against it, for as long as the wire
+  still carries that binding (`…OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate`,
+  `…AReleaseWindowThatNeverSeparatesClosesOnTimeout`). Throughout, the frozen
+  payload is checked against every other link and the world
+  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`), is never a
+  grasp handover, arms no support witness, and a handover latched on it retires
+  (`reason=tracked_release`, which K6 turns into a retired identity). Evaluated
+  on each world-state message (the window can outlive its bound by one message
+  period; a stalled stream fails closed on `attached_collision_deadline_ms`).
+  **Why it is not monotone:** the on-hand copy of the payload stops being checked
+  once the kernel decides the jaw let go. If the object is in fact still in the
+  hand (a stuck object, a wrong sign, a jaw reading off), it is carried unmodelled
+  until the map re-marks it at the fingers (OT-7). **Dependency:** while the
+  window is open the octomap must clear the object at its release pose (the
+  tracker's RELEASED record); otherwise the frozen payload meets its own re-marked
+  cells and stops — a false stop, never a missed one.
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /

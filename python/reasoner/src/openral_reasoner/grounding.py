@@ -12,24 +12,35 @@ Pure and ROS-free (the reasoner node feeds it the latest lifted
 ``WorldState.detected_objects`` and its spatial-memory scene graph), so a
 refusal is a typed ``ROSReasonerInvalidPlan`` the node logs and reports to the
 LLM instead of sending the goal.
+
+With object tracking on (issue #418) a declaration also carries the classes it names
+as ``ObjectQuery`` s (``GraspDeclaration.target_queries``,
+``PlaceDeclaration.destination_query``) for the Layer-2 tracker, beside the unchanged
+``search_box`` path; a label several live detections carry is then no longer refused —
+the tracker grounds every instance (``count="all"``) and the policy's choice is resolved
+at binding.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from openral_core import (
     DetectedObject,
     GraspDeclaration,
     GraspTargetRef,
+    ObjectQuery,
+    ObjectRole,
     PlaceDeclaration,
     PlaceRegion,
     PlaceTargetRef,
     Pose6D,
     SceneGraph,
     gripper_hands,
+    hand_joint,
 )
-from openral_core.exceptions import ROSReasonerInvalidPlan
+from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 
 __all__ = [
     "DECLARATION_TIMEOUT_MARGIN_S",
@@ -37,11 +48,16 @@ __all__ = [
     "ground_grasp_target",
     "ground_place_target",
     "ground_workspace",
+    "hand_joint",
+    "placement_queries",
 ]
 
 #: Seconds a declaration outlives its goal's own patience ceiling before the
 #: backstop expires it; the runner retracts it at goal end anyway.
 DECLARATION_TIMEOUT_MARGIN_S = 10.0
+
+#: A scene object's instance suffix (``orange_1``): instances of one class share a label.
+_INSTANCE_SUFFIX = re.compile(r"_\d+$")
 
 
 def _box(
@@ -96,16 +112,18 @@ def _locate(
     scene_graph: SceneGraph | None,
     base_frame: str,
     pad_m: float,
-) -> tuple[str, PlaceRegion]:
-    """``(target id stem, padded search box)`` for a named object or surface.
+    several_ok: bool = False,
+) -> tuple[str, PlaceRegion | None, int]:
+    """``(target id stem, padded search box, live matches)`` for a named object or surface.
 
     ``node_id`` set → that spatial-memory node's 3D box; else the single live lifted
     detection whose label equals ``label`` (case-insensitive). ``field`` names the
-    tool-call field in refusals.
+    tool-call field in refusals. With ``several_ok`` (object tracking) several matches
+    ground with no search box: the tracker grounds every instance by its query.
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no node
-            id, or the box is missing / in another frame.
+            id (unless ``several_ok``), or the box is missing / in another frame.
     """
     if pad_m <= 0.0:
         raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
@@ -118,9 +136,8 @@ def _locate(
             )
         node = nodes[0]
         what = f"memory node {node_id!r}"
-        return node_id, _box(
-            node.bbox_3d, node.pose.frame_id, what=what, base_frame=base_frame, pad_m=pad_m
-        )
+        box = _box(node.bbox_3d, node.pose.frame_id, what=what, base_frame=base_frame, pad_m=pad_m)
+        return node_id, box, 1
     key = label.strip().casefold()
     matches = [o for o in live_objects if o.label.strip().casefold() == key]
     if not matches:
@@ -129,18 +146,21 @@ def _locate(
             f"{field} {label!r}: no live 3D detection carries that label "
             f"(perception sees: {', '.join(seen)}). Look for it or recall_object it first."
         )
+    if len(matches) > 1 and several_ok:
+        return key, None, len(matches)
     if len(matches) > 1:
         raise ROSReasonerInvalidPlan(
             f"{field} {label!r} is ambiguous: {len(matches)} live detections carry "
             "that label. recall_object it and pass the instance's node_id as object_id."
         )
-    return key, _box(
+    box = _box(
         matches[0].bbox_3d,
         matches[0].pose.frame_id,
         what=f"detection {label!r}",
         base_frame=base_frame,
         pad_m=pad_m,
     )
+    return key, box, 1
 
 
 def ground_grasp_target(
@@ -152,6 +172,8 @@ def ground_grasp_target(
     default_contact_links: Sequence[str | Sequence[str]],
     patience_s: float,
     pad_m: float,
+    object_tracking: bool = False,
+    hand: str | None = None,
 ) -> GraspDeclaration:
     """Resolve a named grasp target to a seed-only ``GraspDeclaration``.
 
@@ -174,10 +196,16 @@ def ground_grasp_target(
         patience_s: The goal's patience ceiling; the backstop is this plus
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
+        object_tracking: The deploy runs the Layer-2 object tracker (issue #418): the
+            declaration also carries ``target_queries=[ObjectQuery(label, count, TARGET,
+            hand)]``, ``count="all"`` when several live detections carry the label —
+            which then grounds (no ``search_box``) instead of being refused.
+        hand: The grasping hand's gripper joint (``hand_joint``), a hint on the query.
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no
-            ``object_id``, the box is missing / in another frame, no contact link is
+            ``object_id`` (without ``object_tracking``), the box is missing / in another
+            frame, no contact link is
             known, none is named on a robot with more than one hand, or the named
             links are not gripper child links of one hand, or are only part of one.
 
@@ -203,7 +231,7 @@ def ground_grasp_target(
         >>> d.region is None, d.target_id, d.timeout_s
         (True, 'obj:box', 70.0)
     """
-    target, seed = _locate(
+    target, seed, matches = _locate(
         "grasp_target",
         ref.label,
         ref.object_id,
@@ -211,6 +239,7 @@ def ground_grasp_target(
         scene_graph=scene_graph,
         base_frame=base_frame,
         pad_m=pad_m,
+        several_ok=object_tracking,
     )
     hands = [(h,) if isinstance(h, str) else tuple(h) for h in default_contact_links]
     listing = "; ".join(f"[{', '.join(h)}]" for h in hands) or "none"
@@ -247,6 +276,18 @@ def ground_grasp_target(
         timeout_s=min(patience_s + DECLARATION_TIMEOUT_MARGIN_S, GraspDeclaration.MAX_TIMEOUT_S),
         stamp_ns=0,
         search_box=seed,
+        target_queries=(
+            (
+                ObjectQuery(
+                    label=ref.label.strip(),
+                    count="all" if matches > 1 else "one",
+                    role=ObjectRole.TARGET,
+                    hand=hand,
+                ),
+            )
+            if object_tracking
+            else ()
+        ),
     )
 
 
@@ -258,6 +299,7 @@ def ground_place_target(
     base_frame: str,
     patience_s: float,
     pad_m: float,
+    object_tracking: bool = False,
 ) -> PlaceDeclaration:
     """Resolve a named place surface to a region-less ``PlaceDeclaration`` with a search box.
 
@@ -276,6 +318,10 @@ def ground_place_target(
         patience_s: The goal's patience ceiling; the backstop is this plus
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
+        object_tracking: The deploy runs the Layer-2 object tracker (issue #418): the
+            declaration also carries ``destination_query=ObjectQuery(label, "one",
+            DESTINATION)``, and a label several live detections carry grounds with no
+            ``search_box`` instead of being refused.
 
     The hint is optional (the place leg measures the surface under the carried payload
     without one), but a supplied hint that does not ground refuses the goal: it never
@@ -311,7 +357,7 @@ def ground_place_target(
     """
     node_id = ref.object_id if ref.object_id is not None else ref.place_node_id
     try:
-        target, seed = _locate(
+        target, seed, _ = _locate(
             "place_target",
             ref.label,
             node_id,
@@ -319,6 +365,7 @@ def ground_place_target(
             scene_graph=scene_graph,
             base_frame=base_frame,
             pad_m=pad_m,
+            several_ok=object_tracking,
         )
     except ROSReasonerInvalidPlan as exc:
         # Option A: the hint is optional, but a supplied one that does not ground refuses
@@ -333,7 +380,62 @@ def ground_place_target(
         timeout_s=min(patience_s + DECLARATION_TIMEOUT_MARGIN_S, PlaceDeclaration.MAX_TIMEOUT_S),
         stamp_ns=0,
         search_box=seed,
+        destination_query=(
+            ObjectQuery(label=ref.label.strip(), count="one", role=ObjectRole.DESTINATION)
+            if object_tracking
+            else None
+        ),
     )
+
+
+def placement_queries(placements: Sequence[tuple[str, str | None]]) -> tuple[ObjectQuery, ...]:
+    """The standing queries a scene task names (issue #418): its object classes and destination.
+
+    ``placements`` are a prompt's ``(object, destination object)`` pairs — e.g. a graded
+    scene's task list, each target region's ``relative_to`` (``None`` for a fixed region
+    such as a shelf slot, which stays a ``PlaceRegion``). An object's instance suffix is
+    dropped (``orange_1`` → ``orange``) and underscores read as spaces, so instances share
+    one open-vocabulary label; a class placed more than once is ``count="all"``. One
+    ``TARGET`` query per class, in task order, then at most one ``DESTINATION`` query.
+
+    Raises:
+        ROSConfigError: No placement, or several destination objects (a
+            ``PlaceDeclaration`` carries one).
+
+    Example:
+        >>> [
+        ...     (q.label, q.count, q.role.value)
+        ...     for q in placement_queries(
+        ...         [("orange_1", "plate"), ("orange_2", "plate"), ("orange_3", "plate")]
+        ...     )
+        ... ]
+        [('orange', 'all', 'target'), ('plate', 'one', 'destination')]
+    """
+    if not placements:
+        raise ROSConfigError("placement_queries needs at least one (object, destination) pair.")
+    counts: dict[str, int] = {}
+    for name, _ in placements:
+        label = _INSTANCE_SUFFIX.sub("", name).replace("_", " ")
+        counts[label] = counts.get(label, 0) + 1
+    destinations = sorted({d for _, d in placements if d is not None})
+    if len(destinations) > 1:
+        raise ROSConfigError(
+            f"placement_queries: the task places into {destinations}; a PlaceDeclaration "
+            "carries one destination_query."
+        )
+    queries = [
+        ObjectQuery(label=label, count="all" if n > 1 else "one", role=ObjectRole.TARGET)
+        for label, n in counts.items()
+    ]
+    queries += [
+        ObjectQuery(
+            label=_INSTANCE_SUFFIX.sub("", d).replace("_", " "),
+            count="one",
+            role=ObjectRole.DESTINATION,
+        )
+        for d in destinations
+    ]
+    return tuple(queries)
 
 
 Bbox = tuple[float, float, float, float, float, float]

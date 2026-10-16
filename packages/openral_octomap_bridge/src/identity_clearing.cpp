@@ -96,6 +96,49 @@ identity_clearing_track(const openral_msgs::msg::AttachedCollisionObject& object
   return match;
 }
 
+std::vector<const openral_msgs::msg::TrackedObject*>
+advance_release_clears(ReleaseClears& windows, const IdentityKeys& was_bound,
+                       const openral_msgs::msg::WorldStateStamped& state,
+                       const std::string& grid_frame, std::int64_t now_ns, double timeout_s) {
+  std::vector<const openral_msgs::msg::TrackedObject*> out;
+  if (!tracked_set_usable(state, grid_frame)) {
+    windows.clear();
+    return out;
+  }
+  const auto timeout_ns = static_cast<double>(timeout_s) * 1e9;
+  ReleaseClears kept;
+  for (const auto& track : state.tracked_objects.objects) {
+    if (track.status != "released") {
+      continue;
+    }
+    const auto open = windows.find(track.object_id);
+    ReleaseClear w;
+    if (open != windows.end() && open->second.epoch == track.epoch) {
+      w = open->second;
+    } else if (was_bound.count({track.object_id, track.epoch}) != 0) {
+      w = ReleaseClear{track.epoch, now_ns};
+    } else {
+      continue;
+    }
+    const auto same_id = [&](const auto& x) { return x.object_id == track.object_id; };
+    const auto& objs = state.tracked_objects.objects;
+    const auto& wire = state.attached_objects;
+    const auto bound = std::find_if(wire.begin(), wire.end(), same_id);
+    PayloadPrimitive box;
+    if (std::count_if(objs.begin(), objs.end(), same_id) != 1 ||
+        std::count_if(wire.begin(), wire.end(), same_id) != 1 ||
+        bound->evidence_kind != kTrackedObjectEvidence || bound->epoch != track.epoch ||
+        !std::isfinite(track.floor_z) || !track_box(track, box) ||
+        static_cast<double>(now_ns - w.opened_ns) > timeout_ns) {
+      continue;  // closed: erased with the rest below
+    }
+    kept[track.object_id] = w;
+    out.push_back(&track);
+  }
+  windows = std::move(kept);
+  return out;
+}
+
 bool track_box(const openral_msgs::msg::TrackedObject& track, PayloadPrimitive& out) {
   const auto& h = track.box.half_extents;
   if (!(h.x > 0.0) || !(h.y > 0.0) || !(h.z > 0.0) || !std::isfinite(h.x) || !std::isfinite(h.y) ||
@@ -174,6 +217,22 @@ bool identity_keep_out(const openral_msgs::msg::TrackedObjectSet& set,
     box.pose = frame_from_grid * box.pose;
     out.boxes.push_back(box);
   }
+  return true;
+}
+
+bool released_clear_pieces(const openral_msgs::msg::TrackedObjectSet& set,
+                           const openral_msgs::msg::TrackedObject& track,
+                           const tf2::Transform& frame_from_grid,
+                           std::vector<IdentityPiece>& pieces, IdentityKeepOut& keep) {
+  pieces.clear();
+  IdentityPiece piece;
+  if (!track_box(track, piece.prim) ||
+      !identity_keep_out(set, track, frame_from_grid, false, keep)) {
+    return false;
+  }
+  piece.prim.pose = frame_from_grid * piece.prim.pose;
+  piece.local_from_frame = piece.prim.pose.inverse();
+  pieces.push_back(std::move(piece));
   return true;
 }
 

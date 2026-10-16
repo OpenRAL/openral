@@ -150,6 +150,49 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
   return 5;
 }
 
+/// Rigid-transform algebra for the #418 K4 union (ingest path only).
+Transform rigid_compose(const Transform& a, const Transform& b) noexcept {
+  Transform out;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      out.r[i * 3 + j] =
+          a.r[i * 3] * b.r[j] + a.r[i * 3 + 1] * b.r[3 + j] + a.r[i * 3 + 2] * b.r[6 + j];
+    }
+  }
+  out.t = Vec3{a.t.x + a.r[0] * b.t.x + a.r[1] * b.t.y + a.r[2] * b.t.z,
+               a.t.y + a.r[3] * b.t.x + a.r[4] * b.t.y + a.r[5] * b.t.z,
+               a.t.z + a.r[6] * b.t.x + a.r[7] * b.t.y + a.r[8] * b.t.z};
+  return out;
+}
+Transform rigid_inverse(const Transform& x) noexcept {
+  Transform out;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      out.r[i * 3 + j] = x.r[j * 3 + i];
+    }
+  }
+  out.t = Vec3{-(out.r[0] * x.t.x + out.r[1] * x.t.y + out.r[2] * x.t.z),
+               -(out.r[3] * x.t.x + out.r[4] * x.t.y + out.r[5] * x.t.z),
+               -(out.r[6] * x.t.x + out.r[7] * x.t.y + out.r[8] * x.t.z)};
+  return out;
+}
+
+/// Same shape, dimensions and pose to 1e-9: one primitive, not two (#418 K4).
+bool same_primitive(const AttachedPrimitiveInput& a, const AttachedPrimitiveInput& b) noexcept {
+  const auto near = [](double x, double y) { return std::abs(x - y) <= 1e-9; };
+  bool same = a.kind == b.kind && near(a.radius, b.radius) && near(a.half_length, b.half_length) &&
+              near(a.half_extents.x, b.half_extents.x) &&
+              near(a.half_extents.y, b.half_extents.y) &&
+              near(a.half_extents.z, b.half_extents.z) &&
+              near(a.pose_in_object.t.x, b.pose_in_object.t.x) &&
+              near(a.pose_in_object.t.y, b.pose_in_object.t.y) &&
+              near(a.pose_in_object.t.z, b.pose_in_object.t.z);
+  for (int k = 0; k < 9 && same; ++k) {
+    same = near(a.pose_in_object.r[k], b.pose_in_object.r[k]);
+  }
+  return same;
+}
+
 /// Decode one wire `AttachedCollisionPrimitive` into the kernel's input record.
 ///
 /// Shared by attached-payload ingest and the declared place target's geometry
@@ -463,6 +506,18 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // gripper's own effort limit). Empty = every joint counts (the stricter reading).
   this->declare_parameter<std::vector<std::string>>("workspace_contact_jaw_joints",
                                                     std::vector<std::string>{});
+  // Issue #418 K5, the kernel's jaw-open release of a TRACKED_OBJECT payload (NOT
+  // monotone, hazard OT-7; Safety-WG review pending). Empty jaw list = off, today's
+  // semantics. `open_sign` (+1 / -1 per jaw) says which way the joint opens; `gap`
+  // is in the joint's own units past the hold measured at attach.
+  this->declare_parameter<std::vector<std::string>>("tracked_release_jaw_joints",
+                                                    std::vector<std::string>{});
+  this->declare_parameter<std::vector<double>>("tracked_release_jaw_open_sign",
+                                               std::vector<double>{});
+  this->declare_parameter<double>("tracked_release_gap", 0.0);
+  this->declare_parameter<double>("tracked_release_dwell_s", 0.0);
+  this->declare_parameter<double>("tracked_release_clear_m", 0.04);
+  this->declare_parameter<double>("tracked_release_timeout_s", 3.0);
   // #349 workspace brake: with the workspace rule on, a position chunk whose only
   // reason to stop is the measured hand speed holds the measured pose instead.
   this->declare_parameter<bool>("workspace_contact_brake_enabled", false);
@@ -577,6 +632,60 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "%zu allowlisted contact link(s); a live grasp declaration exempts them from "
                 "the world-voxel check inside its measured region",
                 grasp_allowlist_.count());
+  }
+  // Issue #418 K5. Every refusal fails configure: a release rule whose jaw,
+  // direction or bounds it cannot state is not run.
+  release_jaw_cols_.clear();
+  release_jaw_sign_.clear();
+  {
+    const auto jaws = this->get_parameter("tracked_release_jaw_joints").as_string_array();
+    const auto signs = this->get_parameter("tracked_release_jaw_open_sign").as_double_array();
+    release_gap_ = this->get_parameter("tracked_release_gap").as_double();
+    release_dwell_s_ = this->get_parameter("tracked_release_dwell_s").as_double();
+    release_clear_m_ = this->get_parameter("tracked_release_clear_m").as_double();
+    release_timeout_s_ = this->get_parameter("tracked_release_timeout_s").as_double();
+    const auto names = this->get_parameter("collision_joint_names").as_string_array();
+    std::string why;
+    if (!jaws.empty()) {
+      if (signs.size() != jaws.size()) {
+        why = "tracked_release_jaw_open_sign must give one +1/-1 per jaw joint";
+      } else if (!std::isfinite(release_gap_) || release_gap_ <= 0.0) {
+        why = "tracked_release_gap must be finite and > 0";
+      } else if (!std::isfinite(release_dwell_s_) || release_dwell_s_ <= 0.0) {
+        why = "tracked_release_dwell_s must be finite and > 0";
+      } else if (!std::isfinite(release_clear_m_) || release_clear_m_ <= 0.0 ||
+                 release_clear_m_ > 0.1) {
+        why = "tracked_release_clear_m must be in (0, 0.1]";  // the HAL's MAX_RELEASE_CLEAR_M
+      } else if (!std::isfinite(release_timeout_s_) || release_timeout_s_ <= 0.0 ||
+                 release_timeout_s_ > 10.0) {
+        why = "tracked_release_timeout_s must be in (0, 10]";
+      }
+      for (std::size_t k = 0; k < jaws.size() && why.empty(); ++k) {
+        const auto it = std::find(names.begin(), names.end(), jaws[k]);
+        const auto d = static_cast<std::size_t>(it - names.begin());
+        if (it == names.end() || d >= envelope_.n_dof) {
+          why = "tracked_release_jaw_joints names '" + jaws[k] + "', not a joint of this model";
+        } else if (signs[k] != 1.0 && signs[k] != -1.0) {
+          why = "tracked_release_jaw_open_sign entries must be +1 or -1";
+        } else {
+          release_jaw_cols_.push_back(static_cast<int>(d));
+          release_jaw_sign_.push_back(signs[k]);
+        }
+      }
+    }
+    if (!why.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "tracked_release refused: %s", why.c_str());
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    if (!release_jaw_cols_.empty()) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.tracked_release enabled (issue #418 K5, NOT monotone, hazard OT-7, "
+                  "Safety-WG review pending): a TRACKED_OBJECT payload whose measured jaw opens "
+                  "> %g past its hold for %g s is frozen in base; its hand and touch links stay "
+                  "exempt against it until %g m clear by FK or %g s",
+                  release_gap_, release_dwell_s_, release_clear_m_, release_timeout_s_);
+    }
   }
   // Region measurement age bounds (kernel-region-age). Resolved after the
   // collision model so `attached_collision_enabled_` (the place allowance's
@@ -1025,6 +1134,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
@@ -1517,7 +1627,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // no exemption for this candidate (not a retirement).
       bool grasp_live = grasp_allowance_enabled_ && grasp_declaration_live();
       if (grasp_live && grasp_region_.handover) {
-        if (!measured_state_fresh() || grasp_region_.object_index >= attached_model_.n_objects) {
+        if (!measured_state_fresh() || grasp_region_.object_index >= attached_model_.n_objects ||
+            attached_model_.objects[grasp_region_.object_index].attach_link < 0) {
           grasp_live = false;
         } else {
           fk_config(q_meas_.data());
@@ -2857,6 +2968,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
@@ -2889,6 +3001,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       attached_max_primitives_ * static_cast<std::size_t>(kMaxTightHullVertices), Vec3{});
   attached_labels_.assign(attached_max_objects_, std::string{});
   attached_binding_.assign(attached_max_objects_, AttachedBinding{});
+  bound_slot_.assign(attached_max_objects_, -1);
   attached_ingest_scratch_.clear();
   attached_ingest_scratch_.reserve(attached_max_objects_);
   // Sized once, here, and never resized again: `place_region_.geometry` is a
@@ -3342,6 +3455,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_ingest_scratch_.push_back(std::move(in));
   }
 
+  union_bound_geometry(*msg);
   const AttachIngestStatus status = ingest_attached_objects(
       attached_ingest_scratch_, collision_link_names_, attached_max_objects_,
       attached_max_primitives_, attached_max_touch_links_, attached_model_);
@@ -3364,6 +3478,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_labels_[i] = wire[i].object_id;
   }
   check_attachment_bindings(*msg);
+  apply_tracked_release();
   // Arm a support-contact witness only when World State attests a genuinely NEW
   // one. The attachment set is heartbeated, so keying off message arrival would
   // silently resurrect an exemption the kernel had already killed on
@@ -3830,6 +3945,236 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
                     "checked as a payload; no handover, no support witness",
                     wire.object_id.c_str(), static_cast<unsigned>(wire.epoch), binding.off_hand);
       }
+    }
+  }
+}
+
+void SafetyKernelLifecycleNode::union_bound_geometry(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  for (auto& e : bound_) {
+    e.seen = false;
+  }
+  std::fill(bound_slot_.begin(), bound_slot_.end(), -1);
+  for (std::size_t i = 0; i < attached_ingest_scratch_.size(); ++i) {
+    const auto& wire = msg.attached_objects[i];
+    if (wire.evidence_kind != "tracked_object") {
+      continue;  // legacy and PINCH_FALLBACK payloads: replaced per message, as today
+    }
+    AttachedObjectInput& in = attached_ingest_scratch_[i];
+    BoundPayload* e = nullptr;
+    for (auto& c : bound_) {
+      if (c.used && c.object_id == wire.object_id && c.attach_link == wire.attach_link) {
+        e = &c;
+        break;
+      }
+    }
+    if (e != nullptr && e->epoch != wire.epoch) {
+      e->used = false;  // a new epoch starts fresh
+    }
+    if (e == nullptr) {
+      for (auto& c : bound_) {
+        if (!c.used || !c.seen) {
+          e = &c;
+          break;
+        }
+      }
+    }
+    if (e == nullptr) {
+      continue;  // unreachable: more tracked payloads than slots; today's semantics
+    }
+    if (!e->used) {
+      if (in.primitives.size() > kMaxBoundPrimitives) {
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.tracked_geometry_cap object=%s epoch=%u primitives=%zu cap=%zu: "
+                    "checked as published, no union held",
+                    wire.object_id.c_str(), static_cast<unsigned>(wire.epoch), in.primitives.size(),
+                    kMaxBoundPrimitives);
+        continue;
+      }
+      *e = BoundPayload{};  // K4 and K5 state both start fresh
+      e->used = true;
+      e->object_id = wire.object_id;
+      e->attach_link = wire.attach_link;
+      e->epoch = wire.epoch;
+      e->revision = wire.geometry_revision;
+      e->frame = in.pose_in_link;
+      e->n = in.primitives.size();
+      std::copy(in.primitives.begin(), in.primitives.end(), e->prims.begin());
+    }
+    e->seen = true;
+    if (i < bound_slot_.size()) {
+      bound_slot_[i] = static_cast<int>(e - bound_.data());
+    }
+    // This message's object frame, expressed in the union's.
+    const Transform to_union = rigid_compose(rigid_inverse(e->frame), in.pose_in_link);
+    {
+      // Any primitive not yet held is unioned in. A lower or equal revision
+      // carrying new content is a producer that changed geometry without
+      // bumping it: still unioned (growth is the safe direction), and WARNed.
+      std::size_t n = e->n;
+      std::array<AttachedPrimitiveInput, kMaxBoundPrimitives> grown = e->prims;
+      bool over = false;
+      for (const auto& p : in.primitives) {
+        AttachedPrimitiveInput q = p;
+        q.pose_in_object = rigid_compose(to_union, p.pose_in_object);
+        if (std::any_of(grown.begin(), grown.begin() + static_cast<std::ptrdiff_t>(n),
+                        [&q](const AttachedPrimitiveInput& h) { return same_primitive(h, q); })) {
+          continue;
+        }
+        if (n == kMaxBoundPrimitives) {
+          over = true;
+          break;
+        }
+        grown[n++] = std::move(q);
+      }
+      if (over) {
+        const auto wall = std::chrono::steady_clock::now();
+        if (wall - bound_cap_last_warn_ >= std::chrono::seconds(1)) {
+          bound_cap_last_warn_ = wall;
+          RCLCPP_WARN(this->get_logger(),
+                      "safety.tracked_geometry_cap object=%s epoch=%u revision=%llu cap=%zu: "
+                      "update refused, the held union (revision %llu) stays",
+                      wire.object_id.c_str(), static_cast<unsigned>(wire.epoch),
+                      static_cast<unsigned long long>(wire.geometry_revision), kMaxBoundPrimitives,
+                      static_cast<unsigned long long>(e->revision));
+        }
+      } else if (n > e->n) {
+        if (wire.geometry_revision <= e->revision) {
+          const auto wall = std::chrono::steady_clock::now();
+          if (wall - bound_cap_last_warn_ >= std::chrono::seconds(1)) {
+            bound_cap_last_warn_ = wall;
+            RCLCPP_WARN(this->get_logger(),
+                        "safety.tracked_geometry_unrevised object=%s epoch=%u revision=%llu "
+                        "held=%llu: new geometry without a higher revision, unioned anyway",
+                        wire.object_id.c_str(), static_cast<unsigned>(wire.epoch),
+                        static_cast<unsigned long long>(wire.geometry_revision),
+                        static_cast<unsigned long long>(e->revision));
+          }
+        }
+        e->prims = std::move(grown);
+        e->n = n;
+      }
+      e->revision = std::max(e->revision, wire.geometry_revision);
+    }
+    // The support witness rides this message's object frame: re-express it.
+    if (in.has_support_witness) {
+      Transform point;
+      point.t = in.support_point;
+      in.support_point = rigid_compose(to_union, point).t;
+      Transform normal;
+      normal.t = in.support_normal;
+      Transform rot = to_union;
+      rot.t = Vec3{};
+      in.support_normal = rigid_compose(rot, normal).t;
+    }
+    in.pose_in_link = e->frame;
+    in.primitives.assign(e->prims.begin(), e->prims.begin() + static_cast<std::ptrdiff_t>(e->n));
+  }
+}
+
+void SafetyKernelLifecycleNode::apply_tracked_release() {
+  if (release_jaw_cols_.empty()) {
+    return;
+  }
+  const std::int64_t now = this->now().nanoseconds();
+  const bool fresh = measured_state_fresh();
+  bool fk_done = false;
+  const auto fk = [&]() {
+    if (!fk_done) {
+      std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+      for (const int d : collision_base_dofs_) {
+        q_fk_[static_cast<std::size_t>(d)] = 0.0;
+      }
+      forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+      fk_done = true;
+    }
+  };
+  for (std::size_t i = 0; i < attached_model_.n_objects && i < bound_slot_.size(); ++i) {
+    if (bound_slot_[i] < 0) {
+      continue;
+    }
+    BoundPayload& e = bound_[static_cast<std::size_t>(bound_slot_[i])];
+    AttachedObject& obj = attached_model_.objects[i];
+    if (e.release == BoundPayload::Release::kHeld) {
+      // The jaw driving the attach link or a touch link (a mimic follower reads
+      // its leader's column).
+      for (std::size_t k = 0; e.jaw < 0 && k < release_jaw_cols_.size(); ++k) {
+        for (int t = -1; t < obj.touch_count; ++t) {
+          const int link =
+              t < 0 ? obj.attach_link
+                    : attached_model_.touch_links[static_cast<std::size_t>(obj.touch_first + t)];
+          if (link >= 0 &&
+              collision_model_.dof_index[static_cast<std::size_t>(link)] == release_jaw_cols_[k]) {
+            e.jaw = static_cast<int>(k);
+            break;
+          }
+        }
+      }
+      if (e.jaw < 0 || !fresh || attached_binding_[i].off_hand != nullptr) {
+        e.open_since_ns = -1;  // no jaw, no measurement or off the hand: today's rules
+        continue;
+      }
+      const auto k = static_cast<std::size_t>(e.jaw);
+      const double q = q_meas_[static_cast<std::size_t>(release_jaw_cols_[k])];
+      if (!e.hold_set) {
+        e.hold = q;
+        e.hold_set = true;
+        continue;
+      }
+      if (!(release_jaw_sign_[k] * (q - e.hold) > release_gap_)) {
+        e.open_since_ns = -1;
+        continue;
+      }
+      if (e.open_since_ns < 0) {
+        e.open_since_ns = now;
+      }
+      if (static_cast<double>(now - e.open_since_ns) < release_dwell_s_ * 1e9) {
+        continue;
+      }
+      fk();
+      e.frozen = rigid_compose(
+          binding_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
+      e.hand_link = obj.attach_link;
+      e.release = BoundPayload::Release::kWindow;
+      e.window_opened_ns = now;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.tracked_release object=%s epoch=%u jaw=%.3f hold=%.3f: frozen in base, "
+                  "hand and touch links exempt until %g m clear or %g s (#418 K5, not monotone)",
+                  e.object_id.c_str(), static_cast<unsigned>(e.epoch), q, e.hold, release_clear_m_,
+                  release_timeout_s_);
+      if (grasp_latched_ && grasp_latched_tracked_ && grasp_latched_object_ == e.object_id &&
+          grasp_latched_epoch_ == e.epoch) {
+        retire_grasp_declaration("tracked_release");
+      }
+    }
+    // Released: the payload stays where it was let go, whatever the wire says.
+    obj.attach_link = -1;
+    obj.pose_in_link = e.frozen;
+    obj.has_support_witness = false;
+    attached_binding_[i].off_hand = "released";  // never a handover, no witness
+    if (e.release == BoundPayload::Release::kWindow) {
+      obj.release_hand_link = e.hand_link;
+      const char* why = nullptr;
+      if (static_cast<double>(now - e.window_opened_ns) >= release_timeout_s_ * 1e9) {
+        why = "timeout";
+      } else if (fresh) {
+        fk();
+        if (released_payload_clearance(collision_model_, binding_scratch_, attached_model_, obj) >
+            release_clear_m_) {
+          why = "separation";
+        }
+      }
+      if (why != nullptr) {
+        e.release = BoundPayload::Release::kClosed;
+        RCLCPP_INFO(this->get_logger(),
+                    "safety.tracked_release_closed object=%s epoch=%u reason=%s: a plain "
+                    "obstacle from here",
+                    e.object_id.c_str(), static_cast<unsigned>(e.epoch), why);
+      }
+    }
+    if (e.release == BoundPayload::Release::kClosed) {
+      obj.release_hand_link = -1;
+      obj.touch_count = 0;  // nothing is exempt against it any more
     }
   }
 }

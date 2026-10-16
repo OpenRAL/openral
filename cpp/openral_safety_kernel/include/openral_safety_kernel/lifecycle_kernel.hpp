@@ -217,6 +217,30 @@ private:
   // stays checked, but it is never a grasp handover and arms no support
   // witness. WARN (<= 1 Hz) `safety.attachment_binding_off_hand`.
   void check_attachment_bindings(const openral_msgs::msg::WorldStateStamped& msg);
+  // Issue #418 K4 — the monotone bound geometry. Rewrites every TRACKED_OBJECT
+  // input in `attached_ingest_scratch_` (parallel to `msg.attached_objects`) to
+  // the union `bound_` holds for its (object_id, epoch, attach link), in the
+  // frame of that binding's first `pose_in_link`. New geometry is unioned in
+  // (exact duplicates dropped), never replaces; past kMaxBoundPrimitives it is
+  // refused whole, the union kept, WARN <= 1 Hz (`safety.tracked_geometry_cap`).
+  // A lower or equal revision never removes anything; one that carries new
+  // geometry is still unioned and WARNed (`safety.tracked_geometry_unrevised`).
+  // A new epoch starts fresh. Legacy inputs are untouched. Ingest path only.
+  void union_bound_geometry(const openral_msgs::msg::WorldStateStamped& msg);
+  // Issue #418 K5 — the jaw-open release. NOT monotone (hazard OT-7). For each
+  // TRACKED_OBJECT binding at the hand, the measured jaw (`tracked_release_jaw_*`,
+  // the one whose column drives the attach or a touch link) is captured at
+  // attach as the hold; open past hold + `tracked_release_gap` for
+  // `tracked_release_dwell_s` and the kernel freezes the payload in the base
+  // frame at its measured pose and opens the (id, epoch) release window: the
+  // hand and touch links stay exempt against it until FK separation >
+  // `tracked_release_clear_m` or `tracked_release_timeout_s`, after which it is
+  // a plain obstacle (no exemption) while the wire carries that binding. The
+  // frozen payload is checked against everything else throughout, is never a
+  // handover and arms no witness; a handover latched on it retires. Called after
+  // `check_attachment_bindings`, on every world-state message. No-op when no jaw
+  // joint is configured (the default: today's semantics).
+  void apply_tracked_release();
 
   // Is the ingested grasp region in force at `now`, before the handover rule?
   // Dead on: no region, retracted (no region is ingested), `timeout_s`
@@ -615,6 +639,41 @@ private:
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
+  /// Issue #418 K4: the held bound geometry per TRACKED_OBJECT binding, fixed
+  /// capacity. An entry outlives a message that omits it (a dropped-and-re-added
+  /// record keeps its union); a slot not on the last wire is reused when needed.
+  static constexpr std::size_t kMaxBoundPrimitives = 16;
+  struct BoundPayload {
+    bool used{false};
+    bool seen{false};  ///< on the last accepted wire
+    std::string object_id;
+    std::string attach_link;
+    std::uint32_t epoch{0};
+    std::uint64_t revision{0};
+    Transform frame{};  ///< the first revision's pose_in_link: the union's object frame
+    std::array<AttachedPrimitiveInput, kMaxBoundPrimitives> prims{};
+    std::size_t n{0};
+    // K5, per binding.
+    enum class Release : std::uint8_t { kHeld, kWindow, kClosed };
+    Release release{Release::kHeld};
+    int jaw{-1};  ///< index into release_jaw_cols_; -1 = not resolved yet
+    bool hold_set{false};
+    double hold{0.0};  ///< measured jaw at attach
+    std::int64_t open_since_ns{-1};
+    std::int64_t window_opened_ns{0};
+    Transform frozen{};  ///< base-frame pose at release
+    int hand_link{-1};   ///< the attach link that held it
+  };
+  std::array<BoundPayload, kMaxTrackedObjects> bound_{};
+  std::chrono::steady_clock::time_point bound_cap_last_warn_{};
+  std::vector<int> bound_slot_;  ///< per accepted attachment, its `bound_` slot (-1 = none)
+  /// Issue #418 K5 parameters (`tracked_release_*`), resolved at configure.
+  std::vector<int> release_jaw_cols_;
+  std::vector<double> release_jaw_sign_;
+  double release_gap_{0.0};
+  double release_dwell_s_{0.0};
+  double release_clear_m_{0.0};
+  double release_timeout_s_{0.0};
 
   // Measured joint-state seed (Phase 1) + velocity-mode reconstruction
   // (Phase 2). All sized to n_dof at configure; the hot path never allocates.

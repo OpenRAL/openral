@@ -631,6 +631,38 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -> str:
+    """The prompt's standing ``ObjectQuery`` s as JSON, or ``""`` (issue #418).
+
+    Only with ``runtime.object_tracking`` on and an Isaac ``placement_success`` task for
+    ``prompt`` (verbatim): its objects and the destination object of each target region
+    (``openral_reasoner.grounding.placement_queries``). A prompt the scene does not grade
+    names nothing, and that is printed rather than guessed.
+    """
+    runtime = deploy_scene.runtime if deploy_scene is not None else None
+    if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
+        return ""
+    raw = deploy_scene.scene.backend_options.get("placement_success")
+    if raw is None:
+        return ""
+    from openral_reasoner.grounding import placement_queries
+    from openral_sim.backends.isaac_sim import (  # reason: defer optional dep
+        IsaacPlacementSuccess,
+    )
+
+    placements = IsaacPlacementSuccess.model_validate(raw).placements_for(prompt)
+    if not placements:
+        _console.print(
+            f"[yellow]object tracking: the scene grades no task {prompt!r}; no object "
+            "queries ride the declarations[/yellow]"
+        )
+        return ""
+    queries = placement_queries(placements)
+    return json.dumps(
+        [q.model_dump(mode="json", exclude_none=True) for q in queries], separators=(",", ":")
+    )
+
+
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
     """Derive the deploy_e2e.launch.py bundle args from a deploy memory-bundle dir.
 
@@ -1783,6 +1815,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
         )
+    # Issue #418: the object classes the prompt's graded task names, for the tracker.
+    queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt)
+    if queries_json:
+        argv_template.append(f"object_queries_json:={queries_json}")
 
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality

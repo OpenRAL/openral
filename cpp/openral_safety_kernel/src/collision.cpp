@@ -1618,6 +1618,9 @@ namespace {
 // owned primitive then composes its own `pose_in_object` on top of this.
 Transform attached_object_transform(const AttachedObject& obj,
                                     const CollisionScratch& scratch) noexcept {
+  if (obj.attach_link < 0) {
+    return obj.pose_in_link;  // #418 K5: frozen in the base frame
+  }
   return compose(scratch.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
 }
 
@@ -1625,7 +1628,7 @@ Transform attached_object_transform(const AttachedObject& obj,
 // explicit touch links (grasped payloads legitimately contact those).
 bool attached_allows_link(const AttachedModel& attached, const AttachedObject& obj,
                           int link) noexcept {
-  if (link == obj.attach_link) {
+  if (link >= 0 && (link == obj.attach_link || link == obj.release_hand_link)) {
     return true;
   }
   for (int k = 0; k < obj.touch_count; ++k) {
@@ -2764,6 +2767,44 @@ bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch&
     }
   }
   return false;
+}
+
+double released_payload_clearance(const CollisionModel& model, const CollisionScratch& scratch,
+                                  const AttachedModel& attached,
+                                  const AttachedObject& object) noexcept {
+  double gap = std::numeric_limits<double>::infinity();
+  const Transform obj_xf = attached_object_transform(object, scratch);
+  for (int p = 0; p < object.prim_count; ++p) {
+    const AttachedPrimitive& prim =
+        attached.primitives[static_cast<std::size_t>(object.prim_first + p)];
+    const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
+    for (std::size_t c = 0; c < model.capsules.size(); ++c) {
+      const int link = model.capsule_link[c];
+      if (!attached_allows_link(attached, object, link)) {
+        continue;
+      }
+      const Capsule& cap = model.capsules[c];
+      gap =
+          std::min(gap, attached_primitive_capsule_distance(
+                            prim, prim_xf,
+                            compose(scratch.link_world[static_cast<std::size_t>(link)], cap.origin),
+                            cap.radius, cap.half_length));
+    }
+    for (std::size_t b = 0; b < model.boxes.size(); ++b) {
+      const int link = model.box_link[b];
+      if (!attached_allows_link(attached, object, link)) {
+        continue;
+      }
+      const Transform box_j =
+          compose(scratch.link_world[static_cast<std::size_t>(link)], model.boxes[b].origin);
+      gap = std::min(gap, prim.kind == AttachedShapeKind::kBox
+                              ? box_box_distance(prim_xf, prim.half_extents, box_j,
+                                                 model.boxes[b].half_extents)
+                              : box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf,
+                                                     prim.radius, prim.half_length));
+    }
+  }
+  return gap;
 }
 
 }  // namespace openral_safety_kernel

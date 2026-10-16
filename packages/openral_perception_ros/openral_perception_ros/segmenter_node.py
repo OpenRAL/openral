@@ -128,6 +128,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only, keeps numpy off the impor
 
 __all__ = [
     "FRAME_HISTORY",
+    "box_prompt",
     "frame_nearest_stamp",
     "frame_wait_budget_s",
     "main",
@@ -359,6 +360,22 @@ def projection_geometry(
             f"SensorSpec.frame_id {spec.frame_id!r}, which must then be an optical frame"
         )
     return scale_intrinsics_to(base, width, height), frame, tuple(fallbacks)
+
+
+def box_prompt(request: Any) -> tuple[float, float, float, float] | None:
+    """A ``SegmentInView`` request's detector box prompt in pixels, or ``None`` (issue #418).
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> box_prompt(SimpleNamespace(box_valid=True, box_xyxy=[10, 20, 110.5, 220]))
+        (10.0, 20.0, 110.5, 220.0)
+        >>> box_prompt(SimpleNamespace(box_valid=False, box_xyxy=[0, 0, 0, 0])) is None
+        True
+    """
+    if not bool(getattr(request, "box_valid", False)):
+        return None
+    x0, y0, x1, y1 = (float(c) for c in request.box_xyxy)
+    return (x0, y0, x1, y1)
 
 
 def mono8_bytes_from_mask(mask: NDArray[np.bool_]) -> bytes:
@@ -736,7 +753,12 @@ def _node_class() -> type:
             return response
 
         def _on_segment_in_view(self, request: Any, response: Any) -> Any:  # noqa: PLR0911 — reason: one named early return per fail-closed precondition; collapsing them would hide which one fired
-            """Service: mask the object under a 3-D prompt point in one frame.
+            """Service: mask the object under a 3-D prompt point (and/or pixel box) in one frame.
+
+            With ``box_valid`` (issue #418) ``box_xyxy`` is passed to the segmenter as a
+            box prompt alongside the points, and the points become optional: a TCP point
+            that does not project, or a prompt frame tf2 cannot place, is dropped
+            instead of refusing the call. Without it the behaviour is unchanged.
 
             Every failure path is *typed and named* in ``failure_reason`` and
             leaves ``masks`` empty. It never raises: the caller is holding an
@@ -792,8 +814,11 @@ def _node_class() -> type:
                 return response
             for note in fallbacks:
                 self._warn_once(note)
+            # Issue #418: a detector box in this camera's pixels, alongside the points.
+            # With it the points are optional, so a point that cannot be placed is dropped.
+            box = box_prompt(request)
             transform = self._prompt_transform(request, optical_frame)
-            if transform is None:
+            if transform is None and box is None:
                 response.failure_reason = (
                     f"ROSPerceptionStale: no tf2 {optical_frame} <- "
                     f"{request.frame_id or optical_frame} at the requested stamp"
@@ -801,34 +826,22 @@ def _node_class() -> type:
                 self.get_logger().warning(response.failure_reason)
                 return response
 
-            from openral_runner.backends.gstreamer.sam2_segmenter import project_point_to_pixel
-
-            positive = project_point_to_pixel(
-                _apply_transform(transform, request.tcp_point), intrinsics
-            )
-            if positive is None:
+            positive, negatives = self._prompt_pixels(request, transform, intrinsics)
+            if positive is None and box is None:
                 response.failure_reason = (
                     f"ROSConfigError: the TCP point does not project into camera {camera!r} "
                     "(behind the optical plane or outside the image)"
                 )
                 self.get_logger().warning(response.failure_reason)
                 return response
-            # Negative prompts are hints (jaw tips). One that misses the image is
-            # dropped rather than failing the whole call — the positive point is
-            # what makes the prompt meaningful.
-            negatives = [
-                pixel
-                for point in request.negative_points
-                if (pixel := project_point_to_pixel(_apply_transform(transform, point), intrinsics))
-                is not None
-            ]
             try:
                 candidates = self._segmenter.segment(
                     bgr,
                     width,
                     height,
-                    positive_points=[positive],
+                    positive_points=[positive] if positive is not None else [],
                     negative_points=negatives,
+                    box_xyxy=box,
                 )
             except Exception as exc:  # never crash the service; the caller is waiting
                 response.failure_reason = f"{type(exc).__name__}: {exc}"
@@ -853,7 +866,7 @@ def _node_class() -> type:
             response.ok = True
             self.get_logger().info(
                 f"segment_in_view: camera={camera!r} candidates={len(candidates)} "
-                f"areas={[c.area_px for c in candidates]}"
+                f"areas={[c.area_px for c in candidates]} box={box} point={positive is not None}"
             )
             # LAST, and only after the reply is complete: the caller is holding
             # an action-acknowledgement barrier open on this call.
@@ -888,6 +901,31 @@ def _node_class() -> type:
                 self._masks_pub.publish(msg)
             except Exception as exc:  # reason: a diagnostic topic must never degrade a grasp
                 self.get_logger().warning(f"debug mask publish failed: {exc}")
+
+        def _prompt_pixels(
+            self, request: Any, transform: Any, intrinsics: Any
+        ) -> tuple[tuple[float, float] | None, list[tuple[float, float]]]:
+            """``(positive pixel | None, negative pixels)`` of the request's 3-D points.
+
+            Negative prompts are hints (jaw tips): one that misses the image is dropped
+            rather than failing the whole call — the positive point (or a box) is what
+            makes the prompt meaningful. No transform (tf2 cannot place the prompt frame)
+            places nothing.
+            """
+            from openral_runner.backends.gstreamer.sam2_segmenter import project_point_to_pixel
+
+            if transform is None:
+                return None, []
+            positive = project_point_to_pixel(
+                _apply_transform(transform, request.tcp_point), intrinsics
+            )
+            negatives = [
+                pixel
+                for point in request.negative_points
+                if (pixel := project_point_to_pixel(_apply_transform(transform, point), intrinsics))
+                is not None
+            ]
+            return positive, negatives
 
         def _prompt_transform(self, request: Any, camera_frame: str) -> Any:
             """``camera_optical <- request.frame_id`` as a 4x4, or ``None``.
