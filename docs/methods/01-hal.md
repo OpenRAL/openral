@@ -909,10 +909,6 @@ _Real-hardware attachment evidence from a segmenter mask plus wrist depth — th
   - **(property)** `touch_links -> tuple[str, ...]` (L553) — finger links allowed to touch the payload: `RobotDescription.grasp_contact_links(gripper_joints=…)` of its gripper(s) — the jaws, their mimic followers and the links rigid on those.
   - **(property)** `palm_in_link -> tuple[float, float, float]` (L548) — the jaw joint's origin in the attach link (`palm_plane_m`).
   - **(property)** `config -> VisionGateConfig` (L558)
-- module const `MASK_ERODE_PX = 2` (L232) — mask erosion passes before back-projection (the grasp-target fit's `erode_px`).
-- module const `MAX_DEPTH_STEP_M = 0.02` (L239) — the largest 4-neighbour depth step on one surface; a larger one is a depth discontinuity (*calibration point*).
-- `erode_mask(mask, px) -> NDArray[bool]` (L242) — 4-neighbour binary erosion, `px` passes, border pixels erode away; shared by `_grasp_target.target_region_from_mask`.
-- `depth_continuous_mask(mask, depth_m, *, erode_px=MASK_ERODE_PX, max_step_m=MAX_DEPTH_STEP_M) -> NDArray[bool]` (L265) — `mask` without its depth discontinuities: eroded, then every pixel whose depth differs from a 4-neighbour inside the eroded mask by more than `max_step_m` dropped. The boundary pixels that see past the object (the support behind it) stretched a 5 cm orange into a 25 cm payload (LeIsaac deploy trial g8). `VisionAttachmentEvidenceProducer` applies it to every candidate mask before `backproject_masked_depth`, on every camera, real or sim; it only ever shrinks the cloud.
 
 **Not covered** (see the module docstring): articulated objects, support contact, transparent/thin objects, self-occlusion, mass/CoM/inertia, deformables, multi-object grasps, and the attach trigger itself.
 
