@@ -150,6 +150,49 @@ std::uint8_t violation_kind_constant(ViolationKind k) {
   return 5;
 }
 
+/// Rigid-transform algebra for the #418 K4 union (ingest path only).
+Transform rigid_compose(const Transform& a, const Transform& b) noexcept {
+  Transform out;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      out.r[i * 3 + j] =
+          a.r[i * 3] * b.r[j] + a.r[i * 3 + 1] * b.r[3 + j] + a.r[i * 3 + 2] * b.r[6 + j];
+    }
+  }
+  out.t = Vec3{a.t.x + a.r[0] * b.t.x + a.r[1] * b.t.y + a.r[2] * b.t.z,
+               a.t.y + a.r[3] * b.t.x + a.r[4] * b.t.y + a.r[5] * b.t.z,
+               a.t.z + a.r[6] * b.t.x + a.r[7] * b.t.y + a.r[8] * b.t.z};
+  return out;
+}
+Transform rigid_inverse(const Transform& x) noexcept {
+  Transform out;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      out.r[i * 3 + j] = x.r[j * 3 + i];
+    }
+  }
+  out.t = Vec3{-(out.r[0] * x.t.x + out.r[1] * x.t.y + out.r[2] * x.t.z),
+               -(out.r[3] * x.t.x + out.r[4] * x.t.y + out.r[5] * x.t.z),
+               -(out.r[6] * x.t.x + out.r[7] * x.t.y + out.r[8] * x.t.z)};
+  return out;
+}
+
+/// Same shape, dimensions and pose to 1e-9: one primitive, not two (#418 K4).
+bool same_primitive(const AttachedPrimitiveInput& a, const AttachedPrimitiveInput& b) noexcept {
+  const auto near = [](double x, double y) { return std::abs(x - y) <= 1e-9; };
+  bool same = a.kind == b.kind && near(a.radius, b.radius) && near(a.half_length, b.half_length) &&
+              near(a.half_extents.x, b.half_extents.x) &&
+              near(a.half_extents.y, b.half_extents.y) &&
+              near(a.half_extents.z, b.half_extents.z) &&
+              near(a.pose_in_object.t.x, b.pose_in_object.t.x) &&
+              near(a.pose_in_object.t.y, b.pose_in_object.t.y) &&
+              near(a.pose_in_object.t.z, b.pose_in_object.t.z);
+  for (int k = 0; k < 9 && same; ++k) {
+    same = near(a.pose_in_object.r[k], b.pose_in_object.r[k]);
+  }
+  return same;
+}
+
 /// Decode one wire `AttachedCollisionPrimitive` into the kernel's input record.
 ///
 /// Shared by attached-payload ingest and the declared place target's geometry
@@ -1025,6 +1068,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
@@ -2857,6 +2901,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
@@ -3342,6 +3387,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_ingest_scratch_.push_back(std::move(in));
   }
 
+  union_bound_geometry(*msg);
   const AttachIngestStatus status = ingest_attached_objects(
       attached_ingest_scratch_, collision_link_names_, attached_max_objects_,
       attached_max_primitives_, attached_max_touch_links_, attached_model_);
@@ -3831,6 +3877,124 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
                     wire.object_id.c_str(), static_cast<unsigned>(wire.epoch), binding.off_hand);
       }
     }
+  }
+}
+
+void SafetyKernelLifecycleNode::union_bound_geometry(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  for (auto& e : bound_) {
+    e.seen = false;
+  }
+  for (std::size_t i = 0; i < attached_ingest_scratch_.size(); ++i) {
+    const auto& wire = msg.attached_objects[i];
+    if (wire.evidence_kind != "tracked_object") {
+      continue;  // legacy and PINCH_FALLBACK payloads: replaced per message, as today
+    }
+    AttachedObjectInput& in = attached_ingest_scratch_[i];
+    BoundPayload* e = nullptr;
+    for (auto& c : bound_) {
+      if (c.used && c.object_id == wire.object_id && c.attach_link == wire.attach_link) {
+        e = &c;
+        break;
+      }
+    }
+    if (e != nullptr && e->epoch != wire.epoch) {
+      e->used = false;  // a new epoch starts fresh
+    }
+    if (e == nullptr) {
+      for (auto& c : bound_) {
+        if (!c.used || !c.seen) {
+          e = &c;
+          break;
+        }
+      }
+    }
+    if (e == nullptr) {
+      continue;  // unreachable: more tracked payloads than slots; today's semantics
+    }
+    if (!e->used) {
+      if (in.primitives.size() > kMaxBoundPrimitives) {
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.tracked_geometry_cap object=%s epoch=%u primitives=%zu cap=%zu: "
+                    "checked as published, no union held",
+                    wire.object_id.c_str(), static_cast<unsigned>(wire.epoch), in.primitives.size(),
+                    kMaxBoundPrimitives);
+        continue;
+      }
+      e->used = true;
+      e->object_id = wire.object_id;
+      e->attach_link = wire.attach_link;
+      e->epoch = wire.epoch;
+      e->revision = wire.geometry_revision;
+      e->frame = in.pose_in_link;
+      e->n = in.primitives.size();
+      std::copy(in.primitives.begin(), in.primitives.end(), e->prims.begin());
+    }
+    e->seen = true;
+    // This message's object frame, expressed in the union's.
+    const Transform to_union = rigid_compose(rigid_inverse(e->frame), in.pose_in_link);
+    {
+      // Any primitive not yet held is unioned in. A lower or equal revision
+      // carrying new content is a producer that changed geometry without
+      // bumping it: still unioned (growth is the safe direction), and WARNed.
+      std::size_t n = e->n;
+      std::array<AttachedPrimitiveInput, kMaxBoundPrimitives> grown = e->prims;
+      bool over = false;
+      for (const auto& p : in.primitives) {
+        AttachedPrimitiveInput q = p;
+        q.pose_in_object = rigid_compose(to_union, p.pose_in_object);
+        if (std::any_of(grown.begin(), grown.begin() + static_cast<std::ptrdiff_t>(n),
+                        [&q](const AttachedPrimitiveInput& h) { return same_primitive(h, q); })) {
+          continue;
+        }
+        if (n == kMaxBoundPrimitives) {
+          over = true;
+          break;
+        }
+        grown[n++] = std::move(q);
+      }
+      if (over) {
+        const auto wall = std::chrono::steady_clock::now();
+        if (wall - bound_cap_last_warn_ >= std::chrono::seconds(1)) {
+          bound_cap_last_warn_ = wall;
+          RCLCPP_WARN(this->get_logger(),
+                      "safety.tracked_geometry_cap object=%s epoch=%u revision=%llu cap=%zu: "
+                      "update refused, the held union (revision %llu) stays",
+                      wire.object_id.c_str(), static_cast<unsigned>(wire.epoch),
+                      static_cast<unsigned long long>(wire.geometry_revision), kMaxBoundPrimitives,
+                      static_cast<unsigned long long>(e->revision));
+        }
+      } else if (n > e->n) {
+        if (wire.geometry_revision <= e->revision) {
+          const auto wall = std::chrono::steady_clock::now();
+          if (wall - bound_cap_last_warn_ >= std::chrono::seconds(1)) {
+            bound_cap_last_warn_ = wall;
+            RCLCPP_WARN(this->get_logger(),
+                        "safety.tracked_geometry_unrevised object=%s epoch=%u revision=%llu "
+                        "held=%llu: new geometry without a higher revision, unioned anyway",
+                        wire.object_id.c_str(), static_cast<unsigned>(wire.epoch),
+                        static_cast<unsigned long long>(wire.geometry_revision),
+                        static_cast<unsigned long long>(e->revision));
+          }
+        }
+        e->prims = std::move(grown);
+        e->n = n;
+      }
+      e->revision = std::max(e->revision, wire.geometry_revision);
+    }
+    // The support witness rides this message's object frame: re-express it.
+    if (in.has_support_witness) {
+      Transform point;
+      point.t = in.support_point;
+      in.support_point = rigid_compose(to_union, point).t;
+      Transform normal;
+      normal.t = in.support_normal;
+      Transform rot = to_union;
+      rot.t = Vec3{};
+      in.support_normal = rigid_compose(rot, normal).t;
+    }
+    in.pose_in_link = e->frame;
+    in.primitives.assign(e->prims.begin(), e->prims.begin() + static_cast<std::ptrdiff_t>(e->n));
   }
 }
 

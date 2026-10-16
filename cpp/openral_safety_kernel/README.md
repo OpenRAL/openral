@@ -980,6 +980,27 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   (`evidence_kind` other than `tracked_object`, `pinch_fallback` included) keep
   every rule above unchanged, the declaration-keyed retirement included; the two
   keys coexist. Nothing here exempts anything new: every change only refuses.
+* **Monotone bound geometry (issue #418 K4, draft — Safety-WG review pending).**
+  A `tracked_object` payload's geometry is the union the kernel holds for its
+  (`object_id`, `epoch`, attach link), in the frame of that binding's first
+  `pose_in_link` (a later message's primitives and support witness are
+  re-expressed into it). New geometry is **unioned** in, exact duplicates
+  dropped, never replacing what is held
+  (`…ATrackedBoundGeometryGrowsAndNeverShrinks`). A lower or equal
+  `geometry_revision` never removes anything; one that still carries geometry not
+  held (a producer that changed it without bumping the revision) is unioned too —
+  growth is the safe direction — and WARNed, `safety.tracked_geometry_unrevised`
+  (`…ALowerOrEqualGeometryRevisionNeverRemovesGeometry`). The union holds at most
+  16 primitives: an update past that is refused whole, the union stays, WARN
+  `safety.tracked_geometry_cap` at most 1 Hz
+  (`…AGeometryUpdatePastTheCapIsRefusedAndTheUnionStays`); a first revision already
+  past it is checked as published, with no union held. A new epoch starts fresh
+  (`…ANewEpochStartsAFreshBoundGeometry`). The table is fixed (32 bindings); an
+  entry survives a message that omits it, so a dropped-and-re-added record keeps
+  its union. The union also counts against `attached_max_primitives`: past it the
+  attachment message fails closed, as any over-cap payload does. Legacy payloads
+  are replaced per message exactly as before. Stricter only: a stale part of the
+  union can cost a false stop, never a missed one.
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /

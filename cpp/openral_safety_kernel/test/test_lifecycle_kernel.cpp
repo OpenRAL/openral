@@ -6677,6 +6677,12 @@ std::vector<rclcpp::Parameter> tracked_payload_params() {
   }
   params.emplace_back("attached_collision_margin_m", 0.03);
   params.emplace_back("attached_contact_tolerance_m", 0.001);
+  // Room for a tracked payload's K4 union (a moved pose is unioned, not replaced).
+  for (auto& p : params) {
+    if (p.get_name() == "attached_max_primitives") {
+      p = rclcpp::Parameter("attached_max_primitives", std::int64_t{4});
+    }
+  }
   return params;
 }
 
@@ -6848,4 +6854,146 @@ TEST_F(LifecycleKernelTest, ARetiredTrackedIdentityNeverReArmsButANewEpochDoes) 
   EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
   EXPECT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:3 object=trk:1"), 1U)
       << logs.joined();
+}
+
+// ── Issue #418 K4: the monotone bound geometry ──────────────────────────────
+//
+// One payload on link0 at x = 0.05; each primitive a 10 mm half box at an
+// object-frame offset. The one occupied cell spans x in [0.140, 0.165], so a
+// primitive at object x = 0.06 (face at 0.12) is inside the 30 mm attached
+// margin and stops, and one at object x = -0.05 is far clear.
+namespace {
+
+constexpr double kTripX = 0.06;
+constexpr double kClearX = -0.05;
+
+struct BoundBeat {
+  std::string kind{"tracked_object"};
+  std::uint32_t epoch{0};
+  std::uint64_t geometry_revision{0};
+  std::vector<std::pair<double, double>> prims;  ///< (x, y) in the object frame
+};
+
+openral_msgs::msg::WorldStateStamped bound_state(std::int64_t stream_ns, const BoundBeat& b) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = stream_ns;
+  msg.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "trk:1";
+  obj.attach_link = "link0";
+  obj.pose_in_link.position.x = 0.05;
+  obj.pose_in_link.orientation.w = 1.0;
+  obj.evidence_kind = b.kind;
+  obj.epoch = b.epoch;
+  obj.geometry_revision = b.geometry_revision;
+  for (const auto& [x, y] : b.prims) {
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.pose_in_object.position.x = x;
+    prim.pose_in_object.position.y = y;
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+  }
+  msg.attached_objects.push_back(obj);
+  return msg;
+}
+
+std::vector<rclcpp::Parameter> bound_params() {
+  auto params = tracked_payload_params();
+  for (auto& p : params) {
+    if (p.get_name() == "attached_max_primitives") {
+      p = rclcpp::Parameter("attached_max_primitives", std::int64_t{32});
+    }
+  }
+  return params;
+}
+
+// A rig publishing `b` every beat, its one cell next to the payload's x.
+struct BoundRig {
+  BoundBeat b;
+  GraspRig rig;
+  explicit BoundRig(const std::string& name) : rig(name, bound_params()) {
+    rig.voxels = declared_target_voxels();
+    rig.state_fn = [this](std::int64_t ns) { return bound_state(ns, b); };
+    rig.start();
+  }
+  void publish(std::uint64_t revision, std::vector<std::pair<double, double>> prims) {
+    b.geometry_revision = revision;
+    b.prims = std::move(prims);
+    rig.warm(nullptr, 0.0, 150);
+  }
+  bool passes() { return rig.offer(nullptr, 0.0, 600); }
+};
+
+std::vector<std::pair<double, double>> clear_prims(std::size_t n) {
+  std::vector<std::pair<double, double>> out;
+  for (std::size_t k = 0; k < n; ++k) {
+    out.emplace_back(kClearX, 0.002 * static_cast<double>(k));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ATrackedBoundGeometryGrowsAndNeverShrinks) {
+  for (const char* kind : {"", "tracked_object"}) {
+    LogCapture logs;
+    BoundRig r(std::string("kernel_bound_grows_") + (*kind != 0 ? "tracked" : "legacy"));
+    r.b.kind = kind;
+    r.publish(0, {{kTripX, 0.0}});
+    r.publish(1, {{kClearX, 0.0}});  // the producer moved its estimate clear
+    if (*kind == 0) {
+      EXPECT_TRUE(r.passes()) << "legacy: the new record replaces the old: " << logs.joined();
+    } else {
+      EXPECT_FALSE(r.passes()) << "tracked: revision 0's primitive stays in the union";
+      EXPECT_TRUE(r.rig.node->fault_latched());
+    }
+  }
+}
+
+TEST_F(LifecycleKernelTest, ALowerOrEqualGeometryRevisionNeverRemovesGeometry) {
+  LogCapture logs;
+  BoundRig r("kernel_bound_revision");
+  r.publish(1, {{kTripX, 0.0}});
+  r.publish(1, {{kTripX, 0.0}});  // the heartbeat re-send: nothing new, nothing said
+  EXPECT_EQ(logs.count("safety.tracked_geometry_unrevised"), 0U) << logs.joined();
+  // A lower revision moving the estimate clear: unioned (never a replacement)
+  // and disclosed, since the producer changed geometry without a new revision.
+  r.publish(0, {{kClearX, 0.0}});
+  EXPECT_EQ(logs.count("safety.tracked_geometry_unrevised object=trk:1 epoch=0 revision=0 held=1"),
+            1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes()) << "revision 1's primitive is still held: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGeometryUpdatePastTheCapIsRefusedAndTheUnionStays) {
+  {
+    LogCapture logs;
+    BoundRig r("kernel_bound_cap_refused");
+    r.publish(0, clear_prims(16));
+    r.publish(1, {{kTripX, 0.0}});  // the 17th primitive: refused whole
+    EXPECT_EQ(logs.count("safety.tracked_geometry_cap object=trk:1 epoch=0 revision=1 cap=16"), 1U)
+        << "WARN, rate-limited: " << logs.joined();
+    EXPECT_TRUE(r.passes()) << logs.joined();
+  }
+  {
+    LogCapture logs;
+    BoundRig r("kernel_bound_cap_keeps");
+    auto prims = clear_prims(15);
+    prims.emplace_back(kTripX, 0.0);
+    r.publish(0, prims);
+    r.publish(1, {{kClearX, 0.1}, {kClearX, 0.2}});  // 18: refused, the 16 stay
+    EXPECT_GE(logs.count("safety.tracked_geometry_cap"), 1U) << logs.joined();
+    EXPECT_FALSE(r.passes()) << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ANewEpochStartsAFreshBoundGeometry) {
+  LogCapture logs;
+  BoundRig r("kernel_bound_epoch");
+  r.publish(0, {{kTripX, 0.0}});
+  r.b.epoch = 1;  // released and re-grounded
+  r.publish(0, {{kClearX, 0.0}});
+  EXPECT_TRUE(r.passes()) << logs.joined();
 }
