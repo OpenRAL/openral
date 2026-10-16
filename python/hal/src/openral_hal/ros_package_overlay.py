@@ -16,44 +16,20 @@ prepend to that process's ``AMENT_PREFIX_PATH``.
 
 from __future__ import annotations
 
-import importlib
 import os
 import re
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from openral_core.exceptions import ROSConfigError
-
 from openral_hal._openarm_description_assets import ensure_openarm_description
 
 __all__ = ["PUBLIC_ROS_PACKAGES", "fetch_public_package", "public_package_overlay"]
 
-
 #: Public description packages fetched on demand: ``{package: fetcher}``, each
 #: fetcher returning the package root (the directory holding ``package.xml``).
-def _robot_descriptions_root(module: str, subdir: str = "") -> Callable[[], Path]:
-    """A fetcher for a package inside a ``robot_descriptions`` clone (pinned by that library)."""
-
-    def fetch() -> Path:
-        try:  # importing the module clones its pinned commit into ~/.cache/robot_descriptions
-            repo = importlib.import_module(f"robot_descriptions.{module}").REPOSITORY_PATH
-        except Exception as exc:  # reason: clone failures surface as many types (git, OSError)
-            raise ROSConfigError(f"robot_descriptions.{module}: fetch failed: {exc}") from exc
-        return Path(repo) / subdir
-
-    return fetch
-
-
 PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]] = {
     "openarm_description": ensure_openarm_description,
-    # robots/droid_franka_robotiq/droid_franka_robotiq.urdf: Franka arm meshes
-    # (Gepetto/example-robot-data, BSD-3) + Robotiq 2F-85 meshes (ros-industrial
-    # robotiq via nickswalker/robotiq-2f-85, BSD-2).
-    "example-robot-data": _robot_descriptions_root("panda_description"),
-    "robotiq_2f_85_gripper_visualization": _robot_descriptions_root(
-        "robotiq_2f85_v4_description", "robotiq_2f_85_gripper_visualization"
-    ),
 }
 
 _INDEX = Path("share") / "ament_index" / "resource_index" / "packages"
