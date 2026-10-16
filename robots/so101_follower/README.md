@@ -63,7 +63,7 @@ thresholds, in fraction units. They follow the method of
 | `closed_rest_offset` | 0.0023 | p99 of the LeIsaac PickOrange teleop dataset's settled commanded-closed samples; the Isaac 6.1 twin's empty close rests at 0.00012 |
 | `close_band` | 0.25 | SmolVLA grasps with the jaw commanded at 0.19–0.23 (deploy trial g5 replayed in the Isaac twin); the teleop dataset at 0.19 (p95 0.25); free motion lags only at commands ≥ 0.25 |
 | `stall_gap` | 0.02 | settled holds sit 0.027–0.103 short of the command in Isaac (teleop median 0.024); free and near-object motion stays ≤ 0.013 |
-| `settle_tolerance` | 0.01 | a settle tolerance of 0.002 caught only 3 of 53 Isaac hold ticks |
+| `settle_tolerance` | 0.02 | the closed-loop hold in deploy trial g6, replayed on the sim clock, chatters with a 0.133 s span of p50 0.0156 (p90 0.021): at 0.01 it never settles, at 0.02 it attaches once; 0.002 caught only 3 of 53 open-loop hold ticks |
 
 On the Isaac replay these values attach on both holds and never on free motion or an
 empty close. On the dataset they attach in 53 of 60 episodes, never outside the
