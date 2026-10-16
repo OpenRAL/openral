@@ -110,7 +110,9 @@ class ContainingFit:
         surface: ``(N, 3)`` mask depth points ``P`` in the base frame (the cover's ``E``).
         support_z: The support the fit was truncated at.
         assumptions: A1-A4 evidence for the trace (``a1_border_clear``, ``a2_gap_m``,
-            ``a3_depth_valid``, ``a4_occluder_px``, ``a5_robot_band_px``: silhouette pixels
+            ``a3_depth_valid``, ``a4_occluder_px``, ``a4_robot_beyond_band_px``: robot pixels
+            past the occluder band where the robot touches the mask (refused when any),
+            ``a5_robot_band_px``: silhouette pixels
             on or beside the robot, whose depth never sets the front cut).
         refusal: Empty when fitted, else why not.
     """
@@ -167,7 +169,7 @@ def _refused(
     return ContainingFit(None, None, surface, support_z, notes, why)
 
 
-def containing_fit(
+def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
     mask: NDArray[np.bool_],
     depth_m: NDArray[np.float64],
     robot_mask: NDArray[np.uint8] | None,
@@ -251,6 +253,17 @@ def containing_fit(
     mask_depth = _neighbour_max(np.where(s0 & usable, d, -np.inf))
     nearer = ring & (robot | (usable & (d < mask_depth - p.occluder_tol_m)))
     notes["a4_occluder_px"] = float(nearer.sum())
+    # Never fitted through the robot (design step 1.5): the bands re-add a hidden part up to
+    # ``w_occ_px`` behind an occluder, so a robot region that touches the mask (across the
+    # filter's uncertain band) and reaches past that band may hide more of the object than
+    # the fit can contain — the arm over a plate's near rim cut 2.7 cm off it. Deferred:
+    # the map holds the track until the arm moves on.
+    reach = p.k_px + 1 + p.w_occ_px
+    touch = _dilate(s0, p.k_px + 1) & robot
+    beyond = _dilate(s0, reach + 1) & ~_dilate(s0, reach) & robot
+    notes["a4_robot_beyond_band_px"] = float(beyond.sum()) if touch.any() else 0.0
+    if notes["a4_robot_beyond_band_px"] > 0:
+        return _refused("a4_robot_occluder_wide", surface, support_z, notes)
     silhouette = s0 | (uncertain & _dilate(s0, p.k_px + 1)) | _dilate(nearer, p.w_occ_px)
     sil = _dilate(silhouette, p.k_px)
 

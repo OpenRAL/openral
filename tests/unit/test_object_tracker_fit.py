@@ -151,15 +151,16 @@ def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
 
 
 def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
-    """A head camera over a tote sees the arm next to the carton, 10 cm nearer: the robot
-    band widens the cone laterally, but the cut stays at the carton's own front."""
+    """A head camera over a tote sees a finger next to the carton, 10 cm nearer (no wider
+    than the occluder band): the band widens the cone laterally, but the cut stays at the
+    carton's own front."""
     rig = _RIGS["so101_top"]
     x, y = rig.centre_xy
     solid = box((x, y, rig.support_z + 0.03), (0.03, 0.02, 0.03), 0.0)
     depth, labels = render([solid], rig)
     rows, cols = np.nonzero(labels == 1)
     robot = np.zeros(depth.shape, np.uint8)
-    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 9))
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 5))
     robot[arm] = ROBOT_PIXEL
     depth[arm] = float(depth[labels == 1].min()) - 0.10
     # The filter's uncertain band straddles the arm's edge: two of its columns are arm.
@@ -172,6 +173,23 @@ def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
     assert fit.box is not None
     top = fit.box.pose.xyz[2] + fit.box.half_extents[2]
     assert top < rig.support_z + 0.06 + 2 * RES  # not lifted toward the arm
+
+
+def test_a_robot_wider_than_the_occluder_band_defers_the_fit() -> None:
+    """The arm over a plate's near rim: it touches the mask and reaches past the band, so
+    whatever it hides may exceed what the band re-adds. Never fitted through the robot."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    plate = cylinder((x, y), 0.08, rig.support_z, rig.support_z + 0.02)
+    depth, labels = render([plate], rig)
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() - 10, cols.max() + 20))
+    robot[arm] = ROBOT_PIXEL
+    depth[arm] = float(depth[labels == 1].min()) - 0.15
+    fit = _fit(rig, [plate], robot_mask=robot, depth=depth)
+    assert fit.refusal == "a4_robot_occluder_wide" and fit.box is None
+    assert fit.assumptions["a4_robot_beyond_band_px"] > 0
 
 
 def test_refusals_name_the_broken_assumption() -> None:
