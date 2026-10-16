@@ -310,6 +310,9 @@ _ASPECT_TOLERANCE = 1e-3
 #: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 _HEARTBEAT_PERIOD_S = 0.2
 
+#: What the trigger computed, for the Layer-2 object tracker (issue #418).
+_GRASP_EVENTS_TOPIC = "/openral/grasp_events"
+
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
 #: region is a gated, map-verified head-view measurement of the same object.
 _STALL_RAD = 0.002
@@ -1478,6 +1481,7 @@ class VisionAttachmentBridge:
         # (capture stamp ns, frame, points) of the self-filter's last few output clouds.
         self._kept_clouds: deque[tuple[int, str, Any]] = deque(maxlen=8)
         self._kept_cloud_sub: Any = None
+        self._grasp_event_pub: Any = None
         self._camera_info_sub: Any = None
         self._logged_depth_frame = False
         self._client: Any = None
@@ -1594,6 +1598,19 @@ class VisionAttachmentBridge:
             self._grasp_target.setup()
         if self._place_target is not None:
             self._place_target.setup()
+        from openral_msgs.msg import GraspEvent as GraspEventMsg
+
+        # An event stream (issue #418): safety/e-stop class, nothing latched.
+        self._grasp_event_pub = self._node.create_publisher(
+            GraspEventMsg,
+            _GRASP_EVENTS_TOPIC,
+            QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=10,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+            ),
+        )
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -1631,6 +1648,9 @@ class VisionAttachmentBridge:
         if self._kept_cloud_sub is not None:
             self._node.destroy_subscription(self._kept_cloud_sub)
             self._kept_cloud_sub = None
+        if self._grasp_event_pub is not None:
+            self._node.destroy_publisher(self._grasp_event_pub)
+            self._grasp_event_pub = None
         self._kept_clouds.clear()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
@@ -1690,6 +1710,7 @@ class VisionAttachmentBridge:
         complete = True
         for leg in self._legs:
             missing_before = leg.trigger.missing_position_ticks
+            held_at = leg.trigger.hold_position  # a DETACH clears it; the event reports it
             event = leg.trigger.update(state)
             if self._node is not None:
                 self._log_close(leg, event)
@@ -1708,6 +1729,7 @@ class VisionAttachmentBridge:
             complete = complete and leg.trigger.missing_position_ticks == missing_before
             if event is None:
                 continue
+            self._publish_grasp_event(leg, event, int(state.stamp_ns), held_at)
             if self._supersede(leg):
                 self._node.get_logger().warning(
                     f"grasp trigger {leg.joint_name}: {event.value.upper()} superseded the "
@@ -1745,6 +1767,38 @@ class VisionAttachmentBridge:
         self._retire_lifted_supports()
         if self._place_target is not None:
             self._place_target.on_joint_state()
+
+    def _publish_grasp_event(
+        self, leg: _GripperLeg, event: GraspEvent, stamp_ns: int, held_at: float | None
+    ) -> None:
+        """Publish what the trigger computed on ``/openral/grasp_events`` (issue #418).
+
+        Args:
+            leg: The leg whose trigger fired.
+            event: The confirmed transition.
+            stamp_ns: Source-clock stamp of the joint-state sample that confirmed it.
+            held_at: The trigger's hold before this sample (what a DETACH released).
+        """
+        if self._grasp_event_pub is None:
+            return
+        from openral_msgs.msg import GraspEvent as GraspEventMsg
+
+        msg = GraspEventMsg()
+        msg.kind = {
+            GraspEvent.ATTACH: GraspEventMsg.KIND_ATTACH,
+            GraspEvent.REGRASP: GraspEventMsg.KIND_REGRASP,
+            GraspEvent.DETACH: GraspEventMsg.KIND_DETACH,
+        }[event]
+        msg.gripper_joint = leg.joint_name
+        msg.hand_link = leg.producer.attach_link
+        measured = self._positions.get(leg.joint_name)
+        command = leg.trigger.last_command
+        hold = held_at if event is GraspEvent.DETACH else leg.trigger.hold_position
+        msg.jaw_measured = math.nan if measured is None else float(measured)
+        msg.jaw_commanded = math.nan if command is None else float(command)
+        msg.hold_position = math.nan if hold is None else float(hold)
+        msg.stamp.sec, msg.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+        self._grasp_event_pub.publish(msg)
 
     def _padding_clip_point(
         self,

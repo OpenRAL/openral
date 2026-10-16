@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 from numpy.typing import NDArray
 from openral_core import (
     DetectedObject,
@@ -28,17 +29,21 @@ from openral_core import (
     GraspDeclaration,
     GraspTargetRef,
     ObjectDetection2D,
+    ObjectQuery,
+    ObjectRole,
     PlaceDeclaration,
     PlaceTargetRef,
     Pose6D,
     RobotDescription,
     SceneGraph,
 )
-from openral_core.exceptions import ROSReasonerInvalidPlan
+from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_reasoner.grounding import (
     gripper_hands,
     ground_grasp_target,
     ground_place_target,
+    hand_joint,
+    placement_queries,
 )
 from openral_reasoner.palette import ToolPalette
 from openral_reasoner.tool_use import (
@@ -508,3 +513,121 @@ def test_the_llm_is_never_told_it_must_name_a_grasp_target() -> None:
     field = ExecuteRskillTool.model_fields["grasp_target"]
     assert field.default is None and (field.description or "").startswith("Optional")
     assert ExecuteRskillTool(rskill_id="openral/pi05-openarm-pick-place").grasp_target is None
+
+
+# ── Object tracking (issue #418): queries beside the unchanged search-box path ──
+
+_ORANGES = {
+    "o1": ("orange", (0.40, -0.20, -0.10)),
+    "o2": ("orange", (0.40, 0.00, -0.10)),
+    "o3": ("orange", (0.40, 0.20, -0.10)),
+    "p": ("plate", (0.55, 0.00, -0.12)),
+}
+
+
+def test_three_oranges_ground_one_count_all_query_instead_of_refusing() -> None:
+    """LeIsaac PickOrange: three identical oranges. With tracking the label grounds (the
+    tracker tracks every instance; the policy's choice is resolved at binding)."""
+    live = _lift(_ORANGES)
+    ref = GraspTargetRef(label="Orange", contact_links=["openarm_left_finger_pair"])
+    with pytest.raises(ROSReasonerInvalidPlan, match="ambiguous: 3"):
+        _ground(ref, live)  # tracking off: unchanged
+    decl = ground_grasp_target(
+        ref,
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+        hand=hand_joint(_OPENARM, ["openarm_left_finger_pair"]),
+    )
+    assert decl.target_queries == (
+        ObjectQuery(label="Orange", count="all", role=ObjectRole.TARGET, hand="left_gripper"),
+    )
+    assert decl.search_box is None  # no single instance to seed
+    assert decl.target_id == "obj:orange"
+    assert decl.region is None
+
+
+def test_one_instance_keeps_its_search_box_and_adds_a_count_one_query() -> None:
+    live = _lift(_ORANGES)
+    ref = GraspTargetRef(label="plate", contact_links=["openarm_right_finger_pair"])
+    legacy = _ground(ref, live)
+    assert legacy.target_queries == ()  # tracking off: no query
+    tracked = ground_grasp_target(
+        ref,
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert tracked.search_box == legacy.search_box  # side by side, unchanged
+    assert tracked.target_queries == (
+        ObjectQuery(label="plate", count="one", role=ObjectRole.TARGET),
+    )
+
+
+def test_the_place_target_carries_its_destination_query_only_with_tracking() -> None:
+    live = _lift(_ORANGES)
+    assert _ground_place(PlaceTargetRef(label="plate"), live).destination_query is None
+    decl = ground_place_target(
+        PlaceTargetRef(label="plate"),
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert decl.destination_query == ObjectQuery(
+        label="plate", count="one", role=ObjectRole.DESTINATION
+    )
+    assert decl.search_box is not None
+
+
+def _scene_placements(scene: str, prompt: str) -> list[tuple[str, str | None]]:
+    from openral_sim.backends.isaac_sim import IsaacPlacementSuccess
+
+    raw = yaml.safe_load((_REPO_ROOT / "scenes" / "deploy" / scene).read_text())
+    success = IsaacPlacementSuccess.model_validate(
+        raw["scene"]["backend_options"]["placement_success"]
+    )
+    return success.placements_for(prompt)
+
+
+def test_pick_orange_scene_queries_all_three_oranges_into_the_plate() -> None:
+    queries = placement_queries(
+        _scene_placements("isaac_leisaac_pick_orange.yaml", "Grab orange and place into plate")
+    )
+    assert queries == (
+        ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET),
+        ObjectQuery(label="plate", count="one", role=ObjectRole.DESTINATION),
+    )
+
+
+def test_droid_scene_queries_one_banana_into_the_bowl() -> None:
+    queries = placement_queries(
+        _scene_placements(
+            "isaac_arena_droid_banana_in_bowl.yaml", "pick up the banana and place it in the bowl"
+        )
+    )
+    assert queries == (
+        ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET),
+        ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION),
+    )
+
+
+def test_a_fixed_slot_has_no_destination_query_and_two_destinations_refuse() -> None:
+    """Restock: the carton class from the task, the shelf slot stays a PlaceRegion."""
+    assert placement_queries([("box_x2_1", None)]) == (
+        ObjectQuery(label="box x2", count="one", role=ObjectRole.TARGET),
+    )
+    with pytest.raises(ROSConfigError, match="one destination_query"):
+        placement_queries([("orange_1", "plate"), ("orange_2", "bowl")])
+    with pytest.raises(ROSConfigError, match="at least one"):
+        placement_queries([])

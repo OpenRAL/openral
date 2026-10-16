@@ -1819,6 +1819,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
+    object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
     dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
@@ -2813,6 +2814,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 "place_declaration_json": place_declaration_json,
                 # Grasp-phase sibling (real pick-and-place design §2.1).
                 "grasp_declaration_json": grasp_declaration_json,
+                # Issue #418: the scene task's standing ObjectQuery s; inert while the
+                # runner's object_tracking is "off".
+                "object_queries_json": object_queries_json,
                 # Approach-armed grasp target (§2.2): a goal-scope declaration per
                 # goal, only when the exemption is on AND the HAL's grasp-target
                 # leg measures around an approaching hand.
@@ -4169,6 +4173,15 @@ def generate_launch_description() -> LaunchDescription:
                 "Serialized openral_core.GraspDeclaration (real pick-and-place "
                 "design §2.1) the skill_runner scopes to each goal it "
                 "dispatches. Empty = no declaration, no grasp exemption."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "object_queries_json",
+            default_value="",
+            description=(
+                "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
+                "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
+                "declaration when object tracking is on. Empty = none."
             ),
         ),
         DeclareLaunchArgument(

@@ -39,7 +39,7 @@ def build_manifest_segmenter(manifest: RSkillManifest, *, device: str = "auto") 
 
     Returns:
         The backend instance, which exposes
-        ``segment(frame_bgr, width, height, *, positive_points, negative_points)``
+        ``segment(frame_bgr, width, height, *, positive_points, negative_points, box_xyxy)``
         and must be ``warm_up``-ed at node
         activate.
 

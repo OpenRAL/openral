@@ -41,6 +41,8 @@ from openral_reasoner.grounding import (
     gripper_hands,
     ground_grasp_target,
     ground_place_target,
+    hand_joint,
+    placement_queries,
 )
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
@@ -126,7 +128,9 @@ __all__ = [
     "gripper_hands",
     "ground_grasp_target",
     "ground_place_target",
+    "hand_joint",
     "load_ladder_state",
+    "placement_queries",
     "plan_active_search",
     "recall_object_tool_to_query",
     "render_robot_context_prompt",

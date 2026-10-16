@@ -127,8 +127,10 @@ def test_segmenter_rejects_over_budget_prompts_before_loading_a_model() -> None:
         backend.segment(
             b"", 2, 2, positive_points=[(0.0, 0.0)], negative_points=[(1.0, 1.0), (1.0, 0.0)]
         )
-    with pytest.raises(ROSConfigError, match="at least one positive point"):
+    with pytest.raises(ROSConfigError, match="at least one positive point or a box"):
         backend.segment(b"", 2, 2, positive_points=[])
+    with pytest.raises(ROSConfigError, match="degenerate box"):
+        backend.segment(b"", 2, 2, box_xyxy=(1.0, 1.0, 1.0, 2.0))
 
 
 # ── Real inference on real frames ──────────────────────────────────────────────
@@ -201,3 +203,27 @@ def test_mis_aimed_prompt_returns_a_huge_mask_at_the_models_top_score(
     # The damning part: the biggest, most wrong mask also carries the top score.
     assert biggest.score_advisory == max(c.score_advisory for c in candidates)
     assert biggest.score_advisory > 0.9
+
+
+def test_a_box_prompt_alone_masks_the_object_inside_it(cpu_segmenter: Sam2Segmenter) -> None:
+    """Issue #418: the tracker prompts SAM with a detector box, no point. Boxing the
+    point prompt's tightest mask on the real wrist frame masks the same object."""
+    frame, width, height = _frame_bgr(_WRIST_FRAME)
+    u, v = _PROMPT_FRAC[0] * width, _PROMPT_FRAC[1] * height
+    held = cpu_segmenter.segment(frame, width, height, positive_points=[(u, v)])[0].mask
+    rows, cols = np.nonzero(held)
+    box = (
+        float(cols.min()) - 10.0,
+        float(rows.min()) - 10.0,
+        float(cols.max()) + 10.0,
+        float(rows.max()) + 10.0,
+    )
+    candidates = cpu_segmenter.segment(frame, width, height, box_xyxy=box)
+    assert candidates
+    # The tightest hypothesis stays in the box (measured: all of it on CPU, 91 % on
+    # CUDA); the nested whole-object ones may spill past a 10 px pad.
+    ys, xs = np.nonzero(candidates[0].mask)
+    inside = (xs >= box[0]) & (xs <= box[2]) & (ys >= box[1]) & (ys <= box[3])
+    assert inside.mean() > 0.9
+    best = max((c.mask & held).sum() / (c.mask | held).sum() for c in candidates)
+    assert best > 0.5, "the box and the point name the same object"

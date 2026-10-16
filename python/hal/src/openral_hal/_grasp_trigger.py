@@ -412,6 +412,11 @@ class PositionStallTrigger:
         return self._command
 
     @property
+    def hold_position(self) -> float | None:
+        """Jaw position the trigger latched as held (ATTACH/REGRASP), ``None`` when empty."""
+        return self._hold
+
+    @property
     def closing(self) -> bool:
         """Whether the last command is within the close band of closed — the band ATTACH reads.
 
