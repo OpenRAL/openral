@@ -59,9 +59,9 @@ _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the man
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L187)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L199)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L251)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L201)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L213)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L265)
 
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that every card field is a well-formed string literal, its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._

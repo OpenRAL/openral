@@ -75,6 +75,10 @@ string camera
 string frame_id
 geometry_msgs/Point tcp_point
 geometry_msgs/Point[] negative_points
+# Optional detector box prompt (issue #418): [x_min, y_min, x_max, y_max] in the
+# camera's image pixels. box_valid false = point prompts only, as before.
+bool box_valid
+float32[4] box_xyxy
 ---
 bool ok
 string camera

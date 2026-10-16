@@ -77,3 +77,7 @@ PlaceRegion workspace_box
 # NO workspace contact. `workspace_region.geometry[]` MUST be empty.
 bool workspace_region_valid
 PlaceRegion workspace_region
+
+# The classes the prompt names (issue #418), role "target" or "context". The
+# Layer-2 tracker grounds every instance of each; they arm nothing. Empty = none.
+ObjectQuery[<=8] target_queries

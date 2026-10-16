@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrackStatus",
+  "description": "Lifecycle status of one ``TrackedObject`` (issue #418).",
+  "type": "string",
+  "enum": [
+    "tentative",
+    "confirmed",
+    "occluded",
+    "split",
+    "bound",
+    "released",
+    "lost"
+  ]
+}

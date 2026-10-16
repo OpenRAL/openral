@@ -35,10 +35,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # witness; exempts nothing on its own. Its producer-measured region carries the
   # bounded approach allowance of the 2026-08-14 amendment.
   msg/PlaceRegion.msg
+  msg/ObjectQuery.msg
   msg/PlaceDeclaration.msg
   # dispatch's typed grasp-phase declaration (real pick-and-place design §2.1).
   # Exempts nothing on its own; the producer measures the region.
   msg/GraspDeclaration.msg
+  # issue #418 object-centric tracking: prompt-named classes, the tracker's
+  # object set, and the HAL's gripper-trigger events.
+  msg/GraspEvent.msg
+  msg/TrackedObject.msg
+  msg/TrackedObjectSet.msg
   # DIAGNOSTIC-only mirror of the latest SegmentInView reply, so the dashboard's
   # mask overlay has a producer. Off by default on the segmenter node; nothing
   # in the safety or attachment path reads it.
