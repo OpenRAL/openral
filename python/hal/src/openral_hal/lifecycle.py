@@ -69,14 +69,16 @@ from typing import TYPE_CHECKING, Any
 from openral_hal.mobile_base_bridge import describes_mobile_base
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription
+    from openral_core import JointState, RobotDescription
 
+    from openral_hal.proprio_snapshot import ProprioFrame
     from openral_hal.protocol import HAL
 
 __all__ = [
     "HALLifecycleNodeBase",
     "ManifestHALLifecycleNode",
     "decode_action_chunk",
+    "grasp_trigger_state",
     "joint_state_republish_stamp_ns",
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
@@ -98,8 +100,10 @@ def joint_state_republish_stamp_ns(
 ) -> int:
     """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
 
-    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every real HAL,
-    while the node's clock may be sim time, so the absolute stamp cannot be copied. The
+    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every HAL (a
+    sim-attached HAL stamps its post-step read too), while the node's clock may be sim
+    time, so the absolute stamp cannot be copied. The grasp trigger alone reads sim
+    snapshots on the sim clock instead (``grasp_trigger_state``). The
     sample's AGE can: consumers that pair joint states with other sensors by stamp (the
     robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
     instead of as fresh at every republish. An age that is negative or implausibly large
@@ -126,6 +130,40 @@ def joint_state_republish_stamp_ns(
     if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
         return node_now_ns
     return node_now_ns - age
+
+
+def grasp_trigger_state(state: JointState, sim_time_ns: int | None) -> JointState:
+    """The joint state the grasp trigger folds in: re-stamped on the sim clock when there is one.
+
+    The trigger's windows (``PositionStallConfig.settle_s`` / ``consecutive_s`` /
+    ``max_gap_s``) are seconds of *sample* time. A sim-attached HAL stamps its post-step
+    read with wall time, so a sim running slower than real time spreads its 1/60 s
+    physics steps over wall gaps longer than ``max_gap_s``: every step restarted the
+    trigger's history and the jaw never read as settled (LeIsaac PickOrange deploy sim,
+    ~0.13x real time, 2026-10-16). Stamping the snapshot with its step's
+    ``ProprioFrame.sim_time_ns`` (cross-reset monotonic) measures the windows in the
+    physics' own time; a re-read of the same frame keeps the same stamp and is still
+    dropped as a repeat. A real HAL (``sim_time_ns`` ``None``) is returned unchanged,
+    and the ``~/joint_states`` republish always uses the HAL's own stamp.
+
+    Args:
+        state: The HAL snapshot.
+        sim_time_ns: The frame's sim time, or ``None`` off the sim clock.
+
+    Returns:
+        ``state`` itself, or a copy whose ``stamp_ns`` is ``sim_time_ns``.
+
+    Example:
+        >>> from openral_core import JointState
+        >>> s = JointState(name=["gripper"], position=[0.3], stamp_ns=1_700_000_000_000_000_000)
+        >>> grasp_trigger_state(s, 8_150_000_000).stamp_ns
+        8150000000
+        >>> grasp_trigger_state(s, None) is s
+        True
+    """
+    if sim_time_ns is None:
+        return state
+    return state.model_copy(update={"stamp_ns": int(sim_time_ns)})
 
 
 def urdf_named_joint_state(msg: Any, urdf_names: Sequence[str]) -> Any:  # noqa: ANN401  # reason: sensor_msgs/JointState is imported only on the ROS path
@@ -1207,6 +1245,7 @@ if _ROS2_AVAILABLE:
                     },
                 ) as hal_read_span,
             ):
+                frame: ProprioFrame | None = None
                 if self._proprio is not None:
                     # Read the post-step snapshot (plain data), never
                     # the simulator: this callback runs on the control thread
@@ -1253,7 +1292,10 @@ if _ROS2_AVAILABLE:
             # the vision attachment leg is enabled.
             vision = getattr(self, "_vision_attachment", None)
             if vision is not None:
-                vision.observe_joint_state(state)
+                # On the sim clock when the frame carries one (`grasp_trigger_state`).
+                vision.observe_joint_state(
+                    grasp_trigger_state(state, frame.sim_time_ns if frame is not None else None)
+                )
             if self._joint_state_pub is not None:
                 self._joint_state_pub.publish(msg)
             if self._urdf_joint_state_pub is not None:
