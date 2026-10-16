@@ -282,3 +282,43 @@ TEST(NoAlloc, GripperEndEffectorLookupIsAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
 }
+
+TEST(NoAlloc, TheTrackedBindingCheckIsAllocationFree) {
+  // Issue #418 K3: the binding check runs on every world-state message against
+  // the measured configuration; like the checks it gates, it must not allocate.
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  m.capsule_link = {1};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.01, 0.03};
+  m.box_link = {1};
+  m.boxes = {finger};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.touch_links.assign(1, 1);
+  att.objects[0].attach_link = 0;
+  att.objects[0].touch_count = 1;
+  att.n_objects = 1;
+  osk::Transform box;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int met = 0;
+  for (int i = 0; i < 10000; ++i) {
+    box.t.x = (i % 2 == 0) ? 0.0 : 0.5;
+    met += osk::tracked_box_meets_hand(m, s, att, att.objects[0], box, osk::Vec3{0.02, 0.02, 0.02},
+                                       0.025)
+               ? 1
+               : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_EQ(met, 5000) << "the loop really exercised both verdicts";
+}

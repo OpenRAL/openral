@@ -38,6 +38,7 @@
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
+#include <openral_msgs/msg/tracked_object.hpp>
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
@@ -3886,6 +3887,20 @@ struct GraspBeat {
   double workspace_x{0.05};            ///< the workspace box centre along x
   std::int64_t workspace_stamp_ns{0};  ///< its confirmation stamp; 0 = declaration_stamp_ns
   std::string workspace_frame{"base_link"};
+  /// Issue #418: the carried payload's evidence kind and epoch ("" = a legacy
+  /// producer), and the tracker's set riding the same snapshot (one object).
+  std::string evidence_kind{};
+  std::uint32_t epoch{0};
+  bool tracked_set{false};
+  std::string tracked_id{"trk:1"};
+  std::uint32_t tracked_epoch{0};
+  std::string tracked_status{"bound"};
+  std::string tracked_frame{"base_link"};
+  double tracked_x{0.05};  ///< the tracked box centre along x (link0's finger is at 0.05)
+  double tracked_half{0.02};
+  std::uint64_t tracked_revision{1};
+  std::int64_t tracked_stamp_ns{0};      ///< 0 = the stream stamp
+  std::size_t tracked_hull_vertices{0};  ///< one tight hull with this many vertices (0 = none)
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3905,7 +3920,38 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     prim.shape_dimensions = {0.01, 0.01, 0.01};
     prim.pose_in_object.orientation.w = 1.0;
     obj.primitives.push_back(prim);
+    obj.evidence_kind = b.evidence_kind;
+    obj.epoch = b.epoch;
     msg.attached_objects.push_back(obj);
+  }
+  if (b.tracked_set) {
+    msg.tracked_objects_valid = true;
+    auto& set = msg.tracked_objects;
+    set.schema_version = "1";
+    set.frame_id = b.tracked_frame;
+    set.stamp_ns = b.tracked_stamp_ns != 0 ? b.tracked_stamp_ns : stream_ns;
+    set.revision = b.tracked_revision;
+    openral_msgs::msg::TrackedObject o;
+    o.object_id = b.tracked_id;
+    o.epoch = b.tracked_epoch;
+    o.label = "cube";
+    o.role = "target";
+    o.status = b.tracked_status;
+    o.box.frame_id = b.tracked_frame;
+    o.box.pose.position.x = b.tracked_x;
+    o.box.pose.orientation.w = 1.0;
+    o.box.half_extents.x = b.tracked_half;
+    o.box.half_extents.y = b.tracked_half;
+    o.box.half_extents.z = b.tracked_half;
+    if (b.tracked_hull_vertices > 0) {
+      openral_msgs::msg::AttachedCollisionPrimitive hull;
+      hull.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+      hull.shape_dimensions = {0.01, 0.01, 0.01};
+      hull.pose_in_object.orientation.w = 1.0;
+      hull.tight_hull_vertices.assign(3 * b.tracked_hull_vertices, 0.0);
+      o.tight.push_back(hull);
+    }
+    set.objects.push_back(o);
   }
   if (!b.second_attach_link.empty()) {
     openral_msgs::msg::AttachedCollisionObject obj;
@@ -6591,4 +6637,215 @@ TEST_F(LifecycleKernelTest, TheOtherArmPassingDoesNotResetAHoldRun) {
   ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)));
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)));
   EXPECT_TRUE(rig.node->fault_latched()) << "past j0's cap despite j1 passing every tick";
+}
+
+// ── Issue #418 K1/K3/K6: tracked objects, binding check, (id, epoch) retirement ──
+//
+// The GraspRig's finger (link0, a 10 mm capsule at x = 0.05 for j0 = 0) is the
+// hand. A TRACKED_OBJECT attachment binds only to a live object of the last
+// accepted set whose box meets it at the MEASURED configuration; otherwise the
+// payload stays a checked payload but can never be a grasp handover.
+namespace {
+
+GraspBeat tracked_beat(GraspRig& rig) {
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.object_label = "trk:1";
+  b.declared_object = "trk:1";
+  b.evidence_kind = "tracked_object";
+  b.tracked_set = true;
+  return b;
+}
+
+// Arm, then attach: true when the attach became the handover.
+bool attach_tracked(GraspRig& rig, GraspBeat& b) {
+  b.carrying = false;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the declaration did not arm";
+  b.carrying = true;
+  ++b.revision;
+  rig.warm(&b, 0.0, 150);
+  return rig.node->fault_latched() == false && rig.offer(&b, 0.0, 600);
+}
+
+std::vector<rclcpp::Parameter> tracked_payload_params() {
+  auto params = grasp_params();
+  for (auto& p : params) {
+    if (p.get_name() == "attached_collision_enabled") {
+      p = rclcpp::Parameter("attached_collision_enabled", true);
+    }
+  }
+  params.emplace_back("attached_collision_margin_m", 0.03);
+  params.emplace_back("attached_contact_tolerance_m", 0.001);
+  return params;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ATrackedBindingAtTheHandIsTheHandover) {
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_on_hand");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attachment_binding_off_hand"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATrackedBindingOffTheHandIsNeverTheHandover) {
+  struct Case {
+    const char* reason;
+    std::function<void(GraspBeat&)> edit;
+  };
+  const std::vector<Case> cases{
+      {"box_off_hand", [](GraspBeat& b) { b.tracked_x = 0.5; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_id = "trk:2"; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_epoch = 1; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_status = "lost"; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_status = "released"; }},
+      {"no_accepted_set", [](GraspBeat& b) { b.tracked_set = false; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    GraspRig rig("kernel_tracked_off_hand_" + std::to_string(n++));
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    c.edit(b);
+    EXPECT_FALSE(attach_tracked(rig, b)) << c.reason << ": " << logs.joined();
+    EXPECT_GE(logs.count(std::string("safety.attachment_binding_off_hand object=trk:1 epoch=0 "
+                                     "reason=") +
+                         c.reason),
+              1U)
+        << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=binding_off_hand"), 1U)
+        << c.reason << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_handover"), 0U) << c.reason << ": " << logs.joined();
+  }
+  // The control: a LEGACY producer's payload (no evidence kind) is untouched by
+  // the tracker's set, even one that puts the object off the hand.
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_legacy");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.evidence_kind.clear();
+  b.tracked_x = 0.5;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attachment_binding_off_hand"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AnOffHandBindingIsStillCheckedAsAPayload) {
+  // Off the hand, the payload is never dropped: moved to 20 mm of the occupied
+  // cell (inside the 30 mm attached margin) it stops exactly as a legacy
+  // producer's payload does. Trips never decrease.
+  for (const char* kind : {"", "tracked_object"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_tracked_payload_") + (*kind != 0 ? "tracked" : "legacy"),
+                 tracked_payload_params());
+    rig.voxels = declared_target_voxels();  // one cell, x in [0.140, 0.165]
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    b.evidence_kind = kind;
+    b.tracked_x = 0.5;  // the tracker's box is nowhere near the hand
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << kind << ": 70 mm clear must pass: " << logs.joined();
+    b.payload_x = 0.11;  // box face at 0.120
+    rig.warm(&b, 0.0, 100);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << kind << ": " << logs.joined();
+    EXPECT_TRUE(rig.node->fault_latched()) << kind;
+  }
+}
+
+TEST_F(LifecycleKernelTest, ARefusedTrackedSetMakesEveryObjectIneligible) {
+  struct Case {
+    const char* reason;
+    std::function<void(GraspBeat&, std::int64_t)> edit;
+  };
+  const std::vector<Case> cases{
+      {"frame_mismatch", [](GraspBeat& b, std::int64_t) { b.tracked_frame = "odom"; }},
+      {"oversize", [](GraspBeat& b, std::int64_t) { b.tracked_half = 0.25; }},
+      {"oversize_volume", [](GraspBeat& b, std::int64_t) { b.tracked_half = 0.19; }},
+      {"hull_too_many_vertices", [](GraspBeat& b, std::int64_t) { b.tracked_hull_vertices = 65; }},
+      {"future_stamp",
+       [](GraspBeat& b, std::int64_t now) { b.tracked_stamp_ns = now + 30'000'000'000; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    GraspRig rig("kernel_tracked_refused_" + std::to_string(n++));
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    c.edit(b, rig.now_ns());
+    EXPECT_FALSE(attach_tracked(rig, b)) << c.reason << ": " << logs.joined();
+    EXPECT_EQ(logs.count(std::string("safety.tracked_objects_rejected reason=") + c.reason), 1U)
+        << "announced once, on the change: " << logs.joined();
+    EXPECT_GE(logs.count("safety.attachment_binding_off_hand object=trk:1 epoch=0 "
+                         "reason=no_accepted_set"),
+              1U)
+        << c.reason << ": " << logs.joined();
+  }
+  // A 64-vertex hull is within the cap: the control.
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_hull_ok");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.tracked_hull_vertices = 64;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATrackedSetWhoseRevisionGoesBackIsRefused) {
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_revision");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.tracked_revision = 5;
+  ASSERT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  // The aggregator re-sends the same revision every beat: still accepted.
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected"), 0U) << logs.joined();
+  // Back to 4: the whole set is refused, so the latched handover's binding is
+  // no longer verified and the declaration retires.
+  b.tracked_revision = 4;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected reason=revision_regressed"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=binding_off_hand"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the finger in the target cell is no longer exempt";
+}
+
+TEST_F(LifecycleKernelTest, ARetiredTrackedIdentityNeverReArmsButANewEpochDoes) {
+  LogCapture logs;
+  auto params = grasp_params();
+  params.emplace_back("estop_reset_cooldown_s", 0.05);
+  GraspRig rig("kernel_tracked_epochs", params);
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  // Pick and release trk:1 at epoch 0: the release retires (trk:1, 0).
+  pick_and_release(rig, b, "approach:link0:1");
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1 object=trk:1"), 1U)
+      << logs.joined();
+  // A fresh declaration, the same (id, epoch) re-attached: never the handover.
+  b.target_id = "approach:link0:2";
+  EXPECT_FALSE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(
+      logs.count("safety.grasp_region_rejected reason=object_retired target=approach:link0:2"), 1U)
+      << logs.joined();
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));  // past the cooldown
+  ASSERT_TRUE(rig.reset());
+  // Re-grounded after the release: epoch 1 arms.
+  b.target_id = "approach:link0:3";
+  b.carrying = false;
+  ++b.revision;
+  b.epoch = 1;
+  b.tracked_epoch = 1;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:3 object=trk:1"), 1U)
+      << logs.joined();
 }

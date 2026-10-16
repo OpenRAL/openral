@@ -11,6 +11,7 @@
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <array>
 #include <atomic>
 #include <bitset>
 #include <chrono>
@@ -201,6 +202,22 @@ private:
   // unchanged world-voxel margin. Transition-only logs.
   void ingest_grasp_declaration(const openral_msgs::msg::WorldStateStamped& msg);
 
+  // Issue #418 K1 — ingest the tracker's `tracked_objects` set into the
+  // fixed-capacity table `tracked_`. The WHOLE set is refused (every object
+  // ineligible, `safety.tracked_objects_rejected reason=<r>` on a change) on a
+  // frame mismatch with the grid, a cap breach (box past the grasp-region caps,
+  // box geometry, a hull past kMaxTrackedHullVertices), a revision below the
+  // last accepted one, or a stamp in the future. Data only: K3 reads it.
+  void ingest_tracked_objects(const openral_msgs::msg::WorldStateStamped& msg);
+  // Issue #418 K3 — the binding check. For every accepted attachment whose
+  // evidence kind is TRACKED_OBJECT, record in `attached_binding_` whether it
+  // names a live (confirmed / occluded / bound) object of the last accepted set,
+  // same id and epoch, whose box meets the hand (`tracked_box_meets_hand`) at
+  // the MEASURED configuration. If not, the binding is off the hand: the payload
+  // stays checked, but it is never a grasp handover and arms no support
+  // witness. WARN (<= 1 Hz) `safety.attachment_binding_off_hand`.
+  void check_attachment_bindings(const openral_msgs::msg::WorldStateStamped& msg);
+
   // Is the ingested grasp region in force at `now`, before the handover rule?
   // Dead on: no region, retracted (no region is ingested), `timeout_s`
   // lapsed, a future stamp, or a world-state stream older than
@@ -368,6 +385,29 @@ private:
              support_id == other.support_id;
     }
   };
+  /// Issue #418 K1: the last accepted tracked-object set (`tracked_n_ == 0`
+  /// when none was published or the last one was refused). Fixed capacity.
+  struct TrackedEntry {
+    std::string object_id;
+    std::uint32_t epoch{0};
+    bool live{false};       ///< status confirmed / occluded / bound
+    GraspTargetRegion box;  ///< the containing box, validated as a grasp region
+  };
+  std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
+  std::size_t tracked_n_{0};
+  bool tracked_have_revision_{false};
+  std::uint64_t tracked_revision_{0};
+  std::string tracked_refusal_reason_;  ///< last announced refusal (logged on change)
+  /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the
+  /// refusal reason (nullptr = a legacy payload or a binding at the hand).
+  struct AttachedBinding {
+    bool tracked{false};
+    std::uint32_t epoch{0};
+    const char* off_hand{nullptr};
+  };
+  std::vector<AttachedBinding> attached_binding_;  ///< capacity = max objects
+  CollisionScratch binding_scratch_;  ///< measured-configuration FK, sized at configure
+  std::chrono::steady_clock::time_point binding_last_warn_{};
   std::uint8_t support_witness_live_{0};  ///< bit i: object i's witness is still live
   std::vector<SupportWitnessKey> support_witness_keys_;
   double support_witness_max_patch_radius_m_{0.0};
@@ -421,6 +461,11 @@ private:
   /// re-arm on the next beat; a retired identity never arms again — for every
   /// pick of a multi-pick goal, not only the last one.
   RetiredGraspSet grasp_retired_{};
+  /// Issue #418 K6: tracked identities (object_id hash, epoch) whose handover
+  /// latched and then retired. A retired (id, epoch) is never a handover again;
+  /// the tracker re-grounds a released object under a new epoch, which may arm.
+  /// Coexists with `grasp_retired_`, which still keys every declaration.
+  RetiredGraspSet tracked_retired_{};
   bool grasp_retired_overflow_logged_{false};
   /// Region latched at the handover edge, keyed by (target, stamp) like the
   /// retirement memory. Later snapshots of that declaration cannot move or
@@ -429,6 +474,8 @@ private:
   /// its contact links or held object (`grasp_latched_object_`), which retires it.
   GraspTargetRegion grasp_latched_region_{};
   std::string grasp_latched_object_;
+  std::uint32_t grasp_latched_epoch_{0};  ///< the latched payload's epoch (#418; 0 = legacy)
+  bool grasp_latched_tracked_{false};     ///< the latched payload is a TRACKED_OBJECT binding
   /// Identity (target, stamp) of the declaration that last armed a region; see
   /// `grasp_identity_armed`.
   std::string grasp_armed_target_;

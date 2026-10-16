@@ -6783,3 +6783,74 @@ TEST(WorkspaceContact, APayloadsReachBoundsItsFarthestPoint) {
   // Sphere: 0.05 + 0.1; box: |(0.05, 0.2, 0)| + 0.05.
   EXPECT_NEAR(osk::attached_object_reach(att, att.objects[0]), std::hypot(0.05, 0.2) + 0.05, 1e-12);
 }
+
+// ── Issue #418 K3: does a tracked object's box meet the hand? ──────────────
+//
+// Two fixed links at the origin: link 1 a finger capsule at x = 0.10, link 2 a
+// wrist box at x = -0.10. The attachment names link 1 (its attach link) only;
+// the box's distance to the hand decides the binding, never an unnamed link.
+namespace {
+
+struct TrackedHandRig {
+  osk::CollisionModel m;
+  osk::CollisionScratch s;
+  osk::AttachedModel att;
+  TrackedHandRig() {
+    m.n_links = 3;
+    m.parent = {-1, 0, 0};
+    m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed};
+    m.dof_index = {-1, -1, -1};
+    m.origin = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+    m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    m.capsule_link = {1};
+    m.capsules = {osk::Capsule{0.01, 0.0, osk::transform_from_xyz_rpy(0.10, 0, 0, 0, 0, 0)}};
+    osk::Obb wrist;
+    wrist.half_extents = {0.02, 0.02, 0.02};
+    wrist.origin = osk::transform_from_xyz_rpy(-0.10, 0, 0, 0, 0, 0);
+    m.box_link = {2};
+    m.boxes = {wrist};
+    s.link_world = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+    att.objects.assign(1, osk::AttachedObject{});
+    att.touch_links.assign(1, 0);
+    att.objects[0].attach_link = 1;
+    att.n_objects = 1;
+  }
+  bool meets(double x, double half, double slack = 0.025) const {
+    return osk::tracked_box_meets_hand(m, s, att, att.objects[0], translate(x, 0.0, 0.0),
+                                       osk::Vec3{half, half, half}, slack);
+  }
+};
+
+}  // namespace
+
+TEST(TrackedBinding, ABoxAroundTheFingerMeetsTheHand) {
+  const TrackedHandRig rig;
+  EXPECT_TRUE(rig.meets(0.10, 0.02));
+  // 30 mm gap between the box face and the capsule surface: within one 25 mm
+  // cell it is not; within a 40 mm slack it is.
+  EXPECT_FALSE(rig.meets(0.16, 0.02));
+  EXPECT_TRUE(rig.meets(0.16, 0.02, 0.04));
+}
+
+TEST(TrackedBinding, ABoxFarFromTheHandIsOffHand) {
+  const TrackedHandRig rig;
+  EXPECT_FALSE(rig.meets(0.50, 0.02));
+}
+
+TEST(TrackedBinding, OnlyTheAttachmentsOwnLinksCountAsTheHand) {
+  TrackedHandRig rig;
+  // Around the wrist box, which the attachment does not name.
+  EXPECT_FALSE(rig.meets(-0.10, 0.02));
+  // Named as a touch link, it is part of the hand.
+  rig.att.touch_links[0] = 2;
+  rig.att.objects[0].touch_count = 1;
+  EXPECT_TRUE(rig.meets(-0.10, 0.02));
+}
+
+TEST(TrackedBinding, ADegenerateOrNonFiniteBoxNeverMeets) {
+  const TrackedHandRig rig;
+  EXPECT_FALSE(rig.meets(0.10, 0.0));
+  EXPECT_FALSE(rig.meets(std::numeric_limits<double>::quiet_NaN(), 0.02));
+  EXPECT_FALSE(rig.meets(0.10, std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(rig.meets(0.10, 0.02, std::numeric_limits<double>::quiet_NaN()));
+}

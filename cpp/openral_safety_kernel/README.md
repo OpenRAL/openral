@@ -950,6 +950,36 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   restarted producer re-sending one included
   (`…EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer`), while a
   fresh one arms (`…ASecondPickInTheGoalArmsUnderItsOwnIdentity`).
+* **Tracked objects and bindings (issue #418 K1/K3/K6, draft — Safety-WG review
+  pending).** The tracker's `TrackedObjectSet` rides `/openral/world_state_fast`
+  (`tracked_objects`, `tracked_objects_valid`). The kernel ingests it into a
+  fixed table of `kMaxTrackedObjects` = 32 and refuses the **whole set** — every
+  object ineligible — on a frame other than the grid's (set or box), a box past the
+  grasp-region caps (half-extent 0.20 m, volume 0.03 m³, finite, unit quaternion,
+  empty `geometry`), a hull past `kMaxTrackedHullVertices` = 64 (≤ 4 hulls is the
+  IDL bound), a duplicate `object_id`, a revision below the last accepted one (an
+  equal revision is the aggregator's re-send) or a stamp in the future: one WARN
+  `safety.tracked_objects_rejected reason=…` per change
+  (`…ARefusedTrackedSetMakesEveryObjectIneligible`,
+  `…ATrackedSetWhoseRevisionGoesBackIsRefused`). The set is data only; the binding
+  check is its one reader. An attachment whose `evidence_kind` is `tracked_object`
+  is **at the hand** only if it names a live (confirmed / occluded / bound) object
+  of the last accepted set, same `object_id` and `epoch`, whose box meets the
+  carrying attachment's own links within one voxel at the **measured**
+  configuration (`tracked_box_meets_hand`, kernel FK with mimic joints). Otherwise
+  it is **off the hand** (`reason=no_accepted_set|no_live_track|no_measured_state|box_off_hand`,
+  WARN `safety.attachment_binding_off_hand` at most 1 Hz): it stays a checked
+  payload — never dropped (`…AnOffHandBindingIsStillCheckedAsAPayload`) — but it
+  arms no support witness and is never a grasp handover; a declaration naming it
+  retires, `reason=binding_off_hand` (`…ATrackedBindingOffTheHandIsNeverTheHandover`).
+  The latch is keyed by (`object_id`, `epoch`), and a latched tracked handover
+  retires its identity into a second `RetiredGraspSet` keyed (hash of `object_id`,
+  `epoch`): that identity is never a handover again (`reason=object_retired`),
+  while the tracker's re-grounding under a new epoch arms
+  (`…ARetiredTrackedIdentityNeverReArmsButANewEpochDoes`). Legacy producers
+  (`evidence_kind` other than `tracked_object`, `pinch_fallback` included) keep
+  every rule above unchanged, the declaration-keyed retirement included; the two
+  keys coexist. Nothing here exempts anything new: every change only refuses.
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /

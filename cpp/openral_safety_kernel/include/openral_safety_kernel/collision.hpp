@@ -1467,6 +1467,35 @@ bool grasp_links_one_hand(const std::vector<int>& parent,
                           const std::bitset<kMaxGraspMaskLinks>& allowlist,
                           const std::bitset<kMaxGraspMaskLinks>& mask) noexcept;
 
+/// Capacity of the kernel's tracked-object table (issue #418 K1), mirroring
+/// `openral_core.TrackedObjectSet.objects` (`max_length=32`) and the IDL bound.
+inline constexpr std::size_t kMaxTrackedObjects = 32;
+
+/// Vertex cap on one tracked object's tight hull (issue #418 K1). The hull
+/// count (<= 4) is enforced by the IDL's bounded sequence itself. A set
+/// carrying a hull past this cap is refused whole.
+inline constexpr std::size_t kMaxTrackedHullVertices = 64;
+
+/// Does a tracked object's box meet the hand that carries `object`, at the
+/// configuration FK'd into `scratch` (issue #418 K3, the binding check)?
+///
+/// The hand is the attachment's own links: its attach link and its touch links
+/// (`attached_allows_link`), the links already trusted to contact the payload,
+/// so naming them widens nothing. True iff some capsule or OBB of one of those
+/// links lies within `slack` (one voxel at the call site) of the box
+/// `box`/`half_extents`. This is the kernel's lowering of the tracker's pinch
+/// volume J_h (the pads at the measured jaw, grown by one cell): a box that
+/// meets neither jaw nor the hand carrying them is not in it.
+///
+/// It decides only whether a TRACKED_OBJECT binding may carry exemptions; it
+/// never removes the payload from any check. A degenerate or non-finite box,
+/// or a non-finite slack, never meets. `box_box_distance` is a lower bound, so
+/// a box near a blocky finger may read as meeting: the ceiling of this check
+/// is "within a cell of the hand", not "between the pads". Allocation-free.
+bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
+                            const AttachedModel& attached, const AttachedObject& object,
+                            const Transform& box, const Vec3& half_extents, double slack) noexcept;
+
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.
 const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
