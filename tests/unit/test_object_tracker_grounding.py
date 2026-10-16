@@ -160,3 +160,30 @@ def test_a_hollow_body_grounds_on_the_support_around_it() -> None:
         results=[TrackerResult(seg.request_id, mask=labels > 0)],
     )  # fmt: skip
     assert [o.label for o in out.tracked.objects] == ["bowl"]
+
+
+def test_a_count_all_query_keeps_its_turn_while_another_stays_unresolved() -> None:
+    """Three oranges and a plate: one orange resolves "all", but within the search window
+    the oranges still get detector turns beside the unresolved plate (PickOrange)."""
+    from tests.unit._tracker_scenes import sphere
+
+    x, y = _RIG.centre_xy
+    orange = sphere((x, y, _RIG.support_z + 0.024), 0.024)
+    tr = ObjectTracker(_RIG.frame, TrackerParams(search_start_s=5.0, search_max_s=60.0))
+    q_all = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+    tr.open_query("g", "q0", q_all, "k@0", stamp_ns=0)
+    _, wall = step(tr, _RIG, [orange], stamp_ns=0, wall_s=0.0)
+    assert tr.queries.get("g", "q0").status is ObjectQueryStatus.RESOLVED
+    plate = ObjectQuery(label="plate", count="one", role=ObjectRole.DESTINATION)
+    tr.open_query("g", "q1", plate, "k@0", stamp_ns=0)
+    depth, _ = render([orange], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    labels = []
+    for n in range(1, 7):
+        wall += 1.0
+        frame = CameraFrame(_RIG.name, n, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+        req = tr.feed(frame, grid=grid, grid_stamp_ns=n, wall_s=wall).requests[0]
+        labels.append(req.label)
+        tr.feed(frame, grid=grid, grid_stamp_ns=n, wall_s=wall,
+                results=[TrackerResult(req.request_id)])  # fmt: skip
+    assert labels.count("orange") >= 2 and labels.count("plate") >= 2, labels

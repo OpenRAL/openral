@@ -47,7 +47,7 @@ from openral_world_state.object_tracker.fit import (
     project_box,
     visible_fraction,
 )
-from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation
+from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
 from openral_world_state.object_tracker.scheduler import (
     PRIORITY_BOUND,
     PRIORITY_DISAGREE,
@@ -533,12 +533,11 @@ class ObjectTracker:
         for r in self._pending:
             q = self.queries.get(*r.query_key) if r.query_key else None
             if r.camera == frame.camera and q is not None:
-                resolved = q.status is ObjectQueryStatus.RESOLVED
-                prio = PRIORITY_REFRESH if resolved else PRIORITY_QUERY
+                prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
                 out.append(replace(r, stamp_ns=stamp, priority=prio))
         tracks = self.store.all()
         for q in self.queries.due():
-            prio = PRIORITY_REFRESH if q.status is ObjectQueryStatus.RESOLVED else PRIORITY_QUERY
+            prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key
             )
@@ -594,6 +593,18 @@ class ObjectTracker:
                 )
             )  # fmt: skip
         return out
+
+    def _searching(self, q: StandingQuery) -> bool:
+        """Whether ``q`` still competes at query priority.
+
+        Unresolved, or a ``count: "all"`` query inside its first ``search_start_s`` of
+        source time: one instance resolves it, but the others are still to be grounded,
+        and at refresh priority an unresolved neighbour query (a plate) would starve it.
+        """
+        if q.status is not ObjectQueryStatus.RESOLVED:
+            return True
+        window = int(self.params.search_start_s * _NS)
+        return q.query.count == "all" and self._now_ns - q.since_ns < window
 
     def _mark_served(self, req: TrackerRequest) -> None:
         if req.object_id is not None:
