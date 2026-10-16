@@ -3089,7 +3089,7 @@ class RobotDescription(BaseModel):
                 )
         return self
 
-    def grasp_contact_links(self) -> tuple[str, ...]:
+    def grasp_contact_links(self, gripper_joints: Iterable[str] | None = None) -> tuple[str, ...]:
         """The links a grasp may touch: every ``role: gripper`` jaw, follower fingers included.
 
         The ``role: gripper`` joints' ``child_link`` first (the leader jaws the
@@ -3099,7 +3099,9 @@ class RobotDescription(BaseModel):
         (ADR-0115) — then every ``fixed_attachments`` child rigid on one of those
         mimic finger links, transitively (the Robotiq 2F-85's outer fingers,
         ``*_bar``, on its outer knuckles). The launch passes this as the kernel's
-        ``grasp_contact_links``. User-approved 2026-10-16, needs Safety-WG review and a
+        ``grasp_contact_links``. ``gripper_joints`` restricts it to those gripper
+        joints (one hand of a bimanual robot: the attachment producers' touch links and
+        the release window's exempt links). User-approved 2026-10-16, needs Safety-WG review and a
         hazard-log row: the fixed-child rule affects every robot with a fixed child on
         a mimic finger (only ``droid_franka_robotiq`` in-tree).
 
@@ -3112,6 +3114,9 @@ class RobotDescription(BaseModel):
             ('left_bar', 'right_bar')
         """
         grippers = [j for j in self.joints if j.role == "gripper"]
+        if gripper_joints is not None:
+            wanted = set(gripper_joints)
+            grippers = [j for j in grippers if j.name in wanted]
         names = {j.name for j in grippers}
         mimic = [m.child_link for m in self.mimic_joints if m.mimics in names]
         fixed: list[str] = []

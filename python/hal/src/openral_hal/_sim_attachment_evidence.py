@@ -1628,9 +1628,9 @@ class SimAttachmentEvidenceTracker:
         # The jaws plus their mimic followers (#349): the follower finger squeezes the
         # payload as hard as the leader, so the payload never collides with it.
         jaws = {joint.name for joint in gripper_joints}
-        self._touch_links = [joint.child_link for joint in gripper_joints] + [
-            m.child_link for m in description.mimic_joints if m.mimics in jaws
-        ]
+        # The same source as the kernel's grasp allowlist and the hand links: the jaws,
+        # their mimic followers and the links rigid on those (the Robotiq bars).
+        self._touch_links = list(description.grasp_contact_links(gripper_joints=jaws))
 
         self._gripper_body_groups = _resolve_gripper_body_groups(model, gripper_joints)
 
