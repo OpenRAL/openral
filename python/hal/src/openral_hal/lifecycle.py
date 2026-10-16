@@ -634,9 +634,12 @@ if _ROS2_AVAILABLE:
             # Tracking watch (`openral_hal._tracking_watch`): a position-commanded joint
             # whose error to its applied target persists for `tracking_fault_window_s`
             # without closing raises /openral/estop. 0 = off (the default; the deploy
-            # launch sets it for a real HAL). Live `read_state` HALs only.
+            # launch sets it for a real HAL and refuses 0 there); off on a live HAL is
+            # logged as an error at activate, a negative or non-finite value refused.
+            # Live `read_state` HALs only.
             self.declare_parameter("tracking_fault_window_s", 0.0)
             self.declare_parameter("tracking_fault_tolerance_rad", 0.05)
+            self.declare_parameter("tracking_fault_tolerance_m", 0.01)
             self._tracking: Any = None
             self._tracking_estop_pub: Any = None
             self.get_logger().info(f"{node_name} HAL node initialised.")
@@ -1218,6 +1221,7 @@ if _ROS2_AVAILABLE:
                     except Exception as exc:  # reason: HAL surfaces typed errors; log + skip
                         hal_read_span.record_exception(exc)
                         self.get_logger().warn(f"read_state failed: {exc}")
+                        self._judge_tracking_read_failure()
                         return
                 joint_specs = list(self._hal.description.joints)
                 ral_producer.record_joint_state(
@@ -1243,8 +1247,7 @@ if _ROS2_AVAILABLE:
             msg.velocity = list(state.velocity) if state.velocity else []
             msg.effort = list(state.effort) if state.effort else []
             self._publisher.publish(msg)
-            if self._tracking is not None and self._proprio is None:
-                self._judge_tracking(state)
+            self._judge_tracking(state)
             # The grasp trigger reads the same typed snapshot the HAL just read —
             # no second source of truth, no extra subscription. Only wired when
             # the vision attachment leg is enabled.
@@ -1275,29 +1278,80 @@ if _ROS2_AVAILABLE:
                     self._policy_state_last_frame = frame
 
         def _arm_tracking_watch(self, estop_qos: Any) -> None:  # noqa: ANN401  # reason: rclpy QoSProfile, imported on the ROS path only
-            """Build the `TrackingWatch` + its /openral/estop publisher when the window is > 0."""
+            """Build the `TrackingWatch` + its /openral/estop publisher when the window is > 0.
+
+            Raises:
+                ROSConfigError: The window is negative, non-finite or not a number, or a
+                    tolerance is not a positive finite number.
+            """
+            import math
+
+            from openral_core.exceptions import ROSConfigError
+
             window_s = self.get_parameter("tracking_fault_window_s").value
-            if isinstance(window_s, int | float) and window_s > 0:
-                from std_msgs.msg import Empty
-
-                from openral_hal._tracking_watch import TrackingWatch
-
-                assert self._hal is not None  # invariant: configure built it
-                tolerance = float(self.get_parameter("tracking_fault_tolerance_rad").value)
-                self._tracking = TrackingWatch(
-                    self._hal.description, tolerance_rad=tolerance, window_s=float(window_s)
+            if not isinstance(window_s, int | float) or not math.isfinite(window_s) or window_s < 0:
+                raise ROSConfigError(
+                    f"tracking_fault_window_s={window_s!r}: must be a finite number >= 0 "
+                    "(0 turns the tracking watch off)."
                 )
-                self._tracking_estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
-                self.get_logger().info(
-                    f"hal.tracking_watch armed window_s={float(window_s)} "
-                    f"tolerance_rad={tolerance} joints={sorted(self._tracking.watched)}"
+            if window_s == 0:
+                if self._proprio is None:
+                    self.get_logger().error(
+                        "hal.tracking_watch OFF (tracking_fault_window_s=0) on a live HAL: a "
+                        "commanded joint that does not follow will not raise the e-stop"
+                    )
+                return
+            from std_msgs.msg import Empty
+
+            from openral_hal._tracking_watch import TrackingWatch
+
+            assert self._hal is not None  # invariant: configure built it
+            tolerance = self.get_parameter("tracking_fault_tolerance_rad").value
+            tolerance_m = self.get_parameter("tracking_fault_tolerance_m").value
+            try:
+                self._tracking = TrackingWatch(
+                    self._hal.description,
+                    tolerance_rad=float(tolerance),
+                    tolerance_m=float(tolerance_m),
+                    window_s=float(window_s),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ROSConfigError(f"tracking watch parameters refused: {exc}") from exc
+            self._tracking_estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+            self.get_logger().info(
+                f"hal.tracking_watch armed window_s={float(window_s)} tolerance_rad={tolerance} "
+                f"tolerance_m={tolerance_m} joints={sorted(self._tracking.watched)}"
+            )
+            if not hasattr(self._hal, "last_applied_action"):
+                self.get_logger().error(
+                    f"hal.tracking_watch: {type(self._hal).__name__} exposes no "
+                    "last_applied_action, so an ADR-0102 slot group's command is unknown and "
+                    "clears the watch's targets: slot-grouped policies run unwatched"
                 )
 
         def _judge_tracking(self, state: Any) -> None:  # noqa: ANN401  # reason: typed JointState lives in openral_core; duck-typed on the ROS path
-            """Raise /openral/estop when a commanded joint does not follow (`TrackingWatch`)."""
+            """Raise /openral/estop when a commanded joint does not follow (`TrackingWatch`).
+
+            Live ``read_state`` HALs only: a snapshot-backed (sim-attached) HAL is skipped.
+            """
+            if self._tracking is None or self._proprio is not None:
+                return
             import time
 
-            fault = self._tracking.observe_state(state.name, state.position, time.monotonic())
+            self._raise_tracking_fault(
+                self._tracking.observe_state(state.name, state.position, time.monotonic())
+            )
+
+        def _judge_tracking_read_failure(self) -> None:
+            """A failed ``read_state`` with a target held for a whole window is a fault too."""
+            if self._tracking is None:
+                return
+            import time
+
+            self._raise_tracking_fault(self._tracking.observe_read_failure(time.monotonic()))
+
+        def _raise_tracking_fault(self, fault: Any) -> None:  # noqa: ANN401  # reason: TrackingFault lives in openral_hal._tracking_watch, imported on the ROS path only
+            """Latch the HAL's own e-stop and publish /openral/estop for ``fault`` (if any)."""
             if fault is None or self._estopped:
                 return
             self.get_logger().error(
@@ -1310,6 +1364,8 @@ if _ROS2_AVAILABLE:
 
             self._tracking.clear()
             self._tracking_estop_pub.publish(Empty())
+            # Latch here too: never depend on this node receiving its own publication.
+            self._on_estop(None)
 
         def _on_safe_action(self, msg: object) -> None:
             """``/openral/safe_action`` callback.
