@@ -120,6 +120,11 @@ class TrackerSession:
         grounding_wait_s: ``DeployRuntime.grounding_wait_s``.
         grounding_required: ``DeployRuntime.grounding_required``.
         release_dwell_s: The jaw-open rule's dwell (source seconds). *Calibration point.*
+        released_clear_timeout_s: How long (source seconds) a released ``TRACKED_OBJECT``
+            binding stays on ``attachment_state`` after release (the kernel freezes it at
+            the release pose, the voxel bridge clears its box) unless the track leaves
+            RELEASED first. MUST equal the kernel's ``tracked_release_timeout_s`` and the
+            voxel bridge's ``released_clear_timeout_s`` (all default 3.0 s).
         params: Tracker calibration.
         require_hands: Refuse a gripper the binder cannot model (``bind`` / ``on``); in
             ``shadow`` such a hand is logged and skipped.
@@ -142,6 +147,7 @@ class TrackerSession:
         grounding_wait_s: float,
         grounding_required: bool = False,
         release_dwell_s: float = 0.3,
+        released_clear_timeout_s: float = 3.0,
         params: TrackerParams | None = None,
         require_hands: bool = False,
     ) -> None:
@@ -152,6 +158,9 @@ class TrackerSession:
         self.grounding_wait_ns = int(grounding_wait_s * _NS)
         self.grounding_required = grounding_required
         self.release_dwell_s = release_dwell_s
+        self.released_clear_ns = int(released_clear_timeout_s * _NS)
+        # Released TRACKED_OBJECT bindings still on the wire: object_id -> (record, stamp).
+        self._released: dict[str, tuple[AttachedCollisionObject, int]] = {}
         self.binders: dict[str, GraspBinder] = {}
         for joint in description.joints:
             if joint.role != "gripper":
@@ -173,7 +182,7 @@ class TrackerSession:
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
-        self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None}
+        self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
         self._now_ns = 0
 
     # -- inputs ------------------------------------------------------------------------
@@ -188,6 +197,31 @@ class TrackerSession:
         for goal in self._goals.values():
             if goal is not None and goal.start_ns is None and self._now_ns > 0:
                 self._start(goal, self._now_ns)
+        self._expire_released()
+
+    def _expire_released(self) -> None:
+        """Drop each released binding whose track left RELEASED or whose window ran out.
+
+        The same update that re-confirms the track (``epoch + 1``) or loses it takes the
+        old ``(id, epoch)`` off the wire; until then the kernel keeps it frozen at the
+        release pose and the voxel bridge keeps the object's box clear.
+        """
+        for oid, (record, since) in list(self._released.items()):
+            t = self.tracker.store.get(oid)
+            gone = t is None or t.status is not TrackStatus.RELEASED or t.epoch != record.epoch
+            if gone or self._now_ns - since >= self.released_clear_ns:
+                del self._released[oid]
+                self.attachment_changes += 1
+                log.info("object_tracker.released_binding_dropped", object_id=oid, left=gone)
+
+    def open_standing_queries(self, queries: Sequence[ObjectQuery]) -> None:
+        """The deploy's prompt-time queries (``object_queries_json``), goal ``deploy:deploy@0``.
+
+        They ground at prompt time whatever declarations are in force (a scene with no
+        place declaration still grounds its plate); a declaration's own goal re-keys the
+        tracks its queries match.
+        """
+        self._set_goal("deploy", "deploy", 0, True, queries)
 
     def on_grid(self, grid: VoxelLattice, source_stamp_ns: int) -> None:
         """Keep the newest grid in the tracks' frame; another frame is logged and ignored."""
@@ -243,6 +277,7 @@ class TrackerSession:
         if binder.held is not None:  # a second ATTACH without a DETACH: the old hold ended
             self._release(gripper_joint, stamp_ns)
         binding = binder.on_attach(self.tracker.store, positions, stamp_ns)
+        self._released.pop(binding.attachment.object_id, None)  # re-grasped before re-grounding
         self._monitors[gripper_joint] = JawReleaseMonitor.for_hand(
             binder.hand, hold=hold, release_dwell_s=self.release_dwell_s
         )
@@ -267,6 +302,7 @@ class TrackerSession:
         )
         for oid, _fit in out.bound_fits:
             self._grow(oid)
+        self._expire_released()
         self._prune_ambiguous()
         self._check_grounding()
         return out
@@ -278,8 +314,9 @@ class TrackerSession:
         return self.tracker.store.snapshot(self._now_ns)
 
     def attachments(self) -> list[AttachedCollisionObject]:
-        """Every hand's held payload, in joint order."""
-        return [b.held.attachment for b in self.binders.values() if b.held is not None]
+        """Every hand's held payload (joint order), then the released ones still on the wire."""
+        held = [b.held.attachment for b in self.binders.values() if b.held is not None]
+        return held + [record for record, _ in self._released.values()]
 
     def hand_spaces(self) -> list[PlaceRegion]:
         """Each hand's collision boxes (grid frame), at the measured configuration."""
@@ -383,7 +420,7 @@ class TrackerSession:
             pose = binder.object_pose(self.positions)
             if track is not None:
                 support = self._support_under(pose, track.box.half_extents, track.support_z)
-                release_track(
+                released = release_track(
                     self.tracker.store,
                     oid,
                     object_pose=pose,
@@ -391,6 +428,8 @@ class TrackerSession:
                     cell_m=binder.cell_m,
                     stamp_ns=stamp_ns,
                 )
+                if released is not None:
+                    self._released[oid] = (held.attachment, stamp_ns)
         binder.on_release()
         self.attachment_changes += 1
 

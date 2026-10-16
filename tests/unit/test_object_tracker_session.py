@@ -145,8 +145,54 @@ def test_attach_binds_then_the_jaw_opening_releases() -> None:
     s.on_joint_state({joint: far}, 30)
     assert s.attachments()  # not yet: the dwell runs on the source clock
     s.on_joint_state({joint: far}, 30 + int(0.31 * _S))
-    assert not s.attachments() and s.attachment_changes > changes
+    assert s.binders[joint].held is None and s.attachment_changes > changes
     assert s.tracker.store.get(oid).status is TrackStatus.RELEASED  # type: ignore[union-attr]
+
+
+def _released(s: TrackerSession) -> tuple[str, str, int]:
+    """Bind the orange at the hold, then DETACH it: ``(joint, object_id, release stamp)``."""
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    oid = _mint(s, centre)
+    s.on_joint_state(q, 10)
+    s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=20)
+    s.on_grasp_event(GraspEventKind.DETACH, joint, jaw=jaw, hold=jaw, stamp_ns=_S)
+    return joint, oid, _S
+
+
+def test_a_released_binding_stays_on_the_wire_until_its_window_runs_out() -> None:
+    s = _session("so101_follower")
+    joint, oid, t0 = _released(s)
+    [att] = s.attachments()  # frozen by the kernel, its box cleared by the voxel bridge
+    assert (att.object_id, att.epoch) == (oid, 0) and s.binders[joint].held is None
+    changes = s.attachment_changes
+    s.on_joint_state({}, t0 + int(2.9 * _S))
+    assert s.attachments() == [att]
+    s.on_joint_state({}, t0 + 3 * _S)  # released_clear_timeout_s (3.0 s): dropped
+    assert s.attachments() == [] and s.attachment_changes == changes + 1
+
+
+def test_a_released_binding_leaves_with_the_reconfirmation() -> None:
+    s = _session("so101_follower")
+    _, oid, t0 = _released(s)
+    track = s.tracker.store.get(oid)
+    assert track is not None and track.status is TrackStatus.RELEASED
+    s.tracker.store.replace(
+        track.model_copy(update={"status": TrackStatus.CONFIRMED, "epoch": track.epoch + 1})
+    )
+    s.on_joint_state({}, t0 + 1)  # the very next update takes (id, 0) off the wire
+    assert s.attachments() == []
+
+
+def test_deploy_queries_ground_without_any_declaration(cap: Any) -> None:
+    s, wall = _session("droid_franka_robotiq"), 0.0
+    s.open_standing_queries([ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET)])
+    for n in range(4):
+        wall = _frame(s, [_BANANA], n * _S // 2, wall + 1)
+    [track] = s.snapshot().objects
+    assert track.status is TrackStatus.CONFIRMED and track.declaration_key == "deploy@0"
+    s.on_grasp_declaration(_decl(300))  # dispatch's goal re-keys it for the kernel
+    assert s.snapshot().objects[0].declaration_key == "banana@300"
 
 
 def test_ambiguous_union_drops_the_candidate_that_stayed_behind() -> None:

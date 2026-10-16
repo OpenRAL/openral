@@ -248,6 +248,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     """Build the lifecycle node (class defined here so the module imports without rclpy)."""
     from openral_core import (
         GraspDeclaration,
+        ObjectQuery,
         PlaceDeclaration,
         RobotDescription,
         camera_topic,
@@ -276,6 +277,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         TrackerSession,
         TrackingMode,
     )
+    from pydantic import TypeAdapter
     from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
     from rclpy.time import Time
@@ -318,6 +320,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("grounding_wait_s", 0.0)
             self.declare_parameter("grounding_required", False)
             self.declare_parameter("release_dwell_s", 0.3)
+            # MUST equal the kernel's tracked_release_timeout_s and the voxel bridge's
+            # released_clear_timeout_s (the launch passes one value to all three).
+            self.declare_parameter("released_clear_timeout_s", 3.0)
+            # The deploy's prompt-time ObjectQuery list (JSON), grounded at start.
+            self.declare_parameter("object_queries_json", "")
             self.declare_parameter("segment_service", DEFAULT_SEGMENT_SERVICE)
             self.declare_parameter("locate_service", "")
             self.declare_parameter("mask_tf_wait_s", 0.3)
@@ -369,8 +376,14 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     grounding_wait_s=wait_s,
                     grounding_required=bool(self._p("grounding_required")),
                     release_dwell_s=float(self._p("release_dwell_s")),
+                    released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
                     require_hands=mode is not TrackingMode.SHADOW,
                 )
+                raw = str(self._p("object_queries_json"))
+                if raw:
+                    self.session.open_standing_queries(
+                        TypeAdapter(list[ObjectQuery]).validate_json(raw)
+                    )
             except (ROSConfigError, ValueError) as exc:
                 self.get_logger().error(f"object tracker configure refused: {exc}")
                 return TransitionCallbackReturn.FAILURE
