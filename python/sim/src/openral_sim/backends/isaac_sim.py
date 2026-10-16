@@ -1243,6 +1243,10 @@ class IsaacSimOptions(BaseModel):
     # gravity like the real one: a position-only MIT/PD loop holds (gravity torque / kp)
     # below its command, which a policy trained on that robot has learnt to expect.
     joint_drive_gains: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # Drive force caps: URDF joint-name regex (fullmatch) -> max effort (N*m angular, N
+    # linear), overriding the URDF limit. For a task whose training sim gripped softer
+    # than the motor can (LeIsaac: the SO-101 jaw at object mass / 0.15).
+    joint_effort_limits: dict[str, float] = Field(default_factory=dict)
     # Manifest gripper joint -> calibration curve [(manifest value, URDF finger value), ...],
     # piecewise linear, applied to commands (manifest -> finger) and joint states (finger ->
     # manifest). For a jaw whose reading is not its URDF finger angle: OpenArm's real jaw
@@ -1269,6 +1273,18 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
             if stiffness < 0 or damping < 0:
                 raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
+
+    @field_validator("joint_effort_limits")
+    @classmethod
+    def _effort_limits_valid(cls, value: dict[str, float]) -> dict[str, float]:
+        for pattern, cap in value.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"joint_effort_limits[{pattern!r}] is not a regex: {exc}") from exc
+            if not cap > 0:
+                raise ValueError(f"joint_effort_limits[{pattern!r}] must be > 0")
         return value
 
     @field_validator("gripper_joint_curve")
@@ -2393,11 +2409,12 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
     """The robot spec's environment-USD load fields (``stage_objects`` and the fixes).
 
     Example:
-        >>> _environment_spec(IsaacSimOptions())
-        {'stage_objects': [], 'strip_xform_colliders': False, 'dome_light': None}
+        >>> sorted(_environment_spec(IsaacSimOptions()))
+        ['dome_light', 'joint_effort_limits', 'stage_objects', 'strip_xform_colliders']
     """
     return opts.model_dump(
-        mode="json", include={"stage_objects", "strip_xform_colliders", "dome_light"}
+        mode="json",
+        include={"stage_objects", "strip_xform_colliders", "dome_light", "joint_effort_limits"},
     )
 
 
@@ -2523,6 +2540,7 @@ def _placement(
             "camera_render_height",
             "depth_cameras",
             "joint_drive_gains",
+            "joint_effort_limits",
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
             "placement_success",
