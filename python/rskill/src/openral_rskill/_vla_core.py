@@ -549,8 +549,15 @@ def maybe_compile_chunk_forward(
     Returns:
         True if a compiled wrapper was installed (or queued lazily),
         False if compile was skipped or setup failed.
+
+    Raises:
+        ROSConfigError: ``compile`` is present but not a bool (a YAML
+            ``"false"`` string would otherwise be truthy).
     """
-    if not bool(spec_extra.get("compile", False)):
+    flag = spec_extra.get("compile", False)
+    if not isinstance(flag, bool):
+        raise ROSConfigError(f"policy_extras.compile must be a YAML bool, got {flag!r}")
+    if not flag:
         return False
     if not device.startswith("cuda"):
         return False
@@ -632,11 +639,14 @@ class CudaGraphChunkForward:
       captured one latches eager for the rest of the process and logs
       ``vla.cuda_graph_disabled`` once with the reason.
 
-    A failed capture raises ``ROSRuntimeError`` instead of falling back: an
-    aborted capture leaves the default CUDA generator in capture state, so the
-    next eager forward fails too ("Offset increment outside graph capture").
-    Capture runs on the first chunk, i.e. at the runner's preload warm-up, so
-    the failure surfaces before any goal and the remedy is to drop the flag.
+    A failed capture raises ``ROSRuntimeError`` instead of falling back, and
+    the error is latched: every later call (keyword calls included) raises it
+    again rather than running eager. An aborted capture leaves the default
+    CUDA generator in capture state, so an eager forward fails too ("Offset
+    increment outside graph capture") or, worse, runs on a half-captured
+    process. Capture runs on the first chunk, i.e. at the runner's preload
+    warm-up; that warm-up is best-effort and logs the error, and the latch
+    makes the skill's first real chunk fail loudly. Remedy: drop the flag.
 
     Args:
         forward: ``batch -> chunk`` under the caller's own ``no_grad`` /
@@ -649,6 +659,10 @@ class CudaGraphChunkForward:
             making a forward's host-to-device uploads capturable (see the
             π0.5 adapter's pinned-upload shim). ``None``: no context.
         warmup_runs: Side-stream forwards before capture.
+        device: CUDA device the forward runs on (the adapter's device);
+            capture, warm-up and replay run under ``torch.cuda.device(device)``
+            so the graph binds there, not to whatever device is current.
+            ``None``: the current device.
 
     Example:
         >>> import torch  # doctest: +SKIP
@@ -664,6 +678,7 @@ class CudaGraphChunkForward:
         name: str,
         capture_ctx: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
         warmup_runs: int = 2,
+        device: Any = None,
     ) -> None:
         self._forward = forward
         self._torch = torch
@@ -675,6 +690,8 @@ class CudaGraphChunkForward:
         self._layout: dict[str, tuple[tuple[int, ...], Any, Any]] = {}
         self._static_out: Any = None
         self._disabled: str | None = None
+        self._capture_error: ROSRuntimeError | None = None
+        self._device = device
         self._lock = threading.Lock()
         self._log = structlog.get_logger("openral_rskill._vla_core")
 
@@ -689,10 +706,16 @@ class CudaGraphChunkForward:
         return self._disabled
 
     def __call__(self, batch: dict[str, Any], **kwargs: Any) -> Any:
-        """Replay for ``batch``; eager for a keyword call or once latched off."""
+        """Replay for ``batch``; eager for a keyword call or once latched off.
+
+        Raises:
+            ROSRuntimeError: The capture failed (on this call or an earlier one).
+        """
+        if self._capture_error is not None:
+            raise ROSRuntimeError(*self._capture_error.args) from self._capture_error
         if kwargs or self._disabled is not None:
             return self._forward(batch, **kwargs)
-        with self._lock:
+        with self._lock, self._torch.cuda.device(self._device):
             if self._graph is None:
                 self._capture(batch)
             mismatch = self._load(batch)
@@ -736,11 +759,12 @@ class CudaGraphChunkForward:
             torch.cuda.synchronize()
         except Exception as exc:
             self._disable("capture_failed", error=f"{type(exc).__name__}: {exc}"[:300])
-            raise ROSRuntimeError(
+            self._capture_error = ROSRuntimeError(
                 f"{self._name}: CUDA-graph capture failed ({type(exc).__name__}: {exc}); the "
                 "process's CUDA generator is no longer usable for eager inference either. "
                 "Remove policy_extras.cuda_graph and restart."
-            ) from exc
+            )
+            raise self._capture_error from exc
         self._graph = graph
         self._log.info(
             "vla.cuda_graph_captured",

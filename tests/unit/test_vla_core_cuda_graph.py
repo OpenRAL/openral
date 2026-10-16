@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -138,10 +139,19 @@ except ROSRuntimeError as exc:
     assert "Remove policy_extras.cuda_graph" in str(exc), exc
     assert graphed.disabled_reason == "capture_failed"
     print("RAISED")
+# Latched: later calls, keyword ones included, must raise, never run eager.
+for kwargs in ({}, {"inference_delay": 2}):
+    try:
+        graphed({"x": torch.zeros(1, 4, device="cuda")}, **kwargs)
+    except ROSRuntimeError as exc:
+        assert "Remove policy_extras.cuda_graph" in str(exc), exc
+    else:
+        raise AssertionError(f"a call after a failed capture ran eager ({kwargs})")
+print("LATCHED")
 """
 
 
-def test_a_failed_capture_raises_rather_than_fall_back() -> None:
+def test_a_failed_capture_raises_now_and_on_every_later_call() -> None:
     """Run in a subprocess: an aborted capture poisons the CUDA generator process-wide."""
     import subprocess
     import sys
@@ -154,7 +164,7 @@ def test_a_failed_capture_raises_rather_than_fall_back() -> None:
         check=False,
     )
     assert done.returncode == 0, done.stderr[-2000:]
-    assert done.stdout.strip().endswith("RAISED"), done.stdout[-500:]
+    assert done.stdout.splitlines()[-2:] == ["RAISED", "LATCHED"], done.stdout[-500:]
 
 
 def test_capture_ctx_wraps_warmup_and_capture_only(flow: Any) -> None:
@@ -169,3 +179,71 @@ def test_capture_ctx_wraps_warmup_and_capture_only(flow: Any) -> None:
     for seed in range(4):
         graphed(_batch(seed))
     assert entered == [1]
+
+
+def test_capture_binds_to_the_given_device(flow: Any) -> None:
+    graphed = _wrapped(flow, device=torch.device("cuda", 0))
+    assert graphed(_batch(1)).device == torch.device("cuda", 0)
+    assert graphed.captured
+
+
+# ── π0.5 adapter wiring ──────────────────────────────────────────────────────
+
+_PI05_SKILL = Path(__file__).resolve().parents[2] / "rskills" / "pi05-libero-int8"
+
+
+class _ChunkPolicy(_Flow):
+    """`_Flow` behind lerobot's `predict_action_chunk` name, as `_graph_forward` calls it."""
+
+    def predict_action_chunk(self, batch: dict[str, Any], **kw: Any) -> Any:
+        return self(batch, **kw)
+
+
+def _pi05_adapter() -> Any:
+    from openral_core import VLASpec
+    from openral_sim.policies.pi05 import _PI05Adapter
+
+    torch.manual_seed(0)
+    return _PI05Adapter(
+        spec=VLASpec(id="pi05", weights_uri=str(_PI05_SKILL)),
+        device="cuda:0",
+        _policy=_ChunkPolicy().cuda().eval(),
+        _preprocessor=None,
+        _postprocessor=None,
+        _torch=torch,
+    )
+
+
+def test_pi05_close_drops_the_cuda_graph() -> None:
+    """After close, `_chunk_forward` must not replay against the freed weights."""
+    adapter = _pi05_adapter()
+    adapter._cuda_graph = CudaGraphChunkForward(
+        adapter._graph_forward, torch=torch, name="pi05", device=adapter.device
+    )
+    adapter._cuda_graph_keepalive.append(torch.zeros(1).pin_memory())
+    adapter._chunk_forward(_batch(1))
+    assert adapter._cuda_graph.captured
+    adapter.close()
+    assert adapter._cuda_graph is None
+    assert adapter._cuda_graph_keepalive == []
+    assert adapter._policy is None
+
+
+@pytest.mark.parametrize("flag", ["false", "true", 1, None])
+def test_pi05_cuda_graph_flag_must_be_a_bool(flag: Any) -> None:
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.policies.pi05 import _maybe_cuda_graph
+
+    adapter = _pi05_adapter()
+    with pytest.raises(ROSConfigError, match="must be a YAML bool"):
+        _maybe_cuda_graph(adapter, {"cuda_graph": flag}, trt=False)
+    assert adapter._cuda_graph is None
+
+
+@pytest.mark.parametrize("flag", ["false", "yes", 0])
+def test_compile_flag_must_be_a_bool(flow: Any, flag: Any) -> None:
+    from openral_core.exceptions import ROSConfigError
+    from openral_rskill._vla_core import maybe_compile_chunk_forward
+
+    with pytest.raises(ROSConfigError, match="must be a YAML bool"):
+        maybe_compile_chunk_forward(flow, {"compile": flag}, "cuda:0", torch)
