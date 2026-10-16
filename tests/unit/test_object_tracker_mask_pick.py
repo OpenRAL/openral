@@ -49,6 +49,6 @@ def test_the_object_beats_its_spill_onto_the_support_and_its_subpart(
     # most of it, not all of it, is a depth edge.
     assert node.outline_edge_fraction(obj, height) >= 0.6
     assert node.outline_edge_fraction(spill, height) < 0.5
-    picked = node.pick_mask([sub, obj, spill], None, height)
-    assert picked is not None and np.array_equal(picked, obj)
-    assert node.pick_mask([spill], None, height) is None  # no fit beats a fit of the support
+    picked = node.pick_masks([sub, obj, spill], None, height)
+    assert picked and np.array_equal(picked[0], obj)
+    assert not node.pick_masks([spill], None, height)  # no fit beats a fit of the support

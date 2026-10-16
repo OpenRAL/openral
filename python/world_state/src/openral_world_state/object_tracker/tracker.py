@@ -126,6 +126,10 @@ class CameraFrame:
     robot_mask: NDArray[np.uint8] | None
 
 
+#: ``_apply_mask``: try the next (smaller) candidate.
+_NEXT = object()
+
+
 @dataclass(frozen=True)
 class TrackerResult:
     """The answer to an issued ``TrackerRequest`` (by ``request_id``).
@@ -134,11 +138,15 @@ class TrackerResult:
         request_id: The request it answers.
         mask: ``SegmentInView``'s mask (``None``: no object at the prompt).
         boxes_xyxy: ``LocateInView``'s detections, pixels.
+        alternatives: Smaller qualifying candidates, largest first, each tried in turn
+            when the one before it cannot be fitted or splits on the map (a packed
+            carton's "part" candidate is several cartons).
     """
 
     request_id: int
     mask: NDArray[np.bool_] | None = None
     boxes_xyxy: tuple[tuple[float, float, float, float], ...] = ()
+    alternatives: tuple[NDArray[np.bool_], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,7 +216,7 @@ class ObjectTracker:
         self.queries.close_goal(goal_id)
         self._pending = [r for r in self._pending if not r.query_key or r.query_key[0] != goal_id]
 
-    def feed(
+    def feed(  # noqa: PLR0912  # reason: one flat pass over steps 0-7
         self,
         frame: CameraFrame,
         *,
@@ -246,8 +254,14 @@ class ObjectTracker:
                     for b in res.boxes_xyxy
                 ]
             elif usable and res.mask is not None and grid is not None:
-                bound = self._apply_mask(req, res.mask, frame, grid, grid_stamp_ns, hand_spaces)
-                if bound is not None:
+                masks = (res.mask, *res.alternatives)
+                for n, mask in enumerate(masks, start=1):
+                    bound = self._apply_mask(
+                        req, mask, frame, grid, grid_stamp_ns, hand_spaces, last=n == len(masks)
+                    )
+                    if bound is not _NEXT:
+                        break
+                if isinstance(bound, tuple):
                     bound_fits.append(bound)
         if grid is not None and grid_stamp_ns > self._grid_ns:
             self._grid_ns = grid_stamp_ns
@@ -350,7 +364,7 @@ class ObjectTracker:
             return None
         return fit, support_z
 
-    def _apply_mask(
+    def _apply_mask(  # noqa: PLR0911  # reason: each gate names its own outcome
         self,
         req: TrackerRequest,
         mask: NDArray[np.bool_],
@@ -358,14 +372,26 @@ class ObjectTracker:
         grid: VoxelLattice,
         grid_stamp_ns: int,
         hands: Sequence[PlaceRegion],
-    ) -> tuple[str, ContainingFit] | None:
+        *,
+        last: bool = True,
+    ) -> tuple[str, ContainingFit] | None | object:
+        """Fit ``mask`` into a track; ``_NEXT`` when a smaller candidate should be tried.
+
+        Not the ``last`` candidate: a refused fit, or one whose box holds two bodies on the
+        map (``map_split``), hands over to the next one instead of minting a SPLIT track.
+        """
         fitted = self._fit(req, mask, frame, grid)
         if fitted is None:
-            return None
+            return None if last else _NEXT
         fit, support_z = fitted
         surface = fit.surface
         centroid = tuple(float(v) for v in surface.mean(axis=0))
         cells = surface_cells(grid, surface, exclude=hands)
+        if not last and fit.box is not None:
+            split = cover_verdict(grid, cells, fit.box, support_z=support_z, own=hands)
+            if split.kind == "map_split":
+                log.info("object_tracker.candidate_split", label=req.label, why=split.why)
+                return _NEXT
         oid, kind = associate(self.store.all(), centroid, voxel_m=grid.resolution)
         if kind == "tie":
             return None

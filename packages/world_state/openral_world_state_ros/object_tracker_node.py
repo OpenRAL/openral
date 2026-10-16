@@ -64,7 +64,7 @@ __all__ = [
     "intrinsics_from_info",
     "main",
     "outline_edge_fraction",
-    "pick_mask",
+    "pick_masks",
 ]
 
 #: ``SegmentInView`` server the HAL's vision bridge also calls.
@@ -184,34 +184,36 @@ def outline_edge_fraction(
     return float(step.sum()) / n if n else 0.0
 
 
-def pick_mask(
+def pick_masks(
     masks: Sequence[NDArray[np.bool_]],
     box_xyxy: tuple[float, float, float, float] | None,
     height_m: NDArray[np.float64] | None = None,
     *,
     inside_fraction: float = 0.9,
     min_edge_fraction: float = 0.5,
-) -> NDArray[np.bool_] | None:
-    """One mask from the segmenter's nested candidates, for a **containing** fit.
+) -> list[NDArray[np.bool_]]:
+    """The segmenter's qualifying nested candidates, largest first, for a **containing** fit.
 
-    The largest qualifying candidate (a subpart under-contains the object). With a box
+    The largest comes first (a subpart under-contains the object); the tracker falls back
+    to the next one only when a candidate cannot be fitted or splits on the map. With a box
     (a detector's prompt or a seed's image rectangle) only candidates with at least
     ``inside_fraction`` of their pixels inside it qualify; with the frame's ``height_m``
     (``height_image``) only candidates whose outline is mostly a height step
     (``outline_edge_fraction`` at least ``min_edge_fraction``): SAM's "whole" of a point
     on an orange is often the counter patch around it, and its outline lies on the
-    counter. ``None``
-    when nothing qualifies (no fit beats a fit of the support). *Calibration points.*
+    counter. Empty when nothing qualifies (no fit beats a fit of the support).
+    *Calibration points.*
 
     Example:
         >>> a = np.zeros((8, 8), bool)
         >>> a[3:5, 3:5] = True
         >>> b = np.ones((8, 8), bool)
-        >>> int(pick_mask([a, b], None).sum()), int(pick_mask([a, b], (3, 3, 5, 5)).sum())
-        (64, 4)
-        >>> z = np.where(a, 0.05, 0.0)
-        >>> int(pick_mask([a, b], None, z).sum())
-        4
+        >>> [int(m.sum()) for m in pick_masks([a, b], None)]
+        [64, 4]
+        >>> [int(m.sum()) for m in pick_masks([a, b], (3, 3, 5, 5))]
+        [4]
+        >>> [int(m.sum()) for m in pick_masks([a, b], None, np.where(a, 0.05, 0.0))]
+        [4]
     """
     ok = [m for m in masks if m.any()]
     if box_xyxy is not None:
@@ -224,7 +226,7 @@ def pick_mask(
         ok = inside
     if height_m is not None:
         ok = [m for m in ok if outline_edge_fraction(m, height_m) >= min_edge_fraction]
-    return max(ok, key=lambda m: int(m.sum())) if ok else None
+    return sorted(ok, key=lambda m: -int(m.sum()))
 
 
 def backproject_pixel(
@@ -744,8 +746,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     if frame.t_base_from_cam is None
                     else height_image(frame.depth_m, frame.intrinsics, frame.t_base_from_cam)
                 )
-                mask = pick_mask(masks, req.box_xyxy or req.within_xyxy, height)
-                self._answer(frame, optical_frame, stamp_msg, TrackerResult(req.request_id, mask))
+                ok = pick_masks(masks, req.box_xyxy or req.within_xyxy, height)
+                result = TrackerResult(
+                    req.request_id, ok[0] if ok else None, alternatives=tuple(ok[1:])
+                )
+                self._answer(frame, optical_frame, stamp_msg, result)
 
             future.add_done_callback(done_segment)
 
