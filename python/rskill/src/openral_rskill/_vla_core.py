@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
@@ -602,6 +603,165 @@ def maybe_compile_chunk_forward(
 
     setattr(policy, method_name, _safe_compiled)
     return True
+
+
+class CudaGraphChunkForward:
+    """Replay a chunk forward as one captured CUDA graph (``policy_extras.cuda_graph``).
+
+    An eager π0.5 forward is ~67k small kernel launches. In an idle process
+    they cost ~0.95 s of Python/ATen dispatch on top of ~1.0 s of GPU work
+    (Jetson AGX Orin, restock π0.5, 2026-09-23); inside the deploy runtime,
+    where every launch competes for the GIL with ROS callbacks, the same
+    forward took 7.2-7.5 s and tripped the 5 s deadman between chunks. A
+    replay is one launch, so both the dispatch and the GIL exposure collapse.
+
+    The first plain call captures: the batch is copied into static input
+    buffers, the forward runs ``warmup_runs`` times on a side stream (as
+    ``torch.cuda.graphs`` requires), then once under capture. Each later call
+    copies its tensors into those buffers, replays, and returns a clone of the
+    static output (``_clone_chunk_output``), so a held chunk is never
+    overwritten by the next replay. Noise drawn from the default CUDA generator
+    is fresh on every replay: PyTorch registers that generator with the graph.
+
+    Eager instead, always explicitly:
+
+    * a call with keyword arguments (RTC's ``inference_delay`` /
+      ``prev_chunk_left_over`` change the computation) runs the forward
+      eagerly for that call only;
+    * a batch whose tensor keys, shapes, dtypes or devices differ from the
+      captured one latches eager for the rest of the process and logs
+      ``vla.cuda_graph_disabled`` once with the reason.
+
+    A failed capture raises ``ROSRuntimeError`` instead of falling back: an
+    aborted capture leaves the default CUDA generator in capture state, so the
+    next eager forward fails too ("Offset increment outside graph capture").
+    Capture runs on the first chunk, i.e. at the runner's preload warm-up, so
+    the failure surfaces before any goal and the remedy is to drop the flag.
+
+    Args:
+        forward: ``batch -> chunk`` under the caller's own ``no_grad`` /
+            autocast. Autocast must not cache casts across calls
+            (``cache_enabled=False``): a cached cast is an allocation the
+            graph would replay against freed memory.
+        torch: The imported ``torch`` module.
+        name: Label for the log events (the adapter name).
+        capture_ctx: Context entered around warm-up and capture only, for
+            making a forward's host-to-device uploads capturable (see the
+            π0.5 adapter's pinned-upload shim). ``None``: no context.
+        warmup_runs: Side-stream forwards before capture.
+
+    Example:
+        >>> import torch  # doctest: +SKIP
+        >>> fwd = CudaGraphChunkForward(model, torch=torch, name="pi05")  # doctest: +SKIP
+        >>> chunk = fwd(batch)  # first call captures, later calls replay  # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        forward: Callable[[dict[str, Any]], Any],
+        *,
+        torch: Any,
+        name: str,
+        capture_ctx: Callable[[], contextlib.AbstractContextManager[Any]] | None = None,
+        warmup_runs: int = 2,
+    ) -> None:
+        self._forward = forward
+        self._torch = torch
+        self._name = name
+        self._capture_ctx = capture_ctx or contextlib.nullcontext
+        self._warmup_runs = warmup_runs
+        self._graph: Any = None
+        self._static_in: dict[str, Any] = {}
+        self._layout: dict[str, tuple[tuple[int, ...], Any, Any]] = {}
+        self._static_out: Any = None
+        self._disabled: str | None = None
+        self._lock = threading.Lock()
+        self._log = structlog.get_logger("openral_rskill._vla_core")
+
+    @property
+    def captured(self) -> bool:
+        """True once a graph is captured and replay is live."""
+        return self._graph is not None and self._disabled is None
+
+    @property
+    def disabled_reason(self) -> str | None:
+        """Why replay latched off (``None`` while it is live or not yet tried)."""
+        return self._disabled
+
+    def __call__(self, batch: dict[str, Any], **kwargs: Any) -> Any:
+        """Replay for ``batch``; eager for a keyword call or once latched off."""
+        if kwargs or self._disabled is not None:
+            return self._forward(batch, **kwargs)
+        with self._lock:
+            if self._graph is None:
+                self._capture(batch)
+            mismatch = self._load(batch)
+            if mismatch is not None:
+                self._disable("input_layout_changed", detail=mismatch)
+                return self._forward(batch)
+            self._graph.replay()
+            return _clone_chunk_output(self._static_out, self._torch)
+
+    def _disable(self, reason: str, **fields: Any) -> None:
+        self._disabled = reason
+        self._graph = None
+        self._static_in = {}
+        self._static_out = None
+        self._log.warning("vla.cuda_graph_disabled", name=self._name, reason=reason, **fields)
+
+    def _capture(self, batch: dict[str, Any]) -> None:
+        torch = self._torch
+        self._static_in = {
+            k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+        }
+        self._layout = {
+            k: (tuple(v.shape), v.dtype, v.device)
+            for k, v in self._static_in.items()
+            if isinstance(v, torch.Tensor)
+        }
+        t0 = perf_counter_ns()
+        try:
+            with self._capture_ctx():
+                side = torch.cuda.Stream()
+                side.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(side):
+                    for _ in range(self._warmup_runs):
+                        self._forward(self._static_in)
+                torch.cuda.current_stream().wait_stream(side)
+                graph = torch.cuda.CUDAGraph()
+                # thread_local: other threads of the runtime may touch CUDA while
+                # this one captures; only this thread's calls are checked.
+                with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+                    self._static_out = self._forward(self._static_in)
+            torch.cuda.synchronize()
+        except Exception as exc:
+            self._disable("capture_failed", error=f"{type(exc).__name__}: {exc}"[:300])
+            raise ROSRuntimeError(
+                f"{self._name}: CUDA-graph capture failed ({type(exc).__name__}: {exc}); the "
+                "process's CUDA generator is no longer usable for eager inference either. "
+                "Remove policy_extras.cuda_graph and restart."
+            ) from exc
+        self._graph = graph
+        self._log.info(
+            "vla.cuda_graph_captured",
+            name=self._name,
+            seconds=round((perf_counter_ns() - t0) / 1e9, 3),
+            inputs=sorted(self._layout),
+        )
+
+    def _load(self, batch: dict[str, Any]) -> str | None:
+        """Copy ``batch`` into the static inputs; the first layout mismatch, or None."""
+        torch = self._torch
+        keys = {k for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        if keys != set(self._layout):
+            return f"tensor keys {sorted(keys ^ set(self._layout))}"
+        for k in keys:
+            v = batch[k]
+            if (tuple(v.shape), v.dtype, v.device) != self._layout[k]:
+                return f"{k}: {tuple(v.shape)} {v.dtype} {v.device} != {self._layout[k]}"
+        for k in keys:
+            self._static_in[k].copy_(batch[k], non_blocking=True)
+        return None
 
 
 def run_inference(
@@ -1544,6 +1704,7 @@ def call_make_processors_cached_first(
 
 
 __all__ = [
+    "CudaGraphChunkForward",
     "InferenceKind",
     "apply_chunk_replay",
     "call_make_processors_cached_first",
