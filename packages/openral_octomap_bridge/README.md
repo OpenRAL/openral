@@ -380,6 +380,49 @@ inside a posed payload box (the AABB of a primitive at one attached pose — a r
 box's corners included) — a hand entering right behind the payload, an object the
 payload is pressed against — disappears from the octree until a camera sees it again.
 
+### …and a tracked object is cleared by identity (issue #418)
+
+An attachment with `evidence_kind == "tracked_object"` (the Layer-2 tracker bound one
+tracked object to the hand) leaves the paths above and is cleared by identity
+(`identity_clearing.hpp`, `clear_by_identity`) — **only** when `identity_clearing_track`
+finds exactly one track with its `object_id`, status `bound`, the same `epoch` and
+`attach_link`, a finite `floor_z`, no other track bound to that link and no other
+payload on it, in a `tracked_objects` set whose frame (and every box's) is
+`base_frame`. Anything else — and every `"pinch_fallback"` attachment — is cleared by
+**nothing**: its cells stay obstacles (hazard OT-10). With object tracking off no
+attachment carries those kinds and every path above is unchanged.
+
+- **Current pose (grid).** Cells whose centre lies within half a cell of the bound
+  primitives, each narrowed by its tight hull when it ships one (`tight_dop_*`,
+  `tight_hull_vertices`; malformed tight geometry clears nothing).
+- **Sweep (octree, needs `payload_sweep_clear_service`).** The same test at every pose
+  of the attach link since `t_attach` — the attachment's `stamp_ns` on first sight,
+  backfilled from TF history (at most 5 s, 50 ms steps) — interpolated half a cell
+  apart between samples at most 0.25 s apart (a longer gap is never bridged by a
+  chord). The cells come from the bridge's copy of the octree: occupied
+  finest-resolution leaves only (a pruned coarser leaf is never sent, since
+  `clear_bbox` frees a whole leaf it touches), merged into at most 64 cell-exact boxes
+  per period; the rest stay.
+- **Vacated cells (octree).** Each track's last `confirmed` box is remembered. When it
+  is `confirmed` again more than a cell clear of that box (displaced while free), or
+  `bound` and carried more than a cell clear of it, the occupied cells centred in the old
+  box are cleared **once**, at that tick, and never again (a cell re-observed after it
+  stays). A re-associated track (`identity_inferred`) vacates nothing, and a stale or
+  unusable set forgets every remembered box.
+- **Exclusions, always.** Never a cell centred below the object's `floor_z`; never a
+  cell within its circumradius of any **other** track's box, whatever that track's
+  status (and, when vacating a free object, of its own new box); declared static
+  geometry is re-marked on the grid after the clear and its octree cells are never
+  sent.
+
+**Hazard OT-8 (issue #418): identity clearing erases occupancy.** Residuals: a body
+entering a vacated box while occluded, between the departure and its detection; a
+`clear_bbox` the server applies to a newer octree than the bridge's copy (a cell
+re-observed in between, or one octomap has since pruned into a 2x2x2 leaf); a straight
+chord between two pose samples at most 0.25 s apart; a bound object that slipped out
+of the hand unnoticed (its home box is vacated). Pinned by `test_identity_clearing`
+and `BridgeIdentitySweep.*`.
+
 ### …except the attested support patch, which is the counter
 
 A resting payload shares its bottom cell layer with the counter's own top
