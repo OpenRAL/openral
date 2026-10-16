@@ -3096,23 +3096,41 @@ class RobotDescription(BaseModel):
         HAL names in a ``GraspDeclaration``), then the ``child_link`` of every
         ``mimic_joints`` row following one of those joints — the other jaw of
         the same gripper, which the kernel must exempt in the grasp region too
-        (ADR-0115). The launch passes this as the kernel's ``grasp_contact_links``.
+        (ADR-0115) — then every ``fixed_attachments`` child rigid on one of those
+        mimic finger links, transitively (the Robotiq 2F-85's outer fingers,
+        ``*_bar``, on its outer knuckles). The launch passes this as the kernel's
+        ``grasp_contact_links``. User-approved 2026-10-16, needs Safety-WG review and a
+        hazard-log row: the fixed-child rule affects every robot with a fixed child on
+        a mimic finger (only ``droid_franka_robotiq`` in-tree).
 
         Example:
             >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
             >>> d.grasp_contact_links()[:2]
             ('openarm_left_finger_pair', 'openarm_right_finger_pair')
+            >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+            >>> d.grasp_contact_links()[-2:]
+            ('left_bar', 'right_bar')
         """
         grippers = [j for j in self.joints if j.role == "gripper"]
         names = {j.name for j in grippers}
-        return tuple(j.child_link for j in grippers) + tuple(
-            m.child_link for m in self.mimic_joints if m.mimics in names
-        )
+        mimic = [m.child_link for m in self.mimic_joints if m.mimics in names]
+        fixed: list[str] = []
+        rigid_on = set(mimic)
+        grown = True
+        while grown:  # ponytail: a fixed chain is a handful of rows; re-scan until stable
+            grown = False
+            for a in self.fixed_attachments:
+                if a.parent_link in rigid_on and a.child_link not in rigid_on:
+                    fixed.append(a.child_link)
+                    rigid_on.add(a.child_link)
+                    grown = True
+        return tuple(j.child_link for j in grippers) + tuple(mimic) + tuple(fixed)
 
     def hand_links(self) -> tuple[str, ...]:
         """The robot's hand links: the jaws, the link carrying them, and the wrist behind it.
 
-        Every ``role: gripper`` jaw and mimic follower (``grasp_contact_links``), then —
+        Every ``role: gripper`` jaw, mimic follower and fixed child of a mimic finger
+        (``grasp_contact_links``), then —
         once per hand — the mount the hand's leader jaws hang off (a chained finger
         climbed to its arm, as in ``gripper_hands``): the link that carries the gripper;
         then the link that carrier hangs off, the wrist (never a root link: a gripper
