@@ -2494,11 +2494,25 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     )
     # A real HAL checks that position-commanded joints follow their applied targets and
     # raises /openral/estop when one does not (drives not producing torque, a blocked
-    # joint): `openral_hal._tracking_watch`. A params-file value still wins.
+    # joint): `openral_hal._tracking_watch`. A params-file value may retune the window,
+    # never turn the watch off on a real arm.
     if hal_mode == "real":
         if not hal_derived_params:
             hal_derived_params = [{}]
         hal_derived_params[0]["tracking_fault_window_s"] = 1.0
+        file_window_s = hal_file_params.get("tracking_fault_window_s", 1.0)
+        if not (
+            isinstance(file_window_s, int | float)
+            and not isinstance(file_window_s, bool)
+            and 0 < file_window_s < float("inf")
+        ):
+            from openral_core.exceptions import ROSConfigError
+
+            raise ROSConfigError(
+                f"tracking_fault_window_s={file_window_s!r} in {hal_params_file}: a real HAL "
+                "runs the tracking watch (openral_hal._tracking_watch); the window must be a "
+                "positive finite number of seconds."
+            )
     # Whatever the source (derived above, or a params-file value that wins over it), the
     # vision leg may never trust a grid the kernel would refuse as stale, nor drop a released
     # payload's record nearer than the kernel's margin plus one cell.

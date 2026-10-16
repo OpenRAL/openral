@@ -57,7 +57,9 @@ def _import_launch_module() -> Any:
     return module
 
 
-def _compose(hal_mode: str) -> list[Any]:
+def _compose(
+    hal_mode: str, hal_params_file: str = "/tmp/openral-test-hal-params.yaml"
+) -> list[Any]:
     """Run the real launch composition for a plain franka_panda deploy."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
@@ -69,7 +71,7 @@ def _compose(hal_mode: str) -> list[Any]:
     cfg["hal_package"] = "openral_hal_node"
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
-    cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    cfg["hal_params_file"] = hal_params_file
     for entity in module.generate_launch_description().entities:
         if isinstance(entity, DeclareLaunchArgument):
             entity.execute(ctx)
@@ -324,3 +326,20 @@ def test_a_real_hal_arms_the_tracking_watch(hal_mode: str, armed: bool) -> None:
     """
     params = _params(_lifecycle_nodes(_compose(hal_mode))["openral_hal_test"])
     assert (params.get("tracking_fault_window_s") == 1.0) is armed
+
+
+@pytest.mark.parametrize("window", [0.0, -1.0, ".inf", "true"])
+def test_a_params_file_cannot_turn_the_tracking_watch_off_on_a_real_hal(
+    tmp_path: Path, window: object
+) -> None:
+    """A real arm always runs the tracking watch: a params file may retune it, never disable it."""
+    from openral_core.exceptions import ROSConfigError
+
+    params_file = tmp_path / "hal.yaml"
+    params_file.write_text(
+        f"/**:\n  ros__parameters:\n    tracking_fault_window_s: {window}\n", encoding="utf-8"
+    )
+    with pytest.raises(ROSConfigError, match="tracking_fault_window_s"):
+        _compose("real", str(params_file))
+    # The same file is fine on a sim twin, where the watch is not armed.
+    _compose("sim", str(params_file))

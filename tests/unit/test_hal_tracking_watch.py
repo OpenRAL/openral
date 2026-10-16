@@ -9,13 +9,14 @@ HAL only. Real manifests and recorded hardware data; no mocks (CLAUDE.md §1.11)
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 from openral_core import RobotDescription
-from openral_core.schemas import Action, ControlMode
+from openral_core.schemas import Action, ControlMode, JointType
 from openral_hal._tracking_watch import TrackingWatch, joint_row_targets
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -104,9 +105,100 @@ def test_full_dof_and_compact_rows_place_the_same_target() -> None:
     assert joint_row_targets([0.1, 0.2], ["right_joint3"], order) is None
 
 
-def test_bad_parameters_are_refused() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"tolerance_rad": 0.0, "window_s": 1.0},
+        {"tolerance_rad": 0.05, "window_s": float("nan")},
+        {"tolerance_rad": float("inf"), "window_s": 1.0},
+        {"tolerance_rad": 0.05, "window_s": 1.0, "tolerance_m": 0.0},
+    ],
+)
+def test_bad_parameters_are_refused(kwargs: dict[str, float]) -> None:
     with pytest.raises(ValueError, match="TrackingWatch"):
-        TrackingWatch(_openarm(), tolerance_rad=0.0, window_s=1.0)
+        TrackingWatch(_openarm(), **kwargs)
+
+
+def test_a_command_in_another_mode_supersedes_the_old_target() -> None:
+    """The start-pose ramp's end pose must not stay the target once a Cartesian policy drives."""
+    watch = TrackingWatch(_openarm(), tolerance_rad=0.05, window_s=0.5)
+    watch.observe_command(_command(["left_joint4"], [0.5]))
+    watch.observe_command(
+        Action(control_mode=ControlMode.CARTESIAN_DELTA, cartesian_delta=[(0.0,) * 6])
+    )
+    assert _held(watch, "left_joint4", [0.0] * 40, 1 / 30) is None
+
+
+def test_an_unplaceable_row_supersedes_the_old_target() -> None:
+    watch = TrackingWatch(_openarm(), tolerance_rad=0.05, window_s=0.5)
+    watch.observe_command(_command(["left_joint4"], [0.5]))
+    watch.observe_command(_command(["left_joint4"], [0.1, 0.2]))  # places nothing
+    assert _held(watch, "left_joint4", [0.0] * 40, 1 / 30) is None
+
+
+def test_a_target_that_reverses_within_the_window_is_a_new_goal() -> None:
+    """Reach then retreat: the joint follows each target, so it must not fault."""
+    watch = TrackingWatch(_openarm(), tolerance_rad=0.05, window_s=1.0)
+    dt = 1 / 30
+    watch.observe_command(_command(["left_joint4"], [0.3]))
+    fault = None
+    for k in range(28):  # 0.9 s converging on +0.3
+        fault = fault or watch.observe_state(["left_joint4"], [0.3 * (1 - 0.92**k)], k * dt)
+    q = 0.3 * (1 - 0.92**27)
+    watch.observe_command(_command(["left_joint4"], [-0.1]))
+    for k in range(28, 70):  # then converging on -0.1
+        q += 0.15 * (-0.1 - q)
+        fault = fault or watch.observe_state(["left_joint4"], [q], k * dt)
+    assert fault is None
+
+
+def test_a_held_target_with_no_usable_measurement_faults() -> None:
+    watch = TrackingWatch(_openarm(), tolerance_rad=0.05, window_s=0.5)
+    watch.observe_command(_command(["left_joint4"], [0.5]))
+    fault = _held(watch, "left_joint4", [float("nan")] * 30, 1 / 30)
+    assert fault is not None and fault.error == float("inf")
+
+    watch.clear()
+    watch.observe_command(_command(["left_joint4"], [0.5]))
+    flicker = [float("nan") if k % 2 else 0.0 for k in range(30)]  # NaN every other read
+    assert _held(watch, "left_joint4", flicker, 1 / 30) is not None
+
+
+def test_failed_reads_with_a_target_held_fault_after_one_window() -> None:
+    watch = TrackingWatch(_openarm(), tolerance_rad=0.05, window_s=0.5)
+    assert watch.observe_read_failure(0.0) is None  # nothing commanded: nothing to judge
+    assert watch.observe_read_failure(1.0) is None
+    watch.observe_command(_command(["left_joint4"], [0.5]))
+    assert watch.observe_read_failure(2.0) is None
+    assert watch.observe_read_failure(2.4) is None
+    fault = watch.observe_read_failure(2.5)
+    assert fault is not None and fault.window_s >= 0.5
+    # A good read in between restarts the clock.
+    watch.observe_read_failure(3.0)
+    watch.observe_state(["left_joint4"], [0.5], 3.2)
+    assert watch.observe_read_failure(3.6) is None
+
+
+def test_continuous_joints_compare_on_the_circle() -> None:
+    desc = _openarm()
+    joints = [
+        j.model_copy(update={"joint_type": JointType.CONTINUOUS}) if j.name == "left_joint4" else j
+        for j in desc.joints
+    ]
+    watch = TrackingWatch(
+        desc.model_copy(update={"joints": joints}), tolerance_rad=0.05, window_s=0.5
+    )
+    watch.observe_command(_command(["left_joint4"], [math.pi - 0.01]))
+    # Measured at -pi + 0.01: 0.02 rad away on the circle, 2*pi - 0.02 on the line.
+    assert _held(watch, "left_joint4", [-math.pi + 0.01] * 40, 1 / 30) is None
+
+
+def test_prismatic_joints_use_the_metre_tolerance() -> None:
+    desc = RobotDescription.from_yaml(str(_REPO / "robots" / "pusht_2d" / "robot.yaml"))
+    watch = TrackingWatch(desc, tolerance_rad=0.05, window_s=0.5, tolerance_m=0.01)
+    assert "tip_x" in watch.watched
+    watch.observe_command(_command(["tip_x"], [0.03]))
+    assert _held(watch, "tip_x", [0.0] * 40, 1 / 30) is not None  # 3 cm off, not moving
 
 
 @pytest.mark.usefixtures("_rclpy_ctx")
@@ -152,6 +244,33 @@ def test_the_hal_node_raises_estop_on_a_fault() -> None:
         while not got and time.monotonic() < deadline:
             rclpy.spin_once(listener, timeout_sec=0.05)
         assert got, "no /openral/estop after a tracking fault"
+        assert node._estopped, "the HAL did not latch its own e-stop"
     finally:
         listener.destroy_node()
+        node.destroy_node()
+
+
+@pytest.mark.usefixtures("_rclpy_ctx")
+@pytest.mark.parametrize("window", [-1.0, float("nan"), float("inf")])
+def test_the_hal_node_refuses_a_bad_tracking_window(window: float) -> None:
+    pytest.importorskip("rclpy")
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.lifecycle import _ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSProfile
+
+    node = _ManifestHALLifecycleNode("t_tracking_bad_window")
+    try:
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
+                Parameter("hal_mode", value="sim"),
+                Parameter("tracking_fault_window_s", value=window),
+            ]
+        )
+        node._hal = node._create_hal()
+        with pytest.raises(ROSConfigError, match="tracking_fault_window_s"):
+            node._arm_tracking_watch(QoSProfile(depth=10))
+        assert node._tracking is None
+    finally:
         node.destroy_node()
