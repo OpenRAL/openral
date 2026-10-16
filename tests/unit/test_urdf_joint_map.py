@@ -20,13 +20,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.schemas import MimicJoint
 from openral_hal.lifecycle import URDF_JOINT_UNITS_UNSET, urdf_joint_units, urdf_named_joint_state
-from openral_hal.resolver import urdf_joint_map, urdf_joint_names
+from openral_hal.resolver import UrdfJointMap, urdf_joint_map, urdf_joint_names
 from openral_hal.vision_attachment_bridge import _edge_chain, _joint_motion
 
 _ROBOTS = Path(__file__).resolve().parents[2] / "robots"
@@ -248,3 +250,29 @@ def test_the_deploy_launch_maps_the_so101_jaw_for_robot_state_publisher(hal_mode
     openarm_map = module._rsp_urdf_joint_map(openarm, str(_ROBOTS / "openarm/robot.yaml"), hal_mode)
     assert ros_control_hal(openarm, mode="real")
     assert (openarm_map is None) == (hal_mode == "real")
+
+
+_FINITE = st.floats(allow_nan=False, allow_infinity=False)
+
+
+@given(st.lists(st.tuples(st.text(), _FINITE, _FINITE), max_size=8))
+def test_the_urdf_joint_map_round_trips_and_its_json_schema_validates(
+    rows: list[tuple[str, float, float]],
+) -> None:
+    m = UrdfJointMap(
+        names=tuple(r[0] for r in rows),
+        scales=tuple(r[1] for r in rows),
+        offsets=tuple(r[2] for r in rows),
+    )
+    assert UrdfJointMap.model_validate_json(m.model_dump_json()) == m
+    assert set(UrdfJointMap.model_json_schema()["required"]) == {"names", "scales", "offsets"}
+
+
+def test_the_so101_urdf_joint_map_is_frozen_and_parallel() -> None:
+    robot, urdf = _robot("so101_follower", "so101_follower.urdf")
+    m = urdf_joint_map(robot, urdf)
+    assert m is not None and len(m.names) == len(robot.joints)
+    with pytest.raises(ValueError, match="frozen"):
+        m.names = ()  # type: ignore[misc]  # reason: asserting the model refuses mutation
+    with pytest.raises(ValueError, match="parallel"):
+        UrdfJointMap(names=m.names, scales=m.scales[:-1], offsets=m.offsets)

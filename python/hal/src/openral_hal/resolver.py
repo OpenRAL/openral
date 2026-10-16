@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from dataclasses import dataclass
 from typing import Literal, cast
 
 from openral_core import RobotDescription, sim_scene_description
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.protocol import HAL
@@ -225,19 +225,33 @@ def ros_control_hal(description: RobotDescription, *, mode: HalMode) -> bool:
     return all(hasattr(cls, m) for m in members)
 
 
-@dataclass(frozen=True)
-class UrdfJointMap:
+class UrdfJointMap(BaseModel):
     """What ``robot_state_publisher`` is sent per manifest joint: name and URDF-unit value.
 
     Parallel to ``RobotDescription.joints``: the URDF joint ``names[i]`` (``""`` = none)
     is sent ``scales[i] * q_i + offsets[i]`` of manifest joint ``i``'s position — the
     manifest's own kinematic map for a gripper whose channel is a fraction, so ``/tf``
     poses the jaw where the kernel's collision model does (``urdf_joint_map``).
+
+    Example:
+        >>> UrdfJointMap(names=("a", "jaw"), scales=(1.0, 1.74533), offsets=(0.0, 0.0)).names
+        ('a', 'jaw')
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     names: tuple[str, ...]
     scales: tuple[float, ...]
     offsets: tuple[float, ...]
+
+    @model_validator(mode="after")
+    def _parallel(self) -> UrdfJointMap:
+        if not len(self.names) == len(self.scales) == len(self.offsets):
+            raise ValueError(
+                f"names / scales / offsets have {len(self.names)} / {len(self.scales)} / "
+                f"{len(self.offsets)} entries; they are parallel to the manifest joints"
+            )
+        return self
 
 
 def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap | None:
@@ -296,7 +310,7 @@ def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap
         s == 1.0 and o == 0.0 for s, o in zip(scales, offsets, strict=True)
     ):
         return None
-    return UrdfJointMap(tuple(names), tuple(scales), tuple(offsets))
+    return UrdfJointMap(names=tuple(names), scales=tuple(scales), offsets=tuple(offsets))
 
 
 def urdf_joint_names(description: RobotDescription, urdf_xml: str) -> list[str]:
