@@ -52,6 +52,28 @@ mimic gearing); the jaw geometry here is the ros-industrial one.
 both 1280 × 720 like Arena's `PinholeCameraCfg`; their mounts are scene
 `camera_mounts`.
 
+## Grasp-trigger calibration
+
+`joints[finger_joint].closure_calibration` holds the position-stall grasp-trigger
+thresholds, in the channel's `[0, 1]` fraction units. They were measured in the Isaac
+6.1 deploy twin (`scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`, start pose,
+nothing between the jaws, 15 Hz joint states): three empty closes 1 → 0, one 0.5 → 0,
+with opens between.
+
+| Value | Setting | Where it comes from |
+| --- | --- | --- |
+| `closed_position` | 0.0 | the channel's closed end |
+| `closed_rest_offset` | 0.0 | every empty close settles at 0.00000 within 2 ticks (the sidecar's curve clamps a leader past π/4 to 0) |
+| `stall_gap` | 0.08 | settled free-motion error is 0 (max 3.6e-7); a 37 mm banana meets the pads near `f = 0.8`, so a stall on it reads about 0.8 from a closed command |
+| `settle_tolerance` | 0.002 | the twin's settled 5-sample span is at most 3.6e-7 |
+
+`stall_gap` is also the band a **command** must be within of closed to arm the
+trigger: a policy that closes to `f > 0.08` never arms it.
+
+**These values are sim-measured and unverified on a real Robotiq** (no real HAL exists).
+Re-measure them on hardware before any real `grasp_allowance_enabled` deploy. This is a
+Safety-WG item, and a hazard-log row is owed.
+
 ## Self-collision
 
 The arm and the Robotiq base are the `openral collision lower` fit (`--tight-link` on
