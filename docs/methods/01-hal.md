@@ -488,9 +488,9 @@ _Fetch Enactic's public `openarm_description` ROS package (Apache-2.0) — the `
 ### `python/hal/src/openral_hal/ros_package_overlay.py`
 _Make fetched public ROS description packages resolvable by ROS tools (`resource_retriever` in `foxglove_bridge`), which find `package://` roots only through the ament index._
 
-- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L48) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`; `example-robot-data` and `robotiq_2f_85_gripper_visualization` → their pinned `robot_descriptions` clones, for `robots/droid_franka_robotiq`'s composed URDF). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
-- `fetch_public_package(pkg) -> Path | None` (L62) — the known public package's root (fetched if needed), `None` for any other.
-- `public_package_overlay(urdf_xml) -> Path | None` (L81) — an ament prefix at `$OPENRAL_CACHE_DIR/ament_overlay` registering every public package the URDF's `package://` URIs name that no `AMENT_PREFIX_PATH` entry indexes; `None` when none is needed. `deploy_e2e.launch.py` prepends it to `foxglove_bridge`'s `AMENT_PREFIX_PATH` so the 3D panel can fetch the URDF meshes.
+- `PUBLIC_ROS_PACKAGES: dict[str, Callable[[], Path]]` (L31) — known public description packages → fetcher returning the package root (`openarm_description` → `ensure_openarm_description`). The one registry; `openral_sim.backends.isaac_sim._fetch_public_package` reads it.
+- `fetch_public_package(pkg) -> Path | None` (L38) — the known public package's root (fetched if needed), `None` for any other.
+- `public_package_overlay(urdf_xml) -> Path | None` (L57) — an ament prefix at `$OPENRAL_CACHE_DIR/ament_overlay` registering every public package the URDF's `package://` URIs name that no `AMENT_PREFIX_PATH` entry indexes; `None` when none is needed. `deploy_e2e.launch.py` prepends it to `foxglove_bridge`'s `AMENT_PREFIX_PATH` so the 3D panel can fetch the URDF meshes.
 
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its own pin to match._

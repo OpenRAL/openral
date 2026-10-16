@@ -117,7 +117,7 @@ def _load_launch(name: str) -> object:
     return module
 
 
-@pytest.mark.parametrize("robot", ["ur5e"])
+@pytest.mark.parametrize("robot", ["ur5e", "droid_franka_robotiq"])
 def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
     """A vendored URDF's `rd:` meshes go on `/robot_description` as `file://` URIs."""
     from openral_core.assets import AssetFetchError, expand_rd_mesh_refs

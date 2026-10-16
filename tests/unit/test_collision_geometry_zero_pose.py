@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
+import yaml
 from openral_core.schemas import (
     FixedAttachment,
     JointSpec,
@@ -152,8 +153,23 @@ def _srdf_states(robot: RobotDescription, manifest_path: Path) -> dict[str, dict
     }
 
 
+def _scene_start_poses(robot_id: str) -> list[tuple[str, dict[str, float]]]:
+    """Every deploy scene's ``initial_joint_positions`` for ``robot_id`` (no SRDF to ask)."""
+    out = []
+    for path in sorted((_REPO_ROOT / "scenes" / "deploy").glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if doc.get("robot_id") != robot_id:
+            continue
+        start = ((doc.get("scene") or {}).get("backend_options") or {}).get(
+            "initial_joint_positions"
+        )
+        if start:
+            out.append((f"{path.name} start pose", {k: float(v) for k, v in start.items()}))
+    return out
+
+
 def _rest_pose(robot: RobotDescription, manifest_path: Path) -> tuple[str, dict[str, float]]:
-    """``q = 0`` when the joint limits admit it, else the SRDF ready/home state."""
+    """``q = 0`` if the limits admit it, else the SRDF ready/home state, else a scene start."""
     q = {j.name: 0.0 for j in robot.joints}
     outside = [
         j.name
@@ -167,10 +183,13 @@ def _rest_pose(robot: RobotDescription, manifest_path: Path) -> tuple[str, dict[
     for name in _REST_STATE_NAMES:
         if name in states and set(outside) <= states[name].keys():
             return f"SRDF group_state {name!r}", q | states[name]
+    for label, start in _scene_start_poses(robot.name):
+        if set(outside) <= start.keys():
+            return label, q | start
     pytest.fail(
         f"{robot.name}: q = 0 is outside the limits of {outside} and the manifest's SRDF "
-        f"declares no {' / '.join(_REST_STATE_NAMES)} group_state covering them, so "
-        "there is no declared rest pose to check."
+        f"declares no {' / '.join(_REST_STATE_NAMES)} group_state covering them, nor does "
+        "a scenes/deploy start pose, so there is no declared rest pose to check."
     )
 
 

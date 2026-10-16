@@ -12,12 +12,12 @@
   <link name="panda_link0">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link0.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link0.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link0.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link0.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -29,12 +29,12 @@
   <link name="panda_link1">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link1.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link1.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link1.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link1.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -55,12 +55,12 @@
   <link name="panda_link2">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link2.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link2.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link2.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link2.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -81,12 +81,12 @@
   <link name="panda_link3">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link3.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link3.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link3.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link3.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -107,12 +107,12 @@
   <link name="panda_link4">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link4.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link4.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link4.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link4.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -133,12 +133,12 @@
   <link name="panda_link5">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link5.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link5.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link5.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link5.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -159,12 +159,12 @@
   <link name="panda_link6">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link6.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link6.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link6.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link6.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -185,12 +185,12 @@
   <link name="panda_link7">
     <visual>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link7.dae" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/visual/link7.dae" />
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link7.stl" />
+        <mesh filename="rd:panda_description:robots/panda_description/meshes/collision/link7.stl" />
       </geometry>
     </collision>
     <inertial>
@@ -228,7 +228,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/base_link.dae" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/base_link.dae" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -237,7 +237,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/base_link.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/base_link.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -251,7 +251,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -260,7 +260,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -273,7 +273,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -282,7 +282,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -295,7 +295,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -304,7 +304,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -317,7 +317,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -326,7 +326,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -339,7 +339,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -348,7 +348,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -361,7 +361,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -370,7 +370,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -383,7 +383,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -392,7 +392,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>
@@ -405,7 +405,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
       <material name="">
@@ -414,7 +414,7 @@
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
+        <mesh filename="rd:robotiq_2f85_v4_description:robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
       </geometry>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
     </collision>

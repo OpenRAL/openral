@@ -52,7 +52,16 @@ from openral_safety.urdf_lowering import (
 from tests.unit._collision_kernel_verdict import kernel_link_gap, surface_pieces
 
 _REPO = Path(__file__).resolve().parents[2]
-URDF_LOWERED = ("franka_panda", "g1", "h1", "rizon4", "so100_follower", "ur10e", "ur5e")
+URDF_LOWERED = (
+    "droid_franka_robotiq",
+    "franka_panda",
+    "g1",
+    "h1",
+    "rizon4",
+    "so100_follower",
+    "ur10e",
+    "ur5e",
+)
 N_POSES = 120
 SEED = 20260924
 

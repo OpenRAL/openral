@@ -12,13 +12,20 @@ weights.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
-from openral_core import DeployScene, RobotDescription, SimScene, load_scene_strict
+from openral_core import (
+    DeployScene,
+    RobotDescription,
+    SimScene,
+    load_scene_strict,
+)
+from openral_core.assets import AssetFetchError, expand_rd_mesh_refs
 from openral_core.exceptions import ROSConfigError
 from openral_rskill._policy_io import PolicyIOCodec
 from openral_rskill.loader import load_rskill_manifest
@@ -26,6 +33,7 @@ from openral_sim.backends.isaac_sim import (
     IsaacSimOptions,
     _build_robot_spec,
     _curve_gripper_specs,
+    _isaac_importable_urdf,
     _placement_success_spec,
 )
 from openral_sim.policies.pi05 import _anchor_deltas, _delta_action_mask
@@ -36,6 +44,35 @@ _DEPLOY = _REPO / "scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml"
 _ROBOT = RobotDescription.from_yaml(str(_REPO / "robots/droid_franka_robotiq/robot.yaml"))
 _SKILL = load_rskill_manifest(str(_REPO / "rskills/pi05-droid-jointpos-arena"))
 _PROMPT = "pick up the banana and place it in the bowl"
+_URDF = _REPO / "robots/droid_franka_robotiq/droid_franka_robotiq.urdf"
+
+
+def _mesh_refs(xml: str) -> list[str]:
+    return re.findall(r'filename="([^"]+)"', xml)
+
+
+def test_every_droid_mesh_resolves_through_its_rd_ref() -> None:
+    xml = _URDF.read_text(encoding="utf-8")
+    refs = _mesh_refs(xml)
+    assert refs and all(r.startswith("rd:") for r in refs), "the URDF names meshes by rd:"
+    try:
+        expanded = expand_rd_mesh_refs(xml)
+    except AssetFetchError as exc:  # the pinned clones need network on first use
+        pytest.skip(f"robot_descriptions clones unavailable: {exc}")
+    missing = [m for m in _mesh_refs(expanded) if not Path(m).is_file()]
+    assert not missing, f"meshes that do not resolve: {missing}"
+
+
+def test_isaac_imports_a_copy_with_absolute_meshes() -> None:
+    try:
+        copy = _isaac_importable_urdf(_URDF)
+    except ROSConfigError as exc:
+        pytest.skip(f"robot_descriptions clones unavailable: {exc}")
+    assert copy != _URDF and copy.name == _URDF.name
+    refs = _mesh_refs(copy.read_text(encoding="utf-8"))
+    assert len(refs) == len(_mesh_refs(_URDF.read_text(encoding="utf-8")))
+    assert all(Path(r).is_absolute() and Path(r).is_file() for r in refs)
+    assert _isaac_importable_urdf(copy) == copy  # nothing left to expand
 
 
 def _options(path: Path, kind: type[SimScene] | type[DeployScene]) -> IsaacSimOptions:
