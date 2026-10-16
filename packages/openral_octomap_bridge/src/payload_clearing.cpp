@@ -497,4 +497,51 @@ SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
   return floor;
 }
 
+std::vector<SweptBox> payload_primitive_boxes(const std::vector<PayloadPrimitive>& primitives,
+                                              const tf2::Transform& frame_from_base) {
+  std::vector<SweptBox> out;
+  out.reserve(primitives.size());
+  for (const auto& prim : primitives) {
+    SweptBox box;
+    add_payload_to_swept_box(box, {prim}, frame_from_base);
+    if (box.valid) {
+      out.push_back(box);
+    }
+  }
+  return out;
+}
+
+SweepFloor floor_pose_boxes(const std::vector<SweptBox>& boxes, const SweepSupports& supports,
+                            double resolution, std::vector<SweptBox>& out) {
+  out.clear();
+  SweptBox all;
+  for (const auto& b : boxes) {
+    if (b.valid) {
+      all.add(b.lo);
+      all.add(b.hi);
+    }
+  }
+  const SweepFloor floor = floor_swept_box(all, supports, resolution);
+  if (floor == SweepFloor::kNone) {
+    return floor;
+  }
+  for (SweptBox b : boxes) {
+    if (!b.valid || floor_swept_box(b, supports, resolution) == SweepFloor::kNone) {
+      continue;
+    }
+    b.lo.setZ(std::max(b.lo.z(), all.lo.z()));
+    if (!(b.lo.z() < b.hi.z())) {
+      continue;
+    }
+    const bool covered = std::any_of(out.begin(), out.end(), [&b](const SweptBox& o) {
+      return o.lo.x() <= b.lo.x() && o.lo.y() <= b.lo.y() && o.lo.z() <= b.lo.z() &&
+             b.hi.x() <= o.hi.x() && b.hi.y() <= o.hi.y() && b.hi.z() <= o.hi.z();
+    });
+    if (!covered) {
+      out.push_back(b);
+    }
+  }
+  return floor;
+}
+
 }  // namespace openral_octomap_bridge
