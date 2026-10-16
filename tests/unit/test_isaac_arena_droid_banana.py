@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 import pytest
 from openral_core import (
+    ActuatorRequirement,
     DeployScene,
     RobotDescription,
     SimScene,
@@ -166,6 +167,22 @@ def test_the_skill_declares_droid_delta_joints_and_an_absolute_gripper() -> None
     out = _anchor_deltas(delta, state, _delta_action_mask(_SKILL) or ())
     np.testing.assert_allclose(out[:7], state[:7] + delta[:7])
     assert out[7] == 1.0  # the gripper target is not offset by its own state
+
+
+def test_a_cartesian_delta_actuator_is_not_anchored_to_joint_state() -> None:
+    """``_anchor_deltas`` adds joint state, so only joint-position deltas are masked."""
+    ee_delta = ActuatorRequirement.model_validate(
+        {
+            "kind": "cartesian_delta",
+            "n_dof": 6,
+            "control_mode_semantics": {"mode": "delta", "reference_frame": _ROBOT.base_frame},
+        }
+    )
+    gripper = _SKILL.actuators_required[1]
+    assert _delta_action_mask(_SKILL.model_copy(update={"actuators_required": [ee_delta]})) is None
+    mixed = [*_SKILL.actuators_required[:1], ee_delta, gripper]
+    mask = _delta_action_mask(_SKILL.model_copy(update={"actuators_required": mixed}))
+    assert mask == (True,) * 7 + (False,) * 6 + (False,)
 
 
 def test_anchor_refuses_a_mask_of_the_wrong_width() -> None:

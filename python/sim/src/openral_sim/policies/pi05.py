@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import structlog
 from numpy.typing import NDArray
+from openral_core import ControlMode
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
@@ -395,7 +396,10 @@ def _delta_action_mask(manifest: Any) -> tuple[bool, ...] | None:
 
     Read from ``actuators_required[].control_mode_semantics.mode`` in declaration
     order, ``n_dof`` channels each (openpi's ``DeltaActions`` mask: DROID joint
-    position is 7 deltas + an absolute gripper). ``None`` when nothing is a delta.
+    position is 7 deltas + an absolute gripper). Only ``joint_position`` actuators
+    are anchored, since ``_anchor_deltas`` adds the observed joint state; a delta
+    of another kind (e.g. ``cartesian_delta``) is left as emitted. ``None`` when no
+    joint-position actuator is a delta.
 
     Raises:
         ROSConfigError: A delta actuator list where some actuator has no ``n_dof``.
@@ -405,14 +409,18 @@ def _delta_action_mask(manifest: Any) -> tuple[bool, ...] | None:
         True
     """
     acts = list(getattr(manifest, "actuators_required", None) or [])
-    if not any(a.control_mode_semantics.mode == "delta" for a in acts):
+    anchored = [
+        a.kind == ControlMode.JOINT_POSITION and a.control_mode_semantics.mode == "delta"
+        for a in acts
+    ]
+    if not any(anchored):
         return None
     if any(a.n_dof is None for a in acts):
         raise ROSConfigError(
             "pi05: a delta actuator needs n_dof on every actuators_required entry "
             "(they lay out the action vector in order)"
         )
-    return tuple(a.control_mode_semantics.mode == "delta" for a in acts for _ in range(a.n_dof))
+    return tuple(d for a, d in zip(acts, anchored, strict=True) for _ in range(a.n_dof))
 
 
 def _refuse_rtc_with_deltas(
