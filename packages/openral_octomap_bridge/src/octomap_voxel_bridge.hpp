@@ -585,6 +585,17 @@ private:
                            sweep_client_->get_service_name());
       return;
     }
+    // A request the server never answers would stay pending in the client forever; drop
+    // any older than kSweepRequestTimeout and say so (the volume then stays in the octree).
+    const size_t pruned = sweep_client_->prune_requests_older_than(
+        std::chrono::system_clock::now() - kSweepRequestTimeout);
+    if (pruned > 0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "payload sweep: %zu clear_bbox request(s) to %s unanswered after %llds; "
+                  "dropped, their volume stays in the octree",
+                  pruned, sweep_client_->get_service_name(),
+                  static_cast<long long>(kSweepRequestTimeout.count()));
+    }
     for (const auto& box : clears) {
       auto req = std::make_shared<octomap_msgs::srv::BoundingBoxQuery::Request>();
       req->min.x = box.lo.x();
@@ -619,6 +630,7 @@ private:
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
   rclcpp::Client<octomap_msgs::srv::BoundingBoxQuery>::SharedPtr sweep_client_;
+  static constexpr std::chrono::seconds kSweepRequestTimeout{5};
   double sweep_period_s_{0.2};
   std::vector<SweptBox> swept_boxes_;
   SweepSupports sweep_supports_;
