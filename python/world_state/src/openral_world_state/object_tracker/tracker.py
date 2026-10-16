@@ -279,8 +279,8 @@ class ObjectTracker:
         """The lowest the support under ``surface`` can be, or ``None`` when none is measured.
 
         ``support_top_from_voxels`` over the column around the mask's points, its ring
-        counted only on cells below the lowest seen point (A2: nothing above it can be what
-        the object stands on, so a neighbour's flank never becomes the support). The
+        counted only on cells that start below the lowest seen point (A2: nothing above it
+        can be what the object stands on, so a neighbour's flank never becomes the support). The
         measured top face is quantised up to one cell above the real surface; the cone is
         truncated one cell lower, and the clearing floor stays at the measured top.
         """
@@ -299,7 +299,10 @@ class ObjectTracker:
             near_xy=(float(near[0]), float(near[1])),
             min_cells=p.support_min_cells,
             probe_margin_m=p.support_probe_m,
-            surface_centers=centers[centers[:, 2] < surface[:, 2].min()],
+            # A cell that starts below the lowest seen point: the support's top layer is
+            # often the one the object's own bottom sits in (a bowl on a table at a cell's
+            # mid-height), and the cone is cut a cell under the measured top anyway.
+            surface_centers=centers[centers[:, 2] - 0.5 * grid.resolution < surface[:, 2].min()],
         )
         return None if top is None else top - grid.resolution
 

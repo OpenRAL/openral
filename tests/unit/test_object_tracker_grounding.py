@@ -114,3 +114,18 @@ def test_a_seeded_prompt_is_bounded_by_the_seed_rectangle() -> None:
     assert req.within_xyxy == tuple(float(v) for v in rect[0])
     x0, y0, x1, y1 = req.within_xyxy
     assert x0 <= req.point_uv[0] <= x1 and y0 <= req.point_uv[1] <= y1
+
+
+def test_a_low_body_grounds_when_the_support_tops_out_mid_cell() -> None:
+    """A bowl on a table whose top face lies mid-cell: the object's bottom shares the table's
+    top layer, and that layer must still count as its support (DROID, 2026-10-17)."""
+    from tests.unit._tracker_scenes import RES, cylinder
+
+    x, y = _RIG.centre_xy
+    bowl = cylinder((x, y), 0.08, _RIG.support_z, _RIG.support_z + 0.05)
+    q = ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION)
+    for shift in (0.0, 0.25 * RES, 0.5 * RES, 0.75 * RES):
+        tr = ObjectTracker(_RIG.frame)
+        tr.open_query("g", "q0", q, "obj:bowl@0", stamp_ns=0)
+        out, _ = step(tr, _RIG, [bowl], stamp_ns=0, wall_s=0.0, shift_z=shift)
+        assert [o.label for o in out.tracked.objects] == ["bowl"], shift
