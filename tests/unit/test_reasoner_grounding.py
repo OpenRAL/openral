@@ -631,3 +631,99 @@ def test_a_fixed_slot_has_no_destination_query_and_two_destinations_refuse() -> 
         placement_queries([("orange_1", "plate"), ("orange_2", "bowl")])
     with pytest.raises(ROSConfigError, match="at least one"):
         placement_queries([])
+
+
+def test_an_unseen_label_becomes_a_standing_query_only_with_tracking() -> None:
+    """Addendum G: with tracking on, a label no camera sees yet is not refused on the first
+    frame — the declaration carries a count-one query with no search box and the tracker
+    keeps looking (escalating to EXHAUSTED itself). Tracking off keeps today's refusal."""
+    live = _lift(_ORANGES)
+    grasp = GraspTargetRef(label="banana", contact_links=["openarm_left_finger_pair"])
+    with pytest.raises(ROSReasonerInvalidPlan, match="no live 3D detection"):
+        _ground(grasp, live)
+    decl = ground_grasp_target(
+        grasp,
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+        hand=hand_joint(_OPENARM, ["openarm_left_finger_pair"]),
+    )
+    assert decl.target_queries == (
+        ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET, hand="left_gripper"),
+    )
+    assert decl.search_box is None and decl.region is None
+    assert decl.target_id == "obj:banana"
+
+    with pytest.raises(ROSReasonerInvalidPlan, match="could not be grounded"):
+        _ground_place(PlaceTargetRef(label="bowl"), live)
+    place = ground_place_target(
+        PlaceTargetRef(label="bowl"),
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert place.destination_query == ObjectQuery(
+        label="bowl", count="one", role=ObjectRole.DESTINATION
+    )
+    assert place.search_box is None and place.target_id == "surface:bowl"
+
+
+_RESTOCK = "restock box x2 into upper slot 6"
+
+
+def _warehouse_restock(placements: list[dict[str, str]]) -> list[tuple[str, str | None]]:
+    """The OpenArm warehouse scene (the in-tree restock stand-in: fixed-base arm, boxed
+    props, shelf slots) validated with a restock task into a fixed world-frame slot; the
+    task's ``placements_for``."""
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    raw = yaml.safe_load((_REPO_ROOT / "scenes/deploy/isaac_openarm_warehouse.yaml").read_text())
+    options = dict(raw["scene"]["backend_options"])
+    options["placement_success"] = {
+        # A shelf slot: world frame, no relative_to — it stays a PlaceRegion.
+        "regions": {"upper_slot_6": {"min_xyz": [0.0, 4.9, 0.6], "max_xyz": [0.3, 5.3, 0.9]}},
+        "tasks": {_RESTOCK: placements},
+    }
+    success = IsaacSimOptions.model_validate(options).placement_success
+    assert success is not None
+    return success.placements_for(_RESTOCK)
+
+
+def test_a_restock_task_queries_its_box_classes_and_no_destination() -> None:
+    """Class-like prim names derive their label; a fixed slot gives no destination query."""
+    placements = _warehouse_restock(
+        [
+            {"object": "cracker_box", "target": "upper_slot_6"},
+            {"object": "sugar_box", "target": "upper_slot_6"},
+        ]
+    )
+    assert placement_queries(placements) == (
+        ObjectQuery(label="cracker box", count="one", role=ObjectRole.TARGET),
+        ObjectQuery(label="sugar box", count="one", role=ObjectRole.TARGET),
+    )
+
+
+def test_a_restock_prim_name_that_is_no_class_takes_the_placement_label() -> None:
+    """``stock_object`` / ``carton_b`` name no class: the scene states the detector label,
+    and two placements sharing it ground as one ``count="all"`` query."""
+    from openral_sim.backends.isaac_sim import IsaacPlacement
+
+    assert placement_queries([("carton_b", None)])[0].label == "carton b"  # why label exists
+    placements = _warehouse_restock(
+        [
+            {"object": "cracker_box", "target": "upper_slot_6", "label": "cardboard box"},
+            {"object": "sugar_box", "target": "upper_slot_6", "label": "cardboard box"},
+        ]
+    )
+    assert placement_queries(placements) == (
+        ObjectQuery(label="cardboard box", count="all", role=ObjectRole.TARGET),
+    )
+    with pytest.raises(ValueError, match="at least 1 character"):
+        IsaacPlacement(object="stock_object", target="upper_slot_6", label="")

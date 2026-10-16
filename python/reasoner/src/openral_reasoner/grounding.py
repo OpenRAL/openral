@@ -18,7 +18,8 @@ as ``ObjectQuery`` s (``GraspDeclaration.target_queries``,
 ``PlaceDeclaration.destination_query``) for the Layer-2 tracker, beside the unchanged
 ``search_box`` path; a label several live detections carry is then no longer refused —
 the tracker grounds every instance (``count="all"``) and the policy's choice is resolved
-at binding.
+at binding — and neither is one no live detection carries: the tracker's standing query
+keeps looking and escalates to EXHAUSTED itself (Addendum G).
 """
 
 from __future__ import annotations
@@ -118,12 +119,14 @@ def _locate(
 
     ``node_id`` set → that spatial-memory node's 3D box; else the single live lifted
     detection whose label equals ``label`` (case-insensitive). ``field`` names the
-    tool-call field in refusals. With ``several_ok`` (object tracking) several matches
-    ground with no search box: the tracker grounds every instance by its query.
+    tool-call field in refusals. With ``several_ok`` (object tracking) several matches —
+    or none — ground with no search box: the tracker grounds every instance by its query,
+    and keeps looking for a label no camera sees yet (#418 Addendum G).
 
     Raises:
-        ROSReasonerInvalidPlan: Nothing grounds, several instances match with no node
-            id (unless ``several_ok``), or the box is missing / in another frame.
+        ROSReasonerInvalidPlan: Nothing grounds (unless ``several_ok``), several instances
+            match with no node id (unless ``several_ok``), an unknown node id, or the box
+            is missing / in another frame.
     """
     if pad_m <= 0.0:
         raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
@@ -140,6 +143,10 @@ def _locate(
         return node_id, box, 1
     key = label.strip().casefold()
     matches = [o for o in live_objects if o.label.strip().casefold() == key]
+    if not matches and several_ok:
+        # Addendum G: the tracker's standing query keeps looking (passive every frame,
+        # then find-object) and escalates to EXHAUSTED itself; never a first-frame refusal.
+        return key, None, 0
     if not matches:
         seen = sorted({o.label for o in live_objects}) or ["nothing"]
         raise ROSReasonerInvalidPlan(
@@ -199,7 +206,9 @@ def ground_grasp_target(
         object_tracking: The deploy runs the Layer-2 object tracker (issue #418): the
             declaration also carries ``target_queries=[ObjectQuery(label, count, TARGET,
             hand)]``, ``count="all"`` when several live detections carry the label —
-            which then grounds (no ``search_box``) instead of being refused.
+            which then grounds (no ``search_box``) instead of being refused. A label no
+            live detection carries grounds too (``count="one"``, no ``search_box``): the
+            tracker's standing query keeps looking and escalates itself (Addendum G).
         hand: The grasping hand's gripper joint (``hand_joint``), a hint on the query.
 
     Raises:
@@ -320,8 +329,8 @@ def ground_place_target(
         pad_m: Padding added to each half-extent, > 0.
         object_tracking: The deploy runs the Layer-2 object tracker (issue #418): the
             declaration also carries ``destination_query=ObjectQuery(label, "one",
-            DESTINATION)``, and a label several live detections carry grounds with no
-            ``search_box`` instead of being refused.
+            DESTINATION)``, and a label several live detections carry — or none —
+            grounds with no ``search_box`` instead of being refused (Addendum G).
 
     The hint is optional (the place leg measures the surface under the carried payload
     without one), but a supplied hint that does not ground refuses the goal: it never
@@ -329,7 +338,8 @@ def ground_place_target(
 
     Raises:
         ROSReasonerInvalidPlan: The hint does not ground — no live detection carries the
-            label (including no detector at all), several do and no node id is given, the
+            label (including no detector at all) or several do and no node id is given
+            (both only without ``object_tracking``), the
             node is not in spatial memory (including no memory at all), or the box is
             missing / in another frame. The message says the hint could not be grounded
             and that omitting ``place_target`` lets the policy place on the measured surface.
@@ -397,6 +407,9 @@ def placement_queries(placements: Sequence[tuple[str, str | None]]) -> tuple[Obj
     dropped (``orange_1`` → ``orange``) and underscores read as spaces, so instances share
     one open-vocabulary label; a class placed more than once is ``count="all"``. One
     ``TARGET`` query per class, in task order, then at most one ``DESTINATION`` query.
+    The derivation suits a class-like name (``cracker_box`` → ``cracker box``); a prim
+    name that is no class (``stock_object``, ``carton_b``) is passed through as is, so a
+    scene names its detector label explicitly (``IsaacPlacement.label``).
 
     Raises:
         ROSConfigError: No placement, or several destination objects (a

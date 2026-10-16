@@ -1057,6 +1057,10 @@ class IsaacPlacement(BaseModel):
 
     ``target`` and ``adjacent`` name ``IsaacPlacementSuccess.regions``; ``adjacent`` are
     the regions that count as "the one next to it" (e.g. the neighbouring shelf slots).
+    ``label`` is the open-vocabulary detector label the object tracker queries (issue
+    #418); unset, it is derived from ``object`` (``orange_1`` → ``orange``), which only
+    works for a name that is a class. Set it for a prim name that is not one
+    (``stock_object``, ``carton_b``). Grading never reads it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1064,6 +1068,7 @@ class IsaacPlacement(BaseModel):
     object: str
     target: str
     adjacent: list[str] = Field(default_factory=list)
+    label: str | None = Field(default=None, min_length=1)
 
 
 class IsaacPlacementGrade(BaseModel):
@@ -1191,7 +1196,8 @@ class IsaacPlacementSuccess(BaseModel):
     def placements_for(self, prompt: str) -> list[tuple[str, str | None]]:
         """``(object, destination object)`` per placement ``prompt`` asks for (issue #418).
 
-        The destination is the target region's ``relative_to`` (``None`` for a fixed
+        The object is its ``label`` when the placement sets one, else its scene name. The
+        destination is the target region's ``relative_to`` (``None`` for a fixed
         world-frame region such as a shelf slot). An unknown prompt places nothing.
 
         Example:
@@ -1206,7 +1212,10 @@ class IsaacPlacementSuccess(BaseModel):
             >>> ps.placements_for("pick it"), ps.placements_for("dance")
             ([('orange_1', 'plate')], [])
         """
-        return [(p.object, self.regions[p.target].relative_to) for p in self.tasks.get(prompt, [])]
+        return [
+            (p.label or p.object, self.regions[p.target].relative_to)
+            for p in self.tasks.get(prompt, [])
+        ]
 
 
 class IsaacSimOptions(BaseModel):
