@@ -7,7 +7,7 @@
 > objects per reset while RoboLab fixes them (the shipped scene uses RoboLab's layout);
 > DROID runs at 15 Hz (Arena `sim.dt` 1/120 s × decimation 8).
 > Companions: [sim-environments](sim-environments.md) (Isaac `placement_success`),
-> [`scenes/README.md`](../../scenes/README.md) §"Isaac Sim: any stage, any robot",
+> [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) §"Isaac Sim: any stage, any robot",
 > [VLA compatibility matrix](vla_compatibility.md).
 >
 > **Conventions.** "card says" = a Hugging Face model/dataset card; "source shows" = the file was
@@ -40,7 +40,7 @@ X-Embodiment) is far behind on action-space mismatch.
 
 | # | Candidate | Robot (OpenRAL manifest?) | Policy family → supported? | Weights licence | USD availability | Isaac target | Success form → maps to `placement_success`? | Effort |
 |---|---|---|---|---|---|---|---|---|
-| 1 | Arena DROID / RoboLab pnp | Franka + Robotiq 2F-85 (**no**: `franka_panda` has the Franka hand) | π0.5 `pi05_droid_jointpos` (+ π0, π0-FAST) → **yes** (`pi05`) | openpi repo Apache-2.0; OpenRAL treats π0.5 weights as permissive research ([CLAUDE.md §3](../../CLAUDE.md)) | **public HTTPS** (Isaac 6.1 S3 root) | **Isaac Sim 6.1.0** / Lab 3.0 EA | contact-supported + settled on destination → **yes**, approximately | M |
+| 1 | Arena DROID / RoboLab pnp | Franka + Robotiq 2F-85 (**no**: `franka_panda` has the Franka hand) | π0.5 `pi05_droid_jointpos` (+ π0, π0-FAST) → **yes** (`pi05`) | openpi repo Apache-2.0; OpenRAL treats π0.5 weights as permissive research ([CLAUDE.md §3](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md)) | **public HTTPS** (Isaac 6.1 S3 root) | **Isaac Sim 6.1.0** / Lab 3.0 EA | contact-supported + settled on destination → **yes**, approximately | M |
 | 2 | LeIsaac PickOrange | SO-101 (**yes**, URDF) | SmolVLA (community) → yes; GR00T N1.5/N1.6 → yes but **noncommercial** | SmolVLA ckpt Apache-2.0 (card); GR00T N1.5 base NC | GitHub release zip (Apache-2.0 repo) | Isaac Sim 4.5 / 5.0 / 5.1 | 3 oranges near plate **and** arm at rest pose → **no** (needs 2 additions) | M–L |
 | 3 | Arena GR1 open-microwave | GR1**T2** + hands (**no**: ours is GR1T1 no-hand, no `control_freq_hz`) | SmolVLA, π0.5 (Apache-2.0 cards), GR00T N1.6 (**NC**) | see row | public HTTPS (Arena assets) | 6.1 (main) | door openness fraction → **no** (articulation criterion) | L |
 | 4 | Arena G1 static / loco pnp | Unitree G1 43-DoF (`g1` exists, 29-DoF) | GR00T N1.7 → yes | card says NVIDIA Open Model Agreement **and** "non-commercial use only" (contradictory) | public HTTPS | 6.1 | pnp → partly | L |
@@ -119,7 +119,7 @@ support (Arena's test). Note also the auto-provisioned sidecar pins `isaacsim==5
   openpi repo Apache-2.0 (GitHub licence field); its README states no separate checkpoint licence
   (**unverified** beyond that). The DAVIAN port's card declares **no licence** — ask or convert
   ourselves with openpi's `convert_jax_model_to_pytorch.py`. Asset licences: NVIDIA-hosted Isaac
-  assets are used in place, never vendored ([`scenes/README.md` L261–263](../../scenes/README.md));
+  assets are used in place, never vendored ([`scenes/README.md` L261–263](https://github.com/OpenRAL/openral/blob/master/scenes/README.md));
   RoboLab objects come from hope, handal, hot3d, ycb, vomp, fruits_veggies
   ([objects README L3](https://github.com/NVlabs/RoboLab/blob/ad45d4f974725d020f82c2b0d77d78533aeba2b3/assets/objects/README.md));
   per-source licences **unverified**.
