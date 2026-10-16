@@ -126,8 +126,12 @@ scene:
 # can move. The derived floor box would never be confirmed on the map, and a
 # hand-written table box is not derived, so the workspace rule has no box to relax here.
 # The pick-side search box covers the table top under the banana (z -0.042 .. 0.085 in
-# panda_link0, the top at z 0.003). `workspace_region` is producer-only. SIM-ONLY,
-# pending Safety-WG review (ADR + hazard-log rows owed).
+# panda_link0, the top at z 0.003). `workspace_region` is producer-only.
+# PENDING RE-DERIVATION: the tool now grounds on dynamic fixtures (the table top, legs
+# left out); re-run it on Isaac to add the table-top `workspace_box`.
+# HAZARD-LOG LINE OWED: the table the workspace will be grounded on is MOVABLE (a dynamic
+# body in Arena too). The workspace relaxes nothing until the voxel map confirms it.
+# SIM-ONLY, pending Safety-WG review (ADR + hazard-log rows owed).
 grasp_declaration:
   target_id: "obj:banana"
   contact_links: [robotiq_finger_pair]

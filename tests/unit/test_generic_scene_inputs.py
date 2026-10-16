@@ -185,3 +185,96 @@ class TestDerivedDeclarations:
                 (-2.0, -2.0, -2.0, 2.0, 2.0, 2.0), None, anchor_xyz=(0.0, 0.0, 0.0),
                 base_frame="base_link", pad_m=0.0, headroom_m=0.0, evidence_ref="sim:room",
             )  # fmt: skip
+
+
+class TestArenaMapleTableSupport:
+    """Arena's maple table: a dynamic rigid body the banana rests on, grounded as its support.
+
+    The colliders are the Isaac 6.1 sidecar's export of
+    ``isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/scenes/maple_table.usda``
+    as measured on Spark (2026-10-16), in the DROID scene's ``panda_link0`` (the robot sits at
+    the world origin): the table top and four legs carry ``CollisionAPI`` under the
+    enabled, non-kinematic ``RigidBodyAPI`` of ``/World/table`` (Arena keeps it dynamic,
+    ``MapleTableRobolab``), the ground plane is static. The banana's bound is the
+    ``scene_ground_truth`` of ``scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml``.
+    """
+
+    TABLE = "/World/environment/table/table_01"
+    # (lo, hi) of each collider's USD world bound.
+    PARTS: ClassVar[dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]]] = {
+        "top": ((0.19859, -0.477937, -0.026999), (0.898591, 0.522063, 0.003001)),
+        "leg_0": ((0.808591, 0.402063, -0.696999), (0.848591, 0.442063, -0.026999)),
+        "leg_1": ((0.808591, -0.397937, -0.696999), (0.848591, -0.357937, -0.026999)),
+        "leg_2": ((0.248591, 0.402063, -0.696999), (0.288591, 0.442063, -0.026999)),
+        "leg_3": ((0.248591, -0.397937, -0.696999), (0.288591, -0.357937, -0.026999)),
+    }
+    BANANA_CENTRE: ClassVar[tuple[float, float, float]] = (0.509671, -0.115792, 0.021202)
+    BANANA_HALF: ClassVar[list[float]] = [0.054504, 0.089225, 0.018602]
+    # t3's stop cell (left inner finger vs the table top, PhysX 8.0 mm clear).
+    STOP_CELL: ClassVar[list[float]] = [0.4425, -0.0675, 0.0075]
+
+    @staticmethod
+    def _box(path: str, lo: tuple[float, ...], hi: tuple[float, ...], **kw: object) -> dict:  # type: ignore[type-arg]  # reason: the sidecar's JSON entry
+        lo_a, hi_a = np.asarray(lo), np.asarray(hi)
+        return {
+            "path": path,
+            "kind": "box",
+            "collision_enabled": True,
+            "center_m": ((lo_a + hi_a) / 2).tolist(),
+            "rotation": np.eye(3).tolist(),
+            "half_extents_m": ((hi_a - lo_a) / 2).tolist(),
+            **kw,
+        }
+
+    def _reply(self) -> dict:  # type: ignore[type-arg]  # reason: the sidecar's JSON reply
+        boxes = [
+            self._box(f"{self.TABLE}/{name}", lo, hi, dynamic=True)
+            for name, (lo, hi) in self.PARTS.items()
+        ]
+        ground = ((-1.0, -1.0, -0.697), (1.0, 1.0, -0.697))
+        boxes.append(self._box("/World/environment/GroundPlane/CollisionPlane", *ground))
+        return {"frame": "base_frame", "boxes": boxes}
+
+    def _banana(self) -> tuple[float, float, float, float, float, float]:
+        c, h = np.asarray(self.BANANA_CENTRE), np.asarray(self.BANANA_HALF)
+        lo, hi = c - h, c + h
+        return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
+
+    def test_the_banana_rests_on_the_table_top_not_the_floor(self) -> None:
+        bound, group = _tool().source_fixture(self._banana(), self._reply()["boxes"])  # type: ignore[attr-defined]
+        assert group == self.TABLE
+        lo, hi = self.PARTS["top"]
+        assert bound == pytest.approx((*lo, *hi)), "the legs below the top are not the support"
+
+    def test_the_workspace_is_the_table_top_and_holds_the_t3_stop_cell(self) -> None:
+        bound, group = _tool().source_fixture(self._banana(), self._reply()["boxes"])  # type: ignore[attr-defined]
+        ws = ground_workspace(
+            bound, None, anchor_xyz=self.BANANA_CENTRE, base_frame="panda_link0",
+            pad_m=0.02, headroom_m=0.10, evidence_ref=f"sim:{group}",
+        )  # fmt: skip
+        GraspDeclaration(
+            target_id="obj:banana", contact_links=("robotiq_finger_pair",), timeout_s=120.0,
+            stamp_ns=0, workspace_box=ws,
+        )  # fmt: skip
+        lo = np.subtract(ws.pose.xyz, ws.half_extents)
+        hi = np.add(ws.pose.xyz, ws.half_extents)
+        assert np.all(lo <= self.STOP_CELL) and np.all(hi >= self.STOP_CELL)
+        assert lo[2] == pytest.approx(self.PARTS["top"][0][2] - 0.02), "nothing below the top"
+
+    def test_the_legs_would_have_stretched_the_workspace_past_the_cap(self) -> None:
+        """What the support was before the below-top rule: the whole table, to the floor."""
+        lo = (0.19859, -0.477937, -0.696999)
+        hi = (0.898591, 0.522063, 0.003001)
+        with pytest.raises(ROSReasonerInvalidPlan, match="cap"):
+            ground_workspace(
+                (*lo, *hi), None, anchor_xyz=self.BANANA_CENTRE, base_frame="panda_link0",
+                pad_m=0.02, headroom_m=0.10, evidence_ref="sim:table",
+            )  # fmt: skip
+
+    def test_a_dynamic_fixture_is_never_declared_static_geometry(self, tmp_path: Path) -> None:
+        import yaml
+
+        out = tmp_path / "static.yaml"
+        assert _tool().write_static(self._reply(), out, None) == 1  # type: ignore[attr-defined]
+        entries = yaml.safe_load(out.read_text())["static_geometry"]
+        assert [e["source"] for e in entries] == ["/World/environment/GroundPlane/CollisionPlane"]

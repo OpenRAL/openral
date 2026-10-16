@@ -152,11 +152,17 @@ scene. A value the scene already declares wins unless `--replace`, which prints 
 - **`search_box`** — the reasoner's own grounding (`ground_grasp_target`), fed the sim's object
   boxes as detections instead of perception's: the target's bound padded on every side.
 - **`workspace_box`** — `openral_reasoner.grounding.ground_workspace`: the hull of the source
-  fixture (the static collider group the target rests on: a tote's floor, walls and rims) and the
+  fixture (the collider group the target rests on: a tote's floor, walls and rims; members
+  wholly below the support's top, such as a table's legs, are left out) and the
   instruction's destination (Isaac: the prompt's `placement_success` region and the regions it
   grades as adjacent; RoboCasa: the task's destination fixture), padded, plus headroom on top for
   a hand riding above its payload. An axis wider than the workspace cap is cut to the cap around
   the target, never widened past it; a box still over the volume cap is not declared.
+  The support may be a dynamic fixture. Arena's maple table is an enabled, non-kinematic
+  rigid body (Arena resets it each episode), so the Isaac sidecar exports it flagged
+  `dynamic`. It grounds the workspace but is never declared static geometry, and the box
+  still relaxes nothing until the map confirms it. That the support can move is a
+  hazard-log line.
 
 Restock `mix_02` (Isaac, 2026-10-13), hand-written → derived, base-frame x / y / z ranges (m):
 `search_box` [0.167, 0.356] / [−0.012, 0.200] / [−0.613, −0.373] → [0.178, 0.350] / [0.016, 0.154]
