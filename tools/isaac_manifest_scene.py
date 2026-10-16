@@ -2890,6 +2890,7 @@ class IsaacManifestScene(IsaacSceneBase):
         dt = float(self.sim_dt_per_tick_s or 0.0)
         turn_rate = math.radians(float(ps.get("rest_turn_deg_s", math.inf)))
         grades = []
+        held = self._robot_touched_paths() if ps.get("require_released") else set()
         for placement in map(self._placement_now, ps["placements"]):
             name = str(placement["object"])
             pos_raw, quat_raw = self._object_prims[name].get_world_pose()
@@ -2907,8 +2908,11 @@ class IsaacManifestScene(IsaacSceneBase):
                 turn_rate,
             )
             self._last_pos[name], self._last_quat[name] = pos, quat
-            # ponytail: rest-based release check -- a gripper holding the object still in
-            # the region for settle_s counts as placed; add a robot-contact test if needed.
+            # require_released: an object the robot still touches is not placed. Without
+            # it a gripper holding the object still in the region for settle_s passes.
+            prim_path = str(self._object_prims[name].prim_path)
+            if any(p == prim_path or p.startswith(prim_path + "/") for p in held):
+                self._rest_s[name] = 0.0
             if self._rest_s[name] + 1e-9 < float(ps["settle_s"]):
                 grades.append("fail")
                 continue
@@ -2939,6 +2943,16 @@ class IsaacManifestScene(IsaacSceneBase):
             prim.set_linear_velocity(np.zeros(3))
             prim.set_angular_velocity(np.zeros(3))
         return {"position": [float(v) for v in prim.get_world_pose()[0]]}
+
+    def _robot_touched_paths(self) -> set[str]:
+        """Prim paths of every non-robot actor touching a robot body in the last physics step."""
+        robot = self._robot_prim.rstrip("/") + "/"
+        touched = set()
+        for c in self._contact_points():
+            a0, a1 = c["actor0"], c["actor1"]
+            if a0.startswith(robot) != a1.startswith(robot):
+                touched.add(a1 if a0.startswith(robot) else a0)
+        return touched
 
     def _placement_now(self, placement: dict[str, Any]) -> dict[str, Any]:
         """``placement`` with its ``relative_to`` boxes at their reference objects' poses now."""
