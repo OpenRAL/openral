@@ -116,6 +116,15 @@ latency_budget:
 #     enabled: true
 #     max_guidance_weight: 10.0
 #     prefix_attention_schedule: ones  # full-weight blend; measurably better OOD, equal in-distribution
+#
+# OPTIONAL (pi05) — cuda_graph replays the chunk forward as one captured CUDA
+# graph: one launch instead of ~67k, so the forward stops competing for the GIL
+# inside the deploy runtime (Orin: 7.2-7.5 s eager in the live graph vs 1.95 s
+# idle). CUDA only, needs the chunk executor (n_action_steps > 1), exclusive
+# with rtc and with the TensorRT runtime. Captures on the first chunk (the
+# runner's preload warm-up); a failed capture refuses the skill:
+# policy_extras:
+#   cuda_graph: true
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2410.24164"

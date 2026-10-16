@@ -17,6 +17,8 @@ them transitively.
 from __future__ import annotations
 
 import contextlib
+import types
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -28,6 +30,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    CudaGraphChunkForward,
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
@@ -38,6 +41,7 @@ from openral_rskill._vla_core import (
     resolve_image_preprocessing,
     resolve_rskill_repo_revision,
     resolve_state_dim,
+    rtc_enabled_in_extra,
     to_numpy_action,
 )
 from openral_rskill.backend_registry import maybe_attach_pro_hooks
@@ -120,6 +124,11 @@ class _PI05Adapter:
     # in fp32 even when params are bf16, tripping a dtype mismatch.
     _autocast_dtype: Any = None
     _chunk_executor: Any = None
+    # `policy_extras.cuda_graph`: the chunk forward replayed as one captured CUDA
+    # graph (`CudaGraphChunkForward`); None = eager.
+    _cuda_graph: Any = None
+    # The pinned host buffers the captured graph's uploads read; alive as long as it.
+    _cuda_graph_keepalive: list[Any] = field(default_factory=list)
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
@@ -185,7 +194,27 @@ class _PI05Adapter:
         ``kwargs`` carries the executor's RTC arguments (``inference_delay`` /
         ``prev_chunk_left_over``) straight through to lerobot; empty otherwise.
         """
+        if self._cuda_graph is not None:
+            return self._cuda_graph(batch, **kwargs)
         with self._torch.no_grad(), self._autocast_ctx():
+            return self._policy.predict_action_chunk(batch, **kwargs)
+
+    def _graph_forward(self, batch: dict[str, Any], **kwargs: Any) -> Any:
+        """The forward `CudaGraphChunkForward` captures (and runs eagerly when it must).
+
+        Same as `_chunk_forward`'s eager branch except autocast does not cache
+        casts across calls: a cached cast is an allocation outside the graph's
+        pool that a replay would read after it was freed.
+        """
+        device_type = self.device.split(":", 1)[0]
+        autocast = (
+            self._torch.amp.autocast(
+                device_type=device_type, dtype=self._autocast_dtype, cache_enabled=False
+            )
+            if self._autocast_dtype is not None
+            else contextlib.nullcontext()
+        )
+        with self._torch.no_grad(), autocast:
             return self._policy.predict_action_chunk(batch, **kwargs)
 
     def close(self) -> None:
@@ -257,6 +286,82 @@ class _PI05Adapter:
 
 
 _log = structlog.get_logger(__name__)
+
+
+@contextlib.contextmanager
+def _pinned_tensor_uploads(module: Any, torch: Any, keepalive: list[Any]) -> Iterator[None]:
+    """Make lerobot π0.5's per-forward ``torch.tensor(..., device=cuda)`` capturable.
+
+    ``modeling_pi05`` builds three small tensors from Python data on every
+    forward (the prefix and suffix attention-mask patterns, the flow time of
+    each denoise step). A ``torch.tensor(data, device="cuda")`` is a
+    synchronous pageable copy, which CUDA-graph capture refuses. Inside this
+    context the module's ``torch`` name resolves to a shim whose ``tensor``
+    builds the host tensor in pinned memory and uploads it ``non_blocking``,
+    a copy the graph records and replays from that pinned buffer. The values
+    are fixed by the model's shapes and step count, identical on every call,
+    so replaying the recorded upload is exact. ``keepalive`` owns the pinned
+    buffers for as long as the graph exists. Only warm-up and capture run
+    inside; the module's ``torch`` is restored on exit, so an eager forward
+    never sees the shim.
+    """
+    real = module.torch
+
+    def _tensor(data: Any, *args: Any, device: Any = None, **kwargs: Any) -> Any:
+        if device is None or real.device(device).type != "cuda":
+            return real.tensor(data, *args, device=device, **kwargs)
+        host = real.tensor(data, *args, **kwargs).pin_memory()
+        keepalive.append(host)
+        return host.to(device, non_blocking=True)
+
+    class _TorchShim(types.ModuleType):
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+    shim = _TorchShim("torch")
+    shim.tensor = _tensor  # type: ignore[attr-defined]  # reason: ModuleType instance attribute
+    module.torch = shim
+    try:
+        yield
+    finally:
+        module.torch = real
+
+
+def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt: bool) -> None:
+    """Attach a `CudaGraphChunkForward` when ``policy_extras.cuda_graph`` is true.
+
+    Refused (``ROSConfigError``) where a graph cannot apply: a non-CUDA device,
+    an enabled ``rtc`` block (its per-call guidance arguments always run eager,
+    so the graph would never replay), or the TensorRT runtime (it replaced the
+    forward already).
+    """
+    if not bool(spec_extra.get("cuda_graph", False)):
+        return
+    if not adapter.device.startswith("cuda"):
+        raise ROSConfigError(
+            f"pi05: policy_extras.cuda_graph needs CUDA; device={adapter.device!r}"
+        )
+    if rtc_enabled_in_extra(spec_extra, adapter_name="pi05"):
+        raise ROSConfigError(
+            "pi05: policy_extras.cuda_graph and an enabled rtc block are exclusive: RTC passes "
+            "per-call guidance arguments, which always run eagerly, so the graph never replays"
+        )
+    if trt:
+        raise ROSConfigError(
+            "pi05: policy_extras.cuda_graph with the TensorRT runtime attached; the engine "
+            "already replaced the torch forward"
+        )
+    import lerobot.policies.pi05.modeling_pi05 as modeling
+
+    keepalive = adapter._cuda_graph_keepalive
+    torch = adapter._torch
+    adapter._cuda_graph = CudaGraphChunkForward(
+        adapter._graph_forward,
+        torch=torch,
+        name="pi05",
+        capture_ctx=lambda: _pinned_tensor_uploads(modeling, torch, keepalive),
+    )
+    _log.info("pi05.cuda_graph_enabled", device=adapter.device)
 
 
 def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
@@ -804,9 +909,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # engines, as SmolVLA/ACT do. The hook ships in the private
     # openral-pro-trt package, looked up by name; a host without it falls
     # through to the torch path unwired above.
-    if maybe_attach_pro_hooks(
+    trt = maybe_attach_pro_hooks(
         "pi05", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
-    ):
+    )
+    if trt:
         _log.info("pi05.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
 
     adapter = _PI05Adapter(
@@ -839,6 +945,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             else (torch.float16 if torch_dtype == torch.float16 else None)
         ),
     )
+    _maybe_cuda_graph(adapter, spec.extra, trt=bool(trt))
     adapter._chunk_executor = build_chunk_executor(
         spec.extra,
         policy=policy,
@@ -847,4 +954,11 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         postprocess_action=adapter._finished_action,
         rtc_prefix_fn=relative_rtc_prefix_fn(preprocessor, device=device),
     )
+    if adapter._cuda_graph is not None and adapter._chunk_executor is None:
+        # Only the executor calls `_chunk_forward`; lerobot's own `select_action`
+        # queue would bypass the graph and the flag would silently do nothing.
+        raise ROSConfigError(
+            "pi05: policy_extras.cuda_graph needs the chunk executor (chunk_prefetch / "
+            "n_action_steps > 1); without it the forward never goes through the graph"
+        )
     return adapter
