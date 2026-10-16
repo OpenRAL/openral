@@ -111,3 +111,33 @@ def test_map_split_inside_the_hand_is_the_hands_own_and_ages_out() -> None:
     track = out.tracked.objects[0]
     assert track.status is TrackStatus.CONFIRMED
     assert track.last_confirmed_stamp_ns == before  # not re-stamped: it ages out
+
+
+def test_a_body_inside_another_confirmed_track_is_not_a_split() -> None:
+    """Design step 4: the closure cells minus other tracks. A neighbour the tracker already
+    holds (a plate's cone reaching over an orange) does not make the box SPLIT; the same
+    cell with no track over it still does (the test above)."""
+    from openral_core import FitKind
+
+    tr, wall = _confirmed_tracker(_CAN)
+    cell = _foreign_cell(tr)
+    centre = tuple(
+        float(o + (c + 0.5) * RES)
+        for o, c in zip(grid_from_depth(render([], _RIG)[0], _RIG).origin, cell, strict=True)
+    )
+    neighbour = PlaceRegion(
+        frame_id=_RIG.frame,
+        half_extents=(RES, RES, RES),
+        pose=Pose6D(xyz=centre, quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+    )
+    other = tr.store.mint(
+        label="orange", role=ObjectRole.TARGET, declaration_key="obj:orange_1@0",
+        box=neighbour, tight=(), fit_kind=FitKind.SILHOUETTE_CONE,
+        support_z=_RIG.support_z, support_ref="map", floor_z=_RIG.support_z + RES,
+        visible_cells=1, occupied_cells=1, last_fit_stamp_ns=0, last_confirmed_stamp_ns=0,
+    )  # fmt: skip
+    tr.store.replace(other.model_copy(update={"status": TrackStatus.CONFIRMED}))
+    out, _ = step(tr, _RIG, [_CAN], stamp_ns=100_000_000, wall_s=wall + 1, extra=[cell])
+    can = next(o for o in out.tracked.objects if o.object_id != other.object_id)
+    assert can.status is TrackStatus.CONFIRMED
+    assert can.last_confirmed_stamp_ns == 100_000_000

@@ -143,7 +143,7 @@ _Size-aware map confirmation (#418 step 4)._
 
 - `@dataclass CoverVerdict` — `visible` (`|E|`), `occupied` (`|E ∩ occupied|`), `kind` (`""` / `map_disagrees` / `map_split` / `map_split_own`), `why`. (L34)
 - `surface_cells(grid, surface, *, exclude=()) -> frozenset[tuple[int, int, int]]` — `E`: lattice cells holding the fit's surface points, minus cells centred in `exclude` (the robot's own space). (L56)
-- `cover_verdict(grid, cells, box, *, support_z, own=()) -> CoverVerdict` — `|E ∩ occupied| ≥ max(2, ⌈0.5·|E|⌉)` (cover on expected cells, not a padded footprint), then `object_primitives.map_confirms` for one body; a second body wholly inside a declared hand's `own` space is `map_split_own`. (L89)
+- `cover_verdict(grid, cells, box, *, support_z, own=(), others=()) -> CoverVerdict` — `others` (the other CONFIRMED/OCCLUDED tracks' boxes): a second body wholly inside one is that object, not a split (design step 4, closure minus other tracks); `|E ∩ occupied| ≥ max(2, ⌈0.5·|E|⌉)` (cover on expected cells, not a padded footprint), then `object_primitives.map_confirms` for one body; a second body wholly inside a declared hand's `own` space is `map_split_own`. (L89)
 
 ### `python/world_state/src/openral_world_state/object_tracker/tracks.py`
 _Track table, association by continuity, source-time ageing (#418 steps 5-6)._
@@ -193,14 +193,14 @@ _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7
 ### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
 _`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._
 
-- `class TrackerParams(BaseModel)` — Frozen calibration: `theta_vis`, `max_age_s`, `lost_s`, `keep_lost_s`, `disagree_grids`, `segment_hz`, `segment_budget_wall_s`, `search_start_s`, `search_max_s`, support probe, `fit: FitParams`. (L69)
-- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L108)
-- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector); `alternatives` (smaller qualifying candidates, largest first: `feed` tries the next when a candidate cannot be fitted or its box splits on the map, and mints a SPLIT track only from the last). (L134)
-- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L153)
-- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L169)
-  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L202)
-  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L214)
-  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L219)
+- `class TrackerParams(BaseModel)` — Frozen calibration: `theta_vis`, `max_age_s`, `lost_s`, `keep_lost_s`, `disagree_grids`, `segment_hz`, `segment_budget_wall_s`, `search_start_s`, `search_max_s`, support probe, `fit: FitParams`. (L70)
+- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L109)
+- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector); `alternatives` (smaller qualifying candidates, largest first: `feed` tries the next when a candidate cannot be fitted or its box splits on the map, and mints a SPLIT track only from the last). (L137)
+- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L156)
+- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L172)
+  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L205)
+  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L217)
+  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L222)
 
 ### `python/world_state/src/openral_world_state/object_tracker/pinch.py`
 _Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (`openral_core.kinematics`), pure numpy over the manifest, no HAL import._

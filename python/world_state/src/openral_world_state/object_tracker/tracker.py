@@ -29,6 +29,7 @@ from openral_core import (
     TrackedObjectSet,
     TrackStatus,
 )
+from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.object_primitives import instance_prompt
 from openral_core.perception_geometry import (
     VoxelLattice,
@@ -128,6 +129,8 @@ class CameraFrame:
 
 #: ``_apply_mask``: try the next (smaller) candidate.
 _NEXT = object()
+#: Tracks whose boxes stand for a measured object: a body inside one is that object.
+_SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
 
 @dataclass(frozen=True)
@@ -388,7 +391,10 @@ class ObjectTracker:
         centroid = tuple(float(v) for v in surface.mean(axis=0))
         cells = surface_cells(grid, surface, exclude=hands)
         if not last and fit.box is not None:
-            split = cover_verdict(grid, cells, fit.box, support_z=support_z, own=hands)
+            split = cover_verdict(
+                grid, cells, fit.box, support_z=support_z, own=hands,
+                others=self._other_boxes(centroid),
+            )  # fmt: skip
             if split.kind == "map_split":
                 log.info("object_tracker.candidate_split", label=req.label, why=split.why)
                 return _NEXT
@@ -455,7 +461,10 @@ class ObjectTracker:
         cells = self._cells.get(t.object_id)
         if cells is None or t.status in (TrackStatus.BOUND, TrackStatus.LOST):
             return
-        v = cover_verdict(grid, cells, t.box, support_z=t.support_z, own=hands)
+        others = [
+            o.box for o in self.store.all() if o.object_id != t.object_id and o.status in _SETTLED
+        ]
+        v = cover_verdict(grid, cells, t.box, support_z=t.support_z, own=hands, others=others)
         status = t.status
         update: dict[str, object] = {}
         if not v.kind:
@@ -479,6 +488,18 @@ class ObjectTracker:
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _other_boxes(self, centroid: tuple[float, ...]) -> list[PlaceRegion]:
+        """Settled tracks' boxes a new fit at ``centroid`` is not a refit of."""
+        c = np.asarray(centroid[:3], dtype=np.float64)
+        out = []
+        for o in self.store.all():
+            if o.status not in _SETTLED:
+                continue
+            t = homogeneous_from_quat_xyz(o.box.pose.xyz, o.box.pose.quat_xyzw)
+            if not np.all(np.abs((c - t[:3, 3]) @ t[:3, :3]) <= np.asarray(o.box.half_extents)):
+                out.append(o.box)
+        return out
 
     def _visibility(self, frame: CameraFrame) -> None:
         assert frame.t_base_from_cam is not None
