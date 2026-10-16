@@ -448,6 +448,7 @@ def _self_filter_params(
     description: object,
     joint_states_topic: str,
     padding_m: float,
+    robot_mask_cameras: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
 
@@ -460,6 +461,22 @@ def _self_filter_params(
     ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
     so the filter poses the robot from the same stream the runner acts on.
     ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
+    ``joint_state_period_s`` is ``1 / action_spec.control_freq_hz`` when the manifest
+    declares it (the filter interpolates joint states at the cloud stamp and refuses a
+    gap of more than two periods), else the node's own default.
+
+    ``robot_mask_cameras`` (issue #418, default none = off) names the depth cameras the
+    filter also renders a robot mask for (``/openral/cameras/<cam>/robot_mask``, mono8:
+    0 free, 128 uncertain, 255 robot, at the depth stamp); the hand links
+    (``RobotDescription.hand_links()``) get the mask's unpadded 3-D backstop, every other
+    link 10 mm.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> p = _self_filter_params({}, d, "/joint_states", 0.02, ("top",))
+        >>> round(p["joint_state_period_s"], 4), p["robot_mask_topics"]
+        (0.0333, ['/openral/cameras/top/robot_mask'])
     """
     joints = list(getattr(description, "joints", []))
     params: dict[str, object] = {
@@ -469,6 +486,23 @@ def _self_filter_params(
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
     params["joint_states_topic"] = joint_states_topic
     params["padding_m"] = padding_m
+    rate_hz = getattr(description, "control_rate_hz", None)
+    if isinstance(rate_hz, float) and rate_hz > 0.0:
+        params["joint_state_period_s"] = 1.0 / rate_hz
+    hand_links = getattr(description, "hand_links", None)
+    params["robot_mask_hand_links"] = list(hand_links()) if callable(hand_links) else []
+    if robot_mask_cameras:
+        params["robot_mask_enabled"] = True
+        params["robot_mask_cameras"] = list(robot_mask_cameras)
+        params["robot_mask_depth_topics"] = [
+            camera_topic(c, CameraTopicKind.DEPTH_IMAGE) for c in robot_mask_cameras
+        ]
+        params["robot_mask_camera_info_topics"] = [
+            camera_topic(c, CameraTopicKind.DEPTH_CAMERA_INFO) for c in robot_mask_cameras
+        ]
+        params["robot_mask_topics"] = [
+            camera_topic(c, CameraTopicKind.ROBOT_MASK) for c in robot_mask_cameras
+        ]
     return params
 
 
@@ -3486,6 +3520,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 description,
                                 runtime_joint_states_topic or "/joint_states",
                                 rig.robot_self_filter_padding_m,
+                                tuple(
+                                    c.strip()
+                                    for c in LaunchConfiguration("robot_mask_cameras")
+                                    .perform(context)
+                                    .split(",")
+                                    if c.strip()
+                                ),
                             ),
                             "use_sim_time": use_sim_time,
                         }
@@ -4509,6 +4550,16 @@ def generate_launch_description() -> LaunchDescription:
                 "Real camera path: how far past the collision model a depth return is "
                 "removed as the robot (DeployRuntime.robot_self_filter_padding_m). "
                 "Empty = the schema default, 0.02 m (measured at rest); hard cap 0.10 m."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "robot_mask_cameras",
+            default_value="",
+            description=(
+                "Comma-separated depth cameras the robot self-filter also renders a robot "
+                "mask for (/openral/cameras/<cam>/robot_mask, mono8: 0 free, 128 "
+                "uncertain, 255 robot, at the depth stamp; issue #418). Empty = off. Only "
+                "where the self-filter runs (a camera that sees the robot)."
             ),
         ),
         DeclareLaunchArgument(

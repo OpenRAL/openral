@@ -116,7 +116,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (40)
+## Unresolved endpoints (43)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -132,6 +132,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `camera_info_topic_for(self._topic)` | `sensor_msgs/CameraInfo` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |
 | topic | pub | `gp('camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `gp('depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | pub | `out[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | pub | `points_topic` | `sensor_msgs/PointCloud2` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `self._info_topic` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
 | topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
@@ -145,12 +146,14 @@ caller's argument). Shown as their source expression.
 | topic | pub | `topic` | `std_msgs/Empty` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | topic | sub | `arm_status_topic` | `action_msgs/GoalStatusArray` | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) |
 | topic | sub | `completion_camera_topic` | `sensor_msgs/Image` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| topic | sub | `depth[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | sub | `depth_topic` | `sensor_msgs/PointCloud2` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode._setup_depth_points_fallback) |
 | topic | sub | `gp('image_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | sub | `gp('input_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) |
 | topic | sub | `gp('input_depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) |
 | topic | sub | `gp('left_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) |
 | topic | sub | `gp('right_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) |
+| topic | sub | `info[c]` | `sensor_msgs/CameraInfo` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | sub | `rgb_info_topic` | `sensor_msgs/CameraInfo` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | sub | `self._camera_info_topic()` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) |
 | topic | sub | `self._config.self_filtered_cloud_topic` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) |

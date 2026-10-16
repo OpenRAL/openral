@@ -68,6 +68,19 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     assert aliases[names.index("left_joint1")] == "openarm_left_joint1"
     assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
     assert params["padding_m"] == 0.03
+    assert params["joint_state_period_s"] == pytest.approx(1.0 / 30.0)
+    assert params["robot_mask_hand_links"] == list(description.hand_links())
+    assert "robot_mask_enabled" not in params, "the robot mask is off unless cameras are named"
+    masked = launch_module._self_filter_params(
+        collision, description, "/joint_states", 0.03, ("top", "wrist")
+    )
+    assert masked["robot_mask_enabled"] is True
+    assert masked["robot_mask_depth_topics"] == [
+        "/openral/cameras/top/depth/image",
+        "/openral/cameras/wrist/depth/image",
+    ]
+    assert masked["robot_mask_camera_info_topics"][0] == "/openral/cameras/top/depth/camera_info"
+    assert masked["robot_mask_topics"][1] == "/openral/cameras/wrist/robot_mask"
     # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
     assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")
 

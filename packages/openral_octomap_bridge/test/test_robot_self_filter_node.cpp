@@ -16,6 +16,8 @@
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <gtest/gtest.h>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
@@ -85,6 +87,9 @@ protected:
     for (auto& p : primitive_params()) {
       params.push_back(std::move(p));
     }
+    for (auto& p : extra_params()) {
+      params.push_back(std::move(p));
+    }
     options.parameter_overrides(params);
     filter_ = std::make_shared<bridge::RobotSelfFilter>(options);
     peer_ = std::make_shared<rclcpp::Node>("self_filter_peer_" + suffix);
@@ -109,6 +114,7 @@ protected:
   }
 
   virtual double padding_m() const { return 0.02; }
+  virtual std::vector<rclcpp::Parameter> extra_params() const { return {}; }
 
   /// One capsule on l1 at x = 0.5 m.
   virtual std::vector<rclcpp::Parameter> primitive_params() const {
@@ -246,7 +252,33 @@ TEST_F(SelfFilterNode, AJointStateFarFromTheCaptureStampIsNotUsed) {
   cloud_pub_->publish(make_cloud({{0.5F, 0.0F, 0.0F}}, now));
   spin_for(400ms);
   EXPECT_EQ(received_.load(), 0) << "a pose 1 s from the capture would filter the wrong place";
-  EXPECT_GT(filter_->totals().dropped_no_state, 0U);
+  EXPECT_GT(filter_->totals().refused_extrapolation, 0U);
+}
+
+TEST_F(SelfFilterNode, InterpolatesTheJointAtTheCloudStamp) {
+  // q = 0 at t0 and pi/2 at t0 + 40 ms (default period 50 ms): at t0 + 20 ms the
+  // capsule sits at 45 degrees, where neither sample puts it.
+  const rclcpp::Time t0 = peer_->now();
+  send_joint_state(0.0, t0);
+  send_joint_state(M_PI / 2.0, t0 + rclcpp::Duration(40ms));
+  spin_for(100ms);
+  const float c = static_cast<float>(0.5 / std::sqrt(2.0));
+  cloud_pub_->publish(make_cloud({{c, c, 0.0F}, {0.5F, 0.0F, 0.0F}, {0.0F, 0.5F, 0.0F}},
+                                 t0 + rclcpp::Duration(20ms)));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  EXPECT_EQ(last_.width, 2U) << "only the interpolated pose is robot";
+}
+
+TEST_F(SelfFilterNode, RefusesACloudBetweenJointStatesTooFarApart) {
+  const rclcpp::Time t0 = peer_->now();
+  send_joint_state(0.0, t0);
+  send_joint_state(0.0, t0 + rclcpp::Duration(200ms));  // 4 periods apart
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, t0 + rclcpp::Duration(100ms)));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0) << "a refused frame inserts nothing";
+  EXPECT_GT(filter_->totals().refused_joint_gap, 0U);
 }
 
 namespace {
@@ -392,4 +424,85 @@ TEST_F(MalformedHullNode, AHullThatEscapesItsBoxForwardsNothing) {
   spin_for(400ms);
   EXPECT_EQ(received_.load(), 0) << "a hull the filter cannot trust must not configure the model";
   EXPECT_GT(filter_->totals().clouds, 0U);
+}
+
+namespace {
+
+// One depth camera, `depth_cam`, 0.5 m behind the capsule along its +z: the
+// capsule (r = 0.05, segment 0.45..0.55 m ahead) fills the image centre.
+class RobotMaskNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> extra_params() const override {
+    const std::string s = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    return {
+        {"robot_mask_enabled", true},
+        {"robot_mask_cameras", std::vector<std::string>{"depth_cam"}},
+        {"robot_mask_depth_topics", std::vector<std::string>{"/test_rm_depth_" + s}},
+        {"robot_mask_camera_info_topics", std::vector<std::string>{"/test_rm_info_" + s}},
+        {"robot_mask_topics", std::vector<std::string>{"/test_rm_mask_" + s}},
+        {"robot_mask_uncertain_px", std::int64_t{2}},
+    };
+  }
+};
+
+}  // namespace
+
+TEST_F(RobotMaskNode, PublishesTheRobotSilhouetteWithTheDepthStamp) {
+  const std::string s = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+  geometry_msgs::msg::TransformStamped tf;
+  tf.header.stamp = peer_->now();
+  tf.header.frame_id = "depth_cam";
+  tf.child_frame_id = "root";
+  tf.transform.translation.x = -0.5;
+  tf.transform.translation.z = 0.5;
+  tf.transform.rotation.w = 1.0;
+  tf_->sendTransform(tf);
+  auto info_pub = peer_->create_publisher<sensor_msgs::msg::CameraInfo>("/test_rm_info_" + s,
+                                                                        rclcpp::QoS(1).reliable());
+  auto depth_pub = peer_->create_publisher<sensor_msgs::msg::Image>(
+      "/test_rm_depth_" + s, rclcpp::SensorDataQoS().keep_last(2));
+  sensor_msgs::msg::Image mask;
+  std::atomic<int> masks{0};
+  auto mask_sub = peer_->create_subscription<sensor_msgs::msg::Image>(
+      "/test_rm_mask_" + s, rclcpp::SensorDataQoS(), [&](sensor_msgs::msg::Image::SharedPtr m) {
+        mask = *m;
+        ++masks;
+      });
+  spin_for(300ms);
+
+  sensor_msgs::msg::CameraInfo info;
+  info.width = 64;
+  info.height = 48;
+  info.k = {100.0, 0.0, 32.0, 0.0, 100.0, 24.0, 0.0, 0.0, 1.0};
+  info_pub->publish(info);
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  sensor_msgs::msg::Image depth;
+  depth.header.stamp = now;
+  depth.header.frame_id = "depth_cam";
+  depth.width = 64;
+  depth.height = 48;
+  depth.encoding = "32FC1";
+  depth.step = 64 * 4;
+  const std::vector<float> metres(64 * 48, 1.0F);  // a wall behind the arm
+  depth.data.resize(depth.step * depth.height);
+  std::memcpy(depth.data.data(), metres.data(), depth.data.size());
+  depth_pub->publish(depth);
+  spin_for(400ms);
+
+  ASSERT_EQ(masks.load(), 1) << "dropped: " << filter_->totals().masks_dropped;
+  EXPECT_EQ(rclcpp::Time(mask.header.stamp).nanoseconds(), now.nanoseconds())
+      << "stamped with the DEPTH stamp";
+  EXPECT_EQ(mask.encoding, "mono8");
+  ASSERT_EQ(mask.data.size(), 64U * 48U);
+  EXPECT_EQ(mask.data[24 * 64 + 32], bridge::kRobotMaskRobot);
+  EXPECT_EQ(mask.data[0], bridge::kRobotMaskFree);
+
+  // A depth image at a stamp the joint states cannot reach publishes nothing.
+  depth.header.stamp = now + rclcpp::Duration(1s);
+  depth_pub->publish(depth);
+  spin_for(300ms);
+  EXPECT_EQ(masks.load(), 1) << "a refused frame is no evidence";
+  EXPECT_GT(filter_->totals().masks_dropped, 0U);
 }
