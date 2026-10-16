@@ -1751,6 +1751,12 @@ class IsaacManifestScene(IsaacSceneBase):
         root_body = self._root_rigid_body_prim()
         if root_body:
             self._root_body = (root_body, self._relative_to_root(root_body))
+        # Pose of the manifest base_frame link in the robot root's frame, read at the
+        # import pose for the same reason: depth clouds are published in base_frame,
+        # which need not be the URDF root (OpenArm's openarm_base sits 0.698 m above
+        # it). Read after placement, a base_frame that IS a URDF link (SO-101 `base`)
+        # returned the spawn pose, so _world_from_base applied the spawn twice.
+        self._root_to_base = self._link_offset(self._spec.get("base_frame"))
         from isaacsim.core.utils.stage import get_current_stage
 
         # World.reset() initializes physics before the post-reset teleport.
@@ -1872,10 +1878,6 @@ class IsaacManifestScene(IsaacSceneBase):
             )
             self._cameras[meta["name"]] = cam
 
-        # Pose of the manifest base_frame link in the robot root's frame: depth
-        # clouds are published in base_frame, which need not be the URDF root
-        # (OpenArm's openarm_base sits 0.698 m above it).
-        self._root_to_base = self._link_offset(self._spec.get("base_frame"))
         self._enable_contact_reports()
         self._world.reset()
         # Opening/importing a stage can restore renderer defaults. Apply the
