@@ -257,17 +257,19 @@ def _openarm() -> RobotDescription:
 
 
 def test_an_uncalibrated_gripper_refuses_the_bridge() -> None:
-    """SO-101 declares no ``closure_calibration``: a typed error, never guessed thresholds."""
+    """A gripper with no ``closure_calibration``: a typed error, never guessed thresholds."""
+    so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    so101 = so101.model_copy(
+        update={
+            "joints": [j.model_copy(update={"closure_calibration": None}) for j in so101.joints]
+        }
+    )
     with pytest.raises(ROSConfigError, match="closure_calibration"):
-        VisionAttachmentBridge(
-            None,
-            RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
-            config=VisionAttachmentConfig(camera="wrist"),
-        )
+        VisionAttachmentBridge(None, so101, config=VisionAttachmentConfig(camera="wrist"))
 
 
 def _so101_calibrated() -> RobotDescription:
-    """SO-101 with an ILLUSTRATIVE calibration (none is measured) so its TCP wiring loads."""
+    """SO-101 with an ILLUSTRATIVE calibration, independent of its sim-measured one."""
     description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     calibration = GripperClosureCalibration(
         closed_position=0.0, closed_rest_offset=0.0, stall_gap=0.1, settle_tolerance=0.01

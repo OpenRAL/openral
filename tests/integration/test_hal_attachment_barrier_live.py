@@ -287,9 +287,9 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
 def _calibrated_so101(tmp_path: Path) -> Path:
     """The real SO-101 manifest plus an ILLUSTRATIVE gripper ``closure_calibration``.
 
-    SO-101 has no measured closure calibration, so the vision leg (rightly) refuses it.
-    This test is about barrier composition, not the SO-101's jaw, so it loads a copy with
-    labelled, unmeasured numbers; the URDF ref is made absolute so the copy resolves it.
+    The SO-101's own calibration is sim-measured; this test is about barrier composition,
+    not the SO-101's jaw, so it loads a copy with labelled, illustrative numbers; the URDF
+    ref is made absolute so the copy resolves it.
     """
     import yaml
 
