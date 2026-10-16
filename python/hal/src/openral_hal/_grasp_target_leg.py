@@ -1843,7 +1843,9 @@ class GraspTargetLeg:
                     )
                 }
             )
-        declaration.fill_idl(msg.grasp_declaration)
+        from openral_msgs.msg import ObjectQuery  # reason: ROS import at call time
+
+        declaration.fill_idl(msg.grasp_declaration, query_factory=ObjectQuery)
 
     @_locked
     def kernel_region(

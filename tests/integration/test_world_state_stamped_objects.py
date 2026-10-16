@@ -349,6 +349,38 @@ def test_a_grasp_declaration_rides_attachment_state_to_world_state_stamped() -> 
         rclpy.shutdown()
 
 
+def test_a_grasp_declaration_with_target_queries_relays_them() -> None:
+    # Issue #418: dispatch names classes, not boxes. Every relay must encode them; one
+    # without a query factory raises rather than drop what the prompt named.
+    from openral_core import ObjectQuery, ObjectRole
+    from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+    declaration = GraspDeclaration(
+        target_id="orange",
+        contact_links=("gripper",),
+        timeout_s=60.0,
+        stamp_ns=5,
+        target_queries=(ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET),),
+    )
+    state_msg = AttachmentState()
+    state_msg.header.stamp.nanosec = 5
+    state_msg.revision = 1
+    state_msg.grasp_declaration_valid = True
+    declaration.fill_idl(state_msg.grasp_declaration, query_factory=ObjectQueryMsg)
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    )
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        node._on_attachment_state(state_msg)
+        msg = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert world_state_from_idl(msg).grasp_declaration == declaration
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_support_contact_witness_round_trips_over_the_idl() -> None:
     # Wire half of ADR-0092 D6: an attachment attesting support contact must arrive at the
     # safety kernel with the attestation intact; one that doesn't must arrive with

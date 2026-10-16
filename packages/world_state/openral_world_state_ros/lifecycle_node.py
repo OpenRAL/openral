@@ -1367,7 +1367,12 @@ def _fill_grasp_declaration(msg: object, world_state: object) -> None:
     declaration = getattr(world_state, "grasp_declaration", None)
     msg.grasp_declaration_valid = declaration is not None  # type: ignore[attr-defined]
     if declaration is not None:
-        declaration.fill_idl(msg.grasp_declaration)  # type: ignore[attr-defined]
+        from openral_msgs.msg import ObjectQuery  # reason: ROS import at call time
+
+        declaration.fill_idl(
+            msg.grasp_declaration,  # type: ignore[attr-defined]
+            query_factory=ObjectQuery,
+        )
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:

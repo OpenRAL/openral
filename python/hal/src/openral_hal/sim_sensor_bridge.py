@@ -4098,7 +4098,9 @@ class SimSensorBridge:
         if declaration is None:
             return
         msg.grasp_declaration_valid = True
-        declaration.fill_idl(msg.grasp_declaration)
+        from openral_msgs.msg import ObjectQuery  # reason: ROS import at call time
+
+        declaration.fill_idl(msg.grasp_declaration, query_factory=ObjectQuery)
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.
