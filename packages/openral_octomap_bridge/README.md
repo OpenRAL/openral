@@ -152,6 +152,31 @@ provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the who
 The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
 non-finite) logs an ERROR and forwards nothing.
 
+Joint positions are linearly interpolated at the capture stamp between the two
+samples around it. The frame is refused (dropped, counted, WARN rate-limited)
+when those samples are more than two `joint_state_period_s` apart or the stamp
+needs more than one period of extrapolation past the newest; a refused frame
+inserts nothing. Each robot primitive's padding grows with its speed:
+`padding_m + |v|·velocity_padding_dt_s`, `|v|·δt` the primitive's motion over
+the interpolated joint rate within δt_sync (default 0.02 s: the stamp error
+interpolation cannot see; 0.5 m/s adds 10 mm). The total stays under the 0.10 m
+cap: a link faster than that is under-padded, which leaves its points in the
+map (a false stop) rather than erasing more of the world.
+
+**Robot mask** (issue #418, off by default). With `robot_mask_enabled`, the node
+also renders the UNPADDED model into each named depth camera at the depth
+stamp and publishes `/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128
+uncertain, 255 robot; the depth image's header; BEST_EFFORT, KEEP_LAST 5). A
+pixel is robot iff the rendered robot depth is at most the measured depth +
+5 mm (so a held object in front of a finger stays free), or its back-projected
+return is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of
+any other link. Pixels within `robot_mask_uncertain_px` of a robot/non-robot
+boundary, and robot-covered pixels with no return, are uncertain. Each
+primitive is rasterised over its projected bounding box only; a hulled box is
+rendered as its 26-DOP (which contains the hull). The deploy launch turns it on
+with `robot_mask_cameras:=top,wrist` (only where the self-filter runs).
+RGB-only cameras get no mask yet.
+
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
 filtered against that geometry, not the box: the box's slack (12–27 mm mean on
@@ -615,10 +640,16 @@ the kernel fails closed.
 The package's second executable (`robot_self_filter`, real camera path) takes
 `cloud_in` and publishes `cloud_out` (+ `cloud_out_rgb` for viewers). Parameters:
 the kernel's collision model (`collision_*`), `padding_m` (`0.02`),
-`max_joint_state_skew_s` (`0.1`), `tf_timeout_s` (`0.05`), `joint_state_history_s`
+`max_joint_state_skew_s` (`0.1`), `joint_state_period_s` (`0.05`; the launch
+passes `1 / action_spec.control_freq_hz`), `velocity_padding_dt_s` (`0.02`),
+`tf_timeout_s` (`0.05`), `joint_state_history_s`
 (`2.0`), `attached_filter_enabled` (`true`), `attached_state_timeout_s` (`0.5`),
 `joint_states_topic` (`/joint_states`), `world_state_topic`
-(`/openral/world_state_fast`). With no collision model it forwards nothing.
+(`/openral/world_state_fast`), and the robot mask's `robot_mask_enabled`
+(`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
+`robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
+`robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no
+collision model, or a period / δt_sync out of range, it forwards nothing.
 
 ## Producing the upstream OctoMap
 

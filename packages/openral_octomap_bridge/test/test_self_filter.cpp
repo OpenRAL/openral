@@ -14,8 +14,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <random>
 #include <string>
 #include <vector>
@@ -595,4 +597,378 @@ TEST(SelfFilterManifest, PandaMobileHullsLoadAndOnlyEverShrinkTheShell) {
   }
   EXPECT_EQ(links, 7) << "panda_link1..7";
   EXPECT_EQ(exact, 6) << "every link but panda_link1 carries its exact hull";
+}
+
+// ---------------------------------------------------------------------------
+// Every real manifest with mimic joints: filter FK == kernel FK over the stroke.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<double> seq_or(const YAML::Node& n, std::vector<double> fallback) {
+  return n ? n.as<std::vector<double>>() : fallback;
+}
+
+// The kinematic lowering of `envelope_loader._ordered_collision_links`: joints,
+// fixed attachments and mimic joints as one tree, breadth-first from the root
+// with children in name order. Both FKs read these same arrays, so the pin is
+// on the C++ mirrors, not on this lowering.
+bridge::SelfModelParams manifest_chain(const YAML::Node& robot,
+                                       std::vector<std::pair<double, double>>& limits,
+                                       std::vector<int>& mimicked) {
+  struct Edge {
+    std::string parent;
+    std::int64_t kind{0};
+    std::int64_t dof{-1};
+    std::vector<double> xyzrpy;
+    std::vector<double> axis;
+    double mult{1.0};
+    double off{0.0};
+  };
+  std::map<std::string, Edge> edge_of;
+  std::map<std::string, int> column;
+  int idx = 0;
+  for (const auto& j : robot["joints"]) {
+    const auto type = j["joint_type"].as<std::string>();
+    Edge e;
+    e.parent = j["parent_link"].as<std::string>();
+    e.kind = type == "prismatic" ? 2 : type == "fixed" ? 0 : 1;
+    e.dof = idx;
+    const auto xyz = seq_or(j["origin_xyz"], {0, 0, 0});
+    const auto rpy = seq_or(j["origin_rpy"], {0, 0, 0});
+    e.xyzrpy = {xyz[0], xyz[1], xyz[2], rpy[0], rpy[1], rpy[2]};
+    e.axis = seq_or(j["axis_xyz"], {0, 0, 1});
+    const auto lim = seq_or(j["position_limits"], {-1.0, 1.0});
+    limits.emplace_back(lim[0], lim[1]);
+    column[j["name"].as<std::string>()] = idx++;
+    edge_of[j["child_link"].as<std::string>()] = e;
+  }
+  const YAML::Node fixed = robot["fixed_attachments"] ? robot["fixed_attachments"]
+                                                      : YAML::Node(YAML::NodeType::Sequence);
+  for (const auto& a : fixed) {
+    Edge e;
+    e.parent = a["parent_link"].as<std::string>();
+    const auto xyz = seq_or(a["origin_xyz"], {0, 0, 0});
+    const auto rpy = seq_or(a["origin_rpy"], {0, 0, 0});
+    e.xyzrpy = {xyz[0], xyz[1], xyz[2], rpy[0], rpy[1], rpy[2]};
+    e.axis = {0, 0, 1};
+    edge_of[a["child_link"].as<std::string>()] = e;
+  }
+  for (const auto& m : robot["mimic_joints"]) {
+    Edge e;
+    e.parent = m["parent_link"].as<std::string>();
+    e.kind = m["joint_type"].as<std::string>() == "prismatic" ? 4 : 3;
+    e.dof = column.at(m["mimics"].as<std::string>());
+    mimicked.push_back(static_cast<int>(e.dof));
+    const auto xyz = seq_or(m["origin_xyz"], {0, 0, 0});
+    const auto rpy = seq_or(m["origin_rpy"], {0, 0, 0});
+    e.xyzrpy = {xyz[0], xyz[1], xyz[2], rpy[0], rpy[1], rpy[2]};
+    e.axis = seq_or(m["axis_xyz"], {0, 0, 1});
+    e.mult = m["multiplier"] ? m["multiplier"].as<double>() : 1.0;
+    e.off = m["offset"] ? m["offset"].as<double>() : 0.0;
+    edge_of[m["child_link"].as<std::string>()] = e;
+  }
+  std::map<std::string, std::vector<std::string>> children;  // std::map: name order
+  std::vector<std::string> roots;
+  for (const auto& [child, e] : edge_of) {
+    children[e.parent].push_back(child);
+  }
+  for (const auto& [parent, kids] : children) {
+    if (edge_of.count(parent) == 0) {
+      roots.push_back(parent);
+    }
+  }
+  bridge::SelfModelParams p;
+  std::map<std::string, std::int64_t> index;
+  std::vector<std::string> queue = roots;
+  for (std::size_t i = 0; i < queue.size(); ++i) {
+    const std::string link = queue[i];
+    index[link] = static_cast<std::int64_t>(p.link_names.size());
+    p.link_names.push_back(link);
+    const auto it = edge_of.find(link);
+    const Edge e =
+        it == edge_of.end() ? Edge{"", 0, -1, {0, 0, 0, 0, 0, 0}, {0, 0, 1}} : it->second;
+    p.parent.push_back(it == edge_of.end() ? -1 : index.at(e.parent));
+    p.joint_kind.push_back(e.kind);
+    p.dof_index.push_back(e.dof);
+    p.origin_xyzrpy.insert(p.origin_xyzrpy.end(), e.xyzrpy.begin(), e.xyzrpy.end());
+    p.axis.insert(p.axis.end(), e.axis.begin(), e.axis.end());
+    p.mimic_multiplier.push_back(e.mult);
+    p.mimic_offset.push_back(e.off);
+    for (const auto& kid : children[link]) {
+      queue.push_back(kid);
+    }
+  }
+  p.n_links = static_cast<std::int64_t>(p.link_names.size());
+  return p;
+}
+
+}  // namespace
+
+TEST(SelfFilterFk, EveryManifestWithMimicJointsMatchesTheKernelOverTheGripperStroke) {
+  const auto robots = repo_root() / "robots";
+  if (!std::filesystem::exists(robots)) {
+    GTEST_SKIP() << "no " << robots << " (not a source checkout)";
+  }
+  int manifests = 0;
+  for (const auto& dir : std::filesystem::directory_iterator(robots)) {
+    const auto path = dir.path() / "robot.yaml";
+    if (!std::filesystem::exists(path)) {
+      continue;
+    }
+    const YAML::Node robot = YAML::LoadFile(path.string());
+    if (!robot["mimic_joints"] || robot["mimic_joints"].size() == 0) {
+      continue;
+    }
+    ++manifests;
+    std::vector<std::pair<double, double>> limits;
+    std::vector<int> mimicked;
+    const auto params = manifest_chain(robot, limits, mimicked);
+    bridge::SelfModel model;
+    std::string error;
+    ASSERT_TRUE(bridge::build_self_model(params, model, error)) << path << ": " << error;
+    const auto kernel = kernel_model(params);
+    osk::CollisionScratch scratch;
+    scratch.link_world.resize(kernel.n_links);
+    std::vector<tf2::Transform> ours;
+    std::mt19937 rng(7);
+    std::vector<double> q(limits.size());
+    for (int step = 0; step <= 20; ++step) {
+      for (std::size_t d = 0; d < q.size(); ++d) {
+        q[d] = std::uniform_real_distribution<double>(limits[d].first, limits[d].second)(rng);
+      }
+      for (const int d : mimicked) {  // the gripper stroke, end to end
+        const auto [lo, hi] = limits[static_cast<std::size_t>(d)];
+        q[static_cast<std::size_t>(d)] = lo + (hi - lo) * step / 20.0;
+      }
+      osk::forward_kinematics(kernel, q.data(), q.size(), scratch);
+      bridge::self_forward_kinematics(model, q.data(), q.size(), ours);
+      for (std::size_t i = 0; i < kernel.n_links; ++i) {
+        const auto& k = scratch.link_world[i];
+        const tf2::Vector3 t(k.t.x, k.t.y, k.t.z);
+        EXPECT_LT((ours[i].getOrigin() - t).length(), 1e-6)
+            << path << " link " << params.link_names[i] << " step " << step;
+        for (int row = 0; row < 3; ++row) {
+          for (int col = 0; col < 3; ++col) {
+            EXPECT_NEAR(ours[i].getBasis()[row][col], k.r[row * 3 + col], 1e-9);
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GE(manifests, 3) << "so101_follower, openarm and droid_franka_robotiq at least";
+}
+
+// ---------------------------------------------------------------------------
+// Joint states at the stamp: interpolation and refusal.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::int64_t kMs = 1'000'000;
+
+std::deque<bridge::JointSample> samples(std::vector<std::pair<std::int64_t, double>> at) {
+  std::deque<bridge::JointSample> h;
+  for (const auto& [t, q] : at) {
+    h.push_back(bridge::JointSample{t * kMs, {q}});
+  }
+  return h;
+}
+
+}  // namespace
+
+TEST(SelfFilterJointState, InterpolatesBetweenTheBracketingSamples) {
+  const auto h = samples({{0, 0.0}, {10, 1.0}, {20, 3.0}});
+  std::vector<double> q;
+  std::vector<double> qdot;
+  ASSERT_EQ(bridge::joint_state_at(h, 15 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+  EXPECT_NEAR(q[0], 2.0, 1e-12);
+  EXPECT_NEAR(qdot[0], 200.0, 1e-9) << "rad/s over the bracketing pair";
+  ASSERT_EQ(bridge::joint_state_at(h, 10 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+  EXPECT_DOUBLE_EQ(q[0], 1.0) << "a stamp on a sample is that sample";
+  // Extrapolation within one period, from the two newest samples.
+  ASSERT_EQ(bridge::joint_state_at(h, 25 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+  EXPECT_NEAR(q[0], 4.0, 1e-12);
+}
+
+TEST(SelfFilterJointState, RefusesAGapAndAnExtrapolationAndKeepsQ) {
+  std::vector<double> q = {42.0};
+  std::vector<double> qdot;
+  const auto gap = samples({{0, 0.0}, {25, 1.0}});
+  EXPECT_EQ(bridge::joint_state_at(gap, 12 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kGap)
+      << "samples 2.5 periods apart";
+  const auto h = samples({{0, 0.0}, {10, 1.0}});
+  EXPECT_EQ(bridge::joint_state_at(h, 21 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kExtrapolation)
+      << "1.1 periods past the newest";
+  EXPECT_EQ(bridge::joint_state_at(h, -11 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kExtrapolation);
+  EXPECT_EQ(bridge::joint_state_at(samples({{0, 0.0}}), 1 * kMs, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kExtrapolation)
+      << "one sample cannot be extrapolated";
+  EXPECT_EQ(bridge::joint_state_at({}, 0, 0.01, 0.1, q, qdot), bridge::JointStateVerdict::kNoState);
+  EXPECT_EQ(bridge::joint_state_at(samples({{0, 0.0}, {100, 1.0}}), 50 * kMs, 0.1, 0.02, q, qdot),
+            bridge::JointStateVerdict::kNoState)
+      << "nearest sample past max_skew_s";
+  EXPECT_DOUBLE_EQ(q[0], 42.0) << "a refusal never writes a pose";
+  // One sample exactly at the stamp is the pose, at rest.
+  ASSERT_EQ(bridge::joint_state_at(samples({{0, 0.5}}), 0, 0.01, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+  EXPECT_DOUBLE_EQ(q[0], 0.5);
+  EXPECT_DOUBLE_EQ(qdot[0], 0.0);
+}
+
+TEST(SelfFilterVelocityPadding, GrowsWithLinkSpeedUpToTheCap) {
+  const auto params = chain_params();
+  bridge::SelfModel model;
+  std::string error;
+  ASSERT_TRUE(bridge::build_self_model(params, model, error)) << error;
+  const std::vector<double> q = {0.3, 0.1, -0.2};
+  std::vector<tf2::Transform> now;
+  bridge::self_forward_kinematics(model, q.data(), q.size(), now);
+  std::vector<double> previous(model.primitives.size(), -1.0);
+  for (const double rate : {0.0, 0.5, 2.0}) {
+    std::vector<double> later_q = q;
+    for (auto& v : later_q) {
+      v += rate * 0.02;  // δt_sync = 20 ms
+    }
+    std::vector<tf2::Transform> later;
+    bridge::self_forward_kinematics(model, later_q.data(), later_q.size(), later);
+    std::vector<double> motion;
+    bridge::self_primitive_motion(model, now, later, motion);
+    ASSERT_EQ(motion.size(), model.primitives.size());
+    for (std::size_t k = 0; k < motion.size(); ++k) {
+      EXPECT_GT(motion[k], previous[k]) << "primitive " << k << " at rate " << rate;
+      // Never an under-report: every surface point moved by at most that much.
+      const tf2::Transform a =
+          now[static_cast<std::size_t>(model.primitive_link[k])] * model.primitives[k].pose;
+      const tf2::Transform b =
+          later[static_cast<std::size_t>(model.primitive_link[k])] * model.primitives[k].pose;
+      const tf2::Vector3 tip(0.0, 0.0,
+                             -model.primitives[k].half_length - model.primitives[k].radius);
+      EXPECT_LE(((b * tip) - (a * tip)).length(), motion[k] + 1e-12);
+    }
+    previous = motion;
+    if (rate == 0.0) {
+      EXPECT_DOUBLE_EQ(motion[0], 0.0);
+    }
+  }
+  // A point 3 cm off the sphere: inside 2 cm + 1.5 cm of motion, outside 2 cm alone.
+  std::vector<bridge::PayloadPrimitive> placed;
+  bridge::place_self_primitives(model, now, tf2::Transform::getIdentity(), placed);
+  const tf2::Vector3 probe = placed[1].pose * tf2::Vector3(0.0, 0.0, 0.04 + 0.03);
+  bridge::SelfMask still;
+  still.set({placed[1]}, 0.02, {}, {0.0});
+  bridge::SelfMask moving;
+  moving.set({placed[1]}, 0.02, {}, {0.015});
+  EXPECT_FALSE(still.contains(probe));
+  EXPECT_TRUE(moving.contains(probe));
+  bridge::SelfMask fast;
+  fast.set(placed, 0.02, {}, {5.0, std::nan("")});
+  EXPECT_DOUBLE_EQ(fast.padding(0), bridge::kMaxSelfFilterPaddingM) << "the blind-shell cap holds";
+  EXPECT_DOUBLE_EQ(fast.padding(1), 0.02) << "a non-finite speed adds nothing";
+}
+
+// ---------------------------------------------------------------------------
+// Robot mask: the z-test and the uncertain band.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::size_t kW = 64;
+constexpr std::size_t kH = 48;
+
+bridge::PinholeCamera test_camera() {
+  bridge::PinholeCamera c;
+  c.fx = 200.0;
+  c.fy = 200.0;
+  c.cx = 32.0;
+  c.cy = 24.0;
+  c.width = kW;
+  c.height = kH;
+  return c;
+}
+
+// A 2 cm "fingertip" sphere 0.5 m ahead of the camera, on the optical axis.
+bridge::PayloadPrimitive finger() {
+  bridge::PayloadPrimitive s;
+  s.shape_type = Wire::SHAPE_CAPSULE;
+  s.radius = 0.02;
+  s.pose.setOrigin(tf2::Vector3(0.0, 0.0, 0.5));
+  return s;
+}
+
+std::vector<std::uint8_t> render(const std::vector<float>& depth, double margin, int k) {
+  bridge::RobotMaskScratch scratch;
+  std::vector<std::uint8_t> mask;
+  bridge::render_robot_mask({finger()}, {nullptr}, {margin}, depth.data(), test_camera(), k,
+                            scratch, mask);
+  return mask;
+}
+
+std::uint8_t at(const std::vector<std::uint8_t>& m, std::size_t u, std::size_t v) {
+  return m[v * kW + u];
+}
+
+}  // namespace
+
+TEST(SelfFilterRobotMask, AFingerInFrontOfAnObjectIsRobot) {
+  // The object's surface at 0.8 m: the finger (front at 0.48 m) is in front.
+  const auto mask = render(std::vector<float>(kW * kH, 0.8F), 0.0, 2);
+  EXPECT_EQ(at(mask, 32, 24), bridge::kRobotMaskRobot);
+  // The silhouette's radius is ~8 px: 7 px out is the band, 20 px out is free.
+  EXPECT_EQ(at(mask, 32 + 9, 24), bridge::kRobotMaskUncertain);
+  EXPECT_EQ(at(mask, 32 + 20, 24), bridge::kRobotMaskFree);
+  EXPECT_EQ(at(mask, 0, 0), bridge::kRobotMaskFree);
+}
+
+TEST(SelfFilterRobotMask, AnObjectInFrontOfAFingerIsKept) {
+  // A held object's surface at 0.4 m, in front of the finger: never robot.
+  const auto mask = render(std::vector<float>(kW * kH, 0.4F), bridge::kRobotMaskArmMarginM, 2);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), bridge::kRobotMaskRobot), 0);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), bridge::kRobotMaskUncertain), 0);
+}
+
+TEST(SelfFilterRobotMask, NoReturnOverTheRobotIsUncertainAndTheBackstopCatchesNoise) {
+  std::vector<float> depth(kW * kH, 0.8F);
+  depth[24 * kW + 32] = std::nanf("");
+  auto mask = render(depth, 0.0, 0);
+  EXPECT_EQ(at(mask, 32, 24), bridge::kRobotMaskUncertain) << "the robot covers it, no return";
+  EXPECT_EQ(at(mask, 33, 24), bridge::kRobotMaskRobot);
+  // A return 8 mm in front of the finger's front (0.472 m): the z-test misses it
+  // (0.48 > 0.472 + 5 mm); the arm's 10 mm backstop catches it, the hand's 0 does not.
+  depth.assign(kW * kH, 0.472F);
+  EXPECT_EQ(at(render(depth, bridge::kRobotMaskArmMarginM, 0), 32, 24), bridge::kRobotMaskRobot);
+  EXPECT_EQ(at(render(depth, bridge::kRobotMaskHandMarginM, 0), 32, 24), bridge::kRobotMaskFree);
+}
+
+TEST(SelfFilterRobotMask, RendersABoxAndAHulledBoxBySlabs) {
+  bridge::PayloadPrimitive box;
+  box.shape_type = Wire::SHAPE_BOX;
+  box.half_extents = tf2::Vector3(0.05, 0.05, 0.05);
+  box.pose.setOrigin(tf2::Vector3(0.0, 0.0, 0.5));
+  bridge::SelfHull hull;  // the inscribed octahedron's DOP
+  const double c = 0.05 / std::sqrt(3.0);
+  const double e = 0.05 / std::sqrt(2.0);
+  const double hi[13] = {0.05, 0.05, 0.05, c, c, c, c, e, e, e, e, e, e};
+  for (int i = 0; i < 13; ++i) {
+    hull.dop_hi[i] = hi[i];
+    hull.dop_lo[i] = -hi[i];
+  }
+  const std::vector<float> depth(kW * kH, 1.0F);
+  bridge::RobotMaskScratch scratch;
+  std::vector<std::uint8_t> plain;
+  std::vector<std::uint8_t> hulled;
+  bridge::render_robot_mask({box}, {nullptr}, {0.0}, depth.data(), test_camera(), 0, scratch,
+                            plain);
+  bridge::render_robot_mask({box}, {&hull}, {0.0}, depth.data(), test_camera(), 0, scratch, hulled);
+  // The box's corner direction (u, v) = (32 + 18, 24 + 18) is box, not octahedron.
+  EXPECT_EQ(at(plain, 32, 24), bridge::kRobotMaskRobot);
+  EXPECT_EQ(at(hulled, 32, 24), bridge::kRobotMaskRobot);
+  EXPECT_EQ(at(plain, 50, 42), bridge::kRobotMaskRobot);
+  EXPECT_EQ(at(hulled, 50, 42), bridge::kRobotMaskFree);
 }

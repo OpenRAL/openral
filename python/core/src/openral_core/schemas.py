@@ -600,6 +600,9 @@ class CameraTopicKind(StrEnum):
     DEPTH_IMAGE = "depth/image"
     DEPTH_CAMERA_INFO = "depth/camera_info"
     POINTS = "points"
+    #: The robot self-filter's per-pixel robot mask (mono8: 0 free, 128 uncertain,
+    #: 255 robot), at the depth image's stamp.
+    ROBOT_MASK = "robot_mask"
 
 
 def camera_topic(
