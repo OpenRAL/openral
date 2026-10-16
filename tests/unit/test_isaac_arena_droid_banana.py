@@ -93,7 +93,8 @@ def test_both_scenes_load_with_the_same_world() -> None:
     assert _PROMPT in sim.placement_success.tasks
     # RoboLab's gripper-detached term: a banana still held inside the bowl is not placed.
     assert sim.placement_success.require_released
-    assert _placement_success_spec(sim.placement_success, _PROMPT)["require_released"] is True
+    spec = _placement_success_spec(sim.placement_success, _PROMPT)
+    assert spec is not None and spec["require_released"] is True
 
 
 def test_the_deploy_scene_maps_the_world_from_a_sim_depth_camera() -> None:
