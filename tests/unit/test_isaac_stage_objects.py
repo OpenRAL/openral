@@ -12,7 +12,11 @@ module's pure helpers, imported without Isaac.
 from __future__ import annotations
 
 import copy
+import hashlib
+import io
 import sys
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +194,43 @@ def test_a_completed_archive_extraction_is_reused(
     (root / archive.usd).write_text("#usda 1.0\n")
     (root / ".extracted").write_text(archive.sha256)
     assert fetch_environment_archive(archive) == str(root / archive.usd)
+
+
+def _serve_zip(monkeypatch: pytest.MonkeyPatch, members: dict[str, str]) -> IsaacEnvironmentArchive:
+    """A pinned archive whose download is served from memory (the network boundary)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, text in members.items():
+            zf.writestr(name, text)
+    blob = buf.getvalue()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.BytesIO(blob))
+    pinned = IsaacEnvironmentArchive.model_validate(_options()["environment_archive"])
+    return pinned.model_copy(update={"sha256": hashlib.sha256(blob).hexdigest()})
+
+
+def test_an_archive_is_extracted_beside_the_cache_and_swapped_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale partial tree is replaced whole; no staging dir or part file is left behind."""
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    archive = _serve_zip(monkeypatch, {"kitchen_with_orange/scene.usd": "#usda 1.0\n"})
+    cache = tmp_path / "isaac-environments"
+    root = cache / archive.sha256[:16]
+    (root / "half_written").mkdir(parents=True)  # a crashed run's leftovers, no marker
+    assert fetch_environment_archive(archive) == str(root / archive.usd)
+    assert (root / ".extracted").read_text() == archive.sha256
+    assert sorted(p.name for p in root.iterdir()) == [".extracted", "kitchen_with_orange"]
+    assert sorted(p.name for p in cache.iterdir()) == [root.name, f"{root.name}.lock"]
+
+
+def test_an_archive_without_its_usd_leaves_the_cache_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENRAL_CACHE_DIR", str(tmp_path))
+    archive = _serve_zip(monkeypatch, {"elsewhere/scene.usd": "#usda 1.0\n"})
+    with pytest.raises(ROSConfigError, match="has no"):
+        fetch_environment_archive(archive)
+    assert list((tmp_path / "isaac-environments").iterdir()) == []
 
 
 # ── sidecar helpers (pure; imported without Isaac) ───────────────────────────
