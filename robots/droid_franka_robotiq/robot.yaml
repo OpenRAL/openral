@@ -256,11 +256,12 @@ observation_spec:
   state_shape: [8]
   state_representation: "joint_positions"
 
+# Isaac-only: no MJCF and no `sim:` block, so there is no MuJoCo twin to derive
+# (`MujocoArmHAL`). Simulated only through the Isaac scenes it is attached to
+# (scenes/{sim,deploy}/isaac_arena_droid_banana_in_bowl.yaml), like galaxea_a1 / r1pro.
 hal:
   sim: null
   real: null
-
-sim: {}
 
 # The URDF's rigid chain from the arm flange to the jaw (panda_joint8, then
 # robotiq_mount_joint: Arena's panda_hand_joint), so the lowering fits the Robotiq
