@@ -192,6 +192,7 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
 
 - `struct PayloadPrimitive` — One attached-payload collision primitive placed in the grid frame, mirroring the kernel's `AttachedPrimitive` conventions (a capsule's segment on local +Z, a box's half-extents on its own axes).
 - `struct SupportPatch` — One attested support contact placed in the grid frame (point + outward normal + patch radius + max penetration); the wire form is `openral_msgs/SupportContactWitness`, lifted here through the payload's live pose. `has_anchor` / `anchor_point` / `anchor_normal`: the attestation's plane on its first grid (`SupportPatchAnchors`); when set, a cell is withheld only if both planes claim it.
+- `pose_from_msg(pose, out) -> bool` — A wire pose as a transform; `false` on a non-finite position or a zero quaternion (never silently the identity).
 - `place_attached_object(object, grid_from_link, out, out_patches) -> bool` — Place one wire `AttachedCollisionObject`'s primitives (and support patch, when valid) using the kernel's own pose composition. Fail-closed on any of the kernel's `ingest_attached_objects` validation rules, returning `false` and appending nothing — so a rejected object clears nothing.
 - `support_patch_withholds(patch, center, resolution) -> bool` — Does an attested patch withhold this cell from clearing? Mirrors the kernel's `support_contact_exempts` (with zero slack) so the withheld set is always a subset of what the kernel exempts — a withheld cell can never be the one that stops the robot. With an anchor it is the AND of the live and anchored planes (only ever narrower). Deliberate mirror of the kernel predicate; see [14-duplication-watch.md](14-duplication-watch.md) item 8.
 - `clear_attached_payload_cells(grid, primitives, patches, padding_m) -> size_t` — Zero every occupied cell within `resolution·√3/2 + padding_m` of a payload primitive's surface, except cells a patch withholds; returns the count cleared. Only ever writes 0 (never marks); a grid with mismatched dimensions or non-positive resolution is left untouched.
@@ -215,6 +216,24 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
 - `struct SweepSupports` — Every support known for a swept box, in its frame: `patches` (attested during the carry, as first attested), `static_points` (declared static geometry), `has_measured_floor` / `measured_floor_z` (a measured payload's lowest point at attach).
 - `floor_swept_box(box, supports, resolution) -> SweepFloor` — The swept-volume `clear_bbox` never reaches below a support: one cell above every patch under the box and every static point under its footprint below its top, and never below the REGION payload's attach bottom when measured (the highest bound wins; a support under the box never switches it off) (the node sets `SweepSupports::measured_floor_z` only for `evidence_kind == "grasp_target_region"`; a segmented payload's bottom can include counter / depth-edge points, LeIsaac g17); with neither (a segmented or gripper-closure payload), `kNone` and the box is not cleared (DROID t7 fix). A non-vertical patch under the box is `kNone`; every `kNone` leaves `box.valid == false`.
 - `floor_pose_boxes(boxes, supports, resolution, out) -> SweepFloor` — One clearing period's `clear_bbox` set: each posed box floored by `floor_swept_box` and never below the union's floor (the highest bound wins, so it clears a subset of what the one union box would); `kNone` boxes and boxes inside one already in `out` are dropped; the union's `kNone` clears nothing.
+
+### `packages/openral_octomap_bridge/include/openral_octomap_bridge/identity_clearing.hpp`
+_C++ (Layer 2). Octomap clearing by identity (issue #418): an unambiguous tracker binding's cells, its sweep since `t_attach` and its vacated box; `PINCH_FALLBACK` / ambiguous bindings get none (hazard OT-8). Wired in `OctomapVoxelBridge::clear_by_identity`._
+
+- `kTrackedObjectEvidence` / `kPinchFallbackEvidence` — The `AttachmentEvidenceKind` wire values; the legacy path skips both.
+- `kIdentityBackfillMaxS = 5.0`, `kIdentityBackfillStepS = 0.05`, `kIdentityMaxInterpGapS = 0.25`, `kIdentityMaxClearBoxes = 64` — Backfill depth and step, the longest gap bridged by interpolation, and `clear_bbox` requests per clear.
+- `tracked_set_usable(state, grid_frame) -> bool` — Valid set whose frame and every box's frame is the grid frame.
+- `identity_clearing_track(object, state, grid_frame) -> const TrackedObject*` — The bound track licensing identity clearing, or null (wrong kind, unusable set, no or duplicated id, not `bound`, epoch / attach-link mismatch, non-finite `floor_z`, another track bound to the link, another payload on it).
+- `track_box(track, out) -> bool` — A track's box as a `SHAPE_BOX` `PayloadPrimitive`; fail-closed on a bad extent or pose.
+- `struct IdentityPiece` — One placed primitive, its inverse pose and optional tight hull (`SelfHull`).
+- `place_identity_pieces(object, frame_from_link, out) -> bool` — `place_attached_object` plus each primitive's tight refinement; malformed tight geometry clears nothing.
+- `identity_covers(pieces, c, half_cell) -> bool` — Cell centre within half a cell of a primitive AND its tight hull.
+- `struct IdentityKeepOut` — Floor plane + boxes no cleared cell may meet.
+- `identity_keep_out(set, self, frame_from_grid, keep_own_box, out) -> bool` — `self.floor_z` plane and every other track's box (own box too when `keep_own_box`), in the clearing frame.
+- `identity_keeps(keep, c, resolution) -> bool` — Below the floor or within the circumradius of a keep-out box.
+- `clear_identity_cells(grid, pieces, keep) -> size_t` — Grid current-pose clear; never marks.
+- `append_swept_poses(out, a, b, reach_m, step_m) -> void` — Interpolated poses (lerp + slerp) so no point within `reach_m` moves more than `step_m`.
+- `octree_clear_boxes(tree, window, clear, max_boxes, truncated) -> vector<SweptBox>` — Accepted occupied finest leaves as cell-exact `clear_bbox` boxes (x-runs merged along y), capped.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_freshness.hpp`
 _C++ (Layer 2), header-only. When the bridge may still republish the last octree it received (hazard log Entry 033)._

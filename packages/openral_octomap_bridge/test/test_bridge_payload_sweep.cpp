@@ -14,6 +14,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -61,6 +63,7 @@ protected:
         {"publish_rate_hz", 20.0},
         {"payload_sweep_clear_service", "/test_clear_bbox"},
         {"payload_sweep_clear_period_s", 0.2},
+        {"static_points_file", static_points_file_},
     };
     rclcpp::NodeOptions options;
     options.parameter_overrides(overrides);
@@ -110,9 +113,14 @@ protected:
     tf_->sendTransform({base, hand});
   }
 
-  void send_octree() {
+  void send_octree(const std::vector<tf2::Vector3>& cells = {}) {
     octomap::OcTree tree(kRes);
     tree.updateNode(octomap::point3d(0.3F, 0.3F, 0.3F), true);  // anything: a live octree
+    for (const auto& c : cells) {
+      tree.updateNode(octomap::point3d(static_cast<float>(c.x()), static_cast<float>(c.y()),
+                                       static_cast<float>(c.z())),
+                      true);
+    }
     octomap_msgs::msg::Octomap msg;
     ASSERT_TRUE(octomap_msgs::binaryMapToMsg(tree, msg));
     msg.header.frame_id = "map";
@@ -147,6 +155,20 @@ protected:
     world_state_pub_->publish(state);
   }
 
+  /// How many clear_bbox requests contain `p`.
+  int times_cleared(const tf2::Vector3& p) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    int n = 0;
+    for (const auto& r : requests_) {
+      n += (r.min.x <= p.x() && p.x() <= r.max.x && r.min.y <= p.y() && p.y() <= r.max.y &&
+            r.min.z <= p.z() && p.z() <= r.max.z)
+               ? 1
+               : 0;
+    }
+    return n;
+  }
+
+  std::string static_points_file_;
   std::shared_ptr<bridge::OctomapVoxelBridge> bridge_;
   std::shared_ptr<rclcpp::Node> peer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
@@ -265,6 +287,128 @@ TEST_F(BridgePayloadSweep, NothingIsClearedWithoutAnAttachment) {
   }
   const std::lock_guard<std::mutex> lock(mutex_);
   EXPECT_TRUE(requests_.empty());
+}
+
+// ── Clearing by identity (issue #418) ───────────────────────────────────────
+
+// Cell centres of the 15 mm lattice on the carry line (y and z are cell centres too).
+constexpr double kLineY = 0.0075;
+constexpr double kLineZ = 0.0975;
+constexpr double kHalfId = 0.02;
+tf2::Vector3 line_cell(int i, double z = kLineZ) { return {(i + 0.5) * kRes, kLineY, z}; }
+
+openral_msgs::msg::TrackedObject tracked(const std::string& id, const std::string& status, double x,
+                                         double half, double floor_z) {
+  openral_msgs::msg::TrackedObject t;
+  t.object_id = id;
+  t.status = status;
+  t.box.frame_id = "base_link";
+  t.box.pose.position.x = x;
+  t.box.pose.position.y = kLineY;
+  t.box.pose.position.z = kLineZ;
+  t.box.pose.orientation.w = 1.0;
+  t.box.half_extents.x = t.box.half_extents.y = t.box.half_extents.z = half;
+  t.floor_z = floor_z;
+  if (status == "bound") {
+    t.attach_link = "hand";
+  }
+  return t;
+}
+
+class BridgeIdentitySweep : public BridgePayloadSweep {
+protected:
+  void SetUp() override {
+    // One declared static point on the carry line (cell 3).
+    static_points_file_ = std::string(::testing::TempDir()) + "identity_static_points.txt";
+    std::ofstream(static_points_file_)
+        << line_cell(3).x() << " " << kLineY << " " << kLineZ << "\n";
+    BridgePayloadSweep::SetUp();
+  }
+  void TearDown() override {
+    BridgePayloadSweep::TearDown();
+    std::remove(static_points_file_.c_str());
+  }
+
+  void send_tracked(const std::vector<openral_msgs::msg::TrackedObject>& tracks,
+                    const std::string& evidence = "", std::int64_t stamp_ns = 0, double x = 0.0) {
+    openral_msgs::msg::WorldStateStamped state;
+    state.header.stamp = peer_->now();
+    state.tracked_objects_valid = true;
+    state.tracked_objects.frame_id = "base_link";
+    for (const auto& t : tracks) {
+      state.tracked_objects.objects.push_back(t);
+    }
+    if (!evidence.empty()) {
+      openral_msgs::msg::AttachedCollisionObject object;
+      object.object_id = "trk:1";
+      object.attach_link = "hand";
+      object.evidence_kind = evidence;
+      object.stamp_ns = stamp_ns;
+      object.pose_in_link.orientation.w = 1.0;
+      openral_msgs::msg::AttachedCollisionPrimitive box;
+      box.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+      box.shape_dimensions = {kHalfId, kHalfId, kHalfId};
+      box.pose_in_object.orientation.w = 1.0;
+      object.primitives.push_back(box);
+      state.attached_objects.push_back(object);
+      state.tracked_objects.objects.push_back(tracked("trk:1", "bound", x, kHalfId, 0.09));
+    }
+    world_state_pub_->publish(state);
+  }
+
+  // The carry line's cells, one under the 0.09 floor, run along x 0 -> 0.16; the binding
+  // appears at x = 0.09 with t_attach stamped at x = 0.04.
+  void carry(const std::string& evidence) {
+    std::vector<tf2::Vector3> cells;
+    for (int i = 0; i < 12; ++i) {
+      cells.push_back(line_cell(i));
+    }
+    cells.push_back(line_cell(6, 0.0825));  // below floor_z
+    // A packed neighbour on the line at cell 9.
+    const auto neighbour = tracked("trk:2", "confirmed", line_cell(9).x(), 0.005, 0.0);
+    std::int64_t t_attach = 0;
+    for (int i = 0; i <= 16; ++i) {
+      place_hand(0.01 * i, kLineZ);
+      send_octree(cells);
+      if (i == 4) {
+        t_attach = peer_->now().nanoseconds();
+      }
+      send_tracked({neighbour}, i >= 9 ? evidence : "", t_attach, 0.01 * i);
+      spin_for(50ms);
+    }
+    spin_for(300ms);
+  }
+};
+
+TEST_F(BridgeIdentitySweep, TheCarryIsBackfilledFromAttachAndKeepsEveryExclusion) {
+  carry("tracked_object");
+  EXPECT_GT(times_cleared(line_cell(11)), 0) << "the live carry was not cleared";
+  EXPECT_GT(times_cleared(line_cell(2)), 0) << "no backfill from t_attach";
+  EXPECT_EQ(times_cleared(line_cell(0)), 0) << "cleared before t_attach";
+  EXPECT_EQ(times_cleared(line_cell(6, 0.0825)), 0) << "cleared below floor_z";
+  EXPECT_EQ(times_cleared(line_cell(9)), 0) << "cleared inside another track's box";
+  EXPECT_EQ(times_cleared(line_cell(3)), 0) << "cleared declared static geometry";
+}
+
+TEST_F(BridgeIdentitySweep, APinchFallbackClearsNothing) {
+  carry("pinch_fallback");
+  const std::lock_guard<std::mutex> lock(mutex_);
+  EXPECT_TRUE(requests_.empty());
+}
+
+TEST_F(BridgeIdentitySweep, AVacatedBoxIsClearedOnceAndNeverAgain) {
+  // trk:5 confirmed at A (cells 13-15), then confirmed at B, far away. A's cells stay
+  // occupied in every later octree: re-observed, so they must not be cleared again.
+  const std::vector<tf2::Vector3> home{line_cell(13), line_cell(14), line_cell(15)};
+  const double a = line_cell(14).x();
+  for (int i = 0; i < 20; ++i) {
+    place_hand(0.0, 0.3);
+    send_octree(home);
+    send_tracked({tracked("trk:5", "confirmed", i < 5 ? a : -0.15, 0.02, 0.05)});
+    spin_for(50ms);
+  }
+  EXPECT_EQ(times_cleared(line_cell(14)), 1);
+  EXPECT_EQ(times_cleared(line_cell(13)), 1);
 }
 
 }  // namespace

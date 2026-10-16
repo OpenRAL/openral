@@ -127,6 +127,11 @@ struct SupportPatch {
   tf2::Vector3 anchor_normal{0.0, 0.0, 1.0};  ///< first-grid outward normal, grid frame
 };
 
+/// A wire pose as a transform. `false` (and `out` untouched) on a non-finite
+/// position or a degenerate (zero) quaternion — never silently the identity, which
+/// would clear the wrong volume.
+bool pose_from_msg(const geometry_msgs::msg::Pose& pose, tf2::Transform& out);
+
 /// Place one wire object's primitives — and its support-contact attestation, if
 /// it carries one — into the grid frame, appending them to `out` / `out_patches`.
 ///
