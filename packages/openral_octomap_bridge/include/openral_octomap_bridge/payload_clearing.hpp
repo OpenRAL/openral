@@ -435,14 +435,6 @@ struct SweptBox {
 void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>& primitives,
                               const tf2::Transform& frame_from_base) noexcept;
 
-/// Trim `box` (frame up = +z) so its bottom sits at least one cell above every attested
-/// support patch (same frame) that lies under it, laterally within the box grown by
-/// the patch radius: the counter or plate the payload was lifted from is never
-/// cleared. A patch whose normal is not near-vertical (`|n.z| < 0.9`) cannot be
-/// trimmed against and empties the box. Returns `false` when nothing is left to clear.
-bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
-                                   double resolution) noexcept;
-
 /// Where `floor_swept_box` put a swept box's floor.
 enum class SweepFloor {
   kSupport,          ///< a known support is under the box (any measured floor still applies)
@@ -466,8 +458,8 @@ struct SweepSupports {
 };
 
 /// Floor `box` (frame up = +z) so the swept-volume `clear_bbox` never reaches below a
-/// support: one cell above every attested support patch under it
-/// (`trim_swept_box_above_supports`'s rule) and every declared static-geometry point
+/// support: one cell above every attested support patch (its penetration bound included)
+/// laterally within the box grown by the patch radius, and every declared static-geometry point
 /// under its footprint below its top, and never below the region payload's lowest point
 /// at attach when one was measured: the floor is the highest of every bound, so one
 /// source never switches another off (a static room floor under the box does not drop
@@ -475,6 +467,8 @@ struct SweepSupports {
 /// floor (a segmented or gripper-closure payload) the box is not cleared at all.
 /// Fix of the 2026-10-16 DROID t7 boxes that reached 49 mm below the table top: the
 /// user approved clearing "trimmed above the support surface", never through it.
+/// A patch whose normal is not near-vertical (`|n.z| < 0.9`) cannot be floored against
+/// and returns `kNone`. Every `kNone` leaves `box.valid == false`.
 SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
                            double resolution) noexcept;
 
