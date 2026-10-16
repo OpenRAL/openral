@@ -89,8 +89,52 @@ def _left(openarm: RobotDescription) -> PositionStallTrigger:
 def test_the_manifest_calibration_is_what_the_trigger_uses(openarm: RobotDescription) -> None:
     left = PositionStallTrigger(openarm, joint_name="left_gripper")
     right = PositionStallTrigger(openarm, joint_name="right_gripper")
-    assert left.thresholds == (0.0, 0.0086, 0.08, 0.001)
-    assert right.thresholds == (0.0, 0.0116, 0.08, 0.001)
+    # No close_band in the OpenArm manifest: the band is stall_gap, as before the field.
+    assert left.thresholds == (0.0, 0.0086, 0.08, 0.001, 0.08)
+    assert right.thresholds == (0.0, 0.0116, 0.08, 0.001, 0.08)
+
+
+def _with_band(openarm: RobotDescription, band: float | None) -> RobotDescription:
+    """The OpenArm manifest with ``close_band`` set on the left gripper's calibration."""
+    joints = [
+        j.model_copy(
+            update={
+                "closure_calibration": j.closure_calibration.model_copy(update={"close_band": band})
+            }
+        )
+        if j.name == "left_gripper" and j.closure_calibration is not None
+        else j
+        for j in openarm.joints
+    ]
+    return openarm.model_copy(update={"joints": joints})
+
+
+@pytest.mark.parametrize("band", [None, 0.08])
+def test_an_unset_or_equal_close_band_keeps_the_stall_gap_band(
+    openarm: RobotDescription, band: float | None
+) -> None:
+    """A partly-open command outside stall_gap of closed never reads as a close command."""
+    trigger = PositionStallTrigger(_with_band(openarm, band), joint_name="left_gripper")
+    trigger.command(0.20)
+    assert not trigger.closing
+    assert _run(trigger, openarm, _flat(0.40, 20)) == [], "0.20 rad is not a close command"
+
+
+def test_a_wider_close_band_attaches_on_a_partly_open_command(openarm: RobotDescription) -> None:
+    """With close_band 0.25 a 0.20 command counts as closing; the stall threshold is unchanged."""
+    banded = _with_band(openarm, 0.25)
+    trigger = PositionStallTrigger(banded, joint_name="left_gripper")
+    assert trigger.thresholds == (0.0, 0.0086, 0.08, 0.001, 0.25)
+    trigger.command(0.20)
+    assert trigger.closing
+    # Short of the command by 0.05 < rest + stall_gap (0.0886): still not a stall.
+    assert _run(trigger, banded, _flat(0.25, 20)) == []
+    # Short by 0.10 > 0.0886: a stall.
+    assert _run(trigger, banded, _flat(0.30, 12)) == [GraspEvent.ATTACH]
+    # Commanded open past the band, the jaw opens past the hold + half the stall gap.
+    trigger.command(0.70)
+    assert not trigger.closing
+    assert _run(trigger, banded, _flat(0.40, 6)) == [GraspEvent.DETACH]
 
 
 @pytest.mark.parametrize("stall_at", [0.18, 0.29])

@@ -2,7 +2,7 @@
   "$defs": {
     "GripperClosureCalibration": {
       "additionalProperties": false,
-      "description": "How a ``role: gripper`` joint's *position* reads \"closed on an object\".\n\nThe position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort\nchannel: a jaw commanded toward closed that settles short of the command by more than\nits empty-close error is stalled on something. These are the numbers that turn that into\nthresholds, in the joint's own position units: robot-type constants of the gripper\nmechanism, declared in the robot manifest and derived from teleop data; not per cell\n(CLAUDE.md \u00a71.2: cited measurements, never a library default).\n\nAttributes:\n    closed_position: The commanded position of a fully closed jaw. Must be an end of the\n        joint's ``position_limits``: \"closer to closed\" is read as the distance to it.\n    closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on\n        nothing (mechanical stop, servo deadband). Measured from teleop data.\n    stall_gap: How much further from closed than the command (beyond\n        ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.\n        Also the band a command must be within of ``closed_position`` to count as a close\n        command, and (halved) the hysteresis for slip / release / re-seat.\n    settle_tolerance: Largest position span over the trigger's settle window for the jaw\n        to count as stationary. A few position-encoder LSBs.\n\nExample:\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0,\n    ...     closed_rest_offset=0.0086,\n    ...     stall_gap=0.08,\n    ...     settle_tolerance=0.001,\n    ... ).stall_gap\n    0.08",
+      "description": "How a ``role: gripper`` joint's *position* reads \"closed on an object\".\n\nThe position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort\nchannel: a jaw commanded toward closed that settles short of the command by more than\nits empty-close error is stalled on something. These are the numbers that turn that into\nthresholds, in the joint's own position units: robot-type constants of the gripper\nmechanism, declared in the robot manifest and derived from teleop data; not per cell\n(CLAUDE.md \u00a71.2: cited measurements, never a library default).\n\nAttributes:\n    closed_position: The commanded position of a fully closed jaw. Must be an end of the\n        joint's ``position_limits``: \"closer to closed\" is read as the distance to it.\n    closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on\n        nothing (mechanical stop, servo deadband). Measured from teleop data.\n    stall_gap: How much further from closed than the command (beyond\n        ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.\n        Also (halved) the hysteresis for slip / release / re-seat, and the close-command\n        band when ``close_band`` is unset.\n    settle_tolerance: Largest position span over the trigger's settle window for the jaw\n        to count as stationary. A few position-encoder LSBs.\n    close_band: How far from ``closed_position`` a command may be and still count as a\n        close command, the band ATTACH reads. ``None`` (the default) is ``stall_gap``,\n        the behaviour before this field existed. A gripper whose policy grasps with a\n        partly open command (the SO-101's SmolVLA holds an orange commanded at ~0.20 of\n        its travel) needs a wider band than its stall threshold.\n\nExample:\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0,\n    ...     closed_rest_offset=0.0086,\n    ...     stall_gap=0.08,\n    ...     settle_tolerance=0.001,\n    ... ).stall_gap\n    0.08\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0, stall_gap=0.02, settle_tolerance=0.01, close_band=0.25\n    ... ).command_band\n    0.25\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0, stall_gap=0.08, settle_tolerance=0.001\n    ... ).command_band\n    0.08",
       "properties": {
         "closed_position": {
           "title": "Closed Position",
@@ -23,6 +23,19 @@
           "exclusiveMinimum": 0.0,
           "title": "Settle Tolerance",
           "type": "number"
+        },
+        "close_band": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Close Band"
         }
       },
       "required": [
