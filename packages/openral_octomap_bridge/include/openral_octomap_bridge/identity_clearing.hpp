@@ -10,7 +10,10 @@
 //   geometry, refined by its tight hull when the producer ships one;
 // * sweep: the same test at every pose since `t_attach` (TF history backfill),
 //   interpolated half a cell apart, cleared from the octree cell by cell;
-// * vacated cells: once, when a tracked object has left its last confirmed box.
+// * vacated cells: once, when a tracked object has left its last confirmed box;
+// * release window: the box of a just-RELEASED track the bridge had been clearing by
+//   identity, while the wire still carries its binding (the kernel's frozen payload,
+//   K5), until the track leaves RELEASED or `released_clear_timeout_s`.
 //
 // Every clear excludes, always: cells centred below the object's `floor_z`, cells
 // meeting any OTHER track's box, and cells holding declared static geometry.
@@ -24,7 +27,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <octomap/OcTree.h>
@@ -56,6 +62,23 @@ inline constexpr double kIdentityMaxInterpGapS = 0.25;
 /// republish the whole map); cells past it stay in the octree.
 inline constexpr std::size_t kIdentityMaxClearBoxes = 64;
 
+/// Default `released_clear_timeout_s`: the safety kernel's `tracked_release_timeout_s`
+/// default, which this must track (the kernel's release window, K5).
+inline constexpr double kReleasedClearTimeoutS = 3.0;
+/// Upper bound on `released_clear_timeout_s`, the kernel's own bound on its timeout.
+inline constexpr double kReleasedClearTimeoutMaxS = 10.0;
+
+/// `(object_id, epoch)`.
+using IdentityKeys = std::set<std::pair<std::string, std::uint32_t>>;
+
+/// One open release window: a RELEASED track's box being cleared.
+struct ReleaseClear {
+  std::uint32_t epoch{0};
+  std::int64_t opened_ns{0};
+};
+/// Open release windows, by `object_id`.
+using ReleaseClears = std::map<std::string, ReleaseClear>;
+
 /// Is the tracked set on `state` one the bridge may act on? Valid, and the set and
 /// every box in `grid_frame` (the kernel's own frame rule).
 bool tracked_set_usable(const openral_msgs::msg::WorldStateStamped& state,
@@ -75,6 +98,23 @@ identity_clearing_track(const openral_msgs::msg::AttachedCollisionObject& object
 /// A track's box as a `SHAPE_BOX` primitive in the grid frame. `false` on a
 /// non-positive or non-finite extent or a degenerate pose.
 bool track_box(const openral_msgs::msg::TrackedObject& track, PayloadPrimitive& out);
+
+/// Advance the release windows to `now_ns` and return the RELEASED tracks whose box
+/// to clear now (pointers into `state`).
+///
+/// A window opens for a track that is `released` now and whose `(object_id, epoch)` is
+/// in `was_bound` (bindings the bridge cleared by identity on its previous tick, so
+/// only unambiguous `tracked_object` ones). It stays open while: the set is usable;
+/// exactly one track carries the id, `released`, same epoch, finite `floor_z`, a valid
+/// box; exactly one attachment carries the id, with `evidence_kind == "tracked_object"`
+/// and the same epoch (the kernel freezes the payload only while the wire carries the
+/// binding: without it the box would be in neither the map nor the payload); and
+/// `now_ns - opened_ns <= timeout_s`. Otherwise it is erased, and only a new binding
+/// the bridge clears can reopen it.
+std::vector<const openral_msgs::msg::TrackedObject*>
+advance_release_clears(ReleaseClears& windows, const IdentityKeys& was_bound,
+                       const openral_msgs::msg::WorldStateStamped& state,
+                       const std::string& grid_frame, std::int64_t now_ns, double timeout_s);
 
 /// One convex piece of a bound object's clearing geometry, placed in one frame.
 struct IdentityPiece {
@@ -113,6 +153,14 @@ bool identity_keep_out(const openral_msgs::msg::TrackedObjectSet& set,
                        const openral_msgs::msg::TrackedObject& self,
                        const tf2::Transform& frame_from_grid, bool keep_own_box,
                        IdentityKeepOut& out);
+
+/// A RELEASED track's clearing piece (its box, no tight refinement) and keep-out (its
+/// `floor_z`, every other track's box), in the frame `frame_from_grid` maps into.
+/// `false` (clear nothing) wherever `track_box` or `identity_keep_out` fails.
+bool released_clear_pieces(const openral_msgs::msg::TrackedObjectSet& set,
+                           const openral_msgs::msg::TrackedObject& track,
+                           const tf2::Transform& frame_from_grid,
+                           std::vector<IdentityPiece>& pieces, IdentityKeepOut& keep);
 
 /// Must the cell centred at `c` stay? Centre below the floor plane, or within the
 /// cell's circumradius of a keep-out box (a superset of the cells meeting it).

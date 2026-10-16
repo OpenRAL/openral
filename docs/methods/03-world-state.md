@@ -296,10 +296,14 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
 - `floor_pose_boxes(boxes, supports, resolution, out) -> SweepFloor` — One clearing period's `clear_bbox` set: each posed box floored by `floor_swept_box` and never below the union's floor (the highest bound wins, so it clears a subset of what the one union box would); `kNone` boxes and boxes inside one already in `out` are dropped; the union's `kNone` clears nothing.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/identity_clearing.hpp`
-_C++ (Layer 2). Octomap clearing by identity (issue #418): an unambiguous tracker binding's cells, its sweep since `t_attach` and its vacated box; `PINCH_FALLBACK` / ambiguous bindings get none (hazard OT-8). Wired in `OctomapVoxelBridge::clear_by_identity`._
+_C++ (Layer 2). Octomap clearing by identity (issue #418): an unambiguous tracker binding's cells, its sweep since `t_attach` and its vacated box; `PINCH_FALLBACK` / ambiguous bindings get none (hazard OT-8). Wired in `OctomapVoxelBridge::clear_by_identity` (release window: `clear_released_box`)._
 
 - `kTrackedObjectEvidence` / `kPinchFallbackEvidence` — The `AttachmentEvidenceKind` wire values; the legacy path skips both.
 - `kIdentityBackfillMaxS = 5.0`, `kIdentityBackfillStepS = 0.05`, `kIdentityMaxInterpGapS = 0.25`, `kIdentityMaxClearBoxes = 64` — Backfill depth and step, the longest gap bridged by interpolation, and `clear_bbox` requests per clear.
+- `kReleasedClearTimeoutS = 3.0`, `kReleasedClearTimeoutMaxS = 10.0` — Default and bound of `released_clear_timeout_s`; must equal the kernel's `tracked_release_timeout_s` (K5).
+- `IdentityKeys`, `struct ReleaseClear`, `ReleaseClears` — `(object_id, epoch)` set; one open release window (epoch, opened stamp) and the windows by id.
+- `advance_release_clears(windows, was_bound, state, grid_frame, now_ns, timeout_s) -> vector<const TrackedObject*>` — Release window (#418 F2): opens for a `released` track whose `(id, epoch)` the bridge cleared by identity last tick; kept while the track is unique, `released`, same epoch, the wire carries exactly one `tracked_object` attachment with that id and epoch, and within the timeout; else erased for good.
+- `released_clear_pieces(set, track, frame_from_grid, pieces, keep) -> bool` — A RELEASED track's box as the clearing piece plus its keep-out (`floor_z`, other tracks' boxes).
 - `tracked_set_usable(state, grid_frame) -> bool` — Valid set whose frame and every box's frame is the grid frame.
 - `identity_clearing_track(object, state, grid_frame) -> const TrackedObject*` — The bound track licensing identity clearing, or null (wrong kind, unusable set, no or duplicated id, not `bound`, epoch / attach-link mismatch, non-finite `floor_z`, another track bound to the link, another payload on it).
 - `track_box(track, out) -> bool` — A track's box as a `SHAPE_BOX` `PayloadPrimitive`; fail-closed on a bad extent or pose.
