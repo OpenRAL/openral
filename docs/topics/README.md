@@ -86,10 +86,11 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
 | `/{which}_costmap/costmap_raw` | `nav2_msgs/Costmap` | — | tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__) |
 
-## Services (5)
+## Services (6)
 
 | Name | Type | Servers | Clients |
 |---|---|---|---|
+| `` | `octomap_msgs/BoundingBoxQuery` | — | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `payload_sweep_clear_service`] |
 | `/openral/estop_reset` | `std_srvs/Trigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | python/cli/src/openral_cli/estop.py (estop_reset_command) |
 | `/openral/perception/locate_in_view` | `openral_msgs/LocateInView` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) [param `locate_in_view_service`] | — |
 | `/openral/perception/query_scene` | `openral_msgs/QueryScene` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_query_scene) |

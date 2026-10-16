@@ -406,4 +406,41 @@ const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::str
 /// payload's own volume explains.
 double attach_transition_padding(double steady_padding_m, double attach_sweep_padding_m) noexcept;
 
+/// An axis-aligned box in one frame — the volume a carried payload swept.
+///
+/// The voxel grid is re-rasterized from the octree on every tick, so clearing a
+/// payload's cells from the grid (`clear_attached_payload_cells`) only ever clears
+/// them around its CURRENT pose. Occupancy the payload left in the octree along its
+/// path — returns captured before the attachment reached the self-filter (deploy
+/// trial g12: the orange 0.27 s before ATTACH), or a return the payload volume did
+/// not cover mid-carry (DROID t6: a banana voxel) — is never retired: every later ray
+/// through it ends on the robot, which the self-filter removes. The bridge therefore
+/// accumulates the payload's swept volume and asks `octomap_server` to clear it from
+/// the octree itself (`~/clear_bbox`). User-approved 2026-10-16; Safety-WG review
+/// and a hazard-log row owed: the payload's swept volume is cleared from the world
+/// map — a real obstacle inside that axis-aligned box disappears until a camera
+/// sees it again.
+struct SweptBox {
+  tf2::Vector3 lo{0.0, 0.0, 0.0};
+  tf2::Vector3 hi{0.0, 0.0, 0.0};
+  bool valid{false};
+  /// Grow the box to hold `point`.
+  void add(const tf2::Vector3& point) noexcept;
+};
+
+/// Grow `box` by the exact axis-aligned bounds of `primitives` (placed in the grid /
+/// base frame) carried into the box's frame through `frame_from_base`: a box's eight
+/// corners, a sphere's or capsule's end caps grown by its radius. A non-finite
+/// primitive adds nothing.
+void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>& primitives,
+                              const tf2::Transform& frame_from_base) noexcept;
+
+/// Trim `box` (frame up = +z) so its bottom sits at least one cell above every attested
+/// support patch (same frame) that lies under it, laterally within the box grown by
+/// the patch radius: the counter or plate the payload was lifted from is never
+/// cleared. A patch whose normal is not near-vertical (`|n.z| < 0.9`) cannot be
+/// trimmed against and empties the box. Returns `false` when nothing is left to clear.
+bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
+                                   double resolution) noexcept;
+
 }  // namespace openral_octomap_bridge
