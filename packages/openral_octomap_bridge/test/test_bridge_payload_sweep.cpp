@@ -351,10 +351,36 @@ protected:
       box.pose_in_object.orientation.w = 1.0;
       object.primitives.push_back(box);
       state.attached_objects.push_back(object);
-      state.tracked_objects.objects.push_back(tracked("trk:1", "bound", x, kHalfId, 0.09));
+      if (released_status_.empty()) {
+        state.tracked_objects.objects.push_back(tracked("trk:1", "bound", x, kHalfId, 0.09));
+      } else {
+        auto t = tracked("trk:1", released_status_, line_cell(18).x(), kHalfId, 0.09);
+        t.epoch = released_epoch_;
+        state.tracked_objects.objects.push_back(t);
+      }
     }
     world_state_pub_->publish(state);
   }
+
+  // Bound at x = 0.09, then `status` (epoch `epoch`) with its box on cells 17-19 and the
+  // attachment still on the wire, `ticks` world states each.
+  void release_phase(const std::string& evidence, const std::string& status, std::uint32_t epoch,
+                     int ticks) {
+    released_status_ = status;
+    released_epoch_ = epoch;
+    for (int i = 0; i < ticks; ++i) {
+      place_hand(0.09, kLineZ);
+      send_octree(release_cells_);
+      send_tracked({}, evidence, 0, 0.09);
+      spin_for(50ms);
+    }
+    spin_for(100ms);
+  }
+
+  std::string released_status_;
+  std::uint32_t released_epoch_{0};
+  const std::vector<tf2::Vector3> release_cells_{line_cell(17), line_cell(18), line_cell(19),
+                                                 line_cell(18, 0.0825)};
 
   // The carry line's cells, one under the 0.09 floor, run along x 0 -> 0.16; the binding
   // appears at x = 0.09 with t_attach stamped at x = 0.04.
@@ -409,6 +435,27 @@ TEST_F(BridgeIdentitySweep, AVacatedBoxIsClearedOnceAndNeverAgain) {
   }
   EXPECT_EQ(times_cleared(line_cell(14)), 1);
   EXPECT_EQ(times_cleared(line_cell(13)), 1);
+}
+
+TEST_F(BridgeIdentitySweep, AReleasedBoxIsClearedOnlyThroughItsReleaseWindow) {
+  release_phase("tracked_object", "", 0, 6);
+  EXPECT_EQ(times_cleared(line_cell(18)), 0) << "cleared before the binding ended";
+  release_phase("tracked_object", "released", 0, 8);
+  const int during = times_cleared(line_cell(18));
+  EXPECT_GT(during, 0) << "the released box was not cleared in its window";
+  EXPECT_GT(times_cleared(line_cell(17)), 0);
+  EXPECT_EQ(times_cleared(line_cell(18, 0.0825)), 0) << "cleared below floor_z";
+  release_phase("tracked_object", "confirmed", 1, 8);
+  EXPECT_EQ(times_cleared(line_cell(18)), during) << "cleared after re-confirmation";
+  release_phase("tracked_object", "released", 1, 8);
+  EXPECT_EQ(times_cleared(line_cell(18)), during) << "reopened without a binding";
+}
+
+TEST_F(BridgeIdentitySweep, APinchFallbackReleaseClearsNothing) {
+  release_phase("pinch_fallback", "", 0, 6);
+  release_phase("pinch_fallback", "released", 0, 8);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  EXPECT_TRUE(requests_.empty());
 }
 
 }  // namespace

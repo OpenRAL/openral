@@ -166,6 +166,17 @@ public:
                   "(every %.2f s, attached poses only) are cleared from the octree via %s",
                   sweep_period_s_, sweep_service.c_str());
     }
+    // Release window (issue #418 F2): how long a just-RELEASED track's box may be cleared.
+    // MUST equal the safety kernel's `tracked_release_timeout_s` (K5, default 3.0 s):
+    // longer clears the object's cells after the kernel's window closed; shorter re-marks
+    // them under the frozen payload while the hand is still exempt against it. Same
+    // bound as the kernel's, (0, 10]; anything else refuses to start.
+    released_clear_timeout_s_ =
+        this->declare_parameter<double>("released_clear_timeout_s", kReleasedClearTimeoutS);
+    if (!(released_clear_timeout_s_ > 0.0) ||
+        !(released_clear_timeout_s_ <= kReleasedClearTimeoutMaxS)) {
+      throw std::invalid_argument("released_clear_timeout_s must be in (0, 10]");
+    }
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
     // Manifest attach link -> the frame the live TF tree names that body
@@ -656,6 +667,8 @@ private:
       // vacated across a gap in which nobody watched it.
       identity_carries_.clear();
       identity_homes_.clear();
+      identity_was_bound_.clear();
+      release_clears_.clear();
       return;
     }
     const auto& set = state->tracked_objects;
@@ -679,6 +692,12 @@ private:
     if (flush) {
       last_identity_flush_ = now;
     }
+    // Before this tick's bindings replace the last tick's: a window opens on the tick a
+    // track the bridge was clearing turns up RELEASED.
+    const auto released =
+        advance_release_clears(release_clears_, identity_was_bound_, *state, base_frame_,
+                               now.nanoseconds(), released_clear_timeout_s_);
+    IdentityKeys was_bound;
     std::map<std::pair<std::string, std::uint32_t>, IdentityCarry> carries;
     std::map<std::string, std::vector<PayloadPrimitive>> live;  // bound, octomap frame
     std::size_t grid_cleared = 0;
@@ -711,6 +730,7 @@ private:
         continue;
       }
       grid_cleared += clear_identity_cells(grid, pieces, keep);
+      was_bound.emplace(object.object_id, object.epoch);
       if (!octree_work) {
         continue;
       }
@@ -736,6 +756,10 @@ private:
       carries.emplace(key, std::move(carry));
     }
     identity_carries_ = std::move(carries);
+    identity_was_bound_ = std::move(was_bound);
+    for (const auto* track : released) {
+      grid_cleared += clear_released_box(grid, *track, set, base_to_octomap, flush);
+    }
     if (grid_cleared > 0) {
       // Declared static geometry is unioned AFTER the clear, so it is never cleared.
       mark_base_points(grid, static_points_);
@@ -746,6 +770,40 @@ private:
     if (octree_work) {
       vacate_left_boxes(set, base_to_octomap, live, grid.resolution);
     }
+  }
+
+  /// Release window (issue #418 F2): the RELEASED track's box ⊕ half a cell, on the grid
+  /// every tick and (on a flush) in the octree, with the identity exclusions. While it is
+  /// open the kernel's frozen payload (K5) stands in for the object; without this its
+  /// own re-marked cells meet that payload and stop the robot. Returns grid cells cleared.
+  std::size_t clear_released_box(openral_msgs::msg::OccupancyVoxels& grid,
+                                 const openral_msgs::msg::TrackedObject& track,
+                                 const openral_msgs::msg::TrackedObjectSet& set,
+                                 const tf2::Transform& base_to_octomap, bool flush) {
+    std::vector<IdentityPiece> pieces;
+    IdentityKeepOut keep;
+    if (!released_clear_pieces(set, track, tf2::Transform::getIdentity(), pieces, keep)) {
+      return 0;
+    }
+    const std::size_t cleared = clear_identity_cells(grid, pieces, keep);
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                         "identity clear (released): %s epoch %u, %zu grid cell(s) of its "
+                         "release box cleared",
+                         track.object_id.c_str(), track.epoch, cleared);
+    if (!flush || !released_clear_pieces(set, track, base_to_octomap, pieces, keep)) {
+      return cleared;
+    }
+    const double res = grid.resolution;
+    const PayloadPrimitive& box = pieces.front().prim;
+    const double r = primitive_bounding_radius(box) + 0.5 * res;
+    SweptBox window;
+    window.add(box.pose.getOrigin() - tf2::Vector3(r, r, r));
+    window.add(box.pose.getOrigin() + tf2::Vector3(r, r, r));
+    send_identity_clears(track, "released", window, [&](const tf2::Vector3& c) {
+      return identity_covers(pieces, c, 0.5 * res) && !identity_keeps(keep, c, res) &&
+             !is_static_cell(c);
+    });
+    return cleared;
   }
 
   /// A new binding's carry: its reach about the link, and its poses from `t_attach`
@@ -960,6 +1018,9 @@ private:
   SupportPatchAnchors support_patch_anchors_;
   std::map<std::pair<std::string, std::uint32_t>, IdentityCarry> identity_carries_;
   std::map<std::string, IdentityHome> identity_homes_;
+  IdentityKeys identity_was_bound_;  ///< bindings cleared by identity on the last tick
+  ReleaseClears release_clears_;
+  double released_clear_timeout_s_{kReleasedClearTimeoutS};
   octomap::KeySet static_keys_;
   rclcpp::Time last_identity_flush_{0, 0, RCL_ROS_TIME};
   AttachLinkTfFrames attach_link_tf_frames_;
