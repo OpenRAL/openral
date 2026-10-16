@@ -1557,7 +1557,9 @@ TEST(PayloadSweep, TheSupportUnderThePayloadIsNeverCleared) {
   counter.point = tf2::Vector3(0.07, -0.30, 0.030);
   counter.patch_radius = 0.03;
   counter.max_penetration = 0.002;
-  ASSERT_TRUE(bridge::trim_swept_box_above_supports(box, {counter}, 0.015));
+  bridge::SweepSupports supports;
+  supports.patches = {counter};
+  ASSERT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
   EXPECT_NEAR(box.lo.z(), 0.030 + 0.002 + 0.015, 1e-12) << "one cell above the support";
   // A support elsewhere does not trim.
   bridge::SweptBox other;
@@ -1565,7 +1567,10 @@ TEST(PayloadSweep, TheSupportUnderThePayloadIsNeverCleared) {
                                    tf2::Transform::getIdentity());
   bridge::SupportPatch far = counter;
   far.point = tf2::Vector3(0.5, 0.5, 0.030);
-  ASSERT_TRUE(bridge::trim_swept_box_above_supports(other, {far}, 0.015));
+  supports.patches = {far};
+  supports.has_measured_floor = true;  // floor it at all: the far patch is not under it
+  supports.measured_floor_z = -1.0;
+  ASSERT_EQ(bridge::floor_swept_box(other, supports, 0.015), bridge::SweepFloor::kMeasuredPayload);
   EXPECT_NEAR(other.lo.z(), 0.06 - 0.054, 1e-12);
 }
 
@@ -1577,9 +1582,22 @@ TEST(PayloadSweep, ASupportItCannotTrimAgainstClearsNothing) {
   wall.point = tf2::Vector3(0.0, 0.0, 0.03);
   wall.normal = tf2::Vector3(1.0, 0.0, 0.0);  // a vertical support face
   wall.patch_radius = 0.03;
-  EXPECT_FALSE(bridge::trim_swept_box_above_supports(box, {wall}, 0.015));
+  bridge::SweepSupports supports;
+  supports.patches = {wall};
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kNone);
+  EXPECT_FALSE(box.valid);
   bridge::SweptBox empty;
-  EXPECT_FALSE(bridge::trim_swept_box_above_supports(empty, {}, 0.015));
+  EXPECT_EQ(bridge::floor_swept_box(empty, {}, 0.015), bridge::SweepFloor::kNone);
+  // Floored to nothing (the support above the box top) is kNone with valid == false too.
+  bridge::SweptBox thin;
+  bridge::add_payload_to_swept_box(thin, {orange_box(tf2::Vector3(0, 0, 0.06), 0.0)},
+                                   tf2::Transform::getIdentity());
+  bridge::SupportPatch high = wall;
+  high.normal = tf2::Vector3(0.0, 0.0, 1.0);
+  high.point = tf2::Vector3(0.0, 0.0, 0.2);
+  supports.patches = {high};
+  EXPECT_EQ(bridge::floor_swept_box(thin, supports, 0.015), bridge::SweepFloor::kNone);
+  EXPECT_FALSE(thin.valid);
 }
 
 TEST(PayloadSweep, ANonFiniteOrDegeneratePrimitiveAddsNothing) {
@@ -1622,7 +1640,6 @@ TEST(PayloadSweepFloor, NoSupportFloorsAtTheMeasuredPayloadsLowestPoint) {
 
 TEST(PayloadSweepFloor, AnAttestedSupportFloorsAsBefore) {
   bridge::SweptBox box = carried_low();
-  bridge::SweptBox same = carried_low();
   bridge::SupportPatch table;
   table.point = tf2::Vector3(0.52, 0.02, kTableTop);
   table.patch_radius = 0.03;
@@ -1632,8 +1649,6 @@ TEST(PayloadSweepFloor, AnAttestedSupportFloorsAsBefore) {
   supports.has_measured_floor = true;  // below the patch floor: the patch bound wins
   supports.measured_floor_z = kTableTop;
   EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
-  ASSERT_TRUE(bridge::trim_swept_box_above_supports(same, {table}, 0.015));
-  EXPECT_NEAR(box.lo.z(), same.lo.z(), 1e-12) << "the attested rule is unchanged";
   EXPECT_NEAR(box.lo.z(), kTableTop + 0.002 + 0.015, 1e-12);
 }
 

@@ -497,25 +497,4 @@ SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
   return floor;
 }
 
-bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
-                                   double resolution) noexcept {
-  if (!box.valid) {
-    return false;
-  }
-  for (const auto& patch : patches) {
-    const tf2::Vector3& p = patch.point;
-    const double r = patch.patch_radius;
-    if (p.x() < box.lo.x() - r || p.x() > box.hi.x() + r || p.y() < box.lo.y() - r ||
-        p.y() > box.hi.y() + r) {
-      continue;  // not under the swept box
-    }
-    if (std::fabs(patch.normal.z()) < 0.9) {
-      box.valid = false;  // a support we cannot trim against: clear nothing
-      return false;
-    }
-    box.lo.setZ(std::max(box.lo.z(), p.z() + patch.max_penetration + resolution));
-  }
-  return box.lo.z() < box.hi.z();
-}
-
 }  // namespace openral_octomap_bridge
