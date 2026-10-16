@@ -187,7 +187,8 @@ _SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
 # (which the `allowance` pattern would also catch), the vision attachment
 # leg (enabling it turns the kernel's attached-payload check on; its tf_frames
 # decide which link a payload rides) and the kernel's manipulation-workspace
-# contact rule with its hand speed and lead bounds (#349). `enable_reasoner`,
+# contact rule with its hand speed and lead bounds (#349), and the octomap bridge's
+# payload clearing in the octree (it removes world occupancy). `enable_reasoner`,
 # `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
 # compose the stack and are the whole point of pinning a scene, so they stay
 # pinnable.
@@ -198,6 +199,7 @@ _SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = (
     "workspace_contact_enabled",
     "workspace_contact_max_speed_mps",
     "workspace_contact_max_lead_m",
+    "payload_sweep_clear_enabled",
 )
 
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the

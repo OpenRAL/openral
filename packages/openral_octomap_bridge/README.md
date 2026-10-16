@@ -346,8 +346,12 @@ payload's own posed volume, never the AABB of its motion: the box around 0.2 s o
 diagonal place approach takes in the neighbour orange on the plate or the bowl rim
 beside the path, which the payload never occupied (PR #417 review). Only attached
 poses are cleared — there is no pre-attach TF backfill, because the payload posed
-rigidly in the hand along the pre-grasp approach is where the object never was
-(`deploy_e2e.launch.py` passes `/openral_octomap_server/clear_bbox`). A box never
+rigidly in the hand along the pre-grasp approach is where the object never was. The
+octree leg is **off by default and sim-only**: `deploy_e2e.launch.py` passes
+`/openral_octomap_server/clear_bbox` only for `DeployRuntime.payload_sweep_clear_enabled`
+(`payload_sweep_clear_enabled:=true`) and refuses it on any HAL but `sim`
+(`ROSConfigError`), as does `openral deploy run`; the LeIsaac PickOrange and the DROID
+banana deploy-sim scenes opt in. A box never
 reaches below a support (`floor_swept_box`, per posed box and never below the floor
 the same rule gives the union of the period's boxes):
 
@@ -370,8 +374,8 @@ table top once the attestation lapsed mid-carry (deploy-sim t7, 2026-10-16). Pin
 `PayloadSweep.*` / `PayloadSweepFloor.*` (test_payload_clearing.cpp) and
 `BridgePayloadSweep.*` (the real node against a real `BoundingBoxQuery` server).
 
-**Hazard (user-approved 2026-10-16; Safety-WG review and a hazard-log row
-owed): the payload's posed volume is cleared from the world map.** A real obstacle
+**Hazard (user-approved 2026-10-16, sim-only; Safety-WG review and a hazard-log
+row owed): the payload's posed volume is cleared from the world map.** A real obstacle
 inside a posed payload box (the AABB of a primitive at one attached pose — a rotated
 box's corners included) — a hand entering right behind the payload, an object the
 payload is pressed against — disappears from the octree until a camera sees it again.
