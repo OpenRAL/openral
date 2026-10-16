@@ -122,6 +122,27 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable._
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step: greedy highest-confidence matching by same-label + `aabb_iou_3d ≥ iou_threshold` freezes a track (unchanged pose/bbox, bumped confidence); no match mints a new track. An unmatched track in FOV accrues `miss_count` and is evicted at `max_misses`; out of FOV it's retained unchanged. (L64)
 
+### `python/world_state/src/openral_world_state/object_tracker/__init__.py`
+_Object-centric tracker core (issue #418) — ROS-free; a lifecycle node wraps it. The module docstring is the **binding/release contract**: those modules mutate tracks only through `ObjectTracker.store` (`TrackStore.get` / `all` / `replace`); the tracker never fits, ages or confirms a BOUND track and hands BOUND fits back in `TrackerOutput.bound_fits`._
+
+### `python/world_state/src/openral_world_state/object_tracker/fit.py`
+_Containing fit (#418 step 3, the #266 rule): `C = cone(dilate(S)) ∩ {z ≥ support} ∩ {z_opt ≥ z_front − ε} ∪ prism(P, support)`, never a hull of sampled surface points._
+
+- const `ROBOT_PIXEL = 255` — `robot_filter` mask value for robot pixels (0 is free). (L63)
+- const `UNCERTAIN_PIXEL = 128` — `robot_filter` mask value for the uncertain band around the robot. (L64)
+- `class FitParams(BaseModel)` — Frozen calibration: `k_px` (mask + extrinsic error), `w_occ_px` (occluder band), `eps_m` (A2/A3 tolerance), `occluder_tol_m`, `min_points`, `min_depth_valid`, depth range. Every value a calibration point. (L70)
+- `@dataclass ContainingFit` — `box` (gravity-aligned, min-area yaw, +½ cell sides/top, bottom on the support), `tight` (one box primitive whose stage-2 hull is the 64-vertex polytope), `surface` (`P`, base frame), `support_z`, `assumptions` (A1-A4 evidence: `a1_border_clear`, `a2_gap_m`, `a3_depth_valid`, `a4_occluder_px`), `refusal`. (L101)
+- `containing_fit(mask, depth_m, robot_mask, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, stamp_ns, params=None) -> ContainingFit` — Robot pixels leave the mask, the uncertain band and an occluder band (where a nearer surface or the robot cuts the boundary) re-enter, `k_px` dilation; the cone over the silhouette's 16-direction outer polygon between the front plane and the support, union the prism of `P`'s footprint: exactly 64 vertices, no hull solver, no inward step. Refuses `too_few_points`, `a1_border_truncated` (mask touches the image border), `a2_below_support` (a surface point under the support), `a3_depth_invalid`, `ray_misses_support`, and the grasp-region caps. A4 (a hidden part wider than the occluder band) is logged, not provable here — the tracker's `θ_vis` gate covers it. (L168)
+- `project_box(box, intrinsics, t_base_from_cam) -> tuple[tuple[int, int, int, int], float] | None` — A box's clipped image rectangle and nearest optical depth; `None` behind the camera or outside the image. (L330)
+- `visible_fraction(box, depth_m, robot_mask, intrinsics, t_base_from_cam, *, tol_m=0.01) -> float | None` — Z-buffered fraction of the box's image rectangle not covered by the robot (robot or uncertain), a nearer surface, or missing depth; `None` out of view. Ceiling: an occluder between the box's nearest corner and the object's surface counts as visible. (L353)
+
+### `python/world_state/src/openral_world_state/object_tracker/cover.py`
+_Size-aware map confirmation (#418 step 4)._
+
+- `@dataclass CoverVerdict` — `visible` (`|E|`), `occupied` (`|E ∩ occupied|`), `kind` (`""` / `map_disagrees` / `map_split` / `map_split_own`), `why`. (L34)
+- `surface_cells(grid, surface, *, exclude=()) -> frozenset[tuple[int, int, int]]` — `E`: lattice cells holding the fit's surface points, minus cells centred in `exclude` (the robot's own space). (L56)
+- `cover_verdict(grid, cells, box, *, support_z, own=()) -> CoverVerdict` — `|E ∩ occupied| ≥ max(2, ⌈0.5·|E|⌉)` (cover on expected cells, not a padded footprint), then `object_primitives.map_confirms` for one body; a second body wholly inside a declared hand's `own` space is `map_split_own`. (L89)
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
 _C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
 
