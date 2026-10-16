@@ -587,8 +587,8 @@ def so101() -> RobotDescription:
     return RobotDescription.from_yaml(_SO101)
 
 
-def _so101_wobble(at: float, ticks: int, amplitude: float = 0.003) -> list[float]:
-    """A held orange wobbling the jaw by +-``amplitude``, inside the 0.01 settle tolerance."""
+def _so101_wobble(at: float, ticks: int, amplitude: float = 0.006) -> list[float]:
+    """A held orange chattering the jaw by +-``amplitude`` (g6: 0.264 <-> 0.277), inside 0.02."""
     return [at + amplitude * ((i % 3) - 1) for i in range(ticks)]
 
 
@@ -596,7 +596,7 @@ def test_the_so101_calibration_separates_its_band_from_its_stall_gap(
     so101: RobotDescription,
 ) -> None:
     trigger = PositionStallTrigger(so101)
-    assert trigger.thresholds == (0.0, 0.0023, 0.02, 0.01, 0.25)
+    assert trigger.thresholds == (0.0, 0.0023, 0.02, 0.02, 0.25)
 
 
 def test_the_so101_attaches_on_a_policy_hold(so101: RobotDescription) -> None:

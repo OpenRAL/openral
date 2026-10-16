@@ -150,6 +150,12 @@ joints:
     #   also halves the DETACH / REGRASP hysteresis to 0.01: a carried orange wobbles
     #   up to 0.04 in Isaac, so expect REGRASP churn. Objects thinner than ~0.022 of
     #   jaw travel never read as held.
+    # - settle_tolerance raised 0.01 -> 0.02 (2026-10-16): deploy trial g6 replayed on
+    #   the sim clock (the trigger now reads sim time, see `grasp_trigger_state`). The
+    #   live closed-loop hold chatters step to step (0.264 <-> 0.277, median |dq|
+    #   0.012), so its 0.133 s span is p10 / p50 / p90 0.0136 / 0.0156 / 0.021. At 0.01
+    #   the hold never settles; at 0.02 it ATTACHes once (8.15 s sim) with no other
+    #   fire in g6.
     # SIM-MEASURED, UNVERIFIED ON A REAL SO-101: re-measure on hardware (an attended
     # empty close plus teleop traces, §5) before any real `grasp_allowance_enabled`
     # deploy. Safety-WG item; a hazard-log row and a decision-record entry are owed.
@@ -157,7 +163,7 @@ joints:
       closed_position: 0.0
       closed_rest_offset: 0.0023
       stall_gap: 0.02
-      settle_tolerance: 0.01
+      settle_tolerance: 0.02
       close_band: 0.25
 
 # The jaw as a moving link of the collision model, posed from the `gripper`
