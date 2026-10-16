@@ -8,9 +8,16 @@
 # Time base: 15 Hz, the manifest's action_spec.control_freq_hz = the skill's
 # action_contract.control_freq_hz (no scene override needed).
 #
-# World collision: off. robots/droid_franka_robotiq declares no depth sensor and no
-# collision_geometry yet (generate it with `openral collision lower` once the
-# Robotiq meshes are lowered), so octomap would have nothing to check against.
+# World collision: the DROID platform has no depth sensor (its `exterior` / `wrist` are
+# RGB), so this scene adds a SIMULATED depth camera, `exterior_depth` (`sim_sensors`),
+# rendered by Isaac (distance_to_image_plane) from the `exterior` mount and field of
+# view at half resolution. The HAL publishes its cloud on
+# /openral/cameras/exterior_depth/points, octomap maps it and the safety kernel checks
+# every chunk against the voxels with the manifest's lowered collision model
+# (robots/droid_franka_robotiq/robot.yaml; the Robotiq jaw linkage carries no
+# primitive, see its README). It exists in this scene only. `range_max_m` cannot keep
+# the stand out: its top is flush with the table, 0.87 m from the camera, nearer than
+# the banana (1.04 m) and the bowl (0.91 m); 1.6 m keeps the far table edge in.
 #
 # Requirements: NVIDIA RTX GPU, Isaac Sim 6.1, network access to the Isaac 6.1 asset root.
 #
@@ -18,7 +25,7 @@
 #
 #     openral deploy sim --config scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml \
 #       --initial-task "pick up the banana and place it in the bowl" \
-#       --no-enable-octomap --no-object-detector
+#       --enable-octomap --enable-octomap-kernel-check
 
 robot_id: "droid_franka_robotiq"
 
@@ -63,13 +70,27 @@ scene:
       "finger_joint": [5729.578, 0.011459]
     gripper_joint_curve:
       finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
+    # Simulated-only depth for the world map: Arena's `external_camera` as metric
+    # depth at 640x360. fx = fy = 320 / tan(104.0 deg / 2) = 250.0, the `exterior`
+    # mount's field of view (its 1280x720 fx = 500 halved).
+    sim_sensors:
+      - name: exterior_depth
+        modality: depth
+        frame_id: exterior_depth_optical_frame
+        rate_hz: 10.0
+        range_max_m: 1.6
+        intrinsics: {width: 640, height: 360, fx: 250.0, fy: 250.0, cx: 320.0, cy: 180.0}
+        encoding: "32FC1"
+        vendor: "sim"
+        model: "isaac_distance_to_image_plane"
     camera_mounts:
-      exterior:
+      exterior: &arena_external  # Arena `external_camera`
         link: panda_link0
         xyz: [0.05, 0.57, 0.66]
         quat_wxyz: [-0.393, -0.195, 0.399, 0.805]
         axes: usd
         hfov_deg: 104.0
+      exterior_depth: *arena_external
       wrist:
         link: robotiq_arg2f_base_link
         xyz: [-0.074, 0.031, 0.011]
@@ -92,9 +113,10 @@ scene:
         # RoboLab's default instruction (banana_in_bowl_task.py L15-45).
         "Pick up the banana and place it in the bowl": *banana_in_bowl
 
-# Committed posture: a fixed-base arm at a table; no SLAM / Nav2, no world map.
+# Committed posture: world collision on (octomap over exterior_depth + the kernel's
+# voxel check), no SLAM / Nav2 (a fixed-base arm at a table).
 runtime:
   enable_slam: false
   enable_nav2: false
-  enable_octomap: false
-  enable_octomap_kernel_check: false
+  enable_octomap: true
+  enable_octomap_kernel_check: true

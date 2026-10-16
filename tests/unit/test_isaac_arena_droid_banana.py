@@ -24,6 +24,7 @@ from openral_core import (
     RobotDescription,
     SimScene,
     load_scene_strict,
+    sim_scene_description,
 )
 from openral_core.assets import AssetFetchError, expand_rd_mesh_refs
 from openral_core.exceptions import ROSConfigError
@@ -81,11 +82,28 @@ def _options(path: Path, kind: type[SimScene] | type[DeployScene]) -> IsaacSimOp
 
 def test_both_scenes_load_with_the_same_world() -> None:
     sim, deploy = _options(_SIM, SimScene), _options(_DEPLOY, DeployScene)
-    assert sim == deploy
+    # The deploy scene adds only its simulated depth view of the exterior camera.
+    only_deploy = {"sim_sensors", "camera_mounts"}
+    assert sim.model_dump(exclude=only_deploy) == deploy.model_dump(exclude=only_deploy)
+    assert {k: deploy.camera_mounts[k] for k in ("exterior", "wrist")} == sim.camera_mounts
+    assert deploy.camera_mounts["exterior_depth"] == deploy.camera_mounts["exterior"]
     assert [o.name for o in sim.objects] == ["franka_stand", "banana", "bowl"]
     assert load_scene_strict(str(_SIM), SimScene).task.instruction == _PROMPT
     assert sim.placement_success is not None
     assert _PROMPT in sim.placement_success.tasks
+
+
+def test_the_deploy_scene_maps_the_world_from_a_sim_depth_camera() -> None:
+    scene = sim_scene_description(
+        _ROBOT, load_scene_strict(str(_DEPLOY), DeployScene).scene.backend_options
+    )
+    assert [s.name for s in scene.sensors] == ["exterior", "wrist", "exterior_depth"]
+    depth = scene.sensors[-1]
+    assert depth.is_depth_camera and depth.deploy_binding is None
+    assert depth.intrinsics is not None and depth.intrinsics.fx == pytest.approx(250.0, abs=0.05)
+    runtime = load_scene_strict(str(_DEPLOY), DeployScene).runtime
+    assert runtime is not None and runtime.enable_octomap and runtime.enable_octomap_kernel_check
+    assert scene.collision_geometry == _ROBOT.collision_geometry != []
 
 
 @pytest.fixture(scope="module")
