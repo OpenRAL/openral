@@ -574,3 +574,57 @@ def test_a_cleared_command_cannot_attach_an_open_stationary_jaw(
     assert cleared.uncommanded_ticks == 30
     cleared.command(0.0)  # a readable command arms it again
     assert GraspEvent.ATTACH in _run(cleared, openarm, _flat(0.2, 10))
+
+
+# ── SO-101: a policy that grasps with a partly open command (close_band) ─────────────
+
+_SO101 = "robots/so101_follower/robot.yaml"
+
+
+@pytest.fixture(scope="module")
+def so101() -> RobotDescription:
+    """The real SO-101 manifest: its jaw channel is a [0, 1] fraction."""
+    return RobotDescription.from_yaml(_SO101)
+
+
+def _so101_wobble(at: float, ticks: int, amplitude: float = 0.003) -> list[float]:
+    """A held orange wobbling the jaw by +-``amplitude``, inside the 0.01 settle tolerance."""
+    return [at + amplitude * ((i % 3) - 1) for i in range(ticks)]
+
+
+def test_the_so101_calibration_separates_its_band_from_its_stall_gap(
+    so101: RobotDescription,
+) -> None:
+    trigger = PositionStallTrigger(so101)
+    assert trigger.thresholds == (0.0, 0.0023, 0.02, 0.01, 0.25)
+
+
+def test_the_so101_attaches_on_a_policy_hold(so101: RobotDescription) -> None:
+    """SmolVLA's hold in the Isaac twin: commanded ~0.20, the jaw stopped on the orange at ~0.30."""
+    trigger = PositionStallTrigger(so101)
+    trigger.command(0.40)
+    assert _run(trigger, so101, _flat(0.40, 10)) == []
+    trigger.command(0.20)
+    assert trigger.closing
+    assert _run(trigger, so101, [0.37, 0.34, 0.31]) == [], "moving is not stalled"
+    assert _run(trigger, so101, _so101_wobble(0.30, 12)) == [GraspEvent.ATTACH]
+    # The release: commanded open past the band, the jaw opens past the hold.
+    trigger.command(0.40)
+    assert _run(trigger, so101, _flat(0.40, 6)) == [GraspEvent.DETACH]
+
+
+@pytest.mark.parametrize(
+    ("command", "jaw"),
+    [
+        (0.36, 0.33),  # free motion outside the band, lagging the command by 0.03
+        (0.20, 0.21),  # inside the band, tracking within 0.01 of the command
+        (0.0, 0.0023),  # an empty close, at its rest offset
+    ],
+)
+def test_the_so101_never_attaches_on_free_motion_or_an_empty_close(
+    so101: RobotDescription, command: float, jaw: float
+) -> None:
+    trigger = PositionStallTrigger(so101)
+    trigger.command(command)
+    assert _run(trigger, so101, _so101_wobble(jaw, 30, amplitude=0.001)) == []
+    assert not trigger.attached

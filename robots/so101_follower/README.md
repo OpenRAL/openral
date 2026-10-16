@@ -61,8 +61,15 @@ thresholds, in fraction units. They follow the method of
 | --- | --- | --- |
 | `closed_position` | 0.0 | the channel's closed end |
 | `closed_rest_offset` | 0.0023 | p99 of the LeIsaac PickOrange teleop dataset's settled commanded-closed samples; the Isaac 6.1 twin's empty close rests at 0.00012 |
-| `stall_gap` | 0.08 | between the dataset's free-motion tracking error (max 0.044) and its stalls on an orange (p1 0.087) |
-| `settle_tolerance` | 0.002 | about 2 STS3215 position LSBs |
+| `close_band` | 0.25 | SmolVLA grasps with the jaw commanded at 0.19–0.23 (deploy trial g5 replayed in the Isaac twin); the teleop dataset at 0.19 (p95 0.25); free motion lags only at commands ≥ 0.25 |
+| `stall_gap` | 0.02 | settled holds sit 0.027–0.103 short of the command in Isaac (teleop median 0.024); free and near-object motion stays ≤ 0.013 |
+| `settle_tolerance` | 0.01 | a settle tolerance of 0.002 caught only 3 of 53 Isaac hold ticks |
+
+On the Isaac replay these values attach on both holds and never on free motion or an
+empty close. On the dataset they attach in 53 of 60 episodes, never outside the
+orange width. The smaller `stall_gap` halves the slip/release hysteresis to 0.01;
+objects thinner than about 0.022 of jaw travel never read as held. A decision-record
+entry is owed for `close_band`.
 
 **These values are sim-measured** (Isaac 6.1 twin plus LeIsaac sim-teleop data) and
 **unverified on a real SO-101**. Re-measure them on hardware before any real
