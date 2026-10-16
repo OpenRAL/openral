@@ -2647,10 +2647,15 @@ class VisionAttachmentBridge:
         return t_link_from_cam, tcp, negatives
 
     def _tcp_in(self, leg: _GripperLeg, link: str) -> tuple[float, float, float] | None:
-        """The leg's TCP in tf2 frame ``link`` (its attach link), or ``None`` without tf."""
+        """The leg's TCP in tf2 frame ``link`` (its attach link), or ``None`` without tf.
+
+        ``tcp_frame`` is a manifest link (the gripper joint's child by default), so it is
+        looked up through ``tf_frames`` like the attach link: the SO-101's logical
+        ``moving_jaw`` is published as ``jaw``.
+        """
         if not leg.tcp_frame:
             return leg.tcp_in_link
-        t_link_from_tcp = self._lookup(link, leg.tcp_frame)
+        t_link_from_tcp = self._lookup(link, self.tf_frame(leg.tcp_frame))
         if t_link_from_tcp is None:
             return None
         return (

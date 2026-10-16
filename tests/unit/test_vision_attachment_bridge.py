@@ -1769,3 +1769,49 @@ def test_a_support_witness_retired_while_a_regrasp_segments_stays_retired() -> N
             assert left.regrasp_hold is None
         finally:
             segmenter.close()
+
+
+@pytest.mark.parametrize("aliased", [True, False])
+def test_the_tcp_lookup_goes_through_tf_frames(aliased: bool) -> None:
+    """SO-101: the TCP is the manifest's logical ``moving_jaw``, published on /tf as ``jaw``.
+
+    With ``tf_frames={"moving_jaw": "jaw"}`` the TCP resolves through the alias (deploy
+    trial g7 found it unresolved and fell back to the jaw box at the wrist); without the
+    alias the manifest name is looked up and is missing.
+    """
+    tf2_ros = pytest.importorskip("tf2_ros")
+    rclpy = pytest.importorskip("rclpy")
+    from geometry_msgs.msg import TransformStamped
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node(f"test_tcp_alias_{int(aliased)}")
+        try:
+            bridge = VisionAttachmentBridge(
+                node,
+                _so101_calibrated(),
+                config=VisionAttachmentConfig(
+                    camera="wrist", tf_frames={"moving_jaw": "jaw"} if aliased else {}
+                ),
+            )
+            buffer = tf2_ros.Buffer()
+            bridge._tf_buffer = buffer
+            jaw = TransformStamped()
+            jaw.header.frame_id = "gripper"
+            jaw.child_frame_id = "jaw"
+            jaw.transform.translation.x = 0.0202
+            jaw.transform.translation.y = 0.0188
+            jaw.transform.translation.z = -0.0234
+            jaw.transform.rotation.w = 1.0
+            buffer.set_transform_static(jaw, "test")
+            (leg,) = bridge._legs
+            assert leg.tcp_frame == "moving_jaw"
+            tcp = bridge._tcp_in(leg, "gripper")
+            if aliased:
+                assert tcp == pytest.approx((0.0202, 0.0188, -0.0234))
+            else:
+                assert tcp is None
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
