@@ -6997,3 +6997,181 @@ TEST_F(LifecycleKernelTest, ANewEpochStartsAFreshBoundGeometry) {
   r.publish(0, {{kClearX, 0.0}});
   EXPECT_TRUE(r.passes()) << logs.joined();
 }
+
+// ── Issue #418 K5: the kernel's jaw-open release ────────────────────────────
+//
+// Three links. link0 "hand" (j0 about z): a palm capsule at x = 0.05. link1
+// "finger" (the jaw, about x): a capsule ON the x axis at 0.10, so the jaw angle
+// moves nothing and is only the measured signal. link2 "other" (j2 along y):
+// a capsule at (0.10, -0.05), 35 mm clear of the payload; j2 = 0.03 drives it
+// into the payload. The payload is a 10 mm sphere on the hand at x = 0.10,
+// touch link "finger", bound to the tracker's box at the same place. The trace
+// mirrors t9: hold ~0.3, the jaw opens to 0.988.
+namespace {
+
+std::vector<rclcpp::Parameter> release_params() {
+  return {
+      {"n_dof", std::int64_t{3}},
+      {"joint_position_min", std::vector<double>{-3.14, -3.14, -0.5}},
+      {"joint_position_max", std::vector<double>{3.14, 3.14, 0.5}},
+      {"joint_velocity_max", std::vector<double>{3.15, 3.15, 3.15}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{64}},
+      {"attached_collision_enabled", true},
+      {"attached_collision_deadline_ms", 200.0},
+      {"attached_collision_margin_m", 0.02},
+      {"attached_max_objects", std::int64_t{1}},
+      {"attached_max_primitives", std::int64_t{16}},
+      {"attached_max_touch_links", std::int64_t{4}},
+      {"collision_n_links", std::int64_t{3}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0, -1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1, 1, 2}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_origin_xyzrpy", std::vector<double>(18, 0.0)},
+      {"collision_axis", std::vector<double>{0, 0, 1, 1, 0, 0, 0, 1, 0}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_capsule_radius", std::vector<double>{0.01, 0.005, 0.005}},
+      {"collision_capsule_half_length", std::vector<double>{0.0, 0.0, 0.0}},
+      {"collision_capsule_origin_xyzrpy",
+       std::vector<double>{0.05, 0, 0, 0, 0, 0, 0.10, 0, 0, 0, 0, 0, 0.10, -0.05, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"hand", "finger", "other"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "jaw", "j2"}},
+      {"collision_state_deadline_ms", 5000.0},
+      {"tracked_release_jaw_joints", std::vector<std::string>{"jaw"}},
+      {"tracked_release_jaw_open_sign", std::vector<double>{1.0}},
+      {"tracked_release_gap", 0.2},
+      {"tracked_release_dwell_s", 0.1},
+      {"tracked_release_clear_m", 0.02},
+      {"tracked_release_timeout_s", 0.4},
+  };
+}
+
+openral_msgs::msg::WorldStateStamped release_state(std::int64_t stream_ns) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = stream_ns;
+  msg.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "trk:1";
+  obj.attach_link = "hand";
+  obj.touch_links = {"finger"};
+  obj.pose_in_link.position.x = 0.10;
+  obj.pose_in_link.orientation.w = 1.0;
+  obj.evidence_kind = "tracked_object";
+  openral_msgs::msg::AttachedCollisionPrimitive prim;
+  prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE;
+  prim.shape_dimensions = {0.01};
+  prim.pose_in_object.orientation.w = 1.0;
+  obj.primitives.push_back(prim);
+  msg.attached_objects.push_back(obj);
+  msg.tracked_objects_valid = true;
+  auto& set = msg.tracked_objects;
+  set.schema_version = "1";
+  set.frame_id = "base_link";
+  set.stamp_ns = stream_ns;
+  set.revision = 1;
+  openral_msgs::msg::TrackedObject o;
+  o.object_id = "trk:1";
+  o.label = "banana";
+  o.role = "target";
+  o.status = "bound";
+  o.box.frame_id = "base_link";
+  o.box.pose.position.x = 0.10;
+  o.box.pose.orientation.w = 1.0;
+  o.box.half_extents.x = 0.02;
+  o.box.half_extents.y = 0.02;
+  o.box.half_extents.z = 0.02;
+  set.objects.push_back(o);
+  return msg;
+}
+
+openral_msgs::msg::ActionChunk release_chunk(double j0, double jaw, double j2) {
+  openral_msgs::msg::ActionChunk chunk;
+  chunk.control_mode = 0;  // JOINT_POSITION
+  chunk.horizon = 1;
+  chunk.n_dof = 3;
+  chunk.flat = {j0, jaw, j2};
+  chunk.rskill_id = "pick_cube";
+  return chunk;
+}
+
+struct ReleaseRig {
+  GraspRig rig;
+  explicit ReleaseRig(const std::string& name) : rig(name, release_params()) {
+    rig.voxels = grasp_target_voxels();
+    rig.voxels.origin.x = 1.0;  // one cell, far from everything
+    rig.js_names = {"j0", "jaw", "j2"};
+    rig.js_tail = {0.30, 0.0};
+    rig.state_fn = release_state;
+    rig.start();
+  }
+  void jaw(double q, int ms, double j0 = 0.0) {
+    rig.js_tail = {q, 0.0};
+    rig.warm(nullptr, j0, ms);
+  }
+  // The t9 trace past the hold: opens to 0.988 and stays.
+  void open_t9() {
+    for (const double q : {0.6, 0.8, 0.988}) {
+      jaw(q, 60);
+    }
+    jaw(0.988, 250);
+  }
+  bool passes(double j0, double j2 = 0.0) {
+    return rig.offer_chunk(nullptr, j0, release_chunk(j0, 0.988, j2), 400);
+  }
+};
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_t9");
+  r.jaw(0.30, 300);  // the hold, captured at attach
+  r.jaw(0.38, 200);  // squeeze jitter, inside the gap
+  r.jaw(0.90, 1);    // a spike shorter than the dwell
+  r.jaw(0.30, 200);
+  EXPECT_EQ(logs.count("safety.tracked_release object="), 0U) << logs.joined();
+  r.open_t9();
+  EXPECT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  // Window open: the finger still touching the frozen payload is exempt.
+  EXPECT_TRUE(r.passes(0.0)) << logs.joined();
+  // The hand retreats: FK separation closes the window.
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  // The payload stayed where it was released, now a plain obstacle: driving the
+  // finger back into it stops (with the payload on the hand it would ride along).
+  EXPECT_FALSE(r.passes(0.0)) << logs.joined();
+  EXPECT_TRUE(r.rig.node->fault_latched());
+  EXPECT_EQ(logs.count("b=finger step="), 1U)
+      << "the payload against the finger: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleaseWindowThatNeverSeparatesClosesOnTimeout) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_timeout");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  r.jaw(0.988, 500);  // the hand never moves; 0.4 s timeout
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=timeout"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "the touching finger is no longer exempt: " << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_other_link");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  ASSERT_TRUE(r.passes(0.0)) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0, 0.03)) << "link2 into the frozen payload: " << logs.joined();
+  EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
+}

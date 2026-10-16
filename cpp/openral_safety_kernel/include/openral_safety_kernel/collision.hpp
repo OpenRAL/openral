@@ -738,8 +738,14 @@ struct AttachedPrimitive {
 /// support occupies the half-space `(x - support_point)·support_normal <= 0`.
 /// No attestation (`has_support_witness == false`) means no exemption.
 struct AttachedObject {
-  Transform pose_in_link{};             ///< object pose in the attach-link frame
-  int attach_link{-1};                  ///< robot link index the object is attached to
+  Transform pose_in_link{};  ///< object pose in the attach-link frame (base frame if frozen)
+  /// Robot link index the object is attached to. -1 = frozen in the base frame
+  /// (issue #418 K5, a kernel-released payload): `pose_in_link` is then its
+  /// base-frame pose, FK never moves it, and no link is exempt as its attach link.
+  int attach_link{-1};
+  /// Issue #418 K5: while a released payload's window is open, the hand link
+  /// that held it, exempt against it like a touch link; -1 otherwise.
+  int release_hand_link{-1};
   int prim_first{0};                    ///< offset into AttachedModel.primitives
   int prim_count{0};                    ///< number of primitives owned by this object
   int touch_first{0};                   ///< offset into AttachedModel.touch_links
@@ -1495,6 +1501,17 @@ inline constexpr std::size_t kMaxTrackedHullVertices = 64;
 bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
                             const AttachedModel& attached, const AttachedObject& object,
                             const Transform& box, const Vec3& half_extents, double slack) noexcept;
+
+/// Lower bound on the gap between `object`'s primitives and every robot link
+/// exempt against it (`attached_allows_link`: its attach link, touch links and
+/// release hand), at the configuration FK'd into `scratch` (issue #418 K5, the
+/// release window's FK separation). Each primitive is taken as its plain box /
+/// capsule (no stage-2 refinement), so the bound only ever reads low and a
+/// window closes late, never early. +infinity when no exempt link carries
+/// geometry. Allocation-free.
+double released_payload_clearance(const CollisionModel& model, const CollisionScratch& scratch,
+                                  const AttachedModel& attached,
+                                  const AttachedObject& object) noexcept;
 
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.

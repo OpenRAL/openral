@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <bitset>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <new>
@@ -321,4 +322,40 @@ TEST(NoAlloc, TheTrackedBindingCheckIsAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
   EXPECT_EQ(met, 5000) << "the loop really exercised both verdicts";
+}
+
+TEST(NoAlloc, AFrozenPayloadsChecksAreAllocationFree) {
+  // Issue #418 K5: the release window's separation test runs per world-state
+  // message and the frozen payload is checked on every candidate.
+  osk::CollisionModel m;
+  m.n_links = 1;
+  m.parent = {-1};
+  m.joint_kind = {osk::JointKind::kFixed};
+  m.dof_index = {-1};
+  m.origin = {osk::Transform{}};
+  m.axis = {{0, 0, 1}};
+  m.capsule_link = {0};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.primitives.assign(1, osk::AttachedPrimitive{});
+  att.primitives[0].radius = 0.01;
+  att.objects[0].attach_link = -1;
+  att.objects[0].release_hand_link = 0;
+  att.objects[0].prim_count = 1;
+  att.n_objects = 1;
+  att.n_primitives = 1;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sum = 0.0;
+  for (int i = 0; i < 10000; ++i) {
+    att.objects[0].pose_in_link.t.x = 0.001 * (i % 100);
+    sum += osk::released_payload_clearance(m, s, att, att.objects[0]);
+    sum += osk::check_attached_self_collision(m, att, s, 0.01).hit ? 1.0 : 0.0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_TRUE(std::isfinite(sum));
 }
