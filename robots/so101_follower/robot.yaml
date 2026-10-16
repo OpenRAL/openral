@@ -134,23 +134,31 @@ joints:
     #   episodes, Isaac sim teleop). The Isaac 6.1 twin's own empty close (open to 0.8
     #   / 0.5, then f = 0 with nothing between the jaws, at the reset pose) rests at
     #   0.00012; the larger value is kept.
-    # - stall_gap 0.08: between the dataset's free-motion tracking error (|gap| on
-    #   settled non-stalled samples: p99.9 0.037, max 0.044) and its stalls on an orange
-    #   (gap p1 0.087, median 0.169). OpenArm's 0.08 sits between 0.025 and 0.18 the
-    #   same way.
-    # - settle_tolerance 0.002: about 2 STS3215 position LSBs (2 pi / 4096 rad =
-    #   0.00088 in this fraction under Isaac's 1.7453 f map). It covers 99 % of the
-    #   dataset's settled non-stall 0.13 s spans (p99 0.0019). The twin's empty close is
-    #   flat to 2e-9. A stalled orange in the dataset spans more (median 0.016), so the
-    #   trigger arms on the flattest stalls only.
-    # UNVERIFIED ON A REAL SO-101: re-measure on hardware (an attended empty close plus
-    # teleop traces, §5) before any real `grasp_allowance_enabled` deploy. Safety-WG
-    # item; a hazard-log row is owed.
+    # - close_band 0.25, stall_gap 0.02, settle_tolerance 0.01: from how the policy
+    #   actually grasps (2026-10-16, deploy trial g5's 517 commanded actions replayed
+    #   open-loop in the physics-matched Isaac twin, holds labelled from the sim's
+    #   orange poses and the URDF fingers). SmolVLA holds an orange with the jaw
+    #   commanded at 0.19-0.23 and stopped at ~0.30: settled hold gaps (measured -
+    #   commanded, span <= 0.01 over 0.13 s) 0.027-0.103, while free and near-object
+    #   motion stays <= 0.013. The LeIsaac teleop dataset holds at a command of 0.19
+    #   (p50; p95 0.25) with a gap of 0.024 (p50), free tracking error p99 0.030 at
+    #   commands >= 0.25, and empty closes within 0.002. So a 0.25 close band (below
+    #   the commands where free motion lags) and a 0.02 stall threshold. On the replay
+    #   that attaches on both holds and never on free motion or an empty close; on the
+    #   dataset, 53 of 60 episodes, with no fire outside the orange width. A settle
+    #   tolerance of 0.002 catches only 3 of 53 Isaac hold ticks. The smaller stall gap
+    #   also halves the DETACH / REGRASP hysteresis to 0.01: a carried orange wobbles
+    #   up to 0.04 in Isaac, so expect REGRASP churn. Objects thinner than ~0.022 of
+    #   jaw travel never read as held.
+    # SIM-MEASURED, UNVERIFIED ON A REAL SO-101: re-measure on hardware (an attended
+    # empty close plus teleop traces, §5) before any real `grasp_allowance_enabled`
+    # deploy. Safety-WG item; a hazard-log row and a decision-record entry are owed.
     closure_calibration:
       closed_position: 0.0
       closed_rest_offset: 0.0023
-      stall_gap: 0.08
-      settle_tolerance: 0.002
+      stall_gap: 0.02
+      settle_tolerance: 0.01
+      close_band: 0.25
 
 # The jaw as a moving link of the collision model, posed from the `gripper`
 # fraction f by the URDF `gripper` joint's origin and axis at q_jaw = 1.7453 * f
