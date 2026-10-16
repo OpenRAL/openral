@@ -88,8 +88,10 @@ Parameters:
         callback group on a multi-threaded executor, so frames arrive while it waits.
     request_deadline_s (float): the requester's deadline per call, the HAL's
         ``vision_attachment_deadline_s`` (default ``0.25``). The wait is capped at
-        this minus the time already spent and the last request's measured serve time
-        (``frame_wait_budget_s``), so a reply is never built after the HAL dropped it.
+        this minus the time this request has already spent in the node and the last
+        request's measured serve time (``frame_wait_budget_s``). The HAL round trip and
+        time queued behind another call are not measured here, so they are not budgeted;
+        a reply that still lands late is dropped by the HAL, which then falls back.
 
 **Which frame a request is served from.** The HAL stamps a request with the depth
 frame it will back-project the masks through, and refuses masks cut from a frame
@@ -433,6 +435,8 @@ def _node_class() -> type:
             self.declare_parameter("request_deadline_s", DEFAULT_REQUEST_DEADLINE_S)
             # The last served request's frame-found -> reply-built time (``frame_wait_budget_s``).
             self._serve_s = DEFAULT_SERVE_S
+            # When the request being served entered the node (``_serve_segment_in_view``).
+            self._request_started = time.perf_counter()
             self._waited_s = 0.0  # the current request's frame wait
 
             # The last FRAME_HISTORY (stamp_ns, (bgr, width, height, header.frame_id,
@@ -695,6 +699,10 @@ def _node_class() -> type:
                 )
             gp = self.get_parameter
             started = time.perf_counter()
+            # The deadline left after what this request has already spent in the node.
+            remaining_s = gp("request_deadline_s").get_parameter_value().double_value - (
+                started - self._request_started
+            )
             frame, stale = wait_for_frame(
                 lambda: self._frames.get(camera, ()),
                 self._frame_arrived,
@@ -702,7 +710,7 @@ def _node_class() -> type:
                 max_skew_s=gp("max_frame_skew_s").get_parameter_value().double_value,
                 wait_s=frame_wait_budget_s(
                     gp("frame_wait_s").get_parameter_value().double_value,
-                    gp("request_deadline_s").get_parameter_value().double_value,
+                    remaining_s,
                     serve_s=self._serve_s,
                 ),
             )
@@ -720,6 +728,7 @@ def _node_class() -> type:
         def _serve_segment_in_view(self, request: Any, response: Any) -> Any:
             """``_on_segment_in_view``, measuring a served request's time outside the wait."""
             started, self._waited_s = time.perf_counter(), 0.0
+            self._request_started = started
             response = self._on_segment_in_view(request, response)
             if response.ok:
                 # ponytail: the last served request only; a moving max if serve times jitter.
