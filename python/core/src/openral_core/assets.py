@@ -17,11 +17,15 @@ Grammar (``resolve_asset(ref, kind)``):
 ``resolve_package_uri`` is the companion for one ROS ``package://<pkg>/<path>``
 mesh reference inside a vendored URDF, for the description packages OpenRAL
 fetches itself as pinned clones (``openral_hal.ros_package_overlay``).
+``expand_rd_mesh_refs`` turns a vendored URDF's ``rd:<module>:<relpath>`` mesh
+refs into absolute paths for a consumer that does not know the scheme (the
+Isaac URDF importer, ``foxglove_bridge``'s ``resource_retriever``).
 """
 
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -29,7 +33,14 @@ import structlog
 
 _log = structlog.get_logger(__name__)
 
-__all__ = ["AssetFetchError", "AssetKind", "AssetRefError", "resolve_asset", "resolve_package_uri"]
+__all__ = [
+    "AssetFetchError",
+    "AssetKind",
+    "AssetRefError",
+    "expand_rd_mesh_refs",
+    "resolve_asset",
+    "resolve_package_uri",
+]
 
 AssetKind = Literal["urdf", "mjcf", "srdf"]
 
@@ -151,6 +162,49 @@ def resolve_package_uri(uri: str) -> Path:
     if not path.is_file():
         raise AssetRefError(f"{uri!r}: {path!s} is not a file in the pinned {pkg!r} clone")
     return path
+
+
+_RD_MESH_REF = re.compile(r'filename="rd:([^:"]+):([^"]+)"')
+
+
+def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "") -> str:
+    """``urdf_xml`` with every ``filename="rd:<module>:<relpath>"`` made an absolute path.
+
+    Vendored URDFs (``openral robot vendor-urdf``) name their meshes
+    ``rd:<robot_descriptions module>:<path relative to the upstream repository>``
+    so the committed file holds no host path; the collision lowering expands
+    them itself. Importing the module clones its pinned upstream into the
+    ``robot_descriptions`` cache on first use. Every other ref is left alone.
+
+    Args:
+        urdf_xml: The URDF text.
+        prefix: Prepended to each absolute path (``"file://"`` for a
+            ``resource_retriever`` consumer).
+
+    Raises:
+        AssetFetchError: The module's pinned clone could not be fetched.
+        AssetRefError: ``robot_descriptions`` is not installed, or a ref names
+            no file in the clone.
+
+    Example:
+        >>> expand_rd_mesh_refs('<mesh filename="package://p/m.stl"/>')
+        '<mesh filename="package://p/m.stl"/>'
+    """
+
+    def expand(match: re.Match[str]) -> str:
+        module, rel = match.group(1), match.group(2)
+        try:
+            mod = importlib.import_module(f"robot_descriptions.{module}")
+        except ImportError as exc:
+            raise AssetRefError(f"rd:{module}:{rel}: {type(exc).__name__}: {exc}") from exc
+        except Exception as exc:  # reason: a clone failure surfaces as many types (git, OSError)
+            raise AssetFetchError(f"rd:{module}:{rel}: fetching the clone failed: {exc}") from exc
+        path = Path(str(mod.REPOSITORY_PATH)) / rel
+        if not path.is_file():
+            raise AssetRefError(f"rd:{module}:{rel}: {path!s} is not a file in the pinned clone")
+        return f'filename="{prefix}{path}"'
+
+    return _RD_MESH_REF.sub(expand, urdf_xml)
 
 
 def _resolve_rd(module: str, kind: AssetKind) -> Path:

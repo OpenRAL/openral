@@ -68,6 +68,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`SensorSpec`-by-name search — two ROS packages, deliberately.** Private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` vs. public `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two packages; promoting it to `openral_core.schemas` is worth doing when a third caller appears, not before.
 
+- **`rd:<module>:<relpath>` mesh expansion — two bodies, deliberately.** `openral_core.assets.expand_rd_mesh_refs` (text rewrite for the Isaac importer and `foxglove_bridge`) vs. `openral_safety.urdf_lowering._rd_mesh_filename_handler` (a yourdfpy filename handler). The lowering cannot route through the text rewrite without a safety-package change, and its handler must keep `package://` refs failing (openarm routing). `openral_cli.robot._portable_mesh_refs` is the inverse (absolute → `rd:`). Change the grammar in all three together.
+
 ---
 
 ### Already correctly DRY (do not flag)

@@ -1822,6 +1822,46 @@ def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
     return out
 
 
+def _isaac_importable_urdf(urdf_path: Path) -> Path:
+    """``urdf_path``, or a copy of it whose ``rd:<module>:<relpath>`` meshes are absolute.
+
+    Isaac's URDF importer knows absolute, relative and ``package://`` mesh refs;
+    a vendored URDF's ``rd:`` refs (``openral_core.assets.expand_rd_mesh_refs``)
+    would import as missing meshes. The copy lives in a content-addressed temp
+    dir, so its relative refs are made absolute too. A URDF without ``rd:`` refs
+    is returned as is.
+
+    Raises:
+        ROSConfigError: an ``rd:`` mesh does not resolve.
+    """
+    from openral_core.assets import AssetRefError, expand_rd_mesh_refs
+
+    text = urdf_path.read_text(encoding="utf-8")
+    if 'filename="rd:' not in text:
+        return urdf_path
+    try:
+        text = expand_rd_mesh_refs(text)
+    except AssetRefError as exc:
+        raise ROSConfigError(f"URDF {urdf_path}: {exc}") from exc
+    base = urdf_path.parent
+
+    def absolute(m: re.Match[str]) -> str:
+        ref = m.group(1)
+        if ref.startswith(("package://", "file://", "/")):
+            return m.group(0)
+        return f'filename="{os.path.normpath(base / ref)}"'
+
+    text = re.sub(r'filename="([^"]+)"', absolute, text)
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    out = Path(tempfile.gettempdir()) / "openral_isaac_urdf" / digest / urdf_path.name
+    if not out.is_file():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(f".{out.name}.{os.getpid()}")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(out)  # atomic: concurrent scenes share the dir
+    return out
+
+
 def _root_to_base(desc: RobotDescription) -> NDArray[np.float64]:
     """4x4 pose of the manifest ``base_frame`` in the URDF root frame.
 
@@ -1961,7 +2001,7 @@ def _build_robot_spec(
 
     return {
         "robot_id": robot_id,
-        "urdf_path": str(urdf_path),
+        "urdf_path": str(_isaac_importable_urdf(urdf_path)),
         "ros_package_paths": _ros_package_paths(urdf_path),
         "base_frame": desc.base_frame,
         "root_to_base": _root_to_base(desc).tolist(),
