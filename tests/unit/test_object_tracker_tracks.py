@@ -1,0 +1,115 @@
+"""Tracks: association by continuity, ties, inferred identity, source-time ageing (#418 5-6)."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+from openral_core import ObjectQuery, ObjectQueryStatus, ObjectRole, TrackedObject, TrackStatus
+from openral_core.exceptions import ROSConfigError
+from openral_world_state.object_tracker import (
+    CameraFrame,
+    ObjectTracker,
+    TrackerResult,
+    associate,
+    containing_fit,
+    visible_fraction,
+)
+
+from tests.unit._tracker_scenes import RES, Solid, grid_from_depth, render, so101_top, sphere, step
+
+_RIG = so101_top()
+_R = 0.024
+_QUERY = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+
+
+def _get(tr: ObjectTracker, object_id: str) -> TrackedObject:
+    track = tr.store.get(object_id)
+    assert track is not None
+    return track
+
+
+def _oranges(spacing: float) -> list[Solid]:
+    x, y = _RIG.centre_xy
+    return [sphere((x + d, y, _RIG.support_z + _R), _R) for d in (-spacing, 0.0, spacing)]
+
+
+def _grounded(oranges: list[Solid]) -> tuple[ObjectTracker, float]:
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    out, wall = step(tr, _RIG, oranges, stamp_ns=0, wall_s=0.0)
+    assert [o.status for o in out.tracked.objects] == [TrackStatus.CONFIRMED] * 3
+    return tr, wall
+
+
+def test_three_identical_oranges_tie_updates_nothing() -> None:
+    oranges = _oranges(0.05)
+    tr, wall = _grounded(oranges)
+    a, b = _get(tr, "trk:1"), _get(tr, "trk:2")
+    mid = tuple((p + q) / 2 for p, q in zip(a.box.pose.xyz, b.box.pose.xyz, strict=True))
+    assert associate(tr.store.all(), mid, voxel_m=RES) == (None, "tie")
+    # A segmenter mask that spans two oranges: its fit sits between them and moves neither.
+    depth, labels = render(oranges, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG)
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1)
+    req = out.requests[0]
+    boxes, rev = {o.object_id: o.box for o in tr.store.all()}, tr.store.revision
+    both = (labels == 1) | (labels == 2)
+    union = TrackerResult(req.request_id, mask=both)
+    # That fit passes every gate and lands on the tie (what feed then does with it).
+    fit = containing_fit(
+        both, depth, frame.robot_mask, _RIG.k, _RIG.t, support_z=a.support_z,
+        resolution=RES, frame_id=_RIG.frame, stamp_ns=1,
+    )  # fmt: skip
+    assert fit.refusal == "" and fit.box is not None
+    vis = visible_fraction(fit.box, depth, frame.robot_mask, _RIG.k, _RIG.t)
+    assert vis is not None and vis >= 0.5
+    centroid = tuple(fit.surface.mean(axis=0))
+    assert associate(tr.store.all(), centroid, voxel_m=RES) == (None, "tie")
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall + 1, results=[union])
+    assert {o.object_id: o.box for o in out.tracked.objects} == boxes
+    assert tr.store.revision == rev
+
+
+def test_refound_lost_track_inherits_its_id_as_inferred() -> None:
+    oranges = _oranges(0.09)
+    tr, wall = _grounded(oranges)
+    lost = _get(tr, "trk:2")
+    tr.store.replace(lost.model_copy(update={"status": TrackStatus.LOST}))
+    for n in range(1, 4):
+        out, wall = step(tr, _RIG, oranges, stamp_ns=n * 100_000_000, wall_s=wall + 1)
+    back = out.tracked.objects[1]
+    assert back.object_id == "trk:2" and back.identity_inferred
+    assert back.status is TrackStatus.CONFIRMED
+    assert [o.object_id for o in out.tracked.objects] == ["trk:1", "trk:2", "trk:3"]
+
+
+def test_ageing_runs_on_the_source_clock_not_the_wall() -> None:
+    """A 0.1x real-time sim: 1 s of wall per 0.1 s of source. Lifetimes follow the source."""
+    oranges = _oranges(0.09)
+    tr, wall = _grounded(oranges)
+    statuses = {}
+    for n in range(1, 71):  # source 0.1 .. 7.0 s; wall 1 .. 70 s
+        wall += 1.0
+        out, wall = step(tr, _RIG, oranges, stamp_ns=n * 100_000_000, wall_s=wall, with_grid=False)
+        statuses[n] = out.tracked.objects[0].status
+    assert statuses[19] is TrackStatus.CONFIRMED  # 1.9 s of source, 19 s of wall: still fresh
+    assert statuses[21] is TrackStatus.TENTATIVE  # past max_age_s = 2 s of source: ineligible
+    assert statuses[59] is TrackStatus.TENTATIVE
+    assert statuses[61] is TrackStatus.LOST  # past lost_s = 6 s of source
+    query = tr.queries.get("g", "q0")
+    assert query is not None and query.status is ObjectQueryStatus.UNRESOLVED  # search restarts
+
+
+def test_track_store_contract() -> None:
+    tr, _ = _grounded(_oranges(0.09))
+    store = tr.store
+    rev = store.revision
+    t = _get(tr, "trk:1")
+    store.replace(t.model_copy(update={"epoch": 1}))
+    assert store.revision == rev + 1 and _get(tr, "trk:1").epoch == 1
+    with pytest.raises(ROSConfigError, match="epoch"):
+        store.replace(t)  # epoch 0 < 1
+    with pytest.raises(ROSConfigError, match="unknown"):
+        store.replace(t.model_copy(update={"object_id": "trk:99"}))
+    assert [o.object_id for o in store.all()] == ["trk:1", "trk:2", "trk:3"]

@@ -21,16 +21,23 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import yaml
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole
+from openral_core import IntrinsicsPinhole, PlaceRegion
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.perception_geometry import VoxelLattice
+from openral_world_state.object_tracker import (
+    CameraFrame,
+    ObjectTracker,
+    TrackerOutput,
+    TrackerRequest,
+    TrackerResult,
+)
 
 from tests.unit._head_camera_render import head_camera
 
@@ -244,3 +251,60 @@ def inside_hull(points: NDArray[np.float64], hull_base: NDArray[np.float64]) -> 
 
     eq = ConvexHull(hull_base).equations
     return np.asarray(np.all(points @ eq[:, :3].T + eq[:, 3] <= 1e-7, axis=1))
+
+
+def answer(req: TrackerRequest, labels: NDArray[np.int64]) -> TrackerResult:
+    """What the detector / segmenter returns for ``req`` on the rendered frame."""
+    if req.service == "locate_in_view":
+        boxes: list[tuple[float, float, float, float]] = []
+        for n in range(1, int(labels.max()) + 1):
+            rows, cols = np.nonzero(labels == n)
+            if len(rows) >= 10:
+                boxes.append(
+                    (float(cols.min()), float(rows.min()), cols.max() + 1.0, rows.max() + 1.0)
+                )
+        return TrackerResult(req.request_id, boxes_xyxy=tuple(boxes))
+    if req.box_xyxy is not None:
+        c0, r0, c1, r1 = (int(v) for v in req.box_xyxy)
+        inside = labels[r0:r1, c0:c1]
+        counts = np.bincount(inside[inside > 0].ravel(), minlength=1)
+        n = int(counts.argmax()) if counts.any() else 0
+    elif req.point_uv is not None:
+        n = int(labels[int(req.point_uv[1]), int(req.point_uv[0])])
+    else:
+        n = 0
+    return TrackerResult(req.request_id, mask=(labels == n) if n else None)
+
+
+def step(
+    tracker: ObjectTracker,
+    rig: Rig,
+    solids: list[Solid],
+    *,
+    stamp_ns: int,
+    wall_s: float,
+    with_grid: bool = True,
+    extra: Sequence[tuple[int, int, int]] = (),
+    hands: Sequence[PlaceRegion] = (),
+    answers: int = 8,
+) -> tuple[TrackerOutput, float]:
+    """Feed one frame, answering the requests it raises.
+
+    Returns the last output (with every escalation the frame raised) and the wall clock.
+    """
+    depth, labels = render(solids, rig)
+    frame = CameraFrame(rig.name, stamp_ns, depth, rig.k, rig.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, rig, extra=extra) if with_grid else None
+    out = tracker.feed(frame, grid=grid, grid_stamp_ns=stamp_ns, wall_s=wall_s, hand_spaces=hands)
+    escalations = list(out.escalations)
+    for n in range(answers + 1):
+        if not out.requests:
+            break
+        if n < answers:
+            wall_s += 0.6  # past the 2 Hz segmenter rate: the next request may go out
+        res = [answer(out.requests[0], labels)]  # the last one at the same wall: no new one
+        out = tracker.feed(
+            frame, grid=grid, grid_stamp_ns=stamp_ns, wall_s=wall_s, results=res, hand_spaces=hands
+        )
+        escalations += out.escalations
+    return replace(out, escalations=tuple(escalations)), wall_s

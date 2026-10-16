@@ -975,6 +975,15 @@ const LAYERS = [
         schemas: ["DetectedObject", "Pose6D", "ObjectsMetadata", "IntrinsicsPinhole"],
       },
       {
+        title: "Object-centric tracker core (issue #418)",
+        pkg: "python/world_state · object_tracker/ (fit, cover, tracks, grounding, scheduler, tracker)",
+        status: "yellow",
+        desc: "ROS-free core of the Layer-2 object tracker (#418 design steps 0-7 + Addendum G). ObjectTracker.feed takes one depth frame (robot mask, K, T_base<-cam at the depth stamp), the newest voxel grid (source_stamp) and the answers to its own requests; returns at most one LocateInView/SegmentInView request, query escalations and the whole TrackedObjectSet. containing_fit: cone(dilated silhouette + uncertain + occluder bands) between the front plane and the support, union the prism of the depth points: a 64-vertex polytope that contains the solid (A1-A4 logged per fit; border-truncated masks and points under the support refused) — property-tested for spheres, cylinders, boxes and a curved banana-like solid on the SO-101 top, DROID exterior_depth and OpenArm head_zed cameras. Size-aware cover |E∩occ| >= max(2, ceil(0.5|E|)) + map_confirms one body (own-hand split vs foreign SPLIT). Association by continuity (tie within a voxel updates nothing; LOST/RELEASED re-found inside their gate inherit the id, identity_inferred); ageing on the source clock only. Standing queries UNRESOLVED/RESOLVING/RESOLVED/EXHAUSTED with fair scheduling and bounded find-object escalation emitted as data. One request in flight at segment_hz (wall). TrackStore get/all/replace is the binding/release interface. Yellow: no lifecycle node publishes /openral/tracked_objects yet, and no sim run measured containment against simulator ground truth (phase 1).",
+        inputs: ["depth + robot_mask + CameraInfo + TF at the depth stamp (via the node)", "msg/OccupancyVoxels (/openral/world_voxels)", "ObjectQuery (GraspDeclaration.target_queries / PlaceDeclaration.destination_query)"],
+        outputs: ["TrackedObjectSet (in-process)", "LocateInView / SegmentInView requests", "query escalations (unresolved / exhausted)"],
+        schemas: ["ObjectQuery", "ObjectQueryStatus", "TrackedObject", "TrackedObjectSet", "TrackStatus", "FitKind", "PlaceRegion", "AttachedCollisionPrimitive"],
+      },
+      {
         title: "Persistent spatial memory (scene graph)",
         pkg: "openral_core.schemas (contracts) · python/world_state · spatial_memory.py + embedder.py",
         status: "green",

@@ -143,6 +143,63 @@ _Size-aware map confirmation (#418 step 4)._
 - `surface_cells(grid, surface, *, exclude=()) -> frozenset[tuple[int, int, int]]` — `E`: lattice cells holding the fit's surface points, minus cells centred in `exclude` (the robot's own space). (L56)
 - `cover_verdict(grid, cells, box, *, support_z, own=()) -> CoverVerdict` — `|E ∩ occupied| ≥ max(2, ⌈0.5·|E|⌉)` (cover on expected cells, not a padded footprint), then `object_primitives.map_confirms` for one body; a second body wholly inside a declared hand's `own` space is `map_split_own`. (L89)
 
+### `python/world_state/src/openral_world_state/object_tracker/tracks.py`
+_Track table, association by continuity, source-time ageing (#418 steps 5-6)._
+
+- const `LIVE` — Statuses a fit refreshes by continuity (TENTATIVE, CONFIRMED, OCCLUDED, SPLIT, BOUND). (L40)
+- `class TrackStore(frame_id)` — The `TrackedObject` rows; every change bumps `revision`. Contract for binding/release: `get`, `all`, `replace`. (L52)
+  - `revision` (property) — Strictly increasing. (L96)
+  - `get(object_id) -> TrackedObject | None` — (L100)
+  - `all() -> list[TrackedObject]` — Mint order. (L104)
+  - `replace(obj) -> None` — Swap the row for an updated copy; bumps `revision`; `ROSConfigError` on an unknown id, a frame mismatch or an epoch going backwards; logs status transitions. Never mints. (L108)
+  - `mint(**fields) -> TrackedObject` — TENTATIVE `trk:<n>`, never reused; past 32 rows the oldest LOST is dropped, else `ROSConfigError`. (L137)
+  - `drop(object_id) -> None` — Forget a row. (L160)
+  - `snapshot(stamp_ns) -> TrackedObjectSet` — (L165)
+- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180)
+- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L249)
+
+### `python/world_state/src/openral_world_state/object_tracker/grounding.py`
+_Standing queries (#418 Addendum G): a query lives as long as its goal; never a first-frame snapshot._
+
+- `@dataclass StandingQuery` — `(goal_id, query_id)`, the `ObjectQuery`, `declaration_key`, `ObjectQueryStatus`, search start (`since_ns`), fairness key (`last_served_ns`), `escalated`. (L43)
+  - `key` (property) — `(goal_id, query_id)`. (L67)
+  - `matches(track) -> bool` — Same label and role. (L71)
+- `@dataclass QueryEscalation` — Active-search data for the reasoner, never executed by the tracker: `kind` `unresolved` (start `find-object`) / `exhausted` (budget spent → replanning ladder), `last_seen` (last LOST match's box, a search prior). (L77)
+- `class QueryBook(*, search_start_s, search_max_s)` — Every live goal's queries. (L97)
+  - `queries` (property) — (L122)
+  - `get(goal_id, query_id) -> StandingQuery | None` — (L126)
+  - `open(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query at dispatch. (L130)
+  - `close_goal(goal_id) -> None` — End a goal's queries. (L145)
+  - `ready(goal_id) -> bool` — `grounding_ready`: every query RESOLVED. (L150)
+  - `update(tracks, *, now_ns) -> list[QueryEscalation]` — UNRESOLVED → RESOLVING (TENTATIVE/RELEASED match) → RESOLVED (≥ `min_instances` CONFIRMED/OCCLUDED/BOUND); all lost again → UNRESOLVED with the timer restarted; one `unresolved` escalation after `search_start_s`, `EXHAUSTED` + `exhausted` at `search_max_s`, all in source time. (L155)
+  - `due() -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting). (L189)
+
+### `python/world_state/src/openral_world_state/object_tracker/scheduler.py`
+_One segmenter/detector request in flight, rate-capped in wall time (#418 step 7)._
+
+- const `PRIORITY_QUERY = 1` — Step-7 priority of unresolved queries. (L39)
+- const `PRIORITY_RELEASED = 2` — RELEASED tracks, searched in their fall column. (L40)
+- const `PRIORITY_DISAGREE = 3` — Tracks the map disagrees with. (L41)
+- const `PRIORITY_BOUND = 4` — Bound-object protrusion checks. (L42)
+- const `PRIORITY_REFRESH = 5` — Oldest visible CONFIRMED refresh and resolved `count: "all"` re-detection. (L43)
+- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv`, `request_id` (0 until issued). (L47)
+- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L78)
+  - `in_flight` (property) — (L108)
+  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L112)
+  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L121)
+
+### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
+_`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._
+
+- `class TrackerParams(BaseModel)` — Frozen calibration: `theta_vis`, `max_age_s`, `lost_s`, `keep_lost_s`, `disagree_grids`, `segment_hz`, `segment_budget_wall_s`, `search_start_s`, `search_max_s`, support probe, `fit: FitParams`. (L69)
+- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L108)
+- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector). (L130)
+- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L145)
+- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L161)
+  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L194)
+  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L206)
+  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L211)
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
 _C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
 
