@@ -407,6 +407,9 @@ def placement_queries(placements: Sequence[tuple[str, str | None]]) -> tuple[Obj
     dropped (``orange_1`` → ``orange``) and underscores read as spaces, so instances share
     one open-vocabulary label; a class placed more than once is ``count="all"``. One
     ``TARGET`` query per class, in task order, then at most one ``DESTINATION`` query.
+    The derivation suits a class-like name (``cracker_box`` → ``cracker box``); a prim
+    name that is no class (``stock_object``, ``carton_b``) is passed through as is, so a
+    scene names its detector label explicitly (``IsaacPlacement.label``).
 
     Raises:
         ROSConfigError: No placement, or several destination objects (a
