@@ -309,7 +309,8 @@ class PositionStallTrigger:
     a tick before any command has been seen counts in ``uncommanded_ticks`` — without a
     command there is no "short of it", so the trigger cannot attach — a sample whose
     stamp repeats the last one counts in ``repeated_samples``, and a gap longer than
-    ``max_gap_s`` that restarted every window counts in ``gap_resets``. The last
+    ``max_gap_s`` that restarted every window counts in ``gap_resets``, and a command
+    entering the close band, which restarts them too (``command``), in ``close_starts``. The last
     classified sample's ``last_short_of_command`` and ``last_settle_spread`` say how near
     it came; the bridge logs them per close (``closing``).
 
@@ -391,6 +392,7 @@ class PositionStallTrigger:
         self.uncommanded_ticks = 0
         self.repeated_samples = 0
         self.gap_resets = 0
+        self.close_starts = 0
         self.last_short_of_command: float | None = None
         self.last_settle_spread: float | None = None
 
@@ -430,9 +432,27 @@ class PositionStallTrigger:
 
         A non-finite target is ignored: the safety kernel never approves one, and it
         cannot be a reference for "short of the command".
+
+        A command that ENTERS the close band (the previous one was outside it, or there
+        was none) starts a close: the settle history and the debounce streak restart, so
+        ATTACH needs the jaw to settle after the close was commanded. Without it a jaw
+        that sat still OPEN before the command read as settled far short of it on the
+        first close sample (Isaac DROID deploy sim t6, 2026-10-16: ATTACH 0.2 s after
+        the command, the jaw 0.868 short of it, still open). It only ever delays an
+        event.
         """
-        if math.isfinite(target):
-            self._command = float(target)
+        if not math.isfinite(target):
+            return
+        was_closing = self._command is not None and self._in_band(self._command)
+        self._command = float(target)
+        if not was_closing and self._in_band(self._command):
+            self._history.clear()
+            self._reset_streak()
+            self.close_starts += 1
+
+    def _in_band(self, command: float) -> bool:
+        """Whether ``command`` counts as a close command (within the band of closed)."""
+        return abs(command - self._closed) <= self._band
 
     def clear_command(self) -> None:
         """Forget the commanded target: what this jaw was last told is no longer known.
