@@ -1101,6 +1101,9 @@ def _release_base_link(description: RobotDescription) -> str:
 
 #: What one grasp needs from TF and the manifest before it can prompt:
 #: ``(t_link_from_cam, tcp_in_link, negative_points_in_link)``.
+#: A cached depth frame: ``(depth_m grid, header stamp ns, header frame_id)``.
+_DepthEntry = tuple[NDArray[np.float64], int, str]
+
 _PromptContext = tuple[
     "NDArray[np.float64]",
     tuple[float, float, float],
@@ -1476,7 +1479,7 @@ def build_segment_request(
     Precondition: the segmenter's RGB is registered to the depth stream.
 
     Args:
-        stamp_ns: The grasp instant.
+        stamp_ns: The depth frame the masks will be back-projected through.
         camera: Logical camera id.
         t_link_from_cam: ``(4, 4)`` transform mapping optical-frame points into
             the attach link.
@@ -1596,7 +1599,7 @@ class VisionAttachmentBridge:
             )
 
         # (raster, stamp ns, header.frame_id) of the newest depth frame.
-        self._depth: tuple[NDArray[np.float64], int, str] | None = None
+        self._depth: _DepthEntry | None = None
         # (lattice, source_stamp ns, monotonic receive time) of the newest
         # ``/openral/world_voxels`` grid: ONE subscription and decode shared by both
         # producer legs; its occupied centres are computed lazily, once, on first use.
@@ -2133,7 +2136,11 @@ class VisionAttachmentBridge:
                 self._release_barrier(leg)
             return
         leg.pending = True
-        context = self._gather_context(leg)
+        # One depth frame for the whole round trip: the request is stamped with it, the
+        # reply's masks are skew-checked against it and back-projected through it (as the
+        # grasp-target leg does), never against whatever frame is cached when it lands.
+        depth_entry = self._depth
+        context = self._gather_context(leg, depth_entry)
         if isinstance(context, str):  # a typed precondition failure
             # The fallback box is posed off the tool point: the live one when tf2 has
             # it (a missing depth frame or camera transform says nothing about the
@@ -2165,8 +2172,9 @@ class VisionAttachmentBridge:
             )
             return
 
+        assert depth_entry is not None  # ``_gather_context`` refused a missing one
         request = build_segment_request(
-            stamp_ns=stamp_ns,
+            stamp_ns=depth_entry[1],
             camera=self._camera,
             t_link_from_cam=t_link_from_cam,
             tcp_in_link=tcp_in_link,
@@ -2183,6 +2191,7 @@ class VisionAttachmentBridge:
                 stamp_ns=stamp_ns,
                 t_link_from_cam=t_link_from_cam,
                 tcp_in_link=tcp_in_link,
+                depth_entry=depth_entry,
             )
         )
         leg.deadline_timer = self._node.create_timer(
@@ -2205,11 +2214,14 @@ class VisionAttachmentBridge:
         stamp_ns: int,
         t_link_from_cam: NDArray[np.float64],
         tcp_in_link: tuple[float, float, float],
+        depth_entry: _DepthEntry,
     ) -> None:
         """Resolve the attachment from a SegmentInView reply (or its exception).
 
         The in-flight check and hand-off run under the lock; decoding and the fit run
         outside it, and ``_finish`` commits only while ``generation`` is still the leg's.
+        ``depth_entry`` is the frame the request was stamped with: the masks are checked
+        against it and back-projected through it.
         """
         with self._lock:
             if generation != leg.generation or future is not leg.inflight:
@@ -2255,9 +2267,8 @@ class VisionAttachmentBridge:
             )
             reason = outcome.reason
             use_masks = outcome.use_masks
-            depth_entry = self._depth
-            if use_masks and depth_entry is not None:
-                # The depth _finish back-projects through is the cached one, now.
+            if use_masks:
+                # Against the frame the request named, which _finish back-projects through.
                 skew = mask_depth_skew_reason(
                     mask_stamps_ns(response.masks),
                     depth_entry[1],
@@ -2291,6 +2302,7 @@ class VisionAttachmentBridge:
             reason=reason,
             t_link_from_cam=t_link_from_cam,
             tcp_in_link=tcp_in_link,
+            depth_entry=depth_entry,
         )
 
     @_locked
@@ -2339,8 +2351,12 @@ class VisionAttachmentBridge:
         reason: str,
         t_link_from_cam: NDArray[np.float64] | None = None,
         tcp_in_link: tuple[float, float, float] | None = None,
+        depth_entry: _DepthEntry | None = None,
     ) -> None:
         """Gate, publish, log, and release the barrier — on every path.
+
+        ``depth_entry`` is the frame a reply's masks were asked about; ``None`` (no
+        masks: a precondition failure, the deadline) takes the cached one.
 
         ``masks`` empty is not an error branch: the producer answers it with its
         conservative jaw-span box, so the collision checker always receives
@@ -2357,7 +2373,8 @@ class VisionAttachmentBridge:
                 f"vision attachment {leg.joint_name}: no live TCP ({leg.tcp_frame!r} in tf2); "
                 f"posing the fallback box off the manifest tool point {tcp_in_link}"
             )
-        depth_entry = self._depth
+        if depth_entry is None:
+            depth_entry = self._depth
         depth = depth_entry[0] if depth_entry is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
         intrinsics = self._no_mask_intrinsics
@@ -2651,19 +2668,21 @@ class VisionAttachmentBridge:
             # kernel or the octomap bridge. A closed heartbeat carries it when it reopens.
             self._publish_snapshot()
 
-    def _gather_context(self, leg: _GripperLeg) -> _PromptContext | str:
+    def _gather_context(
+        self, leg: _GripperLeg, depth_entry: _DepthEntry | None
+    ) -> _PromptContext | str:
         """Collect depth, transforms and prompt geometry, or name what is missing.
 
         Returns the ``(t_link_from_cam, tcp_in_link, negative_points)`` tuple, or
         a typed reason string when a precondition is unmet. The caller turns
         either into an attachment; neither turns into a stall.
         """
-        if self._depth is None:
+        if depth_entry is None:
             return f"ROSPerceptionStale: no depth frame yet on {self._depth_topic()!r}"
         link = self.tf_frame(leg.producer.attach_link)
         # The optical frame is the one the depth raster says it is in — never
         # guessed from the manifest, whose frame_id may name a body frame.
-        camera_frame = self._depth[2]
+        camera_frame = depth_entry[2]
         if not camera_frame:
             return "ROSPerceptionStale: depth frame has no header.frame_id"
         if not self._logged_depth_frame:
