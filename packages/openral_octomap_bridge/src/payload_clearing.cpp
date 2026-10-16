@@ -450,6 +450,50 @@ void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>
   }
 }
 
+SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
+                           double resolution) noexcept {
+  if (!box.valid) {
+    return SweepFloor::kNone;
+  }
+  bool under = false;
+  for (const auto& patch : supports.patches) {
+    const tf2::Vector3& p = patch.point;
+    const double r = patch.patch_radius;
+    if (p.x() < box.lo.x() - r || p.x() > box.hi.x() + r || p.y() < box.lo.y() - r ||
+        p.y() > box.hi.y() + r) {
+      continue;
+    }
+    if (std::fabs(patch.normal.z()) < 0.9) {
+      box.valid = false;  // a support we cannot trim against: clear nothing
+      return SweepFloor::kNone;
+    }
+    box.lo.setZ(std::max(box.lo.z(), p.z() + patch.max_penetration + resolution));
+    under = true;
+  }
+  for (const auto& p : supports.static_points) {
+    if (p.x() < box.lo.x() || p.x() > box.hi.x() || p.y() < box.lo.y() || p.y() > box.hi.y() ||
+        !(p.z() < box.hi.z())) {
+      continue;
+    }
+    box.lo.setZ(std::max(box.lo.z(), p.z() + resolution));
+    under = true;
+  }
+  SweepFloor floor = SweepFloor::kSupport;
+  if (!under) {
+    if (!supports.has_measured_floor || !std::isfinite(supports.measured_floor_z)) {
+      box.valid = false;
+      return SweepFloor::kNone;
+    }
+    box.lo.setZ(std::max(box.lo.z(), supports.measured_floor_z));
+    floor = SweepFloor::kMeasuredPayload;
+  }
+  if (!(box.lo.z() < box.hi.z())) {
+    box.valid = false;
+    return SweepFloor::kNone;
+  }
+  return floor;
+}
+
 bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
                                    double resolution) noexcept {
   if (!box.valid) {

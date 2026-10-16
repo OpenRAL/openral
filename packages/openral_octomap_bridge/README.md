@@ -342,12 +342,22 @@ the self-filter removes. With `payload_sweep_clear_service` set
 accumulates the axis-aligned box the live, fresh payload swept (`SweptBox`,
 `add_payload_to_swept_box`) and every `payload_sweep_clear_period_s` asks
 octomap_server to clear it. At an object's first appearance it also backfills the
-payload's poses over the last `payload_sweep_backfill_s` of TF history. Each box is
-trimmed to start one cell above every attested support patch under it
-(`trim_swept_box_above_supports`), so the counter or plate is never cleared; a
-non-vertical support empties the box. Pinned by `PayloadSweep.*`
-(test_payload_clearing.cpp) and `BridgePayloadSweep.*` (the real node against a real
-`BoundingBoxQuery` server).
+payload's poses over the last `payload_sweep_backfill_s` of TF history. A box never
+reaches below a support (`floor_swept_box`):
+
+- it starts one cell above every support patch attested during this carry, as first
+  attested (a vision pick's attestation lasts only until the payload moves, so it is
+  latched for the carry), and one cell above every declared static-geometry point
+  (`static_points_file`) under its footprint below its top;
+- with no support under it, its floor is the measured payload's lowest point at
+  attach (a payload whose `evidence_kind` is not `gripper_closure`);
+- with neither (a gripper-closure jaw box and no known support) it is **not cleared**,
+  and the bridge logs `payload sweep: NOT clearing ...`.
+
+A non-vertical support empties the box. Before this, a box went 49 mm below the DROID
+table top once the attestation lapsed mid-carry (deploy-sim t7, 2026-10-16). Pinned by
+`PayloadSweep.*` / `PayloadSweepFloor.*` (test_payload_clearing.cpp) and
+`BridgePayloadSweep.*` (the real node against a real `BoundingBoxQuery` server).
 
 **Hazard (user-approved 2026-10-16; Safety-WG review and a hazard-log row owed): the
 payload's swept volume is cleared from the world map.** A real obstacle inside that

@@ -1590,3 +1590,65 @@ TEST(PayloadSweep, ANonFiniteOrDegeneratePrimitiveAddsNothing) {
   bridge::add_payload_to_swept_box(box, {sphere}, tf2::Transform::getIdentity());
   EXPECT_FALSE(box.valid);
 }
+
+// The swept-volume clear_bbox never reaches below a support (DROID t7, 2026-10-16: boxes
+// cleared 49 mm below the table top once the support attestation lapsed mid-carry).
+namespace {
+constexpr double kTableTop = 0.003;  // the DROID maple table top in panda_link0
+bridge::SweptBox carried_low() {
+  bridge::SweptBox box;  // t7's second carry: the jaw box swept down to z = -0.046
+  box.add(tf2::Vector3(0.441, -0.054, -0.046));
+  box.add(tf2::Vector3(0.605, 0.097, 0.089));
+  return box;
+}
+}  // namespace
+
+TEST(PayloadSweepFloor, NoSupportAndAFallbackPayloadClearsNothing) {
+  bridge::SweptBox box = carried_low();
+  EXPECT_EQ(bridge::floor_swept_box(box, bridge::SweepSupports{}, 0.015),
+            bridge::SweepFloor::kNone);
+  EXPECT_FALSE(box.valid);
+}
+
+TEST(PayloadSweepFloor, NoSupportFloorsAtTheMeasuredPayloadsLowestPoint) {
+  bridge::SweptBox box = carried_low();
+  bridge::SweepSupports supports;
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = kTableTop;  // the banana rested on the table at attach
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kMeasuredPayload);
+  EXPECT_NEAR(box.lo.z(), kTableTop, 1e-12) << "never below the table";
+  EXPECT_NEAR(box.hi.z(), 0.089, 1e-12);
+}
+
+TEST(PayloadSweepFloor, AnAttestedSupportFloorsAsBefore) {
+  bridge::SweptBox box = carried_low();
+  bridge::SweptBox same = carried_low();
+  bridge::SupportPatch table;
+  table.point = tf2::Vector3(0.52, 0.02, kTableTop);
+  table.patch_radius = 0.03;
+  table.max_penetration = 0.002;
+  bridge::SweepSupports supports;
+  supports.patches = {table};
+  supports.has_measured_floor = true;  // a support under the box wins over the floor
+  supports.measured_floor_z = 0.05;
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
+  ASSERT_TRUE(bridge::trim_swept_box_above_supports(same, {table}, 0.015));
+  EXPECT_NEAR(box.lo.z(), same.lo.z(), 1e-12) << "the attested rule is unchanged";
+  EXPECT_NEAR(box.lo.z(), kTableTop + 0.002 + 0.015, 1e-12);
+}
+
+TEST(PayloadSweepFloor, DeclaredStaticGeometryUnderTheBoxIsASupport) {
+  bridge::SweptBox box = carried_low();
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.50, 0.00, kTableTop),  // the table top under it
+                            tf2::Vector3(1.50, 0.00, 0.40)};      // a shelf elsewhere
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
+  EXPECT_NEAR(box.lo.z(), kTableTop + 0.015, 1e-12);
+}
+
+TEST(PayloadSweepFloor, AStaticPointAboveTheBoxIsNotUnderIt) {
+  bridge::SweptBox box = carried_low();
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.50, 0.00, 0.30)};  // above the carry: not a floor
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kNone);
+}
