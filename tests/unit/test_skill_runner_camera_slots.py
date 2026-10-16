@@ -529,3 +529,66 @@ class TestBuildRuntimeSkillSceneCameras:
             )
 
         assert captured["cameras"] == ("camera1", "camera2")
+
+
+# ── A required camera the robot lacks refuses the skill (no silent masking) ──
+
+
+def _robot(robot_id: str) -> RobotDescription:
+    return RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot_id / "robot.yaml"))
+
+
+def _act_aloha() -> RSkillManifest:
+    return RSkillManifest.from_yaml(str(_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml"))
+
+
+def test_missing_slots_names_what_the_robot_cannot_serve() -> None:
+    """act-aloha needs slot ``top``; aloha_bimanual has it, aloha_agilex only camera1-3."""
+    from openral_core import missing_vla_camera_slots
+
+    assert missing_vla_camera_slots(_act_aloha(), _robot("aloha_bimanual")) == ()
+    assert missing_vla_camera_slots(_act_aloha(), _robot("aloha_agilex")) == ("top",)
+    assert missing_vla_camera_slots(_act_aloha(), None) == ()
+
+
+def test_a_checkpoint_key_in_sensors_required_is_a_missing_slot() -> None:
+    """The restock pi0.5 bug: ``observation.images.context`` required, OpenArm's head is ``top``.
+
+    Built from the real OpenArm manifest; the requirement list is the one the
+    published restock manifest carried at revision 3599235f (the private
+    rSkill is not in this repo).
+    """
+    from openral_core import missing_vla_camera_slots
+    from openral_core.schemas import SensorRequirement
+
+    keys = ("context", "wrist_left", "wrist_right")
+    old = _act_aloha().model_copy(
+        update={
+            "sensors_required": [
+                SensorRequirement(modality="rgb", vla_feature_key=f"observation.images.{k}")
+                for k in keys
+            ]
+        }
+    )
+    assert missing_vla_camera_slots(old, _robot("openarm")) == ("context",)
+    fixed = old.model_copy(
+        update={
+            "sensors_required": [
+                SensorRequirement(modality="rgb", vla_feature_key=f"observation.images.{k}")
+                for k in ("top", "wrist_left", "wrist_right")
+            ]
+        }
+    )
+    assert missing_vla_camera_slots(fixed, _robot("openarm")) == ()
+
+
+def test_the_runner_refuses_before_loading_weights() -> None:
+    """``_build_runtime_skill_from_manifest`` raises before any policy is built."""
+    from openral_core.exceptions import ROSCapabilityMismatch
+
+    with pytest.raises(ROSCapabilityMismatch, match=r"requires camera slot\(s\) \['top'\]"):
+        _build_runtime_skill_from_manifest(
+            yaml_path=_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml",
+            prompt="",
+            description=_robot("aloha_agilex"),
+        )
