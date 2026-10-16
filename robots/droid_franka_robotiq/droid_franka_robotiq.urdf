@@ -1,0 +1,492 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Composed for OpenRAL robots/droid_franka_robotiq (see README.md there). Upstream licenses apply:
+     Franka arm panda_link0..panda_link8: Gepetto/example-robot-data d0d9098d (BSD-3-Clause),
+       robots/panda_description/urdf/panda.urdf, Franka hand + fingers removed.
+     Robotiq 2F-85: nickswalker/robotiq-2f-85 319f7b94 (ros-industrial robotiq, BSD-2-Clause),
+       robotiq_2f_85_gripper_visualization/urdf/robotiq_arg2f_85.xacro, xacro-expanded; its dummy
+       base_link dropped. finger_joint effort 16.5 / velocity 5.0 = Isaac Lab-Arena DROID's
+       Robotiq drive (franka_robotiq_2f_85_flattened.usd maxForce, droid.py gripper velocity_limit).
+     robotiq_mount_joint: Arena franka_robotiq_2f_85_flattened.usd panda_hand_joint
+       (panda_link8 -> Robotiq base_link) re-expressed for this URDF's base frame: +0.018174 m on z. -->
+<robot name="droid_franka_robotiq">
+  <link name="panda_link0">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link0.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link0.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.041018 -0.00014 0.049974" />
+      <mass value="0.629769" />
+      <inertia ixx="0.00315" ixy="8.2904e-07" ixz="0.00015" iyy="0.00388" iyz="8.2299e-06" izz="0.004285" />
+    </inertial>
+  </link>
+  <link name="panda_link1">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link1.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.003875 0.002081 -0.04762" />
+      <mass value="4.970684" />
+      <inertia ixx="0.70337" ixy="-0.000139" ixz="0.006772" iyy="0.70661" iyz="0.019169" izz="0.009117" />
+    </inertial>
+  </link>
+  <joint name="panda_joint1" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 0.333" />
+    <parent link="panda_link0" />
+    <child link="panda_link1" />
+    <axis xyz="0 0 1" />
+    <limit effort="87.0" lower="-2.8973" upper="2.8973" velocity="2.175" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link2">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link2.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.003141 -0.02872  0.003495" />
+      <mass value="0.646926" />
+      <inertia ixx="0.007962" ixy="-0.003925" ixz="0.010254" iyy="0.02811" iyz="0.000704" izz="0.025995" />
+    </inertial>
+  </link>
+  <joint name="panda_joint2" type="revolute">
+    <origin rpy="-1.5707963267948966 0 0" xyz="0 0 0" />
+    <parent link="panda_link1" />
+    <child link="panda_link2" />
+    <axis xyz="0 0 1" />
+    <limit effort="87.0" lower="-1.7628" upper="1.7628" velocity="2.175" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-1.7628" soft_upper_limit="1.7628" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link3">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link3.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link3.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="2.7518e-02 3.9252e-02 -6.6502e-02" />
+      <mass value="3.228604" />
+      <inertia ixx="0.037242" ixy="-0.004761" ixz="-0.011396" iyy="0.036155" iyz="-0.012805" izz="0.01083" />
+    </inertial>
+  </link>
+  <joint name="panda_joint3" type="revolute">
+    <origin rpy="1.5707963267948966 0 0" xyz="0 -0.316 0" />
+    <parent link="panda_link2" />
+    <child link="panda_link3" />
+    <axis xyz="0 0 1" />
+    <limit effort="87.0" lower="-2.8973" upper="2.8973" velocity="2.175" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link4">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link4.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link4.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-5.317e-02 1.04419e-01 2.7454e-02" />
+      <mass value="3.587895" />
+      <inertia ixx="0.025853" ixy="0.007796" ixz="-0.001332" iyy="0.019552" iyz="0.008641" izz="0.028323" />
+    </inertial>
+  </link>
+  <joint name="panda_joint4" type="revolute">
+    <origin rpy="1.5707963267948966 0 0" xyz="0.0825 0 0" />
+    <parent link="panda_link3" />
+    <child link="panda_link4" />
+    <axis xyz="0 0 1" />
+    <limit effort="87.0" lower="-3.0718" upper="-0.0698" velocity="2.175" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-3.0718" soft_upper_limit="-0.0698" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link5">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link5.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link5.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-1.1953e-02 4.1065e-02 -3.8437e-02" />
+      <mass value="1.225946" />
+      <inertia ixx="0.035549" ixy="-0.002117" ixz="-0.004037" iyy="0.029474" iyz="0.000229" izz="0.008627" />
+    </inertial>
+  </link>
+  <joint name="panda_joint5" type="revolute">
+    <origin rpy="-1.5707963267948966 0 0" xyz="-0.0825 0.384 0" />
+    <parent link="panda_link4" />
+    <child link="panda_link5" />
+    <axis xyz="0 0 1" />
+    <limit effort="12.0" lower="-2.8973" upper="2.8973" velocity="2.61" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link6">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link6.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link6.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="6.0149e-02 -1.4117e-02 -1.0517e-02" />
+      <mass value="1.666555" />
+      <inertia ixx="0.001964" ixy="0.000109" ixz="-0.001158" iyy="0.004354" iyz="0.000341" izz="0.005433" />
+    </inertial>
+  </link>
+  <joint name="panda_joint6" type="revolute">
+    <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+    <parent link="panda_link5" />
+    <child link="panda_link6" />
+    <axis xyz="0 0 1" />
+    <limit effort="12.0" lower="-0.0175" upper="3.7525" velocity="2.61" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-0.0175" soft_upper_limit="3.7525" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link7">
+    <visual>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/visual/link7.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://example-robot-data/robots/panda_description/meshes/collision/link7.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="1.0517e-02 -4.252e-03 6.1597e-02" />
+      <mass value="0.735522" />
+      <inertia ixx="0.012516" ixy="-0.000428" ixz="-0.001196" iyy="0.010027" iyz="-0.000741" izz="0.004815" />
+    </inertial>
+  </link>
+  <joint name="panda_joint7" type="revolute">
+    <origin rpy="1.5707963267948966 0 0" xyz="0.088 0 0" />
+    <parent link="panda_link6" />
+    <child link="panda_link7" />
+    <axis xyz="0 0 1" />
+    <limit effort="12.0" lower="-2.8973" upper="2.8973" velocity="2.61" />
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973" />
+    <dynamics D="1" K="7000" damping="0.003" friction="0.0" mu_coulomb="0" mu_viscous="16" />
+  </joint>
+  <link name="panda_link8">
+    <inertial>
+      <mass value="0" />
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+  <joint name="panda_joint8" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.107" />
+    <parent link="panda_link7" />
+    <child link="panda_link8" />
+  </joint>
+  <link name="robotiq_arg2f_base_link">
+    <inertial>
+      <origin xyz="8.625e-08 -4.6583e-06 0.03145" rpy="0.0 -0.0 0.0" />
+      <mass value="0.7" />
+      <inertia ixx="0.00020005" ixy="-4.2442e-10" ixz="-2.9069e-10" iyy="0.00017832" iyz="-3.4402e-08" izz="0.00013478" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/base_link.dae" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/base_link.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="robotiq_arg2f_tcp" />
+  <link name="left_outer_knuckle">
+    <inertial>
+      <origin xyz="-0.000200000000003065 0.0199435877845359 0.0292245259211331" rpy="0.0 -0.0 0.0" />
+      <mass value="0.00853198276973456" />
+      <inertia ixx="2.89328108496468e-06" ixy="-1.57935047237397e-19" ixz="-1.93980378593255e-19" iyy="1.86719750325683e-06" iyz="-1.21858577871576e-06" izz="1.21905238907251e-06" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="left_bar">
+    <inertial>
+      <origin xyz="0.00030115855001899 0.0373907951953854 -0.0208027427000385" rpy="0.0 -0.0 0.0" />
+      <mass value="0.022614240507152" />
+      <inertia ixx="1.52518312458174e-05" ixy="9.76583423954399e-10" ixz="-5.43838577022588e-10" iyy="6.17694243867776e-06" iyz="6.78636130740228e-06" izz="1.16494917907219e-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="left_distal_phalanx">
+    <inertial>
+      <origin xyz="0.000299999999999317 0.0160078233491243 -0.0136945669206257" rpy="0.0 -0.0 0.0" />
+      <mass value="0.0104003125914103" />
+      <inertia ixx="2.71909453810972e-06" ixy="1.35402465472579e-21" ixz="-7.1817349065269e-22" iyy="7.69100314106116e-07" iyz="6.74715432769696e-07" izz="2.30315190420171e-06" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="left_proximal_phalanx">
+    <inertial>
+      <origin xyz="0.000123011831763771 0.0507850843201817 0.00103968640075166" rpy="0.0 -0.0 0.0" />
+      <mass value="0.0271177346495152" />
+      <inertia ixx="2.61910379223783e-05" ixy="-2.43616858946494e-07" ixz="-6.37789906117123e-09" iyy="2.8270243746167e-06" iyz="-5.37200748039765e-07" izz="2.83695868220296e-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="right_outer_knuckle">
+    <inertial>
+      <origin xyz="-0.000200000000003065 0.0199435877845359 0.0292245259211331" rpy="0.0 -0.0 0.0" />
+      <mass value="0.00853198276973456" />
+      <inertia ixx="2.89328108496468e-06" ixy="-1.57935047237397e-19" ixz="-1.93980378593255e-19" iyy="1.86719750325683e-06" iyz="-1.21858577871576e-06" izz="1.21905238907251e-06" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/outer_knuckle.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/outer_knuckle.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="right_bar">
+    <inertial>
+      <origin xyz="0.00030115855001899 0.0373907951953854 -0.0208027427000385" rpy="0.0 -0.0 0.0" />
+      <mass value="0.022614240507152" />
+      <inertia ixx="1.52518312458174e-05" ixy="9.76583423954399e-10" ixz="-5.43838577022588e-10" iyy="6.17694243867776e-06" iyz="6.78636130740228e-06" izz="1.16494917907219e-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/bar.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/bar.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="right_distal_phalanx">
+    <inertial>
+      <origin xyz="0.000299999999999317 0.0160078233491243 -0.0136945669206257" rpy="0.0 -0.0 0.0" />
+      <mass value="0.0104003125914103" />
+      <inertia ixx="2.71909453810972e-06" ixy="1.35402465472579e-21" ixz="-7.1817349065269e-22" iyy="7.69100314106116e-07" iyz="6.74715432769696e-07" izz="2.30315190420171e-06" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/distal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/distal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <link name="right_proximal_phalanx">
+    <inertial>
+      <origin xyz="0.000123011831763771 0.0507850843201817 0.00103968640075166" rpy="0.0 -0.0 0.0" />
+      <mass value="0.0271177346495152" />
+      <inertia ixx="2.61910379223783e-05" ixy="-2.43616858946494e-07" ixz="-6.37789906117123e-09" iyy="2.8270243746167e-06" iyz="-5.37200748039765e-07" izz="2.83695868220296e-05" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/proximal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+      <material name="">
+        <color rgba="0.1 0.1 0.1 1.0" />
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/proximal_phalanx.stl" />
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0" />
+    </collision>
+  </link>
+  <joint name="robotiq_arg2f_tcp_joint" type="fixed">
+    <parent link="robotiq_arg2f_base_link" />
+    <child link="robotiq_arg2f_tcp" />
+    <origin xyz="0.0 0.0 0.174" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+  </joint>
+  <joint name="left_bar_joint" type="fixed">
+    <parent link="left_outer_knuckle" />
+    <child link="left_bar" />
+    <origin xyz="0.0 0.0315 -0.0041" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+  </joint>
+  <joint name="left_proximal_phalanx_joint" type="revolute">
+    <parent link="robotiq_arg2f_base_link" />
+    <child link="left_proximal_phalanx" />
+    <origin xyz="0.0 -0.0127 0.06142" rpy="0.125 -0.0 3.141592653589793" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="1000.0" velocity="0.5" lower="0.0" upper="0.8757" />
+    <mimic joint="finger_joint" multiplier="1.0" offset="0.0" />
+  </joint>
+  <joint name="left_distal_phalanx_joint" type="revolute">
+    <parent link="left_bar" />
+    <child link="left_distal_phalanx" />
+    <origin xyz="0.0 0.0061 0.0471" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="1000.0" velocity="0.5" lower="-0.8757" upper="0.0" />
+    <mimic joint="finger_joint" multiplier="-1.0" offset="0.0" />
+  </joint>
+  <joint name="finger_joint" type="revolute">
+    <parent link="robotiq_arg2f_base_link" />
+    <child link="left_outer_knuckle" />
+    <origin xyz="0.0 -0.0306011 0.054904" rpy="0.0 -0.0 3.141592653589793" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="16.5" velocity="5.0" lower="0.0" upper="0.8" />
+  </joint>
+  <joint name="right_bar_joint" type="fixed">
+    <parent link="right_outer_knuckle" />
+    <child link="right_bar" />
+    <origin xyz="0.0 0.0315 -0.0041" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+  </joint>
+  <joint name="right_proximal_phalanx_joint" type="revolute">
+    <parent link="robotiq_arg2f_base_link" />
+    <child link="right_proximal_phalanx" />
+    <origin xyz="0.0 0.0127 0.06142" rpy="0.125 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="1000.0" velocity="0.5" lower="0.0" upper="0.8757" />
+    <mimic joint="finger_joint" multiplier="1.0" offset="0.0" />
+  </joint>
+  <joint name="right_distal_phalanx_joint" type="revolute">
+    <parent link="right_bar" />
+    <child link="right_distal_phalanx" />
+    <origin xyz="0.0 0.0061 0.0471" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="1000.0" velocity="0.5" lower="-0.8757" upper="0.0" />
+    <mimic joint="finger_joint" multiplier="-1.0" offset="0.0" />
+  </joint>
+  <joint name="right_finger_joint" type="revolute">
+    <parent link="robotiq_arg2f_base_link" />
+    <child link="right_outer_knuckle" />
+    <origin xyz="0.0 0.0306011 0.054904" rpy="0.0 -0.0 0.0" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit effort="1000.0" velocity="0.5" lower="0.0" upper="0.81" />
+    <mimic joint="finger_joint" multiplier="1.0" offset="0.0" />
+  </joint>
+  <joint name="robotiq_mount_joint" type="fixed">
+    <parent link="panda_link8" />
+    <child link="robotiq_arg2f_base_link" />
+    <origin xyz="0 0 0.018174" rpy="0 0 0" />
+  </joint>
+</robot>

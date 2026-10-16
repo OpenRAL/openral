@@ -41,6 +41,8 @@ _SKILL_SCENES: dict[str, str | None] = {
     "3d-diffuser-actor-rlbench": "rlbench",
     "gr00t-n17-b1k-turning-on-radio": "behavior",
     "lingbot-va-galaxea-a1-fruit-placement": None,
+    # isaac_sim drives the robot end effector's own command_convention.
+    "pi05-droid-jointpos-arena": None,
 }
 
 

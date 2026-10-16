@@ -129,6 +129,12 @@ class _PI05Adapter:
     _cuda_graph: Any = None
     # The pinned host buffers the captured graph's uploads read; alive as long as it.
     _cuda_graph_keepalive: list[Any] = field(default_factory=list)
+    # Per action channel: True = a delta from the state of the observation the chunk was
+    # inferred on (`_delta_action_mask`); None = every channel absolute.
+    _delta_mask: tuple[bool, ...] | None = None
+    # The manifest's action_contract.dim: wider checkpoint outputs (π0.5's 32-D pad) are cut.
+    _action_dim: int | None = None
+    _last_state: NDArray[np.float32] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
@@ -150,8 +156,7 @@ class _PI05Adapter:
         batch = self._prepared_batch(observation, instruction)
         with inference_span(kind="single"), self._torch.no_grad(), self._autocast_ctx():
             action_tensor = self._policy.select_action(batch)
-        action_tensor = self._postprocessor(action_tensor)
-        return to_numpy_action(action_tensor)
+        return self._finished_action(action_tensor)
 
     def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
         """Build the full on-device, dtype-cast batch for one inference."""
@@ -185,8 +190,19 @@ class _PI05Adapter:
         return contextlib.nullcontext()
 
     def _finished_action(self, action_tensor: Any) -> NDArray[np.float32]:
-        """Executor postprocess hook: lerobot postprocessor, then a flat float32 array."""
-        return to_numpy_action(self._postprocessor(action_tensor))
+        """Executor postprocess hook: lerobot postprocessor, then a flat float32 array.
+
+        The executor calls it on each row of a chunk right after that chunk's own
+        inference, so ``_last_state`` is the state the chunk's deltas are anchored to.
+        """
+        action = to_numpy_action(self._postprocessor(action_tensor))
+        if self._action_dim is not None and action.shape[0] > self._action_dim:
+            action = action[: self._action_dim]
+        if self._delta_mask is not None:
+            if self._last_state is None:
+                raise ROSConfigError("pi05: delta actions need observation.state to anchor them")
+            action = _anchor_deltas(action, self._last_state, self._delta_mask)
+        return action
 
     def _chunk_forward(self, batch: dict[str, Any], **kwargs: Any) -> Any:
         """Chunk producer for the executor — predict under this adapter's autocast.
@@ -284,6 +300,7 @@ class _PI05Adapter:
                     state_np = np.concatenate([state_np, pad])
                 else:
                     state_np = state_np[: self._state_dim]
+            self._last_state = state_np
             batch["observation.state"] = torch.from_numpy(state_np).unsqueeze(0).to(self.device)
 
         return batch
@@ -371,6 +388,60 @@ def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt:
         device=adapter.device,
     )
     _log.info("pi05.cuda_graph_enabled", device=adapter.device)
+
+
+def _delta_action_mask(manifest: Any) -> tuple[bool, ...] | None:
+    """Per action channel, whether the checkpoint emits a delta from its observed state.
+
+    Read from ``actuators_required[].control_mode_semantics.mode`` in declaration
+    order, ``n_dof`` channels each (openpi's ``DeltaActions`` mask: DROID joint
+    position is 7 deltas + an absolute gripper). ``None`` when nothing is a delta.
+
+    Raises:
+        ROSConfigError: A delta actuator list where some actuator has no ``n_dof``.
+
+    Example:
+        >>> _delta_action_mask(None) is None
+        True
+    """
+    acts = list(getattr(manifest, "actuators_required", None) or [])
+    if not any(a.control_mode_semantics.mode == "delta" for a in acts):
+        return None
+    if any(a.n_dof is None for a in acts):
+        raise ROSConfigError(
+            "pi05: a delta actuator needs n_dof on every actuators_required entry "
+            "(they lay out the action vector in order)"
+        )
+    return tuple(a.control_mode_semantics.mode == "delta" for a in acts for _ in range(a.n_dof))
+
+
+def _anchor_deltas(
+    action: NDArray[np.float32], state: NDArray[np.float32], mask: tuple[bool, ...]
+) -> NDArray[np.float32]:
+    """Add ``state`` to the ``mask`` channels of ``action`` (openpi ``AbsoluteActions``).
+
+    Example:
+        >>> a = np.array([0.1, 0.5], dtype=np.float32)
+        >>> _anchor_deltas(a, np.array([1.0, 0.9], dtype=np.float32), (True, False)).tolist()
+        [1.100000023841858, 0.5]
+    """
+    if action.shape[0] != len(mask) or state.shape[0] < len(mask):
+        raise ROSConfigError(
+            f"pi05: delta mask has {len(mask)} channels; action has {action.shape[0]}, "
+            f"state {state.shape[0]}"
+        )
+    m = np.asarray(mask)
+    out = action.copy()
+    out[m] += state[: len(mask)][m]
+    return out
+
+
+def _emitted_action_dim(policy: Any) -> int | None:
+    """The checkpoint's own action width (``config.output_features['action']``), if known."""
+    try:
+        return int(policy.config.output_features["action"].shape[0])
+    except (AttributeError, KeyError, TypeError, IndexError):
+        return None
 
 
 def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
@@ -924,6 +995,21 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     if trt:
         _log.info("pi05.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
 
+    delta_mask = _delta_action_mask(manifest)
+    if delta_mask is not None and spec.extra.get("rtc"):
+        raise ROSConfigError(
+            "pi05: RTC guides with the previous chunk's raw rows, which a delta-action "
+            "checkpoint anchors to an older state; drop policy_extras.rtc"
+        )
+    ac = getattr(manifest, "action_contract", None)
+    action_dim = ac.dim if ac is not None else None
+    emitted = _emitted_action_dim(policy)
+    if action_dim is not None and emitted is not None and emitted > action_dim:
+        # Explicit, never silent (CLAUDE.md §1.4): the checkpoint pads its action.
+        _log.info("pi05.action_truncated", emitted_dim=emitted, contract_dim=action_dim)
+    if delta_mask is not None:
+        _log.info("pi05.delta_actions", mask=delta_mask)
+
     adapter = _PI05Adapter(
         spec=spec,
         device=device,
@@ -937,6 +1023,8 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         _camera_keys=cam_keys,
         _image_input_template=ip.input_template,
         _camera_aliases=dict(ip.aliases),
+        _delta_mask=delta_mask,
+        _action_dim=action_dim,
         # Needed whenever policy params are reduced precision (nf4 with
         # bf16 compute, or pure bf16/fp16): PaliGemma's forward computes
         # some intermediates (RMSNorm, RoPE, image-embedding projections)
