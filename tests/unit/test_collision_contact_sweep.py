@@ -192,13 +192,19 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
     for _ in range(N_POSES):
         q = rng.uniform(lo, hi)
         kernel_world = _kernel_fk(params, q)
-        model.update_cfg(
-            {
-                child_to_urdf[j.child_link]: float(v)
-                for j, v in zip(robot.joints, q, strict=True)
-                if child_to_urdf.get(j.child_link) in actuated
-            }
-        )
+        cfg = {
+            child_to_urdf[j.child_link]: float(v)
+            for j, v in zip(robot.joints, q, strict=True)
+            if child_to_urdf.get(j.child_link) in actuated
+        }
+        # A mimic row whose child is driven by an actuated URDF joint (the DROID's
+        # Robotiq leader `finger_joint` under the normalised jaw) sets that joint
+        # from the manifest relation; the URDF's own <mimic> rows pose the rest.
+        leader_q = {j.name: float(v) for j, v in zip(robot.joints, q, strict=True)}
+        for mim in robot.mimic_joints:
+            if child_to_urdf.get(mim.child_link) in actuated:
+                cfg[child_to_urdf[mim.child_link]] = mim.value_at(leader_q[mim.mimics])
+        model.update_cfg(cfg)
         base = np.linalg.inv(model.get_transform(root))
         truth = {}
         for li, hs in hull.items():

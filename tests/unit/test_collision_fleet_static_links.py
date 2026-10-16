@@ -33,22 +33,7 @@ _MANIFESTS = sorted(_REPO.glob("robots/*/robot.yaml"))
 # URDF links with <collision> that the manifest's collision tree does not name,
 # with the reason each is (still) outside the kernel model. Every entry is a
 # known hole or an alias; adding one needs the same safety-WG eye as an ACM row.
-# The URDF lowering scopes geometry to `joints` + `fixed_attachments` (mimic
-# links only on the MJCF path), and the manifest jaw is a normalised fraction,
-# not the URDF's radians: robots/droid_franka_robotiq/README.md "Self-collision".
-_ROBOTIQ_JAW = "Robotiq 2F-85 linkage: no primitive (finger_joint is a logical jaw)"
-
 KNOWN_GAPS: dict[str, dict[str, str]] = {
-    "droid_franka_robotiq": {
-        "left_outer_knuckle": _ROBOTIQ_JAW,
-        "left_bar": _ROBOTIQ_JAW,
-        "left_proximal_phalanx": _ROBOTIQ_JAW,
-        "left_distal_phalanx": _ROBOTIQ_JAW,
-        "right_outer_knuckle": _ROBOTIQ_JAW,
-        "right_bar": _ROBOTIQ_JAW,
-        "right_proximal_phalanx": _ROBOTIQ_JAW,
-        "right_distal_phalanx": _ROBOTIQ_JAW,
-    },
     "openarm": {
         # The manifest is MJCF-named: *_base_link is *_link0, the end-effector
         # base is link7, the leader finger is finger_pair and the follower
