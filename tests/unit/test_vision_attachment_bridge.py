@@ -1834,9 +1834,14 @@ def test_the_fallback_box_is_posed_off_the_live_tcp(aliased: bool) -> None:
     try:
         node = rclpy.create_node(f"test_fallback_pose_{int(aliased)}")
         try:
+            so101 = _so101_calibrated()
+            # The hand the jaw hangs off, by the manifest (the SO-101's gripper joint
+            # parent: `gripper_base` here, `gripper` after the URDF-name commit on
+            # feat/isaac-leisaac-pick-orange).
+            attach_link = next(j.parent_link for j in so101.joints if j.role == "gripper")
             bridge = VisionAttachmentBridge(
                 node,
-                _so101_calibrated(),
+                so101,
                 config=VisionAttachmentConfig(
                     camera="wrist", tf_frames={"moving_jaw": "jaw"} if aliased else {}
                 ),
@@ -1844,7 +1849,7 @@ def test_the_fallback_box_is_posed_off_the_live_tcp(aliased: bool) -> None:
             bridge.setup()
             try:
                 jaw = TransformStamped()
-                jaw.header.frame_id = "gripper"
+                jaw.header.frame_id = attach_link
                 jaw.child_frame_id = "jaw"
                 jaw.transform.translation.x = 0.0202
                 jaw.transform.translation.y = 0.0188
