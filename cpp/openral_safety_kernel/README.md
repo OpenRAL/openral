@@ -1035,6 +1035,46 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   window is open the octomap must clear the object at its release pose (the
   tracker's RELEASED record); otherwise the frozen payload meets its own re-marked
   cells and stops — a false stop, never a missed one.
+* **Grasp exemption by tracked-object id (issue #418 K2, draft — NOT a pure
+  subset of today's rule, hazard OT-6, needs an explicit Safety-WG judgement).**
+  Off unless `tracked_grasp_exemption_enabled` (the launch sets it for
+  `object_tracking: on` only); configure refuses it without
+  `grasp_allowance_enabled` or off `hal_mode: sim`, and when the
+  `grasp_contact_links` do not group into 1..`kMaxGraspHands` (4) hands by mount
+  (`…TheTrackedSourceRefusesToConfigureOutsideItsScope`). It is a **source
+  selector**, not a switch on any check: while on, the tracked-object table
+  replaces the producer-measured region as the exemption source (the region is
+  not read, `…AValidTableReplacesTheLegacyRegion`); while off, today's rule is
+  untouched bit for bit. At **each checked row**, a finger link of hand h does not
+  trip against a cell whose centre is in the box of o*, the **unique** nearest
+  eligible object to h's TCP (the mean of its fingers' geometry origins): a
+  runner-up within one voxel of o*'s gap gives none (HZ-0115-2), and o* is never
+  an object at least as near another hand's TCP (HZ-0115-12) —
+  `select_tracked_grasp`, `…ATieWithinOneVoxelSelectsNothing`,
+  `…AnObjectNeverGoesToTheHandItIsFurtherFrom`. Arm links are never exempt
+  (`…ArmLinksAreNeverExempt`); another hand's finger is not exempt by this hand's
+  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Eligible**, per
+  candidate: role `target`; `declaration_key` equal to the live grasp
+  declaration's `<target_id>@<stamp_ns>` (active, a target, `timeout_s` in range
+  and not lapsed, not retired, the stream fresh — what the tracker stamps on the
+  tracks it grounds or re-keys for that declaration; a prompt-time `deploy@0`
+  track the declaration did not re-key is not eligible); status `confirmed` or
+  `occluded` (never `bound`, `split` — a foreign body in the box — `tentative`,
+  `released`, `lost`); (`object_id`, `epoch`) not K6-retired; confirmed within
+  `grasp_region_max_age_s` on the source clock; and the kernel's **own cover
+  check** on its grid, once per grid or set: occupied cell centres in the box
+  ≥ max(2, ⌈0.5·`visible_cells`⌉) (`tracked_box_cover`,
+  `…EveryIneligibleTrackedTargetStops`,
+  `…ARetiredTrackedIdentityIsNeverExemptButANewEpochIs`). Same accounting as the
+  region (decided before the narrow phase, no stage-2 budget, the pair's own depth
+  reaches the sweep minimum, never the evidence), so per (hand, row) trips with ⊆
+  trips without (`…TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes`).
+  **Why it is not a pure subset of today:** the kernel may select a different
+  measured body than the producer's region would have named — always ≤ 1 per hand
+  per row, map-confirmed and cover-checked. Disclosure: INFO
+  `safety.tracked_grasp_eligible n=… of=… declaration=… live=…` on each change,
+  span attributes `safety.tracked_grasp_eligible` and
+  `safety.grasp_exemption_active` (true while any object is eligible).
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /

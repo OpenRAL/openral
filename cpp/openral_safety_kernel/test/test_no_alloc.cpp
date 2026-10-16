@@ -12,6 +12,7 @@
 #include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <array>
 #include <atomic>
 #include <bitset>
 #include <cmath>
@@ -358,4 +359,65 @@ TEST(NoAlloc, AFrozenPayloadsChecksAreAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
   EXPECT_TRUE(std::isfinite(sum));
+}
+
+TEST(NoAlloc, TheTrackedGraspExemptionIsAllocationFree) {
+  // Issue #418 K2: the per-hand selection runs once per checked row inside the
+  // voxel check, and the cover count once per grid; neither may allocate.
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 1};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.01, 0.02};
+  m.box_link = {2};
+  m.boxes = {finger};
+  m.capsule_link = {1};
+  m.capsules = {osk::Capsule{0.015, 0.0, osk::Transform{}}};
+  std::bitset<osk::kMaxGraspMaskLinks> allow;
+  allow.set(2);
+  osk::TrackedGraspTable table;
+  ASSERT_TRUE(osk::build_grasp_hands(m, allow, table));
+  table.valid = true;
+  table.n_objects = 2;
+  table.box[0].t = {0.0, 0.0, 0.0};
+  table.half_extents[0] = {0.03, 0.03, 0.03};
+  table.box[1].t = {0.1, 0.0, 0.0};
+  table.half_extents[1] = {0.03, 0.03, 0.03};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  s.link_world[1].t = {-0.1, 0.0, 0.0};
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 5) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  grid.tracked_grasp = &table;
+  std::array<int, osk::kMaxGraspHands> sel{};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sink = 0.0;
+  std::size_t cover = 0;
+  for (int i = 0; i < 2000; ++i) {
+    s.link_world[2].t.x = (i % 2 == 0) ? 0.0 : 0.1;
+    osk::select_tracked_grasp(table, s, grid.resolution, sel);
+    sink += sel[0];
+    sink += osk::check_voxel_collision(m, s, grid, 0.02).sweep_min_distance;
+    cover += osk::tracked_box_cover(grid, table.box[0], table.half_extents[0]);
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the tracked grasp exemption allocated; CLAUDE.md §2 forbids this.";
+  EXPECT_TRUE(std::isfinite(sink));
+  EXPECT_GT(cover, 0U) << "the loop really counted occupied cells";
 }

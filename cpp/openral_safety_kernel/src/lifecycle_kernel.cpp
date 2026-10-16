@@ -476,6 +476,14 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // configure refuses a resolved value outside (0, kMaxRegionMeasurementAgeS]
   // while the matching allowance is enabled.
   this->declare_parameter<double>("grasp_region_max_age_s", 0.0);
+  // Issue #418 K2 (hazard OT-6; Safety-WG review pending): the SOURCE of the grasp
+  // exemption. false (default) = the producer-measured region above, unchanged;
+  // true = the tracked-object table replaces it (finger links vs the unique nearest
+  // eligible tracked object per hand, cover re-checked here). Not a disable: either
+  // way only the declared fingers can ever be exempt. Set by the launch for
+  // `object_tracking: on` only; configure refuses it without
+  // `grasp_allowance_enabled` or off `hal_mode: sim`.
+  this->declare_parameter<bool>("tracked_grasp_exemption_enabled", false);
   this->declare_parameter<double>("place_region_max_age_s", 0.0);
   // Manipulation-workspace contact (issue #349, draft; Safety-WG review
   // pending). Default OFF. When on: a hand link (`workspace_contact_links`, the
@@ -632,6 +640,34 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "%zu allowlisted contact link(s); a live grasp declaration exempts them from "
                 "the world-voxel check inside its measured region",
                 grasp_allowlist_.count());
+  }
+  // Issue #418 K2. Every refusal fails configure: an exemption source whose hands
+  // or scope the kernel cannot state is not run.
+  tracked_grasp_enabled_ = this->get_parameter("tracked_grasp_exemption_enabled").as_bool();
+  tracked_grasp_ = TrackedGraspTable{};
+  voxel_grid_.tracked_grasp = nullptr;
+  if (tracked_grasp_enabled_) {
+    const char* why = nullptr;
+    if (!grasp_allowance_enabled_) {
+      why = "it requires grasp_allowance_enabled (the allowlist and the declaration)";
+    } else if (this->get_parameter("hal_mode").as_string() != "sim") {
+      why = "sim-only until Safety-WG review (issue #418, hazard OT-6)";
+    } else if (!build_grasp_hands(collision_model_, grasp_allowlist_, tracked_grasp_)) {
+      why = "the grasp_contact_links do not group into 1..4 hands";
+    }
+    if (why != nullptr) {
+      RCLCPP_ERROR(this->get_logger(), "tracked_grasp_exemption_enabled refused: %s, hal_mode=%s",
+                   why, this->get_parameter("hal_mode").as_string().c_str());
+      tracked_grasp_enabled_ = false;
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    tracked_grasp_.valid = true;
+    RCLCPP_WARN(this->get_logger(),
+                "safety.tracked_grasp_exemption enabled (issue #418 K2, Safety-WG review "
+                "pending): hands=%zu; the tracked-object table replaces the producer region as "
+                "the grasp exemption source",
+                tracked_grasp_.n_hands);
   }
   // Issue #418 K5. Every refusal fails configure: a release rule whose jaw,
   // direction or bounds it cannot state is not run.
@@ -1134,6 +1170,14 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  tracked_set_frame_.clear();
+  tracked_grasp_enabled_ = false;
+  tracked_grasp_ = TrackedGraspTable{};
+  voxel_grid_.tracked_grasp = nullptr;
+  tracked_cover_dirty_ = true;
+  tracked_decl_active_ = false;
+  tracked_decl_key_.clear();
+  tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
@@ -1646,6 +1690,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
       }
       voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
+      if (tracked_grasp_enabled_) {
+        // #418 K2: the tracked table REPLACES the region as the exemption source
+        // (the check reads only the table while it is valid, as it always is here).
+        voxel_grid_.grasp_region = GraspTargetRegion{};
+        voxel_grid_.tracked_grasp = &tracked_grasp_;
+        grasp_live = fill_tracked_grasp() > 0;
+        span->SetAttribute("safety.tracked_grasp_eligible",
+                           static_cast<int64_t>(tracked_grasp_.n_objects));
+      }
       span->SetAttribute("safety.grasp_exemption_active", grasp_live);
       // #349: the manipulation workspace, re-evaluated per candidate like the
       // grasp region. Its hand speed and lead are set per checked row below;
@@ -2968,6 +3021,14 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
+  tracked_set_frame_.clear();
+  tracked_grasp_enabled_ = false;
+  tracked_grasp_ = TrackedGraspTable{};
+  voxel_grid_.tracked_grasp = nullptr;
+  tracked_cover_dirty_ = true;
+  tracked_decl_active_ = false;
+  tracked_decl_key_.clear();
+  tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
@@ -3258,6 +3319,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   if (msg == nullptr) {
     return;
   }
+  tracked_cover_dirty_ = true;  // #418 K2: the cover check runs once per grid
   const std::size_t cells = static_cast<std::size_t>(msg->size_x) * msg->size_y * msg->size_z;
   // The grid's lattice is the source map's, so `orientation` is load-bearing
   // geometry, not metadata. An unset field is the all-zero quaternion, which is
@@ -3558,6 +3620,9 @@ void SafetyKernelLifecycleNode::on_world_state(
   ingest_place_declaration(*msg);
   if (grasp_allowance_enabled_) {
     ingest_grasp_declaration(*msg);
+  }
+  if (tracked_grasp_enabled_) {
+    ingest_tracked_declaration_key(*msg);
   }
   if (workspace_contact_enabled_) {
     ingest_workspace_contact(*msg);
@@ -3874,6 +3939,13 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
     entry.object_id = obj.object_id;
     entry.epoch = obj.epoch;
     entry.live = obj.status == "confirmed" || obj.status == "occluded" || obj.status == "bound";
+    entry.target = obj.role == "target";
+    entry.exemptible = obj.status == "confirmed" || obj.status == "occluded";
+    entry.declaration_key = obj.declaration_key;
+    entry.id_hash = std::hash<std::string>{}(obj.object_id);
+    entry.confirmed_ns = obj.last_confirmed_stamp_ns;
+    entry.visible_cells = obj.visible_cells;
+    entry.cover_ok = false;
   }
   if (reason != nullptr) {
     if (tracked_refusal_reason_ != reason) {
@@ -3888,6 +3960,8 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
   }
   tracked_refusal_reason_.clear();
   tracked_n_ = set.objects.size();
+  tracked_set_frame_ = set.frame_id;
+  tracked_cover_dirty_ = true;
   tracked_revision_ = set.revision;
   tracked_have_revision_ = true;
 }
@@ -4534,6 +4608,74 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 declaration.target_id.c_str(),
                 attached_labels_[grasp_region_.object_index].c_str());
   }
+}
+
+void SafetyKernelLifecycleNode::ingest_tracked_declaration_key(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  tracked_decl_active_ = false;
+  if (!msg.grasp_declaration_valid) {
+    return;
+  }
+  const auto& d = msg.grasp_declaration;
+  // The same identity rules as the region path: active, a target, a bounded
+  // backstop, and never a declaration the kernel retired (HZ-0115-3).
+  if (!d.active || d.target_id.empty() || !std::isfinite(d.timeout_s) || d.timeout_s <= 0.0 ||
+      d.timeout_s > kMaxGraspDeclarationTimeoutS ||
+      grasp_retired_.contains(std::hash<std::string>{}(d.target_id), d.stamp_ns)) {
+    return;
+  }
+  // The tracker's `declaration_key(target_id, stamp_ns)`: "<target_id>@<stamp_ns>".
+  tracked_decl_key_ = d.target_id + "@" + std::to_string(d.stamp_ns);
+  tracked_decl_stamp_ns_ = d.stamp_ns;
+  tracked_decl_timeout_s_ = d.timeout_s;
+  tracked_decl_active_ = true;
+}
+
+std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
+  tracked_grasp_.n_objects = 0;
+  const bool frame_ok = !voxel_frame_id_.empty() && tracked_set_frame_ == voxel_frame_id_;
+  if (tracked_cover_dirty_) {
+    // Once per grid (or set): the kernel's own cover check, on its own grid.
+    for (std::size_t k = 0; k < tracked_n_; ++k) {
+      TrackedEntry& e = tracked_[k];
+      e.cover_ok =
+          frame_ok && !voxel_overflow_ &&
+          tracked_cover_sufficient(tracked_box_cover(voxel_grid_, e.box.pose, e.box.half_extents),
+                                   e.visible_cells);
+    }
+    tracked_cover_dirty_ = false;
+  }
+  // The declaration's own liveness: its backstop, no future stamp, and the
+  // stream carrying it fresh (exactly `grasp_declaration_live`'s rules).
+  const std::int64_t now_ns = this->now().nanoseconds();
+  const std::int64_t elapsed_ns = now_ns - tracked_decl_stamp_ns_;
+  const double age_s = (this->now() - attached_stamp_).seconds();
+  const bool declaration_live =
+      tracked_decl_active_ && elapsed_ns >= 0 &&
+      elapsed_ns <= static_cast<std::int64_t>(tracked_decl_timeout_s_ * 1e9) &&
+      attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+      age_s <= attached_collision_deadline_s_;
+  if (declaration_live && frame_ok) {
+    for (std::size_t k = 0; k < tracked_n_; ++k) {
+      const TrackedEntry& e = tracked_[k];
+      if (!e.target || !e.exemptible || !e.cover_ok || e.declaration_key != tracked_decl_key_ ||
+          tracked_retired_.contains(e.id_hash, e.epoch) ||
+          !region_measurement_fresh(e.confirmed_ns, grasp_region_max_age_s_)) {
+        continue;
+      }
+      const std::size_t n = tracked_grasp_.n_objects++;
+      tracked_grasp_.box[n] = e.box.pose;
+      tracked_grasp_.half_extents[n] = e.box.half_extents;
+    }
+  }
+  if (tracked_grasp_.n_objects != tracked_grasp_logged_n_) {
+    tracked_grasp_logged_n_ = tracked_grasp_.n_objects;
+    RCLCPP_INFO(this->get_logger(),
+                "safety.tracked_grasp_eligible n=%zu of=%zu declaration=%s live=%d",
+                tracked_grasp_.n_objects, tracked_n_, tracked_decl_key_.c_str(),
+                static_cast<int>(declaration_live));
+  }
+  return tracked_grasp_.n_objects;
 }
 
 bool SafetyKernelLifecycleNode::attachment_on_grasp_chain(
