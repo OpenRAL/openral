@@ -142,7 +142,8 @@ def test_the_outer_fingers_are_grasp_contact_and_hand_links(robot: RobotDescript
             ),
         ),
         ("franka_panda", ("panda_finger_pair",), ("panda_finger_pair", "panda_hand")),
-        ("so101_follower", ("moving_jaw",), ("moving_jaw", "gripper_base", "wrist")),
+        # The SO-101 jaw is a mimic link (no fixed child), its link `gripper` (URDF name).
+        ("so101_follower", ("moving_jaw", "jaw"), ("moving_jaw", "jaw", "gripper", "wrist")),
     ],
 )
 def test_robots_without_a_fixed_child_on_a_mimic_finger_are_unchanged(
