@@ -90,7 +90,7 @@ class GraspEventKind(StrEnum):
 class _Goal:
     goal_id: str
     key: str
-    start_ns: int
+    start_ns: int | None  # None until a source stamp exists to start the search at
     queries: tuple[ObjectQuery, ...]
     ready_logged: bool = False
     incomplete_logged: bool = False
@@ -185,6 +185,9 @@ class TrackerSession:
 
     def _tick(self, stamp_ns: int) -> None:
         self._now_ns = max(self._now_ns, stamp_ns)
+        for goal in self._goals.values():
+            if goal is not None and goal.start_ns is None and self._now_ns > 0:
+                self._start(goal, self._now_ns)
 
     def on_grid(self, grid: VoxelLattice, source_stamp_ns: int) -> None:
         """Keep the newest grid in the tracks' frame; another frame is logged and ignored."""
@@ -315,10 +318,20 @@ class TrackerSession:
             log.info("object_tracker.goal_closed", goal_id=old.goal_id)
         if not active or not queries or self._goals[kind] is not None:
             return
-        for i, query in enumerate(queries):
-            self.tracker.open_query(goal_id, f"q{i}", query, key, stamp_ns=self._now_ns)
+        goal = self._goals[kind] = _Goal(goal_id, key, None, tuple(queries))
         self._rekey(queries, key)
-        self._goals[kind] = _Goal(goal_id, key, self._now_ns, tuple(queries))
+        if self._now_ns > 0:
+            self._start(goal, self._now_ns)
+
+    def _start(self, goal: _Goal, stamp_ns: int) -> None:
+        """Open the goal's standing queries at source time ``stamp_ns``.
+
+        A declaration that arrives before any source stamp starts at the first frame: a
+        search timer anchored at 0 would exhaust on the first stamp it is compared with.
+        """
+        for i, query in enumerate(goal.queries):
+            self.tracker.open_query(goal.goal_id, f"q{i}", query, goal.key, stamp_ns=stamp_ns)
+        goal.start_ns = stamp_ns
 
     def _rekey(self, queries: Sequence[ObjectQuery], key: str) -> None:
         """Hand the live tracks a new goal's queries match to that goal's declaration."""
@@ -332,16 +345,15 @@ class TrackerSession:
     def _reground(self) -> None:
         """Restart the live grasp goal's search (an untracked grasp, after lift)."""
         goal = self._goals["grasp"]
-        if goal is None:
+        if goal is None or goal.start_ns is None:
             log.info("object_tracker.reground_skipped", why="no live grasp goal")
             return
-        for i, query in enumerate(goal.queries):
-            self.tracker.open_query(goal.goal_id, f"q{i}", query, goal.key, stamp_ns=self._now_ns)
+        self._start(goal, self._now_ns)
         log.info("object_tracker.reground_queued", goal_id=goal.goal_id)
 
     def _check_grounding(self) -> None:
         for goal in self._goals.values():
-            if goal is None or goal.ready_logged:
+            if goal is None or goal.start_ns is None or goal.ready_logged:
                 continue
             if self.tracker.queries.ready(goal.goal_id):
                 goal.ready_logged = True

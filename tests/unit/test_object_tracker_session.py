@@ -177,9 +177,10 @@ def test_untracked_grasp_restarts_the_live_search() -> None:
     joint, _, jaw = ROBOTS["so101_follower"]
     s = _session("so101_follower")
     s.on_grasp_declaration(_decl(1, label="orange", robot="so101_follower"))
-    s.on_joint_state(q, 5 * _S)
+    assert s.tracker.queries.get("grasp:orange@1", "q0") is None  # no source stamp yet
+    s.on_joint_state(q, 5 * _S)  # the first stamp starts the search, not stamp 0
     query = s.tracker.queries.get("grasp:orange@1", "q0")
-    assert query is not None and query.since_ns == 0
+    assert query is not None and query.since_ns == 5 * _S
     binding = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=6 * _S)
     assert binding is not None and binding.outcome is BindOutcome.UNTRACKED and binding.reground
     query = s.tracker.queries.get("grasp:orange@1", "q0")

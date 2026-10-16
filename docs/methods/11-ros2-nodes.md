@@ -17,6 +17,18 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 - `world_state_from_idl(msg) -> WorldState` (L989) — Symmetric inverse of `build_world_state_stamped_msg`: reconstructs an `openral_core.WorldState` from a `WorldStateStamped` msg. Used by the reasoner node to feed real state into its `ContextRenderer`; `image_frames` is always `None` (the IDL carries image topic refs, not inline pixels). Each detected object's `bbox_3d` comes from the `detected_object_bbox_valid` / `_bbox_min` / `_bbox_max` arrays (ignored unless index-aligned with the labels, so an older publisher decodes as no boxes); the reasoner seeds named grasp targets from it.
 - `build_world_state_stamped_msg(node, world_state) -> WorldStateStamped` (L1182) — Inverse translation: a Pydantic `WorldState` → `WorldStateStamped` IDL msg. Parallel arrays are deterministically ordered (sorted by key) so two consumers comparing snapshots at the same timestamp see the same byte layout.
 
+### `packages/world_state/openral_world_state_ros/object_tracker_node.py`
+_Issue #418 WP D1. The object-tracker lifecycle node (`ros2 run openral_world_state object_tracker_node`); all decisions in `openral_world_state.object_tracker.TrackerSession`, the node owns the wire (README "Object tracker")._
+
+- const `DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"` (L69) — The `SegmentInView` server (the HAL vision bridge's own); kept local because Layer 2 does not import the HAL.
+- `image_array(msg) -> NDArray` (L75) — `sensor_msgs/Image` → `(H, W)`: `32FC1` / `16UC1` → float64 metres, `mono8` → uint8; honours `step`; `ROSConfigError` on another encoding. Duplicates `openral_hal.depth_cloud.depth_grid_from_image` for depth (Layer 2 must not import Layer 0; see 14-duplication-watch).
+- `intrinsics_from_info(msg) -> IntrinsicsPinhole` (L107) — The driver's live `K`.
+- `pick_mask(masks, box_xyxy, *, inside_fraction=0.9) -> NDArray | None` (L122) — The largest nested candidate (a subpart under-contains), restricted with a box prompt to candidates ≥ 90 % inside the box.
+- `backproject_pixel(depth_m, k, uv, *, win=2) -> tuple | None` (L158) — Optical-frame point under a pixel (median valid depth in a window); the `SegmentInView` prompt point.
+- `detector_boxes(metadata_json, k) -> tuple[...]` (L178) — `LocateInView`'s `ObjectsMetadata` boxes rescaled to the depth raster.
+- `main() -> None` (L227) — Entry point.
+- `make_object_tracker_node() -> LifecycleNode` (L247) — `openral_object_tracker`: per-camera depth/`CameraInfo`/`robot_mask` subscriptions, `/openral/world_voxels`, `/joint_states` (manifest names, `sim_joint_name` aliases), `/openral/grasp_events`, the declarations; a frame waits `mask_tf_wait_s` (wall) for its exact-stamp mask and tf, else is fed for ageing only; one `SegmentInView` / `LocateInView` request in flight, answered with the frame it was issued on; publishes `/openral/tracked_objects` on change + `heartbeat_hz`, and in `bind`/`on` `/openral/attachment_state` (bindings + region-less declarations, heartbeated while joint states are fresh). Revisions seeded from wall time at activate (monotone across restarts). `configure` fails on `mode` `bind`/`on` with `hal_mode != sim`, a missing `grounding_wait_s`, or (in `bind`/`on`) a gripper the binder cannot model.
+
 ### `packages/openral_nav2_bringup/openral_nav2_bringup/`
 
 - `_footprint_geometry.py` — Footprint geometry shared by this package's nodes: `convex_hull_2d` (monotone-chain convex hull) and `base_footprint_polygon` (manifest polygon, else an N-gon around the radius). The costmaps' footprint is now static, substituted at launch — no node publishes it.
