@@ -1020,6 +1020,13 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  tracked_retired_.clear();
+  tracked_n_ = 0;
+  tracked_have_revision_ = false;
+  tracked_revision_ = 0;
+  tracked_refusal_reason_.clear();
+  grasp_latched_tracked_ = false;
+  grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
@@ -2721,6 +2728,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_model_ = CollisionModel{};
   collision_link_names_.clear();
   collision_scratch_.link_world.clear();
+  binding_scratch_.link_world.clear();
   collision_required_dof_ = 0;
   self_collision_enabled_ = this->get_parameter("self_collision_enabled").as_bool();
 
@@ -2844,6 +2852,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_declaration_target_.clear();
   grasp_retired_.clear();
   grasp_retired_overflow_logged_ = false;
+  tracked_retired_.clear();
+  tracked_n_ = 0;
+  tracked_have_revision_ = false;
+  tracked_revision_ = 0;
+  tracked_refusal_reason_.clear();
+  grasp_latched_tracked_ = false;
+  grasp_latched_epoch_ = 0;
   grasp_wrong_claim_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
@@ -2873,6 +2888,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_model_.hull_vertices.assign(
       attached_max_primitives_ * static_cast<std::size_t>(kMaxTightHullVertices), Vec3{});
   attached_labels_.assign(attached_max_objects_, std::string{});
+  attached_binding_.assign(attached_max_objects_, AttachedBinding{});
   attached_ingest_scratch_.clear();
   attached_ingest_scratch_.reserve(attached_max_objects_);
   // Sized once, here, and never resized again: `place_region_.geometry` is a
@@ -3063,6 +3079,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_model_ = std::move(m);
   collision_link_names_.assign(names.begin(), names.end());
   collision_scratch_.link_world.resize(n_links);
+  binding_scratch_.link_world.resize(n_links);
   return true;
 }
 
@@ -3179,6 +3196,9 @@ void SafetyKernelLifecycleNode::on_world_state(
   if (msg == nullptr) {
     return;
   }
+  // Issue #418 K1: the tracker's set first, so the binding check below reads
+  // this snapshot's set, whatever happens to the attachments.
+  ingest_tracked_objects(*msg);
   // Parse the wire attachments into the by-name ingest scratch, then validate +
   // resolve into the fixed-capacity attached model. Any malformed shape,
   // capacity overflow, or unknown attach/touch link fails closed: the model is
@@ -3343,6 +3363,7 @@ void SafetyKernelLifecycleNode::on_world_state(
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     attached_labels_[i] = wire[i].object_id;
   }
+  check_attachment_bindings(*msg);
   // Arm a support-contact witness only when World State attests a genuinely NEW
   // one. The attachment set is heartbeated, so keying off message arrival would
   // silently resurrect an exemption the kernel had already killed on
@@ -3351,7 +3372,10 @@ void SafetyKernelLifecycleNode::on_world_state(
   // snapshot does not.
   for (std::size_t i = 0; i < support_witness_keys_.size(); ++i) {
     const auto bit = static_cast<std::uint8_t>(1U << i);
-    if (i >= attached_model_.n_objects || !attached_model_.objects[i].has_support_witness) {
+    // An off-hand tracked binding (#418 K3) arms no witness: a payload the
+    // kernel cannot place in the hand licenses no contact.
+    if (i >= attached_model_.n_objects || !attached_model_.objects[i].has_support_witness ||
+        attached_binding_[i].off_hand != nullptr) {
       support_witness_keys_[i] = SupportWitnessKey{};
       support_witness_live_ = static_cast<std::uint8_t>(support_witness_live_ & ~bit);
       continue;
@@ -3671,6 +3695,145 @@ bool SafetyKernelLifecycleNode::region_measurement_fresh(std::int64_t stamp_ns,
   return age_ns >= 0 && age_ns <= static_cast<std::int64_t>(max_age_s * 1e9);
 }
 
+void SafetyKernelLifecycleNode::ingest_tracked_objects(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  tracked_n_ = 0;  // every path but acceptance leaves the whole set ineligible
+  if (!msg.tracked_objects_valid) {
+    tracked_refusal_reason_.clear();  // no tracker publishing: nothing to refuse
+    return;
+  }
+  const auto& set = msg.tracked_objects;
+  // The objects count (<= 32) and each object's hull count (<= 4) are bounded
+  // by the IDL sequences themselves; everything else is checked here.
+  const char* reason = nullptr;
+  if (voxel_frame_id_.empty() || set.frame_id != voxel_frame_id_) {
+    reason = "frame_mismatch";
+  } else if (tracked_have_revision_ && set.revision < tracked_revision_) {
+    // Equal is the aggregator re-sending the same set on every beat.
+    reason = "revision_regressed";
+  } else if (set.stamp_ns > this->now().nanoseconds()) {
+    reason = "future_stamp";
+  }
+  for (std::size_t i = 0; reason == nullptr && i < set.objects.size(); ++i) {
+    const auto& obj = set.objects[i];
+    if (obj.box.frame_id != set.frame_id) {
+      reason = "frame_mismatch";
+      break;
+    }
+    if (!obj.box.geometry.empty()) {
+      reason = "geometry_not_supported";
+      break;
+    }
+    for (const auto& hull : obj.tight) {
+      const std::size_t values = hull.tight_hull_vertices.size();
+      if (values % 3 != 0 || values / 3 > kMaxTrackedHullVertices) {
+        reason = "hull_too_many_vertices";
+        break;
+      }
+    }
+    for (std::size_t k = 0; reason == nullptr && k < i; ++k) {
+      if (set.objects[k].object_id == obj.object_id) {
+        reason = "duplicate_object_id";
+      }
+    }
+    if (reason != nullptr) {
+      break;
+    }
+    // The grasp-region caps (half-extent, volume, finite, non-degenerate) are
+    // the tracked box's caps; the region's link mask is unused here.
+    TrackedEntry& entry = tracked_[i];
+    const GraspRegionStatus status =
+        is_unit_quaternion(obj.box.pose.orientation)
+            ? ingest_grasp_region(
+                  transform_from_translation_quat(
+                      obj.box.pose.position.x, obj.box.pose.position.y, obj.box.pose.position.z,
+                      obj.box.pose.orientation.x, obj.box.pose.orientation.y,
+                      obj.box.pose.orientation.z, obj.box.pose.orientation.w),
+                  Vec3{obj.box.half_extents.x, obj.box.half_extents.y, obj.box.half_extents.z},
+                  std::bitset<kMaxGraspMaskLinks>{}.set(0), entry.box)
+            : GraspRegionStatus::kBadPose;
+    if (status != GraspRegionStatus::kOk) {
+      reason = grasp_region_status_reason(status);
+      break;
+    }
+    entry.object_id = obj.object_id;
+    entry.epoch = obj.epoch;
+    entry.live = obj.status == "confirmed" || obj.status == "occluded" || obj.status == "bound";
+  }
+  if (reason != nullptr) {
+    if (tracked_refusal_reason_ != reason) {
+      tracked_refusal_reason_ = reason;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.tracked_objects_rejected reason=%s revision=%llu frame=%s "
+                  "grid_frame=%s objects=%zu: every tracked object is ineligible",
+                  reason, static_cast<unsigned long long>(set.revision), set.frame_id.c_str(),
+                  voxel_frame_id_.c_str(), set.objects.size());
+    }
+    return;
+  }
+  tracked_refusal_reason_.clear();
+  tracked_n_ = set.objects.size();
+  tracked_revision_ = set.revision;
+  tracked_have_revision_ = true;
+}
+
+void SafetyKernelLifecycleNode::check_attachment_bindings(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  bool fk_done = false;
+  for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
+    const auto& wire = msg.attached_objects[i];
+    AttachedBinding& binding = attached_binding_[i];
+    binding = AttachedBinding{};
+    binding.epoch = wire.epoch;
+    binding.tracked = wire.evidence_kind == "tracked_object";
+    if (!binding.tracked) {
+      continue;  // legacy and PINCH_FALLBACK payloads: today's rules, unchanged
+    }
+    const TrackedEntry* entry = nullptr;
+    for (std::size_t k = 0; k < tracked_n_; ++k) {
+      if (tracked_[k].live && tracked_[k].epoch == wire.epoch &&
+          tracked_[k].object_id == wire.object_id) {
+        entry = &tracked_[k];
+        break;
+      }
+    }
+    if (tracked_n_ == 0) {
+      binding.off_hand = "no_accepted_set";
+    } else if (entry == nullptr) {
+      binding.off_hand = "no_live_track";
+    } else if (!measured_state_fresh()) {
+      binding.off_hand = "no_measured_state";
+    } else {
+      if (!fk_done) {
+        // The MEASURED configuration, base dofs zeroed exactly as the candidate
+        // path's FK does, into the binding's own scratch.
+        std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+        for (const int d : collision_base_dofs_) {
+          q_fk_[static_cast<std::size_t>(d)] = 0.0;
+        }
+        forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+        fk_done = true;
+      }
+      const double cell = voxel_grid_.resolution > 0.0 ? voxel_grid_.resolution : 0.0;
+      if (!tracked_box_meets_hand(collision_model_, binding_scratch_, attached_model_,
+                                  attached_model_.objects[i], entry->box.pose,
+                                  entry->box.half_extents, cell)) {
+        binding.off_hand = "box_off_hand";
+      }
+    }
+    if (binding.off_hand != nullptr) {
+      const auto wall = std::chrono::steady_clock::now();
+      if (wall - binding_last_warn_ >= std::chrono::seconds(1)) {
+        binding_last_warn_ = wall;
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.attachment_binding_off_hand object=%s epoch=%u reason=%s: still "
+                    "checked as a payload; no handover, no support witness",
+                    wire.object_id.c_str(), static_cast<unsigned>(wire.epoch), binding.off_hand);
+      }
+    }
+  }
+}
+
 bool SafetyKernelLifecycleNode::grasp_identity_armed() const noexcept {
   // The live region, or the current declaration's identity having armed before
   // and merely failing its last check (a stale measurement, a passing frame
@@ -3691,6 +3854,11 @@ void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
   }
   grasp_region_ = GraspTargetRegion{};
   voxel_grid_.grasp_region = GraspTargetRegion{};
+  // #418 K6: the latched handover's tracked identity retires with it (a no-op
+  // when already held), so the same (id, epoch) is never a handover again.
+  if (grasp_latched_ && grasp_latched_tracked_) {
+    tracked_retired_.insert(std::hash<std::string>{}(grasp_latched_object_), grasp_latched_epoch_);
+  }
   const bool evicted = grasp_retired_.insert(std::hash<std::string>{}(grasp_declaration_target_),
                                              grasp_declaration_stamp_ns_);
   if (evicted && !grasp_retired_overflow_logged_) {
@@ -3886,6 +4054,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // is an ancestor of every link). Bimanual: the other hand's payload is on
   // neither chain, so it can neither stand in for the handover nor keep it.
   const std::string* attached_on_gripper = nullptr;
+  const char* binding_refusal = nullptr;
   const std::size_t objects = attached_model_.n_objects;
   for (std::size_t i = 0; i < objects && i < attached_labels_.size(); ++i) {
     if (!attachment_on_grasp_chain(attached_model_.objects[i].attach_link, mask)) {
@@ -3893,10 +4062,33 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     }
     attached_on_gripper = &attached_labels_[i];
     if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
-      grasp_region_.handover = true;
-      grasp_region_.object_index = i;
+      // #418 K3/K6: a tracked binding is the handover only while it is at the
+      // hand, and never under a (id, epoch) a past handover retired.
+      const AttachedBinding& binding = attached_binding_[i];
+      if (binding.off_hand != nullptr) {
+        binding_refusal = "binding_off_hand";
+      } else if (binding.tracked &&
+                 tracked_retired_.contains(std::hash<std::string>{}(attached_labels_[i]),
+                                           binding.epoch)) {
+        binding_refusal = "object_retired";
+      } else {
+        grasp_region_.handover = true;
+        grasp_region_.object_index = i;
+      }
       break;
     }
+  }
+  if (binding_refusal != nullptr) {
+    // A claim the kernel cannot verify: refused and retired for good (only a
+    // new declaration re-arms), its workspace with it. The payload itself stays
+    // a checked payload.
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_region_rejected reason=%s target=%s object=%s rskill=%s trace=%s",
+                binding_refusal, declaration.target_id.c_str(), attached_on_gripper->c_str(),
+                declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+    note_wrong_claim();
+    retire_grasp_declaration(binding_refusal);
+    return;
   }
   if (latched_declaration && !grasp_region_.handover) {
     // This declaration's handover latched, and nothing is attached on the
@@ -3937,7 +4129,8 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     // sit in the frozen box, is not the pick that latched. Fail closed.
     const std::string& held = attached_labels_[grasp_region_.object_index];
     if (grasp_region_.link_mask != grasp_latched_region_.link_mask ||
-        held != grasp_latched_object_) {
+        held != grasp_latched_object_ ||
+        attached_binding_[grasp_region_.object_index].epoch != grasp_latched_epoch_) {
       RCLCPP_WARN(this->get_logger(),
                   "safety.grasp_region_rejected reason=latch_mismatch target=%s latched_object=%s "
                   "object=%s latched_links=%zu links=%zu rskill=%s trace=%s",
@@ -3972,6 +4165,8 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     grasp_latched_stamp_ns_ = declaration.stamp_ns;
     grasp_latched_region_ = grasp_region_;
     grasp_latched_object_ = attached_labels_[grasp_region_.object_index];
+    grasp_latched_epoch_ = attached_binding_[grasp_region_.object_index].epoch;
+    grasp_latched_tracked_ = attached_binding_[grasp_region_.object_index].tracked;
     grasp_latched_moved_warned_ = false;
     RCLCPP_INFO(this->get_logger(), "safety.grasp_region_latched target=%s at handover",
                 declaration.target_id.c_str());

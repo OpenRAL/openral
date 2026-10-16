@@ -2730,4 +2730,40 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
   return finish_sweep(result, sweep_min);
 }
 
+bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
+                            const AttachedModel& attached, const AttachedObject& object,
+                            const Transform& box, const Vec3& half_extents, double slack) noexcept {
+  if (!std::isfinite(slack) || !(half_extents.x > 0.0) || !(half_extents.y > 0.0) ||
+      !(half_extents.z > 0.0) || !std::isfinite(half_extents.x) || !std::isfinite(half_extents.y) ||
+      !std::isfinite(half_extents.z) || !std::isfinite(box.t.x) || !std::isfinite(box.t.y) ||
+      !std::isfinite(box.t.z)) {
+    return false;
+  }
+  const auto pose = [&](int link, const Transform& origin) {
+    return compose(scratch.link_world[static_cast<std::size_t>(link)], origin);
+  };
+  for (std::size_t c = 0; c < model.capsules.size(); ++c) {
+    const int link = model.capsule_link[c];
+    if (!attached_allows_link(attached, object, link)) {
+      continue;
+    }
+    const Capsule& cap = model.capsules[c];
+    if (box_capsule_distance(box, half_extents, pose(link, cap.origin), cap.radius,
+                             cap.half_length) <= slack) {
+      return true;
+    }
+  }
+  for (std::size_t b = 0; b < model.boxes.size(); ++b) {
+    const int link = model.box_link[b];
+    if (!attached_allows_link(attached, object, link)) {
+      continue;
+    }
+    if (box_box_distance(box, half_extents, pose(link, model.boxes[b].origin),
+                         model.boxes[b].half_extents) <= slack) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace openral_safety_kernel
