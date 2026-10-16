@@ -168,6 +168,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **`_coerce_sim_time_ns` / `_opt_num` — `sidecar.coerce_sim_time_ns` and `_sidecar_common.opt_num`** (was item 17).
 - **`_env_bool` — `policies/rldx.py` imports `policies/gr00t.py`'s** (was item 18).
 - **`_sensor_name_to_slot` — the ROS node imported the runner's private copy under an alias; now public as `openral_core.sensor_name_to_slot`, also replacing `SimSensorBridge`'s `_obs_key_for_sensor` and the runner node's `_vla_camera_slots` / `_required_vla_camera_slots` (now `openral_core.required_vla_camera_slots`)** (was item 19).
+- **`openral_core.missing_vla_camera_slots` (#414) — removed; the deploy runner calls `openral_rskill.rSkill.check_sensors`.** It matched only the key's last segment, without modality or resolution, so deploy accepted `observation.image.top` where `openral sim run` / `openral detect` refused it.
 - **Test scaffolding (`_av`, `_find_metric`, `_zero_frame`, `_build_so101_hal`, 2 of 7 `_import_launch_module`) — tier `conftest.py` fixtures; 5 `_import_launch_module` copies remain** (was item 22).
 - **Reward-monitor `assess()` — both monitors call `frame_source.assess_from_score`** (was item 23).
 - **Test-tier fixture duplication — tier-wide fixtures live in `tests/unit/conftest.py` / `tests/sim/conftest.py`** (was item 24).
