@@ -478,15 +478,18 @@ SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
     box.lo.setZ(std::max(box.lo.z(), p.z() + resolution));
     under = true;
   }
-  SweepFloor floor = SweepFloor::kSupport;
-  if (!under) {
-    if (!supports.has_measured_floor || !std::isfinite(supports.measured_floor_z)) {
-      box.valid = false;
-      return SweepFloor::kNone;
-    }
+  // The floor is the HIGHEST of every bound: a support under the box only proves some
+  // surface below it, not that it is the one the payload was lifted from (an undeclared
+  // table above the room floor), so it never switches the measured floor off.
+  const bool measured = supports.has_measured_floor && std::isfinite(supports.measured_floor_z);
+  if (measured) {
     box.lo.setZ(std::max(box.lo.z(), supports.measured_floor_z));
-    floor = SweepFloor::kMeasuredPayload;
   }
+  if (!under && !measured) {
+    box.valid = false;
+    return SweepFloor::kNone;
+  }
+  const SweepFloor floor = under ? SweepFloor::kSupport : SweepFloor::kMeasuredPayload;
   if (!(box.lo.z() < box.hi.z())) {
     box.valid = false;
     return SweepFloor::kNone;

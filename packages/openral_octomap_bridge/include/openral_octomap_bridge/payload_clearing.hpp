@@ -445,7 +445,7 @@ bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch
 
 /// Where `floor_swept_box` put a swept box's floor.
 enum class SweepFloor {
-  kSupport,          ///< one cell above a known support under the box
+  kSupport,          ///< a known support is under the box (any measured floor still applies)
   kMeasuredPayload,  ///< no support under it: the REGION payload's lowest point at attach
   kNone,             ///< nothing to floor against (or nothing left): do not clear the box
 };
@@ -468,9 +468,11 @@ struct SweepSupports {
 /// Floor `box` (frame up = +z) so the swept-volume `clear_bbox` never reaches below a
 /// support: one cell above every attested support patch under it
 /// (`trim_swept_box_above_supports`'s rule) and every declared static-geometry point
-/// under its footprint below its top. With no support under the box, its floor is the
-/// region payload's lowest point at attach; without that either (a segmented or
-/// gripper-closure payload) the box is not cleared at all.
+/// under its footprint below its top, and never below the region payload's lowest point
+/// at attach when one was measured: the floor is the highest of every bound, so one
+/// source never switches another off (a static room floor under the box does not drop
+/// the measured bound above an undeclared table). With neither a support nor a measured
+/// floor (a segmented or gripper-closure payload) the box is not cleared at all.
 /// Fix of the 2026-10-16 DROID t7 boxes that reached 49 mm below the table top: the
 /// user approved clearing "trimmed above the support surface", never through it.
 SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
