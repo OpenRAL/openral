@@ -534,9 +534,9 @@ class VisionAttachmentEvidenceProducer:
         self._palm_in_link: tuple[float, float, float] = tuple(  # type: ignore[assignment] # reason: origin_xyz is a 3-tuple
             float(v) for v in gripper_joints[0].origin_xyz
         )
-        self._touch_links = [joint.child_link for joint in gripper_joints] + [
-            m.child_link for m in description.mimic_joints if m.mimics in jaws
-        ]
+        # The same source as the kernel's grasp allowlist and the hand links: the jaws,
+        # their mimic followers and the links rigid on those (the Robotiq bars).
+        self._touch_links = list(description.grasp_contact_links(gripper_joints=jaws))
         self._attached: bool = False
 
     @property

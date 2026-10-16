@@ -215,3 +215,67 @@ def test_an_unknown_jaw_angle_is_never_clear_and_the_timeout_still_bounds_it(
 
     assert verdict(10.0 + _TIMEOUT_S - 0.01) == ""
     assert verdict(10.0 + _TIMEOUT_S) == "timeout"
+
+
+# ── DROID: the Robotiq's outer fingers are exempt and checked for clearance ─────────────
+
+_DROID = Path("robots/droid_franka_robotiq/robot.yaml")
+_ROBOTIQ = "robotiq_arg2f_base_link"
+
+
+def _droid_held(droid: RobotDescription) -> AttachedCollisionObject:
+    """What DROID's leg holds after an ATTACH the segmenter never answered: the jaw box."""
+    joint = next(j for j in droid.joints if j.role == "gripper")
+    producer = VisionAttachmentEvidenceProducer(droid, gripper_joint=joint.name)
+    held, _ = producer.on_grasp(
+        masks=[],
+        depth_m=np.zeros((0, 0)),
+        intrinsics=None,  # type: ignore[arg-type]  # reason: no masks, so the fit never reads intrinsics
+        t_link_from_cam=np.eye(4),
+        tcp_in_link=joint.origin_xyz,
+        object_id="grasped_payload:finger_joint",
+        stamp_ns=1_000,
+    )
+    assert held is not None
+    return held
+
+
+def test_the_droid_release_window_exempts_and_places_every_grasp_contact_link() -> None:
+    """Deploy-sim t6: the window's exempt links left out the bars (fixed on the knuckles).
+
+    They are now the gripper's ``grasp_contact_links`` (the same source as the kernel's
+    allowlist), and the separation test poses each of them, the bars and the inner
+    fingers below them included, through its chain from the hand.
+    """
+    if not _DROID.exists():
+        pytest.skip("this branch has no robots/droid_franka_robotiq manifest")
+    droid = RobotDescription.from_yaml(str(_DROID))
+    held = _droid_held(droid)
+    assert tuple(held.touch_links) == droid.grasp_contact_links()
+    assert {"left_bar", "right_bar"} <= set(held.touch_links)
+    frozen = freeze_released_attachment(held, base_link="panda_link0", t_base_from_link=np.eye(4))
+    assert set(frozen.touch_links) == {_ROBOTIQ, *held.touch_links}
+    window = ReleaseWindow.open(
+        droid, held, base_link="panda_link0", t_base_from_link=np.eye(4), now_s=0.0
+    )
+    chains = dict(zip(held.touch_links, (chain for chain, _ in window.jaws), strict=True))
+    assert all(chain is not None for chain in chains.values())
+    names = {link: [e.name for e, _ in chain or ()] for link, chain in chains.items()}
+    assert names["left_bar"] == ["left_outer_knuckle_joint", "left_bar_joint"]
+    assert names["left_distal_phalanx"] == [
+        "left_outer_knuckle_joint",
+        "left_bar_joint",
+        "left_distal_phalanx_joint",
+    ]
+    # At DETACH, the hand and the open jaws still surround the frozen payload: not clear.
+    jaw = {"finger_joint": 1.0}
+    assert (gap := window.clearance_m(np.eye(4), jaw)) is not None and gap <= 0.0
+
+
+def test_the_openarm_and_so101_touch_links_are_unchanged() -> None:
+    openarm = RobotDescription.from_yaml(str(_OPENARM))
+    left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
+    assert left.touch_links == ("openarm_left_finger_pair", "openarm_left_finger_follower")
+    so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    # This branch models the SO-101 jaw as a mimic link (`jaw`), already a touch link.
+    assert VisionAttachmentEvidenceProducer(so101).touch_links == ("moving_jaw", "jaw")

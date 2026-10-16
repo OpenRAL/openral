@@ -139,6 +139,7 @@ from openral_core import (
     AttachmentEvidenceKind,
     CameraTopicKind,
     ControlMode,
+    FixedAttachment,
     JointSpec,
     MimicJoint,
     VisionAttachmentRuntime,
@@ -468,6 +469,38 @@ def _joint_motion(joint: Any, q: float) -> NDArray[np.float64]:
             "revolute, continuous and prismatic jaws are posed."
         )
     return t
+
+
+def _edge_chain(
+    description: RobotDescription, root: str, link: str
+) -> tuple[tuple[Any, NDArray[np.float64]], ...] | None:
+    """The ``(edge, origin)`` chain from ``root`` down to ``link``, or ``None`` off its subtree.
+
+    Each link has one defining edge (``RobotDescription`` validates it): a joint, a
+    mimic joint or a fixed attachment, each with its origin in the parent frame.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+        >>> [e.name for e, _ in _edge_chain(d, "robotiq_arg2f_base_link", "left_bar")]
+        ['left_outer_knuckle_joint', 'left_bar_joint']
+        >>> _edge_chain(d, "robotiq_arg2f_base_link", "panda_link3") is None
+        True
+    """
+    edge_of: dict[str, JointSpec | MimicJoint | FixedAttachment] = {
+        **{j.child_link: j for j in description.joints},
+        **{m.child_link: m for m in description.mimic_joints},
+        **{a.child_link: a for a in description.fixed_attachments},
+    }
+    chain: list[tuple[Any, NDArray[np.float64]]] = []
+    current = link
+    while current != root:
+        edge = edge_of.get(current)
+        if edge is None:
+            return None
+        chain.append((edge, _xyz_rpy_matrix(edge.origin_xyz, edge.origin_rpy)))
+        current = edge.parent_link
+    return tuple(reversed(chain))
 
 
 def _link_boxes(description: RobotDescription, link: str) -> tuple[_FramedBox, ...]:
@@ -910,18 +943,24 @@ class ReleaseWindow:
         opened_s: Monotonic seconds at DETACH.
         hand_link: The held record's attach link (the hand), posed through tf2.
         hand_boxes: The hand's collision primitives, bounded, in the hand frame.
-        jaws: ``(joint, origin, boxes)`` per jaw link the record exempts: the
-            jaw joint (hinged on the hand), its origin in the hand frame, and the
-            jaw's bounded primitives in the jaw frame. A ``MimicJoint`` follower
-            of a jaw joint (the OpenArm's second finger, its own collision link
-            since #349) is a jaw too, posed at ``value_at`` of its leader's angle.
+        jaws: ``(chain, boxes)`` per link the record exempts below the hand (its
+            ``touch_links``: ``RobotDescription.grasp_contact_links`` of this gripper):
+            the edges from the hand down to the link, each ``(edge, origin)``, and the
+            link's bounded primitives in its frame. An edge is a jaw joint, a
+            ``MimicJoint`` (the OpenArm's second finger, the Robotiq's knuckles and
+            inner fingers; posed at ``value_at`` of its leader's angle) or a rigid
+            ``fixed_attachments`` row (the Robotiq's outer finger on its knuckle).
+            ``chain`` is ``None`` for a link the hand does not reach: then the
+            clearance is unknown, never clear.
     """
 
     record: AttachedCollisionObject
     opened_s: float
     hand_link: str
     hand_boxes: tuple[_FramedBox, ...]
-    jaws: tuple[tuple[Any, NDArray[np.float64], tuple[_FramedBox, ...]], ...]
+    jaws: tuple[
+        tuple[tuple[tuple[Any, NDArray[np.float64]], ...] | None, tuple[_FramedBox, ...]], ...
+    ]
 
     @classmethod
     def open(
@@ -945,27 +984,13 @@ class ReleaseWindow:
         Returns:
             The open window.
         """
-        jaw_joints = [
-            joint
-            for joint in description.joints
-            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
-        ]
-        # The other jaw of each gripper: a mimic follower of a jaw joint, hinged
-        # on the same hand, is part of what has to clear the payload too.
-        followers = [
-            mimic
-            for mimic in description.mimic_joints
-            if mimic.parent_link == held.attach_link
-            and any(mimic.mimics == joint.name for joint in jaw_joints)
-        ]
-        jaw_edges: list[JointSpec | MimicJoint] = [*jaw_joints, *followers]
         jaws = tuple(
             (
-                joint,
-                _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy),
-                _link_boxes(description, joint.child_link),
+                _edge_chain(description, held.attach_link, link),
+                _link_boxes(description, link),
             )
-            for joint in jaw_edges
+            for link in held.touch_links
+            if link != held.attach_link
         )
         return cls(
             record=freeze_released_attachment(
@@ -996,14 +1021,22 @@ class ReleaseWindow:
         placed: list[tuple[NDArray[np.float64], tuple[_FramedBox, ...]]] = [
             (t_base_from_hand, self.hand_boxes)
         ]
-        for joint, origin, jaw_boxes in self.jaws:
-            # A mimic follower reads its leader's angle: multiplier * q + offset.
-            driving = joint.mimics if isinstance(joint, MimicJoint) else joint.name
-            if driving not in positions:
-                return None
-            q = positions[driving]
-            motion = _joint_motion(joint, joint.value_at(q) if isinstance(joint, MimicJoint) else q)
-            placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
+        for chain, jaw_boxes in self.jaws:
+            if chain is None:
+                return None  # a link the hand does not reach: unknown, never clear
+            t_link = t_base_from_hand
+            for edge, origin in chain:
+                if isinstance(edge, JointSpec | MimicJoint):
+                    # A mimic follower reads its leader's angle: multiplier * q + offset.
+                    driving = edge.mimics if isinstance(edge, MimicJoint) else edge.name
+                    if driving not in positions:
+                        return None
+                    q = positions[driving]
+                    q = edge.value_at(q) if isinstance(edge, MimicJoint) else q
+                    t_link = t_link @ origin @ _joint_motion(edge, q)
+                else:  # a rigid fixed_attachments row
+                    t_link = t_link @ origin
+            placed.append((t_link, jaw_boxes))
         # The frozen record is attached to the base link: its link frame is the base.
         payload: list[_Box] = [
             (t[:3, 3], t[:3, :3], bounding_half_extents(primitive.shape))
