@@ -191,21 +191,53 @@ TEST_F(BridgePayloadSweep, ThePreAttachPathAndTheCarryAreClearedAboveTheSupport)
   EXPECT_GE(lo_z, kSupportTop + 0.002 + kRes - 1e-6);
 }
 
-TEST_F(BridgePayloadSweep, WithoutASupportAMeasuredPayloadIsFlooredAtItsAttachBottom) {
-  // No support attested (the vision pick's attestation lapsed): the floor is the measured
+TEST_F(BridgePayloadSweep, WithoutASupportARegionPayloadIsFlooredAtItsAttachBottom) {
+  // No support attested (the vision pick's attestation lapsed): the floor is the region
   // payload's lowest point at attach, never below it.
   const double z = kSupportTop + kHalf[2];
   for (int i = 0; i <= 8; ++i) {
     place_hand(0.01 * i, z - 0.002 * i);  // the hand dips 16 mm while carrying
+    send_octree();
+    send_world_state(false, "grasp_target_region");
+    spin_for(50ms);
+  }
+  spin_for(300ms);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  ASSERT_FALSE(requests_.empty()) << "a region payload is still cleared";
+  for (const auto& r : requests_) {
+    EXPECT_GE(r.min.z, kSupportTop - 1e-6) << "cleared below the payload's attach bottom";
+  }
+}
+
+TEST_F(BridgePayloadSweep, ASegmentedPayloadWithoutASupportIsNotCleared) {
+  // Deploy trial g17's second grasp: a segmented payload whose bottom took in counter and
+  // depth-edge points floored three boxes at z 0.020-0.027 under a 0.030 counter top.
+  // Its bottom floors nothing: with no support known, nothing is cleared.
+  const double z = kSupportTop + kHalf[2];
+  for (int i = 0; i <= 8; ++i) {
+    place_hand(0.01 * i, z);
     send_octree();
     send_world_state(false, "vision_segmentation");
     spin_for(50ms);
   }
   spin_for(300ms);
   const std::lock_guard<std::mutex> lock(mutex_);
-  ASSERT_FALSE(requests_.empty()) << "a measured payload is still cleared";
+  EXPECT_TRUE(requests_.empty()) << "a segmented payload's bottom floored a clear";
+}
+
+TEST_F(BridgePayloadSweep, ASegmentedPayloadOverAnAttestedSupportIsClearedAboveIt) {
+  const double z = kSupportTop + kHalf[2] + 0.02;
+  for (int i = 0; i <= 8; ++i) {
+    place_hand(0.01 * i, z);
+    send_octree();
+    send_world_state(true, "vision_segmentation");
+    spin_for(50ms);
+  }
+  spin_for(300ms);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  ASSERT_FALSE(requests_.empty()) << "a supported segmented payload is cleared";
   for (const auto& r : requests_) {
-    EXPECT_GE(r.min.z, kSupportTop - 1e-6) << "cleared below the payload's attach bottom";
+    EXPECT_GE(r.min.z, kSupportTop + 0.002 + kRes - 1e-6) << "cleared into the support";
   }
 }
 

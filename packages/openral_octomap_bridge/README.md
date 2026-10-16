@@ -349,10 +349,12 @@ reaches below a support (`floor_swept_box`):
   attested (a vision pick's attestation lasts only until the payload moves, so it is
   latched for the carry), and one cell above every declared static-geometry point
   (`static_points_file`) under its footprint below its top;
-- with no support under it, its floor is the measured payload's lowest point at
-  attach (a payload whose `evidence_kind` is not `gripper_closure`);
-- with neither (a gripper-closure jaw box and no known support) it is **not cleared**,
-  and the bridge logs `payload sweep: NOT clearing ...`.
+- with no support under it, its floor is the REGION payload's lowest point at attach
+  (`evidence_kind == "grasp_target_region"`: the producer-measured grasp-target region);
+- with neither (a segmented payload — its bottom can take in counter and depth-edge
+  points, which floored three LeIsaac g17 boxes at z 0.020-0.027 under a 0.030 counter
+  top — or a gripper-closure jaw box, and no known support) it is **not cleared**, and
+  the bridge logs `payload sweep: NOT clearing ...`.
 
 A non-vertical support empties the box. Before this, a box went 49 mm below the DROID
 table top once the attestation lapsed mid-carry (deploy-sim t7, 2026-10-16). Pinned by
