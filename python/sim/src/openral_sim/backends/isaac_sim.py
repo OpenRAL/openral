@@ -1142,6 +1142,9 @@ class IsaacPlacementSuccess(BaseModel):
     settle_s: float = Field(default=1.0, ge=0.0)
     rest_speed_m_s: float = Field(default=0.02, gt=0.0)
     rest_turn_deg_s: float = Field(default=10.0, gt=0.0)
+    # An object touching any robot body is not placed (its rest timer restarts): without
+    # it, a gripper holding the object still inside the target for settle_s passes.
+    require_released: bool = False
 
     @model_validator(mode="after")
     def _rubric_is_well_formed(self) -> IsaacPlacementSuccess:
@@ -2312,6 +2315,7 @@ def _resolve_placement_rubric(
         "settle_s": placement_success.settle_s,
         "rest_speed_m_s": placement_success.rest_speed_m_s,
         "rest_turn_deg_s": placement_success.rest_turn_deg_s,
+        "require_released": placement_success.require_released,
     }
 
 

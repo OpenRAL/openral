@@ -107,6 +107,7 @@ scene:
         # A banana lies on its side: no upright requirement, one level.
         - {name: complete, score: 1.0, region: target}
       settle_s: 1.0
+      require_released: true
       tasks:
         "pick up the banana and place it in the bowl": &banana_in_bowl
           - {object: banana, target: in_bowl}

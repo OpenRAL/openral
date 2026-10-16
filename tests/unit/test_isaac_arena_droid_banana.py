@@ -91,6 +91,9 @@ def test_both_scenes_load_with_the_same_world() -> None:
     assert load_scene_strict(str(_SIM), SimScene).task.instruction == _PROMPT
     assert sim.placement_success is not None
     assert _PROMPT in sim.placement_success.tasks
+    # RoboLab's gripper-detached term: a banana still held inside the bowl is not placed.
+    assert sim.placement_success.require_released
+    assert _placement_success_spec(sim.placement_success, _PROMPT)["require_released"] is True
 
 
 def test_the_deploy_scene_maps_the_world_from_a_sim_depth_camera() -> None:
