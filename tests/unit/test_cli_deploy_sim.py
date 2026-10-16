@@ -3264,3 +3264,27 @@ def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
     off = _tracking("isaac_leisaac_pick_orange.yaml", "off")
     assert _object_queries_json(off, "Grab orange and place into plate") == ""
     assert _object_queries_json(orange, "dance") == ""
+
+
+def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None:
+    """A placement ``label`` renames the class; the scene's search box follows it."""
+    import json
+
+    from openral_cli.deploy_sim import _object_queries_json
+
+    orange = _tracking("isaac_leisaac_pick_orange.yaml", "shadow")
+    options = dict(orange.scene.backend_options)
+    success = dict(options["placement_success"])
+    task = "Grab orange and place into plate"
+    success["tasks"] = {
+        task: [
+            {**p, "label": "fruit"} if p["object"] == "orange_1" else p
+            for p in success["tasks"][task]
+        ]
+    }
+    options["placement_success"] = success
+    relabelled = orange.model_copy(
+        update={"scene": orange.scene.model_copy(update={"backend_options": options})}
+    )
+    seeded = {q["label"]: "seed" in q for q in json.loads(_object_queries_json(relabelled, task))}
+    assert seeded == {"fruit": True, "orange": False, "plate": False}

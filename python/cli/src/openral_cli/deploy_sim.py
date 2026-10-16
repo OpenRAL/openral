@@ -641,9 +641,9 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
 
     The scene's own ``grasp_declaration.search_box`` (a sim-derived or reasoner seed box
     around one instance) becomes the ``seed`` of the TARGET query whose label its
-    ``target_id`` names (``obj:orange_1`` → ``orange``): the tracker's map-seeded prompt
-    inside it, so a class no open-vocabulary locator knows (``stock object``) still
-    grounds. A seed is a search hint only, never kernel geometry.
+    ``target_id`` names (``obj:orange_1`` → ``orange``, or that placement's ``label``): the
+    tracker's map-seeded prompt inside it, so a class no open-vocabulary locator knows
+    still grounds. A seed is a search hint only, never kernel geometry.
     """
     runtime = deploy_scene.runtime if deploy_scene is not None else None
     if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
@@ -657,7 +657,8 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
         IsaacPlacementSuccess,
     )
 
-    placements = IsaacPlacementSuccess.model_validate(raw).placements_for(prompt)
+    success = IsaacPlacementSuccess.model_validate(raw)
+    placements = success.placements_for(prompt)
     if not placements:
         _console.print(
             f"[yellow]object tracking: the scene grades no task {prompt!r}; no object "
@@ -667,8 +668,11 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     queries = placement_queries(placements)
     decl = deploy_scene.grasp_declaration
     if decl is not None and decl.search_box is not None:
-        # The same instance-suffix / underscore normalisation the queries' labels went through.
-        seeded = placement_queries([(decl.target_id.split(":", 1)[-1], None)])[0].label
+        # The declared object's placement names its label (its detector label, else its
+        # scene name), normalised as the queries' labels were.
+        obj = decl.target_id.split(":", 1)[-1]
+        named = [p.label or p.object for p in success.tasks.get(prompt, []) if p.object == obj]
+        seeded = placement_queries([(named[0] if named else obj, None)])[0].label
         queries = tuple(
             q.model_copy(update={"seed": decl.search_box})
             if q.label == seeded and q.role is ObjectRole.TARGET and q.seed is None
