@@ -3901,6 +3901,11 @@ struct GraspBeat {
   std::uint64_t tracked_revision{1};
   std::int64_t tracked_stamp_ns{0};      ///< 0 = the stream stamp
   std::size_t tracked_hull_vertices{0};  ///< one tight hull with this many vertices (0 = none)
+  /// Issue #418 K2 eligibility fields of the tracked object.
+  std::string tracked_role{"target"};
+  std::string tracked_key{};             ///< "" = "<target_id>@<declaration_stamp_ns>"
+  std::uint32_t tracked_visible{0};      ///< visible_cells
+  std::int64_t tracked_confirmed_ns{0};  ///< last_confirmed_stamp_ns; 0 = the stream stamp
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3935,7 +3940,12 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     o.object_id = b.tracked_id;
     o.epoch = b.tracked_epoch;
     o.label = "cube";
-    o.role = "target";
+    o.role = b.tracked_role;
+    o.declaration_key = !b.tracked_key.empty()
+                            ? b.tracked_key
+                            : b.target_id + "@" + std::to_string(b.declaration_stamp_ns);
+    o.visible_cells = b.tracked_visible;
+    o.last_confirmed_stamp_ns = b.tracked_confirmed_ns != 0 ? b.tracked_confirmed_ns : stream_ns;
     o.status = b.tracked_status;
     o.box.frame_id = b.tracked_frame;
     o.box.pose.position.x = b.tracked_x;
@@ -7174,4 +7184,139 @@ TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePa
   EXPECT_FALSE(r.passes(0.0, 0.03)) << "link2 into the frozen payload: " << logs.joined();
   EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
   EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
+}
+
+// ── Issue #418 K2: the grasp exemption by tracked-object id (hazard OT-6) ───
+//
+// The GraspRig's finger (link0, its TCP the capsule origin at x = 0.05 for
+// j0 = 0) is the one hand. Two occupied cells, centred at x = 0.025 and 0.05;
+// the finger sits in the second. The tracked target's box (centre 0.0375, half
+// 0.03) holds both, so the kernel's own cover check (>= 2 occupied centres)
+// passes. No producer region (`region = false`): in `on` the HAL's leg stands
+// down, and the tracked table is the only possible source.
+namespace {
+
+std::vector<rclcpp::Parameter> k2_params(bool enabled = true, bool grasp_allowance = true,
+                                         const std::string& hal_mode = "sim") {
+  auto params = grasp_params(grasp_allowance);
+  params.emplace_back("tracked_grasp_exemption_enabled", enabled);
+  params.emplace_back("hal_mode", hal_mode);
+  return params;
+}
+
+openral_msgs::msg::OccupancyVoxels k2_voxels() {
+  auto vox = grasp_target_voxels();
+  vox.size_x = 2;
+  vox.origin.x = 0.0125;
+  vox.occupancy.assign(2, 1);
+  return vox;
+}
+
+GraspBeat k2_beat(GraspRig& rig) {
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region = false;
+  b.tracked_set = true;
+  b.tracked_status = "confirmed";
+  b.tracked_x = 0.0375;
+  b.tracked_half = 0.03;
+  return b;
+}
+
+// A fresh on-mode rig, `mutate` applied to the beat: does the finger-in-target
+// chunk pass?
+bool k2_passes(const std::string& name, const std::function<void(GraspRig&, GraspBeat&)>& mutate,
+               std::vector<rclcpp::Parameter> params = k2_params()) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = k2_voxels();
+  rig.start();
+  GraspBeat b = k2_beat(rig);
+  mutate(rig, b);
+  rig.warm(&b, 0.0, 200);
+  return rig.offer(&b, 0.0, 600);
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, OnModeExemptsTheFingerAgainstItsUniqueEligibleTarget) {
+  LogCapture logs;
+  EXPECT_TRUE(k2_passes("kernel_k2_on", [](GraspRig&, GraspBeat&) {})) << logs.joined();
+  EXPECT_GE(logs.count("safety.tracked_grasp_eligible n=1 of=1 declaration=cell:cube@"), 1U)
+      << logs.joined();
+  // The control: the same scene with the source on the legacy region (no
+  // region measured) stops, so the pass above is K2's.
+  EXPECT_FALSE(k2_passes("kernel_k2_off", [](GraspRig&, GraspBeat&) {}, k2_params(false)));
+}
+
+TEST_F(LifecycleKernelTest, EveryIneligibleTrackedTargetStops) {
+  struct Case {
+    const char* why;
+    std::function<void(GraspRig&, GraspBeat&)> mutate;
+  };
+  const std::vector<Case> cases = {
+      {"role", [](GraspRig&, GraspBeat& b) { b.tracked_role = "destination"; }},
+      {"declaration_key", [](GraspRig&, GraspBeat& b) { b.tracked_key = "cell:cube@1"; }},
+      {"deploy_key", [](GraspRig&, GraspBeat& b) { b.tracked_key = "deploy@0"; }},
+      {"bound", [](GraspRig&, GraspBeat& b) { b.tracked_status = "bound"; }},
+      {"tentative", [](GraspRig&, GraspBeat& b) { b.tracked_status = "tentative"; }},
+      {"split", [](GraspRig&, GraspBeat& b) { b.tracked_status = "split"; }},
+      {"stale",
+       [](GraspRig& r, GraspBeat& b) { b.tracked_confirmed_ns = r.now_ns() - 10'000'000'000LL; }},
+      {"cover", [](GraspRig&, GraspBeat& b) { b.tracked_visible = 5; }},  // needs 3 of 2
+      {"retracted", [](GraspRig&, GraspBeat& b) { b.active = false; }},
+      {"no_set", [](GraspRig&, GraspBeat& b) { b.tracked_set = false; }},
+      {"one_cell", [](GraspRig& r, GraspBeat&) { r.voxels.occupancy = {0, 1}; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    EXPECT_FALSE(k2_passes("kernel_k2_inelig_" + std::to_string(n++), c.mutate))
+        << c.why << ": " << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ARetiredTrackedIdentityIsNeverExemptButANewEpochIs) {
+  // K6 retires (id, epoch) when a latched tracked handover retires; K2 then
+  // never exempts that identity again, while the re-grounded epoch is eligible.
+  const auto run = [](const std::string& name, std::uint32_t epoch_after) {
+    LogCapture logs;
+    GraspRig rig(name, k2_params());
+    rig.voxels = k2_voxels();
+    rig.start();
+    GraspBeat b = k2_beat(rig);
+    b.region = true;  // a legacy producer region, so the handover can latch
+    b.object_label = "trk:1";
+    b.declared_object = "trk:1";
+    b.evidence_kind = "tracked_object";
+    rig.warm(&b, 0.0, 200);
+    EXPECT_TRUE(rig.offer(&b, 0.0)) << "K2 exempts before the grasp: " << logs.joined();
+    b.carrying = true;  // bound: the octomap clears it by identity
+    b.tracked_status = "bound";
+    ++b.revision;
+    rig.voxels.occupancy = {0, 0};
+    rig.warm(&b, 0.0, 200);
+    EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+        << logs.joined();
+    b.active = false;  // the pick ends: the latched handover retires (trk:1, 0)
+    rig.warm(&b, 0.0, 200);
+    EXPECT_GE(logs.count("safety.grasp_region_dropped reason=retracted"), 1U) << logs.joined();
+    // A new declaration; the object is back on the table, confirmed.
+    b = k2_beat(rig);
+    b.revision = 2;
+    b.tracked_epoch = epoch_after;
+    rig.voxels = k2_voxels();
+    rig.warm(&b, 0.0, 200);
+    return rig.offer(&b, 0.0, 600);
+  };
+  EXPECT_FALSE(run("kernel_k2_retired", 0)) << "(trk:1, 0) was retired";
+  EXPECT_TRUE(run("kernel_k2_new_epoch", 1)) << "(trk:1, 1) is a new identity";
+}
+
+TEST_F(LifecycleKernelTest, TheTrackedSourceRefusesToConfigureOutsideItsScope) {
+  GraspRig no_allowance("kernel_k2_cfg_noallow", k2_params(true, false));
+  EXPECT_FALSE(no_allowance.configure()) << "needs grasp_allowance_enabled";
+  GraspRig real("kernel_k2_cfg_real", k2_params(true, true, "real"));
+  EXPECT_FALSE(real.configure()) << "sim-only until Safety-WG review";
+  GraspRig ok("kernel_k2_cfg_ok", k2_params());
+  EXPECT_TRUE(ok.configure());
 }

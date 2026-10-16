@@ -567,6 +567,8 @@ enum class GraspRegionStatus : std::uint8_t {
   kOversizeVolume = 6,  ///< a box past kMaxGraspRegionVolumeM3
 };
 
+struct TrackedGraspTable;  // issue #418 K2, defined below
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -599,6 +601,9 @@ struct VoxelGrid {
   PlaceApproachRegion place_region{};                  ///< live place declaration's region, if any
   GraspTargetRegion grasp_region{};                    ///< live grasp declaration's region, if any
   WorkspaceContactRegion workspace_region{};           ///< live confirmed workspace, if any (#349)
+  /// Issue #418 K2: the tracked grasp exemption. Non-null and valid = it, not
+  /// `grasp_region`, is the grasp exemption source (`TrackedGraspTable`).
+  const TrackedGraspTable* tracked_grasp{nullptr};
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -1481,6 +1486,76 @@ inline constexpr std::size_t kMaxTrackedObjects = 32;
 /// count (<= 4) is enforced by the IDL's bounded sequence itself. A set
 /// carrying a hull past this cap is refused whole.
 inline constexpr std::size_t kMaxTrackedHullVertices = 64;
+
+/// Most hands the tracked grasp exemption selects for (issue #418 K2). An
+/// allowlist whose fingers hang off more mounts than this is refused at
+/// configure (`build_grasp_hands`).
+inline constexpr std::size_t kMaxGraspHands = 4;
+
+/// The tracked grasp exemption's inputs (issue #418 K2, hazard OT-6; Safety-WG
+/// review pending). The hands are fixed at configure (`build_grasp_hands`); the
+/// boxes are the tracked objects the lifecycle found ELIGIBLE for this candidate
+/// (role TARGET, the live declaration's key, confirmed / occluded, (id, epoch)
+/// not retired, confirmed within `grasp_region_max_age_s`, and the kernel's own
+/// cover check on its grid passed).
+///
+/// While `valid`, it REPLACES `VoxelGrid::grasp_region` as the grasp exemption
+/// source of `check_voxel_collision` (the legacy region is not read): at each
+/// checked configuration, a finger link of hand h is exempt only against cells
+/// centred in the box of o*, the UNIQUE nearest eligible object to h's TCP
+/// (`select_tracked_grasp`). `valid` with no boxes exempts nothing. A source
+/// selector, not a switch on any check: arm links are never exempt either way,
+/// and the accounting (decided before the narrow phase, no stage-2 budget, the
+/// pair's own depth reaches sweep_min_distance, never the evidence) is the
+/// legacy region's, so its subset argument carries over per (hand, row).
+struct TrackedGraspTable {
+  bool valid{false};
+  std::size_t n_hands{0};
+  /// Bit l of hand h: robot link l is one of hand h's finger (grasp-contact) links.
+  std::array<std::bitset<kMaxGraspMaskLinks>, kMaxGraspHands> hand_links{};
+  /// Per finger link, the mean of its collision primitives' origins (link
+  /// frame); a hand's TCP is the mean of its fingers' points (`grasp_hand_tcp`).
+  std::array<Vec3, kMaxGraspMaskLinks> link_point{};
+  std::size_t n_objects{0};
+  std::array<Transform, kMaxTrackedObjects> box{};  ///< eligible boxes, robot base frame
+  std::array<Vec3, kMaxTrackedObjects> half_extents{};
+};
+
+/// Group the allowlisted finger links into hands by mount (their first ancestor
+/// not itself allowlisted — the grouping of `grasp_links_one_hand`) and record
+/// each finger's TCP sample point. Clears `table`'s hands first. False (and no
+/// hands) on an empty allowlist, a bit past the model, a cyclic parent chain,
+/// or more than `kMaxGraspHands` mounts. Configure-time.
+bool build_grasp_hands(const CollisionModel& model,
+                       const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                       TrackedGraspTable& table) noexcept;
+
+/// Hand `hand`'s TCP in the base frame at the configuration FK'd into
+/// `scratch`: the mean of its finger links' points. NaN for a hand out of
+/// range, one with no finger, or a scratch too short. Allocation-free.
+Vec3 grasp_hand_tcp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                    std::size_t hand) noexcept;
+
+/// K2's per-hand selection at the configuration FK'd into `scratch`. `out[h]`
+/// is the index of o* in `table.box`, or -1 for none. o* is the eligible box
+/// with the smallest gap (point-to-box distance, 0 inside) to hand h's TCP;
+/// none when: no box; the runner-up's gap is within `tie_m` of it (one voxel at
+/// the call site, HZ-0115-2); some other hand's TCP is at least as near o*
+/// (HZ-0115-12); a non-finite TCP, gap or `tie_m`. At most one box per hand.
+/// Allocation-free.
+void select_tracked_grasp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                          double tie_m, std::array<int, kMaxGraspHands>& out) noexcept;
+
+/// How many OCCUPIED cells of `grid` have their (base-frame) centre inside the
+/// box `box` / `half_extents` — K2's cover re-check, on the kernel's own grid.
+/// 0 for an empty or degenerate grid or box. Bounded by the box's window,
+/// clamped to the grid. Allocation-free; not on the hot path (once per grid).
+std::size_t tracked_box_cover(const VoxelGrid& grid, const Transform& box,
+                              const Vec3& half_extents) noexcept;
+
+/// K2's cover rule: `occupied >= max(2, ceil(0.5 * visible))`, `visible` being
+/// the tracker's own expected-cell count (`TrackedObject.visible_cells`).
+bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexcept;
 
 /// Does a tracked object's box meet the hand that carries `object`, at the
 /// configuration FK'd into `scratch` (issue #418 K3, the binding check)?

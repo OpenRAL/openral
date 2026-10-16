@@ -78,7 +78,7 @@ def test_deploy_run_allows_shadow() -> None:
 
 
 @pytest.fixture(scope="module")
-def object_tracking() -> object:
+def launch_module() -> object:
     for dep in ("launch", "launch_ros", "lifecycle_msgs", "openral_foxglove_bringup"):
         pytest.importorskip(dep, reason=f"{dep} is a module-level import of the launch file")
     spec = importlib.util.spec_from_file_location("deploy_e2e_launch_tracking", _LAUNCH)
@@ -86,7 +86,12 @@ def object_tracking() -> object:
     module = importlib.util.module_from_spec(spec)
     sys.modules["deploy_e2e_launch_tracking"] = module
     spec.loader.exec_module(module)
-    return module._object_tracking
+    return module
+
+
+@pytest.fixture(scope="module")
+def object_tracking(launch_module: object) -> object:
+    return launch_module._object_tracking  # type: ignore[attr-defined]
 
 
 _OK = {
@@ -124,10 +129,22 @@ def test_the_launch_refuses_an_incomplete_posture(
         object_tracking(mode, **{**_OK, **change})  # type: ignore[operator]
 
 
-def test_a_locator_caches_every_tracked_camera_under_its_own_name(object_tracking: object) -> None:
+def test_a_locator_caches_every_tracked_camera_under_its_own_name(launch_module: object) -> None:
     """The tracker asks locate_in_view on its depth camera; the locator must hold its frame."""
-    f = sys.modules["deploy_e2e_launch_tracking"]._locator_cameras
+    f = launch_module._locator_cameras  # type: ignore[attr-defined]
     cams, infos = f("top", "/openral/cameras/top/image", ["top=/info"], ("top_depth", "top"))
     assert cams == ["top=/openral/cameras/top/image", "top_depth=/openral/cameras/top_depth/image"]
     assert infos == ["top=/info", "top_depth=/openral/cameras/top_depth/camera_info"]
     assert f("top", "/t", [""], ()) == (["top=/t"], [""])  # nothing tracked: unchanged
+
+
+def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
+    launch_module: object,
+) -> None:
+    f = launch_module._tracked_grasp_exemption  # type: ignore[attr-defined]
+    for mode in ("off", "shadow", "bind"):
+        assert f(mode, grasp_allowance_enabled=True) is False
+        assert f(mode, grasp_allowance_enabled=False) is False
+    assert f("on", grasp_allowance_enabled=True) is True
+    with pytest.raises(ROSConfigError, match="grasp_allowance_enabled"):
+        f("on", grasp_allowance_enabled=False)

@@ -6926,3 +6926,372 @@ TEST(TrackedRelease, TheClearanceCountsOnlyTheExemptLinks) {
   rig.att.objects[0].release_hand_link = 0;
   EXPECT_LT(osk::released_payload_clearance(rig.m, rig.s, rig.att, rig.att.objects[0]), 0.0);
 }
+
+// ── Issue #418 K2: the grasp exemption by tracked-object id (hazard OT-6) ───
+//
+// Two hands: 1 = left mount (an arm capsule) carrying fingers 2 and 3; 4 =
+// right mount (an arm capsule) carrying finger 5. Each finger is a 20x20x40 mm
+// box at its link origin, so its TCP sample point is the link origin. The grid
+// is 20^3 cells of 20 mm about the base origin: cell centres at ±0.01, ±0.03, …
+namespace {
+
+constexpr int kK2LeftMount = 1;
+constexpr int kK2LeftA = 2;
+constexpr int kK2LeftB = 3;
+constexpr int kK2RightMount = 4;
+constexpr int kK2Right = 5;
+constexpr int kK2N = 20;
+constexpr double kK2Res = 0.02;
+constexpr double kK2Margin = 0.02;
+
+osk::CollisionModel k2_model() {
+  osk::CollisionModel m;
+  m.n_links = 6;
+  m.parent = {-1, 0, 1, 1, 0, 4};
+  m.joint_kind = std::vector<osk::JointKind>(6, osk::JointKind::kFixed);
+  m.dof_index = std::vector<int>(6, -1);
+  m.origin = std::vector<osk::Transform>(6, identity());
+  m.axis = std::vector<osk::Vec3>(6, osk::Vec3{0, 0, 1});
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.01, 0.02};
+  m.box_link = {kK2LeftA, kK2LeftB, kK2Right};
+  m.boxes = {finger, finger, finger};
+  m.box_hull = {-1, -1, -1};  // no tight geometry: the shipped OBB path
+  add_capsule(m, kK2LeftMount, 0.015, 0.0, identity());
+  add_capsule(m, kK2RightMount, 0.015, 0.0, identity());
+  return m;
+}
+
+std::bitset<osk::kMaxGraspMaskLinks> k2_allowlist() {
+  return grasp_mask({kK2LeftA, kK2LeftB, kK2Right});
+}
+
+// Every link parked in a far corner of the grid unless the test places it.
+osk::CollisionScratch k2_scratch() {
+  osk::CollisionScratch s;
+  s.link_world = std::vector<osk::Transform>(6, translate(-0.17, -0.17, -0.17));
+  s.link_world[0] = identity();
+  s.link_world[kK2RightMount] = translate(-0.17, 0.17, -0.17);
+  s.link_world[kK2Right] = translate(-0.17, 0.17, -0.17);
+  return s;
+}
+
+int k2_cell(double x, double y, double z) {
+  const auto i = [](double v) { return static_cast<int>(std::floor((v + 0.2) / kK2Res)); };
+  return i(x) + kK2N * (i(y) + kK2N * i(z));
+}
+
+std::vector<std::uint8_t> k2_occ(const std::vector<std::array<double, 3>>& centres) {
+  std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+  for (const auto& c : centres) {
+    occ[static_cast<std::size_t>(k2_cell(c[0], c[1], c[2]))] = 1;
+  }
+  return occ;
+}
+
+osk::VoxelGrid k2_grid(const std::vector<std::uint8_t>& occ) {
+  osk::VoxelGrid g;
+  g.pose.t = {-0.2, -0.2, -0.2};
+  g.resolution = kK2Res;
+  g.sx = kK2N;
+  g.sy = kK2N;
+  g.sz = kK2N;
+  g.occupancy = occ.data();
+  return g;
+}
+
+osk::TrackedGraspTable k2_table(const osk::CollisionModel& m,
+                                const std::vector<std::array<double, 6>>& boxes) {
+  osk::TrackedGraspTable t;
+  EXPECT_TRUE(osk::build_grasp_hands(m, k2_allowlist(), t));
+  t.valid = true;
+  for (const auto& b : boxes) {
+    t.box[t.n_objects] = translate(b[0], b[1], b[2]);
+    t.half_extents[t.n_objects] = osk::Vec3{b[3], b[4], b[5]};
+    ++t.n_objects;
+  }
+  return t;
+}
+
+// The left hand's fingers on the two target cells (0.01 and 0.03, 0.01, 0.01);
+// its TCP is between them.
+void k2_left_on_target(osk::CollisionScratch& s) {
+  s.link_world[kK2LeftA] = translate(0.01, 0.01, 0.01);
+  s.link_world[kK2LeftB] = translate(0.03, 0.01, 0.01);
+}
+
+// Target A around the two cells; B far along x.
+constexpr std::array<double, 6> kK2BoxA{0.02, 0.01, 0.01, 0.03, 0.02, 0.02};
+constexpr std::array<double, 6> kK2BoxB{0.15, 0.01, 0.01, 0.02, 0.02, 0.02};
+
+std::array<int, osk::kMaxGraspHands> k2_select(const osk::TrackedGraspTable& t,
+                                               const osk::CollisionScratch& s) {
+  std::array<int, osk::kMaxGraspHands> sel{};
+  osk::select_tracked_grasp(t, s, kK2Res, sel);
+  return sel;
+}
+
+}  // namespace
+
+TEST(TrackedGraspHands, FingersAreGroupedByMountAndSampledAtTheirGeometry) {
+  osk::CollisionModel m = k2_model();
+  m.boxes[0].origin = translate(0.0, 0.0, 0.04);  // finger A's pad sits 40 mm out
+  osk::TrackedGraspTable t;
+  ASSERT_TRUE(osk::build_grasp_hands(m, k2_allowlist(), t));
+  ASSERT_EQ(t.n_hands, 2U);
+  EXPECT_EQ(t.hand_links[0], grasp_mask({kK2LeftA, kK2LeftB}));
+  EXPECT_EQ(t.hand_links[1], grasp_mask({kK2Right}));
+  EXPECT_DOUBLE_EQ(t.link_point[kK2LeftA].z, 0.04);
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  const osk::Vec3 tcp = osk::grasp_hand_tcp(t, s, 0);
+  EXPECT_DOUBLE_EQ(tcp.x, 0.02);
+  EXPECT_DOUBLE_EQ(tcp.z, 0.03) << "the mean of (0.01+0.04) and 0.01";
+  EXPECT_TRUE(std::isnan(osk::grasp_hand_tcp(t, s, 2).x)) << "no third hand";
+}
+
+TEST(TrackedGraspHands, MalformedAllowlistsBuildNoHands) {
+  const osk::CollisionModel m = k2_model();
+  osk::TrackedGraspTable t;
+  EXPECT_FALSE(osk::build_grasp_hands(m, grasp_mask({}), t));
+  EXPECT_FALSE(osk::build_grasp_hands(m, grasp_mask({kK2LeftA, 9}), t)) << "a bit past the model";
+  EXPECT_EQ(t.n_hands, 0U);
+  // Five mounts, each with one finger: past kMaxGraspHands.
+  osk::CollisionModel wide;
+  wide.n_links = 11;
+  wide.parent = {-1, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5};
+  EXPECT_FALSE(osk::build_grasp_hands(wide, grasp_mask({6, 7, 8, 9, 10}), t));
+  EXPECT_EQ(t.n_hands, 0U);
+}
+
+TEST(TrackedGraspSelection, TheUniqueNearestEligibleObjectIsSelected) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  const auto t = k2_table(m, {kK2BoxB, kK2BoxA});
+  const auto sel = k2_select(t, s);
+  EXPECT_EQ(sel[0], 1) << "A holds the left TCP";
+  EXPECT_EQ(sel[1], -1) << "the right hand's nearest (A) is nearer the left hand";
+}
+
+TEST(TrackedGraspSelection, ATieWithinOneVoxelSelectsNothing) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  // A second box holding the TCP too: both gaps 0, a tie (HZ-0115-2).
+  auto shifted = kK2BoxA;
+  shifted[0] += 0.005;
+  EXPECT_EQ(k2_select(k2_table(m, {kK2BoxA, shifted}), s)[0], -1);
+  // Runner-up within one voxel of A's gap (0): a tie; just past it, A wins.
+  auto near = kK2BoxA;
+  near[0] = 0.02 + 0.019 + 0.03;  // its near face 19 mm past the TCP
+  EXPECT_EQ(k2_select(k2_table(m, {kK2BoxA, near}), s)[0], -1);
+  near[0] = 0.02 + 0.021 + 0.03;  // 21 mm
+  EXPECT_EQ(k2_select(k2_table(m, {kK2BoxA, near}), s)[0], 0);
+  // Non-finite tie or TCP: none.
+  std::array<int, osk::kMaxGraspHands> sel{};
+  osk::select_tracked_grasp(k2_table(m, {kK2BoxA}), s, std::nan(""), sel);
+  EXPECT_EQ(sel[0], -1);
+  s.link_world[kK2LeftA].t.x = std::nan("");
+  EXPECT_EQ(k2_select(k2_table(m, {kK2BoxA}), s)[0], -1);
+}
+
+TEST(TrackedGraspSelection, AnObjectNeverGoesToTheHandItIsFurtherFrom) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  // The right finger at 0.07: 20 mm from A's face. The left hand far away.
+  s.link_world[kK2Right] = translate(0.07, 0.01, 0.01);
+  const auto t = k2_table(m, {kK2BoxA});
+  EXPECT_EQ(k2_select(t, s)[1], 0) << "alone, the right hand selects A";
+  k2_left_on_target(s);
+  const auto sel = k2_select(t, s);
+  EXPECT_EQ(sel[0], 0);
+  EXPECT_EQ(sel[1], -1) << "A is nearer the left hand: never the right's (HZ-0115-12)";
+  // Equidistant hands: neither.
+  s.link_world[kK2Right] = translate(0.02, 0.01, 0.01);
+  s.link_world[kK2RightMount] = translate(0.02, 0.01, 0.01);
+  const auto both = k2_select(t, s);
+  EXPECT_EQ(both[0], -1);
+  EXPECT_EQ(both[1], -1);
+}
+
+TEST(TrackedGraspExemption, TheSelectedObjectExemptsTheHandsFingers) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(today.hit);
+  const auto t = k2_table(m, {kK2BoxA, kK2BoxB});
+  grid.tracked_grasp = &t;
+  const auto with = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  EXPECT_FALSE(with.hit);
+  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance)
+      << "the exempt pairs still reach the sweep minimum at their own depth";
+}
+
+TEST(TrackedGraspExemption, AnUnselectedEligibleObjectExemptsNothing) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  // Only B is eligible: it is selected, but the fingers' cells are not in it.
+  const auto only_b = k2_table(m, {kK2BoxB});
+  grid.tracked_grasp = &only_b;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+  // A and a tie partner: nothing selected, so nothing exempt.
+  auto shifted = kK2BoxA;
+  shifted[0] += 0.005;
+  const auto tied = k2_table(m, {kK2BoxA, shifted});
+  grid.tracked_grasp = &tied;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+}
+
+TEST(TrackedGraspExemption, ArmLinksAreNeverExempt) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  s.link_world[kK2LeftMount] = translate(0.01, 0.01, 0.01);  // the mount on the target cell
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto t = k2_table(m, {kK2BoxA});
+  grid.tracked_grasp = &t;
+  const auto hit = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, kK2LeftMount);
+}
+
+TEST(TrackedGraspExemption, TheOtherHandsFingerIsNotExemptByThisHandsObject) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  // The right finger at 0.07 touches A's cell at 0.05; A is the LEFT hand's.
+  s.link_world[kK2Right] = translate(0.07, 0.01, 0.01);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}, {0.05, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto t = k2_table(m, {kK2BoxA});
+  grid.tracked_grasp = &t;
+  const auto hit = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, kK2Right);
+  EXPECT_EQ(hit.link_b, k2_cell(0.05, 0.01, 0.01));
+}
+
+TEST(TrackedGraspExemption, AValidTableReplacesTheLegacyRegion) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_EQ(osk::ingest_grasp_region(translate(0.02, 0.01, 0.01), osk::Vec3{0.03, 0.02, 0.02},
+                                     grasp_mask({kK2LeftA, kK2LeftB}), grid.grasp_region),
+            osk::GraspRegionStatus::kOk);
+  const auto legacy = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_FALSE(legacy.hit) << "the control: the legacy region alone exempts the fingers";
+  const auto empty = k2_table(m, {});
+  grid.tracked_grasp = &empty;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+  // An invalid table is no source at all: the legacy rule, bit for bit.
+  osk::TrackedGraspTable off = k2_table(m, {kK2BoxB});
+  off.valid = false;
+  grid.tracked_grasp = &off;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), legacy);
+}
+
+TEST(TrackedGraspCover, CountsOnlyOccupiedCentresInsideTheBox) {
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}, {0.09, 0.01, 0.01}});
+  const auto grid = k2_grid(occ);
+  EXPECT_EQ(osk::tracked_box_cover(grid, translate(0.02, 0.01, 0.01), {0.03, 0.02, 0.02}), 2U);
+  EXPECT_EQ(osk::tracked_box_cover(grid, translate(0.02, 0.01, 0.01), {0.005, 0.005, 0.005}), 0U);
+  EXPECT_EQ(osk::tracked_box_cover(grid, translate(0.06, 0.01, 0.01), {0.04, 0.02, 0.02}), 2U);
+  // Rotated 45° about z: the 0.03 cell's centre leaves a thin box along y=x.
+  const osk::Transform rot = osk::transform_from_xyz_rpy(0.01, 0.01, 0.01, 0, 0, kPi / 4);
+  EXPECT_EQ(osk::tracked_box_cover(grid, rot, {0.012, 0.005, 0.005}), 1U);
+  EXPECT_EQ(osk::tracked_box_cover(grid, translate(0.02, 0.01, 0.01), {0.0, 0.02, 0.02}), 0U);
+  osk::VoxelGrid none;
+  EXPECT_EQ(osk::tracked_box_cover(none, translate(0.02, 0.01, 0.01), {0.03, 0.02, 0.02}), 0U);
+}
+
+TEST(TrackedGraspCover, TheThresholdIsHalfTheVisibleCellsAndAtLeastTwo) {
+  EXPECT_FALSE(osk::tracked_cover_sufficient(1, 0));
+  EXPECT_TRUE(osk::tracked_cover_sufficient(2, 0));
+  EXPECT_TRUE(osk::tracked_cover_sufficient(2, 4));
+  EXPECT_FALSE(osk::tracked_cover_sufficient(2, 5)) << "ceil(2.5) = 3";
+  EXPECT_TRUE(osk::tracked_cover_sufficient(3, 5));
+  EXPECT_FALSE(osk::tracked_cover_sufficient(49, 100));
+  EXPECT_TRUE(osk::tracked_cover_sufficient(50, 100));
+}
+
+TEST(TrackedGraspExemption, TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes) {
+  // trips_with ⊆ trips_without, and every removed pair is (a finger of hand h,
+  // a cell centred in h's selected box) — the K2 property against the
+  // no-exemption baseline. Randomised finger poses, boxes and occupancy; fixed
+  // seed. Stage 1 only (no hulls), so trip_set enumerates exactly.
+  std::mt19937 rng(20261016U);
+  std::uniform_real_distribution<double> pos(-0.12, 0.12);
+  std::uniform_real_distribution<double> half(0.01, 0.06);
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  std::uniform_int_distribution<int> n_boxes(0, 4);
+  std::bernoulli_distribution occupied(0.1);
+  const osk::CollisionModel m = k2_model();
+  int trials_with_difference = 0;
+  for (int trial = 0; trial < 200; ++trial) {
+    osk::CollisionScratch s = k2_scratch();
+    for (int l = 1; l <= 5; ++l) {
+      s.link_world[static_cast<std::size_t>(l)] = osk::transform_from_xyz_rpy(
+          pos(rng), pos(rng), pos(rng), kPi * unit(rng), kPi * unit(rng), kPi * unit(rng));
+    }
+    std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+    for (auto& c : occ) {
+      c = occupied(rng) ? 1 : 0;
+    }
+    const osk::VoxelGrid grid = k2_grid(occ);
+    std::vector<std::array<double, 6>> boxes;
+    const int nb = n_boxes(rng);
+    for (int b = 0; b < nb; ++b) {
+      // Half the boxes around a finger, so selections really exempt.
+      const auto& f = s.link_world[static_cast<std::size_t>(b % 2 == 0 ? kK2LeftA : kK2Right)].t;
+      const bool near = b < 2;
+      boxes.push_back({near ? f.x + 0.01 * unit(rng) : pos(rng),
+                       near ? f.y + 0.01 * unit(rng) : pos(rng),
+                       near ? f.z + 0.01 * unit(rng) : pos(rng), half(rng), half(rng), half(rng)});
+    }
+    const auto t = k2_table(m, boxes);
+    osk::VoxelGrid with_grid = grid;
+    with_grid.tracked_grasp = &t;
+    const auto sel = k2_select(t, s);
+    const auto without = trip_set(m, s, occ, grid, kK2Margin);
+    const auto with = trip_set(m, s, occ, with_grid, kK2Margin);
+    for (const auto& pair : with) {
+      EXPECT_EQ(without.count(pair), 1U) << "trial " << trial << ": a NEW trip";
+    }
+    for (const auto& [link, cell] : without) {
+      bool exempt = false;
+      for (std::size_t h = 0; h < t.n_hands; ++h) {
+        if (t.hand_links[h][static_cast<std::size_t>(link)] && sel[h] >= 0) {
+          const auto& b = boxes[static_cast<std::size_t>(sel[h])];
+          const osk::Vec3 c = base_centre(grid, cell);
+          exempt = std::abs(c.x - b[0]) <= b[3] && std::abs(c.y - b[1]) <= b[4] &&
+                   std::abs(c.z - b[2]) <= b[5];
+        }
+      }
+      EXPECT_EQ(with.count({link, cell}), exempt ? 0U : 1U)
+          << "trial " << trial << " link " << link << " cell " << cell;
+    }
+    if (with.size() != without.size()) {
+      ++trials_with_difference;
+    }
+    const auto full_without = osk::check_voxel_collision(m, s, grid, kK2Margin);
+    const auto full_with = osk::check_voxel_collision(m, s, with_grid, kK2Margin);
+    if (full_with.hit) {
+      EXPECT_TRUE(full_without.hit) << "trial " << trial << ": a NEW stop";
+      EXPECT_EQ(with.count({full_with.link_a, full_with.link_b}), 1U)
+          << "trial " << trial << ": the evidence names an exempt pair";
+    }
+  }
+  EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
+}

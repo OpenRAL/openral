@@ -1219,6 +1219,37 @@ def _locator_cameras(
     return cameras, infos or [""]
 
 
+def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: bool) -> bool:
+    """The kernel's ``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
+
+    It selects the SOURCE of the grasp-target exemption, never disables a check:
+    ``off`` / ``shadow`` / ``bind`` keep the producer-measured region; ``on`` replaces
+    it with the kernel's per-hand nearest eligible tracked object (the HAL's grasp
+    target leg stands down in ``bind`` / ``on``). ``on`` without the grasp exemption
+    itself is refused here, as the kernel would refuse it at configure. ``on`` is
+    already sim-only (``_object_tracking``).
+
+    Example:
+        >>> _tracked_grasp_exemption("on", grasp_allowance_enabled=True)
+        True
+        >>> _tracked_grasp_exemption("bind", grasp_allowance_enabled=False)
+        False
+
+    Raises:
+        ROSConfigError: ``on`` without ``grasp_allowance_enabled``.
+    """
+    if object_tracking != "on":
+        return False
+    if not grasp_allowance_enabled:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "object_tracking='on' replaces the grasp-target exemption's source with the "
+            "tracked objects (issue #418 K2) and needs grasp_allowance_enabled:=true."
+        )
+    return True
+
+
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
     """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
 
@@ -2407,6 +2438,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             "grasp-target exemption with no producer measuring its region."
         )
     kernel_params["grasp_allowance_enabled"] = grasp_allowance_enabled
+    # Issue #418 K2: `object_tracking: on` makes the tracked objects the grasp
+    # exemption's source (the kernel refuses it off sim or without the exemption).
+    kernel_params["tracked_grasp_exemption_enabled"] = _tracked_grasp_exemption(
+        object_tracking, grasp_allowance_enabled=grasp_allowance_enabled
+    )
     # How old a producer-measured grasp/place region may be and still exempt anything. The
     # regions are measured off the voxel map, so the bound is derived from that map's own
     # freshness deadline: twice it (the kernel's own default, passed explicitly so the
