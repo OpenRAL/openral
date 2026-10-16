@@ -166,31 +166,48 @@ def grasp_trigger_state(state: JointState, sim_time_ns: int | None) -> JointStat
     return state.model_copy(update={"stamp_ns": int(sim_time_ns)})
 
 
-def urdf_named_joint_state(msg: Any, urdf_names: Sequence[str]) -> Any:  # noqa: ANN401  # reason: sensor_msgs/JointState is imported only on the ROS path
-    """A copy of a manifest-named ``JointState`` under the URDF's joint names.
+def urdf_named_joint_state(
+    msg: Any,  # noqa: ANN401  # reason: sensor_msgs/JointState is imported only on the ROS path
+    urdf_names: Sequence[str],
+    scales: Sequence[float] = (),
+    offsets: Sequence[float] = (),
+) -> Any:  # noqa: ANN401  # reason: as above
+    """A copy of a manifest-named ``JointState`` under the URDF's joint names and units.
 
-    ``urdf_names`` is parallel to the manifest joints (``resolver.urdf_joint_names``);
-    a joint the URDF does not declare (``""``) is left out, and a message whose
-    names are not the manifest's in order is renamed by position only where the
-    lengths agree (the HAL always publishes all its joints, in manifest order).
+    ``urdf_names`` is parallel to the manifest joints (``resolver.urdf_joint_map``); a
+    joint the URDF does not declare (``""``) is left out, and a message whose names are
+    not the manifest's in order is renamed by position only where the lengths agree (the
+    HAL always publishes all its joints, in manifest order). ``scales`` / ``offsets``
+    (parallel too; empty = identity) put each position in its URDF joint's unit —
+    ``scale * q + offset``, the manifest's mimic map for a fraction-unit gripper — and
+    each velocity times ``scale``; effort is passed through. ``msg`` is not modified:
+    ``/joint_states`` keeps the manifest units every other consumer reads.
 
     Example:
         >>> from types import SimpleNamespace as NS
-        >>> m = NS(header=None, name=["a", "b"], position=[1.0, 2.0], velocity=[], effort=[])
-        >>> out = urdf_named_joint_state(m, ["robot_a", ""])
-        >>> out.name, list(out.position)
-        (['robot_a'], [1.0])
+        >>> m = NS(header=None, name=["a", "b"], position=[1.0, 0.5], velocity=[], effort=[])
+        >>> out = urdf_named_joint_state(m, ["robot_a", "jaw"], [1.0, 2.0], [0.0, 0.1])
+        >>> out.name, list(out.position), list(m.position)
+        (['robot_a', 'jaw'], [1.0, 1.1], [1.0, 0.5])
     """
     out = copy.copy(msg)
     keep = [i for i, name in enumerate(urdf_names) if name and i < len(msg.name)]
+    scale = list(scales) or [1.0] * len(urdf_names)
+    offset = list(offsets) or [0.0] * len(urdf_names)
 
-    def _pick(values: Sequence[float]) -> list[float]:
-        return [values[i] for i in keep] if len(values) == len(msg.name) else []
+    def _pick(values: Sequence[float], *, affine: bool, rate: bool = False) -> list[float]:
+        if len(values) != len(msg.name):
+            return []
+        if affine:
+            return [scale[i] * values[i] + offset[i] for i in keep]
+        if rate:
+            return [scale[i] * values[i] for i in keep]
+        return [values[i] for i in keep]
 
     out.name = [urdf_names[i] for i in keep]
-    out.position = _pick(msg.position)
-    out.velocity = _pick(msg.velocity)
-    out.effort = _pick(msg.effort)
+    out.position = _pick(msg.position, affine=True)
+    out.velocity = _pick(msg.velocity, affine=False, rate=True)
+    out.effort = _pick(msg.effort, affine=False)
     return out
 
 
@@ -664,7 +681,15 @@ if _ROS2_AVAILABLE:
             # which ``robot_state_publisher`` reads, so the moving links reach ``/tf``. The
             # one-empty-string default is "off" (an empty list has no ROS parameter type).
             self.declare_parameter("urdf_joint_names", [""])
+            # ... and in the URDF joints' units (``resolver.urdf_joint_map``): parallel
+            # scale / offset per manifest joint, the manifest's mimic map for a fraction-
+            # unit gripper (the SO-101 jaw: 1.74533 f rad). The one-zero default is
+            # "identity" (an empty list has no ROS parameter type).
+            self.declare_parameter("urdf_joint_scales", [0.0])
+            self.declare_parameter("urdf_joint_offsets", [0.0])
             self._urdf_joint_names: list[str] = []
+            self._urdf_joint_scales: list[float] = []
+            self._urdf_joint_offsets: list[float] = []
             self._urdf_joint_state_pub: Any = None
             # The rate joint states are read (and fed to the grasp trigger) at,
             # resolved on activate; ``None`` until then.
@@ -834,6 +859,18 @@ if _ROS2_AVAILABLE:
                     f"declares {len(self._hal.description.joints)} joints."
                 )
             self._urdf_joint_names = urdf_names
+            gp = self.get_parameter
+            scales = list(gp("urdf_joint_scales").get_parameter_value().double_array_value)
+            offsets = list(gp("urdf_joint_offsets").get_parameter_value().double_array_value)
+            if scales != [0.0] or offsets != [0.0]:
+                if not len(scales) == len(offsets) == len(urdf_names):
+                    from openral_core.exceptions import ROSConfigError
+
+                    raise ROSConfigError(
+                        f"urdf_joint_scales / urdf_joint_offsets have {len(scales)} / "
+                        f"{len(offsets)} entries; urdf_joint_names has {len(urdf_names)}."
+                    )
+                self._urdf_joint_scales, self._urdf_joint_offsets = scales, offsets
             self._urdf_joint_state_pub = self.create_publisher(msg_type, "~/urdf_joint_states", qos)
 
         @log_lifecycle_errors
@@ -1300,7 +1337,12 @@ if _ROS2_AVAILABLE:
                 self._joint_state_pub.publish(msg)
             if self._urdf_joint_state_pub is not None:
                 self._urdf_joint_state_pub.publish(
-                    urdf_named_joint_state(msg, self._urdf_joint_names)
+                    urdf_named_joint_state(
+                        msg,
+                        self._urdf_joint_names,
+                        self._urdf_joint_scales,
+                        self._urdf_joint_offsets,
+                    )
                 )
             if self._policy_state_pub is not None:
                 frame = self._proprio.latest() if self._proprio is not None else None

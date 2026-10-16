@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from dataclasses import dataclass
 from typing import Literal, cast
 
 from openral_core import RobotDescription, sim_scene_description
@@ -31,7 +32,13 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.protocol import HAL
 
-__all__ = ["build_hal", "hal_joint_states_topic", "urdf_joint_names"]
+__all__ = [
+    "UrdfJointMap",
+    "build_hal",
+    "hal_joint_states_topic",
+    "urdf_joint_map",
+    "urdf_joint_names",
+]
 
 HalMode = Literal["sim", "real"]
 
@@ -196,6 +203,80 @@ def hal_joint_states_topic(
     if all(hasattr(cls, m) for m in members):
         return f"/{hal_node_name}/joint_states"
     return None
+
+
+@dataclass(frozen=True)
+class UrdfJointMap:
+    """What ``robot_state_publisher`` is sent per manifest joint: name and URDF-unit value.
+
+    Parallel to ``RobotDescription.joints``: the URDF joint ``names[i]`` (``""`` = none)
+    is sent ``scales[i] * q_i + offsets[i]`` of manifest joint ``i``'s position — the
+    manifest's own kinematic map for a gripper whose channel is a fraction, so ``/tf``
+    poses the jaw where the kernel's collision model does (``urdf_joint_map``).
+    """
+
+    names: tuple[str, ...]
+    scales: tuple[float, ...]
+    offsets: tuple[float, ...]
+
+
+def urdf_joint_map(description: RobotDescription, urdf_xml: str) -> UrdfJointMap | None:
+    """The URDF joint and URDF-unit value each manifest joint's state drives, or ``None``.
+
+    Names as ``urdf_joint_names``. Units: a gripper channel is a fraction (``[0, 1]``),
+    not the URDF jaw's radians, and ``robot_state_publisher`` reads whatever it is sent
+    as the URDF joint's own unit — the SO-101 jaw was posed at ``f`` rad instead of
+    ``1.74533 f`` (21.5 deg off in the LeIsaac PickOrange deploy trial g19), the DROID
+    Robotiq's ``finger_joint`` at ``f`` instead of ``pi/4 (1 - f)``. So when a
+    ``mimic_joints`` row driven by manifest joint ``J`` poses the very link a URDF joint
+    ``U`` moves (``U``'s ``<child>``), and ``U`` is not itself a URDF ``<mimic>`` (whose
+    value ``robot_state_publisher`` derives from its leader), ``J``'s state is sent to
+    ``U`` as ``multiplier * q + offset`` — the manifest's map, the one the safety kernel
+    and the self-filter pose that link with. ``None`` when every joint maps to itself
+    with unit scale (``robot_state_publisher`` can read ``/joint_states`` as is).
+
+    Raises:
+        ROSConfigError: ``urdf_xml`` is not parseable XML.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> urdf = open("robots/so101_follower/so101_follower.urdf").read()
+        >>> m = urdf_joint_map(d, urdf)
+        >>> i = [j.name for j in d.joints].index("gripper")
+        >>> m.names[i], round(m.scales[i], 5), m.offsets[i]
+        ('gripper', 1.74533, 0.0)
+    """
+    import xml.etree.ElementTree as ET  # reason: stdlib, only on this launch-time path
+
+    try:
+        root = ET.fromstring(urdf_xml)  # the manifest's own URDF, not untrusted input
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"urdf_joint_map: the URDF does not parse: {exc}") from exc
+    # URDF joints robot_state_publisher takes a value for: moving, not a URDF <mimic>.
+    driven_by_child: dict[str, str] = {}
+    for joint in root.iter("joint"):
+        child = joint.find("child")
+        if joint.get("type") == "fixed" or child is None or joint.find("mimic") is not None:
+            continue
+        driven_by_child[str(child.get("link"))] = str(joint.get("name"))
+    names = list(urdf_joint_names(description, urdf_xml) or [j.name for j in description.joints])
+    scales = [1.0] * len(names)
+    offsets = [0.0] * len(names)
+    index = {j.name: i for i, j in enumerate(description.joints)}
+    for mimic in description.mimic_joints:
+        urdf_joint = driven_by_child.get(mimic.child_link)
+        leader = index.get(mimic.mimics)
+        if urdf_joint is None or leader is None:
+            continue
+        names[leader] = urdf_joint
+        scales[leader] = float(mimic.multiplier)
+        offsets[leader] = float(mimic.offset)
+    if names == [j.name for j in description.joints] and all(
+        s == 1.0 and o == 0.0 for s, o in zip(scales, offsets, strict=True)
+    ):
+        return None
+    return UrdfJointMap(tuple(names), tuple(scales), tuple(offsets))
 
 
 def urdf_joint_names(description: RobotDescription, urdf_xml: str) -> list[str]:

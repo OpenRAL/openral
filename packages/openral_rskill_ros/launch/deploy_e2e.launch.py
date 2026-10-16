@@ -2572,19 +2572,32 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 f"world_voxel_margin_m + octomap resolution ({clear_floor_m}): a released "
                 "payload's record would drop while the kernel still measures it inside its margin."
             )
-    # Sim twin: the HAL publishes joint states under the manifest's logical names; a URDF
-    # that names its joints differently (the OpenArm's vendored one) gets a renamed copy
-    # on `~/urdf_joint_states` for robot_state_publisher, or no moving link reaches /tf
-    # (`openral_hal.resolver.urdf_joint_names`). Real: the vendor broadcaster's own names.
+    # Sim twin: the HAL publishes joint states under the manifest's logical names and units
+    # (what the kernel, the grasp trigger and the runner read); a URDF that names its joints
+    # differently (the OpenArm's vendored one) or takes a gripper in other units (the SO-101
+    # jaw, the Robotiq finger_joint) gets a renamed, re-unit copy on `~/urdf_joint_states`
+    # that robot_state_publisher alone reads (`openral_hal.resolver.urdf_joint_map`), or no
+    # moving link reaches /tf, or the jaw sits at the wrong angle. Real: the vendor
+    # broadcaster's own names and units.
     rsp_urdf_joint_names: list[str] = []
+    rsp_urdf_joint_units: dict[str, list[float]] = {}
     if hal_mode == "sim" and description.assets.urdf is not None:
         _rsp_urdf = _resolve_urdf_path(description.assets.urdf.ref, pathlib.Path(robot_yaml).parent)
         if _rsp_urdf is not None:
-            from openral_hal.resolver import urdf_joint_names
+            from openral_hal.resolver import urdf_joint_map
 
-            rsp_urdf_joint_names = urdf_joint_names(
+            # Names and units (`urdf_joint_map`): a fraction-unit gripper goes to its URDF
+            # jaw joint through the manifest's mimic map, so /tf poses the jaw where the
+            # kernel's collision model does (the SO-101's was 21.5 deg off, PickOrange g19).
+            _rsp_map = urdf_joint_map(
                 description, pathlib.Path(_rsp_urdf).read_text(encoding="utf-8")
             )
+            if _rsp_map is not None:
+                rsp_urdf_joint_names = list(_rsp_map.names)
+                rsp_urdf_joint_units = {
+                    "urdf_joint_scales": list(_rsp_map.scales),
+                    "urdf_joint_offsets": list(_rsp_map.offsets),
+                }
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,
@@ -2596,7 +2609,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # stamps sim-time, coherent with the HAL's /clock publisher.
         parameters=[
             *hal_derived_params,
-            *([{"urdf_joint_names": rsp_urdf_joint_names}] if rsp_urdf_joint_names else []),
+            *(
+                [{"urdf_joint_names": rsp_urdf_joint_names, **rsp_urdf_joint_units}]
+                if rsp_urdf_joint_names
+                else []
+            ),
             hal_params_file,
             {"use_sim_time": use_sim_time},
         ],
