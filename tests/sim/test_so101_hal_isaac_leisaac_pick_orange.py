@@ -107,7 +107,7 @@ def _write_video() -> None:
         return
     import imageio.v2 as imageio
 
-    imageio.mimwrite(path, list(np.stack(_FRAMES)), fps=30)
+    imageio.mimwrite(path, list(np.stack(_FRAMES)), fps=60)
     print(f"front camera video: {path}")
 
 
