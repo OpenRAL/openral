@@ -249,10 +249,11 @@ class Sam2Segmenter:
         width: int,
         height: int,
         *,
-        positive_points: Sequence[tuple[float, float]],
+        positive_points: Sequence[tuple[float, float]] = (),
         negative_points: Sequence[tuple[float, float]] = (),
+        box_xyxy: tuple[float, float, float, float] | None = None,
     ) -> list[MaskCandidate]:
-        """Segment the object under the prompt points in one BGR frame.
+        """Segment the object under the prompt points (and/or box) in one BGR frame.
 
         Candidates are returned ordered by **area ascending** — a deterministic,
         purely geometric ordering over SAM 2's nested subpart/part/whole
@@ -273,6 +274,9 @@ class Sam2Segmenter:
                 normally the single TF-projected TCP.
             negative_points: ``(u, v)`` pixel prompts to exclude, normally the
                 jaw tips, which keep the mask off the gripper fingers.
+            box_xyxy: Optional detector box prompt ``(x_min, y_min, x_max, y_max)`` in
+                pixels (issue #418), alongside any points; with it no positive point
+                is needed.
 
         Returns:
             Surviving ``MaskCandidate`` s, area ascending. Empty when the
@@ -280,15 +284,19 @@ class Sam2Segmenter:
             clears ``min_mask_area_px``.
 
         Raises:
-            ROSConfigError: If no positive point is given, or the total prompt
-                exceeds ``max_prompt_points``.
+            ROSConfigError: If neither a positive point nor a box is given, the box is
+                degenerate, or the total prompt exceeds ``max_prompt_points``.
             ROSRuntimeError: If torch / transformers are not installed.
         """
         import numpy as np  # noqa: PLC0415 — lazy: keep numpy off the import path
         from PIL import Image  # noqa: PLC0415
 
-        if not positive_points:
-            raise ROSConfigError("Sam2Segmenter.segment requires at least one positive point")
+        if not positive_points and box_xyxy is None:
+            raise ROSConfigError(
+                "Sam2Segmenter.segment requires at least one positive point or a box"
+            )
+        if box_xyxy is not None and not (box_xyxy[0] < box_xyxy[2] and box_xyxy[1] < box_xyxy[3]):
+            raise ROSConfigError(f"Sam2Segmenter.segment got a degenerate box {box_xyxy}")
         total = len(positive_points) + len(negative_points)
         if total > self._max_prompt_points:
             raise ROSConfigError(
@@ -309,12 +317,12 @@ class Sam2Segmenter:
         points += [[float(u), float(v)] for u, v in negative_points]
         labels += [0] * len(negative_points)
 
-        inputs = self._processor(
-            images=image,
-            input_points=[[points]],
-            input_labels=[[labels]],
-            return_tensors="pt",
-        ).to(self._device)
+        prompts: dict[str, Any] = {}
+        if points:
+            prompts.update(input_points=[[points]], input_labels=[[labels]])
+        if box_xyxy is not None:
+            prompts["input_boxes"] = [[[float(c) for c in box_xyxy]]]
+        inputs = self._processor(images=image, return_tensors="pt", **prompts).to(self._device)
         with self._torch.no_grad():
             outputs = self._model(**inputs, multimask_output=self._multimask)
         masks = self._processor.post_process_masks(outputs.pred_masks, inputs["original_sizes"])[0]

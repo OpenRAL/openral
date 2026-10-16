@@ -294,6 +294,28 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
         assert off_frame.masks == []
         assert off_frame.failure_reason.startswith("ROSConfigError:")
 
+        # ── a detector box prompt (issue #418) ────────────────────────────────
+        # The clean path's tightest mask, boxed and padded by 10 px: the tracker's
+        # LocateInView box. With it the TCP point is optional — the off-frame one
+        # above is dropped instead of refusing the call.
+        held = np.frombuffer(bytes(response.masks[0].data), dtype=np.uint8).reshape(height, width)
+        rows, cols = np.nonzero(held)
+        box = (
+            max(float(cols.min()) - 10.0, 0.0),
+            max(float(rows.min()) - 10.0, 0.0),
+            min(float(cols.max()) + 10.0, width - 1.0),
+            min(float(rows.max()) + 10.0, height - 1.0),
+        )
+        request.box_valid = True
+        request.box_xyxy = list(box)
+        boxed = _call(request)
+        assert boxed.ok is True, boxed.failure_reason
+        tightest = np.frombuffer(bytes(boxed.masks[0].data), dtype=np.uint8)
+        ys, xs = np.nonzero(tightest.reshape(height, width))
+        inside = (xs >= box[0]) & (xs <= box[2]) & (ys >= box[1]) & (ys <= box[3])
+        assert inside.mean() > 0.9, "a box prompt masks what is inside the box"
+        request.box_valid = False
+
         # ── a deactivated node ────────────────────────────────────────────────
         assert node.trigger_deactivate() == TransitionCallbackReturn.SUCCESS
         request.tcp_point = Point(x=0.0, y=0.05, z=0.06)
