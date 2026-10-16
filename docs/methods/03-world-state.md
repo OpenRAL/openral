@@ -242,6 +242,24 @@ _Issue #418 WP C2, design "Release". Source-clock stamps only._
 - `fall_column(track, cell_m) -> PlaceRegion` (L150) — The release box down to its support, horizontal gate one cell + the release height (45° cone; no bounce model).
 - `reassociate_released(store, fit, *, fit_kind, support_z, support_ref, visible_cells, occupied_cells, cell_m, stamp_ns) -> TrackedObject | None` (L203) — A map-confirmed fit whose centre lies in exactly one RELEASED track's fall column returns it CONFIRMED, same id, `epoch + 1`, `identity_inferred`, on the new support; two columns is ambiguous (logged), none a new object.
 
+### `python/world_state/src/openral_world_state/object_tracker/session.py`
+_Issue #418 WP D1. `TrackerSession` — the ROS-free glue the object-tracker lifecycle node drives: goals from the declarations, the grounding wait, binding/release at grasp events and the jaw-open rule. All stamps source time. A RELEASED track's return (same id, `epoch + 1`) is the tracker core's own association + confirmation; `release.reassociate_released` is not called twice. Logs `object_tracker.goal_closed` / `grounding_ready` / `grounding_incomplete` (error level under `grounding_required`) / `reground_queued` / `jaw_open_release` / `ambiguous_pruned` / `grasp_event_unposed`._
+
+- `class TrackingMode(StrEnum)` (L73) — `shadow`, `bind`, `on` (`DeployRuntime.object_tracking`; `off` never starts the node).
+- `class GraspEventKind(StrEnum)` (L81) — `attach`, `regrasp`, `detach` (`openral_msgs/GraspEvent.kind`).
+- `declaration_key(target_id, stamp_ns) -> str` (L104) — The kernel's `"<target_id>@<stamp_ns>"`.
+- `class TrackerSession(description, *, cell_m, grounding_wait_s, grounding_required=False, release_dwell_s=0.3, params=None, require_hands=False)` (L114) — One `ObjectTracker` in the manifest's `base_frame` and one `GraspBinder` per gripper joint (`require_hands`: a gripper the binder cannot model is a `ROSConfigError`, else logged and skipped).
+  - `now_ns` (property) (L182) — The newest source stamp seen.
+  - `on_grid(grid, source_stamp_ns) -> None` (L189) — Keep the newest grid in the tracks' frame (another frame: logged, ignored).
+  - `on_joint_state(positions, stamp_ns) -> None` (L198) — Manifest-named joints; a hand's `JawReleaseMonitor` firing releases it.
+  - `on_grasp_declaration(decl) -> None` (L208) — Opens one standing query per `target_queries` entry under goal `grasp:<key>` (key = `declaration_key`), re-keys the live tracks the queries match (label + role) to it; a retraction or a new key closes the old goal.
+  - `on_place_declaration(decl) -> None` (L213) — The same for `destination_query` (goal `place:<key>`).
+  - `on_grasp_event(kind, gripper_joint, *, jaw, hold, stamp_ns) -> Binding | None` (L219) — ATTACH binds at the measured jaw (a second ATTACH releases the first hold), arms the jaw-open monitor at `hold`, re-opens the live grasp goal's queries on an untracked grasp; REGRASP grows; DETACH releases (`release_track` at `FK(q)·pose_in_link`, support = the highest occupied cell top under the body, else the track's old support). `None` when the hand is unknown or the joints are unposed.
+  - `on_frame(frame, *, wall_s, results=()) -> TrackerOutput` (L252) — `ObjectTracker.feed` with the newest grid and the hands' spaces; each bound fit triggers `grow_by_protrusion`; an ambiguous union drops every candidate re-fitted after the ATTACH whose box no longer meets the pinch volume (`geometry_revision + 1`); grounding logged once per goal.
+  - `snapshot() -> TrackedObjectSet` (L273) — The table at the newest source stamp.
+  - `attachments() -> list[AttachedCollisionObject]` (L277) — Every hand's held payload.
+  - `hand_spaces() -> list[PlaceRegion]` (L281) — The hands' collision boxes at the measured configuration (empty while unposed).
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
 _C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
 

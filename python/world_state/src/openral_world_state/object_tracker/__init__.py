@@ -34,6 +34,7 @@ from openral_world_state.object_tracker.fit import (
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
 from openral_world_state.object_tracker.scheduler import Scheduler, TrackerRequest
+from openral_world_state.object_tracker.session import GraspEventKind, TrackerSession, TrackingMode
 from openral_world_state.object_tracker.tracker import (
     CameraFrame,
     ObjectTracker,
@@ -50,6 +51,7 @@ __all__ = [
     "ContainingFit",
     "CoverVerdict",
     "FitParams",
+    "GraspEventKind",
     "ObjectTracker",
     "QueryBook",
     "QueryEscalation",
@@ -60,6 +62,8 @@ __all__ = [
     "TrackerParams",
     "TrackerRequest",
     "TrackerResult",
+    "TrackerSession",
+    "TrackingMode",
     "age_tracks",
     "associate",
     "containing_fit",
