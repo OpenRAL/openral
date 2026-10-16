@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (50)
+## Topics (51)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -55,6 +55,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/safe_action` | `openral_msgs/ActionChunk` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) |
 | `/openral/safety_status` | `openral_msgs/SafetyStatus` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `safety_status_topic`]<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start) |
 | `/openral/skill_registry_changed` | `std_msgs/Empty` | tools/wait_for_action_and_signal_palette.py (main) [param `--signal-topic`] | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| `/openral/tracked_objects` | `openral_msgs/TrackedObjectSet` | — | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `tracked_objects_topic`] |
 | `/openral/visual_slam/odometry` | `nav_msgs/Odometry` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode.__init__) [param `odometry_topic`] | — |
 | `/openral/viz/attachments` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
 | `/openral/viz/collisions` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |

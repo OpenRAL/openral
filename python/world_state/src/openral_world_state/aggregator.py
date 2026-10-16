@@ -65,6 +65,7 @@ from openral_core.schemas import (
     Pose6D,
     RobotDescription,
     SensorFrame,
+    TrackedObjectSet,
     WorldState,
 )
 from openral_observability import metrics as ral_metrics
@@ -102,6 +103,9 @@ DEFAULT_STALENESS_S: float = 0.5
 # normal stepping with margin while still flagging a wedged sidecar in
 # seconds rather than its 120 s ZMQ timeout.
 DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0
+# The object tracker heartbeats `/openral/tracked_objects` at >= 2 Hz (issue #418): three
+# missed beats and the relayed set goes invalid. *Calibration point.*
+DEFAULT_TRACKED_OBJECTS_STALE_S: float = 1.5
 
 
 class WorldStateAggregator:
@@ -128,6 +132,9 @@ class WorldStateAggregator:
             to ``time.time_ns``. Override in tests. Stamps arrivals/staleness
             only — place-declaration liveness uses the attachment stream's own
             clock (see ``update_attached_objects``), never this one.
+        tracked_objects_stale_s: Age (on ``clock_fn``) past which the object tracker's
+            last set is dropped from the snapshot. Default ``1.5 s`` —
+            ``DEFAULT_TRACKED_OBJECTS_STALE_S``.
 
     Example:
         >>> from openral_core.schemas import JointState
@@ -172,6 +179,7 @@ class WorldStateAggregator:
         image_staleness_limit_s: float | None = None,
         policy_state_staleness_limit_s: float = DEFAULT_POLICY_STATE_STALENESS_S,
         clock_fn: Callable[[], int] | None = None,
+        tracked_objects_stale_s: float = DEFAULT_TRACKED_OBJECTS_STALE_S,
     ) -> None:
         """Initialise the aggregator; does not open any connection."""
         self.description = description
@@ -183,6 +191,10 @@ class WorldStateAggregator:
         self._policy_state_staleness_limit_ns: int = int(policy_state_staleness_limit_s * 1e9)
         self._clock_fn: Callable[[], int] = clock_fn or time.time_ns
         self._lock = threading.RLock()
+        self._tracked_stale_ns: int = int(tracked_objects_stale_s * 1e9)
+        # The Layer-2 tracker's newest set (issue #418) and its arrival on `_clock_fn`.
+        self._tracked_objects: TrackedObjectSet | None = None
+        self._tracked_objects_rx_ns: int = 0
 
         # ── Tracked state (all protected by _lock) ────────────────────────
         self._joint_state: JointState | None = None
@@ -479,6 +491,27 @@ class WorldStateAggregator:
                 grasp_region=live_grasp is not None and live_grasp.region is not None,
             )
 
+    def update_tracked_objects(self, tracked: TrackedObjectSet) -> None:
+        """Store the object tracker's newest ``TrackedObjectSet`` (issue #418).
+
+        Relayed verbatim on the fast stream; the kernel judges frame, caps, revision and
+        stamp. A set not refreshed within ``tracked_objects_stale_s`` (arrival time on the
+        aggregator's clock; the tracker heartbeats at >= 2 Hz) is dropped from the
+        snapshot, i.e. ``tracked_objects_valid`` false: no tracker publishing.
+
+        Args:
+            tracked: The tracker's whole set.
+        """
+        with self._lock:
+            self._tracked_objects = tracked
+            self._tracked_objects_rx_ns = self._clock_fn()
+
+    def _live_tracked(self, now_ns: int) -> TrackedObjectSet | None:
+        """The tracker's set, or ``None`` once stale: never an old set as a live one."""
+        if now_ns - self._tracked_objects_rx_ns > self._tracked_stale_ns:
+            return None
+        return self._tracked_objects
+
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
 
@@ -641,6 +674,7 @@ class WorldStateAggregator:
                 grasp_declaration=self._grasp_declaration,
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
+                tracked_objects=self._live_tracked(now_ns),
             )
 
     def _emit_snapshot_telemetry(

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         ObjectsMetadata,
         PlaceDeclaration,
         SensorSpec,
+        TrackedObjectSet,
         WorldState,
     )
     from openral_msgs.msg import OccupancyVoxels
@@ -164,6 +165,8 @@ if _ROS2_AVAILABLE:
             # `left_wrist`, `right_wrist`).
             self.declare_parameter("camera_names", [""])
             self.declare_parameter("attachment_state_topic", "/openral/attachment_state")
+            # The Layer-2 object tracker's set (issue #418), relayed on world_state_fast.
+            self.declare_parameter("tracked_objects_topic", "/openral/tracked_objects")
             # Cameras the co-located sensor leg writes directly (zero-copy NVMM
             # handles intact); ``_on_image`` keeps their thumbnail span but must
             # not double-write the aggregator.
@@ -193,6 +196,7 @@ if _ROS2_AVAILABLE:
             self._joint_sub = None
             self._policy_state_sub = None
             self._attachment_sub = None
+            self._tracked_sub = None
             self._camera_subs: dict[str, object] = {}
             self._slow_divider = 1
             self._tick_count = 0
@@ -327,6 +331,20 @@ if _ROS2_AVAILABLE:
                 attachment_topic,
                 self._on_attachment_state,
                 attachment_qos,
+            )
+            from openral_msgs.msg import TrackedObjectSet as TrackedObjectSetMsg
+
+            # Issue #418 topic table: RELIABLE, VOLATILE, KEEP_LAST 1 (the tracker
+            # heartbeats it at >= 2 Hz; the aggregator drops a set that stops arriving).
+            self._tracked_sub = self.create_subscription(
+                TrackedObjectSetMsg,
+                self.get_parameter("tracked_objects_topic").get_parameter_value().string_value,
+                self._on_tracked_objects,
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
             )
 
             # Per-camera subs on `camera_topic(name)`. BEST_EFFORT (CLAUDE.md
@@ -526,6 +544,9 @@ if _ROS2_AVAILABLE:
             if self._attachment_sub is not None:
                 self.destroy_subscription(self._attachment_sub)
                 self._attachment_sub = None
+            if self._tracked_sub is not None:
+                self.destroy_subscription(self._tracked_sub)
+                self._tracked_sub = None
             for sub in self._camera_subs.values():
                 self.destroy_subscription(sub)
             self._camera_subs.clear()
@@ -705,6 +726,17 @@ if _ROS2_AVAILABLE:
                 )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
+
+        def _on_tracked_objects(self, msg: object) -> None:
+            """Validate and store the object tracker's newest set (issue #418)."""
+            if self._aggregator is None:
+                return
+            from openral_core.schemas import TrackedObjectSet
+
+            try:
+                self._aggregator.update_tracked_objects(TrackedObjectSet.from_idl(msg))
+            except (ValueError, TypeError) as exc:
+                self.get_logger().error(f"tracked objects rejected: {exc}")
 
         def _on_voxels(self, msg: object) -> None:  # OccupancyVoxels
             """Store the latest occupancy voxel grid (best-effort; cheap)."""
@@ -1079,7 +1111,17 @@ def world_state_from_idl(msg: object) -> WorldState:
         attachment_stamp_ns=int(msg.attachment_stamp_ns),  # type: ignore[attr-defined]
         place_declaration=_place_declaration_from_idl(msg),
         grasp_declaration=_grasp_declaration_from_idl(msg),
+        tracked_objects=_tracked_objects_from_idl(msg),
     )
+
+
+def _tracked_objects_from_idl(msg: object) -> TrackedObjectSet | None:
+    """Decode ``WorldStateStamped.tracked_objects``; ``None`` when not valid."""
+    from openral_core.schemas import TrackedObjectSet
+
+    if not bool(getattr(msg, "tracked_objects_valid", False)):
+        return None
+    return TrackedObjectSet.from_idl(msg.tracked_objects)  # type: ignore[attr-defined]
 
 
 def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
@@ -1191,6 +1233,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     _fill_attached_objects(msg, world_state)
     _fill_place_declaration(msg, world_state)
     _fill_grasp_declaration(msg, world_state)
+    _fill_tracked_objects(msg, world_state)
 
     return msg
 
@@ -1372,6 +1415,27 @@ def _fill_grasp_declaration(msg: object, world_state: object) -> None:
         declaration.fill_idl(
             msg.grasp_declaration,  # type: ignore[attr-defined]
             query_factory=ObjectQuery,
+        )
+
+
+def _fill_tracked_objects(msg: object, world_state: object) -> None:
+    """Relay the object tracker's set to the kernel and the voxel bridge (issue #418).
+
+    Beside ``_fill_attached_objects``: an absent or stale set publishes
+    ``tracked_objects_valid=False`` (no tracker), never a leftover.
+    """
+    from openral_msgs.msg import (  # reason: ROS import at call time
+        AttachedCollisionPrimitive as RosAttachedCollisionPrimitive,
+    )
+    from openral_msgs.msg import TrackedObject as RosTrackedObject
+
+    tracked = getattr(world_state, "tracked_objects", None)
+    msg.tracked_objects_valid = tracked is not None  # type: ignore[attr-defined]
+    if tracked is not None:
+        tracked.fill_idl(
+            msg.tracked_objects,  # type: ignore[attr-defined]
+            object_factory=RosTrackedObject,
+            primitive_factory=RosAttachedCollisionPrimitive,
         )
 
 

@@ -381,6 +381,51 @@ def test_a_grasp_declaration_with_target_queries_relays_them() -> None:
         rclpy.shutdown()
 
 
+def test_tracked_objects_relay_into_world_state_fast_and_go_invalid_when_stale() -> None:
+    # Issue #418: /openral/tracked_objects -> node callback -> aggregator -> the fast
+    # stream's tracked_objects (valid), and invalid once the tracker stops heartbeating.
+    import numpy as np
+    from openral_core import TrackedObjectSet
+    from openral_msgs.msg import AttachedCollisionPrimitive as RosPrimitive
+    from openral_msgs.msg import TrackedObject as RosTrackedObject
+    from openral_msgs.msg import TrackedObjectSet as RosTrackedObjectSet
+
+    from tests.unit._object_tracker_fixtures import track
+
+    now = [10_000_000_000]
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"), clock_fn=lambda: now[0]
+    )
+    tracked = TrackedObjectSet(
+        frame_id="base",
+        stamp_ns=7,
+        revision=1_760_000_000_000_000_042,
+        objects=[track("trk:1", "base", np.array([0.2, 0.0, 0.03]), (0.03, 0.03, 0.03))],
+    )
+    wire = RosTrackedObjectSet()
+    tracked.fill_idl(wire, object_factory=RosTrackedObject, primitive_factory=RosPrimitive)
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        assert (
+            build_world_state_stamped_msg(node, aggregator.snapshot()).tracked_objects_valid
+            is False
+        )
+        node._on_tracked_objects(wire)
+        msg = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert msg.tracked_objects_valid is True
+        assert msg.tracked_objects.revision == tracked.revision
+        assert world_state_from_idl(msg).tracked_objects == tracked
+        now[0] += 1_400_000_000  # inside the 1.5 s window
+        assert build_world_state_stamped_msg(node, aggregator.snapshot()).tracked_objects_valid
+        now[0] += 200_000_000  # past it: the kernel sees "no tracker"
+        stale = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert stale.tracked_objects_valid is False and not stale.tracked_objects.objects
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_support_contact_witness_round_trips_over_the_idl() -> None:
     # Wire half of ADR-0092 D6: an attachment attesting support contact must arrive at the
     # safety kernel with the attestation intact; one that doesn't must arrive with
