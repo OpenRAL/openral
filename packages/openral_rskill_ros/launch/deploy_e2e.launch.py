@@ -1355,6 +1355,23 @@ def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
     }
 
 
+def _portable_robot_description(urdf_xml: str) -> str:
+    """``urdf_xml`` with its ``rd:<module>:<relpath>`` meshes as ``file://`` URIs.
+
+    A vendored URDF names its meshes ``rd:`` (``openral_core.assets.expand_rd_mesh_refs``),
+    a scheme no ROS tool knows: ``foxglove_bridge``'s ``resource_retriever`` would
+    refuse every mesh. ``file://`` it serves. Left as is when a clone cannot be
+    fetched — a viz convenience must never take the graph down, so that is printed.
+    """
+    from openral_core.assets import AssetRefError, expand_rd_mesh_refs
+
+    try:
+        return expand_rd_mesh_refs(urdf_xml, prefix="file://")
+    except AssetRefError as exc:
+        print(f"[deploy_e2e] foxglove: rd: URDF meshes will not load: {exc!r}", flush=True)
+        return urdf_xml
+
+
 def _build_real_bringup_include(real_bringup: str | None) -> IncludeLaunchDescription | None:
     """Include the robot's vendor ros2_control bringup, if its manifest declares one.
 
@@ -3034,7 +3051,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
         if urdf_path is not None:
             with open(urdf_path, encoding="utf-8") as fh:
-                robot_description_xml = fh.read()
+                robot_description_xml = _portable_robot_description(fh.read())
             extra_nodes.append(
                 Node(
                     package="robot_state_publisher",

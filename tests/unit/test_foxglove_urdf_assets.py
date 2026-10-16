@@ -104,3 +104,34 @@ def test_the_deploy_launch_gives_the_bridge_the_overlay(overlay_cache: Path) -> 
     assert module._foxglove_asset_env(None) == {}
     text = LAUNCH.read_text(encoding="utf-8")
     assert "additional_env=_foxglove_asset_env(robot_description_xml)" in text
+
+
+def _load_launch(name: str) -> object:
+    for dep in ("launch", "launch_ros", "lifecycle_msgs", "openral_foxglove_bringup"):
+        pytest.importorskip(dep, reason=f"{dep} is a module-level import of the launch file")
+    spec = importlib.util.spec_from_file_location(name, LAUNCH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("robot", ["ur5e"])
+def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
+    """A vendored URDF's `rd:` meshes go on `/robot_description` as `file://` URIs."""
+    from openral_core.assets import AssetFetchError, expand_rd_mesh_refs
+
+    xml = (REPO_ROOT / "robots" / robot / f"{robot}.urdf").read_text(encoding="utf-8")
+    assert 'filename="rd:' in xml
+    try:
+        expand_rd_mesh_refs(xml)
+    except AssetFetchError as exc:
+        pytest.skip(f"robot_descriptions clone unavailable: {exc}")
+    module = _load_launch(f"deploy_e2e_launch_rd_{robot}")
+    out = module._portable_robot_description(xml)  # type: ignore[attr-defined]  # reason: launch module loaded by path
+    refs = re.findall(r'filename="([^"]+)"', out)
+    assert refs and all(r.startswith("file:///") for r in refs)
+    assert all(Path(r[len("file://") :]).is_file() for r in refs)
+    text = LAUNCH.read_text(encoding="utf-8")
+    assert "robot_description_xml = _portable_robot_description(fh.read())" in text
