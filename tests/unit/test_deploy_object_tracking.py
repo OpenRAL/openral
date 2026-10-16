@@ -148,3 +148,26 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
     assert f("on", grasp_allowance_enabled=True) is True
     with pytest.raises(ROSConfigError, match="grasp_allowance_enabled"):
         f("on", grasp_allowance_enabled=False)
+
+
+@pytest.mark.parametrize(
+    ("robot", "jaws"),
+    [("so101_follower", 1), ("droid_franka_robotiq", 1), ("openarm", 2)],
+)
+def test_bind_and_on_wire_the_kernels_jaw_open_release(
+    launch_module: object, robot: str, jaws: int
+) -> None:
+    """K5 runs in bind/on with the tracker's own gap and dwell; never in off/shadow."""
+    from openral_core import RobotDescription
+
+    f = launch_module._tracked_release_params  # type: ignore[attr-defined]
+    d = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
+    for mode in ("off", "shadow"):
+        assert f(d, mode) == {}
+    p = f(d, "bind")
+    assert len(p["tracked_release_jaw_joints"]) == jaws
+    assert set(p["tracked_release_jaw_open_sign"]) <= {1.0, -1.0}
+    cals = [j.closure_calibration for j in d.joints if j.name in p["tracked_release_jaw_joints"]]
+    assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals)
+    assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
+    assert f(d, "on") == p

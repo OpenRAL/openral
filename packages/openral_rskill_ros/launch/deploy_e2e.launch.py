@@ -1219,6 +1219,53 @@ def _locator_cameras(
     return cameras, infos or [""]
 
 
+#: The jaw-open release dwell (source seconds) the kernel (K5) and the tracker share.
+_TRACKED_RELEASE_DWELL_S = 0.3
+
+
+def _tracked_release_params(description: object, object_tracking: str) -> dict[str, object]:
+    """The kernel's K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
+
+    Every calibrated gripper joint (``role: gripper`` with a ``closure_calibration``), its
+    open direction (away from ``closed_position``, which is an end of its
+    ``position_limits``), the release gap the tracker's own monitor uses (half the
+    ``stall_gap``; the largest when hands differ, so the kernel never releases before
+    the tracker) and the shared dwell. Without it the kernel keeps a released payload
+    until the tracker's binding drops off the wire.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> p = _tracked_release_params(d, "bind")
+        >>> p["tracked_release_jaw_joints"], p["tracked_release_jaw_open_sign"]
+        (['gripper'], [1.0])
+        >>> _tracked_release_params(d, "shadow")
+        {}
+    """
+    if object_tracking not in ("bind", "on"):
+        return {}
+    jaws: list[str] = []
+    signs: list[float] = []
+    gaps: list[float] = []
+    for joint in getattr(description, "joints", []):
+        cal = getattr(joint, "closure_calibration", None)
+        if joint.role != "gripper" or cal is None or joint.position_limits is None:
+            continue
+        lo, hi = joint.position_limits
+        jaws.append(joint.name)
+        closed = float(cal.closed_position)
+        signs.append(1.0 if abs(closed - lo) <= abs(closed - hi) else -1.0)
+        gaps.append(float(cal.stall_gap) / 2.0)
+    if not jaws:
+        return {}
+    return {
+        "tracked_release_jaw_joints": jaws,
+        "tracked_release_jaw_open_sign": signs,
+        "tracked_release_gap": max(gaps),
+        "tracked_release_dwell_s": _TRACKED_RELEASE_DWELL_S,
+    }
+
+
 def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: bool) -> bool:
     """The kernel's ``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
 
@@ -2302,6 +2349,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
     kernel_params["tracked_release_timeout_s"] = tracked_release_timeout_s
+    kernel_params.update(_tracked_release_params(description, object_tracking))
     # The kernel refuses sim-only rules (workspace contact, #349) on anything but sim.
     kernel_params["hal_mode"] = hal_mode
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
@@ -4052,6 +4100,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     .lower()
                     in ("1", "true", "yes"),
                     "released_clear_timeout_s": tracked_release_timeout_s,
+                    "release_dwell_s": _TRACKED_RELEASE_DWELL_S,
                     "object_queries_json": object_queries_json,
                     # The first on-demand locator, if any; none = seeds and refreshes only.
                     "locate_service": (
