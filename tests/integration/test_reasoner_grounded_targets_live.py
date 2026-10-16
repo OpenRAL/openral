@@ -406,6 +406,26 @@ def test_with_object_tracking_an_ambiguous_target_dispatches_a_count_all_query()
     assert place.search_box_valid  # one shelf: the search-box path is unchanged
 
 
+def test_with_object_tracking_an_unseen_target_dispatches_standing_queries() -> None:
+    """Issue #418 Addendum G: nothing in view, tracking on — the goal still dispatches,
+    both declarations carry their ``count="one"`` query with no search box, and the
+    tracker keeps looking. Tracking off refuses it (``test_a_named_surface_...``)."""
+    from openral_core import ObjectQuery
+
+    received, _ = _run([], tracking="on")
+    assert len(received) == 1
+    grasp, place = received[0].grasp_declaration, received[0].place_declaration
+    assert received[0].grasp_declaration_valid and received[0].place_declaration_valid
+    assert not grasp.search_box_valid and not place.search_box_valid
+    assert [ObjectQuery.from_idl(q) for q in grasp.target_queries] == [
+        ObjectQuery(label="box", count="one", role="target", hand="left_gripper")
+    ]
+    assert place.destination_query_valid
+    assert ObjectQuery.from_idl(place.destination_query) == ObjectQuery(
+        label="shelf", count="one", role="destination"
+    )
+
+
 def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:
     received, last = _run([_box(-0.15)], contact_links=())
     assert received == [], "an unnamed gripper on a two-gripper robot must not be dispatched"
