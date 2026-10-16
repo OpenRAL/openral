@@ -120,6 +120,7 @@ from openral_reasoner.grounding import (
     gripper_hands,
     ground_grasp_target,
     ground_place_target,
+    hand_joint,
 )
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
@@ -172,11 +173,13 @@ try:  # pragma: no cover — gated by colcon-built artifact
     # "openral_msgs not on PYTHONPATH" when only this symbol moved.
     from openral_msgs.action import ExecuteRskill as IDLExecuteRskill
     from openral_msgs.msg import FailureTrigger as IDLFailureTrigger
+    from openral_msgs.msg import ObjectQuery as IDLObjectQuery
     from openral_msgs.msg import PromptStamped as IDLPromptStamped
     from openral_msgs.msg import WorldStateStamped as IDLWorldStateStamped
 except ImportError:  # pragma: no cover — only firing when openral_msgs absent
     IDLExecuteRskill = None
     IDLFailureTrigger = None
+    IDLObjectQuery = None
     IDLPromptStamped = None
     IDLWorldStateStamped = None
 
@@ -806,6 +809,10 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # the exemption.
         self.declare_parameter("grasp_target_voxel_m", 0.0)
         self.declare_parameter("grasp_target_extrinsic_error_m", MAX_PLANAR_ERR_M)
+        # Issue #418: the deploy's DeployRuntime.object_tracking (off | shadow | bind | on).
+        # Not "off": grounded declarations also carry ObjectQuery s for the Layer-2 tracker,
+        # and a label several live detections carry grounds (count "all") instead of refusing.
+        self.declare_parameter("object_tracking", "off")
         self._robot_description: RobotDescription | None = None
         # (dispatch generation, grasp declaration, place declaration) grounded for the goal
         # about to be sent; read once by ``_send_execute_rskill_goal``.
@@ -1427,6 +1434,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self._spatial_memory.to_scene_graph() if self._spatial_memory is not None else None
         )
         base_frame = self._robot_description.base_frame
+        tracking = (
+            self.get_parameter("object_tracking").get_parameter_value().string_value or "off"
+        ) != "off"
         if call.grasp_target is not None:
             grasp = ground_grasp_target(
                 call.grasp_target,
@@ -1436,7 +1446,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 default_contact_links=gripper_hands(self._robot_description),
                 patience_s=patience_s,
                 pad_m=pad_m,
+                object_tracking=tracking,
             )
+            if tracking:
+                hand = hand_joint(self._robot_description, grasp.contact_links)
+                grasp = grasp.model_copy(
+                    update={
+                        "target_queries": tuple(
+                            q.model_copy(update={"hand": hand}) for q in grasp.target_queries
+                        )
+                    }
+                )
         if call.place_target is not None:
             place = ground_place_target(
                 call.place_target,
@@ -1445,6 +1465,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 base_frame=base_frame,
                 patience_s=patience_s,
                 pad_m=pad_m,
+                object_tracking=tracking,
             )
         return grasp, place
 
@@ -4720,7 +4741,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             _, grasp, place = grounded
             if grasp is not None:
                 goal.grasp_declaration_valid = True
-                grasp.fill_idl(goal.grasp_declaration)
+                grasp.fill_idl(goal.grasp_declaration, query_factory=IDLObjectQuery)
                 targets += f" grasp={grasp.target_id}"
             if place is not None:
                 goal.place_declaration_valid = True

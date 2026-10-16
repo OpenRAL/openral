@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_cli import deploy_sim
@@ -3225,3 +3226,39 @@ def test_scene_gripper_convention_comes_from_the_scene_registry(scene: str, expe
     repo = Path(__file__).resolve().parents[2]
     assert _scene_gripper_convention(repo / "scenes" / "deploy" / f"{scene}.yaml") == expected
     assert _scene_gripper_convention(None) == ""
+
+
+def _tracking(scene: str, mode: str) -> Any:
+    from openral_core import DeployScene
+
+    deploy = DeployScene.from_yaml(
+        str(Path(__file__).resolve().parents[2] / "scenes/deploy" / scene)
+    )
+    assert deploy.runtime is not None
+    runtime = deploy.runtime.model_copy(update={"object_tracking": mode, "grounding_wait_s": 3.0})
+    return deploy.model_copy(update={"runtime": runtime})
+
+
+def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
+    """Issue #418: PickOrange's three oranges are one count-all class into the plate, the
+    DROID banana one into the bowl; tracking off or an ungraded prompt forwards nothing."""
+    import json
+
+    from openral_cli.deploy_sim import _object_queries_json
+
+    orange = _tracking("isaac_leisaac_pick_orange.yaml", "on")
+    assert json.loads(_object_queries_json(orange, "Grab orange and place into plate")) == [
+        {"label": "orange", "count": "all", "role": "target", "min_instances": 1},
+        {"label": "plate", "count": "one", "role": "destination", "min_instances": 1},
+    ]
+    banana = _tracking("isaac_arena_droid_banana_in_bowl.yaml", "shadow")
+    labels = [
+        (q["label"], q["count"])
+        for q in json.loads(
+            _object_queries_json(banana, "pick up the banana and place it in the bowl")
+        )
+    ]
+    assert labels == [("banana", "one"), ("bowl", "one")]
+    off = _tracking("isaac_leisaac_pick_orange.yaml", "off")
+    assert _object_queries_json(off, "Grab orange and place into plate") == ""
+    assert _object_queries_json(orange, "dance") == ""

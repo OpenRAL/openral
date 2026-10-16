@@ -70,6 +70,14 @@ telling the LLM to disambiguate (recall the object and pass its `node_id`, or
 look for it). Naming a target arms
 nothing: the runner strips any region, the HAL producers measure, and the
 kernel trusts only the measured region — its trust boundary is unchanged.
+
+With object tracking on (param `object_tracking`, the deploy's
+`DeployRuntime.object_tracking`, issue #418) the declarations also carry the
+named classes as `ObjectQuery`s for the Layer-2 object tracker
+(`GraspDeclaration.target_queries`, `PlaceDeclaration.destination_query`),
+beside the unchanged search box. A label several live detections carry is then
+not refused: it grounds as one `count="all"` query with no search box, and the
+tracker grounds every instance (the policy's choice is resolved at binding).
 Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
 2D answer is not lifted), and the lift must run in the robot base frame
 (`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,

@@ -43,8 +43,9 @@ _FINGERS = ("openarm_left_finger_pair", "openarm_right_finger_pair")
 def _scene_json(**update: Any) -> str:
     from openral_core import GraspDeclaration
 
+    fields: dict[str, Any] = {"contact_links": _FINGERS, **update}
     return GraspDeclaration(
-        target_id=_TARGET, contact_links=_FINGERS, timeout_s=70.0, stamp_ns=0, **update
+        target_id=_TARGET, timeout_s=70.0, stamp_ns=0, **fields
     ).model_dump_json()
 
 
@@ -61,7 +62,11 @@ def _measured_region() -> Any:
 
 @contextmanager
 def _harness(
-    grasp_declaration_json: str, *, skill_resolver: Any = None, approach: bool = False
+    grasp_declaration_json: str,
+    *,
+    skill_resolver: Any = None,
+    approach: bool = False,
+    params: dict[str, Any] | None = None,
 ) -> Iterator[tuple[Any, Any, list[Any]]]:
     """The place harness with the grasp parameter and topic instead."""
     import rclpy
@@ -79,6 +84,7 @@ def _harness(
             rclpy.parameter.Parameter("grasp_declaration_json", value=grasp_declaration_json),
             rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
             rclpy.parameter.Parameter("grasp_approach_enabled", value=approach),
+            *(rclpy.parameter.Parameter(k, value=v) for k, v in (params or {}).items()),
         ]
     )
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
@@ -309,3 +315,94 @@ def test_a_reasoner_grounded_goal_declaration_reaches_the_wire_with_its_search_b
     assert active[0].search_box.frame_id == "openarm_base"
     assert active[0].search_box.half_extents.x == pytest.approx(0.03 + 0.035)
     assert not seen[-1].active, "the goal ended without retracting its grasp declaration"
+
+
+# ── Object tracking (issue #418): standing queries ride the declaration ──
+
+#: What `deploy sim` derives for LeIsaac PickOrange ("Grab orange and place into plate").
+_PICK_ORANGE_QUERIES = (
+    '[{"label": "orange", "count": "all", "role": "target"},'
+    ' {"label": "plate", "count": "one", "role": "destination"}]'
+)
+
+
+def test_tracking_on_attaches_the_target_queries_with_the_hand_hint() -> None:
+    from openral_core import ObjectQuery, hand_joint
+
+    with _harness(
+        _scene_json(contact_links=("gripper_finger",)),
+        params={"object_tracking": "on", "object_queries_json": _PICK_ORANGE_QUERIES},
+    ) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+        hand = hand_joint(runtime.skill_runner_node._description, ["gripper_finger"])
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert hand is not None
+    assert [ObjectQuery.from_idl(q) for q in active[0].target_queries] == [
+        ObjectQuery(label="orange", count="all", role="target", hand=hand)
+    ], "the destination query rides the place declaration, never target_queries"
+    assert active[0].target_id == _TARGET  # the legacy fields are unchanged
+    assert not seen[-1].active
+
+
+def test_tracking_off_leaves_the_declaration_as_before() -> None:
+    with _harness(
+        _scene_json(),
+        params={"object_tracking": "off", "object_queries_json": _PICK_ORANGE_QUERIES},
+    ) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert list(active[0].target_queries) == []
+
+
+def test_a_reasoner_grounded_three_orange_goal_reaches_the_wire_as_one_count_all_query() -> None:
+    """Three oranges: with tracking the grounding does not refuse; the goal carries the
+    query and no search box, and the runner keeps the goal's own query."""
+    from openral_core import DetectedObject, GraspTargetRef, ObjectQuery, Pose6D
+    from openral_reasoner.grounding import ground_grasp_target
+
+    oranges = [
+        DetectedObject(
+            label="orange",
+            confidence=0.9,
+            pose=Pose6D(
+                xyz=(0.4, y, -0.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+            ),
+            bbox_3d=(0.37, y - 0.03, -0.13, 0.43, y + 0.03, -0.07),
+        )
+        for y in (-0.2, 0.0, 0.2)
+    ]
+    grounded = ground_grasp_target(
+        GraspTargetRef(label="orange", contact_links=[_FINGERS[0]]),
+        live_objects=oranges,
+        scene_graph=None,
+        base_frame="openarm_base",
+        default_contact_links=_FINGERS,
+        patience_s=0.4,
+        pad_m=0.035,
+        object_tracking=True,
+    )
+
+    def _fill(goal: Any) -> None:
+        from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+        goal.grasp_declaration_valid = True
+        grounded.fill_idl(goal.grasp_declaration, query_factory=ObjectQueryMsg)
+
+    with _harness(
+        "", params={"object_tracking": "on", "object_queries_json": _PICK_ORANGE_QUERIES}
+    ) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, fill_goal=_fill)
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].target_id == "obj:orange"
+    assert not active[0].search_box_valid
+    assert [ObjectQuery.from_idl(q) for q in active[0].target_queries] == [
+        ObjectQuery(label="orange", count="all", role="target")
+    ]
