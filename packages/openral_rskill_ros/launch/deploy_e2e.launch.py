@@ -1391,13 +1391,15 @@ def _portable_robot_description(urdf_xml: str) -> str:
 
     A vendored URDF names its meshes ``rd:`` (``openral_core.assets.expand_rd_mesh_refs``),
     a scheme no ROS tool knows: ``foxglove_bridge``'s ``resource_retriever`` would
-    refuse every mesh. ``file://`` it serves. Left as is when a clone cannot be
-    fetched — a viz convenience must never take the graph down, so that is printed.
+    refuse every mesh. ``file://`` it serves. Only clones already in the
+    ``robot_descriptions`` cache are read (``cached_only``): a launch never clones, so a
+    viz convenience can neither hang nor take the graph down. Left as is, and printed,
+    when a clone is not cached (any earlier use of the module on this host fills it).
     """
     from openral_core.assets import AssetRefError, expand_rd_mesh_refs
 
     try:
-        return expand_rd_mesh_refs(urdf_xml, prefix="file://")
+        return expand_rd_mesh_refs(urdf_xml, prefix="file://", cached_only=True)
     except AssetRefError as exc:
         print(f"[deploy_e2e] foxglove: rd: URDF meshes will not load: {exc!r}", flush=True)
         return urdf_xml

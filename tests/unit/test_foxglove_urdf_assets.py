@@ -20,6 +20,7 @@ import importlib.util
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,3 +136,24 @@ def test_rd_meshes_reach_the_bridge_as_file_uris(robot: str) -> None:
     assert all(Path(r[len("file://") :]).is_file() for r in refs)
     text = LAUNCH.read_text(encoding="utf-8")
     assert "robot_description_xml = _portable_robot_description(fh.read())" in text
+
+
+def test_the_launch_never_clones_an_uncached_rd_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`_portable_robot_description` reads only cached clones: with an empty
+    `robot_descriptions` cache the URDF is left as is, at once, and nothing is fetched (a
+    launch-time git clone had no timeout)."""
+    pytest.importorskip("robot_descriptions")
+    xml = (REPO_ROOT / "robots" / "ur5e" / "ur5e.urdf").read_text(encoding="utf-8")
+    assert 'filename="rd:ur5e_description:' in xml
+    monkeypatch.setenv("ROBOT_DESCRIPTIONS_CACHE", str(tmp_path / "rd_cache"))
+    monkeypatch.delitem(sys.modules, "robot_descriptions.ur5e_description", raising=False)
+    module = _load_launch("deploy_e2e_launch_rd_uncached")
+    started = time.monotonic()
+    assert module._portable_robot_description(xml) == xml  # type: ignore[attr-defined]  # reason: launch module loaded by path
+    assert time.monotonic() - started < 5.0
+    assert "rd: URDF meshes will not load" in capsys.readouterr().out
+    fetched = [p for p in (tmp_path / "rd_cache").rglob("*") if ".git" not in p.parts]
+    assert all(p.is_dir() for p in fetched), f"files were fetched: {fetched}"
+    assert os.environ.get("GIT_ALLOW_PROTOCOL") is None, "the git override leaked"
