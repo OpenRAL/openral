@@ -209,7 +209,7 @@ def test_producer_resolves_attach_and_touch_links_from_the_real_manifest() -> No
     """Attach link and touch links come from the manifest's gripper-role joints."""
     producer = VisionAttachmentEvidenceProducer(_robot())
     assert producer.attach_link == "gripper"
-    assert producer.touch_links == ("moving_jaw",)
+    assert producer.touch_links == ("moving_jaw", "jaw")
     assert producer.on_release() == []
 
 
@@ -264,7 +264,7 @@ def test_real_eraser_mask_produces_a_gated_vision_attachment() -> None:
 
     assert attachment.evidence_kind is AttachmentEvidenceKind.VISION_SEGMENTATION
     assert attachment.attach_link == "gripper"
-    assert attachment.touch_links == ["moving_jaw"]
+    assert attachment.touch_links == ["moving_jaw", "jaw"]
     assert 1 <= len(attachment.primitives) <= 16
     assert attachment.pose_in_link.frame_id == "gripper"
     assert all(p.pose_in_object.frame_id == "payload" for p in attachment.primitives)

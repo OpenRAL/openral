@@ -80,9 +80,6 @@ KNOWN_GAPS: dict[str, dict[str, str]] = {
         "d435_rgb_module_link": "torso-mounted sensor housing: not in the kernel model",
         "mid360_link": "torso-mounted lidar housing: not in the kernel model",
     },
-    "so101_follower": {
-        "jaw": "swept over its URDF travel into gripper (moving_jaw is the logical fraction link)",
-    },
 }
 
 

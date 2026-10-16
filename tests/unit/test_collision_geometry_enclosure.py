@@ -190,10 +190,6 @@ _UNCOVERED_TWIN_BODIES: dict[str, str] = {
     # are not in the kernel's model. Pre-existing; needs the MJCF finger sweep
     # the OpenArm uses, on a URDF-lowered robot.
     "franka_panda": "panda_finger_pair (the fingers) carries no primitive",
-    # The twin's jaw body maps to the manifest's logical `moving_jaw` (the [0, 1]
-    # fraction channel), which carries no primitive: the jaw's envelope, swept over
-    # its whole URDF travel, is a primitive of `gripper` instead.
-    "so101_follower": "moving_jaw carries no primitive (jaw swept into gripper)",
 }
 
 

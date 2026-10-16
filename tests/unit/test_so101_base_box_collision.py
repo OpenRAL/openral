@@ -207,11 +207,10 @@ def test_lowering_emits_all_boxes_and_negative_margin():
     p = _params()
     names = p["collision_link_names"]
     box_links = sorted(names[i] for i in p.get("collision_box_link", []))
-    # `gripper` carries two: its body and the jaw's swept envelope.
     assert box_links == [
         "base",
         "gripper",
-        "gripper",
+        "jaw",
         "lower_arm",
         "shoulder",
         "upper_arm",
@@ -224,8 +223,8 @@ def test_lowering_emits_all_boxes_and_negative_margin():
 def test_every_obb_encloses_its_link_mesh():
     """Safety (§3): each link's boxes together contain its mesh (conservative).
 
-    A link may carry several boxes (`gripper`: its body and the jaw's swept
-    envelope), so every vertex must sit inside at least one of its link's boxes.
+    A link may carry several boxes, so every vertex must sit inside at least one of
+    its link's boxes. The MJCF names the jaw body `moving_jaw_so101_v1`.
     """
     rd = RobotDescription.from_yaml(str(_MANIFEST))
     model = _mj_model()
@@ -251,7 +250,9 @@ def test_every_obb_encloses_its_link_mesh():
             )
         )
     for link, link_boxes in boxes.items():
-        bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, link)
+        body = {"jaw": "moving_jaw_so101_v1"}.get(link, link)
+        bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, body)
+        assert bid >= 0, f"{link}: no MJCF body {body!r}"
         worst = 0.0
         for gi in range(model.ngeom):
             if model.geom_bodyid[gi] != bid or model.geom_dataid[gi] < 0:
