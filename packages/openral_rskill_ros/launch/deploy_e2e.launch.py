@@ -2249,6 +2249,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         name="openral_safety_kernel",
         namespace="",
         parameters=[kernel_params],
+        # The kernel folds measured state by `collision_joint_names` (the manifest's
+        # names). A real ros2_control arm's global /joint_states is the broadcaster's,
+        # spelled the vendor way (OpenArm: `openarm_left_joint1` for `left_joint1`), so
+        # no name matched, the measured state never filled, and every slot row was
+        # refused `state_unavailable`. Read the stream the runner acts on instead: the
+        # HAL's manifest-named `~/joint_states` (or the scene's override).
+        remappings=(
+            [("/joint_states", runtime_joint_states_topic)] if runtime_joint_states_topic else []
+        ),
         additional_env=otel_env,
         output="screen",
     )

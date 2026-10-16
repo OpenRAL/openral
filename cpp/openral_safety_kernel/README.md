@@ -1222,6 +1222,20 @@ The collision evidence's `joint_positions_rad` is the filled configuration, so
 it names the other arm's measured pose, not the padding. Scratch is sized at
 configure; the fill allocates nothing.
 
+**Which `/joint_states`.** The kernel folds measured state by `collision_joint_names`
+(the manifest's names) and ignores every other name, so the stream it reads must
+spell joints the manifest's way. A real ros2_control arm's global `/joint_states` is
+the broadcaster's and spells them the vendor's way (OpenArm: `openarm_left_joint1`
+for `left_joint1`); read raw, no name matched, the measured state never filled, and
+every OpenArm slot row was dropped `state_unavailable` — fail-closed, but no policy
+chunk could ever pass (Orin cell, 2026-10-16). `deploy_e2e.launch.py` therefore
+remaps the kernel's `/joint_states` to the topic the runner acts on: the scene's
+`joint_states_topic`, else the HAL's manifest-named `~/joint_states` republish
+(`openral_hal.hal_joint_states_topic`), else no remap. On a real ros2_control arm
+the measured state, and the workspace-contact measured velocity, then arrive at
+the HAL's control rate (OpenArm 30 Hz, so up to one control period old), well
+inside `collision_state_deadline_ms`.
+
 ## Frame convention (ADR-0095)
 
 The kernel applies **no transforms**. It FKs each link from the manifest's
