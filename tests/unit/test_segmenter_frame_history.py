@@ -22,8 +22,10 @@ from openral_hal.vision_attachment_bridge import mask_depth_skew_reason
 from openral_perception_ros.segmenter_node import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_MAX_FRAME_SKEW_S,
+    DEFAULT_REQUEST_DEADLINE_S,
     FRAME_HISTORY,
     frame_nearest_stamp,
+    frame_wait_budget_s,
     wait_for_frame,
 )
 
@@ -188,3 +190,21 @@ def test_an_empty_cache_is_refused_after_the_wait_or_at_once_when_unstamped() ->
     )  # fmt: skip
     assert frame is None and reason == "ROSPerceptionStale: no frame cached"
     assert time.monotonic() - start < 0.05
+
+
+def test_the_wait_leaves_the_measured_serve_time_inside_the_hals_deadline() -> None:
+    """The 0.2 s default wait plus an 81 ms SAM pass overran the HAL's 0.25 s deadline, so
+    a request that waited had its reply dropped. The wait is cut to what the deadline leaves
+    and a frame that has not landed by then is refused, in time for the HAL's fallback."""
+    serve_s = 0.081
+    budget = frame_wait_budget_s(DEFAULT_FRAME_WAIT_S, DEFAULT_REQUEST_DEADLINE_S, serve_s=serve_s)
+    assert budget + serve_s <= DEFAULT_REQUEST_DEADLINE_S < DEFAULT_FRAME_WAIT_S + serve_s
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: [(25_000_000_000, "old")], threading.Condition(), 26_000_000_000,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=budget,
+    )  # fmt: skip
+    waited = time.monotonic() - start
+    assert frame is None and reason.startswith("ROSPerceptionStale:")
+    assert budget <= waited < DEFAULT_FRAME_WAIT_S
+    assert frame_wait_budget_s(0.2, 0.25, serve_s=0.3) == 0.0

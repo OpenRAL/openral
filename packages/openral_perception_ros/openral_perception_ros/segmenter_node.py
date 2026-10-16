@@ -86,6 +86,10 @@ Parameters:
         OLDER than the request's stamp, wait up to this long for a frame at or after it
         (``wait_for_frame``). Default ``0.2``. The image subscriptions run in their own
         callback group on a multi-threaded executor, so frames arrive while it waits.
+    request_deadline_s (float): the requester's deadline per call, the HAL's
+        ``vision_attachment_deadline_s`` (default ``0.25``). The wait is capped at
+        this minus the time already spent and the last request's measured serve time
+        (``frame_wait_budget_s``), so a reply is never built after the HAL dropped it.
 
 **Which frame a request is served from.** The HAL stamps a request with the depth
 frame it will back-project the masks through, and refuses masks cut from a frame
@@ -123,6 +127,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only, keeps numpy off the impor
 __all__ = [
     "FRAME_HISTORY",
     "frame_nearest_stamp",
+    "frame_wait_budget_s",
     "main",
     "make_segmenter_node",
     "mono8_bytes_from_mask",
@@ -150,6 +155,29 @@ DEFAULT_MAX_FRAME_SKEW_S = 0.1
 #: Default ``frame_wait_s``: how long a request stamped AFTER the newest cached frame
 #: waits for its frame to arrive (an RGB message trailing its depth twin: DROID t7).
 DEFAULT_FRAME_WAIT_S = 0.2
+
+#: Default ``request_deadline_s``: the HAL's ``vision_attachment_deadline_s``.
+DEFAULT_REQUEST_DEADLINE_S = 0.25
+
+#: The serve time (frame found -> reply built) assumed until a request is measured:
+#: above the warmed SAM 2.1 path measured at 53-81 ms.
+DEFAULT_SERVE_S = 0.1
+
+
+def frame_wait_budget_s(frame_wait_s: float, request_deadline_s: float, *, serve_s: float) -> float:
+    """How long a request may wait for its frame and still be answered inside its deadline.
+
+    ``frame_wait_s`` capped at the requester's deadline minus the measured serve time;
+    never negative. A request whose frame is not cached by then is refused
+    (``ROSPerceptionStale``) rather than answered after the requester dropped it.
+
+    Example:
+        >>> round(frame_wait_budget_s(0.2, 0.25, serve_s=0.081), 3)
+        0.169
+        >>> frame_wait_budget_s(0.2, 0.25, serve_s=0.3)
+        0.0
+    """
+    return max(0.0, min(frame_wait_s, request_deadline_s - serve_s))
 
 
 _Frame = TypeVar("_Frame")
@@ -402,6 +430,10 @@ def _node_class() -> type:
             self.declare_parameter("device", "auto")
             self.declare_parameter("max_frame_skew_s", DEFAULT_MAX_FRAME_SKEW_S)
             self.declare_parameter("frame_wait_s", DEFAULT_FRAME_WAIT_S)
+            self.declare_parameter("request_deadline_s", DEFAULT_REQUEST_DEADLINE_S)
+            # The last served request's frame-found -> reply-built time (``frame_wait_budget_s``).
+            self._serve_s = DEFAULT_SERVE_S
+            self._waited_s = 0.0  # the current request's frame wait
 
             # The last FRAME_HISTORY (stamp_ns, (bgr, width, height, header.frame_id,
             # header.stamp)) per camera: the header travels with the pixels so geometry
@@ -494,7 +526,7 @@ def _node_class() -> type:
                 self._srv = self.create_service(
                     SegmentInView,
                     gp("segment_in_view_service").get_parameter_value().string_value,
-                    self._on_segment_in_view,
+                    self._serve_segment_in_view,
                 )
             except ImportError:
                 self.get_logger().warning(
@@ -652,20 +684,29 @@ def _node_class() -> type:
             return _cb
 
         def _frame_for(self, camera: str, stamp: Any) -> tuple[Any, str]:
-            """The cached frame of ``camera`` a request stamped ``stamp`` is served from."""
+            """The cached frame of ``camera`` a request stamped ``stamp`` is served from.
+
+            The wait is bounded by the requester's deadline (``frame_wait_budget_s``).
+            """
             if camera not in self._cameras:  # no subscription: its frame never arrives
                 return None, (
                     f"ROSPerceptionStale: no frame cached for camera {camera!r} "
                     f"(known: {sorted(self._cameras)})"
                 )
             gp = self.get_parameter
+            started = time.perf_counter()
             frame, stale = wait_for_frame(
                 lambda: self._frames.get(camera, ()),
                 self._frame_arrived,
                 int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
                 max_skew_s=gp("max_frame_skew_s").get_parameter_value().double_value,
-                wait_s=gp("frame_wait_s").get_parameter_value().double_value,
+                wait_s=frame_wait_budget_s(
+                    gp("frame_wait_s").get_parameter_value().double_value,
+                    gp("request_deadline_s").get_parameter_value().double_value,
+                    serve_s=self._serve_s,
+                ),
             )
+            self._waited_s = time.perf_counter() - started
             return frame, f"{stale} (camera {camera!r})" if stale else ""
 
         def _warn_once(self, message: str) -> None:
@@ -675,6 +716,15 @@ def _node_class() -> type:
                 self.get_logger().warning(message)
 
         # ── service ──────────────────────────────────────────────────────────
+
+        def _serve_segment_in_view(self, request: Any, response: Any) -> Any:
+            """``_on_segment_in_view``, measuring a served request's time outside the wait."""
+            started, self._waited_s = time.perf_counter(), 0.0
+            response = self._on_segment_in_view(request, response)
+            if response.ok:
+                # ponytail: the last served request only; a moving max if serve times jitter.
+                self._serve_s = time.perf_counter() - started - self._waited_s
+            return response
 
         def _on_segment_in_view(self, request: Any, response: Any) -> Any:  # noqa: PLR0911 — reason: one named early return per fail-closed precondition; collapsing them would hide which one fired
             """Service: mask the object under a 3-D prompt point in one frame.
