@@ -207,13 +207,26 @@ def test_lowering_emits_all_boxes_and_negative_margin():
     p = _params()
     names = p["collision_link_names"]
     box_links = sorted(names[i] for i in p.get("collision_box_link", []))
-    assert box_links == ["base", "lower_arm", "shoulder", "upper_arm", "wrist"]
+    # `gripper` carries two: its body and the jaw's swept envelope.
+    assert box_links == [
+        "base",
+        "gripper",
+        "gripper",
+        "lower_arm",
+        "shoulder",
+        "upper_arm",
+        "wrist",
+    ]
     assert len(p.get("collision_capsule_link", [])) == 0  # omitted when empty
     assert p["self_collision_margin_m"] == pytest.approx(-0.06)
 
 
 def test_every_obb_encloses_its_link_mesh():
-    """Safety (§3): each box contains its link's collision mesh (conservative)."""
+    """Safety (§3): each link's boxes together contain its mesh (conservative).
+
+    A link may carry several boxes (`gripper`: its body and the jaw's swept
+    envelope), so every vertex must sit inside at least one of its link's boxes.
+    """
     rd = RobotDescription.from_yaml(str(_MANIFEST))
     model = _mj_model()
 
@@ -227,12 +240,18 @@ def test_every_obb_encloses_its_link_mesh():
             ]
         )
 
+    boxes: dict[str, list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], Any]]] = {}
     for g in rd.collision_geometry:
-        bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, g.link_name)
-        rot = _transform(*g.origin_xyz_rpy)[:3, :3]
-        c = np.asarray(g.origin_xyz_rpy[:3])
         assert isinstance(g.shape, BoxShape)
-        he = np.asarray(g.shape.half_extents_m)
+        boxes.setdefault(g.link_name, []).append(
+            (
+                np.asarray(g.origin_xyz_rpy[:3]),
+                _transform(*g.origin_xyz_rpy)[:3, :3],
+                np.asarray(g.shape.half_extents_m),
+            )
+        )
+    for link, link_boxes in boxes.items():
+        bid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, link)
         worst = 0.0
         for gi in range(model.ngeom):
             if model.geom_bodyid[gi] != bid or model.geom_dataid[gi] < 0:
@@ -242,9 +261,12 @@ def test_every_obb_encloses_its_link_mesh():
                 model.mesh_vertadr[did] : model.mesh_vertadr[did] + model.mesh_vertnum[did]
             ].reshape(-1, 3)
             verts = (verts @ quat_to_rot(model.geom_quat[gi]).T) + model.geom_pos[gi]
-            local = (verts - c) @ rot
-            worst = max(worst, float((np.abs(local) - he).max()))
-        assert worst <= 2e-3, f"{g.link_name} mesh escapes its OBB by {worst:.4f} m"
+            excess = np.min(
+                [(np.abs((verts - c) @ rot) - he).max(axis=1) for c, rot, he in link_boxes],
+                axis=0,
+            )
+            worst = max(worst, float(excess.max()))
+        assert worst <= 2e-3, f"{link} mesh escapes its OBBs by {worst:.4f} m"
 
 
 # ── margin behaviour: envelope allowed, gross folds fire ──────────────────────

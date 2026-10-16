@@ -50,6 +50,36 @@ MJCF reference: `robot_descriptions:so_arm101_mj_description` —
 `description.joints`, so the manifest's names (`shoulder_pan`, …, `gripper`)
 form the user-facing contract while the MJCF stays as upstream ships it.
 
+## Collision model
+
+`collision_geometry` is hand-authored (the drift guard checks its ACM only):
+PCA-fit boxes for `base`, `shoulder`, `upper_arm`, `lower_arm` and `wrist`, run
+with the negative `self_collision_margin_m` documented in the manifest, plus two
+box + exact hull entries on `gripper`:
+
+- the gripper body: the URDF `gripper` link's meshes, fitted by
+  `fit_link_with_tight_geometry`;
+- the jaw: the URDF `jaw` meshes swept over the jaw's whole URDF travel
+  (−0.1745 … 1.7453 rad, 1° steps), in the `gripper` frame. The `gripper` joint
+  carries a `[0, 1]` fraction whose jaw-angle map differs per backend (MuJoCo,
+  Isaac and the real servo calibration each map it differently), so the kernel
+  cannot pose the jaw from it. Its child `moving_jaw` is a logical link with no
+  primitive, like `franka_panda`'s `panda_finger_pair`. The envelope is solid
+  between the fingers at every opening: conservative, and the self-filter removes
+  everything inside it from the world map.
+
+The URDF names the wrist-roll child `gripper`, and so do the manifest and `/tf`.
+The `wrist_roll` joint carries the URDF origin. Before this change it was left at
+zero, which put the kernel's gripper frame at the wrist origin. The only ACM row
+added is the adjacent `[gripper, wrist]`.
+
+Without the gripper entries, a LeIsaac PickOrange deploy-sim stopped on `wrist`
+against a voxel on the gripper body (PhysX: no contact). The self-filter had left
+the gripper's own depth returns in the map.
+
+**This model needs Safety-WG review and a hazard-log row** (private
+`OpenRAL/management`) before anyone relies on it (CLAUDE.md §3).
+
 ## Detect & deploy
 
 The SO-101 is electrically identical to the SO-100 over USB (same Feetech

@@ -81,8 +81,7 @@ KNOWN_GAPS: dict[str, dict[str, str]] = {
         "mid360_link": "torso-mounted lidar housing: not in the kernel model",
     },
     "so101_follower": {
-        "gripper": "alias: manifest gripper_base (hand-authored manifest, no geometry on it)",
-        "jaw": "alias: manifest moving_jaw (hand-authored manifest, no geometry on it)",
+        "jaw": "swept over its URDF travel into gripper (moving_jaw is the logical fraction link)",
     },
 }
 

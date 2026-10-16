@@ -686,5 +686,7 @@ kernel's FK. What it found:
   reason. Covering it means fitting each jaw as a link, with the coupled finger on a mimic joint
   as the OpenArm's has been since #349 ([`finger-mimic-geometry.md`](finger-mimic-geometry.md)),
   a follow-up for the WG list.
-- **SO-101** (hand-authored manifest, not re-lowered here): `gripper_base` and `moving_jaw`
-  carry no primitive; strict xfail, same follow-up.
+- **SO-101** (hand-authored manifest, not re-lowered here): the gripper body and the jaw
+  swept over its whole URDF travel are two box + hull primitives on `gripper` (2026-10-16,
+  `robots/so101_follower/README.md`, Safety-WG review owed). The twin maps its jaw body to the
+  logical `moving_jaw`, which carries no primitive; strict xfail.
