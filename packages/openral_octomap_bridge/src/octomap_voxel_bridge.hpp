@@ -529,9 +529,12 @@ private:
       if (!swept_seen_.insert({object.object_id, state.attachment_revision}).second) {
         continue;
       }
-      // A measured payload's lowest point at attach floors a box no support is known
-      // under; the gripper-closure jaw box is not the object and floors nothing.
-      if (object.evidence_kind != "gripper_closure" && i < staged.size()) {
+      // A REGION payload's lowest point at attach floors a box no support is known under:
+      // it is the producer-measured grasp-target region, stood on its measured support.
+      // A segmented payload's bottom is not (deploy trial g17: its points reached into
+      // the counter and depth edges, floors at z 0.020-0.027 under a 0.030 counter top),
+      // and the gripper-closure jaw box is not the object: neither floors anything.
+      if (object.evidence_kind == "grasp_target_region" && i < staged.size()) {
         SweptBox at_attach;
         add_payload_to_swept_box(at_attach, staged[i], base_to_octomap);
         if (at_attach.valid) {
@@ -592,8 +595,8 @@ private:
     if (floor == SweepFloor::kNone) {
       RCLCPP_INFO(this->get_logger(),
                   "payload sweep: NOT clearing [%.3f %.3f %.3f]..[%.3f %.3f %.3f]: no support "
-                  "known under it and no measured payload floor (a gripper-closure payload), "
-                  "or nothing left above the support",
+                  "attested or declared under it and no region payload floor (a segmented "
+                  "or gripper-closure payload), or nothing left above the support",
                   raw.lo.x(), raw.lo.y(), raw.lo.z(), raw.hi.x(), raw.hi.y(), raw.hi.z());
       return;
     }
@@ -615,7 +618,7 @@ private:
                 "payload sweep: clear_bbox [%.3f %.3f %.3f]..[%.3f %.3f %.3f] in %s (floor: %s)",
                 box.lo.x(), box.lo.y(), box.lo.z(), box.hi.x(), box.hi.y(), box.hi.z(),
                 octomap_frame_.c_str(),
-                floor == SweepFloor::kSupport ? "support" : "measured payload at attach");
+                floor == SweepFloor::kSupport ? "support" : "region payload at attach");
   }
 
   std::string base_frame_;
