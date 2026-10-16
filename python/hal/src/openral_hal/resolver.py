@@ -36,6 +36,7 @@ __all__ = [
     "UrdfJointMap",
     "build_hal",
     "hal_joint_states_topic",
+    "ros_control_hal",
     "urdf_joint_map",
     "urdf_joint_names",
 ]
@@ -194,15 +195,34 @@ def hal_joint_states_topic(
     """
     if override:
         return override
+    return f"/{hal_node_name}/joint_states" if ros_control_hal(description, mode=mode) else None
+
+
+def ros_control_hal(description: RobotDescription, *, mode: HalMode) -> bool:
+    """Whether the HAL node wires ``description``'s HAL to a ``RosControlTransport``.
+
+    Mirrors ``_attach_ros_control_transport``: ``mode == "real"`` and the manifest's
+    ``hal.real`` class exposes every ``RosControlDrivable`` member, checked on the class
+    without constructing it (construction may open a bus). Such a robot's vendor
+    ``joint_state_broadcaster`` publishes URDF-named joint states; every other HAL
+    (serial SO-101, interbotix ALOHA, any sim HAL) publishes the manifest's.
+
+    Raises:
+        ROSConfigError: ``hal.real`` is a malformed or unimportable entrypoint.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> ros_control_hal(so101, mode="real"), ros_control_hal(so101, mode="sim")
+        (False, False)
+    """
     if mode != "real" or description.hal.real is None:
-        return None
+        return False
     from openral_hal.ros_control_transport import RosControlDrivable
 
     cls = _import_object(description.hal.real)
     members: frozenset[str] = RosControlDrivable.__protocol_attrs__  # type: ignore[attr-defined]  # reason: typing's 3.12 protocol member set, no public accessor before 3.13
-    if all(hasattr(cls, m) for m in members):
-        return f"/{hal_node_name}/joint_states"
-    return None
+    return all(hasattr(cls, m) for m in members)
 
 
 @dataclass(frozen=True)

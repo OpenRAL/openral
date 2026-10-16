@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from launch import LaunchDescriptionEntity
     from launch.actions import IncludeLaunchDescription
     from openral_core import RobotDescription, SensorSpec
+    from openral_hal.resolver import UrdfJointMap
 from lifecycle_msgs.msg import Transition
 from openral_core import (
     ROBOT_UNIT_ENV,
@@ -1717,6 +1718,33 @@ def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
     return None if path is None else str(path)
 
 
+def _rsp_urdf_joint_map(
+    description: RobotDescription, robot_yaml: str, hal_mode: str
+) -> UrdfJointMap | None:
+    """The HAL's ``urdf_joint_*`` map for robot_state_publisher, or ``None`` for none.
+
+    A HAL with no ros2_control transport (every sim twin, a serial SO-101, ALOHA:
+    ``ros_control_hal``, the condition the HAL node itself uses) publishes joint states
+    under the manifest's logical names and units (what the kernel, the grasp trigger and
+    the runner read). A URDF that names its joints differently (the OpenArm's vendored
+    one) or takes a gripper in other units (the SO-101 jaw, the Robotiq finger_joint)
+    needs a renamed, re-unit copy on ``~/urdf_joint_states`` that robot_state_publisher
+    alone reads (``urdf_joint_map``), or no moving link reaches /tf, or the jaw sits at
+    the wrong angle (the SO-101's was 21.5 deg off, PickOrange g19). A ros2_control arm's
+    vendor broadcaster publishes the URDF's own names and units: ``None``.
+    """
+    from openral_hal.resolver import ros_control_hal, urdf_joint_map
+
+    if description.assets.urdf is None or ros_control_hal(
+        description, mode="real" if hal_mode == "real" else "sim"
+    ):
+        return None
+    urdf = _resolve_urdf_path(description.assets.urdf.ref, pathlib.Path(robot_yaml).parent)
+    if urdf is None:
+        return None
+    return urdf_joint_map(description, pathlib.Path(urdf).read_text(encoding="utf-8"))
+
+
 def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
     context: LaunchContext, *_args: object, **_kwargs: object
 ) -> list[LaunchDescriptionEntity]:
@@ -2609,32 +2637,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 f"world_voxel_margin_m + octomap resolution ({clear_floor_m}): a released "
                 "payload's record would drop while the kernel still measures it inside its margin."
             )
-    # Sim twin: the HAL publishes joint states under the manifest's logical names and units
-    # (what the kernel, the grasp trigger and the runner read); a URDF that names its joints
-    # differently (the OpenArm's vendored one) or takes a gripper in other units (the SO-101
-    # jaw, the Robotiq finger_joint) gets a renamed, re-unit copy on `~/urdf_joint_states`
-    # that robot_state_publisher alone reads (`openral_hal.resolver.urdf_joint_map`), or no
-    # moving link reaches /tf, or the jaw sits at the wrong angle. Real: the vendor
-    # broadcaster's own names and units.
-    rsp_urdf_joint_names: list[str] = []
-    rsp_urdf_joint_units: dict[str, list[float]] = {}
-    if hal_mode == "sim" and description.assets.urdf is not None:
-        _rsp_urdf = _resolve_urdf_path(description.assets.urdf.ref, pathlib.Path(robot_yaml).parent)
-        if _rsp_urdf is not None:
-            from openral_hal.resolver import urdf_joint_map
-
-            # Names and units (`urdf_joint_map`): a fraction-unit gripper goes to its URDF
-            # jaw joint through the manifest's mimic map, so /tf poses the jaw where the
-            # kernel's collision model does (the SO-101's was 21.5 deg off, PickOrange g19).
-            _rsp_map = urdf_joint_map(
-                description, pathlib.Path(_rsp_urdf).read_text(encoding="utf-8")
-            )
-            if _rsp_map is not None:
-                rsp_urdf_joint_names = list(_rsp_map.names)
-                rsp_urdf_joint_units = {
-                    "urdf_joint_scales": list(_rsp_map.scales),
-                    "urdf_joint_offsets": list(_rsp_map.offsets),
-                }
+    # The renamed, re-unit joint states robot_state_publisher reads (`_rsp_urdf_joint_map`).
+    _rsp_map = _rsp_urdf_joint_map(description, robot_yaml, hal_mode)
+    rsp_urdf_joint_names: list[str] = list(_rsp_map.names) if _rsp_map is not None else []
+    rsp_urdf_joint_units: dict[str, list[float]] = (
+        {"urdf_joint_scales": list(_rsp_map.scales), "urdf_joint_offsets": list(_rsp_map.offsets)}
+        if _rsp_map is not None
+        else {}
+    )
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,
