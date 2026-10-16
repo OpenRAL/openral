@@ -631,6 +631,14 @@ if _ROS2_AVAILABLE:
             # The rate joint states are read (and fed to the grasp trigger) at,
             # resolved on activate; ``None`` until then.
             self._joint_state_rate_hz: float | None = None
+            # Tracking watch (`openral_hal._tracking_watch`): a position-commanded joint
+            # whose error to its applied target persists for `tracking_fault_window_s`
+            # without closing raises /openral/estop. 0 = off (the default; the deploy
+            # launch sets it for a real HAL). Live `read_state` HALs only.
+            self.declare_parameter("tracking_fault_window_s", 0.0)
+            self.declare_parameter("tracking_fault_tolerance_rad", 0.05)
+            self._tracking: Any = None
+            self._tracking_estop_pub: Any = None
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -919,6 +927,7 @@ if _ROS2_AVAILABLE:
             self._estop_reset_sub = self.create_subscription(
                 Empty, "/openral/estop_cleared", self._on_estop_cleared, estop_qos
             )
+            self._arm_tracking_watch(estop_qos)
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
@@ -976,6 +985,10 @@ if _ROS2_AVAILABLE:
             if self._estop_reset_sub is not None:
                 self.destroy_subscription(self._estop_reset_sub)
                 self._estop_reset_sub = None
+            if self._tracking_estop_pub is not None:
+                self.destroy_publisher(self._tracking_estop_pub)
+                self._tracking_estop_pub = None
+            self._tracking = None
             if self._action_applied_pub is not None:
                 self.destroy_publisher(self._action_applied_pub)
                 self._action_applied_pub = None
@@ -1230,6 +1243,8 @@ if _ROS2_AVAILABLE:
             msg.velocity = list(state.velocity) if state.velocity else []
             msg.effort = list(state.effort) if state.effort else []
             self._publisher.publish(msg)
+            if self._tracking is not None and self._proprio is None:
+                self._judge_tracking(state)
             # The grasp trigger reads the same typed snapshot the HAL just read —
             # no second source of truth, no extra subscription. Only wired when
             # the vision attachment leg is enabled.
@@ -1259,6 +1274,43 @@ if _ROS2_AVAILABLE:
                     self._policy_state_pub.publish(policy_msg)
                     self._policy_state_last_frame = frame
 
+        def _arm_tracking_watch(self, estop_qos: Any) -> None:  # noqa: ANN401  # reason: rclpy QoSProfile, imported on the ROS path only
+            """Build the `TrackingWatch` + its /openral/estop publisher when the window is > 0."""
+            window_s = self.get_parameter("tracking_fault_window_s").value
+            if isinstance(window_s, int | float) and window_s > 0:
+                from std_msgs.msg import Empty
+
+                from openral_hal._tracking_watch import TrackingWatch
+
+                assert self._hal is not None  # invariant: configure built it
+                tolerance = float(self.get_parameter("tracking_fault_tolerance_rad").value)
+                self._tracking = TrackingWatch(
+                    self._hal.description, tolerance_rad=tolerance, window_s=float(window_s)
+                )
+                self._tracking_estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+                self.get_logger().info(
+                    f"hal.tracking_watch armed window_s={float(window_s)} "
+                    f"tolerance_rad={tolerance} joints={sorted(self._tracking.watched)}"
+                )
+
+        def _judge_tracking(self, state: Any) -> None:  # noqa: ANN401  # reason: typed JointState lives in openral_core; duck-typed on the ROS path
+            """Raise /openral/estop when a commanded joint does not follow (`TrackingWatch`)."""
+            import time
+
+            fault = self._tracking.observe_state(state.name, state.position, time.monotonic())
+            if fault is None or self._estopped:
+                return
+            self.get_logger().error(
+                f"hal.tracking_fault joint={fault.joint} target={fault.target:.4f} "
+                f"measured={fault.measured:.4f} error={fault.error:.4f} "
+                f"progress={fault.progress:.4f} window_s={fault.window_s:.2f}: the joint does not "
+                "follow its command (drives not producing torque, or blocked); raising e-stop"
+            )
+            from std_msgs.msg import Empty
+
+            self._tracking.clear()
+            self._tracking_estop_pub.publish(Empty())
+
         def _on_safe_action(self, msg: object) -> None:
             """``/openral/safe_action`` callback.
 
@@ -1284,6 +1336,8 @@ if _ROS2_AVAILABLE:
             vision = getattr(self, "_vision_attachment", None)
             if vision is not None:
                 self._fold_applied_command(vision, action)
+            if self._tracking is not None:
+                self._fold_applied_command(self._tracking, action)
             self._publish_action_applied_if_complete(action)
 
         def _fold_applied_command(self, vision: Any, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
@@ -1524,6 +1578,8 @@ if _ROS2_AVAILABLE:
             if self._estopped:
                 return
             self._estopped = True
+            if self._tracking is not None:
+                self._tracking.clear()
             self.get_logger().error(
                 "openral_hal.estop_received; ignoring further commands until reset."
             )
@@ -1706,6 +1762,8 @@ if _ROS2_AVAILABLE:
                     self.get_logger().fatal(f"hardware estop reset failed: {exc}")
                     return
             self._estopped = False
+            if self._tracking is not None:
+                self._tracking.clear()
             self.get_logger().info("openral_hal.estop_cleared; resuming command execution.")
 
     class _FactoryHALLifecycleNode(HALLifecycleNodeBase):

@@ -1,0 +1,12 @@
+openarm_tracking_20261016.npz — real OpenArm v2 joint positions and applied commands, Orin cell,
+2026-10-16, restock_shelf pi0.5 goals (OpenRAL #373 investigation). Resampled to 30 Hz (the HAL's
+~/joint_states republish rate) from the 750 Hz /joint_states in rosbags ~/t373/bag_112247 (run2)
+and ~/t373/bag_133901 (run3) on qorin1; commands are the /openral/safe_action JOINT_POSITION slot
+rows (14 arm joints, manifest names), held between ticks. Times are relative to the first
+safe_action.
+
+run2: drives energised, the arms followed the policy (right J3 to -0.35 rad, J5 to +0.30 rad).
+run3: the drives stopped producing torque ~4 s after bringup (|tau| ~0 on every joint) while CAN
+      feedback continued; the arms hung limp at q~0 under 0.05-0.34 rad commands.
+
+Keys: {run2,run3}_{state_t, state_q, cmd_t, cmd_q, names}.

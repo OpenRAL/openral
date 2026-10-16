@@ -312,3 +312,15 @@ def test_hardware_estop_declares_no_device_by_default() -> None:
         "driver in this repo the node would poll a stub that answers 'not pressed' forever, "
         "which is indistinguishable from an armed pendant."
     )
+
+
+@pytest.mark.parametrize(("hal_mode", "armed"), [("real", True), ("sim", False)])
+def test_a_real_hal_arms_the_tracking_watch(hal_mode: str, armed: bool) -> None:
+    """A real HAL raises /openral/estop when a joint does not follow its command.
+
+    ``openral_hal._tracking_watch``: on the Orin cell the drives went limp while the
+    stack kept commanding and nothing noticed. The launch arms the watch (1.0 s) for a
+    real HAL only; a sim twin tracks by construction, and a params-file value still wins.
+    """
+    params = _params(_lifecycle_nodes(_compose(hal_mode))["openral_hal_test"])
+    assert (params.get("tracking_fault_window_s") == 1.0) is armed
