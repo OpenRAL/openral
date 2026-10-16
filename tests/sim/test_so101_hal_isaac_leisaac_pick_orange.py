@@ -138,7 +138,7 @@ def test_oranges_teleported_onto_the_plate_grade_success(env: Any) -> None:
         target = plate + np.array([dx, dy, 0.06])
         moved = env.set_object_position(name, tuple(target))
         assert np.allclose(moved["position"], target, atol=1e-4)
-    for _ in range(120):  # fall, settle, then settle_s 0.5 s at rest (30 Hz)
+    for _ in range(120):  # 2 s at 60 Hz: fall, settle, then settle_s 0.5 s at rest
         result = _hold(env)
         if result.terminated:
             break
