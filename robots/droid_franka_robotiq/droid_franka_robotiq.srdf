@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<!-- User-approved 2026-10-16; needs Safety-WG review + hazard-log row (CLAUDE.md §3).
+     Robotiq 2F-85 closed four-bar loop: the inner knuckle (proximal_phalanx) and the inner
+     finger (distal_phalanx) are pinned together on the real gripper; the URDF tree omits that
+     pin. Evidence: inner-finger mesh 3.95/5.89/5.97 mm inside the inner knuckle at f=0/0.5/1
+     (37 vertices, the pin bore); kernel hulls overlap 16.1/16.9/16.2 mm. Exactly these 2 rows. -->
+<robot name="droid_franka_robotiq">
+  <disable_collisions link1="left_proximal_phalanx" link2="left_distal_phalanx" reason="Adjacent"/>
+  <disable_collisions link1="right_proximal_phalanx" link2="right_distal_phalanx" reason="Adjacent"/>
+</robot>

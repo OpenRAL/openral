@@ -54,23 +54,75 @@ both 1280 × 720 like Arena's `PinholeCameraCfg`; their mounts are scene
 
 ## Self-collision
 
-`collision_geometry` / `allowed_collision_pairs` are generated (`openral collision
-lower --robot robots/droid_franka_robotiq/robot.yaml --tight-link panda_link0 …
---tight-link panda_link7 --tight-link robotiq_arg2f_base_link`, a box plus the exact
-hull per link, like `franka_panda`; ACM from the URDF sampling sweep, no SRDF). The
-`fixed_attachments` rows (`panda_joint8`, `robotiq_mount_joint`) put the Robotiq base
-in the model. At the scenes' start pose (0, −π/5, 0, −4π/5, 0, 3π/5, 0, open) no
-checked pair trips; the nearest is `panda_link7` ↔ `robotiq_arg2f_base_link` at
-12.9 mm (rigidly related).
+The arm and the Robotiq base are the `openral collision lower` fit (`--tight-link` on
+`panda_link0` … `panda_link7` and `robotiq_arg2f_base_link`): a box plus the exact hull
+per link, like `franka_panda`. The `fixed_attachments` rows (`panda_joint8`,
+`robotiq_mount_joint`) put the Robotiq base in the model.
 
-**The jaw linkage carries no primitive** (the eight outer-knuckle / bar / phalanx
-links, `KNOWN_GAPS` in `tests/unit/test_collision_fleet_static_links.py`), as on
-`franka_panda`: `finger_joint`'s child is the logical `robotiq_finger_pair`. Covering
-it needs two safety-package changes this robot does not make: the URDF lowering
-scopes geometry to `joints` + `fixed_attachments` (mimic links are lowered on the
-MJCF path only, `docs/reference/finger-mimic-geometry.md`), and the kernel would pose
-a URDF jaw link at the manifest's normalised fraction read as radians (the URDF's
-travel is inverted, 0 = open … 0.8 rad = closed). The world-voxel check therefore
-does not see the fingers; the Robotiq base and the arm it does.
+**The Robotiq 2F-85 linkage** is in the model as moving links, posed from the jaw
+fraction `f`. The eight links are, per side:
+
+- `outer_knuckle`;
+- `bar` (the outer finger);
+- `proximal_phalanx` (the inner knuckle);
+- `distal_phalanx` (the inner finger and its pad).
+
+Each is a box plus the exact hull of its URDF meshes, in its own URDF frame, from the
+same fitter (`urdf_lowering.lower_link_geometry`). The outer and inner knuckles and
+the inner fingers hang on `mimic_joints` rows. The bars are `fixed_attachments` rows
+on the outer knuckles. Origins and axes are the URDF joints'.
+
+The rows compose the Isaac scenes' `gripper_joint_curve` `[[0, π/4], [1, 0]]` with
+each URDF `<mimic>` multiplier:
+
+| Links | URDF multiplier | Angle at fraction `f` |
+| --- | --- | --- |
+| outer knuckle, inner knuckle | +1 | `π/4 − π/4 · f` |
+| inner finger | −1 | `π/4 · f − π/4` |
+
+So `f = 1` (open) is 0 rad and `f = 0` (closed) is π/4, Arena's close target, not
+the URDF's 0.8 rad limit. The kernel checks the linkage at the commanded fraction, as
+for every link. The map is per backend:
+
+| Backend | Kernel's linkage |
+| --- | --- |
+| Isaac (`tools/isaac_manifest_scene.py` drives the leader through the curve and each follower by its URDF multiplier) | exact: matches the URDF to < 1e-6 m over the stroke |
+| anything else (another sim backend, a real Robotiq driver; no real HAL exists) | **unverified**: it must map `f` the same way |
+
+`grasp_contact_links()` / `hand_links()` carry the six mimic links (both knuckles and
+both inner fingers per side). The bars are fixed children of a mimic link, which
+`grasp_contact_links()` does not follow, so the grasp and workspace-contact
+exemptions do not cover them: they stay checked.
+
+The URDF lowering emits only `joints` + `fixed_attachments` links, so the linkage
+entries are spliced in by hand. The fleet drift guard therefore checks this robot's
+ACM only. `tests/unit/test_droid_robotiq_finger_mimic.py` holds:
+
+- every geometry entry to the fitter's output, byte for byte;
+- the kernel's FK to the URDF over the stroke;
+- the start pose free of trips.
+
+The ACM is `openral collision lower --acm-only`, with `assets.srdf` from
+`droid_franka_robotiq.srdf`:
+
+- the adjacent pairs, which includes each linkage link with its parent;
+- **two hand-reviewed rows**, `left_/right_proximal_phalanx ↔ left_/right_distal_phalanx`.
+
+Those two links are pinned together on the real gripper: the closed four-bar pin
+joint the URDF tree omits. Their collision meshes interpenetrate 3.95 / 5.89 /
+5.97 mm at `f` = 0 / 0.5 / 1, and the kernel's hulls overlap 16.1 / 16.9 / 16.2 mm,
+so the checked pair would trip at every opening.
+
+At the scenes' start pose (0, −π/5, 0, −4π/5, 0, 3π/5, 0), no checked pair trips.
+The nearest checked pair is:
+
+| Fraction | Pair | Gap |
+| --- | --- | --- |
+| `f = 0` | the two inner knuckles | +2.1 mm |
+| `f = 0.5` | Robotiq base ↔ inner finger | +2.5 mm |
+| `f = 1` | outer knuckle ↔ inner knuckle | +4.2 mm |
+
+**The linkage model and the two SRDF rows are user-approved 2026-10-16, needs
+Safety-WG review + hazard-log row (CLAUDE.md §3).**
 
 Safety limits are `franka_panda`'s, provisional.
