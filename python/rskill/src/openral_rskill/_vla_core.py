@@ -711,11 +711,15 @@ class CudaGraphChunkForward:
         Raises:
             ROSRuntimeError: The capture failed (on this call or an earlier one).
         """
-        if self._capture_error is not None:
-            raise ROSRuntimeError(*self._capture_error.args) from self._capture_error
+        self._raise_if_capture_failed()
         if kwargs or self._disabled is not None:
             return self._forward(batch, **kwargs)
         with self._lock, self._torch.cuda.device(self._device):
+            # Re-check under the lock: a caller that waited here behind the first
+            # capture must not capture again after it failed or latched eager.
+            self._raise_if_capture_failed()
+            if self._disabled is not None:
+                return self._forward(batch)
             if self._graph is None:
                 self._capture(batch)
             mismatch = self._load(batch)
@@ -724,6 +728,10 @@ class CudaGraphChunkForward:
                 return self._forward(batch)
             self._graph.replay()
             return _clone_chunk_output(self._static_out, self._torch)
+
+    def _raise_if_capture_failed(self) -> None:
+        if self._capture_error is not None:
+            raise ROSRuntimeError(*self._capture_error.args) from self._capture_error
 
     def _disable(self, reason: str, **fields: Any) -> None:
         self._disabled = reason

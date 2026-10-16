@@ -167,6 +167,41 @@ def test_a_failed_capture_raises_now_and_on_every_later_call() -> None:
     assert done.stdout.splitlines()[-2:] == ["RAISED", "LATCHED"], done.stdout[-500:]
 
 
+@pytest.mark.parametrize("latched", ["capture_failed", "input_layout_changed"])
+def test_a_caller_queued_behind_the_lock_honours_what_the_first_latched(
+    flow: Any, latched: str
+) -> None:
+    """A second caller that passed the unlocked check must not capture again once inside."""
+    import threading
+    import time
+
+    from openral_core.exceptions import ROSRuntimeError
+
+    graphed = _wrapped(flow)
+    result: dict[str, Any] = {}
+
+    def call() -> None:
+        try:
+            result["out"] = graphed(_batch(1))
+        except ROSRuntimeError as exc:
+            result["err"] = exc
+
+    with graphed._lock:  # the "first caller" mid-capture
+        waiter = threading.Thread(target=call)
+        waiter.start()
+        time.sleep(0.2)  # the waiter is now blocked on the lock, past the unlocked check
+        if latched == "capture_failed":
+            graphed._capture_error = ROSRuntimeError("capture failed earlier")
+        else:
+            graphed._disable("input_layout_changed")
+    waiter.join(timeout=30)
+    assert graphed._graph is None, "the queued caller captured a second graph"
+    if latched == "capture_failed":
+        assert "capture failed earlier" in str(result.get("err"))
+    else:
+        assert result["out"].shape == (1, _CHUNK, _DOF)  # eager, as latched
+
+
 def test_capture_ctx_wraps_warmup_and_capture_only(flow: Any) -> None:
     entered: list[int] = []
 
