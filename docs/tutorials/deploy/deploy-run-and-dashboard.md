@@ -572,6 +572,11 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
   field can be overridden without editing it, e.g.
   `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
+  `on` also makes the tracked objects the safety kernel's grasp-exemption source
+  (`tracked_grasp_exemption_enabled`, issue #418 K2): a finger is exempt only against
+  the cells of the one nearest eligible tracked target per hand, cover-checked on the
+  kernel's own grid, instead of the HAL's measured region. It needs
+  `runtime.grasp_allowance_enabled: true`; the launch refuses `on` without it.
 
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.
