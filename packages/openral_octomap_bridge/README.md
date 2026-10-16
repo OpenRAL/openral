@@ -349,8 +349,11 @@ reaches below a support (`floor_swept_box`):
   attested (a vision pick's attestation lasts only until the payload moves, so it is
   latched for the carry), and one cell above every declared static-geometry point
   (`static_points_file`) under its footprint below its top;
-- with no support under it, its floor is the REGION payload's lowest point at attach
-  (`evidence_kind == "grasp_target_region"`: the producer-measured grasp-target region);
+- it never starts below the REGION payload's lowest point at attach
+  (`evidence_kind == "grasp_target_region"`: the producer-measured grasp-target region),
+  even with a support under it: the floor is the highest of every bound, since a static
+  point under the box (the room floor) does not prove it is the surface the payload was
+  lifted from (an undeclared table only the camera sees);
 - with neither (a segmented payload — its bottom can take in counter and depth-edge
   points, which floored three LeIsaac g17 boxes at z 0.020-0.027 under a 0.030 counter
   top — or a gripper-closure jaw box, and no known support) it is **not cleared**, and

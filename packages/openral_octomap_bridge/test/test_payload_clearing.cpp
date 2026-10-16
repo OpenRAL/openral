@@ -1629,12 +1629,51 @@ TEST(PayloadSweepFloor, AnAttestedSupportFloorsAsBefore) {
   table.max_penetration = 0.002;
   bridge::SweepSupports supports;
   supports.patches = {table};
-  supports.has_measured_floor = true;  // a support under the box wins over the floor
-  supports.measured_floor_z = 0.05;
+  supports.has_measured_floor = true;  // below the patch floor: the patch bound wins
+  supports.measured_floor_z = kTableTop;
   EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
   ASSERT_TRUE(bridge::trim_swept_box_above_supports(same, {table}, 0.015));
   EXPECT_NEAR(box.lo.z(), same.lo.z(), 1e-12) << "the attested rule is unchanged";
   EXPECT_NEAR(box.lo.z(), kTableTop + 0.002 + 0.015, 1e-12);
+}
+
+TEST(PayloadSweepFloor, AMeasuredFloorAboveAnAttestedSupportStillApplies) {
+  bridge::SweptBox box = carried_low();
+  bridge::SupportPatch table;
+  table.point = tf2::Vector3(0.52, 0.02, kTableTop);
+  table.patch_radius = 0.03;
+  table.max_penetration = 0.002;
+  bridge::SweepSupports supports;
+  supports.patches = {table};
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = 0.05;
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
+  EXPECT_NEAR(box.lo.z(), 0.05, 1e-12) << "the highest bound wins";
+}
+
+TEST(PayloadSweepFloor, AStaticPointWellBelowTheBoxDoesNotDropTheMeasuredFloor) {
+  // CodeRabbit #417: the declared static geometry holds only the room floor, the real
+  // support is an undeclared table only the camera sees. The static point must only
+  // raise the floor, never switch the measured one off and clear through the table.
+  bridge::SweptBox box = carried_low();
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.50, 0.00, -0.75)};  // the room floor under it
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = kTableTop;  // the banana rested on the table at attach
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
+  ASSERT_TRUE(box.valid);
+  EXPECT_GE(box.lo.z(), kTableTop) << "never through the measured table";
+  EXPECT_NEAR(box.lo.z(), kTableTop, 1e-12);
+}
+
+TEST(PayloadSweepFloor, AStaticPointAboveTheMeasuredFloorRaisesIt) {
+  bridge::SweptBox box = carried_low();
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.50, 0.00, 0.03)};  // a shelf over the table
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = kTableTop;
+  EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kSupport);
+  EXPECT_NEAR(box.lo.z(), 0.03 + 0.015, 1e-12);
 }
 
 TEST(PayloadSweepFloor, DeclaredStaticGeometryUnderTheBoxIsASupport) {
