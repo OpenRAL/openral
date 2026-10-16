@@ -972,6 +972,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
     initial_task_prompt: str | None = None,
+    runtime_overrides: dict[str, object] | None = None,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -1012,6 +1013,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         )
 
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
+    if runtime_overrides:
+        deploy_scene = _with_runtime_overrides(deploy_scene, runtime_overrides)
     scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
     robot_id = (
         _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
@@ -1539,6 +1542,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "runtime.workspace_contact_enabled is sim-only until Safety-WG review "
             "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
         )
+    # The #418 tracker owning attachment_state (bind | on) is sim-only until Safety-WG
+    # review; shadow publishes tracked_objects that nothing consumes, so it may run.
+    if hal_mode == "real" and rt is not None and rt.object_tracking in ("bind", "on"):
+        raise ROSConfigError(
+            f"runtime.object_tracking={rt.object_tracking!r} is sim-only until Safety-WG "
+            "review (issue #418): deploy run refuses it; 'shadow' is allowed."
+        )
     # The payload's octree clearing removes world occupancy: sim-only until Safety-WG review.
     if hal_mode == "real" and rt is not None and rt.payload_sweep_clear_enabled:
         raise ROSConfigError(
@@ -1739,6 +1749,17 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # on `deploy run`, and again by the launch on a non-sim HAL).
     if rt is not None and rt.payload_sweep_clear_enabled:
         argv_template.append("payload_sweep_clear_enabled:=true")
+    # The #418 object tracker: forwarded only when on, so the off path's argv is unchanged.
+    # The launch adds the tracked cameras' robot masks and gates the HAL bridge's
+    # attachment_state publisher in bind/on.
+    if rt is not None and rt.object_tracking != "off":
+        argv_template.extend(
+            [
+                f"object_tracking:={rt.object_tracking}",
+                f"grounding_wait_s:={rt.grounding_wait_s}",
+                f"grounding_required:={str(rt.grounding_required).lower()}",
+            ]
+        )
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
     # else repo-relative, resolved absolute; a declared file that is missing is a config error
     # (never run without walls the scene declared).
@@ -2117,6 +2138,40 @@ def _assert_graph_unoccupied_or_exit(env: dict[str, str], *, hal_mode: str) -> N
     except ROSConfigError as exc:
         _console.print(f"[red]refusing to launch:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+def _with_runtime_overrides(
+    deploy_scene: DeployScene | None, overrides: dict[str, object]
+) -> DeployScene:
+    """``deploy_scene`` with ``--runtime key=value`` applied to its ``runtime`` block.
+
+    The scene file is never edited; the merged block is re-validated whole, so an
+    override cannot produce a posture the schema refuses (e.g. ``object_tracking=shadow``
+    without ``grounding_wait_s``).
+
+    Raises:
+        ROSConfigError: No scene to override, or the merged runtime does not validate.
+
+    Example:
+        >>> from openral_core import DeployScene
+        >>> scene = DeployScene.from_yaml("scenes/deploy/isaac_leisaac_pick_orange.yaml")
+        >>> rt = _with_runtime_overrides(
+        ...     scene, {"object_tracking": "shadow", "grounding_wait_s": 8}
+        ... ).runtime
+        >>> rt.object_tracking, rt.grounding_wait_s
+        ('shadow', 8.0)
+    """
+    from openral_core import DeployRuntime
+    from pydantic import ValidationError
+
+    if deploy_scene is None:
+        raise ROSConfigError("--runtime needs a --config DeployScene to override.")
+    base = deploy_scene.runtime.model_dump() if deploy_scene.runtime is not None else {}
+    try:
+        runtime = DeployRuntime.model_validate({**base, **overrides})
+    except ValidationError as exc:
+        raise ROSConfigError(f"--runtime overrides do not validate: {exc}") from exc
+    return deploy_scene.model_copy(update={"runtime": runtime})
 
 
 def _parse_hal_overrides(raw: list[str] | None) -> dict[str, object]:
@@ -3273,6 +3328,15 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "constructor via ``hal_transport_json``."
         ),
     ),
+    runtime: list[str] = typer.Option(  # reason: typer Option idiom
+        None,
+        "--runtime",
+        help=(
+            "Override a ``DeployRuntime`` field of the scene, ``key=value`` (repeatable, "
+            "JSON-parsed like ``--hal``), re-validated whole; the scene file is untouched. "
+            "E.g. ``--runtime object_tracking=shadow --runtime grounding_wait_s=8``."
+        ),
+    ),
     enable_slam: bool | None = typer.Option(
         None,
         "--enable-slam/--no-enable-slam",
@@ -3555,6 +3619,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         overrides = _parse_hal_overrides(hal)
         invocation = resolve_launch_invocation(
             config=config,
+            runtime_overrides=_parse_hal_overrides(runtime),
             robot_override=robot,
             dashboard_port=dashboard_port,
             reset_to_pose_service=reset_to_pose_service,

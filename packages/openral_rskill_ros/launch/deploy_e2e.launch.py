@@ -1134,6 +1134,63 @@ def _runner_joint_state_staleness_s(
     return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
+_TRACKING_MODES = ("off", "shadow", "bind", "on")
+
+
+def _object_tracking(
+    mode: str,
+    *,
+    hal_mode: str,
+    vision_attachment_enabled: bool,
+    enable_octomap: bool,
+    grounding_wait_s: str,
+    cameras: str,
+    depth_cameras: list[str],
+) -> tuple[str, tuple[str, ...]]:
+    """``DeployRuntime.object_tracking`` (issue #418) checked, with the cameras it tracks.
+
+    ``off`` composes nothing. Otherwise the tracker needs the octomap leg (its map
+    confirmation), the vision attachment leg (its trigger publishes
+    ``/openral/grasp_events``; it brings up the segmenter) and an explicit
+    ``grounding_wait_s``; ``bind`` / ``on`` are sim-only until Safety-WG review.
+    ``cameras`` (comma-separated) empty = every publishing depth camera.
+
+    Example:
+        >>> _object_tracking(
+        ...     "shadow",
+        ...     hal_mode="real",
+        ...     vision_attachment_enabled=True,
+        ...     enable_octomap=True,
+        ...     grounding_wait_s="8",
+        ...     cameras="",
+        ...     depth_cameras=["top_depth"],
+        ... )
+        ('shadow', ('top_depth',))
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if mode not in _TRACKING_MODES:
+        raise ROSConfigError(f"object_tracking={mode!r}; expected one of {_TRACKING_MODES}.")
+    if mode == "off":
+        return mode, ()
+    if mode in ("bind", "on") and hal_mode != "sim":
+        raise ROSConfigError(
+            f"object_tracking={mode!r} is sim-only until Safety-WG review (issue #418); "
+            f"refused on hal_mode={hal_mode!r}. 'shadow' is allowed."
+        )
+    if not grounding_wait_s:
+        raise ROSConfigError(f"object_tracking={mode!r} needs an explicit grounding_wait_s.")
+    if not (vision_attachment_enabled and enable_octomap):
+        raise ROSConfigError(
+            f"object_tracking={mode!r} needs the octomap leg (map confirmation) and the "
+            "vision attachment leg (/openral/grasp_events and the segmenter)."
+        )
+    tracked = tuple(c.strip() for c in cameras.split(",") if c.strip()) or tuple(depth_cameras)
+    if not tracked:
+        raise ROSConfigError(f"object_tracking={mode!r}: no depth camera to track with.")
+    return mode, tracked
+
+
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
     """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
 
@@ -2114,6 +2171,21 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         update={"sensors": apply_sensor_overlays(description.sensors, unit_overlays)}
     )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
+    # Issue #418: the Layer-2 object tracker (off by default; checked here once).
+    object_tracking, tracked_cameras = _object_tracking(
+        LaunchConfiguration("object_tracking").perform(context),
+        hal_mode=hal_mode,
+        vision_attachment_enabled=vision_attachment_enabled,
+        enable_octomap=enable_octomap,
+        grounding_wait_s=LaunchConfiguration("grounding_wait_s").perform(context),
+        cameras=LaunchConfiguration("object_tracking_cameras").perform(context),
+        depth_cameras=[s.name for s in publishing if s.modality == "depth"],
+    )
+    # One value for the kernel (K5), the voxel bridge (released-box clearing) and the
+    # tracker (how long a released binding stays on attachment_state): they must agree.
+    tracked_release_timeout_s = float(
+        LaunchConfiguration("tracked_release_timeout_s").perform(context)
+    )
     gripper_convention = LaunchConfiguration("gripper_convention").perform(context)
     envelope = compute_intersection(
         description,
@@ -2170,6 +2242,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 print(f"[deploy_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
+    kernel_params["tracked_release_timeout_s"] = tracked_release_timeout_s
     # The kernel refuses sim-only rules (workspace contact, #349) on anything but sim.
     kernel_params["hal_mode"] = hal_mode
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
@@ -2529,6 +2602,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
+    reasoner_params["object_tracking"] = object_tracking
     # Offer the read-only locate_in_view tool to the LLM only when an on-demand
     # locator (``--object-detector-locator``) is actually in the graph.
     # ``detector_node_wiring`` (detector_factory.py) makes the two detector
@@ -2700,6 +2774,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             ),
             hal_params_file,
             {"use_sim_time": use_sim_time},
+            # After the params file: in bind/on the tracker owns /openral/attachment_state,
+            # and two publishers on that latched topic would interleave revisions.
+            *(
+                [{"vision_attachment_publish_attachment_state": False}]
+                if object_tracking in ("bind", "on")
+                else []
+            ),
         ],
         # The unit this launch resolved (scene `robot_unit`, else the inherited env), so a
         # sim HAL that renders the robot's cameras (the Isaac scene) places them at the
@@ -2817,6 +2898,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Issue #418: the scene task's standing ObjectQuery s; inert while the
                 # runner's object_tracking is "off".
                 "object_queries_json": object_queries_json,
+                "object_tracking": object_tracking,
                 # Approach-armed grasp target (§2.2): a goal-scope declaration per
                 # goal, only when the exemption is on AND the HAL's grasp-target
                 # leg measures around an approaching hand.
@@ -3525,11 +3607,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                 runtime_joint_states_topic or "/joint_states",
                                 rig.robot_self_filter_padding_m,
                                 tuple(
-                                    c.strip()
-                                    for c in LaunchConfiguration("robot_mask_cameras")
-                                    .perform(context)
-                                    .split(",")
-                                    if c.strip()
+                                    dict.fromkeys(
+                                        [
+                                            *(
+                                                c.strip()
+                                                for c in LaunchConfiguration("robot_mask_cameras")
+                                                .perform(context)
+                                                .split(",")
+                                                if c.strip()
+                                            ),
+                                            *tracked_cameras,  # the tracker's robot masks
+                                        ]
+                                    )
                                 ),
                             ),
                             "use_sim_time": use_sim_time,
@@ -3616,6 +3705,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # Stop republishing an octree that stopped arriving, so the
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
+                    "released_clear_timeout_s": tracked_release_timeout_s,
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
@@ -3835,13 +3925,24 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     ).perform(context),
                     "cameras": [
                         f"{va_camera}="
-                        + LaunchConfiguration("vision_attachment_rgb_topic").perform(context)
+                        + LaunchConfiguration("vision_attachment_rgb_topic").perform(context),
+                        # The tracker's cameras: each depth camera's registered RGB stream.
+                        *(
+                            f"{c}={camera_topic(c, CameraTopicKind.IMAGE)}"
+                            for c in tracked_cameras
+                            if c != va_camera
+                        ),
                     ],
                     "camera_infos": [
                         f"{va_camera}="
                         + LaunchConfiguration("vision_attachment_rgb_camera_info_topic").perform(
                             context
-                        )
+                        ),
+                        *(
+                            f"{c}={camera_topic(c, CameraTopicKind.CAMERA_INFO)}"
+                            for c in tracked_cameras
+                            if c != va_camera
+                        ),
                     ],
                     "primary_camera": va_camera,
                     "device": LaunchConfiguration("vision_attachment_segmenter_device").perform(
@@ -3860,6 +3961,45 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         )
         extra_nodes.append(segmenter)
         autostart += _autostart_lifecycle(segmenter, "openral_segmenter")
+
+    if object_tracking != "off":
+        # Issue #418: the Layer-2 object tracker (packages/world_state/README.md).
+        tracker = LifecycleNode(
+            package="openral_world_state",
+            executable="object_tracker_node",
+            name="openral_object_tracker",
+            namespace="",
+            parameters=[
+                {
+                    "robot_yaml": robot_yaml,
+                    "mode": object_tracking,
+                    "hal_mode": hal_mode,
+                    "cameras": list(tracked_cameras),
+                    "cell_m": _octomap_resolution(hal_mode),
+                    "grounding_wait_s": float(
+                        LaunchConfiguration("grounding_wait_s").perform(context)
+                    ),
+                    "grounding_required": LaunchConfiguration("grounding_required")
+                    .perform(context)
+                    .lower()
+                    in ("1", "true", "yes"),
+                    "released_clear_timeout_s": tracked_release_timeout_s,
+                    "object_queries_json": object_queries_json,
+                    # The first on-demand locator, if any; none = seeds and refreshes only.
+                    "locate_service": (
+                        f"/openral/perception/{locator_specs[0]['segment']}/locate_in_view"
+                        if locator_specs
+                        else ""
+                    ),
+                    "joint_states_topic": runtime_joint_states_topic or "/joint_states",
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            additional_env=otel_env,
+            output="screen",
+        )
+        extra_nodes.append(tracker)
+        autostart += _autostart_lifecycle(tracker, "openral_object_tracker")
 
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM
@@ -4173,6 +4313,44 @@ def generate_launch_description() -> LaunchDescription:
                 "Serialized openral_core.GraspDeclaration (real pick-and-place "
                 "design §2.1) the skill_runner scopes to each goal it "
                 "dispatches. Empty = no declaration, no grasp exemption."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "object_tracking",
+            default_value="off",
+            description=(
+                "DeployRuntime.object_tracking (issue #418): off | shadow | bind | on. Not "
+                "off: the Layer-2 object tracker runs (needs octomap, the vision attachment "
+                "leg and grounding_wait_s); bind/on make it own /openral/attachment_state "
+                "and are sim-only until Safety-WG review. Also passed to the skill runner "
+                "and the reasoner."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "grounding_wait_s",
+            default_value="",
+            description="DeployRuntime.grounding_wait_s; required when object_tracking is on.",
+        ),
+        DeclareLaunchArgument(
+            "grounding_required",
+            default_value="false",
+            description="DeployRuntime.grounding_required (issue #418).",
+        ),
+        DeclareLaunchArgument(
+            "object_tracking_cameras",
+            default_value="",
+            description=(
+                "Comma-separated depth cameras the object tracker uses (each also gets a "
+                "robot mask). Empty = every publishing depth camera."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tracked_release_timeout_s",
+            default_value="3.0",
+            description=(
+                "One value for the kernel's tracked_release_timeout_s, the voxel bridge's "
+                "released_clear_timeout_s and the object tracker's: how long a released "
+                "tracked binding stays frozen on the wire (issue #418)."
             ),
         ),
         DeclareLaunchArgument(

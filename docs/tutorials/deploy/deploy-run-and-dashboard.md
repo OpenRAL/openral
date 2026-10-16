@@ -567,6 +567,12 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   openral deploy run --config scenes/deploy/so100_pick_cube.yaml --hal port=/dev/ttyUSB1
   ```
 
+- `runtime.object_tracking` (issue #418): `deploy run` allows only `shadow` (the object
+  tracker publishes `/openral/tracked_objects`, nothing consumes it); `bind` / `on` are
+  sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
+  field can be overridden without editing it, e.g.
+  `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
+
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.
   Keep your E-stop within reach.
