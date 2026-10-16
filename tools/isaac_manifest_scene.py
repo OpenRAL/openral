@@ -47,6 +47,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "stage_objects": [{"name", "prim"}],  # rigid bodies inside the environment USD
       "strip_xform_colliders": bool,     # drop CollisionAPI from Xform prims of the stage
       "dome_light": {"intensity", "color"} | null,  # for a stage that ships no lights
+      "joint_effort_limits": {joint_regex: Nm},  # drive maxForce caps, fullmatch on joint name
     }
 """
 
@@ -2356,7 +2357,39 @@ class IsaacManifestScene(IsaacSceneBase):
                 f"self-collision {'on' if self_collide else 'off'} (as imported)",
                 flush=True,
             )
+        self._cap_joint_efforts(stage, prim_path)
         return prim_path
+
+    def _cap_joint_efforts(self, stage: Any, prim_path: str) -> None:
+        """Cap each matching joint's drive force (``joint_effort_limits``, N*m angular).
+
+        LeIsaac's SO-101 tasks grip with the jaw limited to the object's mass / 0.15;
+        at the URDF's full effort the jaw squeezes a light sphere out of its grasp.
+        """
+        import re
+
+        from pxr import UsdPhysics
+
+        limits = self._spec.get("joint_effort_limits") or {}
+        if not limits:
+            return
+        from pxr import Usd
+
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(prim_path)):
+            if not prim.IsA(UsdPhysics.Joint):
+                continue
+            cap = next(
+                (float(v) for pat, v in limits.items() if re.fullmatch(pat, prim.GetName())),
+                None,
+            )
+            if cap is None:
+                continue
+            kind = "angular" if prim.IsA(UsdPhysics.RevoluteJoint) else "linear"
+            UsdPhysics.DriveAPI.Apply(prim, kind).CreateMaxForceAttr(cap)
+            print(
+                f"[isaac_manifest_scene] joint {prim.GetName()} drive maxForce capped at {cap}",
+                flush=True,
+            )
 
     def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
         """Move the world-frame base anchor (Isaac >= 6) to a world pose."""

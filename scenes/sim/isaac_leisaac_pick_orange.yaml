@@ -32,7 +32,9 @@
 #
 # Not reproduced: LeIsaac's per-episode randomization (objects +-3 cm x/y, the
 # front camera +-2.5 cm / +-2.5 deg); every episode starts from the authored layout.
-# Nor its dynamic gripper effort limit (nearest object's mass / 0.15 N*m).
+# Its dynamic gripper effort limit (nearest object's mass / 0.15 N*m) is held at the
+# oranges' value: every orange is 0.15 kg in the stage USD -> 1.0 N*m
+# (`joint_effort_limits`; LeIsaac would raise it to 3.3 next to the 0.5 kg plate).
 #
 # Requirements: NVIDIA RTX GPU, Isaac Sim 6.x (a binary install such as
 # /opt/isaac-sim, or the sidecar venv), network access to github.com on first use.
@@ -67,6 +69,8 @@ scene:
     control_freq_hz: 60.0
     joint_drive_gains:
       ".*": [17.8, 0.6]
+    joint_effort_limits:
+      gripper: 1.0
     dome_light:
       intensity: 3000.0
       color: [0.75, 0.75, 0.75]

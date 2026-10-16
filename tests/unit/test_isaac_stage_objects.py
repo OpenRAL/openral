@@ -62,7 +62,19 @@ def test_default_options_change_nothing_for_existing_scenes() -> None:
         "stage_objects": [],
         "strip_xform_colliders": False,
         "dome_light": None,
+        "joint_effort_limits": {},
     }
+
+
+def test_the_pick_orange_scene_caps_the_jaw_at_leisaacs_orange_effort() -> None:
+    # LeIsaac: gripper effort = nearest object's mass / 0.15; every orange is 0.15 kg.
+    spec = _environment_spec(IsaacSimOptions.model_validate(_options()))
+    assert spec["joint_effort_limits"] == {"gripper": 1.0}
+
+
+def test_an_effort_cap_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="must be > 0"):
+        IsaacSimOptions(joint_effort_limits={"gripper": 0.0})
 
 
 def test_spec_carries_the_stage_fixes_and_the_stage_objects() -> None:
