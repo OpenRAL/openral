@@ -63,7 +63,24 @@ def test_default_options_change_nothing_for_existing_scenes() -> None:
         "strip_xform_colliders": False,
         "dome_light": None,
         "joint_effort_limits": {},
+        "physx_scene": None,
+        "collision_approximation": {},
     }
+
+
+def test_the_pick_orange_scene_matches_leisaacs_contact_physics() -> None:
+    # LeIsaac: convexDecomposition finger colliders; single_arm_env_cfg sim.physx values.
+    spec = _environment_spec(IsaacSimOptions.model_validate(_options()))
+    assert spec["collision_approximation"] == {"gripper|jaw": "convexDecomposition"}
+    assert spec["physx_scene"] == {
+        "friction_correlation_distance": 0.00625,
+        "bounce_threshold": 0.01,
+    }
+
+
+def test_an_unknown_collision_approximation_is_refused() -> None:
+    with pytest.raises(ValueError):
+        IsaacSimOptions.model_validate({"collision_approximation": {"jaw": "meshSimplification"}})
 
 
 def test_the_pick_orange_scene_caps_the_jaw_at_leisaacs_orange_effort() -> None:

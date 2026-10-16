@@ -48,6 +48,8 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "strip_xform_colliders": bool,     # drop CollisionAPI from Xform prims of the stage
       "dome_light": {"intensity", "color"} | null,  # for a stage that ships no lights
       "joint_effort_limits": {joint_regex: Nm},  # drive maxForce caps, fullmatch on joint name
+      "physx_scene": {"friction_correlation_distance", "bounce_threshold"} | null,
+      "collision_approximation": {link_regex: token},  # PhysX mesh approximation per link
     }
 """
 
@@ -1731,6 +1733,7 @@ class IsaacManifestScene(IsaacSceneBase):
         # rendered world.step() runs app.update(), which advances rendering_dt.
         dt = physics_dt_for(self._control_freq_hz)
         self._world = World(stage_units_in_meters=1.0, physics_dt=dt, rendering_dt=dt)
+        self._apply_physx_scene()
         if self._environment_usd:
             self._add_environment(self._environment_usd)
         else:
@@ -2358,7 +2361,62 @@ class IsaacManifestScene(IsaacSceneBase):
                 flush=True,
             )
         self._cap_joint_efforts(stage, prim_path)
+        self._set_collision_approximation(stage, prim_path)
         return prim_path
+
+    def _apply_physx_scene(self) -> None:
+        """Author the spec's ``physx_scene`` contact settings on the World's physics scene."""
+        settings = self._spec.get("physx_scene") or {}
+        if not any(v is not None for v in settings.values()):
+            return
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import PhysxSchema, UsdPhysics
+
+        scene = next((p for p in get_current_stage().Traverse() if p.IsA(UsdPhysics.Scene)), None)
+        if scene is None:
+            raise RuntimeError("physx_scene is set but the World has no UsdPhysics.Scene prim")
+        api = PhysxSchema.PhysxSceneAPI.Apply(scene)
+        if settings.get("friction_correlation_distance") is not None:
+            api.CreateFrictionCorrelationDistanceAttr(
+                float(settings["friction_correlation_distance"])
+            )
+        if settings.get("bounce_threshold") is not None:
+            api.CreateBounceThresholdAttr(float(settings["bounce_threshold"]))
+        print(f"[isaac_manifest_scene] physx scene {scene.GetPath()}: {settings}", flush=True)
+
+    def _set_collision_approximation(self, stage: Any, prim_path: str) -> None:
+        """Set each matching link's collider approximation (``collision_approximation``).
+
+        The converter's colliders are instanceable, so a matching link's subtree is
+        de-instanced first (instance proxies cannot be edited).
+        """
+        import re
+
+        from pxr import Usd, UsdPhysics
+
+        patterns = self._spec.get("collision_approximation") or {}
+        if not patterns:
+            return
+        links = [
+            p
+            for p in Usd.PrimRange(stage.GetPrimAtPath(prim_path))
+            if p.HasAPI(UsdPhysics.RigidBodyAPI)
+            and any(re.fullmatch(pat, p.GetName()) for pat in patterns)
+        ]
+        for link in links:
+            token = next(v for pat, v in patterns.items() if re.fullmatch(pat, link.GetName()))
+            while instances := [p for p in Usd.PrimRange(link) if p.IsInstance()]:
+                for inst in instances:
+                    inst.SetInstanceable(False)
+            n = 0
+            for prim in Usd.PrimRange(link):
+                if prim.HasAPI(UsdPhysics.CollisionAPI) and prim.GetTypeName() == "Mesh":
+                    UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr().Set(token)
+                    n += 1
+            print(
+                f"[isaac_manifest_scene] link {link.GetName()}: {n} collider(s) -> {token}",
+                flush=True,
+            )
 
     def _cap_joint_efforts(self, stage: Any, prim_path: str) -> None:
         """Cap each matching joint's drive force (``joint_effort_limits``, N*m angular).
