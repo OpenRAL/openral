@@ -73,7 +73,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
 | `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
-## Per-instance topics (11)
+## Per-instance topics (10)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -82,7 +82,6 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/cameras/{sensor}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure) |
 | `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/cameras/{sensor}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{sensor}/robot_mask` | `sensor_msgs/Image` | — | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure) |
 | `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |
 | `/openral/perception/{kind}` | `openral_msgs/PromptStamped` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
@@ -119,7 +118,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (46)
+## Unresolved endpoints (47)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -150,6 +149,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `topic` | `sensor_msgs/JointState` | tools/joint_state_staleness_probe.py (run) |
 | topic | pub | `topic` | `std_msgs/Empty` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | topic | sub | `arm_status_topic` | `action_msgs/GoalStatusArray` | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) |
+| topic | sub | `camera_topic(name, CameraTopicKind.ROBOT_MASK)` | `sensor_msgs/Image` | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure) |
 | topic | sub | `completion_camera_topic` | `sensor_msgs/Image` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | topic | sub | `depth[c]` | `sensor_msgs/Image` | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | topic | sub | `depth_topic` | `sensor_msgs/PointCloud2` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode._setup_depth_points_fallback) |
