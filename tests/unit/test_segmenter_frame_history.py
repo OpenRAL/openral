@@ -13,14 +13,18 @@ unchanged and still refuses a frame that is gone.
 
 from __future__ import annotations
 
+import threading
+import time
 from collections import deque
 
 from openral_core import DeployScene, RobotDescription, load_scene_strict
 from openral_hal.vision_attachment_bridge import mask_depth_skew_reason
 from openral_perception_ros.segmenter_node import (
+    DEFAULT_FRAME_WAIT_S,
     DEFAULT_MAX_FRAME_SKEW_S,
     FRAME_HISTORY,
     frame_nearest_stamp,
+    wait_for_frame,
 )
 
 _SCENE = "scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml"
@@ -91,3 +95,58 @@ def test_an_empty_cache_is_refused() -> None:
     frame, reason = frame_nearest_stamp([], 1, max_skew_s=DEFAULT_MAX_FRAME_SKEW_S)
     assert frame is None
     assert reason.startswith("ROSPerceptionStale:")
+
+
+def test_a_request_ahead_of_the_cache_waits_for_its_frame() -> None:
+    """DROID t7: the attach request named a depth frame whose RGB twin had not arrived.
+
+    The newest cached frame was one tick (0.133 s at the 7.5 Hz sim sensor) older than
+    the stamp, beyond the 0.1 s skew. The request now waits for the frame it names; it
+    arrives 50 ms later and is served, at zero skew to the HAL's depth.
+    """
+    cache = _stream(4)
+    tick = _tick_ns()
+    depth_stamp_ns = cache[-1][0] + 2 * tick  # its RGB twin is still on its way
+    arrived = threading.Condition()
+
+    def deliver() -> None:
+        time.sleep(0.05)
+        with arrived:
+            cache.append((depth_stamp_ns, "twin"))
+            arrived.notify_all()
+
+    threading.Thread(target=deliver, daemon=True).start()
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: cache, arrived, depth_stamp_ns,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=DEFAULT_FRAME_WAIT_S,
+    )  # fmt: skip
+    assert (frame, reason) == ("twin", "")
+    assert time.monotonic() - start < DEFAULT_FRAME_WAIT_S
+    assert mask_depth_skew_reason([depth_stamp_ns], depth_stamp_ns, max_skew_s=0.1) == ""
+
+
+def test_a_frame_that_never_arrives_is_refused_after_the_wait() -> None:
+    cache = _stream(4)
+    ahead_ns = cache[-1][0] + 3 * _tick_ns()
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: cache, threading.Condition(), ahead_ns,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=0.1,
+    )  # fmt: skip
+    assert frame is None
+    assert reason.startswith("ROSPerceptionStale:") and "waited 0.100 s" in reason
+    assert time.monotonic() - start >= 0.1
+
+
+def test_a_request_behind_the_cache_is_refused_without_waiting() -> None:
+    """The frame it names is gone (older than the history), not on its way: no wait."""
+    cache = _stream(30)
+    gone_ns = 26_000_000_000
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: cache, threading.Condition(), gone_ns,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=DEFAULT_FRAME_WAIT_S,
+    )  # fmt: skip
+    assert frame is None and reason.startswith("ROSPerceptionStale:")
+    assert time.monotonic() - start < 0.05

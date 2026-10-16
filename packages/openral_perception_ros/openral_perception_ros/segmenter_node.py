@@ -82,6 +82,10 @@ Parameters:
         when none is within this many seconds. Default ``0.1``, the HAL's own
         ``vision_attachment_mask_depth_max_skew_s``. A zero stamp is served from
         the newest frame.
+    frame_wait_s (float): when no cached frame is within the skew and the newest is
+        OLDER than the request's stamp, wait up to this long for a frame at or after it
+        (``wait_for_frame``). Default ``0.2``. The image subscriptions run in their own
+        callback group on a multi-threaded executor, so frames arrive while it waits.
 
 **Which frame a request is served from.** The HAL stamps a request with the depth
 frame it will back-project the masks through, and refuses masks cut from a frame
@@ -103,6 +107,7 @@ changes nothing.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -123,6 +128,7 @@ __all__ = [
     "mono8_bytes_from_mask",
     "projection_geometry",
     "sensor_spec_by_name",
+    "wait_for_frame",
 ]
 
 #: Service name the HAL's vision attachment bridge calls by default.
@@ -140,6 +146,10 @@ FRAME_HISTORY = 8
 
 #: Default ``max_frame_skew_s``: the HAL's ``vision_attachment_mask_depth_max_skew_s``.
 DEFAULT_MAX_FRAME_SKEW_S = 0.1
+
+#: Default ``frame_wait_s``: how long a request stamped AFTER the newest cached frame
+#: waits for its frame to arrive (an RGB message trailing its depth twin: DROID t7).
+DEFAULT_FRAME_WAIT_S = 0.2
 
 
 _Frame = TypeVar("_Frame")
@@ -179,6 +189,54 @@ def frame_nearest_stamp(
             f"stamp (nearest {skew / 1e9:.3f} s off, {len(frames)} cached)"
         )
     return best, ""
+
+
+def wait_for_frame(
+    frames: Callable[[], Sequence[tuple[int, _Frame]]],
+    arrived: threading.Condition,
+    stamp_ns: int,
+    *,
+    max_skew_s: float,
+    wait_s: float,
+) -> tuple[_Frame | None, str]:
+    """``frame_nearest_stamp``, waiting up to ``wait_s`` when the request is AHEAD of the cache.
+
+    A request stamped with a depth frame can reach the segmenter before that frame's
+    RGB twin (one render, two topics): then no cached frame is within the skew and the
+    newest one is OLDER than the stamp (Isaac DROID deploy sim t7, 2026-10-16: 0.133 s,
+    one frame). The frame it names is still on its way, so wait for it, woken by each
+    new frame (``arrived`` is notified by the image callback, which must run on another
+    thread). A request stamped before the newest frame, or one still unmatched after
+    ``wait_s``, is refused as before.
+
+    Args:
+        frames: Returns the cache, ``(stamp_ns, frame)`` oldest first; called under
+            ``arrived``'s lock.
+        arrived: Notified whenever a frame is cached.
+        stamp_ns: The request's stamp; ``0`` takes the newest frame, never waits.
+        max_skew_s: Largest accepted ``|frame stamp - stamp_ns|``, seconds.
+        wait_s: Longest wait for a frame at or after ``stamp_ns``, seconds.
+
+    Returns:
+        ``frame_nearest_stamp``'s ``(frame, "")`` or ``(None, reason)``.
+
+    Example:
+        >>> cv = threading.Condition()
+        >>> wait_for_frame(lambda: [(1_000, "a")], cv, 1_000, max_skew_s=0.1, wait_s=0.2)
+        ('a', '')
+    """
+    deadline = time.monotonic() + max(wait_s, 0.0)
+    with arrived:
+        while True:
+            cached = list(frames())
+            frame, reason = frame_nearest_stamp(cached, stamp_ns, max_skew_s=max_skew_s)
+            ahead = bool(cached) and stamp_ns != 0 and cached[-1][0] < stamp_ns
+            remaining = deadline - time.monotonic()
+            if frame is not None or not ahead or remaining <= 0.0:
+                if frame is None and ahead and wait_s > 0.0:
+                    reason = f"{reason}; waited {wait_s:.3f} s for a frame at or after it"
+                return frame, reason
+            arrived.wait(timeout=remaining)
 
 
 def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec | None:
@@ -341,12 +399,21 @@ def _node_class() -> type:
             self.declare_parameter("debug_masks_topic", DEFAULT_DEBUG_MASKS_TOPIC)
             self.declare_parameter("device", "auto")
             self.declare_parameter("max_frame_skew_s", DEFAULT_MAX_FRAME_SKEW_S)
+            self.declare_parameter("frame_wait_s", DEFAULT_FRAME_WAIT_S)
 
             # The last FRAME_HISTORY (stamp_ns, (bgr, width, height, header.frame_id,
             # header.stamp)) per camera: the header travels with the pixels so geometry
             # and the reply's masks name the frame they actually came from, and a
             # request's stamp picks the frame (``frame_nearest_stamp``).
             self._frames: dict[str, deque[tuple[int, tuple[bytes, int, int, str, Any]]]] = {}
+            # Notified on every cached frame; a service call waiting for its frame
+            # (``wait_for_frame``) sleeps on it.
+            self._frame_arrived = threading.Condition()
+            from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+            # The image callbacks' own group: they keep caching while a service call
+            # waits for its frame (multi-threaded executor, ``main``).
+            self._image_group = MutuallyExclusiveCallbackGroup()
             self._cameras: dict[str, str] = {}
             self._info_topics: dict[str, str] = {}
             self._infos: dict[str, Any] = {}
@@ -402,7 +469,13 @@ def _node_class() -> type:
                 durability=QoSDurabilityPolicy.VOLATILE,
             )
             self._subs = [
-                self.create_subscription(Image, topic, self._make_cache_cb(cid), img_qos)
+                self.create_subscription(
+                    Image,
+                    topic,
+                    self._make_cache_cb(cid),
+                    img_qos,
+                    callback_group=self._image_group,
+                )
                 for cid, topic in self._cameras.items()
             ] + [
                 self.create_subscription(CameraInfo, topic, self._make_info_cb(cid), img_qos)
@@ -562,9 +635,11 @@ def _node_class() -> type:
                     return
                 header = msg.header
                 stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
-                self._frames.setdefault(cid, deque(maxlen=FRAME_HISTORY)).append(
-                    (stamp_ns, (bgr, w, h, str(header.frame_id), header.stamp))
-                )
+                with self._frame_arrived:
+                    self._frames.setdefault(cid, deque(maxlen=FRAME_HISTORY)).append(
+                        (stamp_ns, (bgr, w, h, str(header.frame_id), header.stamp))
+                    )
+                    self._frame_arrived.notify_all()
 
             return _cb
 
@@ -576,18 +651,18 @@ def _node_class() -> type:
 
         def _frame_for(self, camera: str, stamp: Any) -> tuple[Any, str]:
             """The cached frame of ``camera`` a request stamped ``stamp`` is served from."""
-            cached = self._frames.get(camera)
-            if not cached:
+            if not self._frames.get(camera):
                 return None, (
                     f"ROSPerceptionStale: no frame cached for camera {camera!r} "
                     f"(known: {sorted(self._frames)})"
                 )
-            frame, stale = frame_nearest_stamp(
-                list(cached),
+            gp = self.get_parameter
+            frame, stale = wait_for_frame(
+                lambda: self._frames.get(camera, ()),
+                self._frame_arrived,
                 int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
-                max_skew_s=self.get_parameter("max_frame_skew_s")
-                .get_parameter_value()
-                .double_value,
+                max_skew_s=gp("max_frame_skew_s").get_parameter_value().double_value,
+                wait_s=gp("frame_wait_s").get_parameter_value().double_value,
             )
             return frame, f"{stale} (camera {camera!r})" if stale else ""
 
@@ -829,14 +904,20 @@ def make_segmenter_node(node_name: str = "openral_segmenter") -> Any:
 def main(args: Sequence[str] | None = None) -> None:
     """Entry point: init ROS, spin the segmenter node, shut down cleanly."""
     import rclpy
-    from openral_observability.rclpy_spin import spin_node_until_shutdown
+    from openral_observability.rclpy_spin import spin_executor_until_shutdown
+    from rclpy.executors import MultiThreadedExecutor
 
     rclpy.init(args=args)
     node = make_segmenter_node()
+    # Two threads: the image callbacks (their own group) keep caching while a
+    # SegmentInView call waits for the frame its stamp names (``frame_wait_s``).
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
         try:
-            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
+            spin_executor_until_shutdown(executor)  # quiet on the SIGINT shutdown race
         finally:
+            executor.shutdown()
             node.destroy_node()
     finally:
         rclpy.try_shutdown()  # idempotent — no-op if context already shut down
