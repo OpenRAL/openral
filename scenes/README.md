@@ -357,7 +357,10 @@ rubric grades it too). `isaac_sim` is a `robot_unit_io` scene: its state is the
 manifest joint vector, so `sim run` applies the rSkill's `PolicyIOCodec` (here
 LeIsaac's per-joint motor-unit `joint_calibration`) exactly as the deploy runner
 does. LeIsaac's dynamic gripper effort limit (nearest object's mass / 0.15) is held
-at the oranges' 1.0 N·m (`joint_effort_limits`). Not reproduced: LeIsaac's per-episode
+at the oranges' 1.0 N·m (`joint_effort_limits`). The finger colliders use LeIsaac's
+`convexDecomposition` (`collision_approximation`; the URDF converter's single hulls are
+2.3–2.6× the finger meshes and pinch an orange off-centre) and the PhysX scene LeIsaac's
+friction correlation distance and bounce threshold (`physx_scene`). Not reproduced: LeIsaac's per-episode
 object and camera randomization, and the arm-at-rest term of its success check.
 Its deploy twin, [`deploy/isaac_leisaac_pick_orange.yaml`](deploy/isaac_leisaac_pick_orange.yaml),
 runs the same kitchen under `openral deploy sim` at 60 Hz with the safety kernel's

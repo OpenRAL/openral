@@ -887,6 +887,24 @@ class IsaacDomeLight(BaseModel):
         return v
 
 
+class IsaacPhysxScene(BaseModel):
+    """PhysX scene contact settings a training sim set away from Isaac's defaults.
+
+    LeIsaac's SO-101 tasks: ``friction_correlation_distance`` 0.00625 m (default
+    0.025) and ``bounce_threshold`` 0.01 m/s (default 0.2), which change how a
+    dropped or nudged sphere rolls and bounces. ``None`` keeps Isaac's default.
+
+    Example:
+        >>> IsaacPhysxScene(bounce_threshold=0.01).friction_correlation_distance is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    friction_correlation_distance: float | None = Field(default=None, gt=0.0)
+    bounce_threshold: float | None = Field(default=None, ge=0.0)
+
+
 class IsaacEnvironmentArchive(BaseModel):
     """A pinned zip holding the environment USD (``environment_archive``).
 
@@ -1197,6 +1215,15 @@ class IsaacSimOptions(BaseModel):
     # light to a stage that ships none (it would render black).
     strip_xform_colliders: bool = False
     dome_light: IsaacDomeLight | None = None
+    # PhysX scene contact settings (IsaacPhysxScene), authored on the World's physics scene.
+    physx_scene: IsaacPhysxScene | None = None
+    # Collider approximation per robot link: URDF link-name regex (fullmatch) -> PhysX
+    # mesh approximation. The URDF converter wraps each collision mesh in one convex hull;
+    # an SO-101 finger hull is 2.3-2.6x its mesh and pinches an orange off-centre, where
+    # LeIsaac's robot USD uses convexDecomposition.
+    collision_approximation: dict[
+        str, Literal["convexHull", "convexDecomposition", "boundingCube", "boundingSphere", "sdf"]
+    ] = Field(default_factory=dict)
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
@@ -1273,6 +1300,18 @@ class IsaacSimOptions(BaseModel):
                 raise ValueError(f"joint_drive_gains[{pattern!r}] is not a regex: {exc}") from exc
             if stiffness < 0 or damping < 0:
                 raise ValueError(f"joint_drive_gains[{pattern!r}] must be >= 0")
+        return value
+
+    @field_validator("collision_approximation")
+    @classmethod
+    def _approximation_patterns_valid(cls, value: dict[str, str]) -> dict[str, str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"collision_approximation[{pattern!r}] is not a regex: {exc}"
+                ) from exc
         return value
 
     @field_validator("joint_effort_limits")
@@ -2409,12 +2448,20 @@ def _environment_spec(opts: IsaacSimOptions) -> dict[str, Any]:
     """The robot spec's environment-USD load fields (``stage_objects`` and the fixes).
 
     Example:
-        >>> sorted(_environment_spec(IsaacSimOptions()))
-        ['dome_light', 'joint_effort_limits', 'stage_objects', 'strip_xform_colliders']
+        >>> sorted(_environment_spec(IsaacSimOptions()))  # doctest: +NORMALIZE_WHITESPACE
+        ['collision_approximation', 'dome_light', 'joint_effort_limits', 'physx_scene',
+         'stage_objects', 'strip_xform_colliders']
     """
     return opts.model_dump(
         mode="json",
-        include={"stage_objects", "strip_xform_colliders", "dome_light", "joint_effort_limits"},
+        include={
+            "stage_objects",
+            "strip_xform_colliders",
+            "dome_light",
+            "joint_effort_limits",
+            "physx_scene",
+            "collision_approximation",
+        },
     )
 
 
@@ -2541,6 +2588,8 @@ def _placement(
             "depth_cameras",
             "joint_drive_gains",
             "joint_effort_limits",
+            "physx_scene",
+            "collision_approximation",
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
             "placement_success",

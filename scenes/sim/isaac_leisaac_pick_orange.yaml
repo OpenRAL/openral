@@ -71,6 +71,14 @@ scene:
       ".*": [17.8, 0.6]
     joint_effort_limits:
       gripper: 1.0
+    # LeIsaac's robot USD decomposes the finger colliders; the URDF converter's single
+    # hulls are 2.3-2.6x the finger meshes and pinch an orange off-centre.
+    collision_approximation:
+      "gripper|jaw": convexDecomposition
+    # LeIsaac single_arm_env_cfg: sim.physx bounce / friction correlation.
+    physx_scene:
+      friction_correlation_distance: 0.00625
+      bounce_threshold: 0.01
     dome_light:
       intensity: 3000.0
       color: [0.75, 0.75, 0.75]
