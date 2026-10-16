@@ -218,3 +218,33 @@ def test_a_scale_array_of_the_wrong_length_is_a_config_error() -> None:
     robot, _ = _robot("so101_follower", "so101_follower.urdf")
     with pytest.raises(ROSConfigError, match="urdf_joint_scales"):
         urdf_joint_units(len(robot.joints), [1.0], list(URDF_JOINT_UNITS_UNSET))
+
+
+@pytest.mark.parametrize("hal_mode", ["sim", "real"])
+def test_the_deploy_launch_maps_the_so101_jaw_for_robot_state_publisher(hal_mode: str) -> None:
+    """The real SO-101 (serial HAL, no ros2_control broadcaster) publishes the manifest's
+    units on /joint_states as the twin does, so /tf needs the same map in both modes."""
+    for dep in ("launch", "launch_ros", "lifecycle_msgs", "openral_foxglove_bringup"):
+        pytest.importorskip(dep, reason=f"{dep} is a module-level import of the launch file")
+    import importlib.util
+    import sys
+
+    from openral_hal.resolver import ros_control_hal
+
+    launch = _ROBOTS.parent / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
+    spec = importlib.util.spec_from_file_location("deploy_e2e_launch_rsp_units", launch)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["deploy_e2e_launch_rsp_units"] = module
+    spec.loader.exec_module(module)
+    robot, urdf = _robot("so101_follower", "so101_follower.urdf")
+    assert not ros_control_hal(robot, mode="real")
+    so101_map = module._rsp_urdf_joint_map(
+        robot, str(_ROBOTS / "so101_follower/robot.yaml"), hal_mode
+    )
+    assert so101_map is not None and so101_map == urdf_joint_map(robot, urdf)
+    # A ros2_control arm (the OpenArm): the vendor broadcaster's URDF names, on real only.
+    openarm = RobotDescription.from_yaml(str(_ROBOTS / "openarm/robot.yaml"))
+    openarm_map = module._rsp_urdf_joint_map(openarm, str(_ROBOTS / "openarm/robot.yaml"), hal_mode)
+    assert ros_control_hal(openarm, mode="real")
+    assert (openarm_map is None) == (hal_mode == "real")

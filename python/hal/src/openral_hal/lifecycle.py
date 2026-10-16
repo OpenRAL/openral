@@ -879,7 +879,7 @@ if _ROS2_AVAILABLE:
             return self.on_configure_post_hal()
 
         def _open_urdf_joint_state_pub(self, msg_type: Any, qos: Any) -> None:  # noqa: ANN401  # reason: rclpy message/QoS types are untyped
-            """Open ``~/urdf_joint_states`` when ``urdf_joint_names`` is set (sim twins only).
+            """Open ``~/urdf_joint_states`` when ``urdf_joint_names`` is set (no ros2_control).
 
             A real ros2_control robot's vendor broadcaster already publishes the
             URDF names, so the renamed stream is never opened beside it.
