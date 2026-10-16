@@ -631,3 +631,45 @@ def test_a_fixed_slot_has_no_destination_query_and_two_destinations_refuse() -> 
         placement_queries([("orange_1", "plate"), ("orange_2", "bowl")])
     with pytest.raises(ROSConfigError, match="at least one"):
         placement_queries([])
+
+
+def test_an_unseen_label_becomes_a_standing_query_only_with_tracking() -> None:
+    """Addendum G: with tracking on, a label no camera sees yet is not refused on the first
+    frame — the declaration carries a count-one query with no search box and the tracker
+    keeps looking (escalating to EXHAUSTED itself). Tracking off keeps today's refusal."""
+    live = _lift(_ORANGES)
+    grasp = GraspTargetRef(label="banana", contact_links=["openarm_left_finger_pair"])
+    with pytest.raises(ROSReasonerInvalidPlan, match="no live 3D detection"):
+        _ground(grasp, live)
+    decl = ground_grasp_target(
+        grasp,
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        default_contact_links=gripper_hands(_OPENARM),
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+        hand=hand_joint(_OPENARM, ["openarm_left_finger_pair"]),
+    )
+    assert decl.target_queries == (
+        ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET, hand="left_gripper"),
+    )
+    assert decl.search_box is None and decl.region is None
+    assert decl.target_id == "obj:banana"
+
+    with pytest.raises(ROSReasonerInvalidPlan, match="could not be grounded"):
+        _ground_place(PlaceTargetRef(label="bowl"), live)
+    place = ground_place_target(
+        PlaceTargetRef(label="bowl"),
+        live_objects=live,
+        scene_graph=None,
+        base_frame=_BASE,
+        patience_s=60.0,
+        pad_m=_PAD,
+        object_tracking=True,
+    )
+    assert place.destination_query == ObjectQuery(
+        label="bowl", count="one", role=ObjectRole.DESTINATION
+    )
+    assert place.search_box is None and place.target_id == "surface:bowl"
