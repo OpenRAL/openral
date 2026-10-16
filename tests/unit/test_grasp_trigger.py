@@ -228,6 +228,11 @@ def test_a_left_grasp_fires_only_the_left_trigger(openarm: RobotDescription) -> 
 
 def test_an_uncalibrated_gripper_refuses_to_arm() -> None:
     so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    so101 = so101.model_copy(
+        update={
+            "joints": [j.model_copy(update={"closure_calibration": None}) for j in so101.joints]
+        }
+    )
     with pytest.raises(ROSConfigError, match="closure_calibration"):
         PositionStallTrigger(so101)
 

@@ -125,6 +125,32 @@ joints:
     # matching so100_follower. The
     # gripper is one of the 6 enumerated joints (not a separate channel).
     role: "gripper"
+    # Position-stall grasp-trigger thresholds, in the [0, 1] fraction units of this
+    # channel. SIM-MEASURED (2026-10-16), following the method of
+    # docs/reference/real-pick-place-design.md §1.6 / §5 as far as sim allows:
+    # - closed_position: the channel's closed end (`position_limits[0]`).
+    # - closed_rest_offset 0.0023: the p99 of |measured - commanded| over the settled
+    #   commanded-closed samples (1672) of the LeIsaac PickOrange teleop dataset (60
+    #   episodes, Isaac sim teleop). The Isaac 6.1 twin's own empty close (open to 0.8
+    #   / 0.5, then f = 0 with nothing between the jaws, at the reset pose) rests at
+    #   0.00012; the larger value is kept.
+    # - stall_gap 0.08: between the dataset's free-motion tracking error (|gap| on
+    #   settled non-stalled samples: p99.9 0.037, max 0.044) and its stalls on an orange
+    #   (gap p1 0.087, median 0.169). OpenArm's 0.08 sits between 0.025 and 0.18 the
+    #   same way.
+    # - settle_tolerance 0.002: about 2 STS3215 position LSBs (2 pi / 4096 rad =
+    #   0.00088 in this fraction under Isaac's 1.7453 f map). It covers 99 % of the
+    #   dataset's settled non-stall 0.13 s spans (p99 0.0019). The twin's empty close is
+    #   flat to 2e-9. A stalled orange in the dataset spans more (median 0.016), so the
+    #   trigger arms on the flattest stalls only.
+    # UNVERIFIED ON A REAL SO-101: re-measure on hardware (an attended empty close plus
+    # teleop traces, §5) before any real `grasp_allowance_enabled` deploy. Safety-WG
+    # item; a hazard-log row is owed.
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0023
+      stall_gap: 0.08
+      settle_tolerance: 0.002
 
 # The jaw as a moving link of the collision model, posed from the `gripper`
 # fraction f by the URDF `gripper` joint's origin and axis at q_jaw = 1.7453 * f

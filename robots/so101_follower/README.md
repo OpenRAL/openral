@@ -50,6 +50,25 @@ MJCF reference: `robot_descriptions:so_arm101_mj_description` —
 `description.joints`, so the manifest's names (`shoulder_pan`, …, `gripper`)
 form the user-facing contract while the MJCF stays as upstream ships it.
 
+## Grasp-trigger calibration
+
+`joints[gripper].closure_calibration` holds the position-stall grasp-trigger
+thresholds, in fraction units. They follow the method of
+[`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md)
+§1.6 / §5 as far as simulation allows:
+
+| Value | Setting | Where it comes from |
+| --- | --- | --- |
+| `closed_position` | 0.0 | the channel's closed end |
+| `closed_rest_offset` | 0.0023 | p99 of the LeIsaac PickOrange teleop dataset's settled commanded-closed samples; the Isaac 6.1 twin's empty close rests at 0.00012 |
+| `stall_gap` | 0.08 | between the dataset's free-motion tracking error (max 0.044) and its stalls on an orange (p1 0.087) |
+| `settle_tolerance` | 0.002 | about 2 STS3215 position LSBs |
+
+**These values are sim-measured** (Isaac 6.1 twin plus LeIsaac sim-teleop data) and
+**unverified on a real SO-101**. Re-measure them on hardware before any real
+`grasp_allowance_enabled` deploy. This is a Safety-WG item, and a hazard-log row is
+owed.
+
 ## Collision model
 
 `collision_geometry` is hand-authored (the drift guard checks its ACM only):
