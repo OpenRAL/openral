@@ -139,7 +139,6 @@ from openral_core import (
     AttachmentEvidenceKind,
     CameraTopicKind,
     ControlMode,
-    FixedAttachment,
     JointSpec,
     MimicJoint,
     VisionAttachmentRuntime,
@@ -148,6 +147,13 @@ from openral_core import (
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.kinematics import (
+    bounding_half_extents,
+    box_gap_lower_bound_m,
+)
+from openral_core.kinematics import edge_chain as _edge_chain
+from openral_core.kinematics import joint_motion as _joint_motion
+from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 from openral_core.perception_geometry import lattice_from_msg
 
 from openral_hal._grasp_target_leg import GraspTargetLeg, _locked
@@ -410,99 +416,6 @@ _Box = tuple["NDArray[np.float64]", "NDArray[np.float64]", "NDArray[np.float64]"
 _FramedBox = tuple["NDArray[np.float64]", "NDArray[np.float64]"]
 
 
-def bounding_half_extents(shape: Any) -> NDArray[np.float64]:
-    """Half extents of a box containing a primitive, in the primitive's frame.
-
-    A box is itself, a sphere its cube, a capsule (segment along local +Z) its
-    ``(r, r, L/2 + r)`` box. Containment makes every distance measured on the
-    result a lower bound on the distance to the primitive — the conservative side
-    for a test that may only *end* a window once things are proven apart.
-
-    Example:
-        >>> from openral_core import CapsuleShape
-        >>> half = bounding_half_extents(CapsuleShape(radius_m=0.01, length_m=0.1))
-        >>> [round(float(v), 6) for v in half]
-        [0.01, 0.01, 0.06]
-    """
-    from openral_core import BoxShape, CapsuleShape, SphereShape
-
-    if isinstance(shape, BoxShape):
-        return np.asarray(shape.half_extents_m, dtype=np.float64)
-    if isinstance(shape, SphereShape):
-        return np.full(3, float(shape.radius_m), dtype=np.float64)
-    if isinstance(shape, CapsuleShape):
-        r = float(shape.radius_m)
-        return np.array([r, r, float(shape.length_m) / 2.0 + r], dtype=np.float64)
-    raise ROSConfigError(f"release window: cannot bound collision primitive {shape!r}.")
-
-
-def _xyz_rpy_matrix(xyz: Sequence[float], rpy: Sequence[float]) -> NDArray[np.float64]:
-    """``(4, 4)`` from a translation and fixed-axis roll-pitch-yaw (``R = Rz Ry Rx``, URDF)."""
-    cr, sr = np.cos(rpy[0]), np.sin(rpy[0])
-    cp, sp = np.cos(rpy[1]), np.sin(rpy[1])
-    cy, sy = np.cos(rpy[2]), np.sin(rpy[2])
-    t = np.eye(4, dtype=np.float64)
-    t[:3, :3] = [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ]
-    t[:3, 3] = xyz
-    return t
-
-
-def _joint_motion(joint: Any, q: float) -> NDArray[np.float64]:
-    """Child-in-parent motion of one joint at position ``q`` (applied after its origin)."""
-    from openral_core.schemas import JointType
-
-    axis = np.asarray(joint.axis_xyz, dtype=np.float64)
-    axis = axis / np.linalg.norm(axis)
-    t = np.eye(4, dtype=np.float64)
-    if joint.joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
-        k = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
-        t[:3, :3] = np.eye(3) + np.sin(q) * k + (1.0 - np.cos(q)) * (k @ k)
-    elif joint.joint_type is JointType.PRISMATIC:
-        t[:3, 3] = q * axis
-    else:
-        raise ROSConfigError(
-            f"release window: jaw joint {joint.name!r} is {joint.joint_type.value}; only "
-            "revolute, continuous and prismatic jaws are posed."
-        )
-    return t
-
-
-def _edge_chain(
-    description: RobotDescription, root: str, link: str
-) -> tuple[tuple[Any, NDArray[np.float64]], ...] | None:
-    """The ``(edge, origin)`` chain from ``root`` down to ``link``, or ``None`` off its subtree.
-
-    Each link has one defining edge (``RobotDescription`` validates it): a joint, a
-    mimic joint or a fixed attachment, each with its origin in the parent frame.
-
-    Example:
-        >>> from openral_core import RobotDescription
-        >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
-        >>> [e.name for e, _ in _edge_chain(d, "robotiq_arg2f_base_link", "left_bar")]
-        ['left_outer_knuckle_joint', 'left_bar_joint']
-        >>> _edge_chain(d, "robotiq_arg2f_base_link", "panda_link3") is None
-        True
-    """
-    edge_of: dict[str, JointSpec | MimicJoint | FixedAttachment] = {
-        **{j.child_link: j for j in description.joints},
-        **{m.child_link: m for m in description.mimic_joints},
-        **{a.child_link: a for a in description.fixed_attachments},
-    }
-    chain: list[tuple[Any, NDArray[np.float64]]] = []
-    current = link
-    while current != root:
-        edge = edge_of.get(current)
-        if edge is None:
-            return None
-        chain.append((edge, _xyz_rpy_matrix(edge.origin_xyz, edge.origin_rpy)))
-        current = edge.parent_link
-    return tuple(reversed(chain))
-
-
 def _link_boxes(description: RobotDescription, link: str) -> tuple[_FramedBox, ...]:
     """``link``'s manifest collision primitives, bounded as boxes, in the link frame."""
     return tuple(
@@ -513,51 +426,6 @@ def _link_boxes(description: RobotDescription, link: str) -> tuple[_FramedBox, .
         for geom in description.collision_geometry
         if geom.link_name == link
     )
-
-
-#: Below this a cross-product axis is degenerate (parallel edges).
-_PARALLEL_EPS = 1e-9
-
-
-def box_gap_lower_bound_m(a: _Box, b: _Box) -> float:
-    """Separating-axis lower bound on the distance between two oriented boxes.
-
-    The gap between the boxes' projections onto any unit axis never exceeds their
-    distance (projection is 1-Lipschitz), so the largest gap over the 15 SAT
-    axes is a sound lower bound — exact along a face normal, conservative across
-    an edge-edge pair. ``<= 0`` when the boxes overlap on every axis tried.
-
-    Args:
-        a: ``(centre, rotation, half_extents)`` of the first box.
-        b: The second box, same frame.
-
-    Returns:
-        A lower bound on the surface distance, metres.
-
-    Example:
-        >>> import numpy as np
-        >>> unit = (np.zeros(3), np.eye(3), np.full(3, 0.5))
-        >>> moved = (np.array([1.05, 0.0, 0.0]), np.eye(3), np.full(3, 0.5))
-        >>> round(box_gap_lower_bound_m(unit, moved), 6)
-        0.05
-    """
-    (ca, ra, ha), (cb, rb, hb) = a, b
-    axes = [ra[:, i] for i in range(3)] + [rb[:, i] for i in range(3)]
-    axes += [
-        np.asarray(np.cross(ra[:, i], rb[:, j]), dtype=np.float64)
-        for i in range(3)
-        for j in range(3)
-    ]
-    offset = cb - ca
-    gap = -np.inf
-    for axis in axes:
-        norm = float(np.linalg.norm(axis))
-        if norm < _PARALLEL_EPS:  # parallel edges: their face normals already cover the pair
-            continue
-        n = axis / norm
-        reach = float(np.sum(ha * np.abs(ra.T @ n)) + np.sum(hb * np.abs(rb.T @ n)))
-        gap = max(gap, abs(float(offset @ n)) - reach)
-    return float(gap)
 
 
 def freeze_released_attachment(

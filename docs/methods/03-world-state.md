@@ -122,6 +122,48 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable._
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step: greedy highest-confidence matching by same-label + `aabb_iou_3d ≥ iou_threshold` freezes a track (unchanged pose/bbox, bumped confidence); no match mints a new track. An unmatched track in FOV accrues `miss_count` and is evicted at `max_misses`; out of FOV it's retained unchanged. (L64)
 
+### `python/world_state/src/openral_world_state/object_tracker/pinch.py`
+_Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (`openral_core.kinematics`), pure numpy over the manifest, no HAL import._
+
+- `class PinchVolume(centre, axes, half, palm_m)` (L45) — An oriented box in the attach link, axes `(c, a, b)` = closing, approach, pad width; `palm_m` the palm plane `x·a ≥ palm_m` it never crosses.
+  - `box() -> Box` (L60) — `(centre, rotation, half)` for `box_gap_lower_bound_m`.
+  - `grown(margin_m) -> PinchVolume` (L64) — Every face out by `margin_m` (`J_h` takes one cell).
+- `class HandModel(description, gripper_joint)` (L69) — One `role: gripper` joint: attach link = its parent link, `touch_links` = `grasp_contact_links([joint])`, pads = touch links no other finger hangs off (the Robotiq's distal/proximal phalanges, the SO-101's moving jaw), closed end = `closure_calibration.closed_position`. Axes fixed per hand at contact: `c` the principal direction of the pads' closing motion, `a` palm → pads square to `c`. The palm plane is the jaw joint's origin, moved forward to the wrist link's front face over the carrying joint's range where the wrist reaches past it (SO-101: 17 mm; g20's cube hit it). `ROSConfigError` on a non-gripper joint, no calibration, or padless fingers.
+  - `pinch_in_link(jaw) -> PinchVolume` (L184) — `J_h` (unpadded): the box in `(c, a, b)` around the pads swept from the measured jaw to closed (16 samples), clipped at the palm plane.
+  - `fallback_in_link(jaw) -> PinchVolume` (L198) — The `PINCH_FALLBACK` payload: `J_h` extended half the pad gap past the fingertips; back face on or in front of the palm plane.
+  - `hand_boxes(frame, positions) -> list[Box]` (L212) — The fingers', palm link's and wrist's collision primitives as boxes in `frame` (never evidence of an object).
+  - `t_frame_from_attach(frame, positions) -> NDArray` (L220) — `T_frame<-attach_link` by FK.
+
+### `python/world_state/src/openral_world_state/object_tracker/binding.py`
+_Issue #418 WP C2, design "Grasp binding and in-hand update". ATTACH binds what meets `J_h`; the bound geometry then only grows (the kernel's K4 union). Logs `object_tracker.bound` / `untracked_grasp` / `ambiguous_grasp` / `bound_geometry_grew` / `bound_geometry_cap` / `protrusion_unexplained`._
+
+- `MAX_PRIMITIVES = 16` (L58) — The kernel's per-object primitive cap (K4).
+- `TRACKED_CONFIDENCE = 0.7` (L60) — A tracked binding's confidence (`region_attachment`'s).
+- `FALLBACK_CONFIDENCE = 0.2` (L62) — A pinch fallback's (the HAL jaw-span fallback's).
+- `class TrackStoreLike(Protocol)` (L72) — The C1 `TrackStore` interface.
+  - `get(object_id) -> TrackedObject | None` (L75) — One track.
+  - `all() -> list[TrackedObject]` (L78) — Every track.
+  - `replace(obj) -> None` (L81) — Store under its id; bumps the set revision.
+- `class BindOutcome(StrEnum)` (L85) — `TRACKED`, `AMBIGUOUS`, `UNTRACKED`.
+- `class Binding(outcome, attachment, candidates, reground)` (L94) — One hand's held payload as published on `/openral/attachment_state`; `reground` asks for a re-ground after lift.
+- `class GraspBinder(hand, *, frame_id, cell_m)` (L168) — One hand. `frame_id` must be the manifest's `base_frame` (FK root), else `ROSConfigError`.
+  - `pinch_in_frame(positions) -> Box` (L193) — `J_h` grown by one cell, in the grid frame.
+  - `object_pose(positions) -> Pose6D` (L199) — The held object frame in the grid frame, `FK(q) · pose_in_link` (the release pose).
+  - `on_attach(store, positions, stamp_ns) -> Binding` (L216) — Candidates: free tracks (TENTATIVE/CONFIRMED/OCCLUDED/SPLIT) of any role whose box meets `J_h`, and RELEASED tracks whose `fall_column` meets it. One: `TRACKED_OBJECT` under the track id (`pose_in_link = T_link⁻¹·T_obj`, the shape — `tight` hulls or the box — unioned with itself slid along `c` onto the pinch axis; a RELEASED one bound re-centred on `J_h` under `epoch + 1`), the track set BOUND. Two or more: `PINCH_FALLBACK` of the pinch box ∪ the candidates' boxes (one enclosing box past 15), object id `pinch:<joint>@<stamp>`, no track touched. None: the pinch fallback alone, `reground=True`.
+  - `on_regrasp(positions, stamp_ns) -> Binding | None` (L387) — Unions the shape slid onto the new pinch axis, `geometry_revision + 1`; `None` when already on it or past the cap (union kept).
+  - `grow_by_protrusion(store, grid, positions, stamp_ns) -> Binding | None` (L400) — Tracked bindings only: occupied cells within the payload's reach of the pinch axis that neither the bound geometry, another non-bound track nor the hand explain (½ cell), 26-connected to the payload; fits the rotation θ about the pinch axis (2° grid, residual < 1 cell, nearest the previous θ) and unions the arc in steps of ≤ one cell at the payload's reach. `None` when nothing protrudes, no θ fits, or the cap would be passed.
+  - `on_release() -> None` (L509) — Forget the held payload.
+
+### `python/world_state/src/openral_world_state/object_tracker/release.py`
+_Issue #418 WP C2, design "Release". Source-clock stamps only._
+
+- `class JawReleaseMonitor(hold, closed, release_gap, release_dwell_ns)` (L39) — The jaw-open trigger (the kernel's K5, mirrored): further from closed than `hold + release_gap` continuously for the dwell; a source clock going back restarts it.
+  - `for_hand(hand, *, hold, release_dwell_s) -> JawReleaseMonitor` (L62) — `release_gap` = half the manifest's `stall_gap` (its release hysteresis).
+  - `observe(jaw, stamp_ns) -> bool` (L68) — Fold one sample in; `True` once open for the dwell.
+- `release_track(store, object_id, *, object_pose, support_z, cell_m, stamp_ns) -> TrackedObject | None` (L98) — A BOUND track → RELEASED at the release pose (yaw-only box containing the tilted body, hulls dropped, binding fields cleared, support/floor from the support measured under the release pose); a box breaking the caps goes LOST (logged).
+- `fall_column(track, cell_m) -> PlaceRegion` (L150) — The release box down to its support, horizontal gate one cell + the release height (45° cone; no bounce model).
+- `reassociate_released(store, fit, *, fit_kind, support_z, support_ref, visible_cells, occupied_cells, cell_m, stamp_ns) -> TrackedObject | None` (L203) — A map-confirmed fit whose centre lies in exactly one RELEASED track's fall column returns it CONFIRMED, same id, `epoch + 1`, `identity_inferred`, on the new support; two columns is ambiguous (logged), none a new object.
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
 _C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
 

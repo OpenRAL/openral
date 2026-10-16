@@ -617,6 +617,18 @@ _Shared rotation geometry — look-at/camera gaze poses plus planar yaw↔quater
 - `yaw_to_quat_wxyz(yaw: float) -> tuple[w, x, y, z]` — Same rotation in MuJoCo order. (L120)
 - `quat_xyzw_to_yaw(x, y, z, w) -> float` — Planar yaw in `[-pi, pi]`, roll/pitch ignored. (L131)
 
+### `python/core/src/openral_core/kinematics.py`
+
+_Manifest forward kinematics and oriented-box helpers, moved down from `openral_hal.vision_attachment_bridge` (issue #418) so the Layer-2 object tracker poses the hand from joint states without importing the HAL; the HAL imports them from here. URDF / kernel convention (`origin · motion(q)`, `R = Rz Ry Rx`), mimic followers through `MimicJoint.value_at`; pinned against the URDF by `tests/unit/test_urdf_joint_map.py`. Not re-exported from `openral_core.__init__`._
+
+- `Box` (TypeAlias) — `(centre (3,), rotation (3, 3), half_extents (3,))` oriented box. (L43)
+- `bounding_half_extents(shape) -> NDArray` (L51) — Half extents of the box containing a box / sphere / capsule primitive (distances on it are lower bounds).
+- `transform_from_xyz_rpy(xyz, rpy) -> NDArray` (L73) — `(4, 4)` from translation + URDF fixed-axis RPY.
+- `joint_motion(joint, q) -> NDArray` (L93) — Revolute/continuous (Rodrigues) or prismatic motion after the joint origin; any other type is `ROSConfigError`.
+- `edge_chain(description, root, link) -> tuple[tuple[edge, origin], ...] | None` (L122) — The `(edge, origin)` chain from `root` down to `link` through `joints`, `mimic_joints` and `fixed_attachments`; `None` off `root`'s subtree.
+- `link_transform(description, root, link, positions) -> NDArray` (L154) — `T_root<-link` at joint positions by name, mimic-aware (never tf's jaw-fraction-as-radians); `ROSConfigError` off the subtree or on a missing position.
+- `box_gap_lower_bound_m(a, b) -> float` (L189) — Separating-axis (15 axes) lower bound on the distance between two oriented boxes; exact on a face normal, `<= 0` exactly on overlap. Not a kernel mirror (see `14-duplication-watch.md` "Convex distance").
+
 ### `python/core/src/openral_core/perception_geometry.py`
 
 _Pre-grasp target geometry (design note `docs/reference/real-pick-place-design.md` §2.2): seed from the voxel map, SAM prompt projection, a measured region from mask + depth, a map cross-check and a re-prompt tracking gate. Pure numpy, no ROS; the producer node that wires it is a follow-up. Every threshold is a calibration point; the caps are the Safety-WG placeholders. Moved down from `openral_hal._grasp_target` (issue #418) so the Layer-2 tracker can import it; `openral_hal._grasp_target` re-exports it._
