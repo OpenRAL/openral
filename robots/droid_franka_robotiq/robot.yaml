@@ -139,25 +139,35 @@ joints:
     actuator_kind: "servo"
     role: "gripper"
     # Position-stall grasp-trigger thresholds, in this channel's [0, 1] fraction units.
-    # SIM-MEASURED (2026-10-16) in the Isaac 6.1 deploy twin
-    # (scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml, start pose, nothing between
-    # the jaws, 15 Hz joint states): 3 empty closes 1 -> 0, one 0.5 -> 0, opens between.
+    # SIM-MEASURED (2026-10-16), Isaac 6.1 deploy twin of
+    # scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml, 15 Hz joint states, sim time:
+    # (a) the twin's empty closes (start pose, nothing between the jaws, 1 -> 0 and
+    #     0.5 -> 0): every close settles at 0.00000 (|gap| <= 3.6e-7);
+    # (b) deploy-sim trial t5's pi0.5 run (fox_mcap, /joint_states vs the commanded
+    #     fraction), split by phase, gap = measured - commanded, span = the jaw's spread
+    #     over the trigger's 5-sample settle window (0.267 s at 15 Hz):
+    #     - banana holds (command <= 0.20, settled, ticks 107-120 / 165-179): command
+    #       0.093-0.105, measured 0.469-0.696, gap 0.366-0.598, span 0.0028-0.0185;
+    #     - closed on nothing in the run (command <= 0.20, jaw at the command): gap
+    #       -0.0008..0.0073, span 0.0018-0.0163;
+    #     - free motion (command > 0.5): not a close command, span <= 0.0196.
     # - closed_position 0.0: the channel's closed end (`position_limits[0]`).
-    # - closed_rest_offset 0.0: every empty close settles at 0.00000 (within 2 ticks).
-    #   The sidecar's curve clamps a leader past pi/4 to 0, so an overshoot would read 0.
-    # - stall_gap 0.08: settled free-motion error is 0 (max 3.6e-7 over the last 10
-    #   ticks of every hold), and a 37 mm banana (its smallest USD bound) meets the pads
-    #   near f = 0.8 (URDF pad gap ~36 mm at f = 0.8, ~1.5 mm at f = 0), so a stall on it
-    #   reads ~0.8 from a closed command. 0.08 is the OpenArm's / SO-101's gap, far from
-    #   both. It is also the band a COMMAND must be within of closed (f <= 0.08) to arm.
-    # - settle_tolerance 0.002: the twin's settled 5-sample span is <= 3.6e-7.
+    # - closed_rest_offset 0.0: (a).
+    # - close_band 0.20: pi0.5 holds the banana at commands 0.09-0.15, outside a
+    #   stall_gap band (user-approved value). A command within 0.20 of closed arms.
+    # - stall_gap 0.15: 20x the largest closed-on-nothing gap (0.0073), 0.41x the smallest
+    #   banana-hold gap (0.366); its half (0.075, the slip/release hysteresis) is still
+    #   10x the closed-on-nothing gap.
+    # - settle_tolerance 0.02: above the largest settled hold span (0.0185); a closing
+    #   jaw moves ~0.4 per tick in the twin, far outside it.
     # UNVERIFIED ON A REAL ROBOTIQ (no real HAL exists): re-measure on hardware before
     # any real `grasp_allowance_enabled` deploy. Safety-WG item; a hazard-log row is owed.
     closure_calibration:
       closed_position: 0.0
       closed_rest_offset: 0.0
-      stall_gap: 0.08
-      settle_tolerance: 0.002
+      stall_gap: 0.15
+      settle_tolerance: 0.02
+      close_band: 0.20
 
 end_effectors:
   - name: "robotiq_2f85"
