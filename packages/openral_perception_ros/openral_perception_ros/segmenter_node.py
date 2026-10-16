@@ -2,7 +2,7 @@
 """Promptable-segmenter service node (``segmenter`` rSkill kind).
 
 Subscribes one or more camera ``sensor_msgs/Image`` streams, caches each
-camera's latest frame, and serves ``/openral/perception/segment_in_view``
+camera's last ``FRAME_HISTORY`` frames, and serves ``/openral/perception/segment_in_view``
 (``openral_msgs/srv/SegmentInView``): a read-only, on-demand "which pixels of
 camera Y's current view belong to the thing under *this* 3-D point?", backed by
 a ``kind: "segmenter"`` rSkill (SAM 2.1 hiera-small) running **in process**
@@ -77,6 +77,18 @@ Parameters:
     device (str): ``auto`` (CUDA when available), ``cpu``, ``cuda``, ``cuda:N``.
         ``cpu`` is the honest setting on a pre-sm_70 dev GPU, where the CUDA
         wheels have no kernels for the card.
+    max_frame_skew_s (float): a request with a non-zero ``stamp`` is served from
+        the cached frame nearest that stamp, and refused (``ROSPerceptionStale``)
+        when none is within this many seconds. Default ``0.1``, the HAL's own
+        ``vision_attachment_mask_depth_max_skew_s``. A zero stamp is served from
+        the newest frame.
+
+**Which frame a request is served from.** The HAL stamps a request with the depth
+frame it will back-project the masks through, and refuses masks cut from a frame
+too far from it. Serving the newest frame instead paired a slow segmenter's
+masks with a depth frame 2-3 frames older (Isaac DROID deploy sim t3, 2026-10-16:
+0.133-0.200 s at 15 Hz, every pre-measurement refused). So each camera keeps a
+short history and the request's stamp picks the frame.
 
 **The debug mask topic is not a second contract.** The HAL's producer takes its
 masks from *its own* service reply and gates them on geometry; this topic exists
@@ -92,8 +104,9 @@ changes nothing.
 from __future__ import annotations
 
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
 
@@ -103,6 +116,8 @@ if TYPE_CHECKING:  # pragma: no cover — typing only, keeps numpy off the impor
     from openral_core import IntrinsicsPinhole, RobotDescription, SensorSpec
 
 __all__ = [
+    "FRAME_HISTORY",
+    "frame_nearest_stamp",
     "main",
     "make_segmenter_node",
     "mono8_bytes_from_mask",
@@ -118,6 +133,52 @@ DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
 #: ``/openral/perception/objects``, and is the topic the dashboard's
 #: ``PerceptionOverlaySubscriber`` reads to paint mask overlays.
 DEFAULT_DEBUG_MASKS_TOPIC = "/openral/perception/masks"
+
+#: Frames cached per camera: a few ticks of history, enough for the request a slow
+#: model serves late to still find the frame its stamp names.
+FRAME_HISTORY = 8
+
+#: Default ``max_frame_skew_s``: the HAL's ``vision_attachment_mask_depth_max_skew_s``.
+DEFAULT_MAX_FRAME_SKEW_S = 0.1
+
+
+_Frame = TypeVar("_Frame")
+
+
+def frame_nearest_stamp(
+    frames: Sequence[tuple[int, _Frame]], stamp_ns: int, *, max_skew_s: float
+) -> tuple[_Frame | None, str]:
+    """The cached frame a request stamped ``stamp_ns`` is served from, or why there is none.
+
+    Args:
+        frames: ``(stamp_ns, frame)`` pairs, oldest first.
+        stamp_ns: The request's stamp. ``0`` (unstamped) takes the newest frame.
+        max_skew_s: Largest accepted ``|frame stamp - stamp_ns|``, seconds.
+
+    Returns:
+        ``(frame, "")``, or ``(None, reason)`` with a typed ``ROSPerceptionStale`` reason.
+
+    Example:
+        >>> frames = [(1_000, "a"), (2_000, "b"), (3_000, "c")]
+        >>> frame_nearest_stamp(frames, 2_100, max_skew_s=1e-6)
+        ('b', '')
+        >>> frame_nearest_stamp(frames, 0, max_skew_s=1e-6)
+        ('c', '')
+        >>> frame_nearest_stamp(frames, 9_000, max_skew_s=1e-6)[1][:19]
+        'ROSPerceptionStale:'
+    """
+    if not frames:
+        return None, "ROSPerceptionStale: no frame cached"
+    if stamp_ns == 0:
+        return frames[-1][1], ""
+    best_ns, best = min(frames, key=lambda f: abs(f[0] - stamp_ns))
+    skew = abs(best_ns - stamp_ns)
+    if skew > max_skew_s * 1e9:
+        return None, (
+            f"ROSPerceptionStale: no cached frame within {max_skew_s:.3f} s of the requested "
+            f"stamp (nearest {skew / 1e9:.3f} s off, {len(frames)} cached)"
+        )
+    return best, ""
 
 
 def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec | None:
@@ -279,11 +340,13 @@ def _node_class() -> type:
             self.declare_parameter("publish_debug_masks", False)
             self.declare_parameter("debug_masks_topic", DEFAULT_DEBUG_MASKS_TOPIC)
             self.declare_parameter("device", "auto")
+            self.declare_parameter("max_frame_skew_s", DEFAULT_MAX_FRAME_SKEW_S)
 
-            # (bgr, width, height, header.frame_id, header.stamp) per camera:
-            # the header travels with the pixels so geometry and the reply's
-            # masks name the frame they actually came from.
-            self._frames: dict[str, tuple[bytes, int, int, str, Any]] = {}
+            # The last FRAME_HISTORY (stamp_ns, (bgr, width, height, header.frame_id,
+            # header.stamp)) per camera: the header travels with the pixels so geometry
+            # and the reply's masks name the frame they actually came from, and a
+            # request's stamp picks the frame (``frame_nearest_stamp``).
+            self._frames: dict[str, deque[tuple[int, tuple[bytes, int, int, str, Any]]]] = {}
             self._cameras: dict[str, str] = {}
             self._info_topics: dict[str, str] = {}
             self._infos: dict[str, Any] = {}
@@ -498,7 +561,10 @@ def _node_class() -> type:
                     )
                     return
                 header = msg.header
-                self._frames[cid] = (bgr, w, h, str(header.frame_id), header.stamp)
+                stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+                self._frames.setdefault(cid, deque(maxlen=FRAME_HISTORY)).append(
+                    (stamp_ns, (bgr, w, h, str(header.frame_id), header.stamp))
+                )
 
             return _cb
 
@@ -507,6 +573,23 @@ def _node_class() -> type:
                 self._infos[cid] = msg
 
             return _cb
+
+        def _frame_for(self, camera: str, stamp: Any) -> tuple[Any, str]:
+            """The cached frame of ``camera`` a request stamped ``stamp`` is served from."""
+            cached = self._frames.get(camera)
+            if not cached:
+                return None, (
+                    f"ROSPerceptionStale: no frame cached for camera {camera!r} "
+                    f"(known: {sorted(self._frames)})"
+                )
+            frame, stale = frame_nearest_stamp(
+                list(cached),
+                int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+                max_skew_s=self.get_parameter("max_frame_skew_s")
+                .get_parameter_value()
+                .double_value,
+            )
+            return frame, f"{stale} (camera {camera!r})" if stale else ""
 
         def _warn_once(self, message: str) -> None:
             """Log a fallback at warning level the first time it is taken."""
@@ -535,12 +618,9 @@ def _node_class() -> type:
             if self._segmenter is None:  # inactive (model released)
                 response.failure_reason = "ROSRuntimeError: segmenter node is not active"
                 return response
-            frame = self._frames.get(camera)
+            frame, stale = self._frame_for(camera, request.stamp)
             if frame is None:
-                response.failure_reason = (
-                    f"ROSPerceptionStale: no frame cached for camera {camera!r} "
-                    f"(known: {sorted(self._frames)})"
-                )
+                response.failure_reason = stale
                 self.get_logger().warning(response.failure_reason)
                 return response
             spec = sensor_spec_by_name(self._description, camera)

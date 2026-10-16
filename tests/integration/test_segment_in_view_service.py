@@ -223,7 +223,8 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
 
         # ── the clean path ────────────────────────────────────────────────────
         request = SegmentInView.Request()
-        request.stamp = Time(sec=17, nanosec=42)
+        # 40 ms after the cached frame: within max_frame_skew_s (0.1 s), so served from it.
+        request.stamp = Time(sec=5, nanosec=40_000_007)
         request.camera = "wrist"
         request.frame_id = _ATTACH_LINK
         # The TCP, in the attach link's frame: 6 cm out along the jaws. Through
@@ -454,7 +455,8 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
         assert "wrist" in node._frames
 
         request = SegmentInView.Request()
-        request.stamp = Time(sec=17, nanosec=42)
+        # 40 ms after the cached frame: within max_frame_skew_s (0.1 s), so served from it.
+        request.stamp = Time(sec=5, nanosec=40_000_007)
         request.camera = "wrist"
         request.frame_id = _ATTACH_LINK
         request.tcp_point = Point(x=0.0, y=0.05, z=0.06)
@@ -593,7 +595,7 @@ def test_a_zed_bgra8_frame_is_cached_as_bgr_without_the_model() -> None:
             time.sleep(0.1)
         assert "wrist" in node._frames, "the segmenter never cached the bgra8 frame"
 
-        bgr, w, h, frame_id, _stamp = node._frames["wrist"]
+        _stamp_ns, (bgr, w, h, frame_id, _stamp) = node._frames["wrist"][-1]
         assert (w, h, frame_id) == (width, height, _CAMERA_FRAME)
         assert np.array_equal(np.frombuffer(bgr, np.uint8).reshape(h, w, 3), rgb[..., ::-1])
         assert "top" not in node._frames, "an unsupported encoding must never be cached"
