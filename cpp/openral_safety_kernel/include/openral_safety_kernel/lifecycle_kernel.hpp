@@ -241,6 +241,16 @@ private:
   // `check_attachment_bindings`, on every world-state message. No-op when no jaw
   // joint is configured (the default: today's semantics).
   void apply_tracked_release();
+  // Issue #418 K2 — record the live grasp declaration's `declaration_key`
+  // (active, a target, `timeout_s` in range, not retired). Ingest path only.
+  void ingest_tracked_declaration_key(const openral_msgs::msg::WorldStateStamped& msg);
+  // Issue #418 K2 — fill `tracked_grasp_` with the tracked objects eligible NOW:
+  // role TARGET, the live declaration's key, confirmed / occluded, (id, epoch)
+  // not retired, confirmed within `grasp_region_max_age_s`, the set's frame still
+  // the grid's, and the kernel's cover check on the current grid (re-run once
+  // per new grid or set). Candidate path: no allocation of its own (its one
+  // transition log aside). Returns the count.
+  std::size_t fill_tracked_grasp();
 
   // Is the ingested grasp region in force at `now`, before the handover rule?
   // Dead on: no region, retracted (no region is ingested), `timeout_s`
@@ -416,12 +426,35 @@ private:
     std::uint32_t epoch{0};
     bool live{false};       ///< status confirmed / occluded / bound
     GraspTargetRegion box;  ///< the containing box, validated as a grasp region
+    // Issue #418 K2 eligibility inputs, recorded at ingest.
+    bool target{false};      ///< role == "target"
+    bool exemptible{false};  ///< status confirmed / occluded (never bound / split / …)
+    std::string declaration_key;
+    std::size_t id_hash{0};          ///< std::hash of object_id (the K6 retirement key)
+    std::int64_t confirmed_ns{0};    ///< last_confirmed_stamp_ns (source clock)
+    std::uint32_t visible_cells{0};  ///< the tracker's expected-cell count
+    bool cover_ok{false};            ///< the kernel's own cover check on the current grid
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
   std::size_t tracked_n_{0};
   bool tracked_have_revision_{false};
   std::uint64_t tracked_revision_{0};
   std::string tracked_refusal_reason_;  ///< last announced refusal (logged on change)
+  std::string tracked_set_frame_;       ///< frame of the last accepted set (K2 re-checks it)
+  /// Issue #418 K2, the grasp exemption by tracked-object id
+  /// (`tracked_grasp_exemption_enabled`, sim-only, requires
+  /// `grasp_allowance_enabled`). While on, `tracked_grasp_` replaces the legacy
+  /// region as the exemption source of the world-voxel check, every candidate.
+  bool tracked_grasp_enabled_{false};
+  TrackedGraspTable tracked_grasp_{};
+  bool tracked_cover_dirty_{true};  ///< a new grid or set: re-run the cover check once
+  /// The live grasp declaration's key, `<target_id>@<stamp_ns>` (what the tracker
+  /// stamps on the tracks it grounds or re-keys for that declaration).
+  bool tracked_decl_active_{false};
+  std::string tracked_decl_key_;
+  std::int64_t tracked_decl_stamp_ns_{0};
+  double tracked_decl_timeout_s_{0.0};
+  std::size_t tracked_grasp_logged_n_{static_cast<std::size_t>(-1)};
   /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the
   /// refusal reason (nullptr = a legacy payload or a binding at the hand).
   struct AttachedBinding {

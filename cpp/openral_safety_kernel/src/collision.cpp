@@ -1298,6 +1298,40 @@ bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& cen
 
 namespace {
 
+// The grasp exemption box a link may be exempt against in this check, or
+// nullptr (issue #418 K2). With a valid tracked table it is the ONLY source:
+// the selected box of the hand the link is a finger of. Otherwise the legacy
+// region, for a link in its mask — exactly `grasp_target_exempts`.
+struct GraspBox {
+  const Transform* pose{nullptr};
+  const Vec3* half{nullptr};
+};
+
+GraspBox grasp_box_for(const VoxelGrid& grid, const std::array<int, kMaxGraspHands>& selected,
+                       int link) noexcept {
+  const TrackedGraspTable* t = grid.tracked_grasp;
+  if (t != nullptr && t->valid) {
+    if (link < 0 || static_cast<std::size_t>(link) >= kMaxGraspMaskLinks) {
+      return {};
+    }
+    for (std::size_t h = 0; h < t->n_hands && h < kMaxGraspHands; ++h) {
+      if (t->hand_links[h][static_cast<std::size_t>(link)] && selected[h] >= 0) {
+        const auto i = static_cast<std::size_t>(selected[h]);
+        return {&t->box[i], &t->half_extents[i]};
+      }
+    }
+    return {};
+  }
+  if (grasp_mask_has(grid.grasp_region, link)) {
+    return {&grid.grasp_region.pose, &grid.grasp_region.half_extents};
+  }
+  return {};
+}
+
+}  // namespace
+
+namespace {
+
 // Is `link` a hand link of a live workspace whose hand is slow and close to its
 // measured pose (speed AND lead within their bounds)? Evaluated once per
 // capsule/box, outside the cell loop. A NaN/inf speed or lead (the lifecycle's
@@ -1457,6 +1491,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   };
   // Every link is carried into the grid's axes through this.
   const Transform grid_from_base = inverse_rigid(grid.pose);
+  // #418 K2: each hand's selected tracked object at THIS configuration.
+  std::array<int, kMaxGraspHands> grasp_selected{};
+  grasp_selected.fill(-1);
+  if (grid.tracked_grasp != nullptr && grid.tracked_grasp->valid) {
+    select_tracked_grasp(*grid.tracked_grasp, scratch, grid.resolution, grasp_selected);
+  }
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t c = 0; c < n_caps; ++c) {
     const int li = model.capsule_link[c];
@@ -1467,7 +1507,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
-    const bool grasp_link = grasp_mask_has(grid.grasp_region, li);
+    const GraspBox gbox = grasp_box_for(grid, grasp_selected, li);
+    const bool grasp_link = gbox.pose != nullptr;
     const bool workspace_link = workspace_link_slow(grid.workspace_region, li);
     // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
     const double reach = r + margin + band_m + half_side;
@@ -1492,7 +1533,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // region never trips and never supplies the reported evidence.
           const Vec3 base_center =
               grasp_link || workspace_link ? apply(grid.pose, voxel.t) : Vec3{};
-          const bool exempt = grasp_link && grasp_target_exempts(grid, li, base_center);
+          const bool exempt = grasp_link && point_in_obb(*gbox.pose, *gbox.half, base_center);
           // #349: a slow hand link vs a cell centred in the live workspace.
           // Never silent: a tolerated pair within the margin is counted.
           const bool ws_exempt =
@@ -1527,7 +1568,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                 compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
-    const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
+    const GraspBox gbox = grasp_box_for(grid, grasp_selected, lb);
+    const bool grasp_link = gbox.pose != nullptr;
     const bool workspace_link = workspace_link_slow(grid.workspace_region, lb);
     TightPose tight;
     GjkWitness witness;
@@ -1560,7 +1602,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // stop). Stage 1's lower bound is all its clamped slack needs.
           // #349's workspace exemption joins it here, under the same accounting.
           const Vec3 base_center = grasp_link || workspace_link ? apply(grid.pose, center) : Vec3{};
-          const bool grasp_exempt = grasp_link && grasp_target_exempts(grid, lb, base_center);
+          const bool grasp_exempt = grasp_link && point_in_obb(*gbox.pose, *gbox.half, base_center);
           const bool ws_exempt =
               !grasp_exempt && workspace_link && workspace_contact_exempts(grid, lb, base_center);
           const bool exempt = grasp_exempt || ws_exempt;
@@ -2805,6 +2847,216 @@ double released_payload_clearance(const CollisionModel& model, const CollisionSc
     }
   }
   return gap;
+}
+
+// ── Issue #418 K2: the grasp exemption by tracked-object id ──────────────────
+
+bool build_grasp_hands(const CollisionModel& model,
+                       const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                       TrackedGraspTable& table) noexcept {
+  table.n_hands = 0;
+  table.hand_links = {};
+  table.link_point = {};
+  const std::size_t n = std::min(model.parent.size(), kMaxGraspMaskLinks);
+  if (allowlist.none()) {
+    return false;
+  }
+  std::array<int, kMaxGraspHands> mounts{};
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks; ++c) {
+    if (!allowlist[c]) {
+      continue;
+    }
+    if (c >= n) {
+      table.n_hands = 0;
+      return false;  // a bit naming no link of the model
+    }
+    // The mount: the first ancestor not itself allowlisted (grasp_links_one_hand).
+    int mount = model.parent[c];
+    std::size_t steps = 0;
+    while (mount >= 0 && static_cast<std::size_t>(mount) < n &&
+           allowlist[static_cast<std::size_t>(mount)]) {
+      if (++steps > n) {
+        table.n_hands = 0;
+        return false;  // a cyclic parent chain: fail closed
+      }
+      mount = model.parent[static_cast<std::size_t>(mount)];
+    }
+    std::size_t h = 0;
+    while (h < table.n_hands && mounts[h] != mount) {
+      ++h;
+    }
+    if (h == table.n_hands) {
+      if (h == kMaxGraspHands) {
+        table.n_hands = 0;
+        return false;
+      }
+      mounts[h] = mount;
+      ++table.n_hands;
+    }
+    table.hand_links[h].set(c);
+    // The finger's TCP sample: the mean of its primitives' origins (link frame).
+    Vec3 sum{};
+    int count = 0;
+    for (std::size_t k = 0; k < model.capsules.size() && k < model.capsule_link.size(); ++k) {
+      if (model.capsule_link[k] == static_cast<int>(c)) {
+        sum = add(sum, model.capsules[k].origin.t);
+        ++count;
+      }
+    }
+    for (std::size_t k = 0; k < model.boxes.size() && k < model.box_link.size(); ++k) {
+      if (model.box_link[k] == static_cast<int>(c)) {
+        sum = add(sum, model.boxes[k].origin.t);
+        ++count;
+      }
+    }
+    table.link_point[c] = count > 0 ? scale(sum, 1.0 / count) : Vec3{};
+  }
+  return table.n_hands > 0;
+}
+
+Vec3 grasp_hand_tcp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                    std::size_t hand) noexcept {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  if (hand >= table.n_hands || hand >= kMaxGraspHands) {
+    return Vec3{nan, nan, nan};
+  }
+  Vec3 sum{};
+  int count = 0;
+  for (std::size_t l = 0; l < kMaxGraspMaskLinks; ++l) {
+    if (!table.hand_links[hand][l]) {
+      continue;
+    }
+    if (l >= scratch.link_world.size()) {
+      return Vec3{nan, nan, nan};
+    }
+    sum = add(sum, apply(scratch.link_world[l], table.link_point[l]));
+    ++count;
+  }
+  return count > 0 ? scale(sum, 1.0 / count) : Vec3{nan, nan, nan};
+}
+
+namespace {
+
+// Distance from `p` to the oriented box (0 inside); NaN for a non-finite input.
+double point_box_gap(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  const Vec3 d = sub(p, box.t);
+  const double l[3] = {box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z,
+                       box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z,
+                       box.r[2] * d.x + box.r[5] * d.y + box.r[8] * d.z};
+  const double h[3] = {half.x, half.y, half.z};
+  double sq = 0.0;
+  for (int k = 0; k < 3; ++k) {
+    const double out = std::fabs(l[k]) - h[k];
+    if (out > 0.0) {
+      sq += out * out;
+    } else if (!(out <= 0.0)) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  return std::sqrt(sq);
+}
+
+}  // namespace
+
+void select_tracked_grasp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                          double tie_m, std::array<int, kMaxGraspHands>& out) noexcept {
+  out.fill(-1);
+  if (!table.valid || !std::isfinite(tie_m) || tie_m < 0.0) {
+    return;
+  }
+  const std::size_t n_hands = std::min(table.n_hands, kMaxGraspHands);
+  const std::size_t n_obj = std::min(table.n_objects, kMaxTrackedObjects);
+  std::array<Vec3, kMaxGraspHands> tcp{};
+  for (std::size_t h = 0; h < n_hands; ++h) {
+    tcp[h] = grasp_hand_tcp(table, scratch, h);
+  }
+  for (std::size_t h = 0; h < n_hands; ++h) {
+    int best = -1;
+    double g1 = std::numeric_limits<double>::infinity();
+    double g2 = std::numeric_limits<double>::infinity();
+    bool finite = true;
+    for (std::size_t i = 0; i < n_obj; ++i) {
+      const double g = point_box_gap(table.box[i], table.half_extents[i], tcp[h]);
+      if (!std::isfinite(g)) {
+        finite = false;  // a NaN TCP or box: no selection for this hand
+        break;
+      }
+      if (g < g1) {
+        g2 = g1;
+        g1 = g;
+        best = static_cast<int>(i);
+      } else if (g < g2) {
+        g2 = g;
+      }
+    }
+    if (!finite || best < 0 || g2 - g1 <= tie_m) {
+      continue;  // none, or a tie within one voxel (HZ-0115-2)
+    }
+    // Never an object at least as near another hand (HZ-0115-12).
+    const auto b = static_cast<std::size_t>(best);
+    bool other_nearer = false;
+    for (std::size_t k = 0; k < n_hands; ++k) {
+      if (k != h && !(point_box_gap(table.box[b], table.half_extents[b], tcp[k]) > g1)) {
+        other_nearer = true;  // `!(>)`: a NaN other-hand gap refuses too
+      }
+    }
+    if (!other_nearer) {
+      out[h] = best;
+    }
+  }
+}
+
+std::size_t tracked_box_cover(const VoxelGrid& grid, const Transform& box,
+                              const Vec3& half_extents) noexcept {
+  if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
+      !(grid.resolution > 0.0) || !std::isfinite(grid.resolution) || !(half_extents.x > 0.0) ||
+      !(half_extents.y > 0.0) || !(half_extents.z > 0.0) || !std::isfinite(half_extents.x) ||
+      !std::isfinite(half_extents.y) || !std::isfinite(half_extents.z)) {
+    return 0;
+  }
+  // The box's window on the grid's own axes (its AABB there), clamped.
+  const Transform box_g = compose(inverse_rigid(grid.pose), box);
+  const Vec3 ext = obb_extent(box_g, half_extents);
+  const double inv = 1.0 / grid.resolution;
+  const auto span = [&](double c, double e, int dim, int& i0, int& i1) {
+    const double lo = std::floor((c - e) * inv);
+    const double hi = std::floor((c + e) * inv);
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi < 0.0 || lo > dim - 1) {
+      return false;
+    }
+    i0 = static_cast<int>(std::max(lo, 0.0));
+    i1 = static_cast<int>(std::min(hi, static_cast<double>(dim - 1)));
+    return true;
+  };
+  int x0 = 0;
+  int x1 = 0;
+  int y0 = 0;
+  int y1 = 0;
+  int z0 = 0;
+  int z1 = 0;
+  if (!span(box_g.t.x, ext.x, grid.sx, x0, x1) || !span(box_g.t.y, ext.y, grid.sy, y0, y1) ||
+      !span(box_g.t.z, ext.z, grid.sz, z0, z1)) {
+    return 0;
+  }
+  std::size_t count = 0;
+  for (int iz = z0; iz <= z1; ++iz) {
+    for (int iy = y0; iy <= y1; ++iy) {
+      for (int ix = x0; ix <= x1; ++ix) {
+        const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+        if (grid.occupancy[idx] != 0 &&
+            point_in_obb(box, half_extents, voxel_center(grid, ix, iy, iz))) {
+          ++count;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexcept {
+  // max(2, ceil(0.5 * visible)), in integers.
+  const std::size_t half_up = (static_cast<std::size_t>(visible) + 1) / 2;
+  return occupied >= std::max<std::size_t>(2, half_up);
 }
 
 }  // namespace openral_safety_kernel
