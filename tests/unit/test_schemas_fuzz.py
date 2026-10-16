@@ -190,6 +190,7 @@ _closure_calibration_st = st.builds(
     closed_rest_offset=st.floats(min_value=0.0, max_value=0.1),
     stall_gap=st.floats(min_value=1e-4, max_value=0.5),
     settle_tolerance=st.floats(min_value=1e-5, max_value=0.05),
+    close_band=st.none() | st.floats(min_value=1e-4, max_value=1.0),
 )
 
 _joint_spec_st = st.builds(

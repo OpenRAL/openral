@@ -24,7 +24,8 @@ commanded closed on an object **stalls** 0.18-0.29 rad short of the command
 and stays flat to ~1e-3 rad; closed on nothing it reaches within ~0.02 rad;
 free-motion steady-state error is 0.006-0.025 rad. So:
 
-* **ATTACH** — the command is near closed, the jaw is settled (its position
+* **ATTACH** — the command is near closed (within ``close_band`` of it, or
+  ``stall_gap`` when the manifest sets no band), the jaw is settled (its position
   span over the last ``PositionStallConfig.settle_s`` seconds is within the joint's
   ``settle_tolerance``), and it sits further from closed than the command by
   more than ``closed_rest_offset + stall_gap``; agreed for
@@ -375,6 +376,7 @@ class PositionStallTrigger:
         self._closed = calibration.closed_position
         self._rest = calibration.closed_rest_offset
         self._gap = calibration.stall_gap
+        self._band = calibration.command_band
         self._settle = calibration.settle_tolerance
         # (stamp_ns, position), oldest first, pruned to just cover ``settle_s``.
         self._history: deque[tuple[int, float]] = deque()
@@ -409,13 +411,19 @@ class PositionStallTrigger:
 
     @property
     def closing(self) -> bool:
-        """Whether the last command is within ``stall_gap`` of closed — the band ATTACH reads."""
-        return self._command is not None and abs(self._command - self._closed) <= self._gap
+        """Whether the last command is within the close band of closed — the band ATTACH reads.
+
+        The band is ``closure_calibration.close_band``, or ``stall_gap`` when it is unset.
+        """
+        return self._command is not None and abs(self._command - self._closed) <= self._band
 
     @property
-    def thresholds(self) -> tuple[float, float, float, float]:
-        """``(closed_position, closed_rest_offset, stall_gap, settle_tolerance)`` in force."""
-        return (self._closed, self._rest, self._gap, self._settle)
+    def thresholds(self) -> tuple[float, float, float, float, float]:
+        """``(closed_position, closed_rest_offset, stall_gap, settle_tolerance, close_band)``.
+
+        ``close_band`` is the band in force (``stall_gap`` when the manifest sets none).
+        """
+        return (self._closed, self._rest, self._gap, self._settle, self._band)
 
     def command(self, target: float) -> None:
         """Fold in the target the HAL just commanded this jaw to (joint units).
@@ -494,7 +502,7 @@ class PositionStallTrigger:
             return None
         from_closed = abs(position - self._closed)
         command_from_closed = abs(self._command - self._closed)
-        closing = command_from_closed <= self._gap
+        closing = command_from_closed <= self._band
         short_of_command = from_closed - command_from_closed
         positions = [q for _, q in self._history]
         spread = max(positions) - min(positions)

@@ -1699,7 +1699,7 @@ class VisionAttachmentBridge:
                 f"attach_link={leg.producer.attach_link!r} "
                 f"tcp={leg.tcp_frame or leg.tcp_in_link!r} "
                 f"deadline={self._config.deadline_s:.3f}s "
-                f"stall_thresholds(closed,rest,gap,settle)={leg.trigger.thresholds}"
+                f"stall_thresholds(closed,rest,gap,settle,band)={leg.trigger.thresholds}"
             )
 
     @_locked
@@ -1951,7 +1951,7 @@ class VisionAttachmentBridge:
             leg.close_reported = False
             self._node.get_logger().info(
                 f"grasp trigger {leg.joint_name}: close commanded (target "
-                f"{trigger.last_command:.4f}, thresholds(closed,rest,gap,settle)="
+                f"{trigger.last_command:.4f}, thresholds(closed,rest,gap,settle,band)="
                 f"{trigger.thresholds}) — watching for a stall"
             )
         if not leg.close_reported and (event is GraspEvent.ATTACH or not trigger.closing):

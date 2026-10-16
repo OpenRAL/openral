@@ -1058,10 +1058,15 @@ class GripperClosureCalibration(BaseModel):
             nothing (mechanical stop, servo deadband). Measured from teleop data.
         stall_gap: How much further from closed than the command (beyond
             ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.
-            Also the band a command must be within of ``closed_position`` to count as a close
-            command, and (halved) the hysteresis for slip / release / re-seat.
+            Also (halved) the hysteresis for slip / release / re-seat, and the close-command
+            band when ``close_band`` is unset.
         settle_tolerance: Largest position span over the trigger's settle window for the jaw
             to count as stationary. A few position-encoder LSBs.
+        close_band: How far from ``closed_position`` a command may be and still count as a
+            close command, the band ATTACH reads. ``None`` (the default) is ``stall_gap``,
+            the behaviour before this field existed. A gripper whose policy grasps with a
+            partly open command (the SO-101's SmolVLA holds an orange commanded at ~0.20 of
+            its travel) needs a wider band than its stall threshold.
 
     Example:
         >>> GripperClosureCalibration(
@@ -1071,6 +1076,14 @@ class GripperClosureCalibration(BaseModel):
         ...     settle_tolerance=0.001,
         ... ).stall_gap
         0.08
+        >>> GripperClosureCalibration(
+        ...     closed_position=0.0, stall_gap=0.02, settle_tolerance=0.01, close_band=0.25
+        ... ).command_band
+        0.25
+        >>> GripperClosureCalibration(
+        ...     closed_position=0.0, stall_gap=0.08, settle_tolerance=0.001
+        ... ).command_band
+        0.08
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1079,6 +1092,12 @@ class GripperClosureCalibration(BaseModel):
     closed_rest_offset: float = Field(default=0.0, ge=0.0)
     stall_gap: float = Field(gt=0.0)
     settle_tolerance: float = Field(gt=0.0)
+    close_band: float | None = Field(default=None, gt=0.0)
+
+    @property
+    def command_band(self) -> float:
+        """The close-command band in force: ``close_band``, else ``stall_gap``."""
+        return self.close_band if self.close_band is not None else self.stall_gap
 
 
 class JointSpec(BaseModel):
