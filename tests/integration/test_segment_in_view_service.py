@@ -61,7 +61,7 @@ _SEGMENTER_ID = "OpenRAL/rskill-sam2_1-any-grasped_object_mask-bf16"
 
 # The attach link the SO-101's gripper joint hangs off, and the camera's own
 # optical frame — both read from the manifest, not invented here.
-_ATTACH_LINK = "gripper_base"
+_ATTACH_LINK = "gripper"
 _CAMERA_FRAME = "wrist_camera"
 
 # CPU inference plus a cold model load. Generous on purpose: this bound exists
