@@ -1490,3 +1490,103 @@ TEST(PayloadClearing, AnAttestationKeepsItsFirstGridAnchorUntilItIsGone) {
   anchors.anchor({});
   EXPECT_NEAR(anchors.anchor({{key, lifted}})[0].point.z(), 0.496, 1e-12);
 }
+
+// ── The payload's swept volume (cleared from the octree via clear_bbox) ──────────────
+//
+// Deploy trial g12: the carried orange's returns from 0.27 s before ATTACH stayed in the
+// octree 85-120 mm behind the payload and stopped the arm; DROID t6: one banana return
+// mid-carry never cleared. The grid clearing follows only the current pose, so the bridge
+// clears the box the payload swept.
+
+namespace {
+
+bridge::PayloadPrimitive orange_box(const tf2::Vector3& centre, double yaw) {
+  bridge::PayloadPrimitive prim;
+  prim.shape_type = Primitive::SHAPE_BOX;
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, yaw);
+  prim.pose = tf2::Transform(q, centre);
+  prim.half_extents = tf2::Vector3(0.032, 0.033, 0.054);  // g12's accepted payload
+  return prim;
+}
+
+}  // namespace
+
+TEST(PayloadSweep, TheSweptBoxHoldsEveryPoseThePayloadPassedThrough) {
+  bridge::SweptBox box;
+  // The carry in g12: from the pre-attach pose to the stop, 12 cm along +x, rising.
+  const tf2::Vector3 start(0.0075, -0.2325, 0.1275);  // the cell that stopped the arm
+  const tf2::Vector3 stop(-0.11, -0.21, 0.18);
+  for (int i = 0; i <= 10; ++i) {
+    const double s = i / 10.0;
+    bridge::add_payload_to_swept_box(box, {orange_box(start + (stop - start) * s, 0.3 * s)},
+                                     tf2::Transform::getIdentity());
+  }
+  ASSERT_TRUE(box.valid);
+  for (const auto& p : {start, stop}) {
+    EXPECT_GE(p.x(), box.lo.x());
+    EXPECT_LE(p.x(), box.hi.x());
+    EXPECT_GE(p.y(), box.lo.y());
+    EXPECT_LE(p.y(), box.hi.y());
+    EXPECT_GE(p.z(), box.lo.z());
+    EXPECT_LE(p.z(), box.hi.z());
+  }
+  // Exact bounds of an unrotated box, not a sphere around it.
+  bridge::SweptBox one;
+  bridge::add_payload_to_swept_box(one, {orange_box(tf2::Vector3(0, 0, 0), 0.0)},
+                                   tf2::Transform::getIdentity());
+  EXPECT_NEAR(one.hi.x(), 0.032, 1e-12);
+  EXPECT_NEAR(one.lo.z(), -0.054, 1e-12);
+}
+
+TEST(PayloadSweep, TheBoxIsCarriedIntoTheOctomapFrame) {
+  bridge::SweptBox box;
+  tf2::Transform octomap_from_base(tf2::Quaternion::getIdentity(), tf2::Vector3(2.2, -0.61, 0.89));
+  bridge::add_payload_to_swept_box(box, {orange_box(tf2::Vector3(0, 0, 0.1), 0.0)},
+                                   octomap_from_base);
+  EXPECT_NEAR(box.lo.x(), 2.2 - 0.032, 1e-12);
+  EXPECT_NEAR(box.hi.z(), 0.89 + 0.1 + 0.054, 1e-12);
+}
+
+TEST(PayloadSweep, TheSupportUnderThePayloadIsNeverCleared) {
+  bridge::SweptBox box;
+  // Lifted from a counter whose attested top is at z = 0.030.
+  bridge::add_payload_to_swept_box(box, {orange_box(tf2::Vector3(0.07, -0.30, 0.06), 0.0)},
+                                   tf2::Transform::getIdentity());
+  bridge::SupportPatch counter;
+  counter.point = tf2::Vector3(0.07, -0.30, 0.030);
+  counter.patch_radius = 0.03;
+  counter.max_penetration = 0.002;
+  ASSERT_TRUE(bridge::trim_swept_box_above_supports(box, {counter}, 0.015));
+  EXPECT_NEAR(box.lo.z(), 0.030 + 0.002 + 0.015, 1e-12) << "one cell above the support";
+  // A support elsewhere does not trim.
+  bridge::SweptBox other;
+  bridge::add_payload_to_swept_box(other, {orange_box(tf2::Vector3(0.07, -0.30, 0.06), 0.0)},
+                                   tf2::Transform::getIdentity());
+  bridge::SupportPatch far = counter;
+  far.point = tf2::Vector3(0.5, 0.5, 0.030);
+  ASSERT_TRUE(bridge::trim_swept_box_above_supports(other, {far}, 0.015));
+  EXPECT_NEAR(other.lo.z(), 0.06 - 0.054, 1e-12);
+}
+
+TEST(PayloadSweep, ASupportItCannotTrimAgainstClearsNothing) {
+  bridge::SweptBox box;
+  bridge::add_payload_to_swept_box(box, {orange_box(tf2::Vector3(0, 0, 0.06), 0.0)},
+                                   tf2::Transform::getIdentity());
+  bridge::SupportPatch wall;
+  wall.point = tf2::Vector3(0.0, 0.0, 0.03);
+  wall.normal = tf2::Vector3(1.0, 0.0, 0.0);  // a vertical support face
+  wall.patch_radius = 0.03;
+  EXPECT_FALSE(bridge::trim_swept_box_above_supports(box, {wall}, 0.015));
+  bridge::SweptBox empty;
+  EXPECT_FALSE(bridge::trim_swept_box_above_supports(empty, {}, 0.015));
+}
+
+TEST(PayloadSweep, ANonFiniteOrDegeneratePrimitiveAddsNothing) {
+  bridge::SweptBox box;
+  bridge::PayloadPrimitive sphere;
+  sphere.shape_type = Primitive::SHAPE_SPHERE;
+  sphere.radius = std::nan("");
+  bridge::add_payload_to_swept_box(box, {sphere}, tf2::Transform::getIdentity());
+  EXPECT_FALSE(box.valid);
+}

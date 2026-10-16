@@ -48,6 +48,7 @@
 #include <cmath>
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -58,6 +59,7 @@
 #include <octomap/OcTree.h>
 #include <octomap_msgs/conversions.h>
 #include <octomap_msgs/msg/octomap.hpp>
+#include <octomap_msgs/srv/bounding_box_query.hpp>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2/time.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -145,6 +147,22 @@ public:
     attach_sweep_padding_m_ =
         this->declare_parameter<double>("attach_sweep_padding_m", resolution_);
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
+    // The payload's swept volume, cleared from the OCTREE (`SweptBox`): the grid clearing
+    // above follows only the payload's current pose, and what the carried object left
+    // along its path stays in the octree. Empty service = off. User-approved 2026-10-16;
+    // Safety-WG review and a hazard-log row owed (the payload's swept volume is cleared
+    // from the world map).
+    const auto sweep_service =
+        this->declare_parameter<std::string>("payload_sweep_clear_service", "");
+    sweep_period_s_ = this->declare_parameter<double>("payload_sweep_clear_period_s", 0.2);
+    sweep_backfill_s_ = this->declare_parameter<double>("payload_sweep_backfill_s", 0.5);
+    if (!sweep_service.empty()) {
+      sweep_client_ = this->create_client<octomap_msgs::srv::BoundingBoxQuery>(sweep_service);
+      RCLCPP_WARN(this->get_logger(),
+                  "payload sweep clearing ON: the carried payload's swept volume (every %.2f s, "
+                  "plus %.2f s of TF history at each attach) is cleared from the octree via %s",
+                  sweep_period_s_, sweep_backfill_s_, sweep_service.c_str());
+    }
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
     // Manifest attach link -> the frame the live TF tree names that body
@@ -306,6 +324,7 @@ private:
                            "declared static geometry added %zu cells the camera map lacked", added);
     }
     clear_attached_payload(grid, base_to_octomap);
+    clear_swept_volume();
     const rclcpp::Time produced = this->now();
     grid.header.stamp = produced;
     grid.source_stamp = octree_stamp_;
@@ -355,6 +374,7 @@ private:
       // grasp — of this object or any other — opens a fresh one.
       attach_sweep_ledger_.sweep({}, attach_sweep_padding_m_);
       support_patch_anchors_.anchor({});
+      swept_seen_.clear();
       return;
     }
     const rclcpp::Time stamp(state->header.stamp);
@@ -425,6 +445,10 @@ private:
       staged.push_back(std::move(object_primitives));
     }
 
+    if (sweep_client_) {
+      accumulate_swept_volume(*state, staged, base_to_octomap, attested);
+    }
+
     // Answering and recording in one call is what keeps the window's state and
     // the reach it licenses from disagreeing. Every early return above skips it,
     // so a frame that clears nothing leaves the padded sweep owed.
@@ -472,6 +496,94 @@ private:
     }
   }
 
+  /// Grow the swept box by this tick's payload pose; at an object's first appearance
+  /// (a new attachment revision), also by its poses over the last `payload_sweep_backfill_s`
+  /// of TF history — the returns captured before the attachment reached the self-filter.
+  void accumulate_swept_volume(const openral_msgs::msg::WorldStateStamped& state,
+                               const std::vector<std::vector<PayloadPrimitive>>& staged,
+                               const tf2::Transform& base_to_octomap,
+                               const std::vector<SupportPatchObservation>& attested) {
+    for (const auto& prims : staged) {
+      add_payload_to_swept_box(swept_, prims, base_to_octomap);
+    }
+    sweep_patches_.clear();
+    for (const auto& obs : attested) {
+      sweep_patches_.push_back(obs.patch);
+    }
+    const rclcpp::Time now = this->now();
+    for (const auto& object : state.attached_objects) {
+      if (!swept_seen_.insert({object.object_id, state.attachment_revision}).second) {
+        continue;
+      }
+      const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
+      std::size_t samples = 0;
+      for (double back = 0.05; back <= sweep_backfill_s_ + 1e-9; back += 0.05) {
+        const rclcpp::Time at = now - rclcpp::Duration::from_seconds(back);
+        try {
+          const auto link_msg =
+              tf_buffer_->lookupTransform(base_frame_, link_frame, tf2_ros::fromRclcpp(at));
+          const auto base_msg =
+              tf_buffer_->lookupTransform(octomap_frame_, base_frame_, tf2_ros::fromRclcpp(at));
+          tf2::Transform base_from_link;
+          tf2::Transform octomap_from_base;
+          tf2::fromMsg(link_msg.transform, base_from_link);
+          tf2::fromMsg(base_msg.transform, octomap_from_base);
+          std::vector<PayloadPrimitive> prims;
+          std::vector<SupportPatch> unused;
+          if (place_attached_object(object, base_from_link, prims, unused)) {
+            add_payload_to_swept_box(swept_, prims, octomap_from_base);
+            ++samples;
+          }
+        } catch (const tf2::TransformException&) {
+          break;  // no history that far back: backfill what there is
+        }
+      }
+      RCLCPP_INFO(this->get_logger(),
+                  "payload sweep: %s attached (revision %lu), backfilled %zu pose(s) over the "
+                  "last %.2f s of TF history",
+                  object.object_id.c_str(), static_cast<unsigned long>(state.attachment_revision),
+                  samples, sweep_backfill_s_);
+    }
+  }
+
+  /// Every `payload_sweep_clear_period_s`: trim the swept box above the attested supports
+  /// and ask `octomap_server` to clear it from the octree; then start a new box.
+  void clear_swept_volume() {
+    if (!sweep_client_ || !swept_.valid) {
+      return;
+    }
+    const rclcpp::Time now = this->now();
+    if (last_sweep_clear_.nanoseconds() != 0 &&
+        (now - last_sweep_clear_).seconds() < sweep_period_s_) {
+      return;
+    }
+    SweptBox box = swept_;
+    swept_.valid = false;
+    last_sweep_clear_ = now;
+    if (!trim_swept_box_above_supports(box, sweep_patches_, resolution_)) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "payload sweep: nothing above the attested support to clear");
+      return;
+    }
+    if (!sweep_client_->service_is_ready()) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "payload sweep: %s not available; the swept volume stays in the octree",
+                           sweep_client_->get_service_name());
+      return;
+    }
+    auto req = std::make_shared<octomap_msgs::srv::BoundingBoxQuery::Request>();
+    req->min.x = box.lo.x();
+    req->min.y = box.lo.y();
+    req->min.z = box.lo.z();
+    req->max.x = box.hi.x();
+    req->max.y = box.hi.y();
+    req->max.z = box.hi.z();
+    sweep_client_->async_send_request(req);
+    RCLCPP_INFO(this->get_logger(),
+                "payload sweep: clear_bbox [%.3f %.3f %.3f]..[%.3f %.3f %.3f] in %s", box.lo.x(),
+                box.lo.y(), box.lo.z(), box.hi.x(), box.hi.y(), box.hi.z(), octomap_frame_.c_str());
+  }
+
   std::string base_frame_;
   std::string octomap_frame_;
   double resolution_{0.05};
@@ -488,6 +600,13 @@ private:
   rclcpp::Time octree_stamp_;
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
+  rclcpp::Client<octomap_msgs::srv::BoundingBoxQuery>::SharedPtr sweep_client_;
+  double sweep_period_s_{0.2};
+  double sweep_backfill_s_{0.5};
+  SweptBox swept_;
+  std::vector<SupportPatch> sweep_patches_;
+  std::set<std::pair<std::string, std::uint64_t>> swept_seen_;
+  rclcpp::Time last_sweep_clear_{0, 0, RCL_ROS_TIME};
   SupportPatchAnchors support_patch_anchors_;
   AttachLinkTfFrames attach_link_tf_frames_;
   std::unordered_set<std::string> unmapped_links_warned_;  ///< one hint per link, not per tick

@@ -3508,6 +3508,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
+                    # A carried payload's swept volume (pre-attach TF backfill included)
+                    # is cleared from the octree through octomap_server's own service:
+                    # the grid clearing follows only the payload's current pose
+                    # (`SweptBox`, payload_clearing.hpp). User-approved 2026-10-16;
+                    # Safety-WG review + hazard-log row owed.
+                    "payload_sweep_clear_service": "/openral_octomap_server/clear_bbox",
                     # Declared static geometry (manipulation-workspace-contact.md §3.1):
                     # surface points the bridge marks occupied in every grid. Omitted
                     # (off) when the scene declares none.

@@ -410,4 +410,65 @@ const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::str
   return it == frames.end() ? attach_link : it->second;
 }
 
+void SweptBox::add(const tf2::Vector3& point) noexcept {
+  if (!std::isfinite(point.x()) || !std::isfinite(point.y()) || !std::isfinite(point.z())) {
+    return;
+  }
+  if (!valid) {
+    lo = point;
+    hi = point;
+    valid = true;
+    return;
+  }
+  lo.setMin(point);
+  hi.setMax(point);
+}
+
+void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>& primitives,
+                              const tf2::Transform& frame_from_base) noexcept {
+  for (const auto& prim : primitives) {
+    const tf2::Transform pose = frame_from_base * prim.pose;
+    if (prim.shape_type == Wire::SHAPE_BOX) {
+      const tf2::Vector3& h = prim.half_extents;
+      for (int i = 0; i < 8; ++i) {
+        box.add(pose * tf2::Vector3((i & 1) != 0 ? h.x() : -h.x(), (i & 2) != 0 ? h.y() : -h.y(),
+                                    (i & 4) != 0 ? h.z() : -h.z()));
+      }
+      continue;
+    }
+    // Sphere (half_length 0) or capsule: its two cap centres, grown by the radius.
+    const double half = prim.shape_type == Wire::SHAPE_CAPSULE ? prim.half_length : 0.0;
+    const double r = prim.radius;
+    if (!finite_positive(r) || !finite_positive(half)) {
+      continue;
+    }
+    for (const double z : {-half, half}) {
+      const tf2::Vector3 c = pose * tf2::Vector3(0.0, 0.0, z);
+      box.add(c - tf2::Vector3(r, r, r));
+      box.add(c + tf2::Vector3(r, r, r));
+    }
+  }
+}
+
+bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
+                                   double resolution) noexcept {
+  if (!box.valid) {
+    return false;
+  }
+  for (const auto& patch : patches) {
+    const tf2::Vector3& p = patch.point;
+    const double r = patch.patch_radius;
+    if (p.x() < box.lo.x() - r || p.x() > box.hi.x() + r || p.y() < box.lo.y() - r ||
+        p.y() > box.hi.y() + r) {
+      continue;  // not under the swept box
+    }
+    if (std::fabs(patch.normal.z()) < 0.9) {
+      box.valid = false;  // a support we cannot trim against: clear nothing
+      return false;
+    }
+    box.lo.setZ(std::max(box.lo.z(), p.z() + patch.max_penetration + resolution));
+  }
+  return box.lo.z() < box.hi.z();
+}
+
 }  // namespace openral_octomap_bridge
