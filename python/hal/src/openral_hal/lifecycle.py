@@ -1344,22 +1344,27 @@ if _ROS2_AVAILABLE:
                         self._urdf_joint_offsets,
                     )
                 )
-            if self._policy_state_pub is not None:
-                frame = self._proprio.latest() if self._proprio is not None else None
-                # Publish only when the frame is NEW (one publish per env.step
-                # capture) — see ``_policy_state_last_frame``. Latched
-                # republishing would defeat the downstream staleness gate.
-                if (
-                    frame is not None
-                    and frame.policy_state is not None
-                    and frame is not self._policy_state_last_frame
-                ):
-                    from std_msgs.msg import Float32MultiArray
+            self._publish_policy_state()
 
-                    policy_msg = Float32MultiArray()
-                    policy_msg.data = list(frame.policy_state)
-                    self._policy_state_pub.publish(policy_msg)
-                    self._policy_state_last_frame = frame
+        def _publish_policy_state(self) -> None:
+            """Publish the latest frame's policy state, once per new frame."""
+            if self._policy_state_pub is None:
+                return
+            frame = self._proprio.latest() if self._proprio is not None else None
+            # Publish only when the frame is NEW (one publish per env.step
+            # capture) — see ``_policy_state_last_frame``. Latched
+            # republishing would defeat the downstream staleness gate.
+            if (
+                frame is not None
+                and frame.policy_state is not None
+                and frame is not self._policy_state_last_frame
+            ):
+                from std_msgs.msg import Float32MultiArray
+
+                policy_msg = Float32MultiArray()
+                policy_msg.data = list(frame.policy_state)
+                self._policy_state_pub.publish(policy_msg)
+                self._policy_state_last_frame = frame
 
         def _arm_tracking_watch(self, estop_qos: Any) -> None:  # noqa: ANN401  # reason: rclpy QoSProfile, imported on the ROS path only
             """Build the `TrackingWatch` + its /openral/estop publisher when the window is > 0.
