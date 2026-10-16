@@ -302,6 +302,7 @@ class ObjectTracker:
         """
         p = self.params
         near = surface[:, :2].mean(axis=0)
+        top_xy = surface[int(np.argmax(surface[:, 2])), :2]
         spread = float(np.ptp(surface[:, :2], axis=0).max()) / 2
         reach = spread + p.support_probe_m + grid.resolution
         centers = grid.occupied_centers()
@@ -312,7 +313,9 @@ class ObjectTracker:
         top = support_top_from_voxels(
             grid,
             column,
-            near_xy=(float(near[0]), float(near[1])),
+            # Anchored on the object's highest seen point, not its centroid: a hollow body
+            # (a bowl) has bare support at its centroid, and an anchor there finds none.
+            near_xy=(float(top_xy[0]), float(top_xy[1])),
             min_cells=p.support_min_cells,
             probe_margin_m=p.support_probe_m,
             # A cell that starts below the lowest seen point: the support's top layer is

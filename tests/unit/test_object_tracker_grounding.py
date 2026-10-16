@@ -129,3 +129,34 @@ def test_a_low_body_grounds_when_the_support_tops_out_mid_cell() -> None:
         tr.open_query("g", "q0", q, "obj:bowl@0", stamp_ns=0)
         out, _ = step(tr, _RIG, [bowl], stamp_ns=0, wall_s=0.0, shift_z=shift)
         assert [o.label for o in out.tracked.objects] == ["bowl"], shift
+
+
+def test_a_hollow_body_grounds_on_the_support_around_it() -> None:
+    """A bowl seen from above is a ring: the table shows through its middle, so the support
+    search is anchored on the body's highest seen point, not its centroid (DROID bowl)."""
+    from tests.unit._tracker_scenes import RES, sphere
+
+    x, y = _RIG.centre_xy
+    ring = [
+        sphere((x + 0.06 * math.cos(a), y + 0.06 * math.sin(a), _RIG.support_z + 0.015), 0.015)
+        for a in np.linspace(0, 2 * math.pi, 14, endpoint=False)
+    ]
+    depth, labels = render(ring, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    tr = ObjectTracker(_RIG.frame)
+    q = ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION)
+    tr.open_query("g", "q0", q, "obj:bowl@0", stamp_ns=0)
+    (locate,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    rows, cols = np.nonzero(labels > 0)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,
+        results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))],
+    )  # fmt: skip
+    (seg,) = out.requests
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=1.1,
+        results=[TrackerResult(seg.request_id, mask=labels > 0)],
+    )  # fmt: skip
+    assert [o.label for o in out.tracked.objects] == ["bowl"]
