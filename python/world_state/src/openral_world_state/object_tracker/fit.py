@@ -17,7 +17,8 @@ border is refused: the cone misses what the frame cut off); A2 the object rests 
 measured support (a surface point under it is refused: truncating there would cut the
 solid); A3 depth is right within ``eps_m``; A4 no hidden part lies outside the prism and
 more than ``w_occ_px`` behind an occluder (weakest in packed totes; logged as the
-occluder pixel count).
+occluder pixel count) -- and no part hidden behind the robot is nearer the camera than the
+object's own measured front (the front cut ignores robot pixels; logged as ``a5``).
 
 The polytope is represented exactly by a few vertices: in optical-depth parametrisation the
 front cut is the plane ``z_opt = z_front`` for every ray and the support is a plane, so
@@ -109,7 +110,8 @@ class ContainingFit:
         surface: ``(N, 3)`` mask depth points ``P`` in the base frame (the cover's ``E``).
         support_z: The support the fit was truncated at.
         assumptions: A1-A4 evidence for the trace (``a1_border_clear``, ``a2_gap_m``,
-            ``a3_depth_valid``, ``a4_occluder_px``).
+            ``a3_depth_valid``, ``a4_occluder_px``, ``a5_robot_band_px``: silhouette pixels
+            behind the robot, whose depth never sets the front cut).
         refusal: Empty when fitted, else why not.
     """
 
@@ -256,7 +258,14 @@ def containing_fit(
     if not (np.all(rays[:, 2] < 0.0) and origin[2] > support_z):
         return _refused("ray_misses_support", surface, support_z, notes)
     z_support = (support_z - origin[2]) / rays[:, 2]
-    z_front = min(float(d[sil & usable].min()) - p.eps_m, float(z_support.min()))
+    # The front cut is the object's own measured front (mask, uncertain band and nearer
+    # non-robot occluders), never a robot pixel's depth: the arm hovers well above what it
+    # works over and cannot hold the object, so its depth would lift the cone to the arm
+    # (a head camera over a tote: +27 cm). Robot-adjacent rays keep their lateral band;
+    # a hidden part nearer than that front behind the robot is A4 (logged, a5).
+    front = sil & usable & ~robot
+    notes["a5_robot_band_px"] = float((sil & robot).sum())
+    z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
     verts = np.concatenate(

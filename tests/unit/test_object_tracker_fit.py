@@ -59,6 +59,7 @@ def _solid(kind: str, rig: Rig, dx: float, dy: float, a: float, b: float, c: flo
 
 def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
     depth, labels = render(solids, rig)
+    depth = kw.pop("depth", depth)
     return containing_fit(
         labels == 1,
         depth,
@@ -147,6 +148,26 @@ def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
     fit = _fit(rig, [solid], robot_mask=robot)
     assert fit.refusal == "" and fit.assumptions["a4_occluder_px"] > 0
     assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+
+
+def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
+    """A head camera over a tote sees the arm next to the carton, 10 cm nearer: the robot
+    band widens the cone laterally, but the cut stays at the carton's own front."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    solid = box((x, y, rig.support_z + 0.03), (0.03, 0.02, 0.03), 0.0)
+    depth, labels = render([solid], rig)
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 9))
+    robot[arm] = ROBOT_PIXEL
+    depth[arm] = float(depth[labels == 1].min()) - 0.10
+    fit = _fit(rig, [solid], robot_mask=robot, depth=depth)
+    assert fit.refusal == "" and fit.assumptions["a5_robot_band_px"] > 0
+    assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+    assert fit.box is not None
+    top = fit.box.pose.xyz[2] + fit.box.half_extents[2]
+    assert top < rig.support_z + 0.06 + 2 * RES  # not lifted toward the arm
 
 
 def test_refusals_name_the_broken_assumption() -> None:
