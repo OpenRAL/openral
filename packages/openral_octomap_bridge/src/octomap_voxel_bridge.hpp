@@ -375,6 +375,8 @@ private:
       attach_sweep_ledger_.sweep({}, attach_sweep_padding_m_);
       support_patch_anchors_.anchor({});
       swept_seen_.clear();
+      sweep_supports_ = SweepSupports{};
+      sweep_support_keys_.clear();
       return;
     }
     const rclcpp::Time stamp(state->header.stamp);
@@ -506,14 +508,39 @@ private:
     for (const auto& prims : staged) {
       add_payload_to_swept_box(swept_, prims, base_to_octomap);
     }
-    sweep_patches_.clear();
+    // Latch every support attested during this carry, as first attested: a vision
+    // pick's support attestation lasts only "until the payload moves", and the carry's
+    // later boxes must still stop above that counter.
     for (const auto& obs : attested) {
-      sweep_patches_.push_back(obs.patch);
+      if (sweep_support_keys_
+              .insert(obs.key.object_id + "|" + obs.key.support_id + "|" +
+                      std::to_string(obs.key.stamp_ns))
+              .second) {
+        sweep_supports_.patches.push_back(obs.patch);
+      }
+    }
+    sweep_supports_.static_points.clear();
+    for (const auto& p : static_points_) {
+      sweep_supports_.static_points.push_back(base_to_octomap * p);
     }
     const rclcpp::Time now = this->now();
-    for (const auto& object : state.attached_objects) {
+    for (std::size_t i = 0; i < state.attached_objects.size(); ++i) {
+      const auto& object = state.attached_objects[i];
       if (!swept_seen_.insert({object.object_id, state.attachment_revision}).second) {
         continue;
+      }
+      // A measured payload's lowest point at attach floors a box no support is known
+      // under; the gripper-closure jaw box is not the object and floors nothing.
+      if (object.evidence_kind != "gripper_closure" && i < staged.size()) {
+        SweptBox at_attach;
+        add_payload_to_swept_box(at_attach, staged[i], base_to_octomap);
+        if (at_attach.valid) {
+          sweep_supports_.measured_floor_z =
+              sweep_supports_.has_measured_floor
+                  ? std::min(sweep_supports_.measured_floor_z, at_attach.lo.z())
+                  : at_attach.lo.z();
+          sweep_supports_.has_measured_floor = true;
+        }
       }
       const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
       std::size_t samples = 0;
@@ -560,9 +587,14 @@ private:
     SweptBox box = swept_;
     swept_.valid = false;
     last_sweep_clear_ = now;
-    if (!trim_swept_box_above_supports(box, sweep_patches_, resolution_)) {
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                           "payload sweep: nothing above the attested support to clear");
+    const SweptBox raw = box;
+    const SweepFloor floor = floor_swept_box(box, sweep_supports_, resolution_);
+    if (floor == SweepFloor::kNone) {
+      RCLCPP_INFO(this->get_logger(),
+                  "payload sweep: NOT clearing [%.3f %.3f %.3f]..[%.3f %.3f %.3f]: no support "
+                  "known under it and no measured payload floor (a gripper-closure payload), "
+                  "or nothing left above the support",
+                  raw.lo.x(), raw.lo.y(), raw.lo.z(), raw.hi.x(), raw.hi.y(), raw.hi.z());
       return;
     }
     if (!sweep_client_->service_is_ready()) {
@@ -580,8 +612,10 @@ private:
     req->max.z = box.hi.z();
     sweep_client_->async_send_request(req);
     RCLCPP_INFO(this->get_logger(),
-                "payload sweep: clear_bbox [%.3f %.3f %.3f]..[%.3f %.3f %.3f] in %s", box.lo.x(),
-                box.lo.y(), box.lo.z(), box.hi.x(), box.hi.y(), box.hi.z(), octomap_frame_.c_str());
+                "payload sweep: clear_bbox [%.3f %.3f %.3f]..[%.3f %.3f %.3f] in %s (floor: %s)",
+                box.lo.x(), box.lo.y(), box.lo.z(), box.hi.x(), box.hi.y(), box.hi.z(),
+                octomap_frame_.c_str(),
+                floor == SweepFloor::kSupport ? "support" : "measured payload at attach");
   }
 
   std::string base_frame_;
@@ -604,7 +638,8 @@ private:
   double sweep_period_s_{0.2};
   double sweep_backfill_s_{0.5};
   SweptBox swept_;
-  std::vector<SupportPatch> sweep_patches_;
+  SweepSupports sweep_supports_;
+  std::set<std::string> sweep_support_keys_;
   std::set<std::pair<std::string, std::uint64_t>> swept_seen_;
   rclcpp::Time last_sweep_clear_{0, 0, RCL_ROS_TIME};
   SupportPatchAnchors support_patch_anchors_;

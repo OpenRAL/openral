@@ -443,4 +443,35 @@ void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>
 bool trim_swept_box_above_supports(SweptBox& box, const std::vector<SupportPatch>& patches,
                                    double resolution) noexcept;
 
+/// Where `floor_swept_box` put a swept box's floor.
+enum class SweepFloor {
+  kSupport,          ///< one cell above a known support under the box
+  kMeasuredPayload,  ///< no support under it: the payload's measured lowest point at attach
+  kNone,             ///< nothing to floor against (or nothing left): do not clear the box
+};
+
+/// Every support the bridge can know for a swept box, all in the box's frame.
+struct SweepSupports {
+  /// Support patches attested during this carry, each as first attested (its anchor):
+  /// the counter a vision pick measured under its grasp-target region.
+  std::vector<SupportPatch> patches;
+  /// Declared static geometry surface points (`static_points_file`).
+  std::vector<tf2::Vector3> static_points;
+  /// The lowest point of a MEASURED payload (not the gripper-closure jaw box) at its
+  /// attach: the support it was lifted from is at or below it.
+  bool has_measured_floor{false};
+  double measured_floor_z{0.0};
+};
+
+/// Floor `box` (frame up = +z) so the swept-volume `clear_bbox` never reaches below a
+/// support: one cell above every attested support patch under it
+/// (`trim_swept_box_above_supports`'s rule) and every declared static-geometry point
+/// under its footprint below its top. With no support under the box, its floor is the
+/// measured payload's lowest point at attach; without that either (a gripper-closure
+/// fallback payload: the jaw box, not the object) the box is not cleared at all.
+/// Fix of the 2026-10-16 DROID t7 boxes that reached 49 mm below the table top: the
+/// user approved clearing "trimmed above the support surface", never through it.
+SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
+                           double resolution) noexcept;
+
 }  // namespace openral_octomap_bridge

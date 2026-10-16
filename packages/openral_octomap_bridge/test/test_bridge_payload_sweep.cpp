@@ -15,6 +15,7 @@
 #include <cmath>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -119,7 +120,8 @@ protected:
     octomap_pub_->publish(msg);
   }
 
-  void send_world_state() {
+  void send_world_state(bool attest_support = true,
+                        const std::string& evidence_kind = "vision_segmentation") {
     openral_msgs::msg::AttachedCollisionObject object;
     object.object_id = "grasped_payload:gripper";
     object.attach_link = "hand";
@@ -129,7 +131,8 @@ protected:
     box.shape_dimensions = {kHalf[0], kHalf[1], kHalf[2]};
     box.pose_in_object.orientation.w = 1.0;
     object.primitives.push_back(box);
-    object.support_contact_valid = true;
+    object.evidence_kind = evidence_kind;
+    object.support_contact_valid = attest_support;
     auto& w = object.support_contact;
     w.support_id = "counter";
     w.contact_point_in_object.z = -kHalf[2];
@@ -186,6 +189,38 @@ TEST_F(BridgePayloadSweep, ThePreAttachPathAndTheCarryAreClearedAboveTheSupport)
   EXPECT_GE(hi_x, 0.16 + kHalf[0] - 0.02) << "the carry was not cleared";
   // Never into the counter: one cell above the attested support (+ its depth bound).
   EXPECT_GE(lo_z, kSupportTop + 0.002 + kRes - 1e-6);
+}
+
+TEST_F(BridgePayloadSweep, WithoutASupportAMeasuredPayloadIsFlooredAtItsAttachBottom) {
+  // No support attested (the vision pick's attestation lapsed): the floor is the measured
+  // payload's lowest point at attach, never below it.
+  const double z = kSupportTop + kHalf[2];
+  for (int i = 0; i <= 8; ++i) {
+    place_hand(0.01 * i, z - 0.002 * i);  // the hand dips 16 mm while carrying
+    send_octree();
+    send_world_state(false, "vision_segmentation");
+    spin_for(50ms);
+  }
+  spin_for(300ms);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  ASSERT_FALSE(requests_.empty()) << "a measured payload is still cleared";
+  for (const auto& r : requests_) {
+    EXPECT_GE(r.min.z, kSupportTop - 1e-6) << "cleared below the payload's attach bottom";
+  }
+}
+
+TEST_F(BridgePayloadSweep, AGripperClosurePayloadWithoutASupportIsNotCleared) {
+  // DROID t7's second grasp: the jaw box (GRIPPER_CLOSURE fallback), no support known.
+  const double z = kSupportTop + kHalf[2];
+  for (int i = 0; i <= 8; ++i) {
+    place_hand(0.01 * i, z);
+    send_octree();
+    send_world_state(false, "gripper_closure");
+    spin_for(50ms);
+  }
+  spin_for(300ms);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  EXPECT_TRUE(requests_.empty()) << "a box with no floor was cleared";
 }
 
 TEST_F(BridgePayloadSweep, NothingIsClearedWithoutAnAttachment) {
