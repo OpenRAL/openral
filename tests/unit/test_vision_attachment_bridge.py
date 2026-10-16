@@ -1067,11 +1067,57 @@ def test_a_malformed_mask_reply_falls_back_and_releases_the_barrier() -> None:
                 stamp_ns=1_000_000_000,
                 t_link_from_cam=np.eye(4),
                 tcp_in_link=(0.0, 0.0, 0.0),
+                depth_entry=(np.zeros((4, 4)), 1_000_000_000, "cam"),
             )
             assert not leg.pending and ready == [True], "the barrier stayed shut"
             assert bridge.attachment_action_ack_ready()
             assert leg.attachment is not None
             assert leg.attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_a_reply_is_checked_against_the_depth_frame_its_request_named(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The ATTACH request names a depth frame; its masks meet that frame, not the newer one
+    cached by the time the reply lands (a slow segmenter refused every mask against it)."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+    from openral_msgs.srv import SegmentInView
+    from rclpy.task import Future
+    from sensor_msgs.msg import Image as ImageMsg
+
+    asked_ns, later_ns = 26_000_000_000, 26_500_000_000
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_reply_depth")
+        try:
+            bridge = VisionAttachmentBridge(node, _so101_calibrated())
+            (leg,) = bridge._legs
+            bridge._depth = (np.zeros((4, 4)), later_ns, "cam")  # landed meanwhile
+            for depth_ns in (asked_ns, later_ns):
+                leg.pending = True
+                future = Future()
+                leg.inflight = future
+                mask = ImageMsg(height=4, width=4, encoding="mono8", step=4)
+                mask.header.stamp.sec, mask.header.stamp.nanosec = divmod(asked_ns, 10**9)
+                mask.data = bytes([255] * 16)
+                future.set_result(SegmentInView.Response(ok=True, masks=[mask]))
+                bridge._on_reply(
+                    leg,
+                    future,
+                    generation=leg.generation,
+                    stamp_ns=asked_ns,
+                    t_link_from_cam=np.eye(4),
+                    tcp_in_link=(0.0, 0.0, 0.0),
+                    depth_entry=(np.zeros((4, 4)), depth_ns, "cam"),
+                )
+                err = capfd.readouterr().err
+                skewed = "mask captured 0.500 s from the depth frame" in err
+                assert skewed == (depth_ns != asked_ns), err
         finally:
             node.destroy_node()
     finally:

@@ -1945,6 +1945,7 @@ def test_every_bridge_and_leg_entry_point_is_serialized() -> None:
                 stamp_ns=1,
                 t_link_from_cam=np.eye(4),
                 tcp_in_link=(0.0, 0.0, 0.0),
+                depth_entry=(np.zeros((1, 1)), 1, "cam"),
             ),
             "segmentation_deadline": lambda: bridge._on_deadline(
                 left,
