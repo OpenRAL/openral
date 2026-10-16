@@ -3790,6 +3790,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "device": LaunchConfiguration("vision_attachment_segmenter_device").perform(
                         context
                     ),
+                    # The HAL drops a reply past this; the segmenter bounds its frame
+                    # wait by it (``segmenter_node.frame_wait_budget_s``).
+                    "request_deadline_s": float(
+                        cast("float", hal_file_params.get("vision_attachment_deadline_s", 0.25))
+                    ),
                     "use_sim_time": use_sim_time,
                 }
             ],
