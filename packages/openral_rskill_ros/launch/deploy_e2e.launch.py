@@ -2492,6 +2492,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         if vision_attachment_enabled
         else []
     )
+    # A real HAL checks that position-commanded joints follow their applied targets and
+    # raises /openral/estop when one does not (drives not producing torque, a blocked
+    # joint): `openral_hal._tracking_watch`. A params-file value still wins.
+    if hal_mode == "real":
+        if not hal_derived_params:
+            hal_derived_params = [{}]
+        hal_derived_params[0]["tracking_fault_window_s"] = 1.0
     # Whatever the source (derived above, or a params-file value that wins over it), the
     # vision leg may never trust a grid the kernel would refuse as stale, nor drop a released
     # payload's record nearer than the kernel's margin plus one cell.

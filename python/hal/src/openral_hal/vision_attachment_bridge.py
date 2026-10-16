@@ -156,6 +156,7 @@ from openral_hal._grasp_trigger import (
     gripper_joints,
 )
 from openral_hal._place_target_leg import _WITNESS_PERIOD_S, PlaceTargetLeg, plane_witness
+from openral_hal._tracking_watch import joint_row_targets
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -2030,13 +2031,9 @@ class VisionAttachmentBridge:
         is compact: ``joint_names[i]`` owns ``row[i]``. Any other length says nothing
         placeable and is logged (once).
         """
-        if len(row) == len(self._joint_order):
-            owned = set(names or self._joint_order)
-            return {
-                name: float(row[i]) for i, name in enumerate(self._joint_order) if name in owned
-            }
-        if names and len(row) == len(names):
-            return {name: float(value) for name, value in zip(names, row, strict=True)}
+        targets = joint_row_targets(row, names, self._joint_order)
+        if targets is not None:
+            return targets
         if not self._warned_row_shape and self._node is not None:
             self._warned_row_shape = True
             self._node.get_logger().warning(
