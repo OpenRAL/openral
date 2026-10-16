@@ -355,6 +355,8 @@ class ObjectTracker:
             frame_id=self.store.frame_id,
             stamp_ns=frame.stamp_ns,
             params=fp,
+            # A detector's box (a query prompt), never a track's own projected box.
+            detector_box=req.box_xyxy if req.object_id is None else None,
         )
         log.debug("object_tracker.fit", label=req.label, refusal=fit.refusal, **fit.assumptions)
         if fit.box is None or fit.tight is None:

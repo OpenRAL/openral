@@ -61,7 +61,7 @@ def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
     depth, labels = render(solids, rig)
     depth = kw.pop("depth", depth)
     return containing_fit(
-        labels == 1,
+        kw.pop("mask", labels == 1),
         depth,
         kw.pop("robot_mask", np.zeros(depth.shape, np.uint8)),
         rig.k,
@@ -190,6 +190,24 @@ def test_a_robot_wider_than_the_occluder_band_defers_the_fit() -> None:
     fit = _fit(rig, [plate], robot_mask=robot, depth=depth)
     assert fit.refusal == "a4_robot_occluder_wide" and fit.box is None
     assert fit.assumptions["a4_robot_beyond_band_px"] > 0
+
+
+def test_the_detector_box_restores_a_rim_the_mask_lost() -> None:
+    """SAM's plate mask lost its near rim (8 px); the detector's box still holds it (A1)."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    plate = cylinder((x, y), 0.08, rig.support_z, rig.support_z + 0.02)
+    _, labels = render([plate], rig)
+    full = labels == 1
+    rows, cols = np.nonzero(full)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    lost = full & (np.arange(full.shape[0])[:, None] < rows.max() - 8)
+    pts = surface_samples(plate)
+    without = _fit(rig, [plate], mask=lost)
+    assert without.refusal == "" and not _in_box(pts, without.box).all()  # the A1 failure
+    fit = _fit(rig, [plate], mask=lost, detector_box=box)
+    assert fit.refusal == "" and _in_box(pts, fit.box).all()
+    assert inside_hull(pts, _hull_base(fit)).all()
 
 
 def test_refusals_name_the_broken_assumption() -> None:

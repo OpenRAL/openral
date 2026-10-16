@@ -128,7 +128,7 @@ def test_a_candidate_that_splits_on_the_map_hands_over_to_the_next() -> None:
     tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
     out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0)
     (locate,) = out.requests
-    rows, cols = np.nonzero(labels > 0)
+    rows, cols = np.nonzero(labels == 1)  # the detector boxed the first orange
     box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
     out = tr.feed(
         frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,

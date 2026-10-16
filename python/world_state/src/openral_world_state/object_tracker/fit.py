@@ -149,6 +149,14 @@ def _neighbour_max(values: NDArray[np.float64]) -> NDArray[np.float64]:
     return out
 
 
+def _rect(box: tuple[float, float, float, float], shape: tuple[int, ...]) -> NDArray[np.bool_]:
+    """The pixels of ``box`` (``x0, y0, x1, y1``), clipped to ``shape``."""
+    out = np.zeros(shape[:2], dtype=bool)
+    c0, r0 = max(math.floor(box[0]), 0), max(math.floor(box[1]), 0)
+    out[r0 : max(math.ceil(box[3]), 0), c0 : max(math.ceil(box[2]), 0)] = True
+    return out
+
+
 def _outer_polygon(points: NDArray[np.float64]) -> NDArray[np.float64]:
     """``(16, 2)`` vertices of the 16-direction polygon that contains ``points``.
 
@@ -169,7 +177,7 @@ def _refused(
     return ContainingFit(None, None, surface, support_z, notes, why)
 
 
-def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
+def containing_fit(  # noqa: PLR0911, PLR0915  # reason: one named refusal per assumption
     mask: NDArray[np.bool_],
     depth_m: NDArray[np.float64],
     robot_mask: NDArray[np.uint8] | None,
@@ -181,6 +189,7 @@ def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
     frame_id: str,
     stamp_ns: int,
     params: FitParams | None = None,
+    detector_box: tuple[float, float, float, float] | None = None,
 ) -> ContainingFit:
     """Fit the set ``C`` that contains the object one mask shows (module docstring).
 
@@ -196,6 +205,10 @@ def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
         frame_id: The grid frame.
         stamp_ns: Depth stamp, carried on the box.
         params: Calibration (``FitParams()`` when ``None``).
+        detector_box: The open-vocabulary detector's box (pixels, ``x0, y0, x1, y1``) the
+            mask was prompted with, if any: its rectangle joins the silhouette (A1), so a
+            mask that lost a rim the detector saw is still contained. Never a track's own
+            projected box (that would only ever grow itself).
 
     Returns:
         A ``ContainingFit``; ``refusal`` names the failed gate.
@@ -265,6 +278,11 @@ def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
     if notes["a4_robot_beyond_band_px"] > 0:
         return _refused("a4_robot_occluder_wide", surface, support_z, notes)
     silhouette = s0 | (uncertain & _dilate(s0, p.k_px + 1)) | _dilate(nearer, p.w_occ_px)
+    measured = sure
+    if detector_box is not None:
+        rect = _rect(detector_box, silhouette.shape)
+        silhouette |= rect
+        measured = sure | (rect & ~robot & ~uncertain)  # the lost rim's depth sets the front
     sil = _dilate(silhouette, p.k_px)
 
     rows, cols = np.nonzero(sil)
@@ -285,7 +303,7 @@ def containing_fit(  # noqa: PLR0911  # reason: one named refusal per assumption
     # filter's uncertain band straddles the arm's edge, so either would lift the cone to
     # the arm (a head camera over a tote: +27 cm). The bands keep widening the cone
     # laterally; a hidden part nearer than that front behind the robot is A4 (logged, a5).
-    front = sure & usable
+    front = measured & usable
     if not front.any():
         front = sil & usable & ~robot
     notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
