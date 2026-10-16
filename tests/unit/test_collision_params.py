@@ -260,11 +260,18 @@ def test_no_tight_geometry_lowers_exactly_as_before() -> None:
     The kernel switches the staged narrow phase on by seeing
     ``box_hull.size() == boxes.size()``, so an accidentally-emitted empty array
     would be the difference between "no robot changed" and "every boxed robot
-    changed". Checked on the real so101_follower fixture, which declares no
-    tight geometry (the OpenArm, the previous fixture, now refines every link).
+    changed". Checked on the real so101_follower fixture with its refinements
+    stripped: no in-tree manifest declares none any more (the OpenArm refines
+    every link, the SO-101 its gripper entries).
     """
     robot = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-    assert all(g.tight_geometry is None for g in robot.collision_geometry)
+    robot = robot.model_copy(
+        update={
+            "collision_geometry": [
+                g.model_copy(update={"tight_geometry": None}) for g in robot.collision_geometry
+            ]
+        }
+    )
     params = collision_params_from_description(robot)
     assert "collision_box_hull" not in params
     assert "collision_hull_dop_lo" not in params
