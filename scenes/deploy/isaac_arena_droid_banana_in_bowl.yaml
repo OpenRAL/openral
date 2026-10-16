@@ -116,21 +116,18 @@ scene:
         "Pick up the banana and place it in the bowl": *banana_in_bowl
 
 # Grasp declaration for the grasp allowance / manipulation-workspace contact rule
-# (runtime block below). `search_box` is DERIVED, not hand-written, by
-# `tools/derive_scene_inputs.py --instruction "pick up the banana and place it in the
-# bowl"` on Isaac 6.1 (spark, 2026-10-16), from the sim's ground truth through the
-# reasoner's grounding (`ground_grasp_target`): the banana's bound, padded. NO
-# `workspace_box`: the tool grounded the banana on the floor (`GroundPlane`, 0.65 m
-# below it), because Arena's maple table is a dynamic rigid body (enabled,
-# non-kinematic, resting on the floor), and the static-collider export skips a body that
-# can move. The derived floor box would never be confirmed on the map, and a
-# hand-written table box is not derived, so the workspace rule has no box to relax here.
-# The pick-side search box covers the table top under the banana (z -0.042 .. 0.085 in
-# panda_link0, the top at z 0.003). `workspace_region` is producer-only.
-# PENDING RE-DERIVATION: the tool now grounds on dynamic fixtures (the table top, legs
-# left out); re-run it on Isaac to add the table-top `workspace_box`.
-# HAZARD-LOG LINE OWED: the table the workspace will be grounded on is MOVABLE (a dynamic
-# body in Arena too). The workspace relaxes nothing until the voxel map confirms it.
+# (runtime block below). DERIVED, not hand-written, by `tools/derive_scene_inputs.py
+# --instruction "pick up the banana and place it in the bowl"` on Isaac 6.1 (spark,
+# 2026-10-16), from the sim's ground truth through the reasoner's grounding
+# (`ground_grasp_target` / `ground_workspace`). `search_box` is the banana's bound,
+# padded. `workspace_box` is the hull of the table top the banana rests on (Arena's
+# maple table, `/World/environment/table/table_01`; its legs left out) and the bowl's
+# `in_bowl` region, padded 2 cm, plus headroom, cut to the 0.5 m half-extent cap around
+# the banana. The producer confirms it on the voxel map (`workspace_region` is
+# producer-only).
+# HAZARD-LOG LINE OWED: the table is a MOVABLE support (an enabled, non-kinematic rigid
+# body here and in Arena). The sidecar exports it flagged `dynamic`, so it is never
+# declared static geometry, and the workspace relaxes nothing until the map confirms it.
 # SIM-ONLY, pending Safety-WG review (ADR + hazard-log rows owed).
 grasp_declaration:
   target_id: "obj:banana"
@@ -142,6 +139,12 @@ grasp_declaration:
     pose: {xyz: [0.509671, -0.115792, 0.021202], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: panda_link0}
     half_extents: [0.099504, 0.134225, 0.063602]
     evidence_ref: "reasoner_seed:detection 'banana'"
+    stamp_ns: 0
+  workspace_box:
+    frame_id: panda_link0
+    pose: {xyz: [0.54859, -0.0568645, 0.0929435], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: panda_link0}
+    half_extents: [0.37, 0.4410725, 0.1399435]
+    evidence_ref: "sim:/World/environment/table/table_01+destination"
     stamp_ns: 0
 
 # Committed posture: world collision on (octomap over exterior_depth + the kernel's
