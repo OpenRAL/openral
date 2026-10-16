@@ -381,23 +381,23 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     self._aliases[j.sim_joint_name] = j.name
             self._tf_buffer = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
-            sub = self.create_subscription
+
             for name in [c for c in self._p("cameras") if c]:
                 cam = self._cams[name] = _Camera(name)
                 self._subs += [
-                    sub(
+                    self.create_subscription(
                         Image,
                         camera_topic(name, CameraTopicKind.DEPTH_IMAGE),
                         lambda m, c=cam: self._on_depth(c, m),
                         sensor_qos,
                     ),
-                    sub(
+                    self.create_subscription(
                         CameraInfo,
                         camera_topic(name, CameraTopicKind.DEPTH_CAMERA_INFO),
                         lambda m, c=cam: setattr(c, "info", intrinsics_from_info(m)),
                         sensor_qos,
                     ),
-                    sub(
+                    self.create_subscription(
                         Image,
                         camera_topic(name, CameraTopicKind.ROBOT_MASK),
                         lambda m, c=cam: self._on_mask(c, m),
@@ -405,16 +405,22 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     ),
                 ]
             self._subs += [
-                sub(OccupancyVoxels, "/openral/world_voxels", self._on_voxels, reliable_1),
-                sub(JointState, str(self._p("joint_states_topic")), self._on_joints, sensor_qos),
-                sub(GraspEventMsg, "/openral/grasp_events", self._on_grasp_event, events_qos),
-                sub(
+                self.create_subscription(
+                    OccupancyVoxels, "/openral/world_voxels", self._on_voxels, reliable_1
+                ),
+                self.create_subscription(
+                    JointState, str(self._p("joint_states_topic")), self._on_joints, sensor_qos
+                ),
+                self.create_subscription(
+                    GraspEventMsg, "/openral/grasp_events", self._on_grasp_event, events_qos
+                ),
+                self.create_subscription(
                     GraspDeclarationMsg,
                     "/openral/grasp_declaration",
                     self._on_grasp_declaration,
                     latched_1,
                 ),
-                sub(
+                self.create_subscription(
                     PlaceDeclarationMsg,
                     "/openral/place_declaration",
                     self._on_place_declaration,
