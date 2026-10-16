@@ -162,6 +162,10 @@ def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
     arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 9))
     robot[arm] = ROBOT_PIXEL
     depth[arm] = float(depth[labels == 1].min()) - 0.10
+    # The filter's uncertain band straddles the arm's edge: two of its columns are arm.
+    edge = (slice(rows.min(), rows.max() + 1), slice(cols.max() - 1, cols.max() + 1))
+    robot[edge] = UNCERTAIN_PIXEL
+    depth[edge] = float(depth[labels == 1].min()) - 0.10
     fit = _fit(rig, [solid], robot_mask=robot, depth=depth)
     assert fit.refusal == "" and fit.assumptions["a5_robot_band_px"] > 0
     assert inside_hull(surface_samples(solid), _hull_base(fit)).all()

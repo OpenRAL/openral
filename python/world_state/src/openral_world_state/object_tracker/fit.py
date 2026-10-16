@@ -111,7 +111,7 @@ class ContainingFit:
         support_z: The support the fit was truncated at.
         assumptions: A1-A4 evidence for the trace (``a1_border_clear``, ``a2_gap_m``,
             ``a3_depth_valid``, ``a4_occluder_px``, ``a5_robot_band_px``: silhouette pixels
-            behind the robot, whose depth never sets the front cut).
+            on or beside the robot, whose depth never sets the front cut).
         refusal: Empty when fitted, else why not.
     """
 
@@ -220,8 +220,16 @@ def containing_fit(
         np.zeros(mask.shape, dtype=bool) if robot_mask is None else robot_mask == UNCERTAIN_PIXEL
     )
     s0 = np.asarray(mask, dtype=bool) & ~robot
+    # ``P``, the object's measured points: the mask's pixels the filter is sure are not
+    # the robot. Its uncertain band straddles the arm's edge and may hold arm returns; it
+    # widens the cone below, never the prism or the front cut.
+    sure = s0 & ~uncertain
     raw, valid_fraction = backproject_masked_depth(
-        s0, depth_m, intrinsics, min_depth_m=p.min_depth_m, max_depth_m=p.max_depth_m
+        sure if sure.any() else s0,
+        depth_m,
+        intrinsics,
+        min_depth_m=p.min_depth_m,
+        max_depth_m=p.max_depth_m,
     )
     surface = raw @ t_base_from_cam[:3, :3].T + t_base_from_cam[:3, 3]
     notes: dict[str, float | bool] = {"a3_depth_valid": valid_fraction}
@@ -258,13 +266,16 @@ def containing_fit(
     if not (np.all(rays[:, 2] < 0.0) and origin[2] > support_z):
         return _refused("ray_misses_support", surface, support_z, notes)
     z_support = (support_z - origin[2]) / rays[:, 2]
-    # The front cut is the object's own measured front (mask, uncertain band and nearer
-    # non-robot occluders), never a robot pixel's depth: the arm hovers well above what it
-    # works over and cannot hold the object, so its depth would lift the cone to the arm
-    # (a head camera over a tote: +27 cm). Robot-adjacent rays keep their lateral band;
-    # a hidden part nearer than that front behind the robot is A4 (logged, a5).
-    front = sil & usable & ~robot
-    notes["a5_robot_band_px"] = float((sil & robot).sum())
+    # The front cut is the object's own measured front: the mask's pixels the robot filter
+    # is sure are not the robot. Never a robot or robot-adjacent (uncertain) pixel's depth:
+    # the arm hovers well above what it works over and cannot hold the object, and the
+    # filter's uncertain band straddles the arm's edge, so either would lift the cone to
+    # the arm (a head camera over a tote: +27 cm). The bands keep widening the cone
+    # laterally; a hidden part nearer than that front behind the robot is A4 (logged, a5).
+    front = sure & usable
+    if not front.any():
+        front = sil & usable & ~robot
+    notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
     z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())

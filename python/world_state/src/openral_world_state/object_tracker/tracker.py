@@ -41,7 +41,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from openral_world_state.object_tracker.cover import Cell, cover_verdict, surface_cells
 from openral_world_state.object_tracker.fit import (
-    ROBOT_PIXEL,
     ContainingFit,
     FitParams,
     containing_fit,
@@ -331,7 +330,7 @@ class ObjectTracker:
         t_cam = frame.t_base_from_cam
         fp = self.params.fit
         raw, _ = backproject_masked_depth(
-            mask & (frame.robot_mask != ROBOT_PIXEL) if frame.robot_mask is not None else mask,
+            mask & (frame.robot_mask == 0) if frame.robot_mask is not None else mask,
             frame.depth_m,
             frame.intrinsics,
             min_depth_m=fp.min_depth_m,
