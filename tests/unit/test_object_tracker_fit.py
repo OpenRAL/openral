@@ -1,0 +1,167 @@
+"""Containing fit (issue #418 step 3): the fitted set contains the solid, on the real cameras.
+
+Spheres, cylinders, yawed boxes and a curved banana-like solid are ray-cast into the three
+scenes' committed depth cameras (``_tracker_scenes``); every surface point of the solid
+must lie in the fitted box **and** in the 64-vertex tight hull — the property a hull of
+sampled surface points breaks for curved objects (#266).
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import numpy as np
+import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+from numpy.typing import NDArray
+from openral_core import PlaceRegion, TrackedObject
+from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_world_state.object_tracker import (
+    ROBOT_PIXEL,
+    UNCERTAIN_PIXEL,
+    ContainingFit,
+    containing_fit,
+)
+
+from tests.unit._tracker_scenes import (
+    RES,
+    RIGS,
+    Rig,
+    Solid,
+    banana,
+    box,
+    cylinder,
+    inside_hull,
+    render,
+    sphere,
+    surface_samples,
+)
+
+pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull checks hull containment")
+
+_RIGS = {name: make() for name, make in RIGS.items()}
+
+
+def _solid(kind: str, rig: Rig, dx: float, dy: float, a: float, b: float, c: float) -> Solid:
+    x, y, z0 = rig.centre_xy[0] + dx, rig.centre_xy[1] + dy, rig.support_z
+    if kind == "sphere":
+        r = 0.02 + 0.03 * a
+        return sphere((x, y, z0 + r), r)
+    if kind == "cylinder":
+        return cylinder((x, y), 0.02 + 0.02 * a, z0, z0 + 0.03 + 0.09 * b)
+    if kind == "box":
+        h = (0.015 + 0.035 * a, 0.015 + 0.035 * b, 0.01 + 0.04 * c)
+        return box((x, y, z0 + h[2]), h, math.pi * c)
+    return banana((x, y), z0, 0.06 + 0.04 * a, 0.015 + 0.006 * b, 0.8 + 0.8 * c, math.pi * a)
+
+
+def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
+    depth, labels = render(solids, rig)
+    return containing_fit(
+        labels == 1,
+        depth,
+        kw.pop("robot_mask", np.zeros(depth.shape, np.uint8)),
+        rig.k,
+        rig.t,
+        support_z=kw.pop("support_z", rig.support_z),
+        resolution=RES,
+        frame_id=rig.frame,
+        stamp_ns=1,
+        **kw,
+    )
+
+
+def _hull_base(fit: ContainingFit) -> NDArray[np.float64]:
+    assert fit.tight is not None and fit.tight.tight_geometry is not None
+    pose = fit.tight.pose_in_object
+    t = homogeneous_from_quat_xyz(pose.xyz, pose.quat_xyzw)
+    return np.asarray(np.asarray(fit.tight.tight_geometry.hull_vertices_m) @ t[:3, :3].T + t[:3, 3])
+
+
+def _in_box(points: NDArray[np.float64], region: PlaceRegion | None) -> NDArray[np.bool_]:
+    assert region is not None
+    t = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    local = (points - t[:3, 3]) @ t[:3, :3]
+    return np.asarray(np.all(np.abs(local) <= np.asarray(region.half_extents) + 1e-9, axis=1))
+
+
+@pytest.mark.parametrize("rig_name", sorted(_RIGS))
+@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    kind=st.sampled_from(["sphere", "cylinder", "box", "banana"]),
+    dx=st.floats(-0.05, 0.05),
+    dy=st.floats(-0.05, 0.05),
+    a=st.floats(0.0, 1.0),
+    b=st.floats(0.0, 1.0),
+    c=st.floats(0.0, 1.0),
+)
+def test_fitted_set_contains_the_solid(
+    rig_name: str, kind: str, dx: float, dy: float, a: float, b: float, c: float
+) -> None:
+    rig = _RIGS[rig_name]
+    solid = _solid(kind, rig, dx, dy, a, b, c)
+    fit = _fit(rig, [solid])
+    assert fit.refusal == "", (rig_name, kind, fit.refusal, fit.assumptions)
+    pts = surface_samples(solid)
+    assert pts[:, 2].min() >= rig.support_z - 1e-9  # resting on the support (A2)
+    assert _in_box(pts, fit.box).all()
+    hull = _hull_base(fit)
+    assert len(hull) <= TrackedObject.MAX_HULL_VERTICES
+    assert inside_hull(pts, hull).all()
+
+
+def test_six_pole_hull_misses_a_sphere_the_cone_contains() -> None:
+    """#266: the hull of a sphere's six sampled poles lies inside its surface; C does not."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    r = 0.024  # the ∅4.8 cm orange
+    c = np.array((x, y, rig.support_z + r))
+    poles = c + r * np.vstack((np.eye(3), -np.eye(3)))
+    diag = c + r * np.ones(3) / math.sqrt(3)  # a surface point between three poles
+    assert not inside_hull(diag[None], poles)[0]
+    # The octahedron's face sits r/√3 from the centre: 10 mm inside the 24 mm surface.
+    assert r - r / math.sqrt(3) > 0.01
+    fit = _fit(rig, [sphere(tuple(c), r)])
+    pts = surface_samples(sphere(tuple(c), r))
+    assert inside_hull(np.vstack((pts, diag)), _hull_base(fit)).all()
+
+
+def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
+    """A fingertip over the mask's edge: robot pixels leave the mask, the bands re-add them.
+
+    The fingertip is ``w_occ_px`` wide with the filter's uncertain band around it (A4
+    holds); a wider hidden part is the visibility gate's job (``θ_vis``), not the fit's.
+    """
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    solid = sphere((x, y, rig.support_z + 0.024), 0.024)
+    depth, labels = render([solid], rig)
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    tip = cols >= cols.max() - 3
+    robot[rows[tip], cols[tip]] = ROBOT_PIXEL
+    band = (robot == 0) & (np.abs(np.arange(depth.shape[1]) - (cols.max() - 4)) <= 2)[None, :]
+    robot[band & np.isin(np.arange(depth.shape[0]), rows)[:, None]] = UNCERTAIN_PIXEL
+    fit = _fit(rig, [solid], robot_mask=robot)
+    assert fit.refusal == "" and fit.assumptions["a4_occluder_px"] > 0
+    assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+
+
+def test_refusals_name_the_broken_assumption() -> None:
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    # A2: the measured support above the object's bottom would truncate the solid.
+    high = _fit(rig, [box((x, y, rig.support_z + 0.04), (0.03, 0.03, 0.04), 0.0)],
+                support_z=rig.support_z + 0.03)  # fmt: skip
+    assert high.refusal == "a2_below_support" and high.box is None
+    # A1: a mask cut by the image border hides what the frame lost.
+    depth, labels = render([box((x, y, rig.support_z + 0.02), (0.03, 0.03, 0.02), 0.0)], rig)
+    mask = labels == 1
+    mask[np.nonzero(mask)[0], 0] = True  # the same rows also touch column 0
+    fit = containing_fit(
+        mask, depth, None, rig.k, rig.t, support_z=rig.support_z, resolution=RES,
+        frame_id=rig.frame, stamp_ns=1,
+    )  # fmt: skip
+    assert fit.refusal == "a1_border_truncated"

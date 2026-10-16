@@ -122,6 +122,84 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable._
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step: greedy highest-confidence matching by same-label + `aabb_iou_3d ≥ iou_threshold` freezes a track (unchanged pose/bbox, bumped confidence); no match mints a new track. An unmatched track in FOV accrues `miss_count` and is evicted at `max_misses`; out of FOV it's retained unchanged. (L64)
 
+### `python/world_state/src/openral_world_state/object_tracker/__init__.py`
+_Object-centric tracker core (issue #418) — ROS-free; a lifecycle node wraps it. The module docstring is the **binding/release contract**: those modules mutate tracks only through `ObjectTracker.store` (`TrackStore.get` / `all` / `replace`); the tracker never fits, ages or confirms a BOUND track and hands BOUND fits back in `TrackerOutput.bound_fits`._
+
+### `python/world_state/src/openral_world_state/object_tracker/fit.py`
+_Containing fit (#418 step 3, the #266 rule): `C = cone(dilate(S)) ∩ {z ≥ support} ∩ {z_opt ≥ z_front − ε} ∪ prism(P, support)`, never a hull of sampled surface points._
+
+- const `ROBOT_PIXEL = 255` — `robot_filter` mask value for robot pixels (0 is free). (L63)
+- const `UNCERTAIN_PIXEL = 128` — `robot_filter` mask value for the uncertain band around the robot. (L64)
+- `class FitParams(BaseModel)` — Frozen calibration: `k_px` (mask + extrinsic error), `w_occ_px` (occluder band), `eps_m` (A2/A3 tolerance), `occluder_tol_m`, `min_points`, `min_depth_valid`, depth range. Every value a calibration point. (L70)
+- `@dataclass ContainingFit` — `box` (gravity-aligned, min-area yaw, +½ cell sides/top, bottom on the support), `tight` (one box primitive whose stage-2 hull is the 64-vertex polytope), `surface` (`P`, base frame), `support_z`, `assumptions` (A1-A4 evidence: `a1_border_clear`, `a2_gap_m`, `a3_depth_valid`, `a4_occluder_px`), `refusal`. (L101)
+- `containing_fit(mask, depth_m, robot_mask, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, stamp_ns, params=None) -> ContainingFit` — Robot pixels leave the mask, the uncertain band and an occluder band (where a nearer surface or the robot cuts the boundary) re-enter, `k_px` dilation; the cone over the silhouette's 16-direction outer polygon between the front plane and the support, union the prism of `P`'s footprint: exactly 64 vertices, no hull solver, no inward step. Refuses `too_few_points`, `a1_border_truncated` (mask touches the image border), `a2_below_support` (a surface point under the support), `a3_depth_invalid`, `ray_misses_support`, and the grasp-region caps. A4 (a hidden part wider than the occluder band) is logged, not provable here — the tracker's `θ_vis` gate covers it. (L168)
+- `project_box(box, intrinsics, t_base_from_cam) -> tuple[tuple[int, int, int, int], float] | None` — A box's clipped image rectangle and nearest optical depth; `None` behind the camera or outside the image. (L330)
+- `visible_fraction(box, depth_m, robot_mask, intrinsics, t_base_from_cam, *, tol_m=0.01) -> float | None` — Z-buffered fraction of the box's image rectangle not covered by the robot (robot or uncertain), a nearer surface, or missing depth; `None` out of view. Ceiling: an occluder between the box's nearest corner and the object's surface counts as visible. (L353)
+
+### `python/world_state/src/openral_world_state/object_tracker/cover.py`
+_Size-aware map confirmation (#418 step 4)._
+
+- `@dataclass CoverVerdict` — `visible` (`|E|`), `occupied` (`|E ∩ occupied|`), `kind` (`""` / `map_disagrees` / `map_split` / `map_split_own`), `why`. (L34)
+- `surface_cells(grid, surface, *, exclude=()) -> frozenset[tuple[int, int, int]]` — `E`: lattice cells holding the fit's surface points, minus cells centred in `exclude` (the robot's own space). (L56)
+- `cover_verdict(grid, cells, box, *, support_z, own=()) -> CoverVerdict` — `|E ∩ occupied| ≥ max(2, ⌈0.5·|E|⌉)` (cover on expected cells, not a padded footprint), then `object_primitives.map_confirms` for one body; a second body wholly inside a declared hand's `own` space is `map_split_own`. (L89)
+
+### `python/world_state/src/openral_world_state/object_tracker/tracks.py`
+_Track table, association by continuity, source-time ageing (#418 steps 5-6)._
+
+- const `LIVE` — Statuses a fit refreshes by continuity (TENTATIVE, CONFIRMED, OCCLUDED, SPLIT, BOUND). (L40)
+- `class TrackStore(frame_id)` — The `TrackedObject` rows; every change bumps `revision`. Contract for binding/release: `get`, `all`, `replace`. (L52)
+  - `revision` (property) — Strictly increasing. (L96)
+  - `get(object_id) -> TrackedObject | None` — (L100)
+  - `all() -> list[TrackedObject]` — Mint order. (L104)
+  - `replace(obj) -> None` — Swap the row for an updated copy; bumps `revision`; `ROSConfigError` on an unknown id, a frame mismatch or an epoch going backwards; logs status transitions. Never mints. (L108)
+  - `mint(**fields) -> TrackedObject` — TENTATIVE `trk:<n>`, never reused; past 32 rows the oldest LOST is dropped, else `ROSConfigError`. (L137)
+  - `drop(object_id) -> None` — Forget a row. (L160)
+  - `snapshot(stamp_ns) -> TrackedObjectSet` — (L165)
+- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180)
+- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L249)
+
+### `python/world_state/src/openral_world_state/object_tracker/grounding.py`
+_Standing queries (#418 Addendum G): a query lives as long as its goal; never a first-frame snapshot._
+
+- `@dataclass StandingQuery` — `(goal_id, query_id)`, the `ObjectQuery`, `declaration_key`, `ObjectQueryStatus`, search start (`since_ns`), fairness key (`last_served_ns`), `escalated`. (L43)
+  - `key` (property) — `(goal_id, query_id)`. (L67)
+  - `matches(track) -> bool` — Same label and role. (L71)
+- `@dataclass QueryEscalation` — Active-search data for the reasoner, never executed by the tracker: `kind` `unresolved` (start `find-object`) / `exhausted` (budget spent → replanning ladder), `last_seen` (last LOST match's box, a search prior). (L77)
+- `class QueryBook(*, search_start_s, search_max_s)` — Every live goal's queries. (L97)
+  - `queries` (property) — (L122)
+  - `get(goal_id, query_id) -> StandingQuery | None` — (L126)
+  - `open(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query at dispatch. (L130)
+  - `close_goal(goal_id) -> None` — End a goal's queries. (L145)
+  - `ready(goal_id) -> bool` — `grounding_ready`: every query RESOLVED. (L150)
+  - `update(tracks, *, now_ns) -> list[QueryEscalation]` — UNRESOLVED → RESOLVING (TENTATIVE/RELEASED match) → RESOLVED (≥ `min_instances` CONFIRMED/OCCLUDED/BOUND); all lost again → UNRESOLVED with the timer restarted; one `unresolved` escalation after `search_start_s`, `EXHAUSTED` + `exhausted` at `search_max_s`, all in source time. (L155)
+  - `due() -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting). (L189)
+
+### `python/world_state/src/openral_world_state/object_tracker/scheduler.py`
+_One segmenter/detector request in flight, rate-capped in wall time (#418 step 7)._
+
+- const `PRIORITY_QUERY = 1` — Step-7 priority of unresolved queries. (L39)
+- const `PRIORITY_RELEASED = 2` — RELEASED tracks, searched in their fall column. (L40)
+- const `PRIORITY_DISAGREE = 3` — Tracks the map disagrees with. (L41)
+- const `PRIORITY_BOUND = 4` — Bound-object protrusion checks. (L42)
+- const `PRIORITY_REFRESH = 5` — Oldest visible CONFIRMED refresh and resolved `count: "all"` re-detection. (L43)
+- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv`, `request_id` (0 until issued). (L47)
+- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L78)
+  - `in_flight` (property) — (L108)
+  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L112)
+  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L121)
+
+### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
+_`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._
+
+- `class TrackerParams(BaseModel)` — Frozen calibration: `theta_vis`, `max_age_s`, `lost_s`, `keep_lost_s`, `disagree_grids`, `segment_hz`, `segment_budget_wall_s`, `search_start_s`, `search_max_s`, support probe, `fit: FitParams`. (L69)
+- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L108)
+- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector). (L130)
+- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L145)
+- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L161)
+  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L194)
+  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L206)
+  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L211)
+
 ### `python/world_state/src/openral_world_state/object_tracker/pinch.py`
 _Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (`openral_core.kinematics`), pure numpy over the manifest, no HAL import._
 
