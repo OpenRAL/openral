@@ -158,8 +158,8 @@ runtime:
   # (docs/reference/manipulation-workspace-contact.md), SIM-ONLY and PENDING Safety-WG
   # review: the ADR (§7) and the hazard-log rows (§8) are owed. The exempt links are
   # `RobotDescription.hand_links()`: robotiq_finger_pair, the six Robotiq mimic links
-  # (outer / inner knuckles, inner fingers) and robotiq_arg2f_base_link; the two outer
-  # fingers (`*_bar`) stay checked. The bounds are the doc's deploy-sim calibration
+  # (outer / inner knuckles, inner fingers), the two outer fingers (`*_bar`, fixed on
+  # the outer knuckles) and robotiq_arg2f_base_link. The bounds are the doc's deploy-sim calibration
   # values (§8); the lead is the schema cap. `deploy run` refuses this block.
   grasp_allowance_enabled: true
   workspace_contact_enabled: true

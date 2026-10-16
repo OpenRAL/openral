@@ -109,3 +109,45 @@ def test_grasp_contact_links_carry_the_linkage(robot: RobotDescription) -> None:
     contact = set(robot.grasp_contact_links())
     assert {m.child_link for m in robot.mimic_joints} <= contact
     assert len(robot.mimic_joints) == 6
+
+
+def test_the_outer_fingers_are_grasp_contact_and_hand_links(robot: RobotDescription) -> None:
+    """The bars are rigid on the outer knuckles (mimic links), so they are the hand's too."""
+    contact = robot.grasp_contact_links()
+    assert contact[-2:] == ("left_bar", "right_bar")
+    assert {"left_bar", "right_bar"} <= set(robot.hand_links())
+    assert robot.hand_links()[-1] == "robotiq_arg2f_base_link"
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "contact", "hand"),
+    [
+        (
+            "openarm",
+            (
+                "openarm_left_finger_pair",
+                "openarm_right_finger_pair",
+                "openarm_left_finger_follower",
+                "openarm_right_finger_follower",
+            ),
+            (
+                "openarm_left_finger_pair",
+                "openarm_right_finger_pair",
+                "openarm_left_finger_follower",
+                "openarm_right_finger_follower",
+                "openarm_left_link7",
+                "openarm_right_link7",
+                "openarm_left_link6",
+                "openarm_right_link6",
+            ),
+        ),
+        ("franka_panda", ("panda_finger_pair",), ("panda_finger_pair", "panda_hand")),
+        ("so101_follower", ("moving_jaw",), ("moving_jaw", "gripper_base", "wrist")),
+    ],
+)
+def test_robots_without_a_fixed_child_on_a_mimic_finger_are_unchanged(
+    robot_id: str, contact: tuple[str, ...], hand: tuple[str, ...]
+) -> None:
+    other = RobotDescription.from_yaml(str(_REPO / "robots" / robot_id / "robot.yaml"))
+    assert other.grasp_contact_links() == contact
+    assert other.hand_links() == hand

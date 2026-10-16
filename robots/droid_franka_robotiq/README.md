@@ -112,9 +112,13 @@ for every link. The map is per backend:
 | anything else (another sim backend, a real Robotiq driver; no real HAL exists) | **unverified**: it must map `f` the same way |
 
 `grasp_contact_links()` / `hand_links()` carry the six mimic links (both knuckles and
-both inner fingers per side). The bars are fixed children of a mimic link, which
-`grasp_contact_links()` does not follow, so the grasp and workspace-contact
-exemptions do not cover them: they stay checked.
+both inner fingers per side) and the two bars. A bar is a fixed child of a mimic link,
+and since 2026-10-16 `grasp_contact_links()` follows fixed children of mimic fingers
+(user-approved, needs Safety-WG review + hazard-log row; it affects every robot with a
+fixed child on a mimic finger, only this one in-tree). The workspace-contact rule
+covers the bars through `hand_links()`. The kernel's grasp-region exemption widens a
+declaration only to allowlisted links on the same joint column, and a bar has none
+(fixed), so it covers a bar only when the declaration names it.
 
 The URDF lowering emits only `joints` + `fixed_attachments` links, so the linkage
 entries are spliced in by hand. The fleet drift guard therefore checks this robot's
