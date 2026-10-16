@@ -638,6 +638,12 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     ``prompt`` (verbatim): its objects and the destination object of each target region
     (``openral_reasoner.grounding.placement_queries``). A prompt the scene does not grade
     names nothing, and that is printed rather than guessed.
+
+    The scene's own ``grasp_declaration.search_box`` (a sim-derived or reasoner seed box
+    around one instance) becomes the ``seed`` of the TARGET query whose label its
+    ``target_id`` names (``obj:orange_1`` → ``orange``): the tracker's map-seeded prompt
+    inside it, so a class no open-vocabulary locator knows (``stock object``) still
+    grounds. A seed is a search hint only, never kernel geometry.
     """
     runtime = deploy_scene.runtime if deploy_scene is not None else None
     if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
@@ -645,6 +651,7 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     raw = deploy_scene.scene.backend_options.get("placement_success")
     if raw is None:
         return ""
+    from openral_core import ObjectRole
     from openral_reasoner.grounding import placement_queries
     from openral_sim.backends.isaac_sim import (  # reason: defer optional dep
         IsaacPlacementSuccess,
@@ -658,6 +665,16 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
         )
         return ""
     queries = placement_queries(placements)
+    decl = deploy_scene.grasp_declaration
+    if decl is not None and decl.search_box is not None:
+        # The same instance-suffix / underscore normalisation the queries' labels went through.
+        seeded = placement_queries([(decl.target_id.split(":", 1)[-1], None)])[0].label
+        queries = tuple(
+            q.model_copy(update={"seed": decl.search_box})
+            if q.label == seeded and q.role is ObjectRole.TARGET and q.seed is None
+            else q
+            for q in queries
+        )
     return json.dumps(
         [q.model_dump(mode="json", exclude_none=True) for q in queries], separators=(",", ":")
     )
@@ -1836,8 +1853,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
         )
-    # Issue #418: the object classes the prompt's graded task names, for the tracker.
-    queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt)
+    # Issue #418: the object classes the prompt's graded task names, for the tracker. A
+    # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
+    # prompt; that is the prompt whose task is graded, so it names the queries.
+    queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt or preload_prompt)
     if queries_json:
         argv_template.append(f"object_queries_json:={queries_json}")
 

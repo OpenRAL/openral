@@ -1191,6 +1191,34 @@ def _object_tracking(
     return mode, tracked
 
 
+def _locator_cameras(
+    det_camera: str,
+    det_image_topic: str,
+    det_camera_infos: list[str],
+    tracked_cameras: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    """An on-demand locator's ``cameras`` / ``camera_infos`` (``id=topic`` entries).
+
+    The detector camera first (the primary a request with no ``camera`` gets), then
+    every object-tracker camera (issue #418) under its own name with its registered RGB
+    stream: the tracker asks ``locate_in_view`` on the depth camera it fits with, and a
+    locator that cached only the detector camera answers "no frame for camera".
+
+    Example:
+        >>> cams, infos = _locator_cameras("top", "/cam/top", [""], ("top_depth",))
+        >>> cams
+        ['top=/cam/top', 'top_depth=/openral/cameras/top_depth/image']
+        >>> infos
+        ['top_depth=/openral/cameras/top_depth/camera_info']
+    """
+    extra = [c for c in tracked_cameras if c != det_camera]
+    cameras = [f"{det_camera}={det_image_topic}"]
+    cameras += [f"{c}={camera_topic(c, CameraTopicKind.IMAGE)}" for c in extra]
+    infos = [i for i in det_camera_infos if i]
+    infos += [f"{c}={camera_topic(c, CameraTopicKind.CAMERA_INFO)}" for c in extra]
+    return cameras, infos or [""]
+
+
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
     """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
 
@@ -3877,6 +3905,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # continuous detector's camera/topic; the node's mode wiring (detector
         # invocation mode)
         # makes them serve-only (no continuous publish leg). Throttle by engine.
+        locator_cameras, locator_infos = _locator_cameras(
+            det_camera, det_image_topic, det_camera_infos, tracked_cameras
+        )
         for spec in locator_specs:
             locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(spec["engine"], 5.0)
             locator_params = {
@@ -3885,7 +3916,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Cache under the real camera name so locate_in_view(camera="top")
                 # hits — see the continuous detector's primary_camera note above.
                 "primary_camera": det_camera,
-                "camera_infos": det_camera_infos,
+                "cameras": locator_cameras,
+                "camera_infos": locator_infos,
                 "manifest_path": spec["manifest"],
                 "onnx_path": object_detector_onnx,
                 "query": object_detector_query,

@@ -3247,8 +3247,10 @@ def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
     from openral_cli.deploy_sim import _object_queries_json
 
     orange = _tracking("isaac_leisaac_pick_orange.yaml", "on")
+    seed = orange.grasp_declaration.search_box.model_dump(mode="json", exclude_none=True)
     assert json.loads(_object_queries_json(orange, "Grab orange and place into plate")) == [
-        {"label": "orange", "count": "all", "role": "target", "min_instances": 1},
+        # obj:orange_1's derived search box seeds the orange class (a search hint only).
+        {"label": "orange", "count": "all", "role": "target", "min_instances": 1, "seed": seed},
         {"label": "plate", "count": "one", "role": "destination", "min_instances": 1},
     ]
     banana = _tracking("isaac_arena_droid_banana_in_bowl.yaml", "shadow")

@@ -39,6 +39,28 @@ def test_deploy_sim_forwards_the_runtime_override_and_leaves_off_unchanged() -> 
     assert not [a for a in off if a.startswith(("object_tracking:=", "grounding_"))]
 
 
+def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() -> None:
+    """No reasoner means no initial task; the preload prompt is the graded one."""
+    import json
+
+    argv = _argv(
+        _PICK_ORANGE,
+        "sim",
+        {
+            "object_tracking": "shadow",
+            "grounding_wait_s": 8,
+            "enable_reasoner": False,
+            "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
+            "preload_prompt": "Grab orange and place into plate",
+        },
+    )
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("object_queries_json:=")]
+    assert [(q["label"], q["role"]) for q in json.loads(raw)] == [
+        ("orange", "target"),
+        ("plate", "destination"),
+    ]
+
+
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
@@ -100,3 +122,12 @@ def test_the_launch_refuses_an_incomplete_posture(
 ) -> None:
     with pytest.raises(ROSConfigError, match=match):
         object_tracking(mode, **{**_OK, **change})  # type: ignore[operator]
+
+
+def test_a_locator_caches_every_tracked_camera_under_its_own_name(object_tracking: object) -> None:
+    """The tracker asks locate_in_view on its depth camera; the locator must hold its frame."""
+    f = sys.modules["deploy_e2e_launch_tracking"]._locator_cameras
+    cams, infos = f("top", "/openral/cameras/top/image", ["top=/info"], ("top_depth", "top"))
+    assert cams == ["top=/openral/cameras/top/image", "top_depth=/openral/cameras/top_depth/image"]
+    assert infos == ["top=/info", "top_depth=/openral/cameras/top_depth/camera_info"]
+    assert f("top", "/t", [""], ()) == (["top=/t"], [""])  # nothing tracked: unchanged
