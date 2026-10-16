@@ -8,7 +8,7 @@ LeIsaac's spawn, the stage's own oranges and plate as graded scene objects.
 * At t0 the four stage objects are found where the USD authors them, the
   robot stays pinned at its spawn, and the episode grades ``fail`` (the oranges
   start beside the plate, not on it).
-* Teleporting the oranges onto the plate (``set_object_position``) grades
+* From a fresh reset, teleporting the oranges onto the plate (``set_object_position``) grades
   ``complete`` once they rest, and the episode terminates as a success.
 
 ``OPENRAL_TEST_ARTIFACT_DIR`` (optional) receives the front-camera frames
@@ -69,9 +69,13 @@ def env() -> Iterator[Any]:
             vla=VLASpec(id="zero", weights_uri="placeholder"),
         )
     )
-    yield sim_env
-    _write_video()
-    sim_env.close()
+    try:
+        yield sim_env
+    finally:  # a failing test or video write must not leak the Isaac sidecar
+        try:
+            _write_video()
+        finally:
+            sim_env.close()
 
 
 def _hold(env: Any) -> Any:
@@ -133,6 +137,7 @@ def test_t0_finds_the_stage_objects_and_grades_fail(env: Any) -> None:
 
 
 def test_oranges_teleported_onto_the_plate_grade_success(env: Any) -> None:
+    env.reset(seed=0)  # independent of the t0 test's steps
     plate = np.asarray(_hold(env).info["object_positions"]["plate"])
     for name, (dx, dy) in zip(_ORANGES, [(-0.04, 0.0), (0.03, 0.035), (0.03, -0.035)], strict=True):
         target = plate + np.array([dx, dy, 0.06])
