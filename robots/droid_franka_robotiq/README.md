@@ -55,20 +55,28 @@ both 1280 × 720 like Arena's `PinholeCameraCfg`; their mounts are scene
 ## Grasp-trigger calibration
 
 `joints[finger_joint].closure_calibration` holds the position-stall grasp-trigger
-thresholds, in the channel's `[0, 1]` fraction units. They were measured in the Isaac
-6.1 deploy twin (`scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`, start pose,
-nothing between the jaws, 15 Hz joint states): three empty closes 1 → 0, one 0.5 → 0,
-with opens between.
+thresholds, in the channel's `[0, 1]` fraction units. They are sim-measured
+(2026-10-16) from two sources, both on the sim clock at 15 Hz joint states:
 
-| Value | Setting | Where it comes from |
+- **The Isaac 6.1 twin's empty closes** (start pose, nothing between the jaws; 1 → 0
+  and 0.5 → 0). Every close settles at 0.00000.
+- **Deploy-sim trial t5** (π0.5 on `banana_in_bowl`, the bag's `/joint_states` against
+  the commanded fraction). The jaw's span is measured over the trigger's 5-sample settle
+  window, 0.267 s at 15 Hz.
+
+| Phase in t5 | Command | Measured | Gap (measured − command) | Span |
+| --- | --- | --- | --- | --- |
+| banana holds (ticks 107–120, 165–179) | 0.093–0.105 | 0.469–0.696 | 0.366–0.598 | 0.0028–0.0185 |
+| closed on nothing | ≤ 0.20 | at the command | −0.0008 … 0.0073 | 0.0018–0.0163 |
+| free motion | > 0.5 (not a close) | — | — | ≤ 0.0196 |
+
+| Value | Setting | Why |
 | --- | --- | --- |
 | `closed_position` | 0.0 | the channel's closed end |
-| `closed_rest_offset` | 0.0 | every empty close settles at 0.00000 within 2 ticks (the sidecar's curve clamps a leader past π/4 to 0) |
-| `stall_gap` | 0.08 | settled free-motion error is 0 (max 3.6e-7); a 37 mm banana meets the pads near `f = 0.8`, so a stall on it reads about 0.8 from a closed command |
-| `settle_tolerance` | 0.002 | the twin's settled 5-sample span is at most 3.6e-7 |
-
-`stall_gap` is also the band a **command** must be within of closed to arm the
-trigger: a policy that closes to `f > 0.08` never arms it.
+| `closed_rest_offset` | 0.0 | the twin's empty closes settle at 0 |
+| `close_band` | 0.20 | π0.5 holds the banana at commands 0.09–0.15, outside a `stall_gap` band (user-approved value) |
+| `stall_gap` | 0.15 | 20× the largest closed-on-nothing gap, 0.41× the smallest hold gap; its half, the slip / release hysteresis, is still 10× the closed-on-nothing gap |
+| `settle_tolerance` | 0.02 | above the largest settled hold span (0.0185) |
 
 **These values are sim-measured and unverified on a real Robotiq** (no real HAL exists).
 Re-measure them on hardware before any real `grasp_allowance_enabled` deploy. This is a
