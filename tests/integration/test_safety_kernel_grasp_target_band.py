@@ -629,7 +629,7 @@ def test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed(
     non-exempt (the closure never grows down)."""
     import numpy as np
     from openral_core import GraspDeclaration as _Declaration
-    from openral_hal._grasp_target import VoxelLattice, cell_closed_region
+    from openral_core.perception_geometry import VoxelLattice, cell_closed_region
 
     lattice = VoxelLattice(
         _FRAME,
@@ -1134,7 +1134,7 @@ def _kernel_box(
     handover on). ``dz`` raises the held region with the world.
     """
     import numpy as np
-    from openral_hal._grasp_target import VoxelLattice, lowered_to_support
+    from openral_core.perception_geometry import VoxelLattice, lowered_to_support
     from openral_hal._grasp_target_leg import _kernel_closure
 
     lattice = VoxelLattice(

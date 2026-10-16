@@ -148,8 +148,9 @@ from openral_core import (
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.perception_geometry import lattice_from_msg
 
-from openral_hal._grasp_target_leg import GraspTargetLeg, _locked, lattice_from_msg
+from openral_hal._grasp_target_leg import GraspTargetLeg, _locked
 from openral_hal._grasp_trigger import (
     GraspEvent,
     PositionStallConfig,
@@ -174,9 +175,8 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         PlaceRegion,
         RobotDescription,
     )
+    from openral_core.perception_geometry import VoxelLattice
     from openral_core.schemas import TightCollisionGeometry
-
-    from openral_hal._grasp_target import VoxelLattice
 
 __all__ = [
     "DEFAULT_SEGMENT_SERVICE",

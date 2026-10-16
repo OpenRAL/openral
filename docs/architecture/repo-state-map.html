@@ -829,7 +829,7 @@ const LAYERS = [
       },
       {
         title: "HAL vision attachment leg (VisionAttachmentBridge + grasp/place target legs)",
-        pkg: "python/hal · vision_attachment_bridge.py / _grasp_target_leg.py / _place_target_leg.py / _grasp_target.py / _object_primitives.py / _grasp_trigger.py",
+        pkg: "python/hal · vision_attachment_bridge.py / _grasp_target_leg.py / _place_target_leg.py / _grasp_trigger.py · pure geometry in python/core · perception_geometry.py / object_primitives.py",
         status: "yellow",
         desc: "Real-hardware attachment evidence producer, built by ManifestHALLifecycleNode from the vision_attachment_* params (DeployRuntime.vision_attachment; enabled defaults off). PositionStallTrigger arms on the manifest's GripperClosureCalibration (the real OpenArm gripper reports no effort); at ATTACH a gated srv/SegmentInView mask of the wrist frame plus the depth image fit the payload, published on /openral/attachment_state as AttachedCollisionObject. GraspTargetLeg (grasp_target_enabled, default off) measures the declared target's oriented region from the head camera and the occupancy grid and publishes /openral/grasp_declaration; PlaceTargetLeg (place_target_enabled, default off) measures the support under a carried payload and publishes /openral/place_declaration. Both legs only measure: the kernel bounds every region. Tested by tests/unit/test_vision_attachment_bridge.py, test_grasp_target_leg.py, test_place_target_leg.py, test_grasp_trigger.py and the *_live integration tests.",
         inputs: ["/openral/world_voxels", "head/wrist RGB + depth + CameraInfo", "/joint_states", "srv/SegmentInView"],

@@ -18,21 +18,21 @@ import numpy as np
 import pytest
 import yaml
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
-from openral_hal._grasp_target import (
-    VoxelLattice,
-    _components,
-    _ijk,
-    cell_closed_region,
-    region_covers_occupied,
-    target_region_from_masks,
-)
-from openral_hal._object_primitives import (
+from openral_core.object_primitives import (
     PrimitiveFit,
     PrimitiveTracker,
     instance_prompt,
     map_confirms,
     nearest_primitive,
     point_box_gap_m,
+)
+from openral_core.perception_geometry import (
+    VoxelLattice,
+    _components,
+    _ijk,
+    cell_closed_region,
+    region_covers_occupied,
+    target_region_from_masks,
 )
 
 from tests.unit._head_camera_render import Box, head_camera, render

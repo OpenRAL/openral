@@ -269,8 +269,15 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError, ROSSafetyViolation
 from openral_core.geometry import homogeneous_from_quat_xyz
-
-from openral_hal._grasp_target import (
+from openral_core.object_primitives import (
+    ObjectPrimitive,
+    PrimitiveFit,
+    PrimitiveTracker,
+    instance_prompt,
+    map_confirms,
+    nearest_primitive,
+)
+from openral_core.perception_geometry import (
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
@@ -279,6 +286,7 @@ from openral_hal._grasp_target import (
     _in_region,
     cell_closed_region,
     fit_pad_m,
+    lattice_from_msg,
     lowered_to_support,
     map_completed_region,
     margin_grown_region,
@@ -292,14 +300,6 @@ from openral_hal._grasp_target import (
     target_region_from_masks,
     target_seed_from_voxels,
     track_region,
-)
-from openral_hal._object_primitives import (
-    ObjectPrimitive,
-    PrimitiveFit,
-    PrimitiveTracker,
-    instance_prompt,
-    map_confirms,
-    nearest_primitive,
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -1101,23 +1101,6 @@ class GraspTargetTracker:
         target = self.target
         assert target is not None
         return target.model_copy(update={"region": self._region})
-
-
-def lattice_from_msg(msg: Any) -> VoxelLattice:
-    """Decode one ``openral_msgs/OccupancyVoxels`` into a ``VoxelLattice``.
-
-    Raises:
-        ROSConfigError: On a malformed grid (via ``VoxelLattice``).
-    """
-    o, q = msg.origin, msg.orientation
-    return VoxelLattice(
-        frame_id=str(msg.header.frame_id),
-        origin=(float(o.x), float(o.y), float(o.z)),
-        orientation_xyzw=(float(q.x), float(q.y), float(q.z), float(q.w)),
-        resolution=float(msg.resolution),
-        size=(int(msg.size_x), int(msg.size_y), int(msg.size_z)),
-        occupancy=np.array(msg.occupancy, dtype=np.uint8),
-    )
 
 
 #: The most a fixed frame's ``frame <- box frame`` rotation may tilt off vertical for a

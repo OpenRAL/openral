@@ -591,7 +591,7 @@ def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_sup
     on the payload as posed back from its attach link."""
     from openral_core import DeployScene, PlaceRegion, Pose6D
     from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
-    from openral_hal._grasp_target import VoxelLattice
+    from openral_core.perception_geometry import VoxelLattice
     from openral_hal._grasp_target_leg import _kernel_closure
     from openral_hal.vision_attachment_bridge import box_gap_lower_bound_m, region_attachment
 

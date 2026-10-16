@@ -33,7 +33,7 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target import VoxelLattice
+from openral_core.perception_geometry import VoxelLattice
 from openral_hal._grasp_trigger import PositionStallConfig, PositionStallTrigger
 from openral_hal._place_target_leg import (
     _LOST_VIEW,
