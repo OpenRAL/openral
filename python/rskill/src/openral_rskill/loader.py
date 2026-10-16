@@ -750,7 +750,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             available = sorted(s.vla_feature_key for s in robot_sensors if s.vla_feature_key)
             raise ROSCapabilityMismatch(
                 f"rSkill '{skill_name}' requires sensor with vla_feature_key="
-                f"{req.vla_feature_key!r}; robot exposes {available or '<none>'}."
+                f"{req.vla_feature_key!r}; robot exposes {available or '<none>'}. "
+                "sensors_required names robot slots; map a slot to the checkpoint's own "
+                "key with image_preprocessing.aliases (e.g. aliases: {top: context})."
             )
         sensor = matches[0]
         # SensorSpec uses ``use_enum_values=True`` so .modality is a plain string.

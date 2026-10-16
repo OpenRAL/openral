@@ -542,53 +542,60 @@ def _act_aloha() -> RSkillManifest:
     return RSkillManifest.from_yaml(str(_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml"))
 
 
-def test_missing_slots_names_what_the_robot_cannot_serve() -> None:
-    """act-aloha needs slot ``top``; aloha_bimanual has it, aloha_agilex only camera1-3."""
-    from openral_core import missing_vla_camera_slots
+def test_the_runner_refuses_a_slot_the_robot_cannot_serve() -> None:
+    """act-aloha needs ``observation.images.top``; aloha_agilex exposes only camera1-3."""
+    from openral_core.exceptions import ROSCapabilityMismatch
 
-    assert missing_vla_camera_slots(_act_aloha(), _robot("aloha_bimanual")) == ()
-    assert missing_vla_camera_slots(_act_aloha(), _robot("aloha_agilex")) == ("top",)
-    assert missing_vla_camera_slots(_act_aloha(), None) == ()
+    with pytest.raises(ROSCapabilityMismatch, match=r"vla_feature_key='observation\.images\.top'"):
+        _build_runtime_skill_from_manifest(
+            yaml_path=_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml",
+            prompt="",
+            description=_robot("aloha_agilex"),
+        )
 
 
-def test_a_checkpoint_key_in_sensors_required_is_a_missing_slot() -> None:
+def test_a_checkpoint_key_in_sensors_required_is_refused() -> None:
     """The restock pi0.5 bug: ``observation.images.context`` required, OpenArm's head is ``top``.
 
     Built from the real OpenArm manifest; the requirement list is the one the
     published restock manifest carried at revision 3599235f (the private
     rSkill is not in this repo).
     """
-    from openral_core import missing_vla_camera_slots
+    from openral_core.exceptions import ROSCapabilityMismatch
     from openral_core.schemas import SensorRequirement
+    from openral_rskill.loader import rSkill
 
-    keys = ("context", "wrist_left", "wrist_right")
-    old = _act_aloha().model_copy(
-        update={
-            "sensors_required": [
-                SensorRequirement(modality="rgb", vla_feature_key=f"observation.images.{k}")
-                for k in keys
-            ]
-        }
-    )
-    assert missing_vla_camera_slots(old, _robot("openarm")) == ("context",)
-    fixed = old.model_copy(
-        update={
-            "sensors_required": [
-                SensorRequirement(modality="rgb", vla_feature_key=f"observation.images.{k}")
-                for k in ("top", "wrist_left", "wrist_right")
-            ]
-        }
-    )
-    assert missing_vla_camera_slots(fixed, _robot("openarm")) == ()
+    def _requiring(*keys: str) -> RSkillManifest:
+        return _act_aloha().model_copy(
+            update={
+                "sensors_required": [
+                    SensorRequirement(modality="rgb", vla_feature_key=f"observation.images.{k}")
+                    for k in keys
+                ]
+            }
+        )
+
+    sensors = list(_robot("openarm").sensors)
+    with pytest.raises(ROSCapabilityMismatch, match=r"image_preprocessing\.aliases"):
+        rSkill.check_sensors(_requiring("context", "wrist_left", "wrist_right"), sensors)
+    rSkill.check_sensors(_requiring("top", "wrist_left", "wrist_right"), sensors)
 
 
-def test_the_runner_refuses_before_loading_weights() -> None:
-    """``_build_runtime_skill_from_manifest`` raises before any policy is built."""
+def test_the_runner_matches_the_full_feature_key(tmp_path: Path) -> None:
+    """Deploy uses the sim/detect rule: the whole key, not just its last segment.
+
+    ``observation.image.top`` (singular) ends in ``top`` like aloha_bimanual's
+    ``observation.images.top``; #414's last-segment rule accepted it on deploy
+    while ``openral sim run`` refused it.
+    """
     from openral_core.exceptions import ROSCapabilityMismatch
 
-    with pytest.raises(ROSCapabilityMismatch, match=r"requires camera slot\(s\) \['top'\]"):
+    source = (_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml").read_text()
+    assert "observation.images.top" in source
+    yaml_path = tmp_path / "rskill.yaml"
+    yaml_path.write_text(source.replace("observation.images.top", "observation.image.top"))
+
+    with pytest.raises(ROSCapabilityMismatch, match=r"'observation\.image\.top'"):
         _build_runtime_skill_from_manifest(
-            yaml_path=_REPO_ROOT / "rskills" / "act-aloha" / "rskill.yaml",
-            prompt="",
-            description=_robot("aloha_agilex"),
+            yaml_path=yaml_path, prompt="", description=_robot("aloha_bimanual")
         )

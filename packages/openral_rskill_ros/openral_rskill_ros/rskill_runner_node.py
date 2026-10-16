@@ -43,7 +43,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import (
-    missing_vla_camera_slots,
     required_vla_camera_slots,
     sensor_name_to_slot,
 )
@@ -3288,19 +3287,15 @@ def _build_runtime_skill_from_manifest(
             "are resolved via make_default_skill_resolver(), which branches "
             "on manifest.kind before reaching this helper."
         )
-    # Before any weights load: a required camera the robot cannot serve would
+    # Before any weights are loaded into memory (a Hub skill's snapshot is
+    # already on disk): a required camera the robot cannot serve would
     # otherwise be dropped from every observation and masked by the policy.
-    missing = missing_vla_camera_slots(manifest, description)
-    if missing:
-        from openral_core.exceptions import ROSCapabilityMismatch
+    # Same rule as `openral sim run` and `openral detect` (full key, modality,
+    # resolution), so the three never disagree on a pairing.
+    if description is not None:
+        from openral_rskill.loader import rSkill
 
-        have = sorted(sensor_name_to_slot(description).values())
-        raise ROSCapabilityMismatch(
-            f"rSkill {manifest.name!r} requires camera slot(s) {list(missing)}, which robot "
-            f"{getattr(description, 'name', '?')!r} does not have (its slots: {have}). "
-            "sensors_required names robot slots; map a slot to the checkpoint's own key "
-            "with image_preprocessing.aliases (e.g. aliases: {top: context})."
-        )
+        rSkill.check_sensors(manifest, list(description.sensors))
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
     # Deploy overlaps the next inference unless the manifest opts out. This

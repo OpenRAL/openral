@@ -695,32 +695,6 @@ def required_vla_camera_slots(
     return tuple(slot for slot in slots if slot in required) if required else slots
 
 
-def missing_vla_camera_slots(
-    manifest: RSkillManifest, description: RobotDescription | None
-) -> tuple[str, ...]:
-    """RGB VLA slots an rSkill requires that this robot has no camera for, sorted.
-
-    ``required_vla_camera_slots`` keeps only the slots both sides name, so a
-    required slot the robot lacks used to vanish without a word: the restock
-    π0.5 manifest (revision ``3599235f``) required ``observation.images.context``
-    while the OpenArm's head camera is slot ``top``, the head view never reached
-    the policy, and lerobot fed a masked image in its place on every real run.
-    ``sensors_required`` names *slots*; a checkpoint whose own key differs maps
-    the slot to it with ``image_preprocessing.aliases`` (``{top: context}``).
-    Empty without a robot description (nothing to check against).
-
-    Example:
-        >>> desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
-        >>> skill = RSkillManifest.from_yaml("rskills/smolvla-libero/rskill.yaml")
-        >>> missing_vla_camera_slots(skill, desc)
-        ()
-    """
-    if description is None:
-        return ()
-    have = set(sensor_name_to_slot(description).values())
-    return tuple(sorted(_required_rgb_slots(manifest.sensors_required) - have))
-
-
 def check_scene_sensor_overrides(
     manifest_sensors: Iterable[SensorSpec], scene_sensors: Iterable[SensorSpec]
 ) -> None:
