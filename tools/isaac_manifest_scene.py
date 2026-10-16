@@ -3038,12 +3038,17 @@ class IsaacManifestScene(IsaacSceneBase):
         return float(np.linalg.norm(delta) / tick)
 
     def static_collider_boxes(self) -> dict[str, Any]:
-        """Every static collider of the stage in the manifest ``base_frame``: a box or a mesh.
+        """Every fixture collider of the stage in the manifest ``base_frame``: a box or a mesh.
 
-        Static = carries ``UsdPhysics.CollisionAPI``, is not under the robot, and has no
-        enabled, non-kinematic rigid body on itself or an ancestor (a dynamic object
-        moves; it is the camera's to see). A triangle-mesh collider (approximation ``none``)
-        is exported as its triangles (``kind: mesh``, its surface is its collision geometry);
+        A fixture collider carries ``UsdPhysics.CollisionAPI`` and is neither under the
+        robot nor a moving declared task object (``backend_options.objects``: the camera's
+        to see; a ``dynamic: false`` one such as the DROID stand is a fixture). It is
+        ``dynamic: true`` when an enabled, non-kinematic rigid body sits on
+        itself or an ancestor: a fixture PhysX can move, such as Arena's maple table
+        (a resettable dynamic body resting on the floor). ``tools/derive_scene_inputs.py``
+        grounds a workspace on it but never declares it as static geometry. A
+        triangle-mesh collider (approximation ``none``) is exported as its triangles
+        (``kind: mesh``, its surface is its collision geometry);
         any other collider as its USD bound (``kind: box``, ``BBoxCache``, every purpose — a
         superset of the collision geometry, the fail-closed direction). Both are expressed in
         ``base_frame`` through PhysX's measured robot pose (``_world_from_base``).
@@ -3071,13 +3076,17 @@ class IsaacManifestScene(IsaacSceneBase):
                 prim = prim.GetParent()
             return False
 
+        objects = [str(p.prim_path).rstrip("/") for p in self._object_prims.values()]
         boxes = []
         for prim in stage.Traverse():
             path = str(prim.GetPath())
             if path == root or path.startswith(root + "/"):
                 continue
-            if not prim.HasAPI(UsdPhysics.CollisionAPI) or moves(prim):
+            if not prim.HasAPI(UsdPhysics.CollisionAPI):
                 continue
+            dynamic = moves(prim)
+            if dynamic and any(path == o or path.startswith(o + "/") for o in objects):
+                continue  # a task object (the banana): the camera's to see
             enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
             approx = (
                 UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
@@ -3089,6 +3098,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 "type": str(prim.GetTypeName()),
                 "approximation": None if approx is None else str(approx),
                 "collision_enabled": enabled is not False,
+                "dynamic": dynamic,
             }
             if prim.IsA(UsdGeom.Mesh) and str(approx or "none") == "none":
                 # A triangle-mesh collider: its surface IS the collision geometry (a bound

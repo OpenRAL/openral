@@ -122,7 +122,11 @@ def source_fixture(
     geoms) and connected to it, each within ``gap_m`` of another (a tote's rims ride
     13 cm over its floor with no wall collider between). A part of the fixture nowhere
     near it — RoboCasa parks the panels a fixture does not use 10 m up — is not part of
-    the bound. ``None`` when nothing static is under the object.
+    the bound, nor is a member wholly below the support's top (more than ``tol_m``
+    under it: a table's legs). ``None`` when nothing is under the object. The
+    colliders may include dynamic fixtures (``dynamic: true``, Arena's maple table):
+    the workspace grounded on one is still confirmed on the live map before it relaxes
+    anything.
 
     Example:
         >>> eye = np.eye(3)
@@ -151,7 +155,14 @@ def source_fixture(
             best = (b, c["path"].rsplit("/", 1)[0])
     if best is None:
         return None
-    rest = [aabb(c) for c in colliders if c["path"].rsplit("/", 1)[0] == best[1]]
+    # Group members wholly below the support's top (a table's legs under its top) are
+    # not where the object is worked: they would stretch the bound to the floor.
+    top = best[0][5]
+    rest = [
+        b
+        for c in colliders
+        if c["path"].rsplit("/", 1)[0] == best[1] and (b := aabb(c))[5] >= top - tol_m
+    ]
 
     def touches(a: Bbox, b: Bbox) -> bool:
         return all(a[i] <= b[i + 3] + gap_m and b[i] <= a[i + 3] + gap_m for i in range(3))
@@ -274,7 +285,9 @@ def write_static(reply: dict[str, Any], out: Path, max_distance: float | None) -
     entries: list[dict[str, Any]] = []
     meshes: dict[str, dict[str, Any]] = {}
     for c in reply["boxes"]:
-        if not c.get("collision_enabled", True):
+        # A dynamic fixture can move: a support to ground a workspace on, never static
+        # geometry the kernel would trust to stay put.
+        if not c.get("collision_enabled", True) or c.get("dynamic", False):
             continue
         if c.get("kind") == "mesh":
             center, half = mesh_bounds(c["vertices_m"])
