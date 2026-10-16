@@ -2102,6 +2102,9 @@ class VisionAttachmentBridge:
         leg.pending = True
         context = self._gather_context(leg)
         if isinstance(context, str):  # a typed precondition failure
+            # The fallback box is posed off the tool point: the live one when tf2 has
+            # it (a missing depth frame or camera transform says nothing about the
+            # hand), else ``_finish`` falls back to the manifest's.
             self._finish(
                 leg,
                 generation=leg.generation,
@@ -2109,6 +2112,7 @@ class VisionAttachmentBridge:
                 masks=[],
                 scores=[],
                 reason=context,
+                tcp_in_link=self._tcp_in(leg, self.tf_frame(leg.producer.attach_link)),
             )
             return
         t_link_from_cam, tcp_in_link, negatives = context
@@ -2311,10 +2315,15 @@ class VisionAttachmentBridge:
         lock; the result is committed under it only while ``generation`` is still the
         leg's — a grasp event meanwhile superseded it, and owns the barrier now.
         """
-        # No context (a typed precondition failure) still has the leg's own tool point:
-        # the fallback box is posed off it, never on the link origin inside the wrist.
+        # No live tool point (tf2 has no TCP): pose the fallback box off the leg's
+        # manifest tool point (the gripper joint's origin), and say so — on a manifest
+        # whose gripper joint has no origin (the SO-101) that is the attach link origin.
         if tcp_in_link is None:
             tcp_in_link = leg.tcp_in_link
+            self._node.get_logger().warning(
+                f"vision attachment {leg.joint_name}: no live TCP ({leg.tcp_frame!r} in tf2); "
+                f"posing the fallback box off the manifest tool point {tcp_in_link}"
+            )
         depth_entry = self._depth
         depth = depth_entry[0] if depth_entry is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
