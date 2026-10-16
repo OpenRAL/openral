@@ -37,7 +37,11 @@ from openral_sim.backends.isaac_sim import (
     _isaac_importable_urdf,
     _placement_success_spec,
 )
-from openral_sim.policies.pi05 import _anchor_deltas, _delta_action_mask
+from openral_sim.policies.pi05 import (
+    _anchor_deltas,
+    _delta_action_mask,
+    _refuse_rtc_with_deltas,
+)
 
 _REPO = Path(__file__).resolve().parents[2]
 _SIM = _REPO / "scenes/sim/isaac_arena_droid_banana_in_bowl.yaml"
@@ -167,6 +171,14 @@ def test_the_skill_declares_droid_delta_joints_and_an_absolute_gripper() -> None
 def test_anchor_refuses_a_mask_of_the_wrong_width() -> None:
     with pytest.raises(ROSConfigError, match="delta mask"):
         _anchor_deltas(np.zeros(32, np.float32), np.zeros(8, np.float32), (True,) * 8)
+
+
+def test_rtc_is_refused_on_deltas_only_when_enabled() -> None:
+    mask = _delta_action_mask(_SKILL)
+    _refuse_rtc_with_deltas(mask, {"rtc": {"enabled": False}})  # disabled block: allowed
+    _refuse_rtc_with_deltas(None, {"rtc": {"enabled": True}})  # absolute actions: allowed
+    with pytest.raises(ROSConfigError, match="drop policy_extras"):
+        _refuse_rtc_with_deltas(mask, {"rtc": {"enabled": True}})
 
 
 def test_codec_flips_droid_gripper_closed_one() -> None:
