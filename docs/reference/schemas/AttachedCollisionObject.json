@@ -60,7 +60,9 @@
         "sim_contact_force",
         "map_support_proximity",
         "gripper_closure",
-        "grasp_target_region"
+        "grasp_target_region",
+        "tracked_object",
+        "pinch_fallback"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"
@@ -445,7 +447,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.",
+  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.\n    epoch: Tracked-object epoch (issue #418): ``+1`` at every re-grounding after a\n        release. With ``object_id`` it is the kernel's retirement key. ``0`` for\n        every producer that does not track.\n    geometry_revision: Revision of the bound geometry within one binding; the\n        kernel unions revisions, so bound geometry only grows. ``0`` = first.",
   "properties": {
     "object_id": {
       "minLength": 1,
@@ -579,6 +581,18 @@
         }
       ],
       "default": null
+    },
+    "epoch": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "geometry_revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Geometry Revision",
+      "type": "integer"
     }
   },
   "required": [

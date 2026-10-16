@@ -3601,6 +3601,13 @@ class AttachmentEvidenceKind(str, Enum):
     # ``PlaceRegion``) reused as the payload at ATTACH, gated by the jaw lying at the region
     # (real pick-and-place design §2.2 "Handover"). Pre-grasp geometry, not a grasp-time view.
     GRASP_TARGET_REGION = "grasp_target_region"
+    # Issue #418: the Layer-2 tracker bound a tracked object (``TrackedObject``) whose
+    # containing fit meets the hand's measured pinch volume at ATTACH. ``object_id`` is
+    # the tracked id; the kernel retires ``(object_id, epoch)``.
+    TRACKED_OBJECT = "tracked_object"
+    # Issue #418: an ATTACH with no tracked object at the pinch: the pinch-volume box,
+    # never extended toward the palm. It gets no identity clearing.
+    PINCH_FALLBACK = "pinch_fallback"
 
 
 class PlaceRegion(BaseModel):
@@ -3806,6 +3813,95 @@ class PlaceRegion(BaseModel):
             msg.geometry.append(item)  # type: ignore[attr-defined]
 
 
+class ObjectRole(StrEnum):
+    """What a prompt-named object is to the task (issue #418).
+
+    ``CONTEXT`` covers neighbours and supports: tracked, never a target.
+    """
+
+    TARGET = "target"
+    DESTINATION = "destination"
+    CONTEXT = "context"
+
+
+class ObjectQueryStatus(StrEnum):
+    """Status of one standing ``ObjectQuery`` in the World State tracker (#418 Addendum G).
+
+    Separate from the per-object ``TrackStatus``. ``RESOLVED`` does not mean "every
+    instance found": the tracker keeps detecting while resolved. ``EXHAUSTED`` (search
+    budget spent) is terminal for the goal and hands off to the replanning ladder.
+    """
+
+    UNRESOLVED = "unresolved"
+    RESOLVING = "resolving"
+    RESOLVED = "resolved"
+    EXHAUSTED = "exhausted"
+
+
+class ObjectQuery(BaseModel):
+    """A class of objects a prompt names; never geometry the kernel uses (issue #418).
+
+    Rides ``GraspDeclaration.target_queries`` / ``PlaceDeclaration.destination_query``
+    into the Layer-2 object tracker, which keeps it as a standing query for the life of
+    the goal and grounds every instance of the class.
+
+    Attributes:
+        label: Open-vocabulary label, e.g. ``"orange"``.
+        count: ``"one"`` still tracks every match (the policy chooses); ``"all"`` names
+            the whole class.
+        role: What the objects are to the task.
+        hand: Gripper joint name, a hint for the policy/reasoner only.
+        seed: Optional search hint (sim-derived or scene graph) in the grid frame or a
+            fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.
+        min_instances: CONFIRMED instances that make the query ``RESOLVED``.
+
+    Example:
+        >>> query = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+        >>> query.min_instances
+        1
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1)
+    count: Literal["one", "all"]
+    role: ObjectRole
+    hand: str | None = None
+    seed: PlaceRegion | None = None
+    min_instances: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_query(self) -> ObjectQuery:
+        if self.seed is not None and self.seed.geometry:
+            raise ValueError("ObjectQuery.seed.geometry must be empty; a seed is a search hint.")
+        if self.count == "one" and self.min_instances != 1:
+            raise ValueError("ObjectQuery with count='one' resolves on exactly one instance.")
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed ``openral_msgs/ObjectQuery`` without importing ROS."""
+        return cls(
+            label=str(msg.label),  # type: ignore[attr-defined]
+            count=str(msg.count),  # type: ignore[attr-defined]
+            role=ObjectRole(str(msg.role)),  # type: ignore[attr-defined]
+            hand=str(msg.hand) or None,  # type: ignore[attr-defined]
+            seed=PlaceRegion.from_idl(msg.seed) if bool(msg.seed_valid) else None,  # type: ignore[attr-defined]
+            min_instances=int(msg.min_instances),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed ``openral_msgs/ObjectQuery`` without importing ROS."""
+        msg.label = self.label  # type: ignore[attr-defined]
+        msg.count = self.count  # type: ignore[attr-defined]
+        msg.role = self.role.value  # type: ignore[attr-defined]
+        msg.hand = self.hand or ""  # type: ignore[attr-defined]
+        msg.min_instances = int(self.min_instances)  # type: ignore[attr-defined]
+        msg.seed_valid = self.seed is not None  # type: ignore[attr-defined]
+        if self.seed is not None:
+            self.seed.fill_idl(msg.seed)  # type: ignore[attr-defined]
+
+
 class PlaceDeclaration(BaseModel):
     """Dispatch's typed statement that a place phase is active for a payload.
 
@@ -3854,6 +3950,9 @@ class PlaceDeclaration(BaseModel):
             node, padded); dispatch passes it through unchanged. It never arms
             anything — the allowance is always the producer-measured ``region``.
             ``geometry`` must be empty.
+        destination_query: Optional class the destination belongs to (a plate, a
+            bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it
+            arms nothing. A shelf slot stays a ``search_box``.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -3900,6 +3999,7 @@ class PlaceDeclaration(BaseModel):
     region: PlaceRegion | None = None
     contact_force_threshold_n: float = 0.0
     search_box: PlaceRegion | None = None
+    destination_query: ObjectQuery | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> PlaceDeclaration:
@@ -3908,6 +4008,11 @@ class PlaceDeclaration(BaseModel):
                 f"PlaceDeclaration.timeout_s {self.timeout_s!r} exceeds the "
                 f"{self.MAX_TIMEOUT_S} s backstop ceiling."
             )
+        if (
+            self.destination_query is not None
+            and self.destination_query.role is not ObjectRole.DESTINATION
+        ):
+            raise ValueError("PlaceDeclaration.destination_query must have role 'destination'.")
         if self.active and not self.target_id:
             raise ValueError("An active PlaceDeclaration must name a target_id.")
         if self.search_box is not None and self.search_box.geometry:
@@ -3983,6 +4088,11 @@ class PlaceDeclaration(BaseModel):
                 if bool(getattr(msg, "search_box_valid", False))
                 else None
             ),
+            destination_query=(
+                ObjectQuery.from_idl(msg.destination_query)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "destination_query_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(
@@ -4017,6 +4127,9 @@ class PlaceDeclaration(BaseModel):
         msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
         if self.search_box is not None:
             self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
+        msg.destination_query_valid = self.destination_query is not None  # type: ignore[attr-defined]
+        if self.destination_query is not None:
+            self.destination_query.fill_idl(msg.destination_query)  # type: ignore[attr-defined]
 
 
 class GraspDeclaration(BaseModel):
@@ -4087,6 +4200,10 @@ class GraspDeclaration(BaseModel):
             runner strips it. With the kernel's ``workspace_contact_enabled`` the
             robot's hand links may touch occupied cells centred inside it while
             the hand is slow. ``None`` = no workspace contact.
+        target_queries: The classes the prompt names (issue #418), at most
+            ``MAX_TARGET_QUERIES``, each with role ``TARGET`` or ``CONTEXT``. The
+            Layer-2 tracker grounds every instance of each class; they arm nothing.
+            Side by side with ``search_box`` until that is deprecated.
 
     Example:
         >>> declaration = GraspDeclaration(
@@ -4115,6 +4232,8 @@ class GraspDeclaration(BaseModel):
     MAX_WORKSPACE_HALF_EXTENT_M: ClassVar[float] = 0.50
     #: Ceiling on the workspace volume (Safety-WG placeholder, #349).
     MAX_WORKSPACE_VOLUME_M3: ClassVar[float] = 0.25
+    #: Ceiling on ``target_queries`` (issue #418).
+    MAX_TARGET_QUERIES: ClassVar[int] = 8
 
     target_id: str = ""
     object_id: str = ""
@@ -4128,6 +4247,7 @@ class GraspDeclaration(BaseModel):
     search_box: PlaceRegion | None = None
     workspace_box: PlaceRegion | None = None
     workspace_region: PlaceRegion | None = None
+    target_queries: tuple[ObjectQuery, ...] = Field(default=(), max_length=MAX_TARGET_QUERIES)
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> GraspDeclaration:
@@ -4142,6 +4262,11 @@ class GraspDeclaration(BaseModel):
             raise ValueError("An active GraspDeclaration must name its gripper contact_links.")
         if any(not link for link in self.contact_links):
             raise ValueError("GraspDeclaration.contact_links may not contain an empty name.")
+        if any(query.role is ObjectRole.DESTINATION for query in self.target_queries):
+            raise ValueError(
+                "GraspDeclaration.target_queries may not name a destination; that is "
+                "PlaceDeclaration.destination_query."
+            )
         if self.search_box is not None and self.search_box.geometry:
             raise ValueError(
                 "GraspDeclaration.search_box.geometry must be empty; a search box is only "
@@ -4245,14 +4370,36 @@ class GraspDeclaration(BaseModel):
                 if bool(getattr(msg, "workspace_region_valid", False))
                 else None
             ),
+            target_queries=tuple(
+                ObjectQuery.from_idl(item) for item in getattr(msg, "target_queries", ())
+            ),
         )
 
-    def fill_idl(self, msg: object) -> None:
+    def fill_idl(self, msg: object, *, query_factory: Callable[[], object] | None = None) -> None:
         """Populate a duck-typed ``openral_msgs/GraspDeclaration`` without importing ROS.
 
         A grasp region never carries geometry (v1), so no primitive factory is
         needed.
+
+        Args:
+            msg: A duck-typed ``openral_msgs/GraspDeclaration`` to populate.
+            query_factory: Builds one empty ``ObjectQuery`` message. Required only
+                when ``target_queries`` is non-empty.
+
+        Raises:
+            ROSConfigError: ``target_queries`` is non-empty and no ``query_factory``
+                was given; dropping them would read as a prompt that named nothing.
         """
+        if self.target_queries and query_factory is None:
+            raise ROSConfigError(
+                f"GraspDeclaration {self.target_id!r} carries {len(self.target_queries)} "
+                "target_queries but fill_idl was given no query_factory to encode them."
+            )
+        msg.target_queries = []  # type: ignore[attr-defined]
+        for query in self.target_queries:
+            item = query_factory()  # type: ignore[misc]  # reason: guarded above
+            query.fill_idl(item)
+            msg.target_queries.append(item)  # type: ignore[attr-defined]
         msg.target_id = self.target_id  # type: ignore[attr-defined]
         msg.object_id = self.object_id  # type: ignore[attr-defined]
         msg.contact_links = list(self.contact_links)  # type: ignore[attr-defined]
@@ -4714,6 +4861,11 @@ class AttachedCollisionObject(BaseModel):
             ``None`` — the honest value for any producer that cannot measure
             support contact, including the vision attachment producer — means
             the safety kernel exempts no payload-vs-world contact at all.
+        epoch: Tracked-object epoch (issue #418): ``+1`` at every re-grounding after a
+            release. With ``object_id`` it is the kernel's retirement key. ``0`` for
+            every producer that does not track.
+        geometry_revision: Revision of the bound geometry within one binding; the
+            kernel unions revisions, so bound geometry only grows. ``0`` = first.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -4732,6 +4884,8 @@ class AttachedCollisionObject(BaseModel):
     stamp_ns: int = Field(ge=0)
     support_contact: SupportContactWitness | None = None
     contact_force: ContactForceWitness | None = None
+    epoch: int = Field(default=0, ge=0)
+    geometry_revision: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _validate_attachment(self) -> AttachedCollisionObject:
@@ -4811,6 +4965,8 @@ class AttachedCollisionObject(BaseModel):
                 if bool(msg.support_contact_valid)  # type: ignore[attr-defined]
                 else None
             ),
+            epoch=int(getattr(msg, "epoch", 0)),
+            geometry_revision=int(getattr(msg, "geometry_revision", 0)),
         )
 
     def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
@@ -4853,6 +5009,307 @@ class AttachedCollisionObject(BaseModel):
         msg.contact_force_valid = self.contact_force is not None  # type: ignore[attr-defined]
         if self.contact_force is not None:
             self.contact_force.fill_idl(msg.contact_force)  # type: ignore[attr-defined]
+        msg.epoch = int(self.epoch)  # type: ignore[attr-defined]
+        msg.geometry_revision = int(self.geometry_revision)  # type: ignore[attr-defined]
+
+
+class TrackStatus(StrEnum):
+    """Lifecycle status of one ``TrackedObject`` (issue #418).
+
+    Only ``CONFIRMED`` / ``OCCLUDED`` / ``BOUND`` tracks can ever be eligible for a
+    kernel exemption; the kernel decides that, never this status alone.
+    """
+
+    TENTATIVE = "tentative"  # fitted, not yet map-confirmed
+    CONFIRMED = "confirmed"  # camera fit + map confirmation within max age
+    OCCLUDED = "occluded"  # no camera sees it; the map holds it
+    SPLIT = "split"  # a foreign body inside its box; ineligible until a camera re-fit
+    BOUND = "bound"  # attached to a hand
+    RELEASED = "released"  # detached; settling; awaiting re-grounding
+    LOST = "lost"  # the map refutes it and no camera re-finds it
+
+
+class FitKind(StrEnum):
+    """How a ``TrackedObject``'s containing geometry was fitted (issue #418)."""
+
+    SILHOUETTE_CONE = "silhouette_cone"
+    MULTI_VIEW_CONE = "multi_view_cone"
+    PINCH_FALLBACK = "pinch_fallback"
+
+
+def _pose_from_idl(pose: object, frame_id: str) -> Pose6D:
+    """Decode a duck-typed ``geometry_msgs/Pose`` into a ``Pose6D`` in ``frame_id``."""
+    p, q = pose.position, pose.orientation  # type: ignore[attr-defined]
+    return Pose6D(
+        xyz=(float(p.x), float(p.y), float(p.z)),
+        quat_xyzw=(float(q.x), float(q.y), float(q.z), float(q.w)),
+        frame_id=frame_id,
+    )
+
+
+class TrackedObject(BaseModel):
+    """One object the Layer-2 tracker grounds, tracks, binds and releases (issue #418).
+
+    Python proposes the geometry; the safety kernel re-verifies cover on its own grid
+    and decides every exemption. ``box`` and ``tight`` are a *containing* fit of the
+    object (never a hull of sampled surface points), under the grasp-region caps the
+    kernel mirrors: ``GraspDeclaration.MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3``, at
+    most ``MAX_TIGHT_HULLS`` hulls of at most ``MAX_HULL_VERTICES`` vertices.
+
+    Attributes:
+        object_id: ``"trk:<n>"``, unique for the session, never reused.
+        epoch: ``+1`` at every re-grounding after release; the kernel retires
+            ``(object_id, epoch)``.
+        label: Open-vocabulary label of the query that grounded it.
+        role: Role of that query.
+        declaration_key: ``"<GraspDeclaration.target_id>@<stamp_ns>"`` that grounded it.
+        status: Track lifecycle status.
+        box: Gravity-aligned box in the grid frame containing the fitted solid
+            (+ half a cell). ``geometry`` must be empty.
+        tight: Convex hull(s) of the same containing set, posed in ``box.frame_id``.
+        fit_kind: How the containing set was fitted.
+        support_z: Measured support top under the object (grid frame, m).
+        support_ref: ``"static:<collider>"`` | ``"trk:<n>"`` | ``"map"``.
+        floor_z: Highest support top ever seen under it + 1 cell: the clearing floor.
+        visible_cells: Cells the camera's surface points fell in at the last fit.
+        occupied_cells: Of those, cells occupied at the last confirmation.
+        last_fit_stamp_ns: Depth-frame stamp of the last camera fit (source clock).
+        last_confirmed_stamp_ns: Grid ``source_stamp`` of the last confirmation.
+        bound_hand: Gripper joint while ``BOUND``.
+        attach_link: Link the object is bound to while ``BOUND``.
+        pose_in_link: Attach-time object pose, ``frame_id == attach_link``.
+        identity_inferred: Re-associated after release/loss by proximity, not continuity.
+
+    Example:
+        >>> box = PlaceRegion(
+        ...     frame_id="base",
+        ...     pose=Pose6D(xyz=(0.07, -0.30, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     half_extents=(0.03, 0.03, 0.03),
+        ... )
+        >>> track = TrackedObject(
+        ...     object_id="trk:1",
+        ...     epoch=0,
+        ...     label="orange",
+        ...     role=ObjectRole.TARGET,
+        ...     declaration_key="obj:orange_1@0",
+        ...     status=TrackStatus.CONFIRMED,
+        ...     box=box,
+        ...     fit_kind=FitKind.SILHOUETTE_CONE,
+        ...     support_z=0.02,
+        ...     support_ref="map",
+        ...     floor_z=0.035,
+        ...     visible_cells=4,
+        ...     occupied_cells=4,
+        ...     last_fit_stamp_ns=1,
+        ...     last_confirmed_stamp_ns=1,
+        ... )
+        >>> track.status.value
+        'confirmed'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Hull caps the kernel mirrors (issue #418).
+    MAX_TIGHT_HULLS: ClassVar[int] = 4
+    MAX_HULL_VERTICES: ClassVar[int] = 64
+
+    object_id: str = Field(min_length=1)
+    epoch: int = Field(ge=0)
+    label: str = Field(min_length=1)
+    role: ObjectRole
+    declaration_key: str
+    status: TrackStatus
+    box: PlaceRegion
+    tight: tuple[AttachedCollisionPrimitive, ...] = Field(default=(), max_length=MAX_TIGHT_HULLS)
+    fit_kind: FitKind
+    support_z: float = Field(allow_inf_nan=False)
+    support_ref: str
+    floor_z: float = Field(allow_inf_nan=False)
+    visible_cells: int = Field(ge=0)
+    occupied_cells: int = Field(ge=0)
+    last_fit_stamp_ns: int = Field(ge=0)
+    last_confirmed_stamp_ns: int = Field(ge=0)
+    bound_hand: str | None = None
+    attach_link: str | None = None
+    pose_in_link: Pose6D | None = None
+    identity_inferred: bool = False
+
+    @model_validator(mode="after")
+    def _validate_track(self) -> TrackedObject:
+        if self.box.geometry:
+            raise ValueError("TrackedObject.box.geometry must be empty; hulls ride in `tight`.")
+        if any(v > GraspDeclaration.MAX_HALF_EXTENT_M for v in self.box.half_extents):
+            raise ValueError(
+                f"TrackedObject.box half-extents {self.box.half_extents!r} exceed the "
+                f"{GraspDeclaration.MAX_HALF_EXTENT_M} m grasp-region cap; one object."
+            )
+        if self.box.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+            raise ValueError(
+                f"TrackedObject.box volume {self.box.volume_m3()!r} m^3 exceeds the "
+                f"{GraspDeclaration.MAX_VOLUME_M3} m^3 grasp-region cap."
+            )
+        for hull in self.tight:
+            if hull.pose_in_object.frame_id != self.box.frame_id:
+                raise ValueError("TrackedObject.tight hulls are posed in box.frame_id.")
+            tight = hull.tight_geometry
+            if tight is not None and len(tight.hull_vertices_m) > self.MAX_HULL_VERTICES:
+                raise ValueError(
+                    f"TrackedObject.tight hull has {len(tight.hull_vertices_m)} vertices, "
+                    f"past the kernel's {self.MAX_HULL_VERTICES}."
+                )
+        if self.floor_z < self.support_z:
+            raise ValueError("TrackedObject.floor_z lies below support_z; the floor only rises.")
+        if self.status is TrackStatus.BOUND and (
+            not self.bound_hand or not self.attach_link or self.pose_in_link is None
+        ):
+            raise ValueError("A BOUND TrackedObject names bound_hand, attach_link, pose_in_link.")
+        if self.pose_in_link is not None and self.pose_in_link.frame_id != self.attach_link:
+            raise ValueError("TrackedObject.pose_in_link.frame_id must equal attach_link.")
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed ``openral_msgs/TrackedObject`` without importing ROS."""
+        attach_link = str(msg.attach_link)  # type: ignore[attr-defined]
+        box = PlaceRegion.from_idl(msg.box)  # type: ignore[attr-defined]
+        return cls(
+            object_id=str(msg.object_id),  # type: ignore[attr-defined]
+            epoch=int(msg.epoch),  # type: ignore[attr-defined]
+            label=str(msg.label),  # type: ignore[attr-defined]
+            role=ObjectRole(str(msg.role)),  # type: ignore[attr-defined]
+            declaration_key=str(msg.declaration_key),  # type: ignore[attr-defined]
+            status=TrackStatus(str(msg.status)),  # type: ignore[attr-defined]
+            box=box,
+            tight=tuple(
+                AttachedCollisionPrimitive.from_idl(item, object_id=box.frame_id)
+                for item in msg.tight  # type: ignore[attr-defined]
+            ),
+            fit_kind=FitKind(str(msg.fit_kind)),  # type: ignore[attr-defined]
+            support_z=float(msg.support_z),  # type: ignore[attr-defined]
+            support_ref=str(msg.support_ref),  # type: ignore[attr-defined]
+            floor_z=float(msg.floor_z),  # type: ignore[attr-defined]
+            visible_cells=int(msg.visible_cells),  # type: ignore[attr-defined]
+            occupied_cells=int(msg.occupied_cells),  # type: ignore[attr-defined]
+            last_fit_stamp_ns=int(msg.last_fit_stamp_ns),  # type: ignore[attr-defined]
+            last_confirmed_stamp_ns=int(msg.last_confirmed_stamp_ns),  # type: ignore[attr-defined]
+            bound_hand=str(msg.bound_hand) or None,  # type: ignore[attr-defined]
+            attach_link=attach_link or None,
+            pose_in_link=(
+                _pose_from_idl(msg.pose_in_link, attach_link)  # type: ignore[attr-defined]
+                if bool(msg.pose_in_link_valid)  # type: ignore[attr-defined]
+                else None
+            ),
+            identity_inferred=bool(msg.identity_inferred),  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
+        """Populate a duck-typed ``openral_msgs/TrackedObject`` without importing ROS."""
+        msg.object_id = self.object_id  # type: ignore[attr-defined]
+        msg.epoch = int(self.epoch)  # type: ignore[attr-defined]
+        msg.label = self.label  # type: ignore[attr-defined]
+        msg.role = self.role.value  # type: ignore[attr-defined]
+        msg.declaration_key = self.declaration_key  # type: ignore[attr-defined]
+        msg.status = self.status.value  # type: ignore[attr-defined]
+        self.box.fill_idl(msg.box)  # type: ignore[attr-defined]
+        msg.tight = []  # type: ignore[attr-defined]
+        for hull in self.tight:
+            item = primitive_factory()
+            hull.fill_idl(item)
+            msg.tight.append(item)  # type: ignore[attr-defined]
+        msg.fit_kind = self.fit_kind.value  # type: ignore[attr-defined]
+        msg.support_z = float(self.support_z)  # type: ignore[attr-defined]
+        msg.support_ref = self.support_ref  # type: ignore[attr-defined]
+        msg.floor_z = float(self.floor_z)  # type: ignore[attr-defined]
+        msg.visible_cells = int(self.visible_cells)  # type: ignore[attr-defined]
+        msg.occupied_cells = int(self.occupied_cells)  # type: ignore[attr-defined]
+        msg.last_fit_stamp_ns = int(self.last_fit_stamp_ns)  # type: ignore[attr-defined]
+        msg.last_confirmed_stamp_ns = int(self.last_confirmed_stamp_ns)  # type: ignore[attr-defined]
+        msg.bound_hand = self.bound_hand or ""  # type: ignore[attr-defined]
+        msg.attach_link = self.attach_link or ""  # type: ignore[attr-defined]
+        msg.pose_in_link_valid = self.pose_in_link is not None  # type: ignore[attr-defined]
+        if self.pose_in_link is not None:
+            pose = msg.pose_in_link  # type: ignore[attr-defined]
+            pose.position.x, pose.position.y, pose.position.z = self.pose_in_link.xyz
+            (
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w,
+            ) = self.pose_in_link.quat_xyzw
+        msg.identity_inferred = bool(self.identity_inferred)  # type: ignore[attr-defined]
+
+
+class TrackedObjectSet(BaseModel):
+    """The tracker's whole object set, one revision (issue #418).
+
+    Published on ``/openral/tracked_objects`` and relayed on ``world_state_fast``. The
+    kernel refuses the whole set on a frame mismatch, a cap breach, a non-monotone
+    ``revision`` or a future stamp. ``schema_version`` is pinned because traces replay it.
+
+    Attributes:
+        schema_version: On-disk/wire schema version.
+        frame_id: Must equal the voxel grid frame; every ``box`` is in it.
+        stamp_ns: Producer stamp (source clock).
+        revision: Strictly increasing per publisher.
+        objects: At most ``MAX_OBJECTS`` tracks, one per ``object_id``.
+
+    Example:
+        >>> TrackedObjectSet(frame_id="base", stamp_ns=0, revision=0).objects
+        []
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Mirrored by the safety kernel's fixed capacity.
+    MAX_OBJECTS: ClassVar[int] = 32
+
+    schema_version: Literal["1"] = "1"
+    frame_id: str = Field(min_length=1)
+    stamp_ns: int = Field(ge=0)
+    revision: int = Field(ge=0)
+    objects: list[TrackedObject] = Field(default_factory=list, max_length=MAX_OBJECTS)
+
+    @model_validator(mode="after")
+    def _validate_set(self) -> TrackedObjectSet:
+        ids = [obj.object_id for obj in self.objects]
+        if len(set(ids)) != len(ids):
+            raise ValueError("TrackedObjectSet.objects carry a duplicate object_id.")
+        for obj in self.objects:
+            if obj.box.frame_id != self.frame_id:
+                raise ValueError(
+                    f"TrackedObject {obj.object_id!r} box is in {obj.box.frame_id!r}, not the "
+                    f"set's {self.frame_id!r}."
+                )
+        return self
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed ``openral_msgs/TrackedObjectSet`` without importing ROS."""
+        return cls(
+            schema_version=str(msg.schema_version),  # type: ignore[attr-defined]
+            frame_id=str(msg.frame_id),  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            revision=int(msg.revision),  # type: ignore[attr-defined]
+            objects=[TrackedObject.from_idl(item) for item in msg.objects],  # type: ignore[attr-defined]
+        )
+
+    def fill_idl(
+        self,
+        msg: object,
+        *,
+        object_factory: Callable[[], object],
+        primitive_factory: Callable[[], object],
+    ) -> None:
+        """Populate a duck-typed ``openral_msgs/TrackedObjectSet`` without importing ROS."""
+        msg.schema_version = self.schema_version  # type: ignore[attr-defined]
+        msg.frame_id = self.frame_id  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.revision = int(self.revision)  # type: ignore[attr-defined]
+        msg.objects = []  # type: ignore[attr-defined]
+        for obj in self.objects:
+            item = object_factory()
+            obj.fill_idl(item, primitive_factory=primitive_factory)
+            msg.objects.append(item)  # type: ignore[attr-defined]
 
 
 class OccupancyGridRef(BaseModel):
@@ -5046,6 +5503,8 @@ class WorldState(BaseModel):
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
+        tracked_objects: The Layer-2 tracker's object set (issue #418), relayed on
+            the fast stream for the kernel and the voxel bridge. ``None`` = no tracker.
     """
 
     stamp_ns: int
@@ -5068,6 +5527,7 @@ class WorldState(BaseModel):
     place_declaration: PlaceDeclaration | None = None
     grasp_declaration: GraspDeclaration | None = None
     occupancy_grid: OccupancyGridRef | None = None
+    tracked_objects: TrackedObjectSet | None = None
 
 
 # ─── Spatial memory — persistent scene graph ──────────────────────────
@@ -11087,6 +11547,27 @@ class DeployRuntime(BaseModel):
     refuses it with the octomap leg off rather than drop declared walls. For a sim
     scene, ``tools/derive_scene_inputs.py`` exports it from the static colliders (an
     Isaac stage or a MuJoCo model). Backward-compatible addition."""
+    object_tracking: Literal["off", "shadow", "bind", "on"] = "off"
+    """Layer-2 object tracker posture (issue #418). ``off``: no tracker. ``shadow``: it
+    runs and publishes, nothing consumes it. ``bind``: it owns ``attachment_state``.
+    ``on``: the kernel keys grasp exemptions on tracked ids. Set explicitly per scene.
+    Backward-compatible addition."""
+    grounding_wait_s: float | None = Field(default=None, gt=0.0)
+    """How long (source time) a goal waits for every query to reach CONFIRMED before the
+    tracker logs ``grounding_incomplete``. Required whenever ``object_tracking`` is not
+    ``off``, so no hidden default decides it. **Calibration point.**"""
+    grounding_required: bool = False
+    """With it, a goal whose queries are not grounded within ``grounding_wait_s`` is
+    refused; without it the goal proceeds with no exemption for that query."""
+
+    @model_validator(mode="after")
+    def _check_object_tracking(self) -> Self:
+        if self.object_tracking != "off" and self.grounding_wait_s is None:
+            raise ValueError(
+                f"DeployRuntime.object_tracking={self.object_tracking!r} needs an explicit "
+                "grounding_wait_s."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_workspace_contact(self) -> Self:
@@ -11795,6 +12276,7 @@ SensorOverlay.model_rebuild()
 # import annotations` defers the annotation; this resolves it. `PlaceDeclaration`
 # embeds a `PlaceRegion`, so it is rebuilt with it.
 PlaceRegion.model_rebuild()
+ObjectQuery.model_rebuild()
 PlaceDeclaration.model_rebuild()
 GraspDeclaration.model_rebuild()
 

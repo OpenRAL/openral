@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FitKind",
+  "description": "How a ``TrackedObject``'s containing geometry was fitted (issue #418).",
+  "type": "string",
+  "enum": [
+    "silhouette_cone",
+    "multi_view_cone",
+    "pinch_fallback"
+  ]
+}

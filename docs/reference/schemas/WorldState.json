@@ -2,7 +2,7 @@
   "$defs": {
     "AttachedCollisionObject": {
       "additionalProperties": false,
-      "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.",
+      "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.\n    epoch: Tracked-object epoch (issue #418): ``+1`` at every re-grounding after a\n        release. With ``object_id`` it is the kernel's retirement key. ``0`` for\n        every producer that does not track.\n    geometry_revision: Revision of the bound geometry within one binding; the\n        kernel unions revisions, so bound geometry only grows. ``0`` = first.",
       "properties": {
         "object_id": {
           "minLength": 1,
@@ -136,6 +136,18 @@
             }
           ],
           "default": null
+        },
+        "epoch": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "geometry_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Geometry Revision",
+          "type": "integer"
         }
       },
       "required": [
@@ -211,7 +223,9 @@
         "sim_contact_force",
         "map_support_proximity",
         "gripper_closure",
-        "grasp_target_region"
+        "grasp_target_region",
+        "tracked_object",
+        "pinch_fallback"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"
@@ -436,6 +450,16 @@
       "title": "DetectedObject",
       "type": "object"
     },
+    "FitKind": {
+      "description": "How a ``TrackedObject``'s containing geometry was fitted (issue #418).",
+      "enum": [
+        "silhouette_cone",
+        "multi_view_cone",
+        "pinch_fallback"
+      ],
+      "title": "FitKind",
+      "type": "string"
+    },
     "FrameEncoding": {
       "description": "How the bytes inside a ``SensorFrame`` are interpreted.\n\nThe first four values are raw per-pixel layouts. ``JPEG`` / ``PNG`` are\ncompressed forms; the runner decodes lazily. ``CUDA_NV12`` /\n``CUDA_RGBA`` and ``RAW`` mark frames whose payload is an opaque handle\n(NVMM pointer, DMA-BUF fd) \u2014 the ``data`` field is empty and the consumer\nmust read via ``handle``. ``CUDA_NV12`` is the Tegra NVMM default;\n``CUDA_RGBA`` is the x86 DeepStream NVMM layout.",
       "enum": [
@@ -454,7 +478,7 @@
     },
     "GraspDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:pick_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-0115-2).\n    trace_id: OTel trace id, for attributability (HZ-0115-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n    search_box: Optional box (in the voxel grid's base frame, or a fixed\n        tf2 frame such as ``odom`` / ``map`` that the producer re-expresses\n        in the grid frame every tick, so a scene's box stays put while a\n        mobile base moves) the target\n        producer searches the occupancy map in for a seed: a search hint only,\n        with no support semantics \u2014 the producer measures the support layer\n        from the voxel map itself (the box is padded so that layer lies inside\n        it). It only *seeds* perception and never arms anything:\n        the exemption is always the measured ``region``. The reasoner grounds\n        it from a named ``GraspTargetRef`` (the generic path); unlike\n        ``region`` a direct-dispatch scene may also supply it; dispatch passes\n        it through unchanged. ``None`` = no search, so the producer never\n        measures a region.\n    workspace_box: Optional manipulation workspace (issue #349,\n        ``docs/reference/manipulation-workspace-contact.md``) in the voxel\n        grid's base frame, or a fixed tf2 frame like ``search_box`` (the\n        confirmed ``workspace_region`` is always in the grid's frame) \u2014 the\n        box the task works in (the source tote's\n        interior for a pick). Like ``search_box`` a scene may *declare* it and\n        dispatch passes it through unchanged; it arms nothing on its own.\n        Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;\n        ``geometry`` must be empty. ``None`` = no workspace.\n    workspace_region: The producer-*confirmed* workspace: ``workspace_box``\n        itself (never grown), stamped with the ``source_stamp`` of the fresh\n        voxel grid that confirmed it holds occupied cells. Producer-supplied\n        only, exactly like ``region`` \u2014 a scene can never supply it\n        (``DeployScene._reject_scene_supplied_place_region``) and the rSkill\n        runner strips it. With the kernel's ``workspace_contact_enabled`` the\n        robot's hand links may touch occupied cells centred inside it while\n        the hand is slow. ``None`` = no workspace contact.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:pick_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:pick_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-0115-2).\n    trace_id: OTel trace id, for attributability (HZ-0115-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n    search_box: Optional box (in the voxel grid's base frame, or a fixed\n        tf2 frame such as ``odom`` / ``map`` that the producer re-expresses\n        in the grid frame every tick, so a scene's box stays put while a\n        mobile base moves) the target\n        producer searches the occupancy map in for a seed: a search hint only,\n        with no support semantics \u2014 the producer measures the support layer\n        from the voxel map itself (the box is padded so that layer lies inside\n        it). It only *seeds* perception and never arms anything:\n        the exemption is always the measured ``region``. The reasoner grounds\n        it from a named ``GraspTargetRef`` (the generic path); unlike\n        ``region`` a direct-dispatch scene may also supply it; dispatch passes\n        it through unchanged. ``None`` = no search, so the producer never\n        measures a region.\n    workspace_box: Optional manipulation workspace (issue #349,\n        ``docs/reference/manipulation-workspace-contact.md``) in the voxel\n        grid's base frame, or a fixed tf2 frame like ``search_box`` (the\n        confirmed ``workspace_region`` is always in the grid's frame) \u2014 the\n        box the task works in (the source tote's\n        interior for a pick). Like ``search_box`` a scene may *declare* it and\n        dispatch passes it through unchanged; it arms nothing on its own.\n        Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;\n        ``geometry`` must be empty. ``None`` = no workspace.\n    workspace_region: The producer-*confirmed* workspace: ``workspace_box``\n        itself (never grown), stamped with the ``source_stamp`` of the fresh\n        voxel grid that confirmed it holds occupied cells. Producer-supplied\n        only, exactly like ``region`` \u2014 a scene can never supply it\n        (``DeployScene._reject_scene_supplied_place_region``) and the rSkill\n        runner strips it. With the kernel's ``workspace_contact_enabled`` the\n        robot's hand links may touch occupied cells centred inside it while\n        the hand is slow. ``None`` = no workspace contact.\n    target_queries: The classes the prompt names (issue #418), at most\n        ``MAX_TARGET_QUERIES``, each with role ``TARGET`` or ``CONTEXT``. The\n        Layer-2 tracker grounds every instance of each class; they arm nothing.\n        Side by side with ``search_box`` until that is deprecated.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:pick_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -542,6 +566,15 @@
             }
           ],
           "default": null
+        },
+        "target_queries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObjectQuery"
+          },
+          "maxItems": 8,
+          "title": "Target Queries",
+          "type": "array"
         }
       },
       "required": [
@@ -595,6 +628,74 @@
       "title": "JointState",
       "type": "object"
     },
+    "ObjectQuery": {
+      "additionalProperties": false,
+      "description": "A class of objects a prompt names; never geometry the kernel uses (issue #418).\n\nRides ``GraspDeclaration.target_queries`` / ``PlaceDeclaration.destination_query``\ninto the Layer-2 object tracker, which keeps it as a standing query for the life of\nthe goal and grounds every instance of the class.\n\nAttributes:\n    label: Open-vocabulary label, e.g. ``\"orange\"``.\n    count: ``\"one\"`` still tracks every match (the policy chooses); ``\"all\"`` names\n        the whole class.\n    role: What the objects are to the task.\n    hand: Gripper joint name, a hint for the policy/reasoner only.\n    seed: Optional search hint (sim-derived or scene graph) in the grid frame or a\n        fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.\n    min_instances: CONFIRMED instances that make the query ``RESOLVED``.\n\nExample:\n    >>> query = ObjectQuery(label=\"orange\", count=\"all\", role=ObjectRole.TARGET)\n    >>> query.min_instances\n    1",
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "count": {
+          "enum": [
+            "one",
+            "all"
+          ],
+          "title": "Count",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ObjectRole"
+        },
+        "hand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hand"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "min_instances": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Instances",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label",
+        "count",
+        "role"
+      ],
+      "title": "ObjectQuery",
+      "type": "object"
+    },
+    "ObjectRole": {
+      "description": "What a prompt-named object is to the task (issue #418).\n\n``CONTEXT`` covers neighbours and supports: tracked, never a target.",
+      "enum": [
+        "target",
+        "destination",
+        "context"
+      ],
+      "title": "ObjectRole",
+      "type": "string"
+    },
     "OccupancyGridRef": {
       "additionalProperties": false,
       "description": "Reference to a 2D occupancy grid for mobile-base world-collision.\n\nMirrors the ``nav_msgs/OccupancyGrid`` metadata that\n``openral_runner.slam_bridge`` already decodes. The kernel consumes a\nbounded, fixed-capacity copy; a grid exceeding the configured capacity or\nolder than the staleness deadline is treated as unavailable\n(fail-closed). The occupancy bytes are referenced by topic, not inlined.\n\nAttributes:\n    frame_id: tf2 frame the grid origin is expressed in (e.g. ``\"map\"``).\n    resolution_m: Edge length of one cell, in metres.\n    width: Grid width in cells.\n    height: Grid height in cells.\n    origin: Pose of cell ``(0, 0)``'s lower-left corner.\n    data_topic: ROS 2 topic carrying the ``nav_msgs/OccupancyGrid``.",
@@ -639,7 +740,7 @@
     },
     "PlaceDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n    destination_query: Optional class the destination belongs to (a plate, a\n        bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it\n        arms nothing. A shelf slot stays a ``search_box``.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -696,6 +797,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "destination_query": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectQuery"
             },
             {
               "type": "null"
@@ -1085,9 +1197,202 @@
       ],
       "title": "TightCollisionGeometry",
       "type": "object"
+    },
+    "TrackStatus": {
+      "description": "Lifecycle status of one ``TrackedObject`` (issue #418).\n\nOnly ``CONFIRMED`` / ``OCCLUDED`` / ``BOUND`` tracks can ever be eligible for a\nkernel exemption; the kernel decides that, never this status alone.",
+      "enum": [
+        "tentative",
+        "confirmed",
+        "occluded",
+        "split",
+        "bound",
+        "released",
+        "lost"
+      ],
+      "title": "TrackStatus",
+      "type": "string"
+    },
+    "TrackedObject": {
+      "additionalProperties": false,
+      "description": "One object the Layer-2 tracker grounds, tracks, binds and releases (issue #418).\n\nPython proposes the geometry; the safety kernel re-verifies cover on its own grid\nand decides every exemption. ``box`` and ``tight`` are a *containing* fit of the\nobject (never a hull of sampled surface points), under the grasp-region caps the\nkernel mirrors: ``GraspDeclaration.MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3``, at\nmost ``MAX_TIGHT_HULLS`` hulls of at most ``MAX_HULL_VERTICES`` vertices.\n\nAttributes:\n    object_id: ``\"trk:<n>\"``, unique for the session, never reused.\n    epoch: ``+1`` at every re-grounding after release; the kernel retires\n        ``(object_id, epoch)``.\n    label: Open-vocabulary label of the query that grounded it.\n    role: Role of that query.\n    declaration_key: ``\"<GraspDeclaration.target_id>@<stamp_ns>\"`` that grounded it.\n    status: Track lifecycle status.\n    box: Gravity-aligned box in the grid frame containing the fitted solid\n        (+ half a cell). ``geometry`` must be empty.\n    tight: Convex hull(s) of the same containing set, posed in ``box.frame_id``.\n    fit_kind: How the containing set was fitted.\n    support_z: Measured support top under the object (grid frame, m).\n    support_ref: ``\"static:<collider>\"`` | ``\"trk:<n>\"`` | ``\"map\"``.\n    floor_z: Highest support top ever seen under it + 1 cell: the clearing floor.\n    visible_cells: Cells the camera's surface points fell in at the last fit.\n    occupied_cells: Of those, cells occupied at the last confirmation.\n    last_fit_stamp_ns: Depth-frame stamp of the last camera fit (source clock).\n    last_confirmed_stamp_ns: Grid ``source_stamp`` of the last confirmation.\n    bound_hand: Gripper joint while ``BOUND``.\n    attach_link: Link the object is bound to while ``BOUND``.\n    pose_in_link: Attach-time object pose, ``frame_id == attach_link``.\n    identity_inferred: Re-associated after release/loss by proximity, not continuity.\n\nExample:\n    >>> box = PlaceRegion(\n    ...     frame_id=\"base\",\n    ...     pose=Pose6D(xyz=(0.07, -0.30, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=\"base\"),\n    ...     half_extents=(0.03, 0.03, 0.03),\n    ... )\n    >>> track = TrackedObject(\n    ...     object_id=\"trk:1\",\n    ...     epoch=0,\n    ...     label=\"orange\",\n    ...     role=ObjectRole.TARGET,\n    ...     declaration_key=\"obj:orange_1@0\",\n    ...     status=TrackStatus.CONFIRMED,\n    ...     box=box,\n    ...     fit_kind=FitKind.SILHOUETTE_CONE,\n    ...     support_z=0.02,\n    ...     support_ref=\"map\",\n    ...     floor_z=0.035,\n    ...     visible_cells=4,\n    ...     occupied_cells=4,\n    ...     last_fit_stamp_ns=1,\n    ...     last_confirmed_stamp_ns=1,\n    ... )\n    >>> track.status.value\n    'confirmed'",
+      "properties": {
+        "object_id": {
+          "minLength": 1,
+          "title": "Object Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ObjectRole"
+        },
+        "declaration_key": {
+          "title": "Declaration Key",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TrackStatus"
+        },
+        "box": {
+          "$ref": "#/$defs/PlaceRegion"
+        },
+        "tight": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AttachedCollisionPrimitive"
+          },
+          "maxItems": 4,
+          "title": "Tight",
+          "type": "array"
+        },
+        "fit_kind": {
+          "$ref": "#/$defs/FitKind"
+        },
+        "support_z": {
+          "title": "Support Z",
+          "type": "number"
+        },
+        "support_ref": {
+          "title": "Support Ref",
+          "type": "string"
+        },
+        "floor_z": {
+          "title": "Floor Z",
+          "type": "number"
+        },
+        "visible_cells": {
+          "minimum": 0,
+          "title": "Visible Cells",
+          "type": "integer"
+        },
+        "occupied_cells": {
+          "minimum": 0,
+          "title": "Occupied Cells",
+          "type": "integer"
+        },
+        "last_fit_stamp_ns": {
+          "minimum": 0,
+          "title": "Last Fit Stamp Ns",
+          "type": "integer"
+        },
+        "last_confirmed_stamp_ns": {
+          "minimum": 0,
+          "title": "Last Confirmed Stamp Ns",
+          "type": "integer"
+        },
+        "bound_hand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bound Hand"
+        },
+        "attach_link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attach Link"
+        },
+        "pose_in_link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pose6D"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "identity_inferred": {
+          "default": false,
+          "title": "Identity Inferred",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "object_id",
+        "epoch",
+        "label",
+        "role",
+        "declaration_key",
+        "status",
+        "box",
+        "fit_kind",
+        "support_z",
+        "support_ref",
+        "floor_z",
+        "visible_cells",
+        "occupied_cells",
+        "last_fit_stamp_ns",
+        "last_confirmed_stamp_ns"
+      ],
+      "title": "TrackedObject",
+      "type": "object"
+    },
+    "TrackedObjectSet": {
+      "additionalProperties": false,
+      "description": "The tracker's whole object set, one revision (issue #418).\n\nPublished on ``/openral/tracked_objects`` and relayed on ``world_state_fast``. The\nkernel refuses the whole set on a frame mismatch, a cap breach, a non-monotone\n``revision`` or a future stamp. ``schema_version`` is pinned because traces replay it.\n\nAttributes:\n    schema_version: On-disk/wire schema version.\n    frame_id: Must equal the voxel grid frame; every ``box`` is in it.\n    stamp_ns: Producer stamp (source clock).\n    revision: Strictly increasing per publisher.\n    objects: At most ``MAX_OBJECTS`` tracks, one per ``object_id``.\n\nExample:\n    >>> TrackedObjectSet(frame_id=\"base\", stamp_ns=0, revision=0).objects\n    []",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "frame_id": {
+          "minLength": 1,
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/TrackedObject"
+          },
+          "maxItems": 32,
+          "title": "Objects",
+          "type": "array"
+        }
+      },
+      "required": [
+        "frame_id",
+        "stamp_ns",
+        "revision"
+      ],
+      "title": "TrackedObjectSet",
+      "type": "object"
     }
   },
-  "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor ``SensorFrame`` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via ``images`` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    attachment_revision: Monotonic producer revision for atomic snapshots.\n    attachment_stamp_ns: Timestamp of the last accepted attachment update.\n    place_declaration: The place-phase declaration in force for the carried\n        payload as the evidence producer resolved it (ADR-0097 and its\n        2026-08-14 amendment), including the producer-measured\n        ``PlaceRegion``. ``None`` means no place phase is declared,\n        which is no place witness and no approach allowance. It rides here\n        rather than on a channel of its own because the amendment extends the\n        payload already crossing the dispatch \u2192 HAL \u2192 World State boundary,\n        and because the kernel must apply the region and the attachment set\n        it is scoped to from one and the same snapshot.\n    grasp_declaration: The grasp-phase declaration in force as the\n        evidence producer resolved it (real pick-and-place design \u00a72.1),\n        including the producer-measured target region. ``None`` means no\n        grasp phase is declared, i.e. no exemption. Carried beside\n        ``place_declaration`` for the same one-snapshot reason.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
+  "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor ``SensorFrame`` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via ``images`` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    attachment_revision: Monotonic producer revision for atomic snapshots.\n    attachment_stamp_ns: Timestamp of the last accepted attachment update.\n    place_declaration: The place-phase declaration in force for the carried\n        payload as the evidence producer resolved it (ADR-0097 and its\n        2026-08-14 amendment), including the producer-measured\n        ``PlaceRegion``. ``None`` means no place phase is declared,\n        which is no place witness and no approach allowance. It rides here\n        rather than on a channel of its own because the amendment extends the\n        payload already crossing the dispatch \u2192 HAL \u2192 World State boundary,\n        and because the kernel must apply the region and the attachment set\n        it is scoped to from one and the same snapshot.\n    grasp_declaration: The grasp-phase declaration in force as the\n        evidence producer resolved it (real pick-and-place design \u00a72.1),\n        including the producer-measured target region. ``None`` means no\n        grasp phase is declared, i.e. no exemption. Carried beside\n        ``place_declaration`` for the same one-snapshot reason.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).\n    tracked_objects: The Layer-2 tracker's object set (issue #418), relayed on\n        the fast stream for the kernel and the voxel bridge. ``None`` = no tracker.",
   "properties": {
     "stamp_ns": {
       "title": "Stamp Ns",
@@ -1286,6 +1591,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/OccupancyGridRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tracked_objects": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TrackedObjectSet"
         },
         {
           "type": "null"
