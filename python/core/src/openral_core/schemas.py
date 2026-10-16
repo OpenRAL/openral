@@ -11066,6 +11066,16 @@ class DeployRuntime(BaseModel):
     ``docs/reference/manipulation-workspace-contact.md`` §8 (the real-hardware value is a
     Safety-WG decision). Capped at 0.10 m (``le=0.10``), mirrored by the kernel's
     ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
+    payload_sweep_clear_enabled: bool = False
+    """Turn on the octomap bridge's payload clearing in the OCTREE (its
+    ``payload_sweep_clear_service`` = octomap_server's ``~/clear_bbox``): every
+    ``payload_sweep_clear_period_s`` the carried payload's own posed primitive boxes, at
+    the poses it was attached in, floored above every known support, are removed from the
+    octree itself, so its own returns left along the carry stop reaching the kernel. It
+    REMOVES world occupancy: a real obstacle inside a cleared box is gone until a camera
+    sees it again. Default off, and off is the graph exactly as without it.
+    **Sim-only until Safety-WG review** (hazard-log row owed): ``openral deploy run``
+    and ``deploy_e2e`` on a non-sim HAL refuse it on. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
     repo-relative): walls, shelf frame, table, tote shell, in the robot's ``base_frame``.

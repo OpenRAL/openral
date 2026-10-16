@@ -13215,6 +13215,11 @@
               "default": null,
               "title": "Workspace Contact Max Lead M"
             },
+            "payload_sweep_clear_enabled": {
+              "default": false,
+              "title": "Payload Sweep Clear Enabled",
+              "type": "boolean"
+            },
             "static_geometry_file": {
               "anyOf": [
                 {
@@ -15466,6 +15471,11 @@
               ],
               "default": null,
               "title": "Workspace Contact Max Lead M"
+            },
+            "payload_sweep_clear_enabled": {
+              "default": false,
+              "title": "Payload Sweep Clear Enabled",
+              "type": "boolean"
             },
             "static_geometry_file": {
               "anyOf": [
@@ -17857,6 +17867,11 @@
               ],
               "default": null,
               "title": "Workspace Contact Max Lead M"
+            },
+            "payload_sweep_clear_enabled": {
+              "default": false,
+              "title": "Payload Sweep Clear Enabled",
+              "type": "boolean"
             },
             "static_geometry_file": {
               "anyOf": [

@@ -1099,6 +1099,36 @@ def _runner_joint_state_staleness_s(
     return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
+def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
+    """The octomap bridge's payload octree-clearing params (``payload_sweep_clear_enabled``).
+
+    Off: ``{}`` — the bridge's own default (no service), so it never clears the octree.
+    On: ``payload_sweep_clear_service`` = octomap_server's ``~/clear_bbox``, and the
+    bridge removes the carried payload's own posed boxes from the octree. That removes
+    world occupancy, so it is sim-only until Safety-WG review (hazard-log row owed).
+
+    Raises:
+        ROSConfigError: Enabled on a non-sim HAL.
+
+    Example:
+        >>> _payload_sweep_clear_params(enabled=False, hal_mode="real")
+        {}
+        >>> _payload_sweep_clear_params(enabled=True, hal_mode="sim")
+        {'payload_sweep_clear_service': '/openral_octomap_server/clear_bbox'}
+    """
+    if not enabled:
+        return {}
+    if hal_mode != "sim":
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "payload_sweep_clear_enabled is sim-only until Safety-WG review "
+            "(packages/openral_octomap_bridge/README.md): it removes world occupancy from "
+            f"the octree; refused on hal_mode={hal_mode!r}."
+        )
+    return {"payload_sweep_clear_service": "/openral_octomap_server/clear_bbox"}
+
+
 def _workspace_contact_kernel_params(
     description: RobotDescription,
     *,
@@ -1855,6 +1885,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     workspace_contact_max_speed_mps = float(_ws_speed) if _ws_speed else None
     _ws_lead = LaunchConfiguration("workspace_contact_max_lead_m").perform(context)
     workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
+    # The octomap bridge's payload octree clearing (DeployRuntime.payload_sweep_clear_enabled).
+    # Resolved here, so a non-sim HAL refuses it even with the octomap leg off.
+    payload_sweep_clear_params = _payload_sweep_clear_params(
+        enabled=LaunchConfiguration("payload_sweep_clear_enabled").perform(context).lower()
+        in ("1", "true", "yes"),
+        hal_mode=hal_mode,
+    )
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -3525,12 +3562,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
-                    # A carried payload's swept volume (pre-attach TF backfill included)
-                    # is cleared from the octree through octomap_server's own service:
-                    # the grid clearing follows only the payload's current pose
-                    # (`SweptBox`, payload_clearing.hpp). User-approved 2026-10-16;
-                    # Safety-WG review + hazard-log row owed.
-                    "payload_sweep_clear_service": "/openral_octomap_server/clear_bbox",
+                    # The carried payload's own posed boxes cleared from the octree
+                    # through octomap_server's own service (`SweptBox`,
+                    # payload_clearing.hpp). Off unless the scene opts in, and sim-only
+                    # until Safety-WG review + its hazard-log row.
+                    **payload_sweep_clear_params,
                     # Declared static geometry (manipulation-workspace-contact.md §3.1):
                     # surface points the bridge marks occupied in every grid. Omitted
                     # (off) when the scene declares none.
@@ -4490,6 +4526,16 @@ def generate_launch_description() -> LaunchDescription:
                 "Safety kernel grasp-target exemption (DeployRuntime.grasp_allowance_enabled): "
                 "world-voxel cells inside a live GraspDeclaration's producer-measured region "
                 "do not trip the manifest's gripper contact links. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "payload_sweep_clear_enabled",
+            default_value="false",
+            description=(
+                "Octomap bridge payload clearing in the octree (DeployRuntime."
+                "payload_sweep_clear_enabled; sim-only until Safety-WG review): the carried "
+                "payload's own posed boxes, above every known support, are cleared from "
+                "the octree via octomap_server's ~/clear_bbox. Default off."
             ),
         ),
         DeclareLaunchArgument(

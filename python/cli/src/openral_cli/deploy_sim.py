@@ -1507,6 +1507,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "runtime.workspace_contact_enabled is sim-only until Safety-WG review "
             "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
         )
+    # The payload's octree clearing removes world occupancy: sim-only until Safety-WG review.
+    if hal_mode == "real" and rt is not None and rt.payload_sweep_clear_enabled:
+        raise ROSConfigError(
+            "runtime.payload_sweep_clear_enabled is sim-only until Safety-WG review "
+            "(packages/openral_octomap_bridge/README.md): deploy run refuses it."
+        )
     # On real hardware the vision bridge's target leg is the only grasp-region producer (in
     # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
     # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus
@@ -1697,6 +1703,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"workspace_contact_max_lead_m:={rt.workspace_contact_max_lead_m}",
             ]
         )
+    # The payload's octree clearing: forwarded only when enabled (sim-only; refused above
+    # on `deploy run`, and again by the launch on a non-sim HAL).
+    if rt is not None and rt.payload_sweep_clear_enabled:
+        argv_template.append("payload_sweep_clear_enabled:=true")
     # Declared static geometry (#349, manipulation-workspace-contact.md §3.1): scene-relative,
     # else repo-relative, resolved absolute; a declared file that is missing is a config error
     # (never run without walls the scene declared).

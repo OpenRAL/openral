@@ -154,6 +154,11 @@ runtime:
   enable_nav2: false
   enable_octomap: true
   enable_octomap_kernel_check: true
+  # The octomap bridge clears the carried payload's own posed boxes (attached poses only,
+  # floored above every known support) from the octree, so its returns left along the
+  # carry stop reaching the kernel. It REMOVES world occupancy: SIM-ONLY and PENDING
+  # Safety-WG review (hazard-log row owed). `deploy run` refuses it.
+  payload_sweep_clear_enabled: true
   # Grasp allowance + manipulation-workspace contact
   # (docs/reference/manipulation-workspace-contact.md), SIM-ONLY and PENDING Safety-WG
   # review: the ADR (§7) and the hazard-log rows (§8) are owed. The exempt links are
