@@ -62,6 +62,7 @@ __all__ = [
     "image_array",
     "intrinsics_from_info",
     "main",
+    "outline_edge_fraction",
     "pick_mask",
 ]
 
@@ -119,22 +120,59 @@ def intrinsics_from_info(msg: Any) -> IntrinsicsPinhole:  # reason: duck-typed C
     )
 
 
+def outline_edge_fraction(
+    mask: NDArray[np.bool_], depth_m: NDArray[np.float64], *, tol_m: float = 0.01
+) -> float:
+    """Fraction of ``mask``'s outline pixels that sit on a depth discontinuity.
+
+    An outline pixel counts when one of its 4-neighbours outside the mask has a valid depth
+    more than ``tol_m`` away from its own (a depth edge: the object against what lies behind
+    it, or a nearer occluder). A candidate that spilled onto the support it stands on, or a
+    subpart cut inside the object, has an outline mostly on a continuous surface. Pixels with
+    no valid depth on either side count as no edge.
+
+    Example:
+        >>> d = np.full((6, 6), 1.0)
+        >>> d[2:4, 2:4] = 0.95  # a 5 cm block on a table
+        >>> obj = d < 0.99
+        >>> spill = np.zeros((6, 6), bool)
+        >>> spill[1:5, 1:5] = True
+        >>> outline_edge_fraction(obj, d), outline_edge_fraction(spill, d)
+        (1.0, 0.0)
+    """
+    m = np.asarray(mask, dtype=bool)
+    d = np.where(np.isfinite(depth_m) & (depth_m > 0.0), depth_m, np.nan)
+    pm = np.pad(m, 1)
+    pd = np.pad(d, 1, constant_values=np.nan)
+    h, w = m.shape
+    outline = np.zeros_like(m)
+    edge = np.zeros_like(m)
+    for dr, dc in ((0, 1), (2, 1), (1, 0), (1, 2)):
+        out = m & ~pm[dr : dr + h, dc : dc + w]
+        jump = np.abs(pd[dr : dr + h, dc : dc + w] - d) > tol_m  # NaN compares False
+        outline |= out
+        edge |= out & jump
+    n = int(outline.sum())
+    return float(edge.sum()) / n if n else 0.0
+
+
 def pick_mask(
     masks: Sequence[NDArray[np.bool_]],
     box_xyxy: tuple[float, float, float, float] | None,
+    depth_m: NDArray[np.float64] | None = None,
     *,
     inside_fraction: float = 0.9,
+    min_edge_fraction: float = 0.5,
 ) -> NDArray[np.bool_] | None:
     """One mask from the segmenter's nested candidates, for a **containing** fit.
 
-    The largest candidate (a subpart under-contains the object), except that with a box
-    prompt only candidates with at least ``inside_fraction`` of their pixels inside the
-    box qualify (the "whole" that spills onto the support is not the boxed object).
-    ``None`` when nothing qualifies.
-
-    ponytail: area ranking only; the HAL's nested-body veto (``target_region_from_masks``)
-    is not run here — the tracker's support / cover / one-body checks refuse a mask that
-    swallowed what the object stands on.
+    The largest qualifying candidate (a subpart under-contains the object). With a box
+    (a detector's prompt or a seed's image rectangle) only candidates with at least
+    ``inside_fraction`` of their pixels inside it qualify; with the frame's ``depth_m``
+    only candidates whose outline is mostly a depth edge (``outline_edge_fraction`` at
+    least ``min_edge_fraction``): SAM's "whole" of a point on an orange is often the
+    counter patch around it, and its outline lies on the continuous counter. ``None``
+    when nothing qualifies (no fit beats a fit of the support). *Calibration points.*
 
     Example:
         >>> a = np.zeros((4, 4), bool)
@@ -142,6 +180,9 @@ def pick_mask(
         >>> b = np.ones((4, 4), bool)
         >>> int(pick_mask([a, b], None).sum()), int(pick_mask([a, b], (1, 1, 3, 3)).sum())
         (16, 4)
+        >>> d = np.where(a, 0.95, 1.0)
+        >>> int(pick_mask([a, b], None, d).sum())
+        4
     """
     ok = [m for m in masks if m.any()]
     if box_xyxy is not None:
@@ -152,6 +193,8 @@ def pick_mask(
             if sub.sum() >= inside_fraction * m.sum():
                 inside.append(m)
         ok = inside
+    if depth_m is not None:
+        ok = [m for m in ok if outline_edge_fraction(m, depth_m) >= min_edge_fraction]
     return max(ok, key=lambda m: int(m.sum())) if ok else None
 
 
@@ -667,7 +710,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     if res is not None and res.ok
                     else []
                 )
-                mask = pick_mask(masks, req.box_xyxy)
+                mask = pick_mask(masks, req.box_xyxy or req.within_xyxy, frame.depth_m)
                 self._answer(frame, optical_frame, stamp_msg, TrackerResult(req.request_id, mask))
 
             future.add_done_callback(done_segment)

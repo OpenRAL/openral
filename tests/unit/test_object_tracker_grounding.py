@@ -90,7 +90,7 @@ def test_tf_or_mask_missing_ages_only() -> None:
     assert out.requests == () and out.tracked.objects == []
 
 
-def test_a_seeded_prompt_carries_the_seed_rectangle() -> None:
+def test_a_seeded_prompt_is_bounded_by_the_seed_rectangle() -> None:
     """A map-seeded point prompt carries its seed's image rectangle, so the mask pick keeps
     only candidates inside it (SAM's "whole" of a packed carton is the tote's contents)."""
     from openral_core import PlaceRegion, Pose6D
@@ -110,6 +110,7 @@ def test_a_seeded_prompt_carries_the_seed_rectangle() -> None:
     (req,) = out.requests
     rect = project_box(seed, _RIG.k, _RIG.t)
     assert req.service == "segment_in_view" and req.point_uv is not None and rect is not None
-    assert req.box_xyxy == tuple(float(v) for v in rect[0])
-    x0, y0, x1, y1 = req.box_xyxy
+    assert req.box_xyxy is None  # a bound on the pick, never SAM's box prompt
+    assert req.within_xyxy == tuple(float(v) for v in rect[0])
+    x0, y0, x1, y1 = req.within_xyxy
     assert x0 <= req.point_uv[0] <= x1 and y0 <= req.point_uv[1] <= y1
