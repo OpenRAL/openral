@@ -81,7 +81,8 @@ def memory_metric_reader() -> Iterator[InMemoryMetricReader]:
 @pytest.fixture(scope="module")
 def ros_init() -> Iterator[None]:
     """Module-scoped rclpy init/shutdown for tests gated behind ``importorskip("rclpy")``."""
-    import rclpy
+    # A fixture runs before the test body's own importorskip, so it must skip here too.
+    rclpy = pytest.importorskip("rclpy")
 
     rclpy.init()
     yield
