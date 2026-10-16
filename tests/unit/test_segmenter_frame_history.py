@@ -150,3 +150,41 @@ def test_a_request_behind_the_cache_is_refused_without_waiting() -> None:
     )  # fmt: skip
     assert frame is None and reason.startswith("ROSPerceptionStale:")
     assert time.monotonic() - start < 0.05
+
+
+def test_a_stamped_request_on_an_empty_cache_waits_for_the_first_frame() -> None:
+    """A request that beats the camera's first frame is served when that frame lands."""
+    cache: deque[tuple[int, str]] = deque(maxlen=FRAME_HISTORY)
+    depth_stamp_ns = 26_000_000_000
+    arrived = threading.Condition()
+
+    def deliver() -> None:
+        time.sleep(0.05)
+        with arrived:
+            cache.append((depth_stamp_ns, "first"))
+            arrived.notify_all()
+
+    threading.Thread(target=deliver, daemon=True).start()
+    frame, reason = wait_for_frame(
+        lambda: cache, arrived, depth_stamp_ns,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=DEFAULT_FRAME_WAIT_S,
+    )  # fmt: skip
+    assert (frame, reason) == ("first", "")
+
+
+def test_an_empty_cache_is_refused_after_the_wait_or_at_once_when_unstamped() -> None:
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: [], threading.Condition(), 26_000_000_000,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=0.1,
+    )  # fmt: skip
+    assert frame is None
+    assert reason.startswith("ROSPerceptionStale:") and "waited 0.100 s" in reason
+    assert time.monotonic() - start >= 0.1
+    start = time.monotonic()
+    frame, reason = wait_for_frame(
+        lambda: [], threading.Condition(), 0,
+        max_skew_s=DEFAULT_MAX_FRAME_SKEW_S, wait_s=DEFAULT_FRAME_WAIT_S,
+    )  # fmt: skip
+    assert frame is None and reason == "ROSPerceptionStale: no frame cached"
+    assert time.monotonic() - start < 0.05

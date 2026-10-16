@@ -206,8 +206,9 @@ def wait_for_frame(
     newest one is OLDER than the stamp (Isaac DROID deploy sim t7, 2026-10-16: 0.133 s,
     one frame). The frame it names is still on its way, so wait for it, woken by each
     new frame (``arrived`` is notified by the image callback, which must run on another
-    thread). A request stamped before the newest frame, or one still unmatched after
-    ``wait_s``, is refused as before.
+    thread). An empty cache counts as behind the stamp (the first frame may still be on
+    its way). A request stamped before the newest frame, an unstamped one on an empty
+    cache, or one still unmatched after ``wait_s``, is refused as before.
 
     Args:
         frames: Returns the cache, ``(stamp_ns, frame)`` oldest first; called under
@@ -230,7 +231,8 @@ def wait_for_frame(
         while True:
             cached = list(frames())
             frame, reason = frame_nearest_stamp(cached, stamp_ns, max_skew_s=max_skew_s)
-            ahead = bool(cached) and stamp_ns != 0 and cached[-1][0] < stamp_ns
+            # An empty cache is behind every stamp: the first frame may be on its way.
+            ahead = stamp_ns != 0 and (not cached or cached[-1][0] < stamp_ns)
             remaining = deadline - time.monotonic()
             if frame is not None or not ahead or remaining <= 0.0:
                 if frame is None and ahead and wait_s > 0.0:
@@ -651,10 +653,10 @@ def _node_class() -> type:
 
         def _frame_for(self, camera: str, stamp: Any) -> tuple[Any, str]:
             """The cached frame of ``camera`` a request stamped ``stamp`` is served from."""
-            if not self._frames.get(camera):
+            if camera not in self._cameras:  # no subscription: its frame never arrives
                 return None, (
                     f"ROSPerceptionStale: no frame cached for camera {camera!r} "
-                    f"(known: {sorted(self._frames)})"
+                    f"(known: {sorted(self._cameras)})"
                 )
             gp = self.get_parameter
             frame, stale = wait_for_frame(
