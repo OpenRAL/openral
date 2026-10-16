@@ -2520,50 +2520,74 @@ def fetch_environment_archive(archive: IsaacEnvironmentArchive) -> str:
 
     Extracted under ``<cache>/isaac-environments/<sha256[:16]>/``; a completed
     extraction is marked and reused. The download is announced (CLAUDE.md §1.4) and
-    its sha256 checked before anything is extracted.
+    its sha256 checked before anything is extracted. Download and extraction go to
+    private siblings of that directory, which is swapped in only once the USD is
+    found and the marker written, under a lock file (``<sha256[:16]>.lock``), so a
+    crash leaves no partial tree behind the marker and a concurrent fetch never
+    removes another's tree or extraction in progress.
 
     Raises:
         ROSConfigError: the download fails, its digest differs, or the archive has no
             ``archive.usd``.
     """
+    import fcntl
     import shutil
     import urllib.request
     import zipfile
 
     root = _environment_cache_root() / archive.sha256[:16]
-    usd = root / archive.usd
-    marker = root / ".extracted"
-    if marker.is_file() and marker.read_text().strip() == archive.sha256 and usd.is_file():
-        return str(usd)
+
+    def done(d: Path) -> bool:
+        m = d / ".extracted"
+        return (
+            m.is_file() and m.read_text().strip() == archive.sha256 and (d / archive.usd).is_file()
+        )
+
+    if done(root):
+        return str(root / archive.usd)
     print(f"[isaac-sim] fetching pinned environment archive {archive.url} -> {root}", flush=True)
-    root.mkdir(parents=True, exist_ok=True)
-    part = root.with_name(root.name + ".zip.part")
-    digest = hashlib.sha256()
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{root.name}.", suffix=".tmp", dir=root.parent))
+    part = staging.with_name(staging.name + ".zip.part")
     try:
-        with urllib.request.urlopen(archive.url, timeout=60) as resp, part.open("wb") as fh:
-            while chunk := resp.read(1 << 20):
-                digest.update(chunk)
-                fh.write(chunk)
-    except OSError as exc:
+        digest = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(archive.url, timeout=60) as resp, part.open("wb") as fh:
+                while chunk := resp.read(1 << 20):
+                    digest.update(chunk)
+                    fh.write(chunk)
+        except OSError as exc:
+            raise ROSConfigError(
+                f"environment_archive {archive.url}: download failed: {exc}"
+            ) from exc
+        if digest.hexdigest() != archive.sha256:
+            raise ROSConfigError(
+                f"environment_archive {archive.url}: sha256 {digest.hexdigest()} differs from "
+                f"the pinned {archive.sha256}."
+            )
+        with zipfile.ZipFile(part) as zf:
+            zf.extractall(staging)  # zipfile drops absolute and ".." member paths
+        if not (staging / archive.usd).is_file():
+            raise ROSConfigError(
+                f"environment_archive {archive.url} has no {archive.usd!r} "
+                f"(top level: {sorted(p.name for p in staging.iterdir())})."
+            )
+        (staging / ".extracted").write_text(archive.sha256)
+        # The swap is serialised on a lock file; extractions stay in private dirs.
+        with (root.parent / f"{root.name}.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not done(root):  # else a concurrent fetch won; ours is discarded below
+                if root.exists():  # a crashed pre-staging run's partial tree
+                    old = Path(
+                        tempfile.mkdtemp(prefix=f"{root.name}.", suffix=".old", dir=root.parent)
+                    )
+                    os.replace(root, old / "tree")
+                    shutil.rmtree(old, ignore_errors=True)
+                os.replace(staging, root)
+    finally:
         part.unlink(missing_ok=True)
-        raise ROSConfigError(f"environment_archive {archive.url}: download failed: {exc}") from exc
-    if digest.hexdigest() != archive.sha256:
-        part.unlink(missing_ok=True)
-        raise ROSConfigError(
-            f"environment_archive {archive.url}: sha256 {digest.hexdigest()} differs from the "
-            f"pinned {archive.sha256}."
-        )
-    shutil.rmtree(root)
-    with zipfile.ZipFile(part) as zf:
-        zf.extractall(root)  # zipfile drops absolute and ".." member paths
-    part.unlink()
-    if not usd.is_file():
-        raise ROSConfigError(
-            f"environment_archive {archive.url} has no {archive.usd!r} "
-            f"(top level: {sorted(p.name for p in root.iterdir())})."
-        )
-    marker.write_text(archive.sha256)
-    return str(usd)
+        shutil.rmtree(staging, ignore_errors=True)
+    return str(root / archive.usd)
 
 
 def provision_isaac_sim() -> None:
