@@ -1706,3 +1706,119 @@ TEST(PayloadSweepFloor, AStaticPointAboveTheBoxIsNotUnderIt) {
   supports.static_points = {tf2::Vector3(0.50, 0.00, 0.30)};  // above the carry: not a floor
   EXPECT_EQ(bridge::floor_swept_box(box, supports, 0.015), bridge::SweepFloor::kNone);
 }
+
+// The clear is the payload's own posed boxes, not the AABB of its motion (PR #417 review):
+// a diagonal place approach's 0.2 s AABB takes in the bowl rim / the neighbour orange
+// beside the path, which the payload never occupied.
+namespace {
+bool inside(const bridge::SweptBox& b, const tf2::Vector3& p) {
+  return p.x() >= b.lo.x() && p.x() <= b.hi.x() && p.y() >= b.lo.y() && p.y() <= b.hi.y() &&
+         p.z() >= b.lo.z() && p.z() <= b.hi.z();
+}
+}  // namespace
+
+TEST(PayloadPoseBoxes, OnePrimitiveOneBoxAtItsExactBounds) {
+  const auto boxes = bridge::payload_primitive_boxes(
+      {orange_box(tf2::Vector3(0, 0, 0.1), 0.0), orange_box(tf2::Vector3(0.2, 0, 0.1), 0.0)},
+      tf2::Transform::getIdentity());
+  ASSERT_EQ(boxes.size(), 2U);
+  EXPECT_NEAR(boxes[0].hi.x(), 0.032, 1e-12);
+  EXPECT_NEAR(boxes[1].lo.x(), 0.2 - 0.032, 1e-12);
+  bridge::PayloadPrimitive bad;
+  bad.shape_type = Primitive::SHAPE_SPHERE;
+  bad.radius = std::nan("");
+  EXPECT_TRUE(bridge::payload_primitive_boxes({bad}, tf2::Transform::getIdentity()).empty());
+}
+
+TEST(PayloadPoseBoxes, ADiagonalApproachLeavesTheNeighbourBesideThePath) {
+  // The payload moves diagonally (+x, +y) over a plate at z = 0.03 for 0.2 s (5 grid ticks).
+  bridge::SupportPatch plate;
+  plate.point = tf2::Vector3(0.10, 0.10, 0.030);
+  plate.patch_radius = 0.2;
+  plate.max_penetration = 0.002;
+  bridge::SweepSupports supports;
+  supports.patches = {plate};
+  std::vector<bridge::SweptBox> boxes;
+  for (int i = 0; i <= 4; ++i) {
+    const double s = 0.05 * i;
+    const auto posed = bridge::payload_primitive_boxes({orange_box(tf2::Vector3(s, s, 0.12), 0.0)},
+                                                       tf2::Transform::getIdentity());
+    boxes.insert(boxes.end(), posed.begin(), posed.end());
+  }
+  // A neighbour orange on the plate beside the path: inside the motion's AABB, off the path.
+  const tf2::Vector3 neighbour(0.17, 0.03, 0.10);
+  bridge::SweptBox aabb;
+  for (const auto& b : boxes) {
+    aabb.add(b.lo);
+    aabb.add(b.hi);
+  }
+  ASSERT_TRUE(inside(aabb, neighbour)) << "the old AABB would have cleared it";
+
+  std::vector<bridge::SweptBox> clears;
+  EXPECT_EQ(bridge::floor_pose_boxes(boxes, supports, 0.015, clears), bridge::SweepFloor::kSupport);
+  ASSERT_EQ(clears.size(), 5U);
+  for (const auto& c : clears) {
+    EXPECT_FALSE(inside(c, neighbour)) << "the neighbour beside the path was cleared";
+    EXPECT_GE(c.lo.z(), 0.030 + 0.002 + 0.015 - 1e-12) << "into the plate";
+  }
+  // Every pose the payload held is still cleared.
+  for (int i = 0; i <= 4; ++i) {
+    const tf2::Vector3 centre(0.05 * i, 0.05 * i, 0.12);
+    EXPECT_TRUE(std::any_of(clears.begin(), clears.end(),
+                            [&](const bridge::SweptBox& c) { return inside(c, centre); }));
+  }
+}
+
+TEST(PayloadPoseBoxes, EachBoxIsFlooredByTheHighestBoundOfTheWholePeriod) {
+  // A static shelf top under only the FIRST pose, the measured floor below it: every box
+  // stops above the shelf (the union's floor), and none drops to the measured floor alone.
+  std::vector<bridge::SweptBox> boxes;
+  for (const double x : {0.0, 0.3}) {
+    const auto posed = bridge::payload_primitive_boxes({orange_box(tf2::Vector3(x, 0, 0.10), 0.0)},
+                                                       tf2::Transform::getIdentity());
+    boxes.insert(boxes.end(), posed.begin(), posed.end());
+  }
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.0, 0.0, 0.06)};
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = 0.0;
+  std::vector<bridge::SweptBox> clears;
+  EXPECT_EQ(bridge::floor_pose_boxes(boxes, supports, 0.015, clears), bridge::SweepFloor::kSupport);
+  ASSERT_EQ(clears.size(), 2U);
+  for (const auto& c : clears) {
+    EXPECT_NEAR(c.lo.z(), 0.06 + 0.015, 1e-12);
+  }
+}
+
+TEST(PayloadPoseBoxes, AStaticPointWellBelowDoesNotDropTheMeasuredFloorOfAnyPoseBox) {
+  // T0 on the posed boxes: the room floor declared, the real table undeclared.
+  const auto boxes = bridge::payload_primitive_boxes({orange_box(tf2::Vector3(0, 0, 0.04), 0.0)},
+                                                     tf2::Transform::getIdentity());
+  bridge::SweepSupports supports;
+  supports.static_points = {tf2::Vector3(0.0, 0.0, -0.75)};
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = 0.003;
+  std::vector<bridge::SweptBox> clears;
+  EXPECT_EQ(bridge::floor_pose_boxes(boxes, supports, 0.015, clears), bridge::SweepFloor::kSupport);
+  ASSERT_EQ(clears.size(), 1U);
+  EXPECT_NEAR(clears[0].lo.z(), 0.003, 1e-12) << "cleared through the measured table";
+}
+
+TEST(PayloadPoseBoxes, NoFloorClearsNothingAndARestingPayloadIsOneBox) {
+  std::vector<bridge::SweptBox> boxes;
+  for (int i = 0; i < 4; ++i) {  // at rest: the same pose four ticks running
+    const auto posed = bridge::payload_primitive_boxes({orange_box(tf2::Vector3(0, 0, 0.10), 0.0)},
+                                                       tf2::Transform::getIdentity());
+    boxes.insert(boxes.end(), posed.begin(), posed.end());
+  }
+  std::vector<bridge::SweptBox> clears;
+  EXPECT_EQ(bridge::floor_pose_boxes(boxes, bridge::SweepSupports{}, 0.015, clears),
+            bridge::SweepFloor::kNone);
+  EXPECT_TRUE(clears.empty());
+  bridge::SweepSupports supports;
+  supports.has_measured_floor = true;
+  supports.measured_floor_z = 0.0;
+  EXPECT_EQ(bridge::floor_pose_boxes(boxes, supports, 0.015, clears),
+            bridge::SweepFloor::kMeasuredPayload);
+  EXPECT_EQ(clears.size(), 1U) << "a box inside one already sent is not resent";
+}

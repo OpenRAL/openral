@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// A carried payload's swept volume is cleared from the octree, pre-attach path included.
+// A carried payload's own posed volume is cleared from the octree, attached poses only.
 //
 // Deploy trial g12 (SO-101, LeIsaac PickOrange, 15 mm octomap): the carried orange's own
-// returns, captured 0.27 s before ATTACH reached the self-filter, stayed in the octree
-// 85-120 mm behind the payload; the grid clearing follows only the payload's current pose,
-// and every later ray through them ended on the robot. The kernel stopped the carry on
-// them. DROID t6: one banana return mid-carry never cleared either.
+// returns stayed in the octree behind the payload; the grid clearing follows only the
+// payload's current pose, and every later ray through them ended on the robot. DROID t6:
+// one banana return mid-carry never cleared either. The bridge clears each attached pose's
+// primitive boxes; the hand's path BEFORE the attach is never cleared (PR #417 review: the
+// payload posed rigidly in the hand along the approach is where the object never was).
 //
 // Runs the REAL node in-process against real TF (/tf history) and real DDS, with a real
 // `BoundingBoxQuery` server standing in for `octomap_server`'s `~/clear_bbox` (a process
@@ -60,7 +61,6 @@ protected:
         {"publish_rate_hz", 20.0},
         {"payload_sweep_clear_service", "/test_clear_bbox"},
         {"payload_sweep_clear_period_s", 0.2},
-        {"payload_sweep_backfill_s", 0.5},
     };
     rclcpp::NodeOptions options;
     options.parameter_overrides(overrides);
@@ -158,7 +158,7 @@ protected:
   std::vector<BBox::Request> requests_;
 };
 
-TEST_F(BridgePayloadSweep, ThePreAttachPathAndTheCarryAreClearedAboveTheSupport) {
+TEST_F(BridgePayloadSweep, TheCarryIsClearedAboveTheSupportAndThePreAttachPathIsNot) {
   // 0.4 s of carry with nothing attached yet (the returns the self-filter kept): x 0 -> 0.08.
   const double z = kSupportTop + kHalf[2] + 0.02;
   for (int i = 0; i <= 8; ++i) {
@@ -183,9 +183,11 @@ TEST_F(BridgePayloadSweep, ThePreAttachPathAndTheCarryAreClearedAboveTheSupport)
     lo_x = std::min(lo_x, r.min.x);
     hi_x = std::max(hi_x, r.max.x);
     lo_z = std::min(lo_z, r.min.z);
+    // One posed payload box per request, never the AABB of the period's motion.
+    EXPECT_LE(r.max.x - r.min.x, 2.0 * kHalf[0] + 1e-6) << "a motion AABB was cleared";
   }
-  // The pre-attach pose 0.3 s back (x ~ 0.05) is cleared through the TF-history backfill.
-  EXPECT_LE(lo_x, 0.05 - kHalf[0] + 1e-6) << "backfill missed the pre-attach path";
+  // Nothing before the first attached pose (x = 0.09): no pre-attach backfill.
+  EXPECT_GE(lo_x, 0.09 - kHalf[0] - 1e-6) << "the pre-attach approach was cleared";
   EXPECT_GE(hi_x, 0.16 + kHalf[0] - 0.02) << "the carry was not cleared";
   // Never into the counter: one cell above the attested support (+ its depth bound).
   EXPECT_GE(lo_z, kSupportTop + 0.002 + kRes - 1e-6);

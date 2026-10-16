@@ -329,7 +329,7 @@ steady reach does
 (`PayloadClearing.ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch`,
 with the no-attestation counterfactual beside it).
 
-### …and the payload's swept volume is cleared from the octree itself
+### …and the payload's own posed volume is cleared from the octree itself
 
 The grid clearing above edits only the published grid, around the payload's
 CURRENT pose: the octree keeps whatever the carried object left along its path.
@@ -337,13 +337,19 @@ Returns captured before the attachment reached the self-filter (deploy trial g12
 the orange 0.27 s before ATTACH, 85-120 mm behind the payload when it stopped the
 arm) or a return the payload volume missed mid-carry (DROID t6: a banana voxel)
 are never retired, because every later ray through them ends on the robot, which
-the self-filter removes. With `payload_sweep_clear_service` set
-(`deploy_e2e.launch.py`: `/openral_octomap_server/clear_bbox`), the bridge
-accumulates the axis-aligned box the live, fresh payload swept (`SweptBox`,
-`add_payload_to_swept_box`) and every `payload_sweep_clear_period_s` asks
-octomap_server to clear it. At an object's first appearance it also backfills the
-payload's poses over the last `payload_sweep_backfill_s` of TF history. A box never
-reaches below a support (`floor_swept_box`):
+the self-filter removes. With `payload_sweep_clear_service` set, the bridge records,
+on every grid tick the live, fresh payload is attached, one axis-aligned box per
+primitive at that pose (`SweptBox`, `payload_primitive_boxes`), and every
+`payload_sweep_clear_period_s` asks octomap_server to clear each of them
+(`floor_pose_boxes`; a box inside one already sent is not resent). It clears the
+payload's own posed volume, never the AABB of its motion: the box around 0.2 s of a
+diagonal place approach takes in the neighbour orange on the plate or the bowl rim
+beside the path, which the payload never occupied (PR #417 review). Only attached
+poses are cleared — there is no pre-attach TF backfill, because the payload posed
+rigidly in the hand along the pre-grasp approach is where the object never was
+(`deploy_e2e.launch.py` passes `/openral_octomap_server/clear_bbox`). A box never
+reaches below a support (`floor_swept_box`, per posed box and never below the floor
+the same rule gives the union of the period's boxes):
 
 - it starts one cell above every support patch attested during this carry, as first
   attested (a vision pick's attestation lasts only until the payload moves, so it is
@@ -364,11 +370,11 @@ table top once the attestation lapsed mid-carry (deploy-sim t7, 2026-10-16). Pin
 `PayloadSweep.*` / `PayloadSweepFloor.*` (test_payload_clearing.cpp) and
 `BridgePayloadSweep.*` (the real node against a real `BoundingBoxQuery` server).
 
-**Hazard (user-approved 2026-10-16; Safety-WG review and a hazard-log row owed): the
-payload's swept volume is cleared from the world map.** A real obstacle inside that
-axis-aligned box — a neighbouring object at the grasp, a shelf edge passed close, a
-hand entering behind the payload — disappears from the octree until a camera sees it
-again.
+**Hazard (user-approved 2026-10-16; Safety-WG review and a hazard-log row
+owed): the payload's posed volume is cleared from the world map.** A real obstacle
+inside a posed payload box (the AABB of a primitive at one attached pose — a rotated
+box's corners included) — a hand entering right behind the payload, an object the
+payload is pressed against — disappears from the octree until a camera sees it again.
 
 ### …except the attested support patch, which is the counter
 
@@ -590,9 +596,8 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |
 | `attach_sweep_padding_m` | `resolution` (one voxel) | Extra reach **while a payload is within this distance of where its object revision first appeared** — for the stale pre-attach silhouette (round-5 `voxel_91633`, 22.13 mm out). Also the distance the payload must travel to close the window. Adds to `attached_clear_padding_m`; `0` restores the pre-#111 single reach; negative/non-finite contributes nothing. |
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
-| `payload_sweep_clear_service` | `""` (off) | octomap_server's `~/clear_bbox` service; set, the payload's swept volume is cleared from the octree (above). |
-| `payload_sweep_clear_period_s` | `0.2` | How often the accumulated swept box is cleared. |
-| `payload_sweep_backfill_s` | `0.5` | TF history backfilled at an object's first appearance (stall detection + segmentation before ATTACH). |
+| `payload_sweep_clear_service` | `""` (off) | octomap_server's `~/clear_bbox` service; set, the carried payload's posed primitive boxes are cleared from the octree (above). |
+| `payload_sweep_clear_period_s` | `0.2` | How often the period's posed payload boxes are cleared. |
 | `attach_link_tf_frames` | `[]` (none) | `"link=frame"` renames for the TF lookup of a payload's attach link: the published `attach_link` is the manifest's name (the kernel's collision model uses manifest names), but a real cell's TF tree may name that body differently (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). Unmapped links are looked up as themselves. `deploy_e2e.launch.py` passes the scene's `vision_attachment.tf_frames` — the strings the HAL gets as `vision_attachment_tf_frames` — and nothing when the leg is off. A malformed or conflicting entry refuses the whole mapping (logged ERROR): every link is then looked up by its own name and, on such a cell, its payload stays in the map. An unmapped link whose lookup fails logs a one-time hint to set this. |
 
 `size_x = size_y = size_z ≤ floor(2·coverage_radius_m / resolution + 1/2) + 1` (the half

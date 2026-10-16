@@ -435,6 +435,14 @@ struct SweptBox {
 void add_payload_to_swept_box(SweptBox& box, const std::vector<PayloadPrimitive>& primitives,
                               const tf2::Transform& frame_from_base) noexcept;
 
+/// One axis-aligned box per primitive of `primitives` (placed in the grid / base frame),
+/// each the exact bounds `add_payload_to_swept_box` gives that primitive alone, in the
+/// frame `frame_from_base` carries it into: the payload's own posed volume at ONE pose,
+/// never the box around its motion (a 0.2 s AABB of a diagonal approach takes in the
+/// neighbour beside the path). A non-finite primitive yields no box.
+std::vector<SweptBox> payload_primitive_boxes(const std::vector<PayloadPrimitive>& primitives,
+                                              const tf2::Transform& frame_from_base);
+
 /// Where `floor_swept_box` put a swept box's floor.
 enum class SweepFloor {
   kSupport,          ///< a known support is under the box (any measured floor still applies)
@@ -471,5 +479,16 @@ struct SweepSupports {
 /// and returns `kNone`. Every `kNone` leaves `box.valid == false`.
 SweepFloor floor_swept_box(SweptBox& box, const SweepSupports& supports,
                            double resolution) noexcept;
+
+/// The `clear_bbox` requests for one clearing period's posed payload boxes (`boxes`, from
+/// `payload_primitive_boxes` at each sampled pose), into `out`, and the period's floor.
+///
+/// Each box is floored by `floor_swept_box` against `supports`, and never below the floor
+/// the same rule gives the union of all of them: the highest bound wins, so the cleared
+/// set is a subset of what the one union box would have cleared. A box with `kNone`, or
+/// one inside a box already in `out` (a payload at rest), is dropped. The union's `kNone`
+/// clears nothing at all (`out` empty).
+SweepFloor floor_pose_boxes(const std::vector<SweptBox>& boxes, const SweepSupports& supports,
+                            double resolution, std::vector<SweptBox>& out);
 
 }  // namespace openral_octomap_bridge
