@@ -53,9 +53,19 @@ form the user-facing contract while the MJCF stays as upstream ships it.
 ## Collision model
 
 `collision_geometry` is hand-authored (the drift guard checks its ACM only):
-PCA-fit boxes for `base`, `shoulder`, `upper_arm`, `lower_arm` and `wrist`, run
-with the negative `self_collision_margin_m` documented in the manifest, plus two
-box + exact hull entries on `gripper`:
+PCA-fit boxes for `base`, `upper_arm`, `lower_arm` and `wrist`, run with the
+negative `self_collision_margin_m` documented in the manifest. `shoulder` is a
+box + exact hull, and `gripper` carries two box + exact hull entries.
+
+`shoulder` is the `openral collision lower --tight-link shoulder` fit of its URDF
+meshes. The mesh sits inside the hull to 1 nm. It replaces the hand PCA box, whose
+bottom hung 1 mm below the surface the arm is mounted on: the box reached
+z = 0.029 m in the base frame, while the mesh only reaches 0.0487 m. Two LeIsaac
+PickOrange deploy-sim trials stopped on `shoulder` against counter voxels beside
+the base, with PhysX reporting no penetration. The hull is less conservative than
+the box. **It needs its own Safety-WG review and hazard-log row.**
+
+The two `gripper` entries are:
 
 - the gripper body: the URDF `gripper` link's meshes, fitted by
   `fit_link_with_tight_geometry`;
