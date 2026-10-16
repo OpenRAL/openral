@@ -105,6 +105,21 @@ def test_a_simulated_sensor_is_a_depth_camera_of_its_own(
         sim_scene_description(_robot(), options)
 
 
+def test_two_simulated_sensors_cannot_share_a_name() -> None:
+    options = _options()
+    options["sim_sensors"].append(copy.deepcopy(options["sim_sensors"][0]))
+    with pytest.raises(ROSConfigError, match=r"names \['top_depth'\] more than once"):
+        sim_scene_description(_robot(), options)
+
+
+def test_the_merged_description_is_validated() -> None:
+    """``model_copy`` skips RobotDescription's validators; the merge re-runs them."""
+    options = _options()
+    options["sim_sensors"][0]["shares_mount_with"] = "no_such_sensor"
+    with pytest.raises(ROSConfigError, match="shares_mount_with='no_such_sensor'"):
+        sim_scene_description(_robot(), options)
+
+
 # ── the deploy scene ──────────────────────────────────────────────────────────
 
 

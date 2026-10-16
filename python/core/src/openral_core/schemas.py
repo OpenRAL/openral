@@ -783,7 +783,9 @@ def sim_scene_description(
     Raises:
         ROSConfigError: A bad ``control_freq_hz``, a rate override on a manifest
             without ``action_spec``, or a ``sim_sensors`` entry that is invalid, not a
-            depth camera with intrinsics, bound to hardware, or reuses a manifest name.
+            depth camera with intrinsics, bound to hardware, or reuses a manifest name or
+            another entry's, or a merged description ``RobotDescription`` refuses (e.g.
+            a ``shares_mount_with`` naming no mount-declaring sensor).
 
     Example:
         >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
@@ -817,8 +819,21 @@ def sim_scene_description(
                 f"backend_options.sim_sensors {bad}: a simulated sensor must be a depth "
                 "camera with intrinsics and no deploy_binding."
             )
+        names = [s.name for s in added]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ROSConfigError(f"backend_options.sim_sensors names {dupes} more than once.")
         update["sensors"] = merge_deploy_sensors(description.sensors, added)
-    return description.model_copy(update=update) if update else description
+    if not update:
+        return description
+    # Re-run RobotDescription's validators on the merged robot (``model_copy`` skips
+    # them), so e.g. a sim sensor's dangling ``shares_mount_with`` is refused here.
+    try:
+        return RobotDescription.model_validate({**dict(description), **update})
+    except ValidationError as exc:
+        raise ROSConfigError(
+            f"robot {description.name!r} with this scene's backend_options is invalid: {exc}"
+        ) from exc
 
 
 ROBOT_UNIT_ENV = "OPENRAL_ROBOT_UNIT"
