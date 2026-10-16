@@ -57,7 +57,7 @@ _T_LINK_FROM_CAM = np.eye(4, dtype=np.float64)
 _T_LINK_FROM_CAM[:3, :3] = _R_LINK_FROM_CAM
 _T_LINK_FROM_CAM[:3, 3] = (0.02, 0.0, 0.03)
 
-# Tool center point of the SO-101 gripper in its `gripper_base` frame.
+# Tool center point of the SO-101 gripper in its `gripper` frame.
 _TCP_IN_LINK = (0.14, 0.0, 0.01)
 
 
@@ -208,7 +208,7 @@ def test_jaw_span_primitive_rejects_a_non_positive_span() -> None:
 def test_producer_resolves_attach_and_touch_links_from_the_real_manifest() -> None:
     """Attach link and touch links come from the manifest's gripper-role joints."""
     producer = VisionAttachmentEvidenceProducer(_robot())
-    assert producer.attach_link == "gripper_base"
+    assert producer.attach_link == "gripper"
     assert producer.touch_links == ("moving_jaw",)
     assert producer.on_release() == []
 
@@ -263,10 +263,10 @@ def test_real_eraser_mask_produces_a_gated_vision_attachment() -> None:
     assert max(report.extents_m) < 0.06
 
     assert attachment.evidence_kind is AttachmentEvidenceKind.VISION_SEGMENTATION
-    assert attachment.attach_link == "gripper_base"
+    assert attachment.attach_link == "gripper"
     assert attachment.touch_links == ["moving_jaw"]
     assert 1 <= len(attachment.primitives) <= 16
-    assert attachment.pose_in_link.frame_id == "gripper_base"
+    assert attachment.pose_in_link.frame_id == "gripper"
     assert all(p.pose_in_object.frame_id == "payload" for p in attachment.primitives)
     # Vision gives geometry only — no mass, no CoG, no inertia (unlike the sim producer).
     assert attachment.mass_kg is None

@@ -81,9 +81,14 @@ joints:
     actuator_kind: "servo"
   - name: "wrist_roll"
     sim_joint_name: "5"
+    # The URDF `wrist_roll` joint origin (wrist -> gripper). It was left at the
+    # zero default while the gripper link carried no collision primitive, which
+    # put the kernel's `gripper` frame at the wrist frame's origin.
+    origin_xyz: [0.0, -0.0611, 0.0181]
+    origin_rpy: [1.5708, -9.38083e-08, 3.14159]
     joint_type: "revolute"
     parent_link: "wrist"
-    child_link: "gripper_base"
+    child_link: "gripper"
     axis_xyz: [0.0, 0.0, 1.0]
     position_limits: [-2.7925, 2.7925]
     velocity_limit: 4.5
@@ -92,7 +97,7 @@ joints:
   - name: "gripper"
     sim_joint_name: "6"
     joint_type: "revolute"
-    parent_link: "gripper_base"
+    parent_link: "gripper"
     child_link: "moving_jaw"
     axis_xyz: [0.0, 0.0, 1.0]
     # NORMALISED jaw fraction — [0 = closed, 1 = open] — NOT the jaw's

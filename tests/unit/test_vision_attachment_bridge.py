@@ -701,7 +701,7 @@ def test_the_single_gripper_bridge_keeps_its_tf_tcp() -> None:
         None, _so101_calibrated(), config=VisionAttachmentConfig(camera="wrist")
     )
     (leg,) = bridge._legs
-    assert leg.producer.attach_link == "gripper_base"
+    assert leg.producer.attach_link == "gripper"
     assert leg.tcp_frame == "moving_jaw"
 
 
