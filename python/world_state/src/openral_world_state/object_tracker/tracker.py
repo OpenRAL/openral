@@ -500,7 +500,12 @@ class ObjectTracker:
                 )
                 uv = project_point(hit[0], cam_from_base, frame.intrinsics) if hit else None
                 if hit is not None and uv is not None:
-                    out.append(replace(base, service="segment_in_view", point_uv=uv))
+                    # The seed's image rectangle rides along: SAM's "whole" candidate of a
+                    # point on one packed carton is the tote's contents, and the mask pick
+                    # keeps only candidates inside the box.
+                    rect = project_box(seed, frame.intrinsics, t_cam)
+                    xyxy = None if rect is None else tuple(float(v) for v in rect[0])
+                    out.append(replace(base, service="segment_in_view", point_uv=uv, box_xyxy=xyxy))
                     continue
                 skip.clear()  # every seed cell tried: start over, and ask the detector
             out.append(base)

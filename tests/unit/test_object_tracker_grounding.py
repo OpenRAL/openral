@@ -88,3 +88,28 @@ def test_tf_or_mask_missing_ages_only() -> None:
     frame = CameraFrame(_RIG.name, 0, depth, _RIG.k, None, np.zeros(depth.shape, np.uint8))
     out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=0, wall_s=0.0)
     assert out.requests == () and out.tracked.objects == []
+
+
+def test_a_seeded_prompt_carries_the_seed_rectangle() -> None:
+    """A map-seeded point prompt carries its seed's image rectangle, so the mask pick keeps
+    only candidates inside it (SAM's "whole" of a packed carton is the tote's contents)."""
+    from openral_core import PlaceRegion, Pose6D
+    from openral_world_state.object_tracker.fit import project_box
+
+    x, y = _RIG.centre_xy
+    seed = PlaceRegion(
+        frame_id=_RIG.frame,
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        half_extents=(0.12, 0.12, 0.07),
+    )
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY.model_copy(update={"seed": seed}), "obj:banana@0", stamp_ns=0)
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=1, wall_s=0.0)
+    (req,) = out.requests
+    rect = project_box(seed, _RIG.k, _RIG.t)
+    assert req.service == "segment_in_view" and req.point_uv is not None and rect is not None
+    assert req.box_xyxy == tuple(float(v) for v in rect[0])
+    x0, y0, x1, y1 = req.box_xyxy
+    assert x0 <= req.point_uv[0] <= x1 and y0 <= req.point_uv[1] <= y1
