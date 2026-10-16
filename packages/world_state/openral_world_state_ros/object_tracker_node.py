@@ -20,9 +20,11 @@ owns the wire:
 * **Outputs.** ``/openral/tracked_objects`` (``TrackedObjectSet``; RELIABLE, VOLATILE,
   KEEP_LAST 1) on every change and as a ``heartbeat_hz`` heartbeat. In ``bind`` / ``on``
   the node also owns ``/openral/attachment_state`` (RELIABLE, TRANSIENT_LOCAL, KEEP_LAST
-  1): every hand's binding plus the live declarations relayed **without** any region
-  (dispatch never measures one; region exemptions stay the HAL producer's, which is
-  gated off in these modes), heartbeated only while joint states are fresh. In
+  1): every hand's binding plus the live declarations relayed **without** a target
+  region (dispatch never measures one; the HAL producer is gated off in these modes) but
+  with the grasp declaration's ``workspace_box`` as ``workspace_region`` while the
+  tracker's own grid confirms it (``TrackerSession.workspace_region``, the producer's
+  rule), heartbeated only while joint states are fresh. In
   ``shadow`` nothing but ``tracked_objects`` and the logged predicted bindings leaves
   the node.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
@@ -732,7 +734,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             grasp, place = s.grasp_declaration, s.place_declaration
             msg.grasp_declaration_valid = grasp is not None
             if grasp is not None:  # dispatch's own declaration: no region, nothing exempted
-                grasp.model_copy(update={"region": None, "workspace_region": None}).fill_idl(
+                # The producer's workspace confirmation, redone on the tracker's grid.
+                ws = s.workspace_region()
+                grasp.model_copy(update={"region": None, "workspace_region": ws}).fill_idl(
                     msg.grasp_declaration, query_factory=ObjectQueryMsg
                 )
             msg.place_declaration_valid = place is not None

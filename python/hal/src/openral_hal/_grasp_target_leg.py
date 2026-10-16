@@ -278,6 +278,7 @@ from openral_core.object_primitives import (
     nearest_primitive,
 )
 from openral_core.perception_geometry import (
+    WORKSPACE_MIN_COVER,
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
@@ -346,13 +347,6 @@ _PREMEASURE_MAX_HZ = 2.0
 #: band the hand crosses *before* it arms, so the instance it arms on is already tracked.
 #: *Calibration point.*
 _PREMEASURE_REACH_APPROACHES = 2.0
-#: Manipulation workspace (issue #349): the declared ``workspace_box`` is confirmed only
-#: while occupied cells centred in it cover at least this fraction of its footprint
-#: (``region_covers_occupied``) on a fresh grid. A tote interior holding its cartons
-#: covers most of its floor; a box declared over empty space (a wrong pose, the tote
-#: taken away) covers none. 10 % keeps a nearly-emptied tote confirmed while a stray
-#: cell or two cannot confirm an empty volume. *Calibration point.*
-WORKSPACE_MIN_COVER = 0.10
 
 
 _P = ParamSpec("_P")
