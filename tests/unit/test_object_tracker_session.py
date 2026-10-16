@@ -249,3 +249,15 @@ def test_hand_spaces_cover_the_measured_hand(robot: str) -> None:
     s.on_joint_state(q, 1)
     spaces = s.hand_spaces()
     assert spaces and all(r.frame_id == s.frame_id for r in spaces)
+
+
+def test_a_grasp_event_without_a_measured_jaw_uses_the_newest_sample() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, _ = ROBOTS["so101_follower"]
+    s = _session("so101_follower")
+    oid = _mint(s, centre)
+    nan = float("nan")
+    assert s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=nan, hold=nan, stamp_ns=5) is None
+    s.on_joint_state(q, 10)  # the measured jaw at the hold
+    binding = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=nan, hold=nan, stamp_ns=20)
+    assert binding is not None and binding.attachment.object_id == oid

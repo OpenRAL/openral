@@ -30,6 +30,7 @@ segmenter rate runs on the ``wall_s`` the node feeds.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -262,6 +263,12 @@ class TrackerSession:
         if binder is None:
             log.warning("object_tracker.grasp_event_unknown_hand", hand=gripper_joint)
             return None
+        if not math.isfinite(jaw):  # the HAL had no measured jaw: the newest sample
+            jaw = self.positions.get(gripper_joint, math.nan)
+        if not math.isfinite(jaw):
+            log.warning("object_tracker.grasp_event_no_jaw", hand=gripper_joint, kind=kind.value)
+            return binder.held
+        hold = hold if math.isfinite(hold) else jaw
         positions = {**self.positions, gripper_joint: jaw}
         if not self._joints <= positions.keys():
             missing = sorted(self._joints - positions.keys())
