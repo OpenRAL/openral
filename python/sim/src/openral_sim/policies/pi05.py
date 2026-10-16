@@ -415,6 +415,24 @@ def _delta_action_mask(manifest: Any) -> tuple[bool, ...] | None:
     return tuple(a.control_mode_semantics.mode == "delta" for a in acts for _ in range(a.n_dof))
 
 
+def _refuse_rtc_with_deltas(
+    delta_mask: tuple[bool, ...] | None, spec_extra: dict[str, Any]
+) -> None:
+    """Refuse an *enabled* RTC block on a delta-action checkpoint.
+
+    RTC guides with the previous chunk's raw rows, which ``_anchor_deltas`` anchors
+    to an older state. ``rtc: {enabled: false}`` is not RTC and passes.
+
+    Raises:
+        ROSConfigError: ``delta_mask`` is set and ``policy_extras.rtc`` is enabled.
+    """
+    if delta_mask is not None and rtc_enabled_in_extra(spec_extra, adapter_name="pi05"):
+        raise ROSConfigError(
+            "pi05: RTC guides with the previous chunk's raw rows, which a delta-action "
+            "checkpoint anchors to an older state; drop policy_extras.rtc"
+        )
+
+
 def _anchor_deltas(
     action: NDArray[np.float32], state: NDArray[np.float32], mask: tuple[bool, ...]
 ) -> NDArray[np.float32]:
@@ -996,11 +1014,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         _log.info("pi05.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
 
     delta_mask = _delta_action_mask(manifest)
-    if delta_mask is not None and spec.extra.get("rtc"):
-        raise ROSConfigError(
-            "pi05: RTC guides with the previous chunk's raw rows, which a delta-action "
-            "checkpoint anchors to an older state; drop policy_extras.rtc"
-        )
+    _refuse_rtc_with_deltas(delta_mask, spec.extra)
     ac = getattr(manifest, "action_contract", None)
     action_dim = ac.dim if ac is not None else None
     emitted = _emitted_action_dim(policy)
