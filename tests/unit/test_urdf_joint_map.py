@@ -22,9 +22,10 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from openral_core import RobotDescription
+from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.schemas import MimicJoint
-from openral_hal.lifecycle import urdf_named_joint_state
+from openral_hal.lifecycle import URDF_JOINT_UNITS_UNSET, urdf_joint_units, urdf_named_joint_state
 from openral_hal.resolver import urdf_joint_map, urdf_joint_names
 from openral_hal.vision_attachment_bridge import _edge_chain, _joint_motion
 
@@ -190,3 +191,30 @@ def test_the_manifest_units_on_joint_states_are_untouched() -> None:
     assert msg.position[-1] == 0.4 and msg.velocity[-1] == 0.2
     assert out.position[-1] == pytest.approx(1.74533 * 0.4)
     assert out.velocity[-1] == pytest.approx(1.74533 * 0.2)
+
+
+def test_the_so101_map_passes_the_parameter_parsing_unchanged() -> None:
+    robot, urdf = _robot("so101_follower", "so101_follower.urdf")
+    m = urdf_joint_map(robot, urdf)
+    assert m is not None
+    n = len(robot.joints)
+    assert urdf_joint_units(n, m.scales, m.offsets) == (list(m.scales), list(m.offsets))
+
+
+def test_an_unset_array_is_identity_and_explicit_zeros_are_kept() -> None:
+    robot, urdf = _robot("so101_follower", "so101_follower.urdf")
+    m = urdf_joint_map(robot, urdf)
+    assert m is not None
+    n = len(robot.joints)
+    unset = list(URDF_JOINT_UNITS_UNSET)
+    assert urdf_joint_units(n, unset, unset) == ([1.0] * n, [0.0] * n)
+    assert urdf_joint_units(n, m.scales, unset) == (list(m.scales), [0.0] * n)
+    assert urdf_joint_units(n, unset, m.offsets) == ([1.0] * n, list(m.offsets))
+    # A real single-joint [0.0] is a value, not the old "unset" sentinel.
+    assert urdf_joint_units(1, [0.0], [0.0]) == ([0.0], [0.0])
+
+
+def test_a_scale_array_of_the_wrong_length_is_a_config_error() -> None:
+    robot, _ = _robot("so101_follower", "so101_follower.urdf")
+    with pytest.raises(ROSConfigError, match="urdf_joint_scales"):
+        urdf_joint_units(len(robot.joints), [1.0], list(URDF_JOINT_UNITS_UNSET))

@@ -59,6 +59,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import logging
+import math
 import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
     from openral_hal.protocol import HAL
 
 __all__ = [
+    "URDF_JOINT_UNITS_UNSET",
     "HALLifecycleNodeBase",
     "ManifestHALLifecycleNode",
     "decode_action_chunk",
@@ -85,6 +87,7 @@ __all__ = [
     "sim_attachment_heartbeat",
     "spin_until_shutdown",
     "twin_jaw_evidence_timeout_s",
+    "urdf_joint_units",
     "urdf_named_joint_state",
 ]
 
@@ -209,6 +212,42 @@ def urdf_named_joint_state(
     out.velocity = _pick(msg.velocity, affine=False, rate=True)
     out.effort = _pick(msg.effort, affine=False)
     return out
+
+
+#: Default of the ``urdf_joint_scales`` / ``urdf_joint_offsets`` parameters: "unset".
+#: An empty list has no ROS parameter type, and NaN is never a real scale or offset.
+URDF_JOINT_UNITS_UNSET: tuple[float, ...] = (math.nan,)
+
+
+def urdf_joint_units(
+    n_joints: int, scales: Sequence[float], offsets: Sequence[float]
+) -> tuple[list[float], list[float]]:
+    """The per-joint ``(scales, offsets)`` from the HAL's ``urdf_joint_*`` parameters.
+
+    Each array is ``URDF_JOINT_UNITS_UNSET`` (expanded to ``1.0`` / ``0.0`` per joint)
+    or one value per joint, zeros included.
+
+    Raises:
+        ROSConfigError: A set array does not have ``n_joints`` entries.
+
+    Example:
+        >>> urdf_joint_units(2, [1.0, 1.74533], URDF_JOINT_UNITS_UNSET)
+        ([1.0, 1.74533], [0.0, 0.0])
+    """
+
+    def _unset(values: Sequence[float]) -> bool:
+        return len(values) == 1 and math.isnan(values[0])
+
+    out_scales = [1.0] * n_joints if _unset(scales) else list(scales)
+    out_offsets = [0.0] * n_joints if _unset(offsets) else list(offsets)
+    if not len(out_scales) == len(out_offsets) == n_joints:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"urdf_joint_scales / urdf_joint_offsets have {len(out_scales)} / "
+            f"{len(out_offsets)} entries; urdf_joint_names has {n_joints}."
+        )
+    return out_scales, out_offsets
 
 
 def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
@@ -683,10 +722,10 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("urdf_joint_names", [""])
             # ... and in the URDF joints' units (``resolver.urdf_joint_map``): parallel
             # scale / offset per manifest joint, the manifest's mimic map for a fraction-
-            # unit gripper (the SO-101 jaw: 1.74533 f rad). The one-zero default is
-            # "identity" (an empty list has no ROS parameter type).
-            self.declare_parameter("urdf_joint_scales", [0.0])
-            self.declare_parameter("urdf_joint_offsets", [0.0])
+            # unit gripper (the SO-101 jaw: 1.74533 f rad). Unset is identity
+            # (``URDF_JOINT_UNITS_UNSET``, ``urdf_joint_units``).
+            self.declare_parameter("urdf_joint_scales", list(URDF_JOINT_UNITS_UNSET))
+            self.declare_parameter("urdf_joint_offsets", list(URDF_JOINT_UNITS_UNSET))
             self._urdf_joint_names: list[str] = []
             self._urdf_joint_scales: list[float] = []
             self._urdf_joint_offsets: list[float] = []
@@ -860,17 +899,11 @@ if _ROS2_AVAILABLE:
                 )
             self._urdf_joint_names = urdf_names
             gp = self.get_parameter
-            scales = list(gp("urdf_joint_scales").get_parameter_value().double_array_value)
-            offsets = list(gp("urdf_joint_offsets").get_parameter_value().double_array_value)
-            if scales != [0.0] or offsets != [0.0]:
-                if not len(scales) == len(offsets) == len(urdf_names):
-                    from openral_core.exceptions import ROSConfigError
-
-                    raise ROSConfigError(
-                        f"urdf_joint_scales / urdf_joint_offsets have {len(scales)} / "
-                        f"{len(offsets)} entries; urdf_joint_names has {len(urdf_names)}."
-                    )
-                self._urdf_joint_scales, self._urdf_joint_offsets = scales, offsets
+            self._urdf_joint_scales, self._urdf_joint_offsets = urdf_joint_units(
+                len(urdf_names),
+                gp("urdf_joint_scales").get_parameter_value().double_array_value,
+                gp("urdf_joint_offsets").get_parameter_value().double_array_value,
+            )
             self._urdf_joint_state_pub = self.create_publisher(msg_type, "~/urdf_joint_states", qos)
 
         @log_lifecycle_errors
