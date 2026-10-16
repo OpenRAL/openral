@@ -227,6 +227,10 @@ class _PI05Adapter:
         if self._chunk_executor is not None:
             self._chunk_executor.stop()
             self._chunk_executor = None
+        # Before the weights go: `_chunk_forward` tries the graph first, and a
+        # replay after close would read freed memory.
+        self._cuda_graph = None
+        self._cuda_graph_keepalive.clear()
         release_torch_modules(
             self,
             "_policy",
@@ -330,12 +334,16 @@ def _pinned_tensor_uploads(module: Any, torch: Any, keepalive: list[Any]) -> Ite
 def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt: bool) -> None:
     """Attach a `CudaGraphChunkForward` when ``policy_extras.cuda_graph`` is true.
 
-    Refused (``ROSConfigError``) where a graph cannot apply: a non-CUDA device,
+    Refused (``ROSConfigError``) for a non-bool flag (YAML ``"false"`` is a
+    string, and truthy), and where a graph cannot apply: a non-CUDA device,
     an enabled ``rtc`` block (its per-call guidance arguments always run eager,
     so the graph would never replay), or the TensorRT runtime (it replaced the
     forward already).
     """
-    if not bool(spec_extra.get("cuda_graph", False)):
+    flag = spec_extra.get("cuda_graph", False)
+    if not isinstance(flag, bool):
+        raise ROSConfigError(f"pi05: policy_extras.cuda_graph must be a YAML bool, got {flag!r}")
+    if not flag:
         return
     if not adapter.device.startswith("cuda"):
         raise ROSConfigError(
@@ -360,6 +368,7 @@ def _maybe_cuda_graph(adapter: _PI05Adapter, spec_extra: dict[str, Any], *, trt:
         torch=torch,
         name="pi05",
         capture_ctx=lambda: _pinned_tensor_uploads(modeling, torch, keepalive),
+        device=adapter.device,
     )
     _log.info("pi05.cuda_graph_enabled", device=adapter.device)
 
