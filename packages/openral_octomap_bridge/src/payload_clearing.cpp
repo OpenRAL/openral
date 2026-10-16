@@ -17,6 +17,8 @@ using Wire = openral_msgs::msg::AttachedCollisionPrimitive;
 
 bool finite_positive(double v) { return std::isfinite(v) && v >= 0.0; }
 
+}  // namespace
+
 // A wire pose → tf2, refusing a degenerate quaternion rather than silently
 // treating it as the identity (the bridge would then clear the wrong volume).
 bool pose_from_msg(const geometry_msgs::msg::Pose& pose, tf2::Transform& out) {
@@ -35,8 +37,6 @@ bool pose_from_msg(const geometry_msgs::msg::Pose& pose, tf2::Transform& out) {
   out = tf2::Transform(q, tf2::Vector3(pose.position.x, pose.position.y, pose.position.z));
   return true;
 }
-
-}  // namespace
 
 // Signed distance from a point to the primitive's surface (negative inside).
 double primitive_surface_distance(const PayloadPrimitive& prim,
