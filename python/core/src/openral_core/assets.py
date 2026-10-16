@@ -24,8 +24,11 @@ Isaac URDF importer, ``foxglove_bridge``'s ``resource_retriever``).
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -167,7 +170,25 @@ def resolve_package_uri(uri: str) -> Path:
 _RD_MESH_REF = re.compile(r'filename="rd:([^:"]+):([^"]+)"')
 
 
-def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "") -> str:
+@contextlib.contextmanager
+def _git_local_only() -> Iterator[None]:
+    """Let git use only local transports meanwhile (``GIT_ALLOW_PROTOCOL=file``).
+
+    A ``robot_descriptions`` import then reads a clone already in its cache and fails
+    at once, instead of cloning or fetching over the network, when there is none.
+    """
+    previous = os.environ.get("GIT_ALLOW_PROTOCOL")
+    os.environ["GIT_ALLOW_PROTOCOL"] = "file"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("GIT_ALLOW_PROTOCOL", None)
+        else:
+            os.environ["GIT_ALLOW_PROTOCOL"] = previous
+
+
+def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "", cached_only: bool = False) -> str:
     """``urdf_xml`` with every ``filename="rd:<module>:<relpath>"`` made an absolute path.
 
     Vendored URDFs (``openral robot vendor-urdf``) name their meshes
@@ -180,9 +201,14 @@ def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "") -> str:
         urdf_xml: The URDF text.
         prefix: Prepended to each absolute path (``"file://"`` for a
             ``resource_retriever`` consumer).
+        cached_only: Never clone or fetch: a module whose pinned clone is not
+            already in the ``robot_descriptions`` cache raises ``AssetFetchError``
+            at once (``GIT_ALLOW_PROTOCOL=file`` while importing). For a caller with
+            no time budget for a network clone (the deploy launch).
 
     Raises:
-        AssetFetchError: The module's pinned clone could not be fetched.
+        AssetFetchError: The module's pinned clone could not be fetched (or, with
+            ``cached_only``, is not cached).
         AssetRefError: ``robot_descriptions`` is not installed, or a ref names
             no file in the clone.
 
@@ -194,7 +220,8 @@ def expand_rd_mesh_refs(urdf_xml: str, *, prefix: str = "") -> str:
     def expand(match: re.Match[str]) -> str:
         module, rel = match.group(1), match.group(2)
         try:
-            mod = importlib.import_module(f"robot_descriptions.{module}")
+            with _git_local_only() if cached_only else contextlib.nullcontext():
+                mod = importlib.import_module(f"robot_descriptions.{module}")
         except ImportError as exc:
             raise AssetRefError(f"rd:{module}:{rel}: {type(exc).__name__}: {exc}") from exc
         except Exception as exc:  # reason: a clone failure surfaces as many types (git, OSError)
