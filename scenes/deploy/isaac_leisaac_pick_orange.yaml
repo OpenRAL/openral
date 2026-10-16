@@ -57,6 +57,15 @@ scene:
     control_freq_hz: 60.0
     joint_drive_gains:
       ".*": [17.8, 0.6]
+    # The sim twin's gripper effort, finger colliders and PhysX contact settings,
+    # copied from scenes/sim/isaac_leisaac_pick_orange.yaml (see it for the sources).
+    joint_effort_limits:
+      gripper: 1.0
+    collision_approximation:
+      "gripper|jaw": convexDecomposition
+    physx_scene:
+      friction_correlation_distance: 0.00625
+      bounce_threshold: 0.01
     dome_light:
       intensity: 3000.0
       color: [0.75, 0.75, 0.75]
