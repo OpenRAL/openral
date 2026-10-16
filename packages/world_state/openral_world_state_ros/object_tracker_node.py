@@ -59,6 +59,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "backproject_pixel",
     "detector_boxes",
+    "height_image",
     "image_array",
     "intrinsics_from_info",
     "main",
@@ -120,46 +121,73 @@ def intrinsics_from_info(msg: Any) -> IntrinsicsPinhole:  # reason: duck-typed C
     )
 
 
-def outline_edge_fraction(
-    mask: NDArray[np.bool_], depth_m: NDArray[np.float64], *, tol_m: float = 0.01
-) -> float:
-    """Fraction of ``mask``'s outline pixels that sit on a depth discontinuity.
-
-    An outline pixel counts when one of its 4-neighbours outside the mask has a valid depth
-    more than ``tol_m`` away from its own (a depth edge: the object against what lies behind
-    it, or a nearer occluder). A candidate that spilled onto the support it stands on, or a
-    subpart cut inside the object, has an outline mostly on a continuous surface. Pixels with
-    no valid depth on either side count as no edge.
+def height_image(
+    depth_m: NDArray[np.float64], k: IntrinsicsPinhole, t_base_from_cam: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Per pixel, the base-frame height of the depth return (``NaN`` where none).
 
     Example:
-        >>> d = np.full((6, 6), 1.0)
-        >>> d[2:4, 2:4] = 0.95  # a 5 cm block on a table
-        >>> obj = d < 0.99
-        >>> spill = np.zeros((6, 6), bool)
-        >>> spill[1:5, 1:5] = True
-        >>> outline_edge_fraction(obj, d), outline_edge_fraction(spill, d)
+        >>> k = IntrinsicsPinhole(width=2, height=1, fx=1.0, fy=1.0, cx=1.0, cy=0.5)
+        >>> t = np.eye(4)
+        >>> t[:3, :3] = [[1, 0, 0], [0, -1, 0], [0, 0, -1]]  # looking straight down
+        >>> t[2, 3] = 1.0
+        >>> height_image(np.array([[0.75, 0.0]]), k, t).round(2).tolist()
+        [[0.25, nan]]
+    """
+    h, w = depth_m.shape
+    d = np.where(np.isfinite(depth_m) & (depth_m > 0.0), depth_m, np.nan)
+    u = (np.arange(w) + 0.5 - k.cx) / k.fx
+    v = (np.arange(h) + 0.5 - k.cy) / k.fy
+    r = t_base_from_cam[2, :3]
+    return np.asarray(d * (r[0] * u[None, :] + r[1] * v[:, None] + r[2]) + t_base_from_cam[2, 3])
+
+
+def outline_edge_fraction(
+    mask: NDArray[np.bool_],
+    height_m: NDArray[np.float64],
+    *,
+    tol_m: float = 0.008,
+    reach_px: int = 3,
+) -> float:
+    """Fraction of ``mask``'s outline pixels that sit on a height step.
+
+    An outline pixel counts when, in a direction its 4-neighbour leaves the mask, the pixel
+    ``reach_px`` away has a base-frame height more than ``tol_m`` from its own: the object
+    against what it stands on, or a nearer occluder. Heights, not depths, so a tilted camera
+    over a flat counter sees no step; ``reach_px`` so a plate's sloped rim still steps. A
+    candidate that spilled onto its support outlines the support itself. Pixels with no
+    return count as no step.
+
+    Example:
+        >>> z = np.zeros((8, 8))
+        >>> z[3:5, 3:5] = 0.05  # a 5 cm block on a table
+        >>> obj = z > 0.01
+        >>> spill = np.zeros((8, 8), bool)
+        >>> spill[1:7, 1:7] = True
+        >>> outline_edge_fraction(obj, z, reach_px=1), outline_edge_fraction(spill, z, reach_px=1)
         (1.0, 0.0)
     """
     m = np.asarray(mask, dtype=bool)
-    d = np.where(np.isfinite(depth_m) & (depth_m > 0.0), depth_m, np.nan)
-    pm = np.pad(m, 1)
-    pd = np.pad(d, 1, constant_values=np.nan)
     h, w = m.shape
+    r = reach_px
+    pm = np.pad(m, r)
+    pz = np.pad(np.asarray(height_m, dtype=np.float64), r, constant_values=np.nan)
     outline = np.zeros_like(m)
-    edge = np.zeros_like(m)
-    for dr, dc in ((0, 1), (2, 1), (1, 0), (1, 2)):
-        out = m & ~pm[dr : dr + h, dc : dc + w]
-        jump = np.abs(pd[dr : dr + h, dc : dc + w] - d) > tol_m  # NaN compares False
+    step = np.zeros_like(m)
+    for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        nxt = pm[r + dr : r + dr + h, r + dc : r + dc + w]
+        far = pz[r + r * dr : r + r * dr + h, r + r * dc : r + r * dc + w]
+        out = m & ~nxt
         outline |= out
-        edge |= out & jump
+        step |= out & (np.abs(far - height_m) > tol_m)  # NaN compares False
     n = int(outline.sum())
-    return float(edge.sum()) / n if n else 0.0
+    return float(step.sum()) / n if n else 0.0
 
 
 def pick_mask(
     masks: Sequence[NDArray[np.bool_]],
     box_xyxy: tuple[float, float, float, float] | None,
-    depth_m: NDArray[np.float64] | None = None,
+    height_m: NDArray[np.float64] | None = None,
     *,
     inside_fraction: float = 0.9,
     min_edge_fraction: float = 0.5,
@@ -168,20 +196,21 @@ def pick_mask(
 
     The largest qualifying candidate (a subpart under-contains the object). With a box
     (a detector's prompt or a seed's image rectangle) only candidates with at least
-    ``inside_fraction`` of their pixels inside it qualify; with the frame's ``depth_m``
-    only candidates whose outline is mostly a depth edge (``outline_edge_fraction`` at
-    least ``min_edge_fraction``): SAM's "whole" of a point on an orange is often the
-    counter patch around it, and its outline lies on the continuous counter. ``None``
+    ``inside_fraction`` of their pixels inside it qualify; with the frame's ``height_m``
+    (``height_image``) only candidates whose outline is mostly a height step
+    (``outline_edge_fraction`` at least ``min_edge_fraction``): SAM's "whole" of a point
+    on an orange is often the counter patch around it, and its outline lies on the
+    counter. ``None``
     when nothing qualifies (no fit beats a fit of the support). *Calibration points.*
 
     Example:
-        >>> a = np.zeros((4, 4), bool)
-        >>> a[1:3, 1:3] = True
-        >>> b = np.ones((4, 4), bool)
-        >>> int(pick_mask([a, b], None).sum()), int(pick_mask([a, b], (1, 1, 3, 3)).sum())
-        (16, 4)
-        >>> d = np.where(a, 0.95, 1.0)
-        >>> int(pick_mask([a, b], None, d).sum())
+        >>> a = np.zeros((8, 8), bool)
+        >>> a[3:5, 3:5] = True
+        >>> b = np.ones((8, 8), bool)
+        >>> int(pick_mask([a, b], None).sum()), int(pick_mask([a, b], (3, 3, 5, 5)).sum())
+        (64, 4)
+        >>> z = np.where(a, 0.05, 0.0)
+        >>> int(pick_mask([a, b], None, z).sum())
         4
     """
     ok = [m for m in masks if m.any()]
@@ -193,8 +222,8 @@ def pick_mask(
             if sub.sum() >= inside_fraction * m.sum():
                 inside.append(m)
         ok = inside
-    if depth_m is not None:
-        ok = [m for m in ok if outline_edge_fraction(m, depth_m) >= min_edge_fraction]
+    if height_m is not None:
+        ok = [m for m in ok if outline_edge_fraction(m, height_m) >= min_edge_fraction]
     return max(ok, key=lambda m: int(m.sum())) if ok else None
 
 
@@ -710,7 +739,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     if res is not None and res.ok
                     else []
                 )
-                mask = pick_mask(masks, req.box_xyxy or req.within_xyxy, frame.depth_m)
+                height = (
+                    None
+                    if frame.t_base_from_cam is None
+                    else height_image(frame.depth_m, frame.intrinsics, frame.t_base_from_cam)
+                )
+                mask = pick_mask(masks, req.box_xyxy or req.within_xyxy, height)
                 self._answer(frame, optical_frame, stamp_msg, TrackerResult(req.request_id, mask))
 
             future.add_done_callback(done_segment)
