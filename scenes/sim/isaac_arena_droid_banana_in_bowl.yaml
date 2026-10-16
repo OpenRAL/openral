@@ -1,0 +1,148 @@
+# Isaac Lab-Arena DROID / RoboLab `banana_in_bowl` on OpenRAL's own Isaac Sim 6.x
+# backend: a Franka + Robotiq 2F-85 on its stand at a maple table, a YCB banana and
+# bowl on it, graded like Arena's PickAndPlaceTask (banana resting in the bowl).
+# Survey: docs/reference/isaac-reproducible-datasets-survey.md §4.1 / §5 rank 1.
+#
+# Sources (pins: IsaacLab-Arena 738d20a28c12, RoboLab ad45d4f974725, openpi 215abfb2):
+#
+# * Task: Arena isaaclab_arena_environments/robolab/tasks/banana_in_bowl.yaml
+#   L6-17 — "pick up the banana and place it in the bowl", PickAndPlaceTask
+#   banana -> bowl on `maple_table_robolab`, episode_length_s 70; its scene
+#   ../scenes/banana_bowl.yaml L6-33 places both objects `on` the table.
+# * Assets, all under the Isaac 6.1 asset root (`isaac:` = https://omniverse-content-
+#   production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.1; Arena reads the byte-
+#   identical staging copy, isaaclab_arena/assets/nucleus.py L8-14). Used in place,
+#   never vendored. Sizes probed 2026-10-16: maple_table.usda 10 153 B (payload
+#   fixtures/table_maple.usd 11 853 B), banana.usd 839 100 B, bowl.usd 685 873 B,
+#   robots/franka_stand_grey.usda 9 431 B (fixtures/franka_table.usd 3 569 B +
+#   Props/instaceable_meshes.usd 17 794 512 B). Read with usd-core: the maple top is
+#   0.70 x 1.00 m, x 0.199..0.899, y -0.478..0.522, surface z = 0.003; the table
+#   stage carries its own CollisionPlane at z = -0.697 and NO light. Banana: rigid
+#   body /banana, 0.12 kg, bbox +-(0.0544, 0.0892, 0.0183) m about its origin;
+#   bowl: /bowl, 0.5 kg, +-(0.0807, 0.0806, 0.0275) m.
+# * Layout: Arena draws a new `On` placement per reset (relations.py L186-231,
+#   placement_events.py L121-150). This scene uses RoboLab's FIXED banana_in_bowl
+#   layout instead (RoboLab assets/scenes/banana_bowl.usda L427-448: banana
+#   (0.50973, -0.11581, 0.02118), bowl (0.56110, 0.15261, 0.03035), both unrotated),
+#   whose object heights sit both bboxes on a z = 0.0029 top, the maple top's 0.003.
+# * Robot: robots/droid_franka_robotiq, spawned at the origin (droid.py L383-384), on
+#   Arena's stand (droid.py L66-73; the stand top is z = 0, its footprint x
+#   -0.811..0.089). Start pose droid.py L382-398: (0, -pi/5, 0, -4pi/5, 0, 3pi/5, 0),
+#   gripper open. Arena adds N(0, 0.02) joint noise per reset: not reproduced.
+# * Light: Arena adds its default DomeLight (intensity 1500, colour 0.75 grey,
+#   object_library.py L440-443) to a scene with no light of its own
+#   (arena_env_graph_conversion_utils.py L121-132).
+# * Cameras, droid.py L566-610 (Isaac Lab 3 quaternions are xyzw, re-ordered to wxyz
+#   here; RoboLab's wxyz copies agree): `exterior` = external_camera on panda_link0,
+#   `wrist` = wrist_camera on the Robotiq base_link, OpenGL axes (`usd`). The wrist
+#   pose is re-expressed from Arena's base_link frame (x = approach) into this
+#   URDF's robotiq_arg2f_base_link frame (z = approach): (x, y, z)_urdf =
+#   (z, -y, x)_arena. Arena's external_camera_2 (the -y twin) is not rendered: the
+#   openpi client sends only external_camera (isaaclab_arena_openpi/policy/
+#   droid_adapter.py L30-75).
+# * Time base: 15 Hz (Arena sim.dt 1/120 s x decimation 8,
+#   isaaclab_arena_manager_based_env_cfg.py L103-108) = the manifest's rate.
+# * Gripper: Arena's BinaryJointPositionZeroToOneAction drives finger_joint to 0
+#   (open) or pi/4 (close) (droid.py L478-483); the curve below maps the manifest's
+#   [0 closed, 1 open] onto that travel. Its USD drive (stiffness 100 / deg,
+#   damping 2e-4 / deg, maxForce 16.5) converted to per-radian gains; the effort cap
+#   is in the URDF. Arena BINARISES the command at > 0.5 inside its action term
+#   (actions.py L17-22); this scene drives the continuous value.
+# * Success: banana centre inside the bowl's own bbox in x/y and from its bottom to
+#   one bowl height above its rim (RoboLab object_in_container, conditionals.py
+#   L273-311), at rest for settle_s. NOT graded: Arena's contact-force support and
+#   "lifted first" terms, RoboLab's contact + gripper-detached terms.
+#
+# Not reproduced (honest gaps, docs/reference/isaac-reproducible-datasets-survey.md):
+# Arena disables gravity on the robot and drives the arm at stiffness 400 /
+# damping 80 (droid.py L371-421); this backend has no robot-gravity switch, so the
+# arm keeps the sidecar's stiffer default drives (1000 / 100) to hold its targets.
+#
+# Requirements: NVIDIA RTX GPU, Isaac Sim 6.1 (binary install via
+# OPENRAL_ISAAC_SIDECAR_PYTHON), network access to the Isaac 6.1 asset root.
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/isaac_arena_droid_banana_in_bowl.yaml \
+#       --rskill rskills/pi05-droid-jointpos-arena
+
+robot_id: "droid_franka_robotiq"
+
+base_pose:
+  xyz: [0.0, 0.0, 0.0]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+  frame_id: world
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  assets_uri: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/scenes/maple_table.usda"
+  observation_height: 720
+  observation_width: 1280
+  cameras: ["exterior", "wrist"]
+  backend_options:
+    boot_timeout_s: 1200
+    dome_light:
+      intensity: 1500.0
+      color: [0.75, 0.75, 0.75]
+    objects:
+      - name: franka_stand
+        usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/robots/franka_stand_grey.usda"
+        xyz: [0.0, 0.0, 0.0]
+        dynamic: false
+      - name: banana
+        usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/banana.usd"
+        xyz: [0.50973, -0.11581, 0.02118]
+      - name: bowl
+        usd: "isaac:Isaac/IsaacLab/Arena/assets/object_library/srl_robolab_assets/objects/ycb/bowl.usd"
+        xyz: [0.56110, 0.15261, 0.03035]
+    initial_joint_positions:
+      panda_joint1: 0.0
+      panda_joint2: -0.6283185
+      panda_joint3: 0.0
+      panda_joint4: -2.5132741
+      panda_joint5: 0.0
+      panda_joint6: 1.8849556
+      panda_joint7: 0.0
+      finger_joint: 1.0  # open
+    joint_drive_gains:
+      "finger_joint": [5729.578, 0.011459]
+    gripper_joint_curve:
+      finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
+    camera_mounts:
+      exterior:
+        link: panda_link0
+        xyz: [0.05, 0.57, 0.66]
+        quat_wxyz: [-0.393, -0.195, 0.399, 0.805]
+        axes: usd
+        hfov_deg: 104.0
+      wrist:
+        link: robotiq_arg2f_base_link
+        xyz: [-0.074, 0.031, 0.011]
+        quat_wxyz: [-0.113824, -0.704153, 0.692134, 0.110289]
+        axes: usd
+        hfov_deg: 87.66
+    placement_success:
+      regions:
+        in_bowl:
+          min_xyz: [-0.0807, -0.0806, -0.0275]
+          max_xyz: [0.0807, 0.0806, 0.0825]
+          relative_to: bowl
+      grades:
+        # A banana lies on its side: no upright requirement, one level.
+        - {name: complete, score: 1.0, region: target}
+      settle_s: 1.0
+      tasks:
+        "pick up the banana and place it in the bowl": &banana_in_bowl
+          - {object: banana, target: in_bowl}
+        # RoboLab's default instruction (banana_in_bowl_task.py L15-45).
+        "Pick up the banana and place it in the bowl": *banana_in_bowl
+
+task:
+  id: isaac_sim/arena_droid_banana_in_bowl
+  scene_id: isaac_sim
+  instruction: "pick up the banana and place it in the bowl"
+  max_steps: 1050  # 70 s episode_length_s at 15 Hz
+
+seed: 0
+n_episodes: 1

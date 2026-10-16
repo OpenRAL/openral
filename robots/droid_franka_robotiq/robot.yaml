@@ -1,0 +1,226 @@
+# RobotDescription — DROID platform arm: Franka Emika Panda + Robotiq 2F-85
+# (sim only today; no real HAL in this repo).
+#
+# The robot of Isaac Lab-Arena's `droid_abs_joint_pos` embodiment
+# (isaaclab_arena/embodiments/droid/droid.py @738d20a, robot USD
+# Arena/assets/robot_library/droid/franka_robotiq_2f_85_flattened.usd) and of the
+# DROID dataset the π0.5 `pi05_droid_jointpos` checkpoint was trained on. Not
+# `franka_panda`: that manifest declares the Franka hand; the Robotiq jaw, its
+# mount and the wrist camera on it differ.
+#
+# Imported into Isaac Sim from the composed URDF beside this file (provenance in
+# its header and README.md): example-robot-data's Panda arm (BSD-3) + the
+# ros-industrial Robotiq 2F-85 (BSD-2), mounted where Arena's robot USD mounts it.
+# Its meshes resolve as package://example-robot-data/ and
+# package://robotiq_2f_85_gripper_visualization/ through pinned robot_descriptions
+# clones (openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES).
+#
+# Arm joint values, limits and axes are the Franka's (data sheet; identical to
+# robots/franka_panda and to Arena's USD, whose limits in degrees match these).
+
+name: "droid_franka_robotiq"
+embodiment_kind: "manipulator"
+base_frame: "panda_link0"
+
+assets:
+  urdf:
+    ref: "file:droid_franka_robotiq.urdf"
+
+joints:
+  - name: "panda_joint1"
+    origin_xyz: [0, 0, 0.333]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link0"
+    child_link: "panda_link1"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint2"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [-1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link1"
+    child_link: "panda_link2"
+    position_limits: [-1.7628, 1.7628]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint3"
+    origin_xyz: [0, -0.316, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link2"
+    child_link: "panda_link3"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint4"
+    origin_xyz: [0.0825, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link3"
+    child_link: "panda_link4"
+    position_limits: [-3.0718, -0.0698]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint5"
+    origin_xyz: [-0.0825, 0.384, 0]
+    origin_rpy: [-1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link4"
+    child_link: "panda_link5"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint6"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link5"
+    child_link: "panda_link6"
+    position_limits: [-0.0175, 3.7525]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "panda_joint7"
+    origin_xyz: [0.088, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link6"
+    child_link: "panda_link7"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # Robotiq 2F-85 jaw as a NORMALISED fraction [0 = closed, 1 = open], like every
+  # OpenRAL gripper channel. The URDF leader is `finger_joint` (0 = open .. 0.8 rad
+  # = closed), the opposite sense, so the Isaac scenes map it with
+  # backend_options.gripper_joint_curve (closed = pi/4, Arena's close target).
+  # The five <mimic> followers of the URDF carry no channel of their own.
+  - name: "finger_joint"
+    origin_xyz: [0.0, -0.0306, 0.0549]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "robotiq_arg2f_base_link"
+    child_link: "left_outer_knuckle"
+    position_limits: [0.0, 1.0]
+    velocity_limit: 5.0
+    effort_limit: 16.5
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "robotiq_2f85"
+    command_convention: "normalized_open_unit"
+    kind: "parallel_gripper"
+    hand: "na"
+    n_dof: 1
+    # Robotiq 2F-85 product specification: grip force 20-235 N, payload 5 kg.
+    max_grip_force_n: 235.0
+    max_payload_kg: 3.0  # the Franka's payload bounds the pair, not the jaw's 5 kg
+    workspace_radius_m: 0.855
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 3.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+  supported_vla_embodiments: ["droid_franka_robotiq"]
+  embodiment_tags:
+    - "droid_franka_robotiq"
+    - "droid"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 100.0
+  max_torque_nm: 87.0
+  deadman_required: true
+  # provisional: copied from robots/franka_panda (same arm), not measured here.
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.0
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
+  # finger_joint carries the normalised [0, 1] jaw fraction (radian-typed joint).
+  starting_pose_max_joint_speed_m_s: 0.1
+  starting_pose_tolerance_m: 0.05
+  # provisional: robots/franka_panda's value; this robot has no real HAL.
+  joint_state_staleness_limit_s: 0.2
+
+# DROID's two RGB streams as Arena renders them (droid.py L566-610: 1280x720
+# PinholeCameraCfg, horizontal_aperture 5.376, vertical_aperture 3.024 mm):
+# `exterior` = Arena `external_camera` (focal 2.1 mm: fx = fy = 500 px, hfov
+# 104.0 deg), the one Arena's openpi client sends as exterior_image_1_left;
+# `wrist` = `wrist_camera` on the Robotiq base (focal 2.8 mm: 666.67 px, 87.66 deg).
+# Mounted by the scene's camera_mounts (Arena's poses).
+sensors:
+  - name: "exterior"
+    modality: "rgb"
+    frame_id: "panda_link0"
+    rate_hz: 15.0
+    intrinsics: {width: 1280, height: 720, fx: 500.0, fy: 500.0, cx: 640.0, cy: 360.0}
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "arena_droid_external_camera"
+  - name: "wrist"
+    modality: "rgb"
+    frame_id: "robotiq_arg2f_base_link"
+    rate_hz: 15.0
+    intrinsics: {width: 1280, height: 720, fx: 666.6667, fy: 666.6667, cx: 640.0, cy: 360.0}
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera2"
+    vendor: "sim"
+    model: "arena_droid_wrist_camera"
+
+sdk_kind: "closed_with_api"
+# DROID's control rate: 15 Hz (openpi examples/droid/main.py
+# DROID_CONTROL_FREQUENCY = 15; Arena sim.dt 1/120 s x decimation 8,
+# isaaclab_arena_manager_based_env_cfg.py L103-108).
+action_spec:
+  dim: 8
+  representation: "joint_positions"
+  control_freq_hz: 15.0
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [8]
+  state_representation: "joint_positions"
+
+hal:
+  sim: null
+  real: null
+
+sim: {}
+
+schema_version: "0.2"

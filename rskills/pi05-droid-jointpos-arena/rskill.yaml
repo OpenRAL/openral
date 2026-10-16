@@ -1,0 +1,159 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps DAVIAN-Robotics/pi05_droid_jointpos (lerobot PI05Policy, pinned commit
+# 66f1ce6e): Physical Intelligence's openpi π0.5 DROID joint-position checkpoint,
+# the `gs://openpi-assets-simeval/pi05_droid_jointpos` weights Isaac Lab-Arena's
+# openpi server runs (isaaclab_arena_openpi/docker/run_openpi_server.sh L51-58,
+# config pi05_droid_jointpos_polaris), converted to PyTorch with openpi's
+# convert_jax_model_to_pytorch.py (model card). Card-reported: RoboLab
+# BananaInBowlTask 7/8 (JAX baseline 6/8) — not reproduced here yet.
+#
+# I/O — openpi DroidInputs / DroidOutputs (openpi 215abfb2,
+# src/openpi/policies/droid_policy.py L35-81), as Arena's client feeds it
+# (isaaclab_arena_openpi/policy/droid_adapter.py L30-75):
+#   state  = joint_position[7] (rad) ++ gripper_position[1] (0 open .. 1 closed;
+#            Arena: finger_joint / (pi/4), observations.py L31-41);
+#   images = exterior_image_1_left -> base_0_rgb, wrist_image_left ->
+#            left_wrist_0_rgb, resize_with_pad 224 (the checkpoint's third slot,
+#            right_wrist_0_rgb, is padded by lerobot);
+#   action = 15 x 8: joints 0-6 are DELTAS from the observed state, the gripper is
+#            absolute (openpi training/config.py L403-409: DeltaActions with
+#            make_bool_mask(7, -1); the server adds the state back with
+#            AbsoluteActions). The lerobot port does NOT ship that step (its
+#            postprocessor is unnormalize only; card: "an external adapter is
+#            required"), so the delta / absolute split is declared below
+#            (actuators_required[].control_mode_semantics.mode) and the pi05
+#            adapter anchors each chunk to its own observation's state.
+#   The checkpoint pads its action to 32 (config.json output_features); the pi05
+#   adapter cuts it to action_contract.dim 8 (logged pi05.action_truncated).
+#
+# GRIPPER — DROID's gripper_position is 1 = closed; OpenRAL's jaw channel is the
+# normalised [0 = closed, 1 = open] fraction (robots/droid_franka_robotiq). The
+# joint_calibration below flips it both ways (policy = 1 - robot). Arena and the
+# openpi DROID client binarise the command at > 0.5; this skill does not.
+#
+# TIME BASE — DROID control at 15 Hz (openpi examples/droid/main.py L22-23;
+# Arena dt 1/120 s x decimation 8). Open-loop horizon 15 (Arena droid_adapter
+# open_loop_horizon_by_variant {"pi05": 15}; openpi Pi0Config(action_horizon=15)).
+#
+# LICENSE (CLAUDE.md §3 VLA license matrix): openpi code Apache-2.0; π0.5 weights
+# are treated as Physical Intelligence "permissive research". The DAVIAN port's
+# card declares no license of its own. Commercial use needs a PI agreement.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-droid_franka_robotiq-droid_jointpos-bf16"
+version: "0.1.0"
+license: "permissive_research"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "droid_franka_robotiq"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# In action-vector order, n_dof channels each: the pi05 adapter reads the
+# delta / absolute split from here (openpi make_bool_mask(7, -1)).
+actuators_required:
+  - kind: "joint_position"
+    n_dof: 7
+    control_mode_semantics:
+      mode: "delta"
+  - kind: "gripper_position"
+    n_dof: 1
+    control_mode_semantics:
+      mode: "absolute"
+      # After joint_calibration (robot units); the checkpoint itself emits 1 = closed.
+      gripper_convention: "normalized_open_unit"
+
+# ── Home / starting pose ─────────────────────────────────────────────────
+# Arena droid.py L382-398 (robot units: rad, then the jaw open = 1.0).
+starting_pose: [0.0, -0.6283185, 0.0, -2.5132741, 0.0, 1.8849556, 0.0, 1.0]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Same 3.4 B π0.5 graph as rskills/pi05-libero-int8 (bf16 peak 8.06 GB measured
+# there); not re-measured for this checkpoint.
+min_vram_gb:
+  bf16: 8.1
+weights_uri: "hf://DAVIAN-Robotics/pi05_droid_jointpos@66f1ce6e5d199eb7f8f266bc5ed9d67644fbb6f1"
+
+processors:
+  preprocessor_uri: "hf://DAVIAN-Robotics/pi05_droid_jointpos@66f1ce6e5d199eb7f8f266bc5ed9d67644fbb6f1/policy_preprocessor.json"
+  postprocessor_uri: "hf://DAVIAN-Robotics/pi05_droid_jointpos@66f1ce6e5d199eb7f8f266bc5ed9d67644fbb6f1/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: false
+  aliases:
+    camera1: "base_0_rgb"
+    camera2: "left_wrist_0_rgb"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# Synchronous re-plan every 15 steps (Arena replays the first 15 rows of each
+# chunk, remote_policy_base.py L93-114). No prefetch / RTC: RTC would guide with
+# rows anchored to an older state (the adapter refuses it).
+chunk_size: 15
+n_action_steps: 15
+latency_budget:
+  per_chunk_ms: 400.0
+
+# Arena's task string, verbatim (robolab/tasks/banana_in_bowl.yaml).
+default_prompt: "pick up the banana and place it in the bowl"
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2504.16054"
+source_repo: "hf://DAVIAN-Robotics/pi05_droid_jointpos"
+
+description: >
+  π0.5 DROID joint-position policy (openpi pi05_droid_jointpos, the checkpoint
+  Isaac Lab-Arena evaluates) for a Franka Panda + Robotiq 2F-85: picks a tabletop
+  object and places it in a container from one exterior and one wrist RGB view
+  and the 8-D joint + gripper state, at 15 Hz in 15-step chunks of 7 joint deltas
+  plus an absolute gripper. PI permissive-research weights: commercial use needs a
+  vendor agreement.
+
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+objects:
+  - "bowl"
+  - "object"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 8
+  representation: "joint_positions"
+  joint_units: "radians"
+  control_freq_hz: 15.0
+  # Robot joint order (the checkpoint pads its action feature to 32, which the
+  # codec would otherwise read as its width).
+  joint_names:
+    - "panda_joint1"
+    - "panda_joint2"
+    - "panda_joint3"
+    - "panda_joint4"
+    - "panda_joint5"
+    - "panda_joint6"
+    - "panda_joint7"
+    - "finger_joint"
+  joint_calibration:
+    finger_joint: {scale: -1.0, offset: 1.0}

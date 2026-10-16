@@ -372,6 +372,18 @@ sensors for this scene only (`sim_scene_description`), mounted by `camera_mounts
 The HAL publishes its cloud, octomap maps it, and the kernel checks every chunk
 against the voxels; the robot manifest, and so a real deploy, is unchanged.
 
+[`sim/isaac_arena_droid_banana_in_bowl.yaml`](sim/isaac_arena_droid_banana_in_bowl.yaml)
+is the second Isaac task: Isaac Lab-Arena's DROID / RoboLab `banana_in_bowl`
+(Apache-2.0) with `robots/droid_franka_robotiq` (Franka + Robotiq 2F-85, composed
+URDF) on Arena's stand at its maple table, every asset referenced in place under the
+Isaac 6.1 asset root (`isaac:Isaac/IsaacLab/Arena/...`). The banana and bowl are
+`objects` at RoboLab's fixed layout (Arena re-samples one per reset); the success
+region follows the bowl (`relative_to`). The Robotiq's leader `finger_joint` closes
+toward +0.8 rad, the opposite sense of OpenRAL's `[0 = closed, 1 = open]` jaw, so
+`gripper_joint_curve` maps it onto Arena's 0 .. pi/4 travel. Run it with
+[`rskills/pi05-droid-jointpos-arena`](../rskills/pi05-droid-jointpos-arena/); its
+deploy twin is [`deploy/isaac_arena_droid_banana_in_bowl.yaml`](deploy/isaac_arena_droid_banana_in_bowl.yaml).
+
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
 1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at
 that aspect, no wider than `observation_width`) with their FOV. Each is mounted
