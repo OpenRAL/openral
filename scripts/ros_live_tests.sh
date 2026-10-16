@@ -38,6 +38,8 @@ TARGETS=(
     # safety_kernel_node; needs the colcon kernel binary + openral_msgs
     # overlay, which only this image has.
     tests/integration/test_safety_kernel_place_allowance_band.py
+    # The real robot_state_publisher fed the HAL's URDF-unit joint states (`urdf_joint_map`).
+    tests/integration/test_rsp_urdf_units_live.py
     # ADR-0098: same rig with the declared target's geometry shipped, run at
     # the DEPLOYED margin -- the collision gtests run at margin 0, where
     # gating at `margin` vs at the surface is algebraically identical.
