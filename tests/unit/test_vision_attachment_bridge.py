@@ -1815,3 +1815,61 @@ def test_the_tcp_lookup_goes_through_tf_frames(aliased: bool) -> None:
             node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+@pytest.mark.parametrize("aliased", [True, False])
+def test_the_fallback_box_is_posed_off_the_live_tcp(aliased: bool) -> None:
+    """A precondition failure (no depth frame yet) still knows the hand: the jaw box sits at
+    the live TCP, not the manifest gripper-joint origin (the SO-101's is the attach-link
+    origin, inside the wrist: deploy trial g7's payload/wrist self-stop). Without a live
+    TCP it keeps the manifest pose. Either way the box is the same jaw-span cube."""
+    pytest.importorskip("openral_msgs")
+    pytest.importorskip("tf2_ros")
+    rclpy = pytest.importorskip("rclpy")
+    from geometry_msgs.msg import TransformStamped
+    from openral_core import BoxShape
+    from openral_hal._grasp_trigger import GraspEvent as _Event
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node(f"test_fallback_pose_{int(aliased)}")
+        try:
+            bridge = VisionAttachmentBridge(
+                node,
+                _so101_calibrated(),
+                config=VisionAttachmentConfig(
+                    camera="wrist", tf_frames={"moving_jaw": "jaw"} if aliased else {}
+                ),
+            )
+            bridge.setup()
+            try:
+                jaw = TransformStamped()
+                jaw.header.frame_id = "gripper"
+                jaw.child_frame_id = "jaw"
+                jaw.transform.translation.x = 0.0202
+                jaw.transform.translation.y = 0.0188
+                jaw.transform.translation.z = -0.0234
+                jaw.transform.rotation.w = 1.0
+                assert bridge._tf_buffer is not None
+                bridge._tf_buffer.set_transform_static(jaw, "test")
+                (leg,) = bridge._legs
+                bridge._begin_segmentation(leg, _Event.ATTACH, stamp_ns=1_000_000_000)
+                held = leg.attachment
+                assert held is not None
+                (box,) = held.primitives
+                assert isinstance(box.shape, BoxShape)
+                assert box.shape.half_extents_m == (0.05, 0.05, 0.05)
+                centre = np.asarray(held.pose_in_link.xyz)
+                if aliased:
+                    tcp = np.array([0.0202, 0.0188, -0.0234])
+                    # Along the attach-link -> TCP direction, at or beyond the TCP.
+                    assert np.linalg.norm(np.cross(centre, tcp)) < 1e-9
+                    assert float(centre @ tcp) >= float(tcp @ tcp) - 1e-12
+                else:
+                    np.testing.assert_allclose(centre, [0.0, 0.0, 0.0], atol=1e-12)
+            finally:
+                bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
