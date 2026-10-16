@@ -1160,6 +1160,9 @@ class VisionAttachmentConfig:
             target leg then fits only masked pixels whose point the filter kept
             (``mask_without_removed_points``), so the robot's own fingers never enter
             the target's fit. Empty: no removal (the fit sees the hand).
+        publish_attachment_state: Publish ``/openral/attachment_state``. ``False`` when
+            the #418 object tracker owns that topic (``object_tracking: bind | on``): the
+            bridge still runs its legs, but nothing it computes leaves the node.
     """
 
     camera: str = ""
@@ -1194,6 +1197,7 @@ class VisionAttachmentConfig:
     place_target_freeze_s: float | None = None
     place_target_search_depth_m: float = 0.20
     place_target_extrinsic_error_m: float = MAX_PLANAR_ERR_M
+    publish_attachment_state: bool = True
 
 
 @dataclass(frozen=True)
@@ -1565,9 +1569,10 @@ class VisionAttachmentBridge:
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
-        self._attachment_pub = self._node.create_publisher(
-            AttachmentState, "/openral/attachment_state", state_qos
-        )
+        if self._config.publish_attachment_state:  # else the #418 tracker owns the topic
+            self._attachment_pub = self._node.create_publisher(
+                AttachmentState, "/openral/attachment_state", state_qos
+            )
         self._client = self._node.create_client(SegmentInView, self._config.service_name)
         # The bridge is rebuilt on every HAL activate, and the aggregator rejects
         # a revision that moves backwards, so a counter restarting at 0 would

@@ -2141,6 +2141,9 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_place_target_freeze_s", 0.0),
                     ("vision_attachment_place_target_search_depth_m", 0.20),
                     ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
+                    # False when the #418 object tracker owns /openral/attachment_state
+                    # (DeployRuntime.object_tracking bind | on): the bridge publishes nothing.
+                    ("vision_attachment_publish_attachment_state", True),
                 ],
             )
             self._bridge: Any = None
@@ -2813,6 +2816,9 @@ if _ROS2_AVAILABLE:
                     )
                     .get_parameter_value()
                     .double_value,
+                    publish_attachment_state=gp("vision_attachment_publish_attachment_state")
+                    .get_parameter_value()
+                    .bool_value,
                 ),
             )
             self._vision_attachment.setup()
