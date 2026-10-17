@@ -26,6 +26,8 @@ from openral_world_state.object_tracker.cover import (
     CoverVerdict,
     cover_verdict,
     own_cover,
+    read_static_cells,
+    static_cell_keys,
     surface_cells,
 )
 from openral_world_state.object_tracker.fit import (
@@ -80,6 +82,8 @@ __all__ = [
     "intersect_views",
     "own_cover",
     "project_box",
+    "read_static_cells",
+    "static_cell_keys",
     "surface_cells",
     "visible_fraction",
 ]

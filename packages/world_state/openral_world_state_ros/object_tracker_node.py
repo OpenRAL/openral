@@ -413,6 +413,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # MUST equal the kernel's tracked_release_timeout_s and the voxel bridge's
             # released_clear_timeout_s (the launch passes one value to all three).
             self.declare_parameter("released_clear_timeout_s", 3.0)
+            # The declared static geometry as base-frame cell centres (the launch's static-cells
+            # file, the safety kernel's): excused in the one-body test, never in the fit.
+            self.declare_parameter("static_cells_file", "")
             # The deploy's prompt-time ObjectQuery list (JSON), grounded at start.
             self.declare_parameter("object_queries_json", "")
             self.declare_parameter("segment_service", DEFAULT_SEGMENT_SERVICE)
@@ -483,6 +486,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         search_max_s=float(self._p("search_max_s")),
                     ),
                 )
+                static_file = str(self._p("static_cells_file"))
+                if static_file:
+                    from openral_world_state.object_tracker import read_static_cells
+
+                    self.session.tracker.set_static_geometry(read_static_cells(static_file))
                 raw = str(self._p("object_queries_json"))
                 if raw:
                     self.session.open_standing_queries(

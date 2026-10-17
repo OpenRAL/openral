@@ -105,6 +105,7 @@ def map_confirms(
     min_cover: float,
     pad_m: float = 0.0,
     own: Sequence[PlaceRegion] = (),
+    static: Collection[tuple[int, int, int]] = (),
 ) -> tuple[str, str]:
     """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
@@ -131,6 +132,10 @@ def map_confirms(
             second body confined to that band is a sliver, not a split.
         own: Boxes the robot itself fills (its hands, padded), in the grid frame: a
             second body wholly inside them is the robot's own and does not split it.
+        static: Lattice cells of declared static geometry (padded as the caller likes): a
+            body whose every cell is one of them is the declared wall or floor the camera
+            saw, not a foreign object, and is not counted. The cover gate and the fit read
+            every cell regardless; only a component wholly inside ``static`` is excused.
 
     Raises:
         ROSConfigError: On a frame mismatch or a tilted region.
@@ -168,6 +173,10 @@ def map_confirms(
     centers = occupied_centers_in_box(grid, closed)
     above = centers[centers[:, 2] > support_z + grid.resolution]
     comps = sorted(_components(_ijk(grid, above)), key=len, reverse=True)
+    if static:
+        static_set = static if isinstance(static, (set, frozenset)) else set(static)
+        keys = _ijk(grid, above)
+        comps = [c for c in comps if not all(tuple(keys[i]) in static_set for i in c)]
     hx, hy, hz = region.half_extents
     x, y, z = region.pose.xyz
     inner = region.model_copy(

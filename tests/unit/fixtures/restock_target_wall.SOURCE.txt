@@ -1,0 +1,3 @@
+Source: Spark ~/livesim/418/phase1/r8rs02_on2 (restock, object_tracking on, build dd149491, 2026-10-17), made by mkwall.py at sim 8.82 s.
+voxels: /p418/world_voxels_cloud_2hz (15 mm cell centres) within 0.2 m of the box. box: x y z qx qy qz qw hx hy hz of trk:3 (the target stock_object) as tracked then, support_z its measured support.
+static_cells: the declared static cell centres (openral_static_cells_restock_mix02_derived_static_*.txt, SourceToteCollision etc.) in the same crop. The box (half-x 9.1 cm for a 4.1 cm carton) reaches the tote wall: two components of 12 and 7 cells lie wholly within one cell of declared static cells.

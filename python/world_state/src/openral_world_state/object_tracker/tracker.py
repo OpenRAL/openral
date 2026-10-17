@@ -41,7 +41,13 @@ from openral_core.perception_geometry import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from openral_world_state.object_tracker.cover import Cell, cover_verdict, own_cover, surface_cells
+from openral_world_state.object_tracker.cover import (
+    Cell,
+    cover_verdict,
+    own_cover,
+    static_cell_keys,
+    surface_cells,
+)
 from openral_world_state.object_tracker.fit import (
     ROBOT_PIXEL,
     ContainingFit,
@@ -84,6 +90,9 @@ class TrackerParams(BaseModel):
         theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
             exemption-shrinking and payload-union geometry only), so a target the arm half
             hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
+        static_pad_cells: Cells a declared static collider is padded by for the one-body test
+            (the camera sees a wall about a cell off its declared box; K7 pads the same).
+            *Calibration point.*
         low_score_confirm_grids: Consecutive confirming grids (distinct stamps) a track minted
             from a prompt under ``LOW_PROMPT_SCORE`` needs before CONFIRMED (one otherwise;
             #418 r6po_dbg4 ghost trk:5, score 0.171, confirmed on its first grid).
@@ -112,6 +121,7 @@ class TrackerParams(BaseModel):
     continuous_locate_s: float = Field(default=2.0, gt=0.0)
     locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
     low_score_confirm_grids: int = Field(default=3, ge=1)
+    static_pad_cells: int = Field(default=1, ge=0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -252,6 +262,9 @@ class ObjectTracker:
         self._low_score_run: dict[str, tuple[int, int]] = {}
         # Per track: the largest smaller-horizontal extent of its clear (non-provisional) fits.
         self._clear_size: dict[str, float] = {}
+        # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
+        self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
+        self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -684,7 +697,7 @@ class ObjectTracker:
         if not last and fit.box is not None:
             split = cover_verdict(
                 grid, cells, fit.box, support_z=support_z, own=hands,
-                others=self._other_boxes(centroid),
+                others=self._other_boxes(centroid), static=self._static_keys(grid),
             )  # fmt: skip
             if split.kind == "map_split":
                 self._refuse(f"{req.label}@{req.camera}", "candidate_split", detail=split.why)
@@ -733,7 +746,13 @@ class ObjectTracker:
             if fit.box is not None and old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
                 others = self._other_boxes(centroid)
                 verdict = cover_verdict(
-                    grid, cells, fit.box, support_z=support_z, own=hands, others=others
+                    grid,
+                    cells,
+                    fit.box,
+                    support_z=support_z,
+                    own=hands,
+                    others=others,
+                    static=self._static_keys(grid),
                 )
                 if verdict.kind == "map_split":
                     # A mask that took in a neighbour too never replaces a confirmed box: the
@@ -782,7 +801,15 @@ class ObjectTracker:
         others = [
             o.box for o in self.store.all() if o.object_id != t.object_id and o.status in _SETTLED
         ]
-        v = cover_verdict(grid, cells, t.box, support_z=t.support_z, own=hands, others=others)
+        v = cover_verdict(
+            grid,
+            cells,
+            t.box,
+            support_z=t.support_z,
+            own=hands,
+            others=others,
+            static=self._static_keys(grid),
+        )
         status = t.status
         update: dict[str, object] = {}
         if not v.kind:
@@ -809,6 +836,29 @@ class ObjectTracker:
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def set_static_geometry(self, centres: NDArray[np.float64]) -> None:
+        """Declare static geometry for the ONE-BODY test only.
+
+        ``centres`` are cell centres in the grid frame, one per cell the octomap bridge
+        marks. A body wholly inside them, padded by ``static_pad_cells``, is the declared wall,
+        not a foreign object (#418 restock: the target's overshooting fit reached the source
+        tote's wall and split). The fit and the cover gate still use every measured point.
+        """
+        self._static_centres = np.asarray(centres, dtype=np.float64).reshape(-1, 3)
+        self._static_cache = None
+
+    def _static_keys(self, grid: VoxelLattice) -> frozenset[Cell]:
+        """The declared static cells on ``grid``'s lattice (cached per lattice)."""
+        if not len(self._static_centres):
+            return frozenset()
+        key = (grid.origin, grid.resolution, grid.size, grid.orientation_xyzw)
+        if self._static_cache is None or self._static_cache[0] != key:
+            keys = static_cell_keys(
+                grid, self._static_centres, pad_cells=self.params.static_pad_cells
+            )
+            self._static_cache = (key, keys)
+        return self._static_cache[1]
 
     def _measured_size(self, object_id: str | None, label: str) -> tuple[float, str] | None:
         """How big a provisional track's object is, and where that came from, or ``None``.

@@ -25,7 +25,14 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.object_primitives import map_confirms
 from openral_core.perception_geometry import VoxelLattice
 
-__all__ = ["CoverVerdict", "cover_verdict", "own_cover", "surface_cells"]
+__all__ = [
+    "CoverVerdict",
+    "cover_verdict",
+    "own_cover",
+    "read_static_cells",
+    "static_cell_keys",
+    "surface_cells",
+]
 
 Cell = tuple[int, int, int]
 
@@ -77,6 +84,63 @@ def surface_cells(
     return frozenset((int(i), int(j), int(k)) for i, j, k in ijk.tolist())
 
 
+def read_static_cells(path: str) -> NDArray[np.float64]:
+    r"""The declared static cells' centres from the launch's static-cells file.
+
+    One ``x y z`` per line in the base frame (metres), ``#`` comments allowed; an empty file
+    is no static geometry.
+
+    Example:
+        >>> import tempfile, os
+        >>> with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        ...     _ = f.write("# cells\n0.1 0.2 0.3\n0.4 0.5 0.6\n")
+        >>> read_static_cells(f.name).shape
+        (2, 3)
+        >>> os.unlink(f.name)
+    """
+    pts = np.loadtxt(path, comments="#", ndmin=2, dtype=np.float64)
+    return np.asarray(pts, dtype=np.float64).reshape(-1, 3) if pts.size else np.zeros((0, 3))
+
+
+def static_cell_keys(
+    grid: VoxelLattice, centres: NDArray[np.float64], *, pad_cells: int = 0
+) -> frozenset[Cell]:
+    """The lattice cells of declared static geometry, grown by ``pad_cells``.
+
+    ``centres`` are the declared cells' centres in the grid frame (the launch's static-cells
+    file, one centre per cell the octomap bridge marks); each is mapped onto ``grid``'s lattice
+    and every cell within ``pad_cells`` (Chebyshev) of one is kept, clipped to the lattice. The
+    camera sees a wall about a cell off its declared box (#418 restock, 17.5 mm at 15 mm cells),
+    so the kernel's K7 pads the same way.
+
+    Example:
+        >>> import numpy as np
+        >>> g = VoxelLattice(
+        ...     "b", (0.0, 0.0, 0.0), (0, 0, 0, 1.0), 0.1, (4, 4, 4), np.zeros(64, np.uint8)
+        ... )
+        >>> len(static_cell_keys(g, np.array([[0.15, 0.15, 0.15]]), pad_cells=1))
+        27
+        >>> sorted(static_cell_keys(g, np.array([[0.05, 0.05, 0.05]]), pad_cells=0))
+        [(0, 0, 0)]
+    """
+    if not len(centres):
+        return frozenset()
+    base = np.floor(
+        (np.asarray(centres) - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution
+    )
+    out: set[Cell] = set()
+    sx, sy, sz = grid.size
+    steps = range(-pad_cells, pad_cells + 1)
+    for i, j, k in np.unique(base.astype(np.int64), axis=0).tolist():
+        for di in steps:
+            for dj in steps:
+                for dk in steps:
+                    a, b, c = i + di, j + dj, k + dk
+                    if 0 <= a < sx and 0 <= b < sy and 0 <= c < sz:
+                        out.add((a, b, c))
+    return frozenset(out)
+
+
 def own_cover(grid: VoxelLattice, cells: frozenset[Cell], others: Sequence[PlaceRegion]) -> int:
     """``|E ∩ occupied|`` over the cells centred in none of ``others`` (other tracks' boxes).
 
@@ -123,6 +187,7 @@ def cover_verdict(
     support_z: float,
     own: Sequence[PlaceRegion] = (),
     others: Sequence[PlaceRegion] = (),
+    static: frozenset[Cell] = frozenset(),
 ) -> CoverVerdict:
     """Confirm a track's box on one grid: size-aware cover, then one body.
 
@@ -135,6 +200,9 @@ def cover_verdict(
         others: The other confirmed tracks' boxes, grid frame: a second body wholly inside
             one of them is that object, not a foreign body (design step 4: the closure
             cells minus other tracks).
+        static: Lattice cells of the declared static geometry (``static_cell_keys``): a body
+            wholly inside them is the declared wall, not a foreign body, for the ONE-BODY
+            test only. The cover gate counts every occupied cell.
 
     Example:
         >>> import numpy as np
@@ -157,10 +225,18 @@ def cover_verdict(
     if hit < need:
         return CoverVerdict(len(cells), hit, "map_disagrees", f"{hit}/{len(cells)} expected cells")
     pad = 0.5 * grid.resolution
-    kind, why = map_confirms(grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=others)
+    kind, why = map_confirms(
+        grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=others, static=static
+    )
     if kind == "map_split" and own:
         own_kind, _ = map_confirms(
-            grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=[*others, *own]
+            grid,
+            box,
+            support_z=support_z,
+            min_cover=0.0,
+            pad_m=pad,
+            own=[*others, *own],
+            static=static,
         )
         if not own_kind:
             return CoverVerdict(len(cells), hit, "map_split_own", why)
