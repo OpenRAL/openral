@@ -41,7 +41,7 @@ from openral_core.perception_geometry import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from openral_world_state.object_tracker.cover import Cell, cover_verdict, surface_cells
+from openral_world_state.object_tracker.cover import Cell, cover_verdict, own_cover, surface_cells
 from openral_world_state.object_tracker.fit import (
     ROBOT_PIXEL,
     ContainingFit,
@@ -83,6 +83,10 @@ class TrackerParams(BaseModel):
         theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
             exemption-shrinking and payload-union geometry only), so a target the arm half
             hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
+        low_score_confirm_grids: Consecutive confirming grids (distinct stamps) a track minted
+            from a prompt under ``LOW_PROMPT_SCORE`` needs before CONFIRMED (one otherwise;
+            #418 r6po_dbg4 ghost trk:5, score 0.171, confirmed on its first grid).
+            *Calibration point.*
         max_age_s: Source seconds without a confirming grid before a track is ineligible.
         lost_s: Source seconds without evidence before an ineligible track is LOST.
         keep_lost_s: Source seconds a LOST track is kept as a re-association prior.
@@ -106,6 +110,7 @@ class TrackerParams(BaseModel):
     theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
     continuous_locate_s: float = Field(default=2.0, gt=0.0)
     locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    low_score_confirm_grids: int = Field(default=3, ge=1)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -238,6 +243,8 @@ class ObjectTracker:
         self._research_logged: dict[tuple[str, str], int] = {}
         # Tracks minted from a prompt box scored under LOW_PROMPT_SCORE, until they confirm.
         self._low_score: dict[str, float] = {}
+        # Per low-score track: its run of consecutive confirming grids (last stamp, count).
+        self._low_score_run: dict[str, tuple[int, int]] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -690,10 +697,9 @@ class ObjectTracker:
                 return  # ineligible until a camera re-fit
             update = {"occupied_cells": v.occupied, "last_confirmed_stamp_ns": stamp_ns}
             if status is TrackStatus.TENTATIVE:
+                if not self._may_confirm(t, grid, cells, others, v.occupied, stamp_ns):
+                    return
                 update["status"] = TrackStatus.CONFIRMED
-                if (score := self._low_score.pop(t.object_id, None)) is not None:
-                    log.info("object_tracker.low_score_prompt_confirmed", object_id=t.object_id,
-                             label=t.label, score=score)  # fmt: skip
             elif status is TrackStatus.RELEASED:
                 update.update(status=TrackStatus.CONFIRMED, epoch=t.epoch + 1)
                 self._released.discard(t.object_id)
@@ -705,9 +711,43 @@ class ObjectTracker:
             if n >= self.params.disagree_grids:
                 update = {"status": TrackStatus.LOST}
         if v.kind:
+            self._low_score_run.pop(t.object_id, None)  # a refuting grid ends the run
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _may_confirm(  # reason: the confirm step's own state, passed through
+        self,
+        t: TrackedObject,
+        grid: VoxelLattice,
+        cells: frozenset[Cell],
+        others: Sequence[PlaceRegion],
+        occupied: int,
+        stamp_ns: int,
+    ) -> bool:
+        """May TENTATIVE ``t``, whose cover just held on the grid at ``stamp_ns``, confirm?
+
+        Its evidence must be its own (OT-13: #418 r6po_dbg4's ghost trk:5 was one mask over
+        two tracked oranges), and a low-score prompt's track needs
+        ``low_score_confirm_grids`` consecutive confirming grids.
+        """
+        if own_cover(grid, cells, others) < max(2, math.ceil(0.5 * occupied)):
+            self._refuse(f"{t.label}@{t.object_id}", "cover_already_tracked", occupied=occupied)
+            self._low_score_run.pop(t.object_id, None)
+            return False
+        score = self._low_score.get(t.object_id)
+        if score is None:
+            return True
+        last, n = self._low_score_run.get(t.object_id, (-1, 0))
+        n = n if stamp_ns == last else n + 1
+        self._low_score_run[t.object_id] = (stamp_ns, n)
+        if n < self.params.low_score_confirm_grids:
+            return False
+        self._low_score.pop(t.object_id)
+        self._low_score_run.pop(t.object_id)
+        log.info("object_tracker.low_score_prompt_confirmed", object_id=t.object_id,
+                 label=t.label, score=score, grids=n)  # fmt: skip
+        return True
 
     def _other_boxes(self, centroid: tuple[float, ...]) -> list[PlaceRegion]:
         """Settled tracks' boxes a new fit at ``centroid`` is not a refit of."""

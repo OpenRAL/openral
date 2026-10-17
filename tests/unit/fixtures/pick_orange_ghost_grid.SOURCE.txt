@@ -1,0 +1,3 @@
+Source: Spark ~/livesim/418/phase1/r6po_dbg4 (PickOrange, object_tracking on, batch d0b9bf58, 2026-10-17).
+Made by ~/livesim/418/phase1/mkghost.py: voxels = /p418/world_voxels_cloud_2hz at sim 3.517 s cropped to x[-0.2,0.22] y[-0.42,-0.12] z[0,0.16] (SO-101 base frame);
+box_trkN = tracked.jsonl boxes (xyz + half extents, axis-aligned) at sim 3.47 s; gt_* = USD-bound GT centre + half extents.

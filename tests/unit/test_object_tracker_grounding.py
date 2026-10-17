@@ -377,7 +377,13 @@ def test_a_locate_asks_down_to_the_tracker_threshold_and_low_score_prompts_are_l
         out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall,
                       results=[answer(out.requests[0], labels)])  # fmt: skip
     (track,) = tr.store.all()
+    assert track.status is TrackStatus.TENTATIVE, "a low-score prompt: one grid is not enough"
+    for stamp in (2, 3):  # fresh grids: the run reaches low_score_confirm_grids (3)
+        wall += 0.6
+        out = tr.feed(frame, grid=grid, grid_stamp_ns=stamp, wall_s=wall,
+                      results=[answer(r, labels) for r in out.requests])  # fmt: skip
+    (track,) = tr.store.all()
     assert track.status is TrackStatus.CONFIRMED
     (event,) = [e for e in logs if e["event"] == "object_tracker.low_score_prompt_confirmed"]
-    assert event["log_level"] == "info" and event["score"] == 0.2
+    assert event["log_level"] == "info" and event["score"] == 0.2 and event["grids"] == 3
     assert event["object_id"] == track.object_id
