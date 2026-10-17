@@ -461,6 +461,8 @@ private:
     bool cover_ok{false};            ///< the kernel's own cover check on the current grid
     /// Issue #418 K7: measured support top less one cell (grid frame z); NaN = none.
     double support_z{std::numeric_limits<double>::quiet_NaN()};
+    /// Issue #418 OT-10 amendment: the clearing floor (support top + one cell, base z); NaN = none.
+    double floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
   std::size_t tracked_n_{0};
@@ -494,12 +496,25 @@ private:
   VoxelGrid static_cells_for_{};            ///< the lattice `static_cells_` was marked on
   bool static_cells_for_valid_{false};
   std::size_t workspace_explained_logged_n_{static_cast<std::size_t>(-1)};
+  /// Issue #418 (hazard OT-10 amendment, `payload_own_cells_enabled`, sim-only, requires K2):
+  /// a bound payload's measured / grown cells cannot stop that payload. `payload_own_` is
+  /// refilled per candidate from the tracked set and the per-attachment bindings.
+  bool payload_own_enabled_{false};
+  PayloadOwnCells payload_own_{};
+  std::size_t payload_own_logged_n_{static_cast<std::size_t>(-1)};
+  std::chrono::steady_clock::time_point payload_own_last_warn_{};
+  std::size_t fill_payload_own();
   /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the
   /// refusal reason (nullptr = a legacy payload or a binding at the hand).
   struct AttachedBinding {
     bool tracked{false};
     std::uint32_t epoch{0};
     const char* off_hand{nullptr};
+    /// Issue #418 OT-10 amendment (`payload_own_cells_enabled`): this binding's own track, valid
+    /// right now, with a floor. `own_track` indexes `tracked_`.
+    bool own_armed{false};
+    int own_track{-1};
+    double own_floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::vector<AttachedBinding> attached_binding_;  ///< capacity = max objects
   CollisionScratch binding_scratch_;  ///< measured-configuration FK, sized at configure

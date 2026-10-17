@@ -4752,6 +4752,16 @@ def _tight_geometry_from_idl(msg: object) -> TightCollisionGeometry | None:
     )
 
 
+#: ``AttachedCollisionPrimitive.geometry_source`` on the wire (``SOURCE_*``); an unknown code is
+#: ``fallback``: nothing is exempted on a value the reader does not know.
+_GEOMETRY_SOURCES: dict[int, Literal["fallback", "measured", "grown"]] = {
+    0: "fallback",
+    1: "measured",
+    2: "grown",
+}
+_GEOMETRY_SOURCE_CODES: dict[str, int] = {v: k for k, v in _GEOMETRY_SOURCES.items()}
+
+
 class AttachedCollisionPrimitive(BaseModel):
     """One bounded payload primitive positioned in its object frame.
 
@@ -4773,6 +4783,12 @@ class AttachedCollisionPrimitive(BaseModel):
             payload's box corners stand a median 50.78 mm proud of the mesh,
             2.3-3.9x the entire world-voxel quantisation term, and 97 % of
             15 mm-arm stops were payload-vs-world (issue #266).
+        geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``
+            (the tracked or single provisional object's own fitted geometry), ``grown`` (cells
+            observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of
+            candidates that may not be the held object; the default, and what a reader treats an
+            unknown code as). Only measured and grown primitives can explain the payload's own
+            cells to the kernel (``payload_own_cells_enabled``, sim only).
 
     Example:
         >>> p = AttachedCollisionPrimitive(
@@ -4785,6 +4801,8 @@ class AttachedCollisionPrimitive(BaseModel):
         ... )
         >>> p.tight_geometry is None
         True
+        >>> p.geometry_source
+        'fallback'
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -4792,6 +4810,7 @@ class AttachedCollisionPrimitive(BaseModel):
     shape: CollisionShape
     pose_in_object: Pose6D
     tight_geometry: TightCollisionGeometry | None = None
+    geometry_source: Literal["fallback", "measured", "grown"] = "fallback"
 
     @model_validator(mode="after")
     def _tight_geometry_fits_inside_the_box(self) -> Self:
@@ -4839,6 +4858,9 @@ class AttachedCollisionPrimitive(BaseModel):
                 frame_id=object_id,
             ),
             tight_geometry=_tight_geometry_from_idl(msg),
+            geometry_source=_GEOMETRY_SOURCES.get(
+                int(getattr(msg, "geometry_source", 0)), "fallback"
+            ),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -4888,6 +4910,7 @@ class AttachedCollisionPrimitive(BaseModel):
             pose.orientation.z,
             pose.orientation.w,
         ) = self.pose_in_object.quat_xyzw
+        msg.geometry_source = _GEOMETRY_SOURCE_CODES[self.geometry_source]  # type: ignore[attr-defined]
         tight = self.tight_geometry
         msg.tight_dop_lo = [] if tight is None else list(tight.dop_lo_m)  # type: ignore[attr-defined]
         msg.tight_dop_hi = [] if tight is None else list(tight.dop_hi_m)  # type: ignore[attr-defined]

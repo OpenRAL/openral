@@ -1360,6 +1360,69 @@ trips(no workspace). It also checks that the pairs K7 still tolerates are exactl
   and `ExplainedCellsRefuseToConfigureOutsideTheirScope`.
 * `NoAlloc.TheExplainedCellsCheckIsAllocationFree`.
 
+### Payload own cells (issue #418, hazard OT-10 amendment, draft) — default off, sim-only
+
+**Draft for Safety-WG review. Off unless `payload_own_cells_enabled` is set. The launch sets it
+only for `object_tracking: on` (so only with K2, only in sim). A bound payload's measured cells
+cannot stop that payload.** It relaxes the payload-vs-VOXEL check and nothing else: a payload's
+(object, primitive, occupied cell) pair within the attached margin is tolerated when the cell is
+the payload's OWN cell, decided per cell over all of the object's primitives
+(`payload_own_cell_exempts`). The cell is its own only when ALL hold:
+
+1. its VOLUME meets a `measured` or `grown` BOX primitive of THIS payload (the exact oriented-box
+   vs cube separating-axis test, as K2's `grasp_cell_exempt`). `AttachedCollisionPrimitive.
+   geometry_source` is the wire tag (`SOURCE_FALLBACK = 0`, `MEASURED = 1`, `GROWN = 2`); a
+   publisher that never sets it, and any code the kernel does not know, is fallback. A fallback
+   primitive (the pinch volume, or the boxes of several or ambiguous candidates) explains nothing,
+   so a neighbouring object inside it still stops the payload;
+2. its centre stands strictly above the payload's track `floor_z` (support top + one cell): the
+   support is the world, never the payload;
+3. it is not a declared static collider cell (K7's padded set, from `static_points_file`); a static
+   table of another layout exempts nothing;
+4. its volume meets no OTHER settled track's box (`confirmed`, `occluded` or `bound`, provisional or
+   not, never a K6-retired identity). The payload's own track is excluded from the others;
+5. the binding is valid right now: a `tracked_object` attachment K3 places at the hand with an
+   unretired live track, the tracked set accepted and in the grid's frame, the grid not overflowed,
+   the attachment stream fresh. A `pinch_fallback` attachment owns a track only when its
+   `evidence_ref` names exactly ONE provisional candidate (`provisional:<id>`) that is live,
+   provisional, unretired and within one cell of the hand (K3's geometric test); several or
+   `ambiguous:` candidates may be neighbours and own nothing.
+
+**What it never exempts.** Payload vs robot links (K3 and the self rules are unchanged); any
+hand-vs-voxel pair (K2 and the legacy region are unchanged; the #349 `ws_hand_contact_` probe runs
+without it); a payload whose binding the kernel rejects; a non-box, non-finite or untagged
+primitive. An exempt cell contributes to `sweep_min` only and is never a stop's evidence.
+
+**Fail-closed.** Configure refuses it without K2 (`tracked_grasp_exemption_enabled`), without
+`attached_collision_enabled`, off `hal_mode: sim`, or with an unreadable `static_points_file`.
+A refused or stale tracked set, an unknown floor, an unarmed object, a missing table or a
+non-finite number exempts nothing.
+
+**Failure modes (both directions).** A missed stop needs a measured/grown primitive that covers a
+real foreign object: a fit that swallowed a neighbour the tracker has no settled track for (a
+hand-sized body that never grounded), or in-hand growth that took a neighbour's cells before the
+neighbour was a track. Everything else (fallback volume, another settled track, the support, a
+declared collider) still stops. A false stop it fixes: the carried object's own cells reappearing
+in the map at the lift (r12 payload stops: restock x3, DROID, PickOrange place).
+
+**Property.** `PayloadOwnCells.TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes` (200 random
+scenes, fixed seed, each occupied cell checked alone): no new trip, and every removed pair
+satisfies the rule written out independently; measured non-vacuity: a stop removed in 80 of 200
+scenes and kept in 167 of 200.
+
+**Disclosure.** WARN `safety.payload_own_cells enabled ... Safety-WG review pending` at configure;
+INFO `safety.payload_own_armed objects= of= others= static_cells=` on each change; WARN (at most
+1 Hz) `safety.payload_own_cells step= pairs= deepest= mm` when it tolerates a pair; span attribute
+`safety.payload_own_armed`.
+
+**Tests.** `PayloadOwnCells.*` in `test_collision.cpp`; `APayloadStopsOnItsOwnCellWithoutTheExemption`,
+`ABoundPayloadsMeasuredOrGrownCellCannotStopIt`, `AFallbackOrUnknownOrMissingTagExemptsNothing`,
+`ACellBelowTheTracksFloorOrInAnotherSettledTracksBoxStillStops`,
+`AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox` and
+`ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions` in `test_lifecycle_kernel.cpp`;
+`NoAlloc.ThePayloadOwnCellExemptionIsAllocationFree`.
+
+
 ## The contact-force gate (ADR-0100, survey Path C)
 
 Every check above discriminates on **position**. At the instant of a place the

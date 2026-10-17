@@ -31,6 +31,7 @@ segmenter rate runs on the ``wall_s`` the node feeds.
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -57,7 +58,13 @@ from openral_core.perception_geometry import (
     region_covers_occupied,
 )
 
-from openral_world_state.object_tracker.binding import Binding, BindOutcome, GraspBinder
+from openral_world_state.object_tracker.binding import (
+    Binding,
+    BindOutcome,
+    GraspBinder,
+    _holds,  # reason: same package; the candidate rule a late bind must share
+    _t,
+)
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 from openral_world_state.object_tracker.stall import JawStallDetector
@@ -74,6 +81,23 @@ __all__ = ["GraspEventKind", "TrackerSession", "TrackingMode", "declaration_key"
 log = structlog.get_logger(__name__)
 
 _NS = 1_000_000_000
+#: A late ATTACH (the object may already be moving) is bound at the hand pose of the hold when
+#: the hold began at least this long before the event ...
+_LATE_MIN_NS = 100_000_000
+#: ... and at most this long before it, ...
+_LATE_MAX_NS = 3 * _NS
+#: ... the hand has travelled no further than this since the hold (m), ...
+_LATE_MAX_TRAVEL_M = 0.12
+#: ... the track was last confirmed within this long of the hold start, and ...
+_LATE_CONFIRM_NS = 1_500_000_000
+#: ... the box carried to the hand's pose now is at least this occupied on the newest grid.
+_LATE_MIN_COVER = 0.5
+#: A track a late ATTACH may revive and bind.
+_LATE_STATUSES = frozenset(
+    {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT, TrackStatus.LOST}
+)
+#: A joint sample further than this from a stamp is not the pose then.
+_JOINT_SAMPLE_MAX_AGE_NS = 250_000_000
 
 
 class TrackingMode(StrEnum):
@@ -195,6 +219,8 @@ class TrackerSession:
                     cal.settle_tolerance,
                 )
         self._joints = frozenset(j.name for j in description.joints)
+        # (stamp_ns, complete joint state): the hand pose at the start of a hold, for a late ATTACH.
+        self._joint_history: deque[tuple[int, dict[str, float]]] = deque(maxlen=480)
         self.positions: dict[str, float] = {}
         self.grid: VoxelLattice | None = None
         self.grid_stamp_ns = 0
@@ -271,6 +297,8 @@ class TrackerSession:
     def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
         """Fold measured joints in (manifest names); run the jaw-open release rule."""
         self.positions.update(positions)
+        if self._joints <= self.positions.keys():
+            self._joint_history.append((stamp_ns, dict(self.positions)))
         for joint, binder in self.binders.items():
             if joint in positions:  # the most open jaw before closure bounds a fallback
                 binder.observe_jaw(positions[joint])
@@ -352,7 +380,8 @@ class TrackerSession:
             return binder.held
         if binder.held is not None:  # a second ATTACH without a DETACH: the old hold ended
             self._release(gripper_joint, stamp_ns)
-        binding = binder.on_attach(self.tracker.store, positions, stamp_ns)
+        late = self._late_hold(gripper_joint, binder, positions, stamp_ns)
+        binding = binder.on_attach(self.tracker.store, late or positions, stamp_ns)
         self._released.pop(binding.attachment.object_id, None)  # re-grasped before re-grounding
         self._monitors[gripper_joint] = JawReleaseMonitor.for_hand(
             binder.hand, hold=hold, release_dwell_s=self.release_dwell_s
@@ -362,6 +391,99 @@ class TrackerSession:
         if binding.reground:
             self._reground()
         return binding
+
+    def _late_hold(  # noqa: PLR0911  # reason: one return per guard
+        self,
+        joint: str,
+        binder: GraspBinder,
+        positions: Mapping[str, float],
+        stamp_ns: int,
+    ) -> dict[str, float] | None:
+        """The joint state of the hold's start when this ATTACH is late and safe to bind there.
+
+        A policy lifts within a fraction of a second of the jaw settling, so the ATTACH (the
+        HAL's trigger or the stalled-jaw dwell) often lands after the object has begun to
+        move and its track has been split or lost (#418 r12: ATTACH +0.3 to +2 s after the lift,
+        13 of 13 DROID/restock binds fell back to the 2-4x PINCH_FALLBACK box). Binding the
+        track as fitted at the hand pose NOW would put the payload where the object was, not
+        where it is. Binding it at the hand pose of the hold's start (``pose_in_link`` from
+        there) carries it with the hand, which is right if the grasp is rigid. Guarded so a
+        wrong guess cannot under-cover the real object: the hand travelled at most
+        ``_LATE_MAX_TRAVEL_M`` since the hold; exactly one track, last confirmed within
+        ``_LATE_CONFIRM_NS`` of the hold, holds the pinch centre at the hold; and the box
+        carried to the hand's pose now is at least ``_LATE_MIN_COVER`` occupied on the newest
+        grid (an object left on the table fails this). Otherwise ``None``: the normal bind.
+        A SPLIT / LOST candidate is revived to OCCLUDED for the bind.
+        """
+        detector = self._stall.get(joint)
+        hold_ns = detector.hold_since_ns if detector is not None else None
+
+        def skip(why: str, **kv: object) -> None:
+            log.info("object_tracker.late_attach_skipped", hand=joint, why=why, **kv)
+
+        if hold_ns is None:
+            skip("no_hold_read", detector=detector is not None)
+            return None
+        if not _LATE_MIN_NS <= stamp_ns - hold_ns <= _LATE_MAX_NS:
+            skip("lag_out_of_range", lag_s=(stamp_ns - hold_ns) / _NS)
+            return None
+        if self.grid is None or not self._joint_history:
+            skip("no_grid_or_history")
+            return None
+        t, sample = min(self._joint_history, key=lambda s: abs(s[0] - hold_ns))
+        if abs(t - hold_ns) > _JOINT_SAMPLE_MAX_AGE_NS:
+            skip("no_joint_sample_at_hold")
+            return None
+        hold_q = {**sample, joint: positions[joint]}
+        now_c = binder.pinch_in_frame(positions)[0]
+        hold_c = binder.pinch_in_frame(hold_q)[0]
+        travel = float(np.linalg.norm(now_c - hold_c))
+        if travel > _LATE_MAX_TRAVEL_M:
+            skip("hand_travelled", travel_m=travel)
+            return None
+        store = self.tracker.store
+        cands = [
+            o
+            for o in store.all()
+            if o.status in _LATE_STATUSES
+            and o.last_confirmed_stamp_ns >= hold_ns - _LATE_CONFIRM_NS
+            and _holds(o, hold_c, binder.cell_m)
+        ]
+        t_now = binder.hand.t_frame_from_attach(self.frame_id, positions)
+        t_hold = binder.hand.t_frame_from_attach(self.frame_id, hold_q)
+        move = t_now @ np.linalg.inv(t_hold)
+        carried_ok = []
+        for track in cands:
+            carried = move @ _t(track.box.pose)
+            w, x, y, z = rotation_to_quat_wxyz(carried[:3, :3])
+            region = PlaceRegion(
+                frame_id=self.frame_id,
+                pose=Pose6D(
+                    xyz=(float(carried[0, 3]), float(carried[1, 3]), float(carried[2, 3])),
+                    quat_xyzw=(x, y, z, w),
+                    frame_id=self.frame_id,
+                ),
+                half_extents=track.box.half_extents,
+            )
+            _, covered = region_covers_occupied(self.grid, region, min_fraction=_LATE_MIN_COVER)
+            if covered:
+                carried_ok.append(track)
+        if not carried_ok:
+            skip(
+                "carried_box_not_occupied" if cands else "no_candidate",
+                tracks=[(o.object_id, o.status.value, o.provisional) for o in store.all()],
+            )
+            return None
+        for track in carried_ok:
+            if track.status in (TrackStatus.SPLIT, TrackStatus.LOST):
+                store.replace(track.model_copy(update={"status": TrackStatus.OCCLUDED}))
+        log.info(
+            "object_tracker.late_attach",
+            hand=joint,
+            objects=[o.object_id for o in carried_ok],
+            lag_s=(stamp_ns - hold_ns) / _NS,
+        )
+        return hold_q
 
     def on_frame(
         self, frame: CameraFrame, *, wall_s: float, results: Sequence[TrackerResult] = ()

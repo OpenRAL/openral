@@ -58,6 +58,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core import IntrinsicsPinhole, ObjectQueryEvidence, ObjectsMetadata
 from openral_core.exceptions import ROSConfigError
+from openral_world_state.object_tracker.commands import jaw_commands
 from openral_world_state.object_tracker.grounding import QueryEscalation, StandingQuery
 from openral_world_state.object_tracker.heartbeat import StarvationFill
 
@@ -677,25 +678,23 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         def _on_safe_action(self, msg: Any) -> None:
             """The approved command's gripper targets, for the tracker's own stalled-jaw read.
 
-            The chunk's last row, like the HAL trigger reads it: a full-dof row at each gripper's
-            manifest index, a compact row positionally by ``joint_names``. A slot of a group is
-            not the applied command and is ignored.
+            ``jaw_commands`` reads a full-dof row at each gripper's manifest index, a compact row
+            by ``joint_names``, and an ADR-0102 slot group's one-value gripper slot by its
+            ``ee_name`` (the arm slots of a group carry no jaw command).
             """
-            if self.session is None or int(msg.tick_group_size) > 1:
+            if self.session is None:
                 return
-            n, flat = int(msg.n_dof), list(msg.flat)
-            if n <= 0 or len(flat) < n:
-                return
-            row, names = flat[-n:], list(msg.joint_names)
-            for joint in self.session.binders:
-                if names:
-                    index = names.index(joint) if joint in names and len(names) == n else None
-                elif n == len(self._joint_order) and joint in self._joint_order:
-                    index = self._joint_order.index(joint)
-                else:
-                    index = None
-                if index is not None:
-                    self.session.on_jaw_command(joint, float(row[index]), self.session.now_ns)
+            got = jaw_commands(
+                self.session.binders,
+                self._joint_order,
+                n_dof=int(msg.n_dof),
+                flat=list(msg.flat),
+                joint_names=list(msg.joint_names),
+                tick_group_size=int(msg.tick_group_size),
+                ee_name=str(msg.ee_name),
+            )
+            for joint, target in got.items():
+                self.session.on_jaw_command(joint, target, self.session.now_ns)
 
         def _on_grasp_event(self, msg: Any) -> None:
             kind = kinds.get(int(msg.kind))

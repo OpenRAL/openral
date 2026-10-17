@@ -2037,6 +2037,7 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
       op.half_length = pin.half_length;
       op.half_extents = pin.half_extents;
       op.pose_in_object = pin.pose_in_object;
+      op.source = pin.source;
       op.hull_index = accept_tight(out, pin, slot);
     }
     for (std::size_t t = 0; t < n_touch; ++t) {
@@ -2052,6 +2053,71 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
   out.n_objects = n;
   out.n_primitives = prim_cursor;
   return AttachIngestStatus::kOk;
+}
+
+bool payload_own_cell_exempts(const VoxelGrid& grid, const AttachedModel& attached,
+                              std::size_t object_index, const Transform& object_xf,
+                              std::size_t cell_idx, const Vec3& center,
+                              const Vec3& local) noexcept {
+  const PayloadOwnCells* t = grid.payload_own;
+  if (t == nullptr || !t->valid || object_index >= 8 || (t->armed & (1U << object_index)) == 0 ||
+      object_index >= attached.n_objects || !(grid.resolution > 0.0) ||
+      !std::isfinite(grid.resolution) || !std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(center.z) || !std::isfinite(local.x) || !std::isfinite(local.y) ||
+      !std::isfinite(local.z)) {
+    return false;
+  }
+  // The support, never the payload: the centre must stand strictly above the floor.
+  const double floor = t->floor_z[object_index];
+  if (!std::isfinite(floor) || !(center.z > floor)) {
+    return false;
+  }
+  // A declared static collider's cell (padded) is the world, never the payload.
+  const std::size_t cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                            static_cast<std::size_t>(grid.sz);
+  if (t->static_cells != nullptr) {
+    // A static table of another layout cannot say which cells are static: nothing is exempt.
+    if (t->static_cells_n != cells || cell_idx >= cells || t->static_cells[cell_idx] != 0) {
+      return false;
+    }
+  }
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
+  Transform cell;
+  cell.t = local;
+  const Transform grid_from_base = inverse_rigid(grid.pose);
+  const AttachedObject& obj = attached.objects[object_index];
+  // 1. A measured / grown box primitive of THIS payload whose box meets the cell's volume.
+  bool own = false;
+  for (int p = 0; p < obj.prim_count && !own; ++p) {
+    const AttachedPrimitive& prim =
+        attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+    if (prim.source == PrimitiveSource::kFallback || prim.kind != AttachedShapeKind::kBox ||
+        !(prim.half_extents.x > 0.0) || !(prim.half_extents.y > 0.0) ||
+        !(prim.half_extents.z > 0.0) || !std::isfinite(prim.half_extents.x) ||
+        !std::isfinite(prim.half_extents.y) || !std::isfinite(prim.half_extents.z)) {
+      continue;
+    }
+    const Transform prim_g = compose(grid_from_base, compose(object_xf, prim.pose_in_object));
+    const double gap = box_box_distance(prim_g, prim.half_extents, cell, voxel_half);
+    own = std::isfinite(gap) && gap <= 0.0;
+  }
+  if (!own) {
+    return false;
+  }
+  // 2. A cell that also meets ANOTHER settled track's box is that body's, not the payload's.
+  const std::size_t n_others = std::min(t->n_others, t->other_box.size());
+  for (std::size_t k = 0; k < n_others; ++k) {
+    if (k < 32 && (t->own[object_index] & (1U << k)) != 0) {
+      continue;
+    }
+    const double gap = box_box_distance(compose(grid_from_base, t->other_box[k]), t->other_half[k],
+                                        cell, voxel_half);
+    if (!std::isfinite(gap) || gap <= 0.0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
@@ -2229,6 +2295,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // inside the payload when the baseline was snapshotted, so it
                 // is the payload's own uncleared occupancy, not an obstacle.
                 tripped = false;
+              } else if (payload_own_cell_exempts(grid, attached, i, obj_xf, idx, center,
+                                                  voxel.t)) {
+                // Issue #418 (OT-10 amendment): the payload's own measured / grown cell.
+                tripped = false;
+                ++result.payload_own_pairs;
+                if (d < result.payload_own_min_distance) {
+                  result.payload_own_min_distance = d;
+                }
               } else if (workspace_contact_exempts(grid, obj.attach_link, center)) {
                 // Manipulation workspace (#349, draft): a payload carried by a
                 // hand link is part of that hand — inside the confirmed

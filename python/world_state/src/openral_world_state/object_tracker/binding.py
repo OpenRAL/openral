@@ -37,7 +37,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 import structlog
@@ -62,6 +62,9 @@ from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
 from openral_world_state.object_tracker.release import fall_column
 
 __all__ = ["BindOutcome", "Binding", "GraspBinder", "TrackStoreLike"]
+
+#: ``AttachedCollisionPrimitive.geometry_source``: the evidence behind a payload primitive.
+GeometrySource = Literal["fallback", "measured", "grown"]
 
 log = structlog.get_logger(__name__)
 
@@ -190,11 +193,16 @@ def _box(region: PlaceRegion) -> Box:
 
 
 def _prim(
-    t_obj_prim: NDArray[np.float64], half: Sequence[float] | NDArray[np.float64], object_id: str
+    t_obj_prim: NDArray[np.float64],
+    half: Sequence[float] | NDArray[np.float64],
+    object_id: str,
+    source: GeometrySource = "fallback",
 ) -> AttachedCollisionPrimitive:
+    """One box primitive; ``source`` tells the kernel whether it is evidence of the object."""
     return AttachedCollisionPrimitive(
         shape=BoxShape(half_extents_m=tuple(float(h) for h in half)),
         pose_in_object=_pose(t_obj_prim, object_id),
+        geometry_source=source,
     )
 
 
@@ -236,7 +244,9 @@ def _palm_clipped(
         lo, hi = local.min(axis=0), local.max(axis=0)
         lo[1] = pinch.palm_m
         t_link = _frame(pinch.axes @ ((lo + hi) / 2.0), pinch.axes)
-        out.append(_prim(np.linalg.inv(t_ao) @ t_link, (hi - lo) / 2.0, object_id))
+        out.append(
+            _prim(np.linalg.inv(t_ao) @ t_link, (hi - lo) / 2.0, object_id, p.geometry_source)
+        )
     return out or list(prims)
 
 
@@ -377,12 +387,17 @@ class GraspBinder:
         t_fa = self.hand.t_frame_from_attach(self.frame_id, positions)
         t_fo = _t(track.box.pose)
         t_ao = np.linalg.inv(t_fa) @ t_fo
+        released = track.status is TrackStatus.RELEASED
+        # A released track's pose is stale (it is re-centred on the pinch volume below): no
+        # evidence of where the object is, so nothing the kernel may call the object's own.
+        src: GeometrySource = "fallback" if released else "measured"
         shape = (
             [
                 _moved(
                     h.model_copy(
                         update={
-                            "pose_in_object": h.pose_in_object.model_copy(update={"frame_id": oid})
+                            "pose_in_object": h.pose_in_object.model_copy(update={"frame_id": oid}),
+                            "geometry_source": src,
                         }
                     ),
                     np.asarray(np.linalg.inv(t_fo), dtype=np.float64),
@@ -390,11 +405,10 @@ class GraspBinder:
                 for h in track.tight
             ]
             if track.tight
-            else [_prim(np.eye(4), track.box.half_extents, oid)]
+            else [_prim(np.eye(4), track.box.half_extents, oid, src)]
         )
         pinch = self.hand.pinch_in_link(positions[self.hand.joint.name])
         c = pinch.axes[:, 0]
-        released = track.status is TrackStatus.RELEASED
         if released:  # its pose is stale: bind it re-centred on the pinch volume
             t_ao[:3, 3] = pinch.centre
             prims = list(shape)
@@ -455,7 +469,10 @@ class GraspBinder:
             lo, hi = pts.min(axis=0), pts.max(axis=0)
             prims.append(_prim(_frame((lo + hi) / 2.0, np.eye(3)), (hi - lo) / 2.0, oid))
         else:
-            prims += [_prim(t_of @ _frame(c, r), h, oid) for c, r, h in boxes]
+            # Evidence of the held object only when exactly ONE provisional candidate holds
+            # the pinch centre; several (or ambiguous) boxes may belong to neighbours.
+            src: GeometrySource = "measured" if provisional and len(cands) == 1 else "fallback"
+            prims += [_prim(t_of @ _frame(c, r), h, oid, src) for c, r, h in boxes]
         prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
         self._shape, self._theta = prims[:1], 0.0
         attachment = AttachedCollisionObject(
@@ -616,7 +633,10 @@ class GraspBinder:
         t_of = np.asarray(np.linalg.inv(t_fo), dtype=np.float64)
         p_o, c_o = t_of[:3, :3] @ p + t_of[:3, 3], t_of[:3, :3] @ c
         added = [
-            _moved(s, _rotation_about(c_o, p_o, self._theta + (theta - self._theta) * k / n))
+            _moved(
+                s.model_copy(update={"geometry_source": "grown"}),
+                _rotation_about(c_o, p_o, self._theta + (theta - self._theta) * k / n),
+            )
             for k in range(1, n + 1)
             for s in self._shape
         ]
@@ -722,7 +742,10 @@ class GraspBinder:
         pts = new @ t_of[:3, :3].T + t_of[:3, 3]
         lo, hi = pts.min(axis=0) - cell / 2.0, pts.max(axis=0) + cell / 2.0
         prim = _prim(
-            _frame((lo + hi) / 2.0, np.eye(3)), (hi - lo) / 2.0, held_b.attachment.object_id
+            _frame((lo + hi) / 2.0, np.eye(3)),
+            (hi - lo) / 2.0,
+            held_b.attachment.object_id,
+            "grown",
         )
         return self._union([prim], stamp_ns, "moves_with_hand")
 

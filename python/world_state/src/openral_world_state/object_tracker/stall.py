@@ -76,6 +76,15 @@ class JawStallDetector:
         return float(median(p for _, p in self._samples))
 
     @property
+    def hold_since_ns(self) -> int | None:
+        """Source time the stall condition first held for the current hold, or ``None``.
+
+        The moment the jaw settled on whatever is between the pads: a late ATTACH (the HAL's
+        trigger or this detector's dwell) still names the hand pose the object was grasped at.
+        """
+        return self._since_ns
+
+    @property
     def latched(self) -> bool:
         """Whether a stall already fired (or a real ATTACH took over) for this hold."""
         return self._latched

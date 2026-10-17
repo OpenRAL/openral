@@ -1312,6 +1312,24 @@ def _tracked_release_params(description: object, object_tracking: str) -> dict[s
     }
 
 
+def _payload_own_cells(object_tracking: str, *, tracked_grasp_exemption_enabled: bool) -> bool:
+    """The kernel's ``payload_own_cells_enabled`` (issue #418, hazard OT-10 amendment): ``on`` + K2.
+
+    "A bound payload's measured cells cannot stop that payload": a relaxation of the
+    payload-vs-voxel check for cells inside the payload's own measured / grown geometry. It
+    rides ``on`` only (the tracker publishes the evidence tags and the tracked set it reads)
+    and needs K2 (the kernel refuses it without), and ``on`` is already sim-only
+    (``_object_tracking``; the kernel refuses it off sim too).
+
+    Example:
+        >>> _payload_own_cells("on", tracked_grasp_exemption_enabled=True)
+        True
+        >>> _payload_own_cells("bind", tracked_grasp_exemption_enabled=False)
+        False
+    """
+    return object_tracking == "on" and tracked_grasp_exemption_enabled
+
+
 def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: bool) -> bool:
     """The kernel's ``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
 
@@ -2555,6 +2573,12 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # exemption's source (the kernel refuses it off sim or without the exemption).
     kernel_params["tracked_grasp_exemption_enabled"] = _tracked_grasp_exemption(
         object_tracking, grasp_allowance_enabled=grasp_allowance_enabled
+    )
+    # Issue #418 OT-10 amendment: with K2 (so only in `on`, only in sim) a bound payload's
+    # measured / grown cells cannot stop that payload.
+    kernel_params["payload_own_cells_enabled"] = _payload_own_cells(
+        object_tracking,
+        tracked_grasp_exemption_enabled=bool(kernel_params["tracked_grasp_exemption_enabled"]),
     )
     # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
     # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
