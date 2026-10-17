@@ -90,3 +90,53 @@ def test_a_mask_that_takes_in_the_support_still_measures_it(shift: float) -> Non
     top = ObjectTracker(_RIG.frame)._support(grid, surface)
     assert top is not None
     assert abs(top - _RIG.support_z) <= RES + 1e-9
+
+
+@pytest.mark.parametrize("over", [1e-4, _EPS, 2e-3])
+def test_a_support_mapped_in_two_layers_is_measured_in_the_one_its_surface_is_in(
+    over: float,
+) -> None:
+    """r6po_dbg3-6: the counter at z 0.0302, 0.2 mm over the 0.030 boundary, filled the layer
+    under the boundary too (octree noise), and the probe measured the support a cell low. K7's
+    support band (centre within half a cell of support_z) then missed the counter cells the hand
+    reached. The camera's own returns around the object raise it to the layer the surface is in.
+    """
+    import numpy as np
+
+    from tests.unit._tracker_scenes import grid_from_depth, render
+
+    x, y = _RIG.centre_xy
+    orange = sphere((x, y, _RIG.support_z + _R), _R)
+    depth, labels = render([orange], _RIG)
+    boundary = _RIG.support_z - over  # the surface lies `over` above a layer boundary
+    grid = grid_from_depth(depth, _RIG, shift_z=-over)
+    # The octree also holds the support in the layer under the boundary, everywhere.
+    occ = grid.occupancy.reshape(grid.size[2], grid.size[1], grid.size[0]).copy()
+    k_up = int(np.floor((_RIG.support_z - grid.origin[2]) / RES))
+    occ[k_up - 1] |= occ[k_up]
+    grid = type(grid)(grid.frame_id, grid.origin, grid.orientation_xyzw, RES, grid.size,
+                      occ.reshape(-1))  # fmt: skip
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET),
+                  "obj:orange_1@0", stamp_ns=0)  # fmt: skip
+    from openral_world_state.object_tracker import CameraFrame
+    from openral_world_state.object_tracker.scheduler import TrackerRequest
+    from scipy.ndimage import binary_dilation
+
+    # SAM's mask spills two pixels onto the counter, and one of those returns reads a hair
+    # under the boundary (r6po_dbg6: min 0.03000 against a 0.030000000000000027 boundary).
+    mask = binary_dilation(labels == 1, iterations=2) & (depth > 0)
+    rows, cols = np.nonzero(mask & (labels == 0))
+    r, c = int(rows[0]), int(cols[0])
+    k, t = _RIG.k, _RIG.t
+    ray = t[:3, :3] @ np.array([(c + 0.5 - k.cx) / k.fx, (r + 0.5 - k.cy) / k.fy, 1.0])
+    depth = depth.copy()
+    depth[r, c] = (boundary - 1e-6 - t[2, 3]) / ray[2]
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    req = TrackerRequest("segment_in_view", _RIG.name, 1, 1, -1, "orange", ("g", "q0"))
+    fitted = tr._fit(req, mask, frame, grid)
+    assert fitted is not None
+    _, support_z = fitted
+    # The layer holding the surface is K7's top layer: centred half a cell over support_z.
+    surface_layer_centre = boundary + 0.5 * RES
+    assert surface_layer_centre - support_z == pytest.approx(0.5 * RES, abs=1e-6)

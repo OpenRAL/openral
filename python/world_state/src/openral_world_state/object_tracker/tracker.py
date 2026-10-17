@@ -163,6 +163,10 @@ ROBOT_BOX_FRACTION = 0.5
 ROBOT_BOX_NEGATIVES = 3
 #: A prompt box scored under this grounds a track that is logged when it confirms.
 LOW_PROMPT_SCORE = 0.3
+#: How far under the voxel-measured support top the camera's own support returns may lie and
+#: still read as ON the layer boundary (``ObjectTracker._support_seen``). Sim depth is exact;
+#: a real camera's noise is larger. *Calibration point.*
+_SUPPORT_SEEN_TOL_M = 0.001
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -541,6 +545,70 @@ class ObjectTracker:
                          support_top_z=round(top, 4))  # fmt: skip
         return None if top is None else top - grid.resolution
 
+    def _support_seen(
+        self,
+        frame: CameraFrame,
+        mask: NDArray[np.bool_],
+        surface: NDArray[np.float64],
+        support_z: float,
+        grid: VoxelLattice,
+    ) -> float:
+        """``support_z`` raised one cell when the camera sees the support above its measured top.
+
+        The voxel probe measures the support's top face as a layer boundary: ``support_z`` +
+        one cell. A support surface lying a hair above a boundary is mapped in BOTH layers
+        (#418 r6po_dbg3-6: the counter at z 0.0302 over the 0.030 boundary filled the
+        0.015-0.030 and 0.030-0.045 layers), and the probe takes the lower one: the support
+        a cell low, so K7's support band missed the counter cells the hand reached. Raised
+        one cell (never lowered) when both hold: the camera's own returns around the object
+        (not the mask, not the robot), within a cell of that top, are one flat surface (10-90 %
+        spread within a quarter cell: not a partial mask's own body around it) whose median
+        lies at or above the top (within ``_SUPPORT_SEEN_TOL_M``: ON the boundary, not inside
+        the measured layer); and the map holds the layer above as well, under those returns
+        (at least ``support_min_cells`` of it occupied).
+        """
+        res = grid.resolution
+        if frame.t_base_from_cam is None:
+            return support_z
+        p = self.params
+        top = support_z + res
+        k = frame.intrinsics
+        rows, cols = np.nonzero(~mask & (frame.depth_m > 0) & np.isfinite(frame.depth_m))
+        if frame.robot_mask is not None:
+            keep = frame.robot_mask[rows, cols] == 0
+            rows, cols = rows[keep], cols[keep]
+        z = frame.depth_m[rows, cols]
+        cam = np.stack(((cols + 0.5 - k.cx) / k.fx * z, (rows + 0.5 - k.cy) / k.fy * z, z), axis=1)
+        t = frame.t_base_from_cam
+        pts = cam @ t[:3, :3].T + t[:3, 3]
+        centre = surface[:, :2].mean(axis=0)
+        spread = float(np.ptp(surface[:, :2], axis=0).max()) / 2
+        d = np.linalg.norm(pts[:, :2] - centre, axis=1)
+        ring = (
+            (d > spread + res)
+            & (d <= spread + p.support_probe_m)
+            & (np.abs(pts[:, 2] - top) <= res)
+        )
+        if int(ring.sum()) < p.support_min_cells:
+            return support_z
+        lo, seen, hi = (float(v) for v in np.percentile(pts[ring, 2], (10, 50, 90)))
+        if hi - lo > 0.25 * res or seen < top - _SUPPORT_SEEN_TOL_M:
+            return support_z  # not one flat surface (a partial mask's own body), or inside
+        # The layer above the measured top, under those returns: occupied in the map too?
+        up = pts[ring].copy()
+        up[:, 2] = top + 0.5 * res
+        local = (up - np.asarray(grid.origin)) @ grid.rotation() / res
+        ijk = np.unique(np.floor(local).astype(np.int64), axis=0)
+        sx, sy, sz = grid.size
+        inside = np.all((ijk >= 0) & (ijk < (sx, sy, sz)), axis=1)
+        ijk = ijk[inside]
+        held = int(np.count_nonzero(grid.occupancy[ijk[:, 0] + sx * (ijk[:, 1] + sy * ijk[:, 2])]))
+        if held < p.support_min_cells:
+            return support_z
+        log.info("object_tracker.support_raised_to_seen_surface", seen_z=round(seen, 4),
+                 voxel_top_z=round(top, 4), points=int(ring.sum()))  # fmt: skip
+        return support_z + res
+
     def _fit(
         self, req: TrackerRequest, mask: NDArray[np.bool_], frame: CameraFrame, grid: VoxelLattice
     ) -> tuple[ContainingFit, float] | None:
@@ -564,6 +632,7 @@ class ObjectTracker:
         if support_z is None:
             self._refuse(key, "no_support", points=len(raw))
             return None
+        support_z = self._support_seen(frame, mask, surface, support_z, grid)
         fit = containing_fit(
             mask,
             frame.depth_m,
