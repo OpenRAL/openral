@@ -131,6 +131,9 @@ class _FakeSidecar:
                 }
                 if self.sim_time_ns is not None:
                     reply["sim_time_ns"] = self.sim_time_ns
+            elif endpoint == "refresh_frames":
+                self.frames_requests.append("refresh")
+                reply = {"observation": self._obs()}
             elif endpoint == "close":
                 reply = {"ok": True}
             else:
@@ -470,7 +473,6 @@ class TestImageTime:
     _FRAMES: ClassVar[dict[str, Any]] = {
         "images": {"top": np.full((64, 48, 3), 9, dtype=np.uint8)},
         "image_time_ns": {"top": _IMAGE_NS, "head_zed": _IMAGE_NS - _TICK_NS},
-        "depth_points": {"head_zed": np.asarray([[1.0, 0.0, 0.5]], dtype=np.float32)},
         "depth_frames": {
             "head_zed": {
                 "depth": np.ones((4, 6), dtype=np.float32),
@@ -740,6 +742,33 @@ class TestFramesOnDemand:
                 hal.env.close()
         assert s.frames_requests[-7:] == ["fresh", "none", "none", "fresh", "none", "none", "fresh"]
         # The reused frames still reach the camera publisher.
+        assert set(hal.read_images()) == {"top"}
+
+    def test_hal_refresh_renders_without_stepping(self) -> None:
+        # The attachment barrier holds the runner: the HAL asks for the present
+        # state's frames, and the sidecar renders them without a physics step.
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 30,
+            obs_extra=self._FRAMES,
+            sim_time_ns=_STATE_NS,
+            tick_ns=_TICK_NS,
+        ) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                hal.set_frame_period_s(0.1)
+                hal.idle_step()
+                hal.idle_step()  # a "none" step: no frames in its reply
+                before = hal.sim_time_ns()
+                assert hal.refresh_frames()
+                assert hal.sim_time_ns() == before  # nothing stepped
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-3:] == ["fresh", "none", "refresh"]
         assert set(hal.read_images()) == {"top"}
 
     def test_hal_without_a_frame_period_renders_every_step(self) -> None:

@@ -1314,27 +1314,6 @@ def _configure_rendering(spec: dict[str, Any]) -> None:
         )
 
 
-def points_in_frame(
-    points: NDArray[np.float32], world_from_frame: NDArray[np.float64]
-) -> NDArray[np.float32]:
-    """World points ``(N, 3)`` in a frame given by its 4x4 world pose; non-finite rows dropped.
-
-    A depth pixel that hits nothing deprojects to inf/NaN; those rows are not points.
-
-    Example:
-        >>> pose = np.eye(4)
-        >>> pose[:3, 3] = (1.0, 0.0, 0.5)
-        >>> points_in_frame(
-        ...     np.array([[1.0, 0.0, 0.0], [np.inf, 0, 0]], dtype=np.float32), pose
-        ... ).tolist()
-        [[0.0, 0.0, -0.5]]
-    """
-    raw = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    pts = raw[np.isfinite(raw).all(axis=1)]
-    rot, trans = world_from_frame[:3, :3], world_from_frame[:3, 3]
-    return ((pts - trans) @ rot).astype(np.float32)
-
-
 def resolve_beam_range(
     raycast_closest: Any,
     *,
@@ -2696,9 +2675,8 @@ class IsaacManifestScene(IsaacSceneBase):
         if self._has_base:
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
         if with_frames:
-            clouds = self._depth_clouds()
-            if clouds:
-                obs["depth_points"] = clouds
+            # The HAL derives each depth camera's cloud from these frames
+            # (SimAttachedHAL.read_depth_clouds): no point cloud crosses the wire.
             frames = self._depth_frames()
             if frames:
                 obs["depth_frames"] = frames
@@ -2744,8 +2722,8 @@ class IsaacManifestScene(IsaacSceneBase):
     def _image_times(self) -> dict[str, int]:
         """Sim time each camera's frame shows, by obs key (a depth camera's key is its name).
 
-        Covers the RGB images, ``depth_frames`` and ``depth_points``: all three are
-        read from the same delivered frame of their camera.
+        Covers the RGB images and ``depth_frames``: both are read from the same
+        delivered frame of their camera.
         """
         out: dict[str, int] = {}
         for meta in self._cam_meta:
@@ -2811,36 +2789,6 @@ class IsaacManifestScene(IsaacSceneBase):
                 "k": np.array([k[0, 0], k[1, 1], k[0, 2], k[1, 2]], dtype=np.float64),
                 "optical_in_base": base_from_world @ world_from_optical,
             }
-        return out
-
-    def _depth_clouds(self) -> dict[str, NDArray[np.float32]]:
-        """``{sensor_name: (N, 3) base_frame points}`` from each depth camera.
-
-        Uses Isaac's ``Camera.get_pointcloud(world_frame=True)`` — Isaac owns the
-        camera intrinsics + frame convention, so we never guess the
-        Isaac-camera↔REP-103-optical rotation — then transforms world→base_frame by
-        the robot root's pose and the base_frame link's offset from the root
-        (``points_in_frame``; misses are dropped). The openral-side
-        ``SimSensorBridge`` publishes these as ``PointCloud2`` in the manifest's
-        ``base_frame`` (already on /tf), so
-        octomap gets a geometrically-correct cloud. Range-filtered (planar distance
-        from the base) per the depth ``SensorSpec``. Empty when the manifest
-        declares no depth sensor — never a fabricated cloud.
-        """
-        world_from_base = self._world_from_base()
-        out: dict[str, NDArray[np.float32]] = {}
-        for meta in self._cam_meta:
-            if meta["modality"] != "depth":
-                continue
-            pts = self._cameras[meta["name"]].get_pointcloud(world_frame=True)
-            if pts is None:
-                continue
-            pb = points_in_frame(np.asarray(pts, dtype=np.float32), world_from_base)
-            rmax = float(meta.get("range_max_m") or 0.0)
-            if rmax > 0.0:
-                pb = pb[(pb[:, 0] ** 2 + pb[:, 1] ** 2) <= rmax * rmax]
-            if pb.size:
-                out[meta["name"]] = pb
         return out
 
     def _state(self) -> NDArray[np.float32]:

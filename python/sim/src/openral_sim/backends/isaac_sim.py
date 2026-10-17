@@ -190,7 +190,7 @@ _DEFAULT_BOOT_TIMEOUT_S = 900.0
 #: ``step`` frame modes and the observation keys a ``"none"`` step omits; must match
 #: ``FRAME_MODES`` / ``FRAME_KEYS`` in ``tools/_isaac_scene_base.py`` (Isaac interpreter).
 FRAME_MODES = ("render", "fresh", "none")
-_FRAME_KEYS = ("images", "image_time_ns", "depth_points", "depth_frames")
+_FRAME_KEYS = ("images", "image_time_ns", "depth_frames")
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
 
@@ -438,6 +438,17 @@ class _IsaacSimSidecar(SidecarSimRollout):
             raise ROSConfigError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
         self._frames_next = frames
 
+    def refresh_frames(self) -> Observation:
+        """Render the current state's frames without stepping physics; the new observation.
+
+        The sidecar ``refresh_frames`` endpoint: renders until every timed camera's
+        frame shows the current sim time (as a ``"fresh"`` step) and returns the full
+        observation. For a waiter that holds the runner and so the stepping
+        (``SimAttachedHAL.refresh_frames``).
+        """
+        reply = self._client.call("refresh_frames")
+        return self._wrap_obs(self._client.require(reply, "observation"))
+
     def _step_options(self) -> dict[str, Any]:
         frames, self._frames_next = self._frames_next, "render"
         return {} if frames == "render" else {"frames": frames}
@@ -616,13 +627,6 @@ class _IsaacSimSidecar(SidecarSimRollout):
         base_pose = raw.get("base_pose")
         if base_pose is not None:
             obs["base_pose"] = np.asarray(base_pose, dtype=np.float32).reshape(-1)
-        # Per-depth-sensor point clouds ((N,3) base_link), when the manifest scene
-        # renders a depth camera — SimSensorBridge publishes them as PointCloud2.
-        clouds = raw.get("depth_points")
-        if isinstance(clouds, dict):
-            obs["depth_points"] = {
-                k: np.asarray(v, dtype=np.float32).reshape(-1, 3) for k, v in clouds.items()
-            }
         # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
         # the RGB-D streams a real driver publishes, for the vision attachment leg.
         # One contract for every backend (``openral_sim.depth_frames``).
