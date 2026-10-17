@@ -314,7 +314,7 @@ sim` renders once per camera/depth publish period (`camera_publish_rate_hz`,
 `depth_publish_rate_hz`). A frame rendered for the policy or a publish is
 *fresh*: the scene keeps rendering until every camera's frame shows that step's
 state, so it carries no pipeline lag; steps in between reuse the last frames,
-which keep the `image_time_ns` of the state they show. A recorder or
+which keep the `image_time_ns` of the state they show. The sidecar boots Kit's zero-delay experience when the install ships it, so a frame trails the physics by ~2 renders instead of ~4 and a fresh frame needs half the catch-up. Depth cameras ship their registered RGB-D frame only; the HAL deprojects it into the published point cloud, each point coloured by its own pixel. A recorder or
 `OPENRAL_DUMP_OBS_TICK` brings back a render every step. Render the cameras at the
 size the policy consumes (`camera_render_height`): a policy that resizes to 224 px
 gains nothing from a 720p raster.

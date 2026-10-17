@@ -415,20 +415,6 @@ def test_compose_planar_keeps_the_spawn_height(_manifest_scene_mod: object) -> N
     assert compose_planar((0.0, 0.0, 1.2, 0.0), [0.4, 0.0, 0.0])[2] == pytest.approx(1.2)
 
 
-def test_points_in_frame_drops_misses_and_expresses_in_the_frame(
-    _manifest_scene_mod: object,
-) -> None:
-    """Depth pixels that hit nothing deproject to inf/NaN; they must not reach octomap.
-    Kept points land in the frame given by its world pose (yaw + offset)."""
-    mod = _manifest_scene_mod
-    pose = np.eye(4)
-    pose[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]  # yaw 90 deg
-    pose[:3, 3] = (1.0, 2.0, 0.7)
-    pts = np.array([[1.0, 3.0, 0.0], [np.inf, 0.0, 0.0], [np.nan, 1.0, 1.0]], dtype=np.float32)
-    out = mod.points_in_frame(pts, pose)  # type: ignore[attr-defined]
-    assert out == pytest.approx(np.array([[1.0, 0.0, -0.7]]))
-
-
 def test_look_at_aims_the_camera_x_axis(_manifest_scene_mod: object) -> None:
     mod = _manifest_scene_mod
     rot = mod.look_at_matrix(np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]))  # type: ignore[attr-defined]
