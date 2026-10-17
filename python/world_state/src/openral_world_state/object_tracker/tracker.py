@@ -439,6 +439,16 @@ class ObjectTracker:
                 # A fit through the robot never replaces geometry measured clear of it.
                 log.info("object_tracker.provisional_refit_ignored", object_id=oid)
                 return None
+            if old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
+                others = self._other_boxes(centroid)
+                verdict = cover_verdict(
+                    grid, cells, fit.box, support_z=support_z, own=hands, others=others
+                )
+                if verdict.kind == "map_split":
+                    # A mask that took in a neighbour too never replaces a confirmed box: the
+                    # track would go SPLIT and its next fit take a new id (a swap).
+                    log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
+                    return None
             refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
             track = old.model_copy(
                 update={

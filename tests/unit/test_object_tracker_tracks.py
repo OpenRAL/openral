@@ -220,3 +220,48 @@ def test_a_split_track_never_takes_a_neighbours_fit() -> None:
     assert associate([big.model_copy(update={"status": TrackStatus.CONFIRMED})], inside,
                      voxel_m=RES)[0] == "trk:1"  # fmt: skip
     assert others  # the scene still holds the neighbours
+
+
+def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
+    """PickOrange r3po_on1: a mask over orange_1 and orange_3 refit the CONFIRMED orange_1
+    track, which went SPLIT, so orange_1's next fit took a new id. A refit that splits on
+    the map is ignored: the confirmed box and id stay."""
+    oranges = _oranges(0.08)[:2]
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    depth, labels = render(oranges, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    (locate,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    rows, cols = np.nonzero(labels == 1)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,
+                  results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))])  # fmt: skip
+    (seg,) = out.requests
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=1.1,
+                  results=[TrackerResult(seg.request_id, mask=labels == 1)])  # fmt: skip
+    (fitted,) = out.tracked.objects
+    assert fitted.status is TrackStatus.CONFIRMED
+    # Its box as an earlier, wider (provisional-era) fit left it: wide enough to hold the
+    # centroid of a mask over both oranges.
+    wide = fitted.box.model_copy(update={"half_extents": (0.06, 0.06, fitted.box.half_extents[2])})
+    tr.store.replace(fitted.model_copy(update={"box": wide}))
+    before = _get(tr, fitted.object_id)
+    # A refresh prompt answered with a mask over both oranges.
+    t2 = 6_000_000_000  # past the count-all search window: refreshes compete again
+    frame2 = CameraFrame(_RIG.name, t2, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    req = None
+    for n in range(40):  # cycle the detector's turns until the track's refresh comes up
+        out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n)
+        if not out.requests:
+            continue
+        if out.requests[0].object_id == before.object_id:
+            req = out.requests[0]
+            break
+        tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
+                results=[TrackerResult(out.requests[0].request_id)])  # fmt: skip
+    assert req is not None
+    out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
+                  results=[TrackerResult(req.request_id, mask=labels > 0)])  # fmt: skip
+    after = _get(tr, before.object_id)
+    assert after.status is TrackStatus.CONFIRMED and after.box == before.box
