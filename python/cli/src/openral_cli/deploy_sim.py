@@ -2197,7 +2197,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         # passing ``run_preflight=False`` means it.
         if run_preflight:
             _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
-        return _run_launch(argv, venv_env)
+        return _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
     finally:
         with contextlib.suppress(OSError):
             Path(hal_params_tmp.name).unlink(missing_ok=True)
@@ -2532,7 +2532,24 @@ def _spawn_launch(argv: list[str], env: dict[str, str]) -> subprocess.Popen[byte
     return subprocess.Popen(argv, env=env, start_new_session=True, preexec_fn=_default_sigint)  # noqa: PLW1509  # reason: only resets one signal disposition before exec; no locks, no imports
 
 
-def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) -> int:
+def _spawn_orphan_guard(launch_pid: int) -> subprocess.Popen[bytes]:
+    """Start ``_launch_guard.py`` watching this CLI over the launch ``launch_pid``.
+
+    Its own session, so a signal to the CLI's process group (``kill -INT -<pgid>``) does
+    not take it down with the CLI; it reaps the launch tree once the CLI is gone.
+    """
+    return subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("_launch_guard.py")), str(os.getpid()),
+         str(launch_pid)],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+    )  # fmt: skip
+
+
+def _run_launch(
+    argv: list[str], env: dict[str, str], *, grace_s: float = 12.0, orphan_guard: bool = False
+) -> int:
     """Run ``ros2 launch`` in its own session, reaping the whole tree on exit.
 
     The legacy ``subprocess.run(argv)`` left the launch a sibling in the
@@ -2567,10 +2584,18 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
        launch exits, and stage 1+2 alone leak nodes. The signature sweep
        matches every graph process regardless of parentage.
 
+    4. ``orphan_guard``: a stdlib-only watcher (``_launch_guard.py``, own session)
+       snapshots the launch's descendants every 0.5 s and reaps them once this CLI is
+       gone, so a SIGKILLed or crashed CLI, whose ``finally`` never runs, leaves no
+       node or sim sidecar on the ROS domain (#418 r4dr_shadow2). Sim deploys only for
+       now: a real HAL's teardown on its CLI's death is a Safety-WG decision.
+
     Returns the launch process's exit code (0 if it exited via signal
     with no recorded returncode).
     """
     proc = _spawn_launch(argv, env)
+    if orphan_guard:
+        _spawn_orphan_guard(proc.pid)
 
     def _forward(_signum: int, _frame: object) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):
@@ -3927,7 +3952,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # every node — and the static_transform_publisher /
         # robot_state_publisher / HAL it spawns — is reaped on shutdown
         # instead of orphaning onto ``/tf_static`` + the GPU.
-        returncode = _run_launch(argv, venv_env)
+        returncode = _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
         raise typer.Exit(code=returncode)
     finally:
         with contextlib.suppress(OSError):
