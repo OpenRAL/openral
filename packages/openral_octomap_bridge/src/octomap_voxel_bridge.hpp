@@ -47,6 +47,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -69,6 +70,7 @@
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "openral_octomap_bridge/identity_clearing.hpp"
 #include "openral_octomap_bridge/octree_freshness.hpp"
 #include "openral_octomap_bridge/octree_to_grid.hpp"
 #include "openral_octomap_bridge/payload_clearing.hpp"
@@ -163,6 +165,17 @@ public:
                   "payload sweep clearing ON: the carried payload's posed primitive boxes "
                   "(every %.2f s, attached poses only) are cleared from the octree via %s",
                   sweep_period_s_, sweep_service.c_str());
+    }
+    // Release window (issue #418 F2): how long a just-RELEASED track's box may be cleared.
+    // MUST equal the safety kernel's `tracked_release_timeout_s` (K5, default 3.0 s):
+    // longer clears the object's cells after the kernel's window closed; shorter re-marks
+    // them under the frozen payload while the hand is still exempt against it. Same
+    // bound as the kernel's, (0, 10]; anything else refuses to start.
+    released_clear_timeout_s_ =
+        this->declare_parameter<double>("released_clear_timeout_s", kReleasedClearTimeoutS);
+    if (!(released_clear_timeout_s_ > 0.0) ||
+        !(released_clear_timeout_s_ <= kReleasedClearTimeoutMaxS)) {
+      throw std::invalid_argument("released_clear_timeout_s must be in (0, 10]");
     }
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
@@ -324,11 +337,14 @@ private:
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                            "declared static geometry added %zu cells the camera map lacked", added);
     }
+    clearing_complete_ = true;
     clear_attached_payload(grid, base_to_octomap);
+    clear_by_identity(grid, base_to_octomap);
     clear_swept_volume(base_to_octomap);
     const rclcpp::Time produced = this->now();
     grid.header.stamp = produced;
     grid.source_stamp = octree_stamp_;
+    grid.attachment_revision = certified_attachment_revision();
     voxel_pub_->publish(grid);
     // The one number that says how far behind the world this grid is: capture
     // of the newest cloud in it to now. Throttled; the kernel carries the same
@@ -336,6 +352,22 @@ private:
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                          "world_voxels data age %.0f ms at publish (octree received %.0f ms ago)",
                          (produced - octree_stamp_).seconds() * 1e3, octree_age_s * 1e3);
+  }
+
+  /// The attachment revision this grid certifies (`OccupancyVoxels.attachment_revision`):
+  /// the revision of the fresh attachment state the clearing above ran against, provided
+  /// every object it had to clear was cleared (a TF it lacked, geometry it could not place
+  /// or an unusable tracked set withhold it: 0). A consumer waiting for the held object's
+  /// cells to leave the map (the sim HAL's perception barrier) must see this number reach
+  /// the revision it armed for. Objects left in the map ON PURPOSE (a pinch fallback, an
+  /// ambiguous binding) do not withhold it: there is nothing to wait for.
+  std::uint64_t certified_attachment_revision() const {
+    const auto state = world_state_;
+    if (!attached_clear_enabled_ || state == nullptr || !clearing_complete_) {
+      return 0;
+    }
+    const double age_s = (this->now() - rclcpp::Time(state->header.stamp)).seconds();
+    return age_s > attached_state_timeout_s_ ? 0 : state->attachment_revision;
   }
 
   /// Remove the grasped payload's own cells from the grid about to be
@@ -386,6 +418,7 @@ private:
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "attachment state is %.3f s old (> %.3f s): clearing nothing", age_s,
                            attached_state_timeout_s_);
+      clearing_complete_ = false;
       return;
     }
 
@@ -395,9 +428,17 @@ private:
     std::vector<AttachSweepObservation> present;
     // Each attestation's key and its patch in the OctoMap frame, for the anchors.
     std::vector<SupportPatchObservation> attested;
+    // Parallel to `staged`: the objects this (pre-#418) path clears.
+    std::vector<const openral_msgs::msg::AttachedCollisionObject*> legacy;
     staged.reserve(state->attached_objects.size());
     present.reserve(state->attached_objects.size());
     for (const auto& object : state->attached_objects) {
+      // A tracker binding (#418) is cleared by identity (`clear_by_identity`) or not
+      // at all: a pinch fallback or an ambiguous binding stays an obstacle.
+      if (object.evidence_kind == kTrackedObjectEvidence ||
+          object.evidence_kind == kPinchFallbackEvidence) {
+        continue;
+      }
       geometry_msgs::msg::TransformStamped tf_msg;
       const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
       try {
@@ -416,6 +457,7 @@ private:
                       "vision_attachment.tf_frames)",
                       object.attach_link.c_str(), object.attach_link.c_str());
         }
+        clearing_complete_ = false;
         return;
       }
       tf2::Transform base_from_link;
@@ -426,6 +468,7 @@ private:
                              "payload %s carries geometry or a support attestation this bridge "
                              "cannot place: clearing nothing",
                              object.object_id.c_str());
+        clearing_complete_ = false;
         return;
       }
       // The window's reference point is the first primitive's origin lifted
@@ -446,10 +489,11 @@ private:
           AttachedObjectRevision{object.object_id, state->attachment_revision},
           base_to_octomap * object_primitives.front().pose.getOrigin()});
       staged.push_back(std::move(object_primitives));
+      legacy.push_back(&object);
     }
 
     if (sweep_client_) {
-      accumulate_swept_volume(*state, staged, base_to_octomap, attested);
+      accumulate_swept_volume(*state, legacy, staged, base_to_octomap, attested);
     }
 
     // Answering and recording in one call is what keeps the window's state and
@@ -503,10 +547,11 @@ private:
   /// and, at an object's first appearance (a new attachment revision), a REGION
   /// payload's lowest point. No pre-attach TF backfill: posing the payload rigidly in
   /// the hand along the approach clears where the object never was.
-  void accumulate_swept_volume(const openral_msgs::msg::WorldStateStamped& state,
-                               const std::vector<std::vector<PayloadPrimitive>>& staged,
-                               const tf2::Transform& base_to_octomap,
-                               const std::vector<SupportPatchObservation>& attested) {
+  void accumulate_swept_volume(
+      const openral_msgs::msg::WorldStateStamped& state,
+      const std::vector<const openral_msgs::msg::AttachedCollisionObject*>& objects,
+      const std::vector<std::vector<PayloadPrimitive>>& staged,
+      const tf2::Transform& base_to_octomap, const std::vector<SupportPatchObservation>& attested) {
     for (const auto& prims : staged) {
       const auto boxes = payload_primitive_boxes(prims, base_to_octomap);
       swept_boxes_.insert(swept_boxes_.end(), boxes.begin(), boxes.end());
@@ -522,8 +567,8 @@ private:
         sweep_supports_.patches.push_back(obs.patch);
       }
     }
-    for (std::size_t i = 0; i < state.attached_objects.size(); ++i) {
-      const auto& object = state.attached_objects[i];
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+      const auto& object = *objects[i];
       if (!swept_seen_.insert({object.object_id, state.attachment_revision}).second) {
         continue;
       }
@@ -613,6 +658,367 @@ private:
     }
   }
 
+  struct IdentityCarry {
+    std::vector<tf2::Transform> pending;  ///< octomap <- link, not yet cleared
+    bool has_last{false};
+    std::int64_t last_ns{0};
+    tf2::Transform last{tf2::Transform::getIdentity()};
+    double reach_m{0.0};  ///< furthest geometry point from the link origin
+  };
+  struct IdentityHome {
+    std::uint32_t epoch{0};
+    PayloadPrimitive box;  ///< last confirmed box, octomap frame
+  };
+
+  /// Clearing by identity (issue #418, `identity_clearing.hpp`). On the grid, each
+  /// unambiguous tracker binding's cells at its live pose. On the octree (with
+  /// `payload_sweep_clear_service` set), every pose since `t_attach` — backfilled from
+  /// TF history, interpolated half a cell apart — and, once, the box a tracked object
+  /// has left. Every failure (stale or unusable set, missing TF, geometry the bridge
+  /// will not place) clears less, never more.
+  void clear_by_identity(openral_msgs::msg::OccupancyVoxels& grid,
+                         const tf2::Transform& base_to_octomap) {
+    const auto state = world_state_;
+    if (!attached_clear_enabled_ || state == nullptr) {
+      return;
+    }
+    const double age_s = (this->now() - rclcpp::Time(state->header.stamp)).seconds();
+    if (age_s > attached_state_timeout_s_ || !tracked_set_usable(*state, base_frame_)) {
+      // Pending poses and remembered boxes dropped: less is cleared, and a box is never
+      // vacated across a gap in which nobody watched it.
+      for (const auto& object : state->attached_objects) {
+        if (object.evidence_kind == kTrackedObjectEvidence) {
+          clearing_complete_ = false;  // a tracker binding this tick could not clear
+        }
+      }
+      identity_carries_.clear();
+      identity_homes_.clear();
+      identity_was_bound_.clear();
+      release_clears_.clear();
+      return;
+    }
+    const auto& set = state->tracked_objects;
+    const rclcpp::Time now = this->now();
+    const bool octree_work = sweep_client_ != nullptr && octree_ != nullptr;
+    const bool flush = octree_work && (last_identity_flush_.nanoseconds() == 0 ||
+                                       (now - last_identity_flush_).seconds() >= sweep_period_s_);
+    if (octree_work) {
+      static_keys_.clear();
+      for (const auto& p : static_points_) {
+        const tf2::Vector3 w = base_to_octomap * p;
+        octomap::OcTreeKey key;
+        if (octree_->coordToKeyChecked(octomap::point3d(static_cast<float>(w.x()),
+                                                        static_cast<float>(w.y()),
+                                                        static_cast<float>(w.z())),
+                                       key)) {
+          static_keys_.insert(key);
+        }
+      }
+    }
+    if (flush) {
+      last_identity_flush_ = now;
+    }
+    // Before this tick's bindings replace the last tick's: a window opens on the tick a
+    // track the bridge was clearing turns up RELEASED.
+    const auto released =
+        advance_release_clears(release_clears_, identity_was_bound_, *state, base_frame_,
+                               now.nanoseconds(), released_clear_timeout_s_);
+    IdentityKeys was_bound;
+    std::map<std::pair<std::string, std::uint32_t>, IdentityCarry> carries;
+    std::map<std::string, std::vector<PayloadPrimitive>> live;  // bound, octomap frame
+    std::size_t grid_cleared = 0;
+    for (const auto& object : state->attached_objects) {
+      const auto* track = identity_clearing_track(object, *state, base_frame_);
+      if (track == nullptr) {
+        continue;
+      }
+      const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
+      geometry_msgs::msg::TransformStamped tf_msg;
+      try {
+        tf_msg = tf_buffer_->lookupTransform(base_frame_, link_frame, tf2::TimePointZero);
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "identity clear: TF %s <- %s unavailable (%s): %s stays in the map",
+                             base_frame_.c_str(), link_frame.c_str(), ex.what(),
+                             object.object_id.c_str());
+        clearing_complete_ = false;
+        continue;
+      }
+      tf2::Transform base_from_link;
+      tf2::fromMsg(tf_msg.transform, base_from_link);
+      std::vector<IdentityPiece> pieces;
+      IdentityKeepOut keep;
+      if (!place_identity_pieces(object, base_from_link, pieces) ||
+          !identity_keep_out(set, *track, tf2::Transform::getIdentity(), false, keep)) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "identity clear: %s carries geometry or a track set this bridge "
+                             "cannot place: clearing nothing for it",
+                             object.object_id.c_str());
+        clearing_complete_ = false;
+        continue;
+      }
+      grid_cleared += clear_identity_cells(grid, pieces, keep);
+      was_bound.emplace(object.object_id, object.epoch);
+      if (!octree_work) {
+        continue;
+      }
+      const tf2::Transform octomap_from_link = base_to_octomap * base_from_link;
+      for (const auto& piece : pieces) {
+        PayloadPrimitive placed = piece.prim;
+        placed.pose = base_to_octomap * placed.pose;
+        live[object.object_id].push_back(placed);
+      }
+      const auto key = std::make_pair(object.object_id, object.epoch);
+      const std::int64_t t_ns = rclcpp::Time(tf_msg.header.stamp).nanoseconds();
+      auto found = identity_carries_.find(key);
+      IdentityCarry carry;
+      if (found != identity_carries_.end()) {
+        carry = std::move(found->second);
+      } else {
+        carry = start_carry(object, link_frame, t_ns, grid.resolution);
+      }
+      add_carry_pose(carry, t_ns, octomap_from_link, grid.resolution);
+      if (flush) {
+        flush_carry(carry, object, *track, set, base_to_octomap, grid.resolution);
+      }
+      carries.emplace(key, std::move(carry));
+    }
+    identity_carries_ = std::move(carries);
+    identity_was_bound_ = std::move(was_bound);
+    for (const auto* track : released) {
+      grid_cleared += clear_released_box(grid, *track, set, base_to_octomap, flush);
+    }
+    if (grid_cleared > 0) {
+      // Declared static geometry is unioned AFTER the clear, so it is never cleared.
+      mark_base_points(grid, static_points_);
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "identity clear: %zu grid cell(s) of tracked bindings cleared",
+                           grid_cleared);
+    }
+    if (octree_work) {
+      vacate_left_boxes(set, base_to_octomap, live, grid.resolution);
+    }
+  }
+
+  /// Release window (issue #418 F2): the RELEASED track's box ⊕ half a cell, on the grid
+  /// every tick and (on a flush) in the octree, with the identity exclusions. While it is
+  /// open the kernel's frozen payload (K5) stands in for the object; without this its
+  /// own re-marked cells meet that payload and stop the robot. Returns grid cells cleared.
+  std::size_t clear_released_box(openral_msgs::msg::OccupancyVoxels& grid,
+                                 const openral_msgs::msg::TrackedObject& track,
+                                 const openral_msgs::msg::TrackedObjectSet& set,
+                                 const tf2::Transform& base_to_octomap, bool flush) {
+    std::vector<IdentityPiece> pieces;
+    IdentityKeepOut keep;
+    if (!released_clear_pieces(set, track, tf2::Transform::getIdentity(), pieces, keep)) {
+      return 0;
+    }
+    const std::size_t cleared = clear_identity_cells(grid, pieces, keep);
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                         "identity clear (released): %s epoch %u, %zu grid cell(s) of its "
+                         "release box cleared",
+                         track.object_id.c_str(), track.epoch, cleared);
+    if (!flush || !released_clear_pieces(set, track, base_to_octomap, pieces, keep)) {
+      return cleared;
+    }
+    const double res = grid.resolution;
+    const PayloadPrimitive& box = pieces.front().prim;
+    const double r = primitive_bounding_radius(box) + 0.5 * res;
+    SweptBox window;
+    window.add(box.pose.getOrigin() - tf2::Vector3(r, r, r));
+    window.add(box.pose.getOrigin() + tf2::Vector3(r, r, r));
+    send_identity_clears(track, "released", window, [&](const tf2::Vector3& c) {
+      return identity_covers(pieces, c, 0.5 * res) && !identity_keeps(keep, c, res) &&
+             !is_static_cell(c);
+    });
+    return cleared;
+  }
+
+  /// A new binding's carry: its reach about the link, and its poses from `t_attach`
+  /// (the attachment's `stamp_ns` on first sight; at most `kIdentityBackfillMaxS`
+  /// back) up to `now_ns` from TF history. A pose TF cannot give is skipped.
+  IdentityCarry start_carry(const openral_msgs::msg::AttachedCollisionObject& object,
+                            const std::string& link_frame, std::int64_t now_ns, double res) {
+    IdentityCarry carry;
+    std::vector<IdentityPiece> at_link;
+    if (place_identity_pieces(object, tf2::Transform::getIdentity(), at_link)) {
+      for (const auto& p : at_link) {
+        carry.reach_m = std::max(carry.reach_m, p.prim.pose.getOrigin().length() +
+                                                    primitive_bounding_radius(p.prim));
+      }
+    }
+    if (object.stamp_ns <= 0 || object.stamp_ns >= now_ns) {
+      return carry;
+    }
+    const auto max_ns = static_cast<std::int64_t>(kIdentityBackfillMaxS * 1e9);
+    const auto step_ns = static_cast<std::int64_t>(kIdentityBackfillStepS * 1e9);
+    for (std::int64_t t = std::max(object.stamp_ns, now_ns - max_ns); t < now_ns; t += step_ns) {
+      try {
+        const auto msg = tf_buffer_->lookupTransform(octomap_frame_, link_frame,
+                                                     tf2::TimePoint(std::chrono::nanoseconds(t)));
+        tf2::Transform pose;
+        tf2::fromMsg(msg.transform, pose);
+        add_carry_pose(carry, t, pose, res);
+      } catch (const tf2::TransformException&) {
+        continue;
+      }
+    }
+    return carry;
+  }
+
+  /// Queue `pose` (octomap <- link at `t_ns`), interpolated from the last one when the
+  /// two are at most `kIdentityMaxInterpGapS` apart.
+  static void add_carry_pose(IdentityCarry& carry, std::int64_t t_ns, const tf2::Transform& pose,
+                             double res) {
+    if (carry.has_last && t_ns == carry.last_ns) {
+      return;
+    }
+    const double gap_s = static_cast<double>(t_ns - carry.last_ns) * 1e-9;
+    if (carry.has_last && gap_s > 0.0 && gap_s <= kIdentityMaxInterpGapS) {
+      append_swept_poses(carry.pending, carry.last, pose, carry.reach_m, 0.5 * res);
+    } else {
+      carry.pending.push_back(pose);
+    }
+    carry.has_last = true;
+    carry.last_ns = t_ns;
+    carry.last = pose;
+  }
+
+  /// Clear from the octree every cell the bound geometry covers at a queued pose.
+  void flush_carry(IdentityCarry& carry, const openral_msgs::msg::AttachedCollisionObject& object,
+                   const openral_msgs::msg::TrackedObject& track,
+                   const openral_msgs::msg::TrackedObjectSet& set,
+                   const tf2::Transform& base_to_octomap, double res) {
+    std::vector<std::vector<IdentityPiece>> poses;
+    SweptBox window;
+    for (const auto& pose : carry.pending) {
+      std::vector<IdentityPiece> pieces;
+      if (!place_identity_pieces(object, pose, pieces)) {
+        continue;
+      }
+      for (const auto& p : pieces) {
+        const double r = primitive_bounding_radius(p.prim) + 0.5 * res;
+        window.add(p.prim.pose.getOrigin() - tf2::Vector3(r, r, r));
+        window.add(p.prim.pose.getOrigin() + tf2::Vector3(r, r, r));
+      }
+      poses.push_back(std::move(pieces));
+    }
+    carry.pending.clear();
+    IdentityKeepOut keep;
+    if (poses.empty() || !identity_keep_out(set, track, base_to_octomap, false, keep)) {
+      return;
+    }
+    send_identity_clears(track, "sweep", window, [&](const tf2::Vector3& c) {
+      if (identity_keeps(keep, c, res) || is_static_cell(c)) {
+        return false;
+      }
+      return std::any_of(poses.begin(), poses.end(),
+                         [&](const auto& pieces) { return identity_covers(pieces, c, 0.5 * res); });
+    });
+  }
+
+  /// Vacated cells: a track that has left its last confirmed box — free and confirmed
+  /// clear of it, or bound and carried clear of it — gets that box's cells cleared
+  /// once, as of now. A re-associated (`identity_inferred`) track vacates nothing.
+  void vacate_left_boxes(const openral_msgs::msg::TrackedObjectSet& set,
+                         const tf2::Transform& base_to_octomap,
+                         const std::map<std::string, std::vector<PayloadPrimitive>>& live,
+                         double res) {
+    std::map<std::string, IdentityHome> homes;
+    for (const auto& track : set.objects) {
+      PayloadPrimitive box;
+      if (!track_box(track, box)) {
+        continue;
+      }
+      box.pose = base_to_octomap * box.pose;
+      const auto home = identity_homes_.find(track.object_id);
+      const bool known = home != identity_homes_.end() && home->second.epoch == track.epoch;
+      if (track.status == "confirmed") {
+        if (known && !track.identity_inferred && clear_of(home->second.box, {box}, res)) {
+          vacate(set, track, home->second.box, base_to_octomap, true, res);
+        }
+        homes[track.object_id] = IdentityHome{track.epoch, box};
+        continue;
+      }
+      if (!known) {
+        continue;
+      }
+      const auto carried = live.find(track.object_id);
+      if (track.status == "bound" && carried != live.end() &&
+          clear_of(home->second.box, carried->second, res)) {
+        vacate(set, track, home->second.box, base_to_octomap, false, res);
+        continue;  // spent
+      }
+      homes.emplace(track.object_id, home->second);
+    }
+    identity_homes_ = std::move(homes);
+  }
+
+  /// Is every primitive more than a cell clear of `home`?
+  static bool clear_of(const PayloadPrimitive& home, const std::vector<PayloadPrimitive>& prims,
+                       double res) {
+    const tf2::Transform local = home.pose.inverse();
+    return std::all_of(prims.begin(), prims.end(), [&](const PayloadPrimitive& p) {
+      return primitive_surface_distance(home, local * p.pose.getOrigin()) >
+             primitive_bounding_radius(p) + res;
+    });
+  }
+
+  void vacate(const openral_msgs::msg::TrackedObjectSet& set,
+              const openral_msgs::msg::TrackedObject& track, const PayloadPrimitive& home,
+              const tf2::Transform& base_to_octomap, bool keep_own_box, double res) {
+    IdentityKeepOut keep;
+    if (!identity_keep_out(set, track, base_to_octomap, keep_own_box, keep)) {
+      return;
+    }
+    SweptBox window;
+    add_payload_to_swept_box(window, {home}, tf2::Transform::getIdentity());
+    const tf2::Transform local = home.pose.inverse();
+    send_identity_clears(track, "vacated", window, [&](const tf2::Vector3& c) {
+      return primitive_surface_distance(home, local * c) <= 0.0 && !identity_keeps(keep, c, res) &&
+             !is_static_cell(c);
+    });
+  }
+
+  bool is_static_cell(const tf2::Vector3& c) const {
+    return static_keys_.count(octree_->coordToKey(octomap::point3d(
+               static_cast<float>(c.x()), static_cast<float>(c.y()), static_cast<float>(c.z())))) !=
+           0;
+  }
+
+  void send_identity_clears(const openral_msgs::msg::TrackedObject& track, const char* what,
+                            const SweptBox& window,
+                            const std::function<bool(const tf2::Vector3&)>& clear) {
+    bool truncated = false;
+    const auto boxes =
+        octree_clear_boxes(*octree_, window, clear, kIdentityMaxClearBoxes, truncated);
+    if (boxes.empty()) {
+      return;
+    }
+    if (!sweep_client_->service_is_ready()) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "identity clear: %s not available; %s's cells stay in the octree",
+                           sweep_client_->get_service_name(), track.object_id.c_str());
+      return;
+    }
+    sweep_client_->prune_requests_older_than(std::chrono::system_clock::now() -
+                                             kSweepRequestTimeout);
+    for (const auto& box : boxes) {
+      auto req = std::make_shared<octomap_msgs::srv::BoundingBoxQuery::Request>();
+      req->min.x = box.lo.x();
+      req->min.y = box.lo.y();
+      req->min.z = box.lo.z();
+      req->max.x = box.hi.x();
+      req->max.y = box.hi.y();
+      req->max.z = box.hi.z();
+      sweep_client_->async_send_request(req);
+    }
+    RCLCPP_INFO(this->get_logger(),
+                "identity clear (%s): %s epoch %u, %zu clear_bbox cell box(es) in %s%s", what,
+                track.object_id.c_str(), track.epoch, boxes.size(), octomap_frame_.c_str(),
+                truncated ? "; TRUNCATED, the rest stay in the octree" : "");
+  }
+
   std::string base_frame_;
   std::string octomap_frame_;
   double resolution_{0.05};
@@ -638,6 +1044,13 @@ private:
   std::set<std::pair<std::string, std::uint64_t>> swept_seen_;
   rclcpp::Time last_sweep_clear_{0, 0, RCL_ROS_TIME};
   SupportPatchAnchors support_patch_anchors_;
+  std::map<std::pair<std::string, std::uint32_t>, IdentityCarry> identity_carries_;
+  std::map<std::string, IdentityHome> identity_homes_;
+  IdentityKeys identity_was_bound_;  ///< bindings cleared by identity on the last tick
+  ReleaseClears release_clears_;
+  double released_clear_timeout_s_{kReleasedClearTimeoutS};
+  octomap::KeySet static_keys_;
+  rclcpp::Time last_identity_flush_{0, 0, RCL_ROS_TIME};
   AttachLinkTfFrames attach_link_tf_frames_;
   std::unordered_set<std::string> unmapped_links_warned_;  ///< one hint per link, not per tick
 
@@ -647,6 +1060,8 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
+  /// False once any clearing step of the grid being built withheld what it owed.
+  bool clearing_complete_{true};
   rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

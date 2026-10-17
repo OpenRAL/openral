@@ -79,6 +79,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import rotation_to_quat_wxyz
+from openral_core.perception_geometry import backproject_masked_depth
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import IntrinsicsPinhole
@@ -222,82 +223,6 @@ class VisionAttachmentReport:
     candidate_index: int = -1
     candidate_count: int = 0
     mask_score_advisory: float = 0.0
-
-
-def backproject_masked_depth(
-    mask: NDArray[np.bool_],
-    depth_m: NDArray[np.float64],
-    intrinsics: IntrinsicsPinhole,
-    *,
-    min_depth_m: float,
-    max_depth_m: float,
-) -> tuple[NDArray[np.float64], float]:
-    """Back-project the masked pixels of a depth frame into the camera frame.
-
-    Args:
-        mask: ``(H, W)`` boolean segmentation mask.
-        depth_m: ``(H, W)`` metric depth, same shape as ``mask``. Zero / NaN /
-            out-of-range readings are treated as missing.
-        intrinsics: Pinhole intrinsics matching the frame's resolution. Rescale
-            with ``openral_core.scale_intrinsics_to`` first if they were
-            calibrated at a different size.
-        min_depth_m: Readings at or below this are invalid.
-        max_depth_m: Readings at or above this are invalid.
-
-    Returns:
-        ``(points, valid_fraction)`` — an ``(N, 3)`` float64 array of points in
-        the camera **optical** frame (REP-103: +x right, +y down, +z forward),
-        and the fraction of masked pixels that carried usable depth. An empty
-        mask yields ``((0, 3), 0.0)`` rather than raising: "nothing was masked"
-        is a gate result, not an error.
-
-    Raises:
-        ROSConfigError: If ``mask`` and ``depth_m`` shapes disagree, or the
-            intrinsics resolution does not match the frame.
-
-    Rays leave pixel *centres* (``col + 0.5``), unlike
-    ``openral_hal.depth_cloud.points_from_depth_grid``, which inverts the depth synth's
-    own corner-indexed projection.
-
-    Example:
-        >>> import numpy as np
-        >>> from openral_core import IntrinsicsPinhole
-        >>> k = IntrinsicsPinhole(width=4, height=2, fx=2.0, fy=2.0, cx=2.0, cy=1.0)
-        >>> m = np.zeros((2, 4), dtype=bool)
-        >>> m[1, 2] = True
-        >>> d = np.full((2, 4), 0.5)
-        >>> pts, frac = backproject_masked_depth(m, d, k, min_depth_m=0.1, max_depth_m=1.0)
-        >>> pts.round(3).tolist()
-        [[0.125, 0.125, 0.5]]
-        >>> frac
-        1.0
-    """
-    if mask.shape != depth_m.shape:
-        raise ROSConfigError(
-            f"backproject_masked_depth: mask shape {mask.shape} != depth shape {depth_m.shape}."
-        )
-    if mask.shape != (intrinsics.height, intrinsics.width):
-        raise ROSConfigError(
-            f"backproject_masked_depth: frame {mask.shape} does not match intrinsics "
-            f"{(intrinsics.height, intrinsics.width)}; rescale with scale_intrinsics_to first."
-        )
-    masked_total = int(mask.sum())
-    if masked_total == 0:
-        return np.zeros((0, 3), dtype=np.float64), 0.0
-
-    rows, cols = np.nonzero(mask)
-    z = np.asarray(depth_m, dtype=np.float64)[rows, cols]
-    usable = np.isfinite(z) & (z > min_depth_m) & (z < max_depth_m)
-    valid_fraction = float(usable.sum()) / float(masked_total)
-    if not usable.any():
-        return np.zeros((0, 3), dtype=np.float64), valid_fraction
-
-    z = z[usable]
-    u = cols[usable].astype(np.float64) + 0.5
-    v = rows[usable].astype(np.float64) + 0.5
-    x = (u - intrinsics.cx) * z / intrinsics.fx
-    y = (v - intrinsics.cy) * z / intrinsics.fy
-    return np.stack((x, y, z), axis=1), valid_fraction
 
 
 def _pca_basis(points: NDArray[np.float64]) -> NDArray[np.float64]:

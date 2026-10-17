@@ -28,7 +28,9 @@ from openral_msgs.msg import FailureTrigger, SafetyStatus
 
 # Every FailureTrigger kind SafetyStatus redeclares. KIND_SUPPRESSED_SUMMARY
 # (254) is deliberately absent: it is a rate-limiter roll-up marker on the
-# failure *bus*, never a reason actions are being suppressed right now.
+# failure *bus*, never a reason actions are being suppressed right now. So is
+# KIND_OBJECT_QUERY (11, issue #418): a World State search escalation to the
+# reasoner, never a kernel drop cause.
 _SHARED_KINDS = (
     "KIND_TIMEOUT",
     "KIND_FORCE",
@@ -74,6 +76,7 @@ def test_drop_constants_are_disjoint_from_kind_constants() -> None:
     """No ``DROP_*`` value may collide with any ``KIND_*`` value."""
     kinds = {getattr(SafetyStatus, name) for name in _SHARED_KINDS}
     kinds.add(FailureTrigger.KIND_SUPPRESSED_SUMMARY)
+    kinds.add(FailureTrigger.KIND_OBJECT_QUERY)
     drops = {getattr(SafetyStatus, name) for name in _DROP_CONSTANTS}
     assert kinds.isdisjoint(drops), f"DROP_*/KIND_* overlap: {sorted(kinds & drops)}"
     assert len(drops) == len(_DROP_CONSTANTS), "two DROP_* constants share a value"

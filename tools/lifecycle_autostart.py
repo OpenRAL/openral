@@ -39,6 +39,14 @@ _STATE_TO_TRANSITION = {
 }
 
 
+# The FSM states that mean a transition landed. ACTIVATE starts from ``inactive``, so
+# ``inactive`` is not evidence that it advanced.
+_GOAL_STATES = {"configure": {"inactive", "active"}, "activate": {"active"}}
+# Slice of the change_state wait between get_state reads: a dropped reply (Jazzy
+# ``failed to send response (timeout)``) is noticed within this, not after the budget.
+_POLL_SLICE_S = 2.0
+
+
 def _service_path(node: str, suffix: str) -> str:
     return f"{node.rstrip('/')}/{suffix}"
 
@@ -98,8 +106,19 @@ def _drive_transition(
     # import, ``env.reset``, a cold ``uv`` build measured at ~27s) — a
     # fixed 30s timeout previously returned ``future.result()=None`` and
     # false-failed a transition that was about to succeed. Wait the
-    # caller-supplied budget instead.
-    rclpy.spin_until_future_complete(node, future, timeout_sec=transition_timeout_s)
+    # caller-supplied budget instead. A dropped reply leaves the future pending although the FSM moved: read the state
+    # between slices and accept it as soon as it is the transition's goal state.
+    goal = _GOAL_STATES.get(transition_label, {"inactive", "active"})
+    deadline = time.monotonic() + transition_timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        rclpy.spin_until_future_complete(
+            node, future, timeout_sec=max(0.0, min(_POLL_SLICE_S, remaining))
+        )
+        if future.done() or remaining <= _POLL_SLICE_S:
+            break
+        if _read_state(node, target_node, get_state_client) in goal:
+            return
     resp = future.result()
     # Post-call state is the source of truth, not ``resp.success``: Jazzy's
     # first CONFIGURE returns ``success=false`` even though the FSM
@@ -109,7 +128,7 @@ def _drive_transition(
     grace_deadline = time.monotonic() + 5.0
     while True:
         post_state = _read_state(node, target_node, get_state_client)
-        if post_state in {"inactive", "active"}:
+        if post_state in goal:
             return
         if resp is not None and resp.success:
             return

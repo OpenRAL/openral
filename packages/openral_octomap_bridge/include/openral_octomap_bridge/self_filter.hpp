@@ -34,6 +34,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <string>
 #include <vector>
@@ -233,14 +234,21 @@ inline bool valid_self_filter_padding(double padding_m) noexcept {
 /// and broad-phase bound precomputed once per cloud.
 class SelfMask {
 public:
-  /// Replace the mask's primitives. `padding_m` is clamped to be non-negative.
-  /// `hulls[i]`, where present and non-null, is primitive `i`'s tight geometry
-  /// (a box's); primitives past the end of `hulls` (a payload's) have none.
+  /// Replace the mask's primitives. Primitive `i` is padded by `padding_m +
+  /// extra_padding_m[i]` (entries past the end of `extra_padding_m` — a
+  /// payload's — by `padding_m` alone), clamped to `[0, kMaxSelfFilterPaddingM]`:
+  /// the blind-shell cap holds at any speed (hazard log Entry 035), so a fast
+  /// link is under-padded, which leaves robot points in the map (a false stop),
+  /// never more of the world erased. `hulls[i]`, where present and non-null, is
+  /// primitive `i`'s tight geometry (a box's); primitives past its end have none.
   void set(const std::vector<PayloadPrimitive>& primitives, double padding_m,
-           const std::vector<const SelfHull*>& hulls = {});
-  /// Is `p` (cloud frame) within the padding of any primitive?
+           const std::vector<const SelfHull*>& hulls = {},
+           const std::vector<double>& extra_padding_m = {});
+  /// Is `p` (cloud frame) within its padding of any primitive?
   bool contains(const tf2::Vector3& p) const noexcept;
   std::size_t size() const noexcept { return entries_.size(); }
+  /// Primitive `i`'s padding after the clamp.
+  double padding(std::size_t i) const noexcept { return entries_[i].padding; }
 
 private:
   struct Entry {
@@ -248,11 +256,108 @@ private:
     const SelfHull* hull{nullptr};  ///< refines a box primitive; null = none
     tf2::Transform local_from_frame;
     tf2::Vector3 center;
+    double padding{0.0};
     double reach_sq{0.0};  ///< (bounding radius + padding)^2
   };
   std::vector<Entry> entries_;
-  double padding_m_{0.0};
 };
+
+/// One complete joint-position sample (every dof the model reads) at its stamp.
+struct JointSample {
+  std::int64_t stamp_ns{0};
+  std::vector<double> q;
+};
+
+/// Why `joint_state_at` refused a stamp (`kOk` = it did not).
+enum class JointStateVerdict : std::uint8_t {
+  kOk = 0,
+  kNoState = 1,        ///< no sample near the stamp at all
+  kGap = 2,            ///< the samples around it are more than 2 periods apart
+  kExtrapolation = 3,  ///< it lies more than 1 period past the newest (or before the oldest)
+};
+
+/// Joint positions `q` and rates `qdot` at `stamp_ns`, from `history` (sorted
+/// by stamp): linear interpolation between the two samples that bracket it.
+/// Refused (`q` untouched) when those samples are more than `2 * period_s`
+/// apart, or when the stamp lies outside the history and reaching it needs
+/// more than `period_s` of extrapolation from the two outermost samples (one
+/// sample cannot be extrapolated), or when the nearest sample is more than
+/// `max_skew_s` away. A stamp equal to a sample's is that sample; its rate is
+/// the difference to a neighbour within `2 * period_s`, else zero. A refused
+/// frame is no evidence: the caller drops it.
+JointStateVerdict joint_state_at(const std::deque<JointSample>& history, std::int64_t stamp_ns,
+                                 double period_s, double max_skew_s, std::vector<double>& q,
+                                 std::vector<double>& qdot);
+
+/// How far each robot primitive can move between the poses `link_a` and
+/// `link_b` (two `self_forward_kinematics` results): `|Δorigin| + r·θ`, `r` its
+/// bounding radius and `θ` the rotation angle between the two poses — an upper
+/// bound on the displacement of every point of a rigid body. One value per
+/// `model.primitives` entry, model order, into `out` (resized).
+void self_primitive_motion(const SelfModel& model, const std::vector<tf2::Transform>& link_a,
+                           const std::vector<tf2::Transform>& link_b, std::vector<double>& out);
+
+/// Robot-mask pixel values (`/openral/cameras/<cam>/robot_mask`, mono8).
+inline constexpr std::uint8_t kRobotMaskFree = 0;
+inline constexpr std::uint8_t kRobotMaskUncertain = 128;
+inline constexpr std::uint8_t kRobotMaskRobot = 255;
+/// `DEPTH_TOL_M`: a pixel is ROBOT when the rendered robot depth is within
+/// this of the measured depth, or in front of it.
+inline constexpr double kRobotMaskDepthTolM = 0.005;
+/// The 3-D backstop's margins: a back-projected return inside the UNPADDED
+/// hand geometry, or within 10 mm of any other link, is ROBOT.
+inline constexpr double kRobotMaskHandMarginM = 0.0;
+inline constexpr double kRobotMaskArmMarginM = 0.010;
+/// A return this far behind the robot's rendered front, and outside every primitive by
+/// more than `kRobotMaskArmMarginM`, is something the camera sees past the robot's
+/// envelope (a convex hull / 26-DOP spans a gripper's open jaw): not ROBOT (#418).
+inline constexpr double kRobotMaskSeeThroughM = 0.03;
+
+/// A rectified pinhole camera (`CameraInfo.k`), optical frame: +z forward.
+struct PinholeCamera {
+  double fx{0.0};
+  double fy{0.0};
+  double cx{0.0};
+  double cy{0.0};
+  std::size_t width{0};
+  std::size_t height{0};
+};
+
+/// Buffers `render_robot_mask` reuses across frames (no per-frame allocation
+/// once they reach the image size).
+struct RobotMaskScratch {
+  std::vector<float> z_robot;
+  std::vector<std::uint8_t> robot;
+  std::vector<std::uint8_t> not_robot;
+  std::vector<std::uint8_t> backstop;
+  std::vector<std::uint8_t> inside;
+  std::vector<std::uint8_t> tmp;
+  std::vector<std::uint8_t> near_robot;
+  std::vector<std::uint8_t> near_free;
+};
+
+/// The robot's silhouette in one depth image. `primitives` are the UNPADDED
+/// robot primitives in the camera's optical frame (`hulls` parallel, null =
+/// none; a hulled box is rendered as its 26-DOP), `backstop_margin_m` their 3-D
+/// backstop margins (parallel). `depth_m` is `width*height` metres, row-major;
+/// a non-finite or non-positive value is no return.
+///
+/// Each primitive is rasterised over its projected bounding box only (a ray per
+/// pixel of that footprint against that one primitive), into a z-buffer of the
+/// robot's depth `Z_r`. Pixel `p` is ROBOT iff `Z_r(p) <= D(p) + kRobotMaskDepthTolM`
+/// — so an object in front of a finger stays FREE — unless the return lies more than
+/// `kRobotMaskSeeThroughM` behind `Z_r(p)` and outside every primitive by more than
+/// `kRobotMaskArmMarginM` (seen past the envelope: FREE); or its back-projected
+/// return lies within its primitive's backstop margin. A pixel within
+/// `uncertain_px` (Chebyshev) of both a ROBOT and a non-ROBOT z-test pixel is
+/// UNCERTAIN unless the backstop holds it, and so is a pixel the robot covers
+/// that has no return. Everything else is FREE. `mask` is resized to
+/// `width*height`.
+void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
+                       const std::vector<const SelfHull*>& hulls,
+                       const std::vector<double>& backstop_margin_m, const float* depth_m,
+                       const PinholeCamera& camera, int uncertain_px, RobotMaskScratch& scratch,
+                       std::vector<std::uint8_t>& mask);
 
 /// The x/y/z of each `point_step`-byte record of `data` as packed 12-byte FLOAT32
 /// records (offsets 0, 4, 8): a coloured cloud's points for a consumer that reads

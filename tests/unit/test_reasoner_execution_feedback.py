@@ -145,6 +145,7 @@ def test_permanent_skill_failure_removes_only_that_skill() -> None:
         result_cls.FAILURE_PERCEPTION_STALE,
         result_cls.FAILURE_PLANNING_ERROR,
         result_cls.FAILURE_CANCELLED,
+        result_cls.FAILURE_OBJECT_NOT_FOUND,
         result_cls.FAILURE_UNKNOWN,
         result_cls.FAILURE_NONE,
     ):

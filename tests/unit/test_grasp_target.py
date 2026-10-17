@@ -30,7 +30,7 @@ from numpy.typing import NDArray
 from openral_core import IntrinsicsPinhole, PlaceRegion, Pose6D, RobotUnit
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import yaw_to_quat_xyzw
-from openral_hal._grasp_target import (
+from openral_core.perception_geometry import (
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,

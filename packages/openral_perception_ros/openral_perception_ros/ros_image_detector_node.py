@@ -64,8 +64,11 @@ Parameters:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from typing import Any
+
+import numpy as np
 
 from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
 
@@ -217,6 +220,65 @@ def stamp_camera_geometry(md: Any, geometry: tuple[str, Any] | None) -> Any:
     return type(md).model_validate(
         {**md.model_dump(), "camera_frame_id": frame, "camera_intrinsics": k}
     )
+
+
+def _takes_score_threshold(detector: Any) -> bool:
+    """Whether ``detector.detect_with_query`` accepts a per-call ``score_threshold``."""
+    import inspect
+
+    try:
+        return "score_threshold" in inspect.signature(detector.detect_with_query).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def crop_bgr(
+    bgr: bytes, width: int, height: int, roi_norm_xyxy: Sequence[float]
+) -> tuple[bytes, int, int, int, int] | None:
+    """``(bytes, w, h, x0, y0)`` of the packed BGR frame cropped to a normalised ROI.
+
+    ``roi_norm_xyxy`` is ``(x0, y0, x1, y1)`` in ``[0, 1]`` of the frame (clamped);
+    ``None`` = detect on the whole frame (no ROI, or one with no area). Issue #418: a
+    1920x1080 frame squashed to the detector's 640x640 left a restock carton ~40 px.
+
+    Example:
+        >>> crop_bgr(bytes(4 * 2 * 3), 4, 2, (0.5, 0.0, 1.0, 1.0))[1:]
+        (2, 2, 2, 0)
+    """
+    if len(roi_norm_xyxy) != 4:
+        return None
+    a, b, c, d = (min(max(float(v), 0.0), 1.0) for v in roi_norm_xyxy)
+    x0, y0 = int(a * width), int(b * height)
+    x1, y1 = math.ceil(c * width), math.ceil(d * height)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    img = np.frombuffer(bgr, dtype=np.uint8).reshape(height, width, 3)
+    return np.ascontiguousarray(img[y0:y1, x0:x1]).tobytes(), x1 - x0, y1 - y0, x0, y0
+
+
+def uncrop_metadata(md: Any, x0: int, y0: int, width: int, height: int) -> Any:
+    """``md`` (detected on a crop at ``(x0, y0)``) back in the full ``width x height`` frame.
+
+    Example:
+        >>> from openral_core import ObjectDetection2D, ObjectsMetadata
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="c",
+        ...     model_id="m",
+        ...     frame_width=10,
+        ...     frame_height=10,
+        ...     detections=[ObjectDetection2D(label="box", confidence=0.5, bbox_xyxy=(1, 2, 3, 4))],
+        ... )
+        >>> uncrop_metadata(md, 100, 50, 640, 480).detections[0].bbox_xyxy
+        (101, 52, 103, 54)
+    """
+    dets = [
+        d.model_copy(
+            update={"bbox_xyxy": (d.bbox_xyxy[0] + x0, d.bbox_xyxy[1] + y0,
+                                  d.bbox_xyxy[2] + x0, d.bbox_xyxy[3] + y0)}
+        )
+        for d in md.detections
+    ]  # fmt: skip
+    return md.model_copy(update={"detections": dets, "frame_width": width, "frame_height": height})
 
 
 def main(args: Any = None) -> None:
@@ -691,11 +753,24 @@ def main(args: Any = None) -> None:
                 )
                 return response
             bgr, w, h = frame
+            # #418: the caller's region of interest (normalised), detected on that crop and
+            # answered in full-frame pixels; none (or empty) = the whole frame.
+            crop = crop_bgr(bgr, w, h, list(getattr(request, "roi_norm_xyxy", ()) or ()))
+            src, sw, sh, ox, oy = crop if crop is not None else (bgr, w, h, 0, 0)
             try:
+                floor = float(getattr(request, "min_score", 0.0) or 0.0)
                 if query and hasattr(self._detector, "detect_with_query"):
-                    md = self._detector.detect_with_query(bgr, w, h, self._sensor_id, query)
+                    md = (
+                        self._detector.detect_with_query(
+                            src, sw, sh, self._sensor_id, query, score_threshold=floor
+                        )
+                        if floor > 0.0 and _takes_score_threshold(self._detector)
+                        else self._detector.detect_with_query(src, sw, sh, self._sensor_id, query)
+                    )
                 else:
-                    md = self._detector.detect(bgr, w, h, self._sensor_id)
+                    md = self._detector.detect(src, sw, sh, self._sensor_id)
+                if md is not None and crop is not None:
+                    md = uncrop_metadata(md, ox, oy, w, h)
             except Exception as exc:  # best-effort; never crash the service
                 self.get_logger().warning(f"locate_in_view detect failed: {exc}")
                 response.found = False
@@ -709,6 +784,7 @@ def main(args: Any = None) -> None:
                 response.metadata_json = self._stamp_camera(camera, md).model_dump_json()
             self.get_logger().info(
                 f"locate_in_view: query={query!r} camera={camera!r} found={response.found}"
+                f" crop={None if crop is None else (ox, oy, sw, sh)}"
             )
             return response
 

@@ -76,7 +76,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -187,6 +187,10 @@ def _scene_default_port(task_id: str, robot_id: str, layout: str, world: str = "
 # dead sidecar).
 _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 900.0
+#: ``step`` frame modes and the observation keys a ``"none"`` step omits; must match
+#: ``FRAME_MODES`` / ``FRAME_KEYS`` in ``tools/_isaac_scene_base.py`` (Isaac interpreter).
+FRAME_MODES = ("render", "fresh", "none")
+_FRAME_KEYS = ("images", "image_time_ns", "depth_frames")
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
 
@@ -388,6 +392,68 @@ class _IsaacSimSidecar(SidecarSimRollout):
     """
 
     layout: IsaacActionLayout | None = None
+    # One-shot frame mode for the next ``step`` (``set_frames_next_step``).
+    _frames_next: str = "render"
+    # The wrapped frame entries (``images`` / ``image_time_ns`` / ``depth_frames``) of the
+    # last reply that carried frames, reused as the same objects by a ``frames="none"``
+    # step (its reply carries none): consumers tell a new frame from a reused one by
+    # identity (``SimAttachedHAL.read_depth_frames``, the sensor bridge).
+    _wrapped_frames: dict[str, Any] = field(default_factory=dict)
+    # ``backend_options.keep_alive``: ``close`` leaves the sidecar running for the
+    # next run of the same scene to adopt (``launch_id`` identity) instead of ending it.
+    keep_alive: bool = False
+
+    def close(self) -> None:
+        """End the sidecar, or with ``keep_alive`` leave it running for the next run.
+
+        Kept alive, the next ``sim run`` of the same scene (same launch arguments and
+        sidecar code: the ``launch_id`` in its ping) adopts it and skips Kit's boot; a
+        run without ``keep_alive`` ends it when it closes. Logged either way.
+        """
+        if not self.keep_alive:
+            super().close()
+            return
+        pid = self._client.detach()
+        _log.info(
+            "isaac_sidecar_kept_alive",
+            port=self._client.port,
+            pid=pid,
+            stop="run once without keep_alive (sim run without --keep-sim-open), or kill the pid",
+        )
+
+    def set_frames_next_step(self, frames: str) -> None:
+        """Choose what the NEXT ``step`` renders: ``"render"``, ``"fresh"`` or ``"none"``.
+
+        One-shot: the step after it renders as usual unless asked again, so a caller
+        that never calls this sees no change. ``"none"`` skips rendering (most of an
+        Isaac step's cost) and the observation reuses the previous frames, which keep
+        the ``image_time_ns`` of the state they show. ``"fresh"`` renders until the
+        frames show this step's state (the RTX pipeline otherwise delivers them a few
+        renders late). See ``tools/_isaac_scene_base.py``.
+
+        Example:
+            >>> from openral_sim.backends.isaac_sim import FRAME_MODES
+            >>> FRAME_MODES
+            ('render', 'fresh', 'none')
+        """
+        if frames not in FRAME_MODES:
+            raise ROSConfigError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
+        self._frames_next = frames
+
+    def refresh_frames(self) -> Observation:
+        """Render the current state's frames without stepping physics; the new observation.
+
+        The sidecar ``refresh_frames`` endpoint: renders until every timed camera's
+        frame shows the current sim time (as a ``"fresh"`` step) and returns the full
+        observation. For a waiter that holds the runner and so the stepping
+        (``SimAttachedHAL.refresh_frames``).
+        """
+        reply = self._client.call("refresh_frames")
+        return self._wrap_obs(self._client.require(reply, "observation"))
+
+    def _step_options(self) -> dict[str, Any]:
+        frames, self._frames_next = self._frames_next, "render"
+        return {} if frames == "render" else {"frames": frames}
 
     def pack_action(
         self,
@@ -517,7 +583,9 @@ class _IsaacSimSidecar(SidecarSimRollout):
             )
         self._sim_dt_per_tick_s = float(dt)
 
-    def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+    def _wrap_frames(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """The frame entries of a reply that carries frames, in eval-layer shape."""
+        out: dict[str, Any] = {}
         images_raw = raw.get("images", {})
         images: dict[str, NDArray[np.uint8]] = {
             k: np.asarray(v, dtype=np.uint8) for k, v in images_raw.items()
@@ -529,18 +597,37 @@ class _IsaacSimSidecar(SidecarSimRollout):
             w = self.scene.observation_width
             cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
             images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
-        state = np.asarray(raw.get("state", []), dtype=np.float32).reshape(-1)
-        obs: Observation = {
-            "images": images,
-            "state": state,
-            "task": raw.get("task", self.task.instruction),
-        }
+        out["images"] = images
         # Sim time (ns, the sidecar's ``sim_time_ns`` domain) each camera's frame
         # shows, by obs key — the RTX pipeline delivers images a few steps behind the
         # state (issue #361), so they are NOT from this step's time.
         image_times = raw.get("image_time_ns")
         if isinstance(image_times, dict):
-            obs["image_time_ns"] = {str(k): int(v) for k, v in image_times.items()}
+            out["image_time_ns"] = {str(k): int(v) for k, v in image_times.items()}
+        # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
+        # the RGB-D streams a real driver publishes, for the vision attachment leg.
+        # One contract for every backend (``openral_sim.depth_frames``).
+        frames = raw.get("depth_frames")
+        if isinstance(frames, dict):
+            from openral_sim.depth_frames import depth_frame
+
+            out["depth_frames"] = {
+                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
+                for k, v in frames.items()
+                if isinstance(v, dict)
+            }
+        return out
+
+    def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+        if "images" in raw or not self._wrapped_frames:
+            self._wrapped_frames = self._wrap_frames(raw)
+        # else a frames="none" step: the sidecar rendered nothing, the last frames stand.
+        state = np.asarray(raw.get("state", []), dtype=np.float32).reshape(-1)
+        obs: Observation = {
+            **self._wrapped_frames,
+            "state": state,
+            "task": raw.get("task", self.task.instruction),
+        }
         # Real robot joint angles (manifest order), when the sidecar provides
         # them — `openral deploy sim`'s SimAttachedHAL.read_state reads this for
         # a non-MuJoCo backend's /joint_states.
@@ -558,25 +645,6 @@ class _IsaacSimSidecar(SidecarSimRollout):
         base_pose = raw.get("base_pose")
         if base_pose is not None:
             obs["base_pose"] = np.asarray(base_pose, dtype=np.float32).reshape(-1)
-        # Per-depth-sensor point clouds ((N,3) base_link), when the manifest scene
-        # renders a depth camera — SimSensorBridge publishes them as PointCloud2.
-        clouds = raw.get("depth_points")
-        if isinstance(clouds, dict):
-            obs["depth_points"] = {
-                k: np.asarray(v, dtype=np.float32).reshape(-1, 3) for k, v in clouds.items()
-            }
-        # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
-        # the RGB-D streams a real driver publishes, for the vision attachment leg.
-        # One contract for every backend (``openral_sim.depth_frames``).
-        frames = raw.get("depth_frames")
-        if isinstance(frames, dict):
-            from openral_sim.depth_frames import depth_frame
-
-            obs["depth_frames"] = {
-                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
-                for k, v in frames.items()
-                if isinstance(v, dict)
-            }
         # 2-D LaserScan range fan (base_link), when the manifest scene has a lidar
         # — SimSensorBridge publishes it as /scan.
         scan = raw.get("scan")
@@ -1057,6 +1125,10 @@ class IsaacPlacement(BaseModel):
 
     ``target`` and ``adjacent`` name ``IsaacPlacementSuccess.regions``; ``adjacent`` are
     the regions that count as "the one next to it" (e.g. the neighbouring shelf slots).
+    ``label`` is the open-vocabulary detector label the object tracker queries (issue
+    #418); unset, it is derived from ``object`` (``orange_1`` → ``orange``), which only
+    works for a name that is a class. Set it for a prim name that is not one
+    (``stock_object``, ``carton_b``). Grading never reads it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1064,6 +1136,7 @@ class IsaacPlacement(BaseModel):
     object: str
     target: str
     adjacent: list[str] = Field(default_factory=list)
+    label: str | None = Field(default=None, min_length=1)
 
 
 class IsaacPlacementGrade(BaseModel):
@@ -1188,6 +1261,30 @@ class IsaacPlacementSuccess(BaseModel):
                     )
         return self
 
+    def placements_for(self, prompt: str) -> list[tuple[str, str | None]]:
+        """``(object, destination object)`` per placement ``prompt`` asks for (issue #418).
+
+        The object is its ``label`` when the placement sets one, else its scene name. The
+        destination is the target region's ``relative_to`` (``None`` for a fixed
+        world-frame region such as a shelf slot). An unknown prompt places nothing.
+
+        Example:
+            >>> ps = IsaacPlacementSuccess(
+            ...     regions={
+            ...         "on_plate": IsaacPlacementRegion(
+            ...             min_xyz=(-0.1, -0.1, -0.1), max_xyz=(0.1, 0.1, 0.1), relative_to="plate"
+            ...         )
+            ...     },
+            ...     tasks={"pick it": [IsaacPlacement(object="orange_1", target="on_plate")]},
+            ... )
+            >>> ps.placements_for("pick it"), ps.placements_for("dance")
+            ([('orange_1', 'plate')], [])
+        """
+        return [
+            (p.label or p.object, self.regions[p.target].relative_to)
+            for p in self.tasks.get(prompt, [])
+        ]
+
 
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
@@ -1258,11 +1355,16 @@ class IsaacSimOptions(BaseModel):
     # (decimation 1), not per 1/30 s. Physics substeps still follow this rate.
     # None = the robot's own rate.
     control_freq_hz: float | None = Field(default=None, gt=0.0)
+    # Leave the sidecar running when the rollout closes, so the next run of this scene
+    # adopts it instead of booting Kit again (`openral sim run --keep-sim-open`).
+    keep_alive: bool = False
     # Speed knobs (sim cost, not the scene's look). Physics substeps are no knob: the
     # scene derives them from the control rate (one step = one tick, #355).
-    # RGB sensor name -> render raster height (px). The width, focal lengths and principal
-    # point scale with it (same field of view and lens), and so does the blur sigma: a
-    # policy that resizes to 224 px needs no larger render.
+    # Camera (RGB or depth) sensor name -> render raster height (px). The width, focal
+    # lengths and principal point scale with it (same field of view and lens), and so does
+    # an RGB blur sigma: a policy that resizes to 224 px needs no larger render. A depth
+    # camera renders at its manifest raster unless named here (#418 restock: head_zed
+    # at 1920x1080 cost 3.3x the 512 px tick; the scene asks 540).
     camera_render_height: dict[str, int] = Field(default_factory=dict)
     # False: no depth camera in the scene (no depth render, no point clouds), e.g. when
     # the world-collision check that consumes them is off.
@@ -2184,16 +2286,21 @@ def _camera_render_scale(
 ) -> dict[str, float]:
     """``camera_render_height`` as per-camera scale factors on the manifest raster.
 
-    Refuses names that are not RGB sensors with intrinsics (nothing to scale).
+    Refuses names that are not RGB or depth sensors with intrinsics (nothing to scale).
     """
-    rgb = {s.name: s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None}
-    unknown = sorted(set(camera_render_height) - set(rgb))
+    cams = {
+        s.name: s
+        for s in desc.sensors
+        if s.modality in ("rgb", "depth") and s.intrinsics is not None
+    }
+    unknown = sorted(set(camera_render_height) - set(cams))
     if unknown:
         raise ROSConfigError(
-            f"camera_render_height must name RGB sensors with intrinsics; invalid: {unknown}"
+            "camera_render_height must name RGB or depth sensors with intrinsics; "
+            f"invalid: {unknown}"
         )
     return {
-        name: h / rgb[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
+        name: h / cams[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
         for name, h in camera_render_height.items()
     }
 
@@ -2209,6 +2316,14 @@ def _render_desc(
             continue
         k = sensor.intrinsics
         f = scale.get(sensor.name)
+        if f is not None and k is not None:
+            _log.info(
+                "isaac.camera_render_override",
+                camera=sensor.name,
+                modality=sensor.modality,
+                manifest=f"{k.width}x{k.height}",
+                render=f"{round(k.width * f)}x{round(k.height * f)}",
+            )
         sensors.append(
             sensor.model_copy(
                 update={
@@ -2784,7 +2899,6 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
     )
-    launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
@@ -2794,6 +2908,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         launch_argv += ["--spawn-pose", *spawn_args]
     if objects_json:
         launch_argv += ["--objects-json", objects_json]
+    launch_id = _launch_id(launch_argv, robot_spec_hash)
+    launch_argv += ["--robot-spec", robot_spec_path, "--launch-id", launch_id]
 
     client = SidecarClient(
         name="isaac",
@@ -2805,6 +2921,12 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         auto_spawn=auto_spawn,
         # Reject (loudly) an already-running sidecar on this port that serves a
         # different scene, instead of silently adopting its wrong layout.
+        # A kept-alive sidecar outlives this run: it must not hold our stdout open.
+        log_path=(
+            Path.home() / ".cache" / "openral" / "isaac-sidecar" / f"sidecar-{port}.log"
+            if opts.keep_alive
+            else None
+        ),
         expected_identity={
             "task": env_cfg.task.id,
             "layout": layout,
@@ -2814,6 +2936,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "robot": robot_id,
             "objects": objects_json,
             "robot_spec_hash": robot_spec_hash,
+            "launch_id": launch_id,
         },
     )
     try:
@@ -2835,4 +2958,33 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         task=env_cfg.task,
         _client=client,
         layout=IsaacActionLayout.from_description(desc),
+        keep_alive=opts.keep_alive,
     )
+
+
+#: Sidecar source files whose content is part of ``_launch_id`` (beside the script).
+_SIDECAR_SOURCES = ("isaac_sidecar.py", "_isaac_scene_base.py", "isaac_manifest_scene.py")
+
+
+def _launch_id(launch_argv: list[str], robot_spec_hash: str) -> str:
+    """Identity of a sidecar launch: its arguments and the sidecar code it runs.
+
+    A kept-alive sidecar (``keep_alive``) is adopted only by a run whose launch would
+    be identical (instruction, observation size, step budget, interpreter, script
+    path, the robot spec by content, not its temp path) and whose checkout carries
+    the same sidecar sources, so a run never steps a scene built from other code.
+
+    Example:
+        >>> a = _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "t"], "h")
+        >>> a == _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "t"], "h")
+        True
+        >>> a == _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "u"], "h")
+        False
+    """
+    digest = hashlib.sha256()
+    digest.update(json.dumps([launch_argv, robot_spec_hash]).encode("utf-8"))
+    tools = Path(launch_argv[1]).parent
+    for name in _SIDECAR_SOURCES:
+        with contextlib.suppress(OSError):
+            digest.update(name.encode("utf-8") + (tools / name).read_bytes())
+    return digest.hexdigest()

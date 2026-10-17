@@ -8,6 +8,7 @@ ament_python_install_package(openral_world_state_ros)
 
 install(PROGRAMS
   scripts/world_state_node
+  scripts/object_tracker_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

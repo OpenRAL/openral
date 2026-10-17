@@ -282,7 +282,7 @@ def _raster(model: Any, data: Any, exclude: frozenset[int]) -> Any:
     axis-aligned box — asserted, not assumed.
     """
     import mujoco
-    from openral_hal._grasp_target import VoxelLattice
+    from openral_core.perception_geometry import VoxelLattice
 
     sx, sy, sz = _GRID_SIZE
     lo_idx = np.stack(np.meshgrid(np.arange(sx), np.arange(sy), np.arange(sz), indexing="ij"), -1)

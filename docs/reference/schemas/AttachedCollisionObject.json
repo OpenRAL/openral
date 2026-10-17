@@ -2,7 +2,7 @@
   "$defs": {
     "AttachedCollisionPrimitive": {
       "additionalProperties": false,
-      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True",
+      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n    geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``\n        (the tracked or single provisional object's own fitted geometry), ``grown`` (cells\n        observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of\n        candidates that may not be the held object; the default, and what a reader treats an\n        unknown code as). Only measured and grown primitives can explain the payload's own\n        cells to the kernel (``payload_own_cells_enabled``, sim only).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True\n    >>> p.geometry_source\n    'fallback'",
       "properties": {
         "shape": {
           "discriminator": {
@@ -39,6 +39,16 @@
             }
           ],
           "default": null
+        },
+        "geometry_source": {
+          "default": "fallback",
+          "enum": [
+            "fallback",
+            "measured",
+            "grown"
+          ],
+          "title": "Geometry Source",
+          "type": "string"
         }
       },
       "required": [
@@ -60,7 +70,9 @@
         "sim_contact_force",
         "map_support_proximity",
         "gripper_closure",
-        "grasp_target_region"
+        "grasp_target_region",
+        "tracked_object",
+        "pinch_fallback"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"
@@ -445,7 +457,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.",
+  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload. The\nremoval itself is the occupancy bridge's (``openral_octomap_bridge`` clears\nthe payload's own cells out of ``/openral/world_voxels`` while it appears\nhere); the kernel keeps checking the payload as robot geometry.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.\n    contact_force: Optional attestation of a measured contact force on the\n        declared place target (ADR-0100). ``None`` \u2014 the default, and what\n        every producer that cannot measure force publishes \u2014 means the\n        declaration-scoped force gate never arms and geometry decides\n        alone. The gate it feeds only ever adds a refusal; it never\n        licenses a contact the geometry refuses.\n    support_contact: Optional attestation that this payload is in bounded\n        support contact with a named environment surface (ADR-0092 D6).\n        ``None`` \u2014 the honest value for any producer that cannot measure\n        support contact, including the vision attachment producer \u2014 means\n        the safety kernel exempts no payload-vs-world contact at all.\n    epoch: Tracked-object epoch (issue #418): ``+1`` at every re-grounding after a\n        release. With ``object_id`` it is the kernel's retirement key. ``0`` for\n        every producer that does not track.\n    geometry_revision: Revision of the bound geometry within one binding; the\n        kernel unions revisions, so bound geometry only grows. ``0`` = first.",
   "properties": {
     "object_id": {
       "minLength": 1,
@@ -579,6 +591,18 @@
         }
       ],
       "default": null
+    },
+    "epoch": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "geometry_revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Geometry Revision",
+      "type": "integer"
     }
   },
   "required": [

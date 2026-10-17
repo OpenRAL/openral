@@ -152,6 +152,34 @@ provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the who
 The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
 non-finite) logs an ERROR and forwards nothing.
 
+Joint positions are linearly interpolated at the capture stamp between the two
+samples around it. The frame is refused (dropped, counted, WARN rate-limited)
+when those samples are more than two `joint_state_period_s` apart or the stamp
+needs more than one period of extrapolation past the newest; a refused frame
+inserts nothing. Each robot primitive's padding grows with its speed:
+`padding_m + |v|·velocity_padding_dt_s`, `|v|·δt` the primitive's motion over
+the interpolated joint rate within δt_sync (default 0.02 s: the stamp error
+interpolation cannot see; 0.5 m/s adds 10 mm). The total stays under the 0.10 m
+cap: a link faster than that is under-padded, which leaves its points in the
+map (a false stop) rather than erasing more of the world.
+
+**Robot mask** (issue #418, off by default). With `robot_mask_enabled`, the node
+also renders the UNPADDED model into each named depth camera at the depth
+stamp and publishes `/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128
+uncertain, 255 robot; the depth image's header; BEST_EFFORT, KEEP_LAST 5). A
+pixel is robot iff the rendered robot depth is at most the measured depth +
+5 mm (so a held object in front of a finger stays free) and the return is not seen
+past the robot (a return more than 3 cm behind the rendered front and more than 10 mm
+outside every link is not robot: a convex hull or 26-DOP spans a gripper's open jaw,
+#418), or its back-projected
+return is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of
+any other link. Pixels within `robot_mask_uncertain_px` of a robot/non-robot
+boundary, and robot-covered pixels with no return, are uncertain. Each
+primitive is rasterised over its projected bounding box only; a hulled box is
+rendered as its 26-DOP (which contains the hull). The deploy launch turns it on
+with `robot_mask_cameras:=top,wrist` (only where the self-filter runs).
+RGB-only cameras get no mask yet.
+
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
 filtered against that geometry, not the box: the box's slack (12–27 mm mean on
@@ -379,6 +407,77 @@ row owed): the payload's posed volume is cleared from the world map.** A real ob
 inside a posed payload box (the AABB of a primitive at one attached pose — a rotated
 box's corners included) — a hand entering right behind the payload, an object the
 payload is pressed against — disappears from the octree until a camera sees it again.
+
+### …and a tracked object is cleared by identity (issue #418)
+
+An attachment with `evidence_kind == "tracked_object"` (the Layer-2 tracker bound one
+tracked object to the hand) leaves the paths above and is cleared by identity
+(`identity_clearing.hpp`, `clear_by_identity`) — **only** when `identity_clearing_track`
+finds exactly one track with its `object_id`, status `bound`, the same `epoch` and
+`attach_link`, a finite `floor_z`, no other track bound to that link and no other
+payload on it, in a `tracked_objects` set whose frame (and every box's) is
+`base_frame`. Anything else — and every `"pinch_fallback"` attachment — is cleared by
+**nothing**: its cells stay obstacles (hazard OT-10). With object tracking off no
+attachment carries those kinds and every path above is unchanged.
+
+- **Current pose (grid).** Cells whose centre lies within half a cell of the bound
+  primitives, each narrowed by its tight hull when it ships one (`tight_dop_*`,
+  `tight_hull_vertices`; malformed tight geometry clears nothing).
+- **Sweep (octree, needs `payload_sweep_clear_service`).** The same test at every pose
+  of the attach link since `t_attach` — the attachment's `stamp_ns` on first sight,
+  backfilled from TF history (at most 5 s, 50 ms steps) — interpolated half a cell
+  apart between samples at most 0.25 s apart (a longer gap is never bridged by a
+  chord). The cells come from the bridge's copy of the octree: occupied
+  finest-resolution leaves only (a pruned coarser leaf is never sent, since
+  `clear_bbox` frees a whole leaf it touches), merged into at most 64 cell-exact boxes
+  per period; the rest stay.
+- **Vacated cells (octree).** Each track's last `confirmed` box is remembered. When it
+  is `confirmed` again more than a cell clear of that box (displaced while free), or
+  `bound` and carried more than a cell clear of it, the occupied cells centred in the old
+  box are cleared **once**, at that tick, and never again (a cell re-observed after it
+  stays). A re-associated track (`identity_inferred`) vacates nothing, and a stale or
+  unusable set forgets every remembered box.
+- **Release window (grid every tick; octree on each period).** When the kernel's jaw-open
+  release (K5) freezes a tracked payload in the base frame, the camera re-marks the
+  object at the release pose and the frozen payload meets its own cells — a false stop.
+  So, on the tick a track the bridge cleared by identity on its previous tick turns up
+  `released` (the tracker's `release_track`: its box at the release pose, `floor_z` =
+  support + one cell), the bridge clears the cells centred in that box ⊕ half a cell
+  (`advance_release_clears`, `released_clear_pieces`, `clear_released_box`) — and keeps
+  doing so only while the set is usable, exactly one track carries the id, `released`,
+  same epoch, and exactly one attachment on the wire carries the id with
+  `evidence_kind == "tracked_object"` and that epoch (the kernel holds a frozen payload
+  only while the wire carries the binding; without it the box would be in neither the
+  map nor the payload). The window closes for good — reopened only by a new binding the
+  bridge clears — when the track leaves `released` (`confirmed` at epoch + 1, `lost`),
+  the wire drops the binding, or after `released_clear_timeout_s` (default 3.0 s,
+  range (0, 10], refused otherwise). **That parameter must equal the kernel's
+  `tracked_release_timeout_s`**: the bridge cannot see the kernel's window, and its own
+  opens when the tracker's RELEASED record first arrives, so it can trail the kernel's by
+  the tracker-vs-kernel trigger skew plus one world-state period. A `pinch_fallback` or
+  ambiguous binding never opens one (it was never cleared by identity).
+- **Exclusions, always.** Never a cell centred below the object's `floor_z`; never a
+  cell within its circumradius of any **other** track's box, whatever that track's
+  status (and, when vacating a free object, of its own new box); declared static
+  geometry is re-marked on the grid after the clear and its octree cells are never
+  sent.
+
+**Hazard OT-8 (issue #418): identity clearing erases occupancy.** Residuals: a body
+entering a vacated box while occluded, between the departure and its detection; a
+`clear_bbox` the server applies to a newer octree than the bridge's copy (a cell
+re-observed in between, or one octomap has since pruned into a 2x2x2 leaf); a straight
+chord between two pose samples at most 0.25 s apart; a bound object that slipped out
+of the hand unnoticed (its home box is vacated); a body entering a released box during
+its release window (at most `released_clear_timeout_s`), and the half cell around the
+tracker's box beyond the kernel's frozen payload. Pinned by `test_identity_clearing`
+(`ReleaseClear.*` for the window) and `BridgeIdentitySweep.*`.
+
+**After the window (kernel, not changed here).** The kernel checks a frozen released
+payload against world cells for as long as the wire carries its binding, whatever its
+release state: `check_attached_voxel_collision` iterates every attached object, frozen
+ones included (`attached_object_transform` returns the frozen pose for
+`attach_link < 0`). Once this window closes the object's re-marked cells meet that
+payload again; only the producer dropping the binding from the wire ends it.
 
 ### …except the attested support patch, which is the counter
 
@@ -615,10 +714,16 @@ the kernel fails closed.
 The package's second executable (`robot_self_filter`, real camera path) takes
 `cloud_in` and publishes `cloud_out` (+ `cloud_out_rgb` for viewers). Parameters:
 the kernel's collision model (`collision_*`), `padding_m` (`0.02`),
-`max_joint_state_skew_s` (`0.1`), `tf_timeout_s` (`0.05`), `joint_state_history_s`
+`max_joint_state_skew_s` (`0.1`), `joint_state_period_s` (`0.05`; the launch
+passes `1 / action_spec.control_freq_hz`), `velocity_padding_dt_s` (`0.02`),
+`tf_timeout_s` (`0.05`), `joint_state_history_s`
 (`2.0`), `attached_filter_enabled` (`true`), `attached_state_timeout_s` (`0.5`),
 `joint_states_topic` (`/joint_states`), `world_state_topic`
-(`/openral/world_state_fast`). With no collision model it forwards nothing.
+(`/openral/world_state_fast`), and the robot mask's `robot_mask_enabled`
+(`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
+`robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
+`robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no
+collision model, or a period / δt_sync out of range, it forwards nothing.
 
 ## Producing the upstream OctoMap
 

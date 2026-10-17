@@ -39,6 +39,7 @@ from typing import Any
 
 import typer
 from openral_core import (
+    PhysicsBackend,
     SimEnvironment,
     SimScene,
     VLASpec,
@@ -247,6 +248,15 @@ def _sim_run_callback(
         "--dashboard-port",
         help="Port for the spawned dashboard when --dashboard is set.",
     ),
+    keep_sim_open: bool = typer.Option(
+        False,
+        "--keep-sim-open",
+        help=(
+            "Isaac scenes: leave the simulator sidecar running when the run ends, so the "
+            "next run of the same scene (same arguments and sidecar code) adopts it instead "
+            "of booting Kit again (~10-15 s). The first run without the flag ends it."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -278,6 +288,7 @@ def _sim_run_callback(
         dataset_repo_id=dataset_repo_id,
         dataset_license=dataset_license,
         view=view,
+        keep_sim_open=keep_sim_open,
         dry_run=dry_run,
         verbose=verbose,
     )
@@ -412,9 +423,19 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
     if args.max_steps is not None:
         task = task.model_copy(update={"max_steps": args.max_steps})
 
+    scene = scene_env.scene
+    if getattr(args, "keep_sim_open", False):
+        if scene.backend is not PhysicsBackend.ISAACSIM:
+            raise ROSConfigError(
+                f"--keep-sim-open keeps an Isaac sidecar running; scene {scene.id!r} runs "
+                f"on {scene.backend.value!r}, which has none to keep."
+            )
+        scene = scene.model_copy(
+            update={"backend_options": {**scene.backend_options, "keep_alive": True}}
+        )
     env = SimEnvironment(
         robot_id=resolved_robot,
-        scene=scene_env.scene,
+        scene=scene,
         task=task,
         vla=vla_spec,
         base_pose=scene_env.base_pose,

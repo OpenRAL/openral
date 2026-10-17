@@ -32,6 +32,7 @@ The reasoner is event-driven with a slow heartbeat:
 |---|---|---|
 | **A — safety** | `/openral/failure/safety` | `severity ≥ SEVERITY_WARN` |
 | **B — execution** | `/openral/failure/{hal,sensor,rskill,wam}` | `severity ≥ SEVERITY_FAIL` |
+| **B — object search** (issue #418) | `/openral/failure/world_state` (`KIND_OBJECT_QUERY`) | always: `unresolved` → `find-object` tick, `exhausted` → human handoff |
 | **C — critic** | `/openral/failure/critic` | `severity ≥ SEVERITY_FAIL` |
 | **D — operator** | `/openral/prompt` | always |
 

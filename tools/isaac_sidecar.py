@@ -7,9 +7,10 @@ Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
 environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash","launch_id"}
     reset->{"observation"}
-    step->{"observation","reward","terminated","truncated","info"}
+    step{action, frames?}->{"observation","reward","terminated","truncated","info","renders"}
+        frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
@@ -70,6 +71,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
     p.add_argument("--headless", action="store_true")
+    p.add_argument(
+        "--launch-id",
+        default="",
+        help="opaque launch identity echoed by ping (openral_sim isaac_sim._launch_id)",
+    )
     p.add_argument(
         "--layout",
         default="manifest",
@@ -165,6 +171,36 @@ def _check_required_versions(requirements: list[str]) -> None:
         )
 
 
+def _zero_delay_experience(isaac_root: str | None) -> str | None:
+    """Isaac's zero-delay Kit experience file, when the install ships one.
+
+    It runs the RTX pipeline without the default frames in flight, so a camera frame
+    trails the physics by ~2 renders instead of ~4 (measured on Isaac 6.1): a
+    ``frames="fresh"`` step then needs about half the catch-up renders, which are
+    most of its cost in a deploy scene. ``None`` keeps Kit's default experience.
+
+    Example:
+        >>> _zero_delay_experience("/nonexistent") is None
+        True
+    """
+    candidates = []
+    if isaac_root:
+        candidates.append(os.path.join(isaac_root, "apps", "isaacsim.exp.base.zero_delay.kit"))
+    try:
+        import isaacsim  # pip install: the apps live beside the package
+
+        package_file = getattr(isaacsim, "__file__", None)  # None for a namespace package
+        if package_file:
+            candidates.append(
+                os.path.join(
+                    os.path.dirname(package_file), "apps", "isaacsim.exp.base.zero_delay.kit"
+                )
+            )
+    except ImportError:
+        pass
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     if args.site_dir:
@@ -185,7 +221,13 @@ def main(argv: list[str]) -> int:
     #    on a live SimulationApp.
     from isaacsim import SimulationApp
 
-    sim_app = SimulationApp({"headless": bool(args.headless)})
+    experience = _zero_delay_experience(isaac_root)
+    print(f"[isaac_sidecar] Kit experience: {experience or 'default'}", flush=True)
+    sim_app = (
+        SimulationApp({"headless": bool(args.headless)}, experience=experience)
+        if experience
+        else SimulationApp({"headless": bool(args.headless)})
+    )
     if args.headless:
         # Kit keeps rendering its 1280x720 editor viewport every frame even headless;
         # nothing reads it and it costs ~20 % of a scene step (26 -> 20.5 ms measured
@@ -233,6 +275,7 @@ def main(argv: list[str]) -> int:
             robot=args.robot,
             objects=args.objects_json or "",
             robot_spec_hash=hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
+            launch_id=args.launch_id,
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -258,6 +301,7 @@ def _serve(
     robot: str,
     objects: str,
     robot_spec_hash: str,
+    launch_id: str = "",
 ) -> int:
     import msgpack
     import zmq
@@ -290,6 +334,7 @@ def _serve(
                     "robot": robot,
                     "objects": objects,
                     "robot_spec_hash": robot_spec_hash,
+                    "launch_id": launch_id,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the
@@ -299,7 +344,12 @@ def _serve(
                     "sim_time_ns": scene.sim_time_ns(),
                 }
             elif endpoint == "step":
-                reply = scene.step(np.asarray(data["action"], dtype=np.float32))
+                reply = scene.step(
+                    np.asarray(data["action"], dtype=np.float32),
+                    frames=str(data.get("frames", "render")),
+                )
+            elif endpoint == "refresh_frames":
+                reply = {"observation": scene.refresh_frames()}
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
             elif endpoint == "contacts":

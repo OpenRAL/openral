@@ -12,10 +12,13 @@
 #include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <array>
 #include <atomic>
 #include <bitset>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <string>
 #include <vector>
@@ -281,4 +284,255 @@ TEST(NoAlloc, GripperEndEffectorLookupIsAllocationFree) {
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}
+
+TEST(NoAlloc, TheTrackedBindingCheckIsAllocationFree) {
+  // Issue #418 K3: the binding check runs on every world-state message against
+  // the measured configuration; like the checks it gates, it must not allocate.
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  m.capsule_link = {1};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.01, 0.03};
+  m.box_link = {1};
+  m.boxes = {finger};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.touch_links.assign(1, 1);
+  att.objects[0].attach_link = 0;
+  att.objects[0].touch_count = 1;
+  att.n_objects = 1;
+  osk::Transform box;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int met = 0;
+  for (int i = 0; i < 10000; ++i) {
+    box.t.x = (i % 2 == 0) ? 0.0 : 0.5;
+    met += osk::tracked_box_meets_hand(m, s, att, att.objects[0], box, osk::Vec3{0.02, 0.02, 0.02},
+                                       0.025)
+               ? 1
+               : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_EQ(met, 5000) << "the loop really exercised both verdicts";
+}
+
+TEST(NoAlloc, AFrozenPayloadsChecksAreAllocationFree) {
+  // Issue #418 K5: the release window's separation test runs per world-state
+  // message and the frozen payload is checked on every candidate.
+  osk::CollisionModel m;
+  m.n_links = 1;
+  m.parent = {-1};
+  m.joint_kind = {osk::JointKind::kFixed};
+  m.dof_index = {-1};
+  m.origin = {osk::Transform{}};
+  m.axis = {{0, 0, 1}};
+  m.capsule_link = {0};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.primitives.assign(1, osk::AttachedPrimitive{});
+  att.primitives[0].radius = 0.01;
+  att.objects[0].attach_link = -1;
+  att.objects[0].release_hand_link = 0;
+  att.objects[0].prim_count = 1;
+  att.n_objects = 1;
+  att.n_primitives = 1;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sum = 0.0;
+  for (int i = 0; i < 10000; ++i) {
+    att.objects[0].pose_in_link.t.x = 0.001 * (i % 100);
+    sum += osk::released_payload_clearance(m, s, att, att.objects[0]);
+    sum += osk::check_attached_self_collision(m, att, s, 0.01).hit ? 1.0 : 0.0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_TRUE(std::isfinite(sum));
+}
+
+TEST(NoAlloc, TheTrackedGraspExemptionIsAllocationFree) {
+  // Issue #418 K2: the per-hand selection runs once per checked row inside the
+  // voxel check, and the cover count once per grid; neither may allocate.
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 1};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  osk::Obb finger;
+  finger.half_extents = {0.01, 0.01, 0.02};
+  m.box_link = {2};
+  m.boxes = {finger};
+  m.capsule_link = {1};
+  m.capsules = {osk::Capsule{0.015, 0.0, osk::Transform{}}};
+  std::bitset<osk::kMaxGraspMaskLinks> allow;
+  allow.set(2);
+  osk::TrackedGraspTable table;
+  ASSERT_TRUE(osk::build_grasp_hands(m, allow, table));
+  table.valid = true;
+  table.n_objects = 2;
+  table.box[0].t = {0.0, 0.0, 0.0};
+  table.half_extents[0] = {0.03, 0.03, 0.03};
+  table.box[1].t = {0.1, 0.0, 0.0};
+  table.half_extents[1] = {0.03, 0.03, 0.03};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  s.link_world[1].t = {-0.1, 0.0, 0.0};
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 5) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  grid.tracked_grasp = &table;
+  std::array<int, osk::kMaxGraspHands> sel{};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sink = 0.0;
+  std::size_t cover = 0;
+  for (int i = 0; i < 2000; ++i) {
+    s.link_world[2].t.x = (i % 2 == 0) ? 0.0 : 0.1;
+    osk::select_tracked_grasp(table, s, grid.resolution, sel);
+    sink += sel[0];
+    sink += osk::check_voxel_collision(m, s, grid, 0.02).sweep_min_distance;
+    cover += osk::tracked_box_cover(grid, table.box[0], table.half_extents[0]);
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the tracked grasp exemption allocated; CLAUDE.md §2 forbids this.";
+  EXPECT_TRUE(std::isfinite(sink));
+  EXPECT_GT(cover, 0U) << "the loop really counted occupied cells";
+}
+
+TEST(NoAlloc, TheExplainedCellsCheckIsAllocationFree) {
+  // Issue #418 K7: every pair the live workspace would tolerate asks whether its
+  // cell is explained (boxes, static cells, support), inside the voxel check.
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  osk::Obb hand;
+  hand.half_extents = {0.03, 0.03, 0.03};
+  m.box_link = {1};
+  m.boxes = {hand};
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 3) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  std::bitset<osk::kMaxGraspMaskLinks> hands;
+  hands.set(1);
+  ASSERT_EQ(osk::ingest_workspace_region(osk::Transform{}, {0.15, 0.15, 0.15}, hands, 0.5, 0.05,
+                                         grid.workspace_region),
+            osk::GraspRegionStatus::kOk);
+  grid.workspace_region.hand_speed_mps = 0.0;
+  grid.workspace_region.hand_lead_m = 0.0;
+  std::vector<std::uint8_t> static_mask(occ.size(), 0);
+  const std::vector<osk::Vec3> points = {{0.01, 0.01, 0.01}, {-0.03, 0.01, 0.01}};
+  ASSERT_EQ(osk::mark_static_cells(grid, points, static_mask.data(), static_mask.size()), 2U);
+  osk::WorkspaceExplanation e;
+  e.n_objects = 2;
+  e.half_extents[0] = {0.02, 0.02, 0.02};
+  e.box[1].t = {0.05, 0.0, 0.0};
+  e.half_extents[1] = {0.02, 0.02, 0.02};
+  e.support_z[0] = -0.02;
+  e.support_z[1] = std::numeric_limits<double>::quiet_NaN();
+  e.static_cells = static_mask.data();
+  e.static_cells_n = static_mask.size();
+  grid.workspace_explained = &e;
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sink = 0.0;
+  int explained = 0;
+  for (int i = 0; i < 2000; ++i) {
+    s.link_world[1].t.x = (i % 2 == 0) ? 0.0 : 0.05;
+    const auto hit = osk::check_voxel_collision(m, s, grid, 0.02);
+    sink += hit.sweep_min_distance + hit.workspace_denied;
+    explained += osk::workspace_cell_explained(grid, {0.01, 0.01, 0.01}) ? 1 : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the explained-cells check allocated; CLAUDE.md §2 forbids this.";
+  EXPECT_TRUE(std::isfinite(sink));
+  EXPECT_EQ(explained, 2000);
+}
+
+TEST(NoAlloc, ThePayloadOwnCellExemptionIsAllocationFree) {
+  // Issue #418 OT-10 amendment: the exemption runs inside the payload-vs-voxel sweep on every
+  // candidate; like the sweep it must not allocate.
+  osk::CollisionModel m;
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.primitives.assign(2, osk::AttachedPrimitive{});
+  att.touch_links.assign(1, 0);
+  att.objects[0].attach_link = 1;
+  att.objects[0].prim_count = 2;
+  for (int p = 0; p < 2; ++p) {
+    att.primitives[static_cast<std::size_t>(p)].kind = osk::AttachedShapeKind::kBox;
+    att.primitives[static_cast<std::size_t>(p)].half_extents = {0.03, 0.03, 0.03};
+  }
+  att.primitives[1].source = osk::PrimitiveSource::kMeasured;
+  att.n_objects = 1;
+  att.n_primitives = 2;
+  std::vector<std::uint8_t> occ(20 * 20 * 20, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 37) {
+    occ[i] = 1;
+  }
+  osk::PayloadOwnCells own;
+  own.valid = true;
+  own.armed = 1;
+  own.floor_z[0] = -0.3;
+  own.n_others = 2;
+  own.other_box[0].t = {0.1, 0.0, 0.0};
+  own.other_half[0] = {0.02, 0.02, 0.02};
+  own.other_box[1].t = {-0.1, 0.0, 0.0};
+  own.other_half[1] = {0.02, 0.02, 0.02};
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.2, -0.2, -0.2};
+  grid.resolution = 0.02;
+  grid.sx = grid.sy = grid.sz = 20;
+  grid.occupancy = occ.data();
+  grid.payload_own = &own;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int pairs = 0;
+  for (int i = 0; i < 2000; ++i) {
+    pairs += osk::check_attached_voxel_collision(m, att, s, grid, 0.01).payload_own_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_GT(pairs, 0) << "the loop really exercised the exemption";
 }

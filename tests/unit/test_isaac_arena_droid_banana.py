@@ -41,6 +41,7 @@ from openral_sim.backends.isaac_sim import (
 from openral_sim.policies.pi05 import (
     _anchor_deltas,
     _delta_action_mask,
+    _postprocessor_absolutizes,
     _refuse_rtc_with_deltas,
 )
 
@@ -183,6 +184,19 @@ def test_a_cartesian_delta_actuator_is_not_anchored_to_joint_state() -> None:
     mixed = [*_SKILL.actuators_required[:1], ee_delta, gripper]
     mask = _delta_action_mask(_SKILL.model_copy(update={"actuators_required": mixed}))
     assert mask == (True,) * 7 + (False,) * 6 + (False,)
+
+
+def test_a_postprocessor_that_absolutizes_is_not_anchored_again() -> None:
+    """A ``use_relative_actions`` checkpoint (the OpenArm restock pi0.5) makes its own
+    deltas absolute in its postprocessor; the adapter must not add the state twice."""
+    processor = pytest.importorskip("lerobot.processor")
+    relative = processor.RelativeActionsProcessorStep(enabled=True)
+    on = processor.AbsoluteActionsProcessorStep(enabled=True, relative_step=relative)
+    off = processor.AbsoluteActionsProcessorStep(enabled=False, relative_step=relative)
+    pipeline = processor.PolicyProcessorPipeline
+    assert _postprocessor_absolutizes(pipeline(steps=[on]))
+    assert not _postprocessor_absolutizes(pipeline(steps=[off]))
+    assert not _postprocessor_absolutizes(pipeline(steps=[]))
 
 
 def test_anchor_refuses_a_mask_of_the_wrong_width() -> None:

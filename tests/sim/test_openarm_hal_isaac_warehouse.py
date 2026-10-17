@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from openral_hal.depth_cloud import cloud_from_depth_frame
 
 from tests.sim.conftest import _repo_root, _sidecar_python_available
 
@@ -114,7 +115,10 @@ def test_head_depth_is_a_real_cloud_in_openarm_base(env: Any) -> None:
     and the camera rode the robot root Xform, which Isaac >= 6 leaves at the origin.
     """
     result = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 10)
-    cloud = result.observation["depth_points"]["head_zed"]
+    frame = result.observation["depth_frames"]["head_zed"]
+    cloud, _ = cloud_from_depth_frame(
+        frame["depth"], frame["rgb"], frame["k"], frame["optical_in_base"]
+    )
     assert cloud.shape[0] > 1000
     assert np.isfinite(cloud).all()
     assert float(np.min(cloud[:, 2])) == pytest.approx(-0.698, abs=0.02)
@@ -130,9 +134,11 @@ def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
     and the camera's optical pose in openarm_base — what the vision attachment leg
     needs (a real RGB-D driver publishes the same four streams).
 
-    Registration is checked against Isaac's own deprojection: depth pixels lifted
-    through ``k`` and ``optical_in_base`` land on the ``depth_points`` cloud Isaac
-    computed for the same step (``Camera.get_pointcloud``).
+    Registration is checked against the scene itself: depth pixels lifted through
+    ``k`` and ``optical_in_base`` put the floor where it is, 0.698 m below
+    openarm_base, and the HAL's cloud (``read_depth_clouds``, coloured per pixel) is
+    exactly that lift. (Until the sidecar stopped shipping it, this lift was also
+    held to Isaac's own ``Camera.get_pointcloud`` cloud: median 1 cm.)
     """
     from openral_core import RobotDescription
     from openral_hal.sim_attached import SimAttachedHAL
@@ -158,16 +164,30 @@ def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
     z = depth[v[pick], u[pick]]
     optical = np.stack([(u[pick] - cx) * z / fx, (v[pick] - cy) * z / fy, z], axis=1)
     lifted = optical @ pose[:3, :3].T + pose[:3, 3]
-    cloud = result.observation["depth_points"]["head_zed"]
-    nearest = np.min(np.linalg.norm(lifted[:, None, :] - cloud[None, ::7, :], axis=2), axis=1)
-    assert float(np.median(nearest)) < 0.01
-    # The HAL keeps the newest frame for the sensor bridge between the steps that carry one.
+    assert float(np.min(lifted[:, 2])) == pytest.approx(-0.698, abs=0.03)  # the floor
+    # The HAL keeps the newest frame for the sensor bridge between the steps that carry
+    # one, and its cloud is that frame's lift, coloured by the pixel each point came from.
     desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
     hal = SimAttachedHAL(env, desc)
     hal.connect()
     for _ in range(3):
         hal.idle_step()
     assert set(hal.read_depth_frames()) == {"head_zed"}
+    held = hal.read_depth_frames()["head_zed"]
+    cloud = hal.read_depth_clouds()["head_zed"]
+    colours = hal.read_depth_cloud_colours()["head_zed"]
+    assert cloud is hal.read_depth_clouds()["head_zed"]  # one deprojection per frame
+    assert len(colours) == len(cloud) > 1000
+    spec = next(s for s in desc.sensors if s.name == "head_zed")
+    want, want_rgb = cloud_from_depth_frame(
+        held["depth"],
+        held["rgb"],
+        held["k"],
+        held["optical_in_base"],
+        max_planar_range_m=spec.range_max_m,
+    )
+    np.testing.assert_array_equal(cloud, want)
+    np.testing.assert_array_equal(colours, want_rgb)
 
 
 def test_each_jaw_opens_into_its_own_manifest_range(env: Any) -> None:

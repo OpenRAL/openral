@@ -950,6 +950,169 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   restarted producer re-sending one included
   (`…EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer`), while a
   fresh one arms (`…ASecondPickInTheGoalArmsUnderItsOwnIdentity`).
+* **Tracked objects and bindings (issue #418 K1/K3/K6, draft — Safety-WG review
+  pending).** The tracker's `TrackedObjectSet` rides `/openral/world_state_fast`
+  (`tracked_objects`, `tracked_objects_valid`). The kernel ingests it into a
+  fixed table of `kMaxTrackedObjects` = 32 and refuses the **whole set** — every
+  object ineligible — on a frame other than the grid's (set or box), a box past the
+  grasp-region caps (half-extent 0.20 m, volume 0.03 m³, finite, unit quaternion,
+  empty `geometry`), a hull past `kMaxTrackedHullVertices` = 64 (≤ 4 hulls is the
+  IDL bound), a duplicate `object_id`, a revision below the last accepted one (an
+  equal revision is the aggregator's re-send) or a stamp in the future: one WARN
+  `safety.tracked_objects_rejected reason=…` per change
+  (`…ARefusedTrackedSetMakesEveryObjectIneligible`,
+  `…ATrackedSetWhoseRevisionGoesBackIsRefused`). The set is data only; the binding
+  check is its one reader. An attachment whose `evidence_kind` is `tracked_object`
+  is **at the hand** only if it names a live (confirmed / occluded / bound),
+  non-`provisional` object of the last accepted set, same `object_id` and `epoch`, whose box meets the
+  carrying attachment's own links within one voxel at the **measured**
+  configuration (`tracked_box_meets_hand`, kernel FK with mimic joints). Otherwise
+  it is **off the hand** (`reason=no_accepted_set|no_live_track|provisional_track|no_measured_state|box_off_hand`,
+  WARN `safety.attachment_binding_off_hand` at most 1 Hz): it stays a checked
+  payload — never dropped (`…AnOffHandBindingIsStillCheckedAsAPayload`) — but it
+  arms no support witness and is never a grasp handover; a declaration naming it
+  retires, `reason=binding_off_hand` (`…ATrackedBindingOffTheHandIsNeverTheHandover`).
+  The latch is keyed by (`object_id`, `epoch`), and a latched tracked handover
+  retires its identity into a second `RetiredGraspSet` keyed (hash of `object_id`,
+  `epoch`): that identity is never a handover again (`reason=object_retired`),
+  while the tracker's re-grounding under a new epoch arms
+  (`…ARetiredTrackedIdentityNeverReArmsButANewEpochDoes`). Legacy producers
+  (`evidence_kind` other than `tracked_object`, `pinch_fallback` included) keep
+  every rule above unchanged, the declaration-keyed retirement included; the two
+  keys coexist. A `provisional` track (`TrackedObject.provisional`: its fit was
+  taken with the robot hiding more than the occluder band, so its box may
+  under-contain) stays K2 exemption geometry — a short box exempts less
+  (`…AProvisionalTrackStillServesAsTheK2Exemption`) — but is never accepted as
+  payload binding geometry (`reason=provisional_track`); the tracker never binds
+  one, and the kernel fails closed if it does. Nothing here exempts anything
+  new: every change only refuses.
+* **Monotone bound geometry (issue #418 K4, draft — Safety-WG review pending).**
+  A `tracked_object` payload's geometry is the union the kernel holds for its
+  (`object_id`, `epoch`, attach link), in the frame of that binding's first
+  `pose_in_link` (a later message's primitives and support witness are
+  re-expressed into it). New geometry is **unioned** in, exact duplicates
+  dropped, never replacing what is held
+  (`…ATrackedBoundGeometryGrowsAndNeverShrinks`). A lower or equal
+  `geometry_revision` never removes anything; one that still carries geometry not
+  held (a producer that changed it without bumping the revision) is unioned too —
+  growth is the safe direction — and WARNed, `safety.tracked_geometry_unrevised`
+  (`…ALowerOrEqualGeometryRevisionNeverRemovesGeometry`). The union holds at most
+  16 primitives: an update past that is refused whole, the union stays, WARN
+  `safety.tracked_geometry_cap` at most 1 Hz
+  (`…AGeometryUpdatePastTheCapIsRefusedAndTheUnionStays`); a first revision already
+  past it is checked as published, with no union held. A new epoch starts fresh
+  (`…ANewEpochStartsAFreshBoundGeometry`). The table is fixed (32 bindings); an
+  entry survives a message that omits it, so a dropped-and-re-added record keeps
+  its union. The union also counts against `attached_max_primitives`: past it the
+  attachment message fails closed, as any over-cap payload does. Legacy payloads
+  are replaced per message exactly as before. Stricter only: a stale part of the
+  union can cost a false stop, never a missed one.
+* **Jaw-open release (issue #418 K5, draft — NOT monotone, hazard OT-7, needs an
+  explicit Safety-WG judgement).** Off unless `tracked_release_jaw_joints` names
+  the gripper joints (with `tracked_release_jaw_open_sign`, +1/-1 per joint: the
+  direction that opens it); empty is today's semantics, the payload rides the hand
+  until the producer detaches it. When on, configure refuses any `hal_mode`
+  but `sim` (as K2 does; sim-only until Safety-WG review,
+  `…TheTrackedReleaseRefusesToConfigureOffSim`), a sign that is not ±1, an unknown joint, `tracked_release_gap` (joint units) or
+  `tracked_release_dwell_s` ≤ 0, `tracked_release_clear_m` outside (0, 0.1] (the
+  HAL's `MAX_RELEASE_CLEAR_M`) or `tracked_release_timeout_s` outside (0, 10]. A
+  `tracked_object` binding at the hand (K3) whose attach or touch link is driven
+  by one of those jaws (a mimic follower reads its leader's column) captures the
+  **measured** jaw at attach as its hold. Opened past hold + gap continuously for
+  the dwell, the kernel itself — no DETACH needed (t9 stayed attached at 0.988) —
+  freezes the payload in the base frame at its measured pose (`attach_link = -1`,
+  what the HAL's `freeze_released_attachment` does) and opens the
+  (`object_id`, `epoch`) release window: the hand (`release_hand_link`) and touch
+  links stay exempt against it until `released_payload_clearance` (kernel FK of
+  the measured state) exceeds the clearance — `safety.tracked_release_closed
+  reason=separation` — or the timeout elapses (`reason=timeout`). From then on it
+  is a **plain obstacle**: nothing is exempt against it, for as long as the wire
+  still carries that binding (`…OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate`,
+  `…AReleaseWindowThatNeverSeparatesClosesOnTimeout`). Throughout, the frozen
+  payload is checked against every other link and the world
+  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`), is never a
+  grasp handover, arms no support witness, and a handover latched on it retires
+  (`reason=tracked_release`, which K6 turns into a retired identity). Evaluated
+  on each world-state message (the window can outlive its bound by one message
+  period; a stalled stream fails closed on `attached_collision_deadline_ms`).
+  **Why it is not monotone:** the on-hand copy of the payload stops being checked
+  once the kernel decides the jaw let go. If the object is in fact still in the
+  hand (a stuck object, a wrong sign, a jaw reading off), it is carried unmodelled
+  until the map re-marks it at the fingers (OT-7). **Dependency:** while the
+  window is open the octomap must clear the object at its release pose (the
+  tracker's RELEASED record); otherwise the frozen payload meets its own re-marked
+  cells and stops — a false stop, never a missed one.
+* **Grasp exemption by tracked-object id (issue #418 K2, draft — NOT a pure
+  subset of today's rule, hazard OT-6, needs an explicit Safety-WG judgement).**
+  Off unless `tracked_grasp_exemption_enabled` (the launch sets it for
+  `object_tracking: on` only); configure refuses it without
+  `grasp_allowance_enabled` or off `hal_mode: sim`, and when the
+  `grasp_contact_links` do not group into 1..`kMaxGraspHands` (4) hands by mount
+  (`…TheTrackedSourceRefusesToConfigureOutsideItsScope`). It is a **source
+  selector**, not a switch on any check: while on, the tracked-object table
+  replaces the producer-measured region as the exemption source (the region is
+  not read, `…AValidTableReplacesTheLegacyRegion`); while off, today's rule is
+  untouched bit for bit. At **each checked row**, a finger link of hand h does not
+  trip against a cell whose centre is in the box of o*, the **unique** nearest
+  eligible object to h's TCP (the mean of its fingers' geometry origins): a
+  runner-up within one voxel of o*'s gap gives none (HZ-0115-2), and o* is never
+  an object at least as near another hand's TCP (HZ-0115-12) —
+  `select_tracked_grasp`, `…ATieWithinOneVoxelSelectsNothing`,
+  `…AnObjectNeverGoesToTheHandItIsFurtherFrom`. Arm links are never exempt
+  (`…ArmLinksAreNeverExempt`); another hand's finger is not exempt by this hand's
+  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Cell volume, not cell
+  centre (OT-6 amendment, 2026-10-17, Safety-WG review pending; widens K2 by at most half
+  a cell, more on a diagonal):** with a tracked table a cell is exempt for the selected
+  hand's finger when the cell's VOLUME meets the object's box (exact OBB-vs-cube separating
+  axis test, `grasp_cell_exempt`), not only when its centre lies inside. A voxel is occupied
+  when any part of it touches the object, so a cell whose centre is up to half a cell outside
+  the containing box can still be the target's own; the same quantisation argument as the K7
+  static pad, with no extra margin. Per-hand isolation, the selection and the legacy region
+  (centre test) are unchanged; a cell wholly beyond the box still stops
+  (`…ACellWhollyBeyondTheBoxStillStops`); `…ACellWhoseVolumeTouchesTheBoxIsExempt…`; the
+  randomised subset property now expects the volume rule. Evidence: of the four r10 false
+  stops on a box under-cover, exact volume intersection covers 1 (DROID camlong, the cell is
+  8.7 mm from the box by centre but inside by volume); the three PickOrange cells stay
+  2.9-4.0 mm outside. **Fixed jaws on a
+  body link (OT-6 amendment, 2026-10-17, Safety-WG review pending):**
+  `tracked_grasp_extra_contact_links` (the launch passes the manifest's
+  `fixed_jaw_link`s, `RobotDescription.fixed_jaw_links()`: the SO-101's `gripper`,
+  whose fixed jaw is part of that body) adds those links to their hand for K2
+  only: they group with the hand's fingers by mount and are exempt like a finger
+  against the selected box, but never sample the TCP, so the selection is
+  unchanged (`…AFixedJawBodyJoinsItsHandButNeverMovesTheTcp`). Cells outside the
+  box and the other hand's object still stop them
+  (`…AFixedJawIsExemptOnlyInItsOwnHandsSelectedBox`); the legacy region and
+  `grasp_contact_links` (the declaration check) are untouched
+  (`…AnExtraFixedJawLeavesTheLegacyRegionBitForBit`); the randomised subset
+  property runs with and without it. Configure refuses an unknown name, a hand of
+  extra links alone, or any name with K2 off
+  (`…TheK2ExtraFixedJawsRefuseAnUnknownLinkOrNoK2`). Why: PickOrange r6po_dbg3
+  stopped on `gripper` x voxel inside the CONFIRMED target's box at the grasp —
+  the fixed jaw touching the orange it holds. The amendment widens what K2 may
+  exempt (the whole `gripper` body inside o*'s box, motor housing included), so
+  it is not a subset of the pre-amendment K2. **Eligible**, per
+  candidate: role `target`; `declaration_key` equal to the live grasp
+  declaration's `<target_id>@<stamp_ns>` (active, a target, `timeout_s` in range
+  and not lapsed, not retired, the stream fresh — what the tracker stamps on the
+  tracks it grounds or re-keys for that declaration; a prompt-time `deploy@0`
+  track the declaration did not re-key is not eligible); status `confirmed` or
+  `occluded` (never `bound`, `split` — a foreign body in the box — `tentative`,
+  `released`, `lost`); (`object_id`, `epoch`) not K6-retired; confirmed within
+  `grasp_region_max_age_s` on the source clock; and the kernel's **own cover
+  check** on its grid, once per grid or set: occupied cell centres in the box
+  ≥ max(2, ⌈0.5·`visible_cells`⌉) (`tracked_box_cover`,
+  `…EveryIneligibleTrackedTargetStops`,
+  `…ARetiredTrackedIdentityIsNeverExemptButANewEpochIs`). Same accounting as the
+  region (decided before the narrow phase, no stage-2 budget, the pair's own depth
+  reaches the sweep minimum, never the evidence), so per (hand, row) trips with ⊆
+  trips without (`…TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes`).
+  **Why it is not a pure subset of today:** the kernel may select a different
+  measured body than the producer's region would have named — always ≤ 1 per hand
+  per row, map-confirmed and cover-checked. Disclosure: INFO
+  `safety.tracked_grasp_eligible n=… of=… declaration=… live=…` on each change,
+  span attributes `safety.tracked_grasp_eligible` and
+  `safety.grasp_exemption_active` (true while any object is eligible).
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
@@ -1122,6 +1285,143 @@ Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle 
 (`test_lifecycle_kernel.cpp`), the allocation-free check (`test_no_alloc.cpp`), and
 `tests/unit/test_workspace_contact.py` (schema, scene rejection, `hand_links`, launch/CLI, the
 producer on a real lattice).
+
+### Explained cells (issue #418 K7, draft) — default off, sim-only
+
+**Draft for Safety-WG review (hazard OT-11). Off unless `workspace_explained_cells_enabled` is
+set. The launch sets it only for `object_tracking: on` with the workspace rule on.** K7 adds one
+more conjunct to the rule above, so it can only add stops. A pair of (hand link or carried
+payload, cell) that the workspace tolerates stays tolerated only when the cell is **explained**
+(`workspace_cell_explained`). A cell is explained in three cases:
+
+1. **Its centre lies in the box of an explaining tracked object.** The object may have any role
+   (target, neighbour or destination). Explaining means all of the following hold:
+   * status `confirmed` or `occluded`. It is never `split` (a foreign body in the box), `bound`,
+     `tentative`, `released` or `lost`;
+   * (`object_id`, `epoch`) is not K6-retired;
+   * the object was confirmed within `grasp_region_max_age_s` on the source clock;
+   * the box passes the kernel's own cover check on its grid. This is K2's `tracked_box_cover`,
+     run once per grid or set;
+   * the set's frame is the grid's frame;
+   * the world-state stream is fresh.
+
+   The declaration key is not checked, because a neighbour grounded under an earlier prompt still
+   explains its own cells (`fill_workspace_explained`).
+2. **It is a declared static collider's cell.** The kernel reads `static_points_file`, the same
+   static geometry the launch hands to the octomap bridge, written as one centre per cell the
+   bridge marks (`_static_cells_file`). It marks them into the grid with the bridge's indexing
+   (`mark_static_cells`), and re-marks only when the grid's pose, resolution or size changes.
+   **Padded by one cell (OT-11 amendment, 2026-10-17, Safety-WG review pending).** The
+   explained set is the declared cells plus every cell within ONE cell of one
+   (`kExplainedStaticPadCells`): #418 restock's stop cells (r7rs02_on2/on3, r8rs02_on1/2) sat 17.5 mm,
+   about 1.2 of the 15 mm cells, outside the declared `SourceToteCollision/Wall_Left` box: the wall
+   as the camera sees it. Only the explanation widens, so K7 stays a narrowing of the #349
+   workspace (`trips(#349) ⊆ trips(K7) ⊆ trips(no workspace)` over randomised grids, with the
+   declared cells padded half the time); a hand-sized body two cells past the declared wall still
+   stops (`ExplainedCells.AHandSizedBodyJustOutsideThePaddedWallStillStops`) and one cell off is
+   tolerated; an arm link and a cell outside the workspace are unchanged. Padding never wraps.
+   Static geometry is declared for fixed-base robots only, whose octree accumulates in the base
+   frame, so the grid is the base frame's lattice. On any other lattice, where a centre could fall
+   in a neighbouring cell, the kernel explains no cell as static (WARN
+   `safety.workspace_static_cells refused reason=lattice`).
+3. **It is in the measured support of an explaining object.** The cell's centre z is within half
+   a cell of the tracker's `support_z` (the measured top less one cell). That is the support's top
+   layer or the layer under it. The cell is also within `kExplainedSupportReachM` (0.05 m, a WG
+   placeholder) of that object's box, measured horizontally. This covers a fingertip that grazes
+   the table beside the object it grasps (PickOrange g4). A body lying on the support sits above
+   that layer, so it is not explained.
+
+Every other cell in the workspace trips exactly as it would outside the workspace. That includes
+a person's hand in the tote and a carton that grounding missed. The stop line says
+`workspace_denied=5`. Three things are unchanged: arm links, cells outside the workspace, and the
+two-hands self-collision rule.
+
+**Property.** `ExplainedCells.TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomisedGrids`
+runs 200 random scenes, with and without K2's table. It checks that trips(#349) ⊆ trips(K7) ⊆
+trips(no workspace). It also checks that the pairs K7 still tolerates are exactly the
+#349-tolerated pairs on an explained cell.
+
+**Fail-closed.**
+* Configure refuses K7 without `workspace_contact_enabled`.
+* Configure refuses an unreadable or malformed `static_points_file`: a point that is not three
+  finite numbers, or a file with no points.
+* A refused or stale tracked set explains no box and no support.
+* A refused grid (overflow) explains no static cell.
+
+**Disclosure.**
+* WARN `safety.workspace_explained_cells enabled ... Safety-WG review pending` at configure.
+* INFO `safety.workspace_explained objects= of= static_cells=` on each change.
+* INFO `safety.workspace_static_cells marked=` on each re-mark.
+* Span attribute `safety.workspace_explained_objects`.
+
+**Tests.**
+* `ExplainedCells.*` in `test_collision.cpp`.
+* In `test_lifecycle_kernel.cpp`: the `*UnderK7` tests, `AnEligibleTrackedObjectOfAnyRoleExplainsItsCells`
+  and `ExplainedCellsRefuseToConfigureOutsideTheirScope`.
+* `NoAlloc.TheExplainedCellsCheckIsAllocationFree`.
+
+### Payload own cells (issue #418, hazard OT-10 amendment, draft) — default off, sim-only
+
+**Draft for Safety-WG review. Off unless `payload_own_cells_enabled` is set. The launch sets it
+only for `object_tracking: on` (so only with K2, only in sim). A bound payload's measured cells
+cannot stop that payload.** It relaxes the payload-vs-VOXEL check and nothing else: a payload's
+(object, primitive, occupied cell) pair within the attached margin is tolerated when the cell is
+the payload's OWN cell, decided per cell over all of the object's primitives
+(`payload_own_cell_exempts`). The cell is its own only when ALL hold:
+
+1. its VOLUME meets a `measured` or `grown` BOX primitive of THIS payload (the exact oriented-box
+   vs cube separating-axis test, as K2's `grasp_cell_exempt`). `AttachedCollisionPrimitive.
+   geometry_source` is the wire tag (`SOURCE_FALLBACK = 0`, `MEASURED = 1`, `GROWN = 2`); a
+   publisher that never sets it, and any code the kernel does not know, is fallback. A fallback
+   primitive (the pinch volume, or the boxes of several or ambiguous candidates) explains nothing,
+   so a neighbouring object inside it still stops the payload;
+2. its centre stands strictly above the payload's track `floor_z` (support top + one cell): the
+   support is the world, never the payload;
+3. it is not a declared static collider cell (K7's padded set, from `static_points_file`); a static
+   table of another layout exempts nothing;
+4. its volume meets no OTHER settled track's box (`confirmed`, `occluded` or `bound`, provisional or
+   not, never a K6-retired identity). The payload's own track is excluded from the others;
+5. the binding is valid right now: a `tracked_object` attachment K3 places at the hand with an
+   unretired live track, the tracked set accepted and in the grid's frame, the grid not overflowed,
+   the attachment stream fresh. A `pinch_fallback` attachment owns a track only when its
+   `evidence_ref` names exactly ONE provisional candidate (`provisional:<id>`) that is live,
+   provisional, unretired and within one cell of the hand (K3's geometric test); several or
+   `ambiguous:` candidates may be neighbours and own nothing.
+
+**What it never exempts.** Payload vs robot links (K3 and the self rules are unchanged); any
+hand-vs-voxel pair (K2 and the legacy region are unchanged; the #349 `ws_hand_contact_` probe runs
+without it); a payload whose binding the kernel rejects; a non-box, non-finite or untagged
+primitive. An exempt cell contributes to `sweep_min` only and is never a stop's evidence.
+
+**Fail-closed.** Configure refuses it without K2 (`tracked_grasp_exemption_enabled`), without
+`attached_collision_enabled`, off `hal_mode: sim`, or with an unreadable `static_points_file`.
+A refused or stale tracked set, an unknown floor, an unarmed object, a missing table or a
+non-finite number exempts nothing.
+
+**Failure modes (both directions).** A missed stop needs a measured/grown primitive that covers a
+real foreign object: a fit that swallowed a neighbour the tracker has no settled track for (a
+hand-sized body that never grounded), or in-hand growth that took a neighbour's cells before the
+neighbour was a track. Everything else (fallback volume, another settled track, the support, a
+declared collider) still stops. A false stop it fixes: the carried object's own cells reappearing
+in the map at the lift (r12 payload stops: restock x3, DROID, PickOrange place).
+
+**Property.** `PayloadOwnCells.TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes` (200 random
+scenes, fixed seed, each occupied cell checked alone): no new trip, and every removed pair
+satisfies the rule written out independently; measured non-vacuity: a stop removed in 80 of 200
+scenes and kept in 167 of 200.
+
+**Disclosure.** WARN `safety.payload_own_cells enabled ... Safety-WG review pending` at configure;
+INFO `safety.payload_own_armed objects= of= others= static_cells=` on each change; WARN (at most
+1 Hz) `safety.payload_own_cells step= pairs= deepest= mm` when it tolerates a pair; span attribute
+`safety.payload_own_armed`.
+
+**Tests.** `PayloadOwnCells.*` in `test_collision.cpp`; `APayloadStopsOnItsOwnCellWithoutTheExemption`,
+`ABoundPayloadsMeasuredOrGrownCellCannotStopIt`, `AFallbackOrUnknownOrMissingTagExemptsNothing`,
+`ACellBelowTheTracksFloorOrInAnotherSettledTracksBoxStillStops`,
+`AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox` and
+`ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions` in `test_lifecycle_kernel.cpp`;
+`NoAlloc.ThePayloadOwnCellExemptionIsAllocationFree`.
+
 
 ## The contact-force gate (ADR-0100, survey Path C)
 

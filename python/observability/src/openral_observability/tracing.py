@@ -33,6 +33,7 @@ __all__ = [
     "rskill_span",
     "safety_span",
     "traced",
+    "world_state_span",
 ]
 
 # Closed value set (design §9) for `kind` on `rskill.chunk_inference` spans
@@ -172,6 +173,40 @@ def safety_span(
     for k, v in attrs.items():
         tagged[f"safety.{k}"] = v
     with _tracer().start_as_current_span(name, attributes=tagged) as span:
+        yield span
+
+
+@contextmanager
+def world_state_span(
+    name: str,
+    *,
+    traceparent: str = "",
+    **attrs: Any,
+) -> Iterator[Span]:
+    """Span around one World State event, parented on a goal's trace when given.
+
+    ``traceparent`` (W3C, e.g. a ``GraspDeclaration.trace_id`` — the runner's
+    ``rskill.execute`` span) makes the span a child of that skill execution, so the
+    event replays from the skill's trace (CLAUDE.md §1.8). Empty: the active context.
+
+    Args:
+        name: Span name (e.g. ``semconv.SPAN_WORLD_STATE_OBJECT_QUERY``).
+        traceparent: Parent ``traceparent``; ``""`` keeps the current context.
+        **attrs: Attributes recorded with a ``world_state.`` prefix.
+
+    Yields:
+        The active span.
+
+    Example:
+        >>> with world_state_span("world_state.object_query", label="orange") as span:
+        ...     span.is_recording() in (True, False)
+        True
+    """
+    from openral_observability.propagation import extract_traceparent
+
+    parent = extract_traceparent(traceparent) if traceparent else None
+    tagged = {f"world_state.{k}": v for k, v in attrs.items()}
+    with _tracer().start_as_current_span(name, context=parent, attributes=tagged) as span:
         yield span
 
 

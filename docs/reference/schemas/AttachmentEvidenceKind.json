@@ -13,6 +13,8 @@
     "sim_contact_force",
     "map_support_proximity",
     "gripper_closure",
-    "grasp_target_region"
+    "grasp_target_region",
+    "tracked_object",
+    "pinch_fallback"
   ]
 }

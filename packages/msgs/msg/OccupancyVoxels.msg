@@ -43,3 +43,12 @@ uint32 size_x
 uint32 size_y
 uint32 size_z
 uint8[] occupancy
+
+# The attachment revision (`WorldStateStamped.attachment_revision`) whose payload and
+# identity clearing this grid was built with: the octomap bridge sets it from the
+# attachment state it applied to THIS grid, and 0 when it applied none (no state, a stale
+# one, no usable tracked set, a binding it could not place). A consumer that must see the
+# held object's cells gone (the sim HAL's attachment perception barrier) waits for a grid
+# whose value is at least the revision it armed for. Additive field (schema-compatible):
+# older producers leave it zero.
+uint64 attachment_revision

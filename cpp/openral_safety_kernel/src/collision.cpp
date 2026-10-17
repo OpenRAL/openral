@@ -1298,6 +1298,67 @@ bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& cen
 
 namespace {
 
+// The grasp exemption box a link may be exempt against in this check, or
+// nullptr (issue #418 K2). With a valid tracked table it is the ONLY source:
+// the selected box of the hand the link is a finger of. Otherwise the legacy
+// region, for a link in its mask — exactly `grasp_target_exempts`.
+struct GraspBox {
+  const Transform* pose{nullptr};
+  const Vec3* half{nullptr};
+};
+
+GraspBox grasp_box_for(const VoxelGrid& grid, const std::array<int, kMaxGraspHands>& selected,
+                       int link) noexcept {
+  const TrackedGraspTable* t = grid.tracked_grasp;
+  if (t != nullptr && t->valid) {
+    if (link < 0 || static_cast<std::size_t>(link) >= kMaxGraspMaskLinks) {
+      return {};
+    }
+    for (std::size_t h = 0; h < t->n_hands && h < kMaxGraspHands; ++h) {
+      if (t->hand_links[h][static_cast<std::size_t>(link)] && selected[h] >= 0) {
+        const auto i = static_cast<std::size_t>(selected[h]);
+        return {&t->box[i], &t->half_extents[i]};
+      }
+    }
+    return {};
+  }
+  if (grasp_mask_has(grid.grasp_region, link)) {
+    return {&grid.grasp_region.pose, &grid.grasp_region.half_extents};
+  }
+  return {};
+}
+
+// #418 K2 (hazard OT-6 amendment 2026-10-17; Safety-WG review pending): is the cell exempt
+// against the selected hand's box? A voxel is occupied when ANY part of it touches the object,
+// so with a tracked table a cell is the target's own when its VOLUME intersects the box (exact
+// OBB-vs-cube separating-axis test), not only when its centre lies inside: widening K2 by at
+// most half a cell (more on the diagonal), the same quantisation argument as the K7 static
+// pad. The legacy region keeps the centre test. A non-finite box or cell never exempts.
+bool grasp_cell_exempt(const VoxelGrid& grid, const GraspBox& gbox, const Transform& grid_from_base,
+                       const Vec3& local_center, const Vec3& voxel_half,
+                       const Vec3& base_center) noexcept {
+  if (gbox.pose == nullptr) {
+    return false;
+  }
+  const TrackedGraspTable* t = grid.tracked_grasp;
+  if (t == nullptr || !t->valid) {
+    return point_in_obb(*gbox.pose, *gbox.half, base_center);
+  }
+  const Vec3& h = *gbox.half;
+  if (!(h.x > 0.0) || !(h.y > 0.0) || !(h.z > 0.0) || !std::isfinite(h.x) || !std::isfinite(h.y) ||
+      !std::isfinite(h.z) || !std::isfinite(local_center.x) || !std::isfinite(local_center.y) ||
+      !std::isfinite(local_center.z)) {
+    return false;
+  }
+  Transform cell;
+  cell.t = local_center;
+  const double gap = box_box_distance(compose(grid_from_base, *gbox.pose), h, cell, voxel_half);
+  return std::isfinite(gap) && gap <= 0.0;
+}
+}  // namespace
+
+namespace {
+
 // Is `link` a hand link of a live workspace whose hand is slow and close to its
 // measured pose (speed AND lead within their bounds)? Evaluated once per
 // capsule/box, outside the cell loop. A NaN/inf speed or lead (the lifecycle's
@@ -1348,7 +1409,9 @@ void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double ma
 
 bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
   return workspace_link_slow(grid.workspace_region, link_index) &&
-         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center);
+         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center) &&
+         // #418 K7: a new conjunct only — an unexplained cell trips as outside.
+         (grid.workspace_explained == nullptr || workspace_cell_explained(grid, center));
 }
 
 namespace {
@@ -1373,6 +1436,9 @@ int workspace_denial(const VoxelGrid& grid, int link, const Vec3& center) noexce
   }
   if (!point_in_obb(ws.pose, ws.half_extents, center)) {
     return 4;
+  }
+  if (grid.workspace_explained != nullptr && !workspace_cell_explained(grid, center)) {
+    return 5;
   }
   return 0;
 }
@@ -1457,6 +1523,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
   };
   // Every link is carried into the grid's axes through this.
   const Transform grid_from_base = inverse_rigid(grid.pose);
+  // #418 K2: each hand's selected tracked object at THIS configuration.
+  std::array<int, kMaxGraspHands> grasp_selected{};
+  grasp_selected.fill(-1);
+  if (grid.tracked_grasp != nullptr && grid.tracked_grasp->valid) {
+    select_tracked_grasp(*grid.tracked_grasp, scratch, grid.resolution, grasp_selected);
+  }
   const std::size_t n_caps = model.capsules.size();
   for (std::size_t c = 0; c < n_caps; ++c) {
     const int li = model.capsule_link[c];
@@ -1467,7 +1539,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
-    const bool grasp_link = grasp_mask_has(grid.grasp_region, li);
+    const GraspBox gbox = grasp_box_for(grid, grasp_selected, li);
+    const bool grasp_link = gbox.pose != nullptr;
     const bool workspace_link = workspace_link_slow(grid.workspace_region, li);
     // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
     const double reach = r + margin + band_m + half_side;
@@ -1492,7 +1565,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // region never trips and never supplies the reported evidence.
           const Vec3 base_center =
               grasp_link || workspace_link ? apply(grid.pose, voxel.t) : Vec3{};
-          const bool exempt = grasp_link && grasp_target_exempts(grid, li, base_center);
+          const bool exempt = grasp_link && grasp_cell_exempt(grid, gbox, grid_from_base, voxel.t,
+                                                              voxel_half, base_center);
           // #349: a slow hand link vs a cell centred in the live workspace.
           // Never silent: a tolerated pair within the margin is counted.
           const bool ws_exempt =
@@ -1527,7 +1601,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                 compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
-    const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
+    const GraspBox gbox = grasp_box_for(grid, grasp_selected, lb);
+    const bool grasp_link = gbox.pose != nullptr;
     const bool workspace_link = workspace_link_slow(grid.workspace_region, lb);
     TightPose tight;
     GjkWitness witness;
@@ -1560,7 +1635,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // stop). Stage 1's lower bound is all its clamped slack needs.
           // #349's workspace exemption joins it here, under the same accounting.
           const Vec3 base_center = grasp_link || workspace_link ? apply(grid.pose, center) : Vec3{};
-          const bool grasp_exempt = grasp_link && grasp_target_exempts(grid, lb, base_center);
+          const bool grasp_exempt =
+              grasp_link &&
+              grasp_cell_exempt(grid, gbox, grid_from_base, center, voxel_half, base_center);
           const bool ws_exempt =
               !grasp_exempt && workspace_link && workspace_contact_exempts(grid, lb, base_center);
           const bool exempt = grasp_exempt || ws_exempt;
@@ -1618,6 +1695,9 @@ namespace {
 // owned primitive then composes its own `pose_in_object` on top of this.
 Transform attached_object_transform(const AttachedObject& obj,
                                     const CollisionScratch& scratch) noexcept {
+  if (obj.attach_link < 0) {
+    return obj.pose_in_link;  // #418 K5: frozen in the base frame
+  }
   return compose(scratch.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
 }
 
@@ -1625,7 +1705,7 @@ Transform attached_object_transform(const AttachedObject& obj,
 // explicit touch links (grasped payloads legitimately contact those).
 bool attached_allows_link(const AttachedModel& attached, const AttachedObject& obj,
                           int link) noexcept {
-  if (link == obj.attach_link) {
+  if (link >= 0 && (link == obj.attach_link || link == obj.release_hand_link)) {
     return true;
   }
   for (int k = 0; k < obj.touch_count; ++k) {
@@ -1957,6 +2037,7 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
       op.half_length = pin.half_length;
       op.half_extents = pin.half_extents;
       op.pose_in_object = pin.pose_in_object;
+      op.source = pin.source;
       op.hull_index = accept_tight(out, pin, slot);
     }
     for (std::size_t t = 0; t < n_touch; ++t) {
@@ -1972,6 +2053,71 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
   out.n_objects = n;
   out.n_primitives = prim_cursor;
   return AttachIngestStatus::kOk;
+}
+
+bool payload_own_cell_exempts(const VoxelGrid& grid, const AttachedModel& attached,
+                              std::size_t object_index, const Transform& object_xf,
+                              std::size_t cell_idx, const Vec3& center,
+                              const Vec3& local) noexcept {
+  const PayloadOwnCells* t = grid.payload_own;
+  if (t == nullptr || !t->valid || object_index >= 8 || (t->armed & (1U << object_index)) == 0 ||
+      object_index >= attached.n_objects || !(grid.resolution > 0.0) ||
+      !std::isfinite(grid.resolution) || !std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(center.z) || !std::isfinite(local.x) || !std::isfinite(local.y) ||
+      !std::isfinite(local.z)) {
+    return false;
+  }
+  // The support, never the payload: the centre must stand strictly above the floor.
+  const double floor = t->floor_z[object_index];
+  if (!std::isfinite(floor) || !(center.z > floor)) {
+    return false;
+  }
+  // A declared static collider's cell (padded) is the world, never the payload.
+  const std::size_t cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                            static_cast<std::size_t>(grid.sz);
+  if (t->static_cells != nullptr) {
+    // A static table of another layout cannot say which cells are static: nothing is exempt.
+    if (t->static_cells_n != cells || cell_idx >= cells || t->static_cells[cell_idx] != 0) {
+      return false;
+    }
+  }
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
+  Transform cell;
+  cell.t = local;
+  const Transform grid_from_base = inverse_rigid(grid.pose);
+  const AttachedObject& obj = attached.objects[object_index];
+  // 1. A measured / grown box primitive of THIS payload whose box meets the cell's volume.
+  bool own = false;
+  for (int p = 0; p < obj.prim_count && !own; ++p) {
+    const AttachedPrimitive& prim =
+        attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+    if (prim.source == PrimitiveSource::kFallback || prim.kind != AttachedShapeKind::kBox ||
+        !(prim.half_extents.x > 0.0) || !(prim.half_extents.y > 0.0) ||
+        !(prim.half_extents.z > 0.0) || !std::isfinite(prim.half_extents.x) ||
+        !std::isfinite(prim.half_extents.y) || !std::isfinite(prim.half_extents.z)) {
+      continue;
+    }
+    const Transform prim_g = compose(grid_from_base, compose(object_xf, prim.pose_in_object));
+    const double gap = box_box_distance(prim_g, prim.half_extents, cell, voxel_half);
+    own = std::isfinite(gap) && gap <= 0.0;
+  }
+  if (!own) {
+    return false;
+  }
+  // 2. A cell that also meets ANOTHER settled track's box is that body's, not the payload's.
+  const std::size_t n_others = std::min(t->n_others, t->other_box.size());
+  for (std::size_t k = 0; k < n_others; ++k) {
+    if (k < 32 && (t->own[object_index] & (1U << k)) != 0) {
+      continue;
+    }
+    const double gap = box_box_distance(compose(grid_from_base, t->other_box[k]), t->other_half[k],
+                                        cell, voxel_half);
+    if (!std::isfinite(gap) || gap <= 0.0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
@@ -2149,6 +2295,14 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // inside the payload when the baseline was snapshotted, so it
                 // is the payload's own uncleared occupancy, not an obstacle.
                 tripped = false;
+              } else if (payload_own_cell_exempts(grid, attached, i, obj_xf, idx, center,
+                                                  voxel.t)) {
+                // Issue #418 (OT-10 amendment): the payload's own measured / grown cell.
+                tripped = false;
+                ++result.payload_own_pairs;
+                if (d < result.payload_own_min_distance) {
+                  result.payload_own_min_distance = d;
+                }
               } else if (workspace_contact_exempts(grid, obj.attach_link, center)) {
                 // Manipulation workspace (#349, draft): a payload carried by a
                 // hand link is part of that hand — inside the confirmed
@@ -2728,6 +2882,436 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
     }
   }
   return finish_sweep(result, sweep_min);
+}
+
+bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
+                            const AttachedModel& attached, const AttachedObject& object,
+                            const Transform& box, const Vec3& half_extents, double slack) noexcept {
+  if (!std::isfinite(slack) || !(half_extents.x > 0.0) || !(half_extents.y > 0.0) ||
+      !(half_extents.z > 0.0) || !std::isfinite(half_extents.x) || !std::isfinite(half_extents.y) ||
+      !std::isfinite(half_extents.z) || !std::isfinite(box.t.x) || !std::isfinite(box.t.y) ||
+      !std::isfinite(box.t.z)) {
+    return false;
+  }
+  const auto pose = [&](int link, const Transform& origin) {
+    return compose(scratch.link_world[static_cast<std::size_t>(link)], origin);
+  };
+  for (std::size_t c = 0; c < model.capsules.size(); ++c) {
+    const int link = model.capsule_link[c];
+    if (!attached_allows_link(attached, object, link)) {
+      continue;
+    }
+    const Capsule& cap = model.capsules[c];
+    if (box_capsule_distance(box, half_extents, pose(link, cap.origin), cap.radius,
+                             cap.half_length) <= slack) {
+      return true;
+    }
+  }
+  for (std::size_t b = 0; b < model.boxes.size(); ++b) {
+    const int link = model.box_link[b];
+    if (!attached_allows_link(attached, object, link)) {
+      continue;
+    }
+    if (box_box_distance(box, half_extents, pose(link, model.boxes[b].origin),
+                         model.boxes[b].half_extents) <= slack) {
+      return true;
+    }
+  }
+  return false;
+}
+
+double released_payload_clearance(const CollisionModel& model, const CollisionScratch& scratch,
+                                  const AttachedModel& attached,
+                                  const AttachedObject& object) noexcept {
+  double gap = std::numeric_limits<double>::infinity();
+  const Transform obj_xf = attached_object_transform(object, scratch);
+  for (int p = 0; p < object.prim_count; ++p) {
+    const AttachedPrimitive& prim =
+        attached.primitives[static_cast<std::size_t>(object.prim_first + p)];
+    const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
+    for (std::size_t c = 0; c < model.capsules.size(); ++c) {
+      const int link = model.capsule_link[c];
+      if (!attached_allows_link(attached, object, link)) {
+        continue;
+      }
+      const Capsule& cap = model.capsules[c];
+      gap =
+          std::min(gap, attached_primitive_capsule_distance(
+                            prim, prim_xf,
+                            compose(scratch.link_world[static_cast<std::size_t>(link)], cap.origin),
+                            cap.radius, cap.half_length));
+    }
+    for (std::size_t b = 0; b < model.boxes.size(); ++b) {
+      const int link = model.box_link[b];
+      if (!attached_allows_link(attached, object, link)) {
+        continue;
+      }
+      const Transform box_j =
+          compose(scratch.link_world[static_cast<std::size_t>(link)], model.boxes[b].origin);
+      gap = std::min(gap, prim.kind == AttachedShapeKind::kBox
+                              ? box_box_distance(prim_xf, prim.half_extents, box_j,
+                                                 model.boxes[b].half_extents)
+                              : box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf,
+                                                     prim.radius, prim.half_length));
+    }
+  }
+  return gap;
+}
+
+// ── Issue #418 K2: the grasp exemption by tracked-object id ──────────────────
+
+bool build_grasp_hands(const CollisionModel& model, const std::bitset<kMaxGraspMaskLinks>& fingers,
+                       TrackedGraspTable& table,
+                       const std::bitset<kMaxGraspMaskLinks>& extra) noexcept {
+  table.n_hands = 0;
+  table.hand_links = {};
+  table.link_point = {};
+  table.extra_links = extra & ~fingers;
+  const std::size_t n = std::min(model.parent.size(), kMaxGraspMaskLinks);
+  if (fingers.none()) {
+    return false;
+  }
+  const std::bitset<kMaxGraspMaskLinks> allowlist = fingers | extra;
+  std::array<int, kMaxGraspHands> mounts{};
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks; ++c) {
+    if (!allowlist[c]) {
+      continue;
+    }
+    if (c >= n) {
+      table.n_hands = 0;
+      return false;  // a bit naming no link of the model
+    }
+    // The mount: the first ancestor not itself allowlisted (grasp_links_one_hand).
+    int mount = model.parent[c];
+    std::size_t steps = 0;
+    while (mount >= 0 && static_cast<std::size_t>(mount) < n &&
+           allowlist[static_cast<std::size_t>(mount)]) {
+      if (++steps > n) {
+        table.n_hands = 0;
+        return false;  // a cyclic parent chain: fail closed
+      }
+      mount = model.parent[static_cast<std::size_t>(mount)];
+    }
+    std::size_t h = 0;
+    while (h < table.n_hands && mounts[h] != mount) {
+      ++h;
+    }
+    if (h == table.n_hands) {
+      if (h == kMaxGraspHands) {
+        table.n_hands = 0;
+        return false;
+      }
+      mounts[h] = mount;
+      ++table.n_hands;
+    }
+    table.hand_links[h].set(c);
+    // The finger's TCP sample: the mean of its primitives' origins (link frame).
+    Vec3 sum{};
+    int count = 0;
+    for (std::size_t k = 0; k < model.capsules.size() && k < model.capsule_link.size(); ++k) {
+      if (model.capsule_link[k] == static_cast<int>(c)) {
+        sum = add(sum, model.capsules[k].origin.t);
+        ++count;
+      }
+    }
+    for (std::size_t k = 0; k < model.boxes.size() && k < model.box_link.size(); ++k) {
+      if (model.box_link[k] == static_cast<int>(c)) {
+        sum = add(sum, model.boxes[k].origin.t);
+        ++count;
+      }
+    }
+    table.link_point[c] = count > 0 ? scale(sum, 1.0 / count) : Vec3{};
+  }
+  for (std::size_t h = 0; h < table.n_hands; ++h) {
+    if ((table.hand_links[h] & fingers).none()) {
+      table.n_hands = 0;
+      return false;  // a hand of extra links alone: no jaw to grasp with
+    }
+  }
+  return table.n_hands > 0;
+}
+
+Vec3 grasp_hand_tcp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                    std::size_t hand) noexcept {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  if (hand >= table.n_hands || hand >= kMaxGraspHands) {
+    return Vec3{nan, nan, nan};
+  }
+  Vec3 sum{};
+  int count = 0;
+  for (std::size_t l = 0; l < kMaxGraspMaskLinks; ++l) {
+    if (!table.hand_links[hand][l] || table.extra_links[l]) {
+      continue;
+    }
+    if (l >= scratch.link_world.size()) {
+      return Vec3{nan, nan, nan};
+    }
+    sum = add(sum, apply(scratch.link_world[l], table.link_point[l]));
+    ++count;
+  }
+  return count > 0 ? scale(sum, 1.0 / count) : Vec3{nan, nan, nan};
+}
+
+namespace {
+
+// Distance from `p` to the oriented box (0 inside); NaN for a non-finite input.
+double point_box_gap(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  const Vec3 d = sub(p, box.t);
+  const double l[3] = {box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z,
+                       box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z,
+                       box.r[2] * d.x + box.r[5] * d.y + box.r[8] * d.z};
+  const double h[3] = {half.x, half.y, half.z};
+  double sq = 0.0;
+  for (int k = 0; k < 3; ++k) {
+    const double out = std::fabs(l[k]) - h[k];
+    if (out > 0.0) {
+      sq += out * out;
+    } else if (!(out <= 0.0)) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  return std::sqrt(sq);
+}
+
+}  // namespace
+
+void select_tracked_grasp(const TrackedGraspTable& table, const CollisionScratch& scratch,
+                          double tie_m, std::array<int, kMaxGraspHands>& out) noexcept {
+  out.fill(-1);
+  if (!table.valid || !std::isfinite(tie_m) || tie_m < 0.0) {
+    return;
+  }
+  const std::size_t n_hands = std::min(table.n_hands, kMaxGraspHands);
+  const std::size_t n_obj = std::min(table.n_objects, kMaxTrackedObjects);
+  std::array<Vec3, kMaxGraspHands> tcp{};
+  for (std::size_t h = 0; h < n_hands; ++h) {
+    tcp[h] = grasp_hand_tcp(table, scratch, h);
+  }
+  for (std::size_t h = 0; h < n_hands; ++h) {
+    int best = -1;
+    double g1 = std::numeric_limits<double>::infinity();
+    double g2 = std::numeric_limits<double>::infinity();
+    bool finite = true;
+    for (std::size_t i = 0; i < n_obj; ++i) {
+      const double g = point_box_gap(table.box[i], table.half_extents[i], tcp[h]);
+      if (!std::isfinite(g)) {
+        finite = false;  // a NaN TCP or box: no selection for this hand
+        break;
+      }
+      if (g < g1) {
+        g2 = g1;
+        g1 = g;
+        best = static_cast<int>(i);
+      } else if (g < g2) {
+        g2 = g;
+      }
+    }
+    if (!finite || best < 0 || g2 - g1 <= tie_m) {
+      continue;  // none, or a tie within one voxel (HZ-0115-2)
+    }
+    // Never an object at least as near another hand (HZ-0115-12).
+    const auto b = static_cast<std::size_t>(best);
+    bool other_nearer = false;
+    for (std::size_t k = 0; k < n_hands; ++k) {
+      if (k != h && !(point_box_gap(table.box[b], table.half_extents[b], tcp[k]) > g1)) {
+        other_nearer = true;  // `!(>)`: a NaN other-hand gap refuses too
+      }
+    }
+    if (!other_nearer) {
+      out[h] = best;
+    }
+  }
+}
+
+std::size_t tracked_box_cover(const VoxelGrid& grid, const Transform& box,
+                              const Vec3& half_extents) noexcept {
+  if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
+      !(grid.resolution > 0.0) || !std::isfinite(grid.resolution) || !(half_extents.x > 0.0) ||
+      !(half_extents.y > 0.0) || !(half_extents.z > 0.0) || !std::isfinite(half_extents.x) ||
+      !std::isfinite(half_extents.y) || !std::isfinite(half_extents.z)) {
+    return 0;
+  }
+  // The box's window on the grid's own axes (its AABB there), clamped.
+  const Transform box_g = compose(inverse_rigid(grid.pose), box);
+  const Vec3 ext = obb_extent(box_g, half_extents);
+  const double inv = 1.0 / grid.resolution;
+  const auto span = [&](double c, double e, int dim, int& i0, int& i1) {
+    const double lo = std::floor((c - e) * inv);
+    const double hi = std::floor((c + e) * inv);
+    if (!std::isfinite(lo) || !std::isfinite(hi) || hi < 0.0 || lo > dim - 1) {
+      return false;
+    }
+    i0 = static_cast<int>(std::max(lo, 0.0));
+    i1 = static_cast<int>(std::min(hi, static_cast<double>(dim - 1)));
+    return true;
+  };
+  int x0 = 0;
+  int x1 = 0;
+  int y0 = 0;
+  int y1 = 0;
+  int z0 = 0;
+  int z1 = 0;
+  if (!span(box_g.t.x, ext.x, grid.sx, x0, x1) || !span(box_g.t.y, ext.y, grid.sy, y0, y1) ||
+      !span(box_g.t.z, ext.z, grid.sz, z0, z1)) {
+    return 0;
+  }
+  std::size_t count = 0;
+  for (int iz = z0; iz <= z1; ++iz) {
+    for (int iy = y0; iy <= y1; ++iy) {
+      for (int ix = x0; ix <= x1; ++ix) {
+        const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+        if (grid.occupancy[idx] != 0 &&
+            point_in_obb(box, half_extents, voxel_center(grid, ix, iy, iz))) {
+          ++count;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexcept {
+  // max(2, ceil(0.5 * visible)), in integers.
+  const std::size_t half_up = (static_cast<std::size_t>(visible) + 1) / 2;
+  return occupied >= std::max<std::size_t>(2, half_up);
+}
+
+// ── Issue #418 K7: explained cells for workspace contact ─────────────────────
+
+namespace {
+
+// Horizontal gap (m) from `p` to the box's footprint, in the box's own x / y
+// (the tracker's boxes are gravity-aligned, so those are horizontal). NaN for a
+// non-finite input, which never compares as within reach.
+double footprint_gap(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  const Vec3 d = sub(p, box.t);
+  const double lx = box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z;
+  const double ly = box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z;
+  const double ex = std::max(std::fabs(lx) - half.x, 0.0);
+  const double ey = std::max(std::fabs(ly) - half.y, 0.0);
+  if (!std::isfinite(lx) || !std::isfinite(ly) || !std::isfinite(half.x) ||
+      !std::isfinite(half.y) || !(half.x > 0.0) || !(half.y > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return std::sqrt(ex * ex + ey * ey);
+}
+
+// The cell of `grid` whose (base-frame) point `p` falls in, or -1 outside /
+// degenerate — the octomap bridge's `mark_base_points` indexing.
+long grid_cell_of(const VoxelGrid& grid, const Transform& grid_from_base, const Vec3& p) noexcept {
+  const Vec3 l = apply(grid_from_base, p);
+  const double fx = std::floor(l.x / grid.resolution);
+  const double fy = std::floor(l.y / grid.resolution);
+  const double fz = std::floor(l.z / grid.resolution);
+  // `!(>=)` so a NaN coordinate is outside too.
+  if (!(fx >= 0.0) || !(fy >= 0.0) || !(fz >= 0.0) || fx >= grid.sx || fy >= grid.sy ||
+      fz >= grid.sz) {
+    return -1;
+  }
+  return static_cast<long>(fx) +
+         static_cast<long>(grid.sx) *
+             (static_cast<long>(fy) + static_cast<long>(grid.sy) * static_cast<long>(fz));
+}
+
+bool grid_lattice_sound(const VoxelGrid& grid) noexcept {
+  return grid.sx > 0 && grid.sy > 0 && grid.sz > 0 && grid.resolution > 0.0 &&
+         std::isfinite(grid.resolution);
+}
+
+}  // namespace
+
+bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcept {
+  const WorkspaceExplanation* e = grid.workspace_explained;
+  if (e == nullptr || !std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(center.z) || !grid_lattice_sound(grid)) {
+    return false;
+  }
+  const double half_cell = 0.5 * grid.resolution;
+  constexpr double kTolM = 1e-9;  // float slack on the layer bounds only
+  const std::size_t n = std::min(e->n_objects, kMaxTrackedObjects);
+  for (std::size_t i = 0; i < n; ++i) {
+    // A tracked object's containing box.
+    if (point_in_obb(e->box[i], e->half_extents[i], center)) {
+      return true;
+    }
+    // The measured support's top layer (or the one under it), near the object.
+    const double s = e->support_z[i];
+    if (std::isfinite(s) && center.z >= s - half_cell - kTolM &&
+        center.z <= s + half_cell + kTolM &&
+        footprint_gap(e->box[i], e->half_extents[i], center) <= kExplainedSupportReachM) {
+      return true;
+    }
+  }
+  // A declared static collider's cell, on this grid's own lattice.
+  const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                     static_cast<std::size_t>(grid.sz);
+  if (e->static_cells != nullptr && e->static_cells_n == cells) {
+    const long idx = grid_cell_of(grid, inverse_rigid(grid.pose), center);
+    return idx >= 0 && e->static_cells[static_cast<std::size_t>(idx)] != 0;
+  }
+  return false;
+}
+
+std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,
+                              std::uint8_t* mask, std::size_t mask_n,
+                              std::size_t pad_cells) noexcept {
+  if (mask == nullptr || !grid_lattice_sound(grid)) {
+    return 0;
+  }
+  const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                     static_cast<std::size_t>(grid.sz);
+  if (mask_n < cells) {
+    return 0;
+  }
+  std::fill(mask, mask + cells, std::uint8_t{0});
+  const Transform grid_from_base = inverse_rigid(grid.pose);
+  std::size_t marked = 0;
+  for (const Vec3& p : base_points) {
+    const long idx = grid_cell_of(grid, grid_from_base, p);
+    if (idx >= 0 && mask[static_cast<std::size_t>(idx)] == 0) {
+      mask[static_cast<std::size_t>(idx)] = 1;
+      ++marked;
+    }
+  }
+  if (pad_cells > 0 && marked > 0) {
+    // Grow the declared cells (value 1) into 2s first, so the growth never chains: a cell
+    // padded in this pass is not itself a seed of the same pass.
+    const long sx = static_cast<long>(grid.sx);
+    const long sy = static_cast<long>(grid.sy);
+    const long sz = static_cast<long>(grid.sz);
+    const long r = static_cast<long>(pad_cells);
+    for (long k = 0; k < sz; ++k) {
+      for (long j = 0; j < sy; ++j) {
+        for (long i = 0; i < sx; ++i) {
+          if (mask[static_cast<std::size_t>(i + sx * (j + sy * k))] != 1) {
+            continue;
+          }
+          for (long dk = -r; dk <= r; ++dk) {
+            for (long dj = -r; dj <= r; ++dj) {
+              for (long di = -r; di <= r; ++di) {
+                const long ni = i + di;
+                const long nj = j + dj;
+                const long nk = k + dk;
+                if (ni < 0 || nj < 0 || nk < 0 || ni >= sx || nj >= sy || nk >= sz) {
+                  continue;
+                }
+                std::uint8_t& cell = mask[static_cast<std::size_t>(ni + sx * (nj + sy * nk))];
+                if (cell == 0) {
+                  cell = 2;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    for (std::size_t c = 0; c < cells; ++c) {
+      if (mask[c] == 2) {
+        mask[c] = 1;
+      }
+    }
+  }
+  return marked;
 }
 
 }  // namespace openral_safety_kernel

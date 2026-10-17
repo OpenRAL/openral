@@ -103,6 +103,22 @@ def test_no_k_source_at_all_is_a_config_error() -> None:
         projection_geometry(spec, width=1920, height=1080, header_frame_id=_ZED_OPTICAL)
 
 
+def test_a_camera_the_manifest_does_not_declare_needs_live_k_and_header() -> None:
+    """A scene's simulated depth camera (issue #418's tracker fits with it) has no SensorSpec:
+    it projects through its own CameraInfo and header, with nothing to fall back to."""
+    k, frame, notes = projection_geometry(
+        None, width=960, height=540, header_frame_id=_ZED_OPTICAL, camera_info=_zed_camera_info()
+    )
+    assert (frame, k.width, notes) == (_ZED_OPTICAL, 960, ())
+    assert k.fx == pytest.approx(749.09)
+    with pytest.raises(ROSConfigError, match="no SensorSpec"):
+        projection_geometry(None, width=960, height=540, header_frame_id=_ZED_OPTICAL)
+    with pytest.raises(ROSConfigError, match="no SensorSpec"):
+        projection_geometry(
+            None, width=960, height=540, header_frame_id=" ", camera_info=_zed_camera_info()
+        )
+
+
 def test_node_configure_wires_camera_infos_and_rejects_unknown_ids() -> None:
     rclpy = pytest.importorskip("rclpy")
     from openral_perception_ros.segmenter_node import make_segmenter_node

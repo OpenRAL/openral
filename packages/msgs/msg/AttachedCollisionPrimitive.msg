@@ -7,11 +7,23 @@
 #   FK(attach_link) . object.pose_in_link . primitive.pose_in_object
 # and re-checks it as collision-active robot geometry.
 
+# Where this primitive's geometry came from (issue #418, hazard OT-10 amendment). Additive:
+# a publisher that does not set it leaves 0 = FALLBACK, and the kernel treats every value it does
+# not know as FALLBACK. Only MEASURED and GROWN primitives of a payload can explain the payload's
+# OWN cells (kernel param `payload_own_cells_enabled`, sim only); a FALLBACK primitive (the pinch
+# volume, or a box of an object that may not be the held one) has no evidence behind it and
+# explains nothing.
+uint8 SOURCE_FALLBACK = 0   # pinch-volume fallback, ambiguous or unnamed candidates: no evidence
+uint8 SOURCE_MEASURED = 1   # the tracked or single provisional object's own fitted geometry
+uint8 SOURCE_GROWN    = 2   # cells observed to move with the hand (in-hand growth)
+
 uint8 SHAPE_SPHERE  = 1
 uint8 SHAPE_CAPSULE = 2
 uint8 SHAPE_BOX     = 3
 
 uint8 shape_type
+# One of SOURCE_*. Default 0 = FALLBACK.
+uint8 geometry_source
 # Shape dimensions:
 #   sphere  -> [radius]
 #   capsule -> [radius, central_segment_length]

@@ -30,6 +30,14 @@ reads the last frame the RTX pipeline finished, a few steps (measured: 4 at 30 H
 Isaac 6.1) behind the physics just stepped. Rather than render extra frames to catch
 up, every observation carries ``image_time_ns`` — the sim time each frame shows — so
 consumers pair images with state by time, as with a real camera's latency (issue #361).
+
+Frames on demand: rendering is most of a step's cost (25 of 47 ms on the restock scene,
+GB10), yet a chunked policy reads images once per chunk and a deploy camera publishes at
+10 Hz. ``step(frames=...)`` lets the caller say what this step needs: ``"render"``
+(default, one rendered substep as before), ``"fresh"`` (render, then keep rendering
+until every timed camera's frame shows this step's sim time: the RTX pipeline drains
+only on render calls) or ``"none"`` (physics only; the observation carries no frame
+keys and the client reuses its last frames, still stamped with the time they show).
 """
 
 from __future__ import annotations
@@ -42,6 +50,12 @@ from numpy.typing import NDArray
 
 #: Tolerance on ``physics_hz / control_freq_hz`` being an integer (1 %).
 _SUBSTEP_RATIO_TOL = 0.01
+#: ``step`` frame modes (see the module docstring).
+FRAME_MODES = ("render", "fresh", "none")
+#: Observation keys read from rendered frames; a ``frames="none"`` step omits them.
+FRAME_KEYS = ("images", "image_time_ns", "depth_frames")
+#: Extra renders a ``"fresh"`` step may spend draining the RTX pipeline.
+_MAX_CATCHUP_RENDERS = 8
 #: Isaac's default physics rate, the rate the finger contacts were validated at;
 #: the physics rate never drops below it.
 _MIN_PHYSICS_HZ = 60.0
@@ -126,6 +140,9 @@ class IsaacSceneBase:
         self._physics_dt_s: float | None = None
         # Cameras already reported as carrying no frame time (``_frame_time_ns``).
         self._untimed_cameras: set[str] = set()
+        # Renders the last step spent (its rendered substep + catch-up), for the reply.
+        self._last_renders = 0
+        self._catchup_exhausted_warned = False
 
     # ── public sidecar contract ──────────────────────────────────────────────
 
@@ -140,16 +157,20 @@ class IsaacSceneBase:
             self._world.step(render=True)
         self._after_warmup()
         # The hook may step physics without rendering (a soft-driven arm settling
-        # onto its hold target): render once more after it. The frame the reset
-        # observation gets still trails that render by the RTX pipeline depth, so it
-        # can show the arm before the settle; its image_time_ns says which state it
-        # shows (issue #361).
+        # onto its hold target): render once more after it, then drain the RTX
+        # pipeline so the first observation shows the settled pose (issue #361).
         self._before_render()
         self._world.step(render=True)
+        self._catch_up_frames()
         return self._observe()
 
-    def step(self, action: NDArray[np.float32]) -> dict[str, Any]:
-        """Apply one action, advance physics, and return a StepResult dict."""
+    def step(self, action: NDArray[np.float32], frames: str = "render") -> dict[str, Any]:
+        """Apply one action, advance physics, and return a StepResult dict.
+
+        ``frames`` picks the rendering this step does (``FRAME_MODES``, module docstring).
+        """
+        if frames not in FRAME_MODES:
+            raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         if action.shape[0] < self.action_dim:
             # NaN, not 0: slots are absolute targets, and 0 is a legal one ("drive
@@ -157,18 +178,24 @@ class IsaacSceneBase:
             # base twist as 0 (stop).
             action = np.pad(action, (0, self.action_dim - action.shape[0]), constant_values=np.nan)
         self._apply_action(action)
-        # Render only the final substep — it is the frame the obs reads, so the
-        # camera observation stays at the control rate.
+        # Render only the final substep — it is the frame the obs reads — and only
+        # when the caller wants frames this step.
+        render = frames != "none"
         for _ in range(self._substeps() - 1):
             self._world.step(render=False)
-        self._before_render()
-        self._world.step(render=True)
+        if render:
+            self._before_render()
+        self._world.step(render=render)
+        self._last_renders = int(render)
+        if frames == "fresh":
+            self._catch_up_frames()
         self._step_idx += 1
         reward, terminated = self._reward_terminated()
         info: dict[str, Any] = {self.success_key: bool(terminated)}
         info.update(self._extra_info())
         return {
-            "observation": self._observe(),
+            "observation": self._observe(with_frames=render),
+            "renders": self._last_renders,
             "reward": float(reward),
             "terminated": bool(terminated),
             "truncated": bool(self._step_idx >= self.max_steps),
@@ -248,6 +275,48 @@ class IsaacSceneBase:
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_rgb is None else self._last_rgb.copy()
 
+    def refresh_frames(self) -> dict[str, Any]:
+        """Render the current state until its frames are current; the observation.
+
+        No physics step: sim time does not move. For a caller that holds the stepping
+        (the deploy-sim attachment barrier) and needs a frame of the present state.
+        """
+        self._before_render()
+        self._world.render()
+        self._last_renders = 1
+        self._catch_up_frames()
+        return self._observe()
+
+    def _catch_up_frames(self) -> None:
+        """Render until every timed camera's frame shows the current sim time.
+
+        ``world.render()`` draws without stepping physics, so each call moves the
+        delivered frame one stage closer to the state just simulated. Bounded by
+        ``_MAX_CATCHUP_RENDERS``; a scene whose cameras report no frame time cannot be
+        checked and gets no extra render (the frames' own time still says what they show).
+        """
+        now = self.sim_time_ns()
+        if now is None or self._physics_dt_s is None:
+            return
+        # Frame times are float seconds converted twice; half a physics step tells
+        # "this step" from "the previous one" without depending on the rounding.
+        tol_ns = int(self._physics_dt_s * 0.5e9)
+        for _ in range(_MAX_CATCHUP_RENDERS):
+            times = self._image_times()
+            if not times or min(times.values()) >= now - tol_ns:
+                return
+            self._before_render()
+            self._world.render()
+            self._last_renders += 1
+        if not self._catchup_exhausted_warned:
+            self._catchup_exhausted_warned = True
+            print(
+                f"[{type(self).__name__}] WARNING frames still trail the physics after "
+                f"{_MAX_CATCHUP_RENDERS} catch-up renders (frame times {self._image_times()}, "
+                f"sim now {now}); fresh frames are only as fresh as their image_time_ns.",
+                flush=True,
+            )
+
     # ── template methods (override in subclasses) ────────────────────────────
 
     def build(self) -> None:
@@ -316,18 +385,17 @@ class IsaacSceneBase:
 
     # ── shared helpers ───────────────────────────────────────────────────────
 
-    def _observe(self) -> dict[str, Any]:
-        images = self._images()
-        if images:
-            self._last_rgb = next(iter(images.values()))
-        obs: dict[str, Any] = {
-            "images": images,
-            "state": self._state(),
-            "task": self.instruction,
-        }
-        image_times = self._image_times()
-        if image_times:
-            obs["image_time_ns"] = image_times
+    def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
+        """The observation; ``with_frames=False`` leaves out every ``FRAME_KEYS`` entry."""
+        obs: dict[str, Any] = {"state": self._state(), "task": self.instruction}
+        if with_frames:
+            images = self._images()
+            if images:
+                self._last_rgb = next(iter(images.values()))
+            obs["images"] = images
+            image_times = self._image_times()
+            if image_times:
+                obs["image_time_ns"] = image_times
         joints = self._joint_positions()
         if joints is not None:
             obs["joint_positions"] = np.asarray(joints, dtype=np.float32)

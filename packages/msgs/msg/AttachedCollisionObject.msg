@@ -54,3 +54,10 @@ SupportContactWitness support_contact
 # can never license a contact the geometry refuses.
 bool contact_force_valid
 ContactForceWitness contact_force
+
+# Issue #418. epoch: the tracked object's epoch (+1 per re-grounding after
+# release); with object_id it is the kernel's retirement key. geometry_revision:
+# revision of the bound geometry within one binding; the kernel unions
+# revisions, so bound geometry only grows. Both 0 for producers that do not track.
+uint32 epoch
+uint64 geometry_revision

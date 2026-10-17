@@ -591,7 +591,7 @@ def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_sup
     on the payload as posed back from its attach link."""
     from openral_core import DeployScene, PlaceRegion, Pose6D
     from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
-    from openral_hal._grasp_target import VoxelLattice
+    from openral_core.perception_geometry import VoxelLattice
     from openral_hal._grasp_target_leg import _kernel_closure
     from openral_hal.vision_attachment_bridge import box_gap_lower_bound_m, region_attachment
 
@@ -1254,6 +1254,86 @@ def test_each_close_logs_the_trigger_counters_once_at_attach_or_give_up(
     assert "last short_of_command=0.2000, settle spread=0.0000" in err
     assert err.count("this close:") == 2, "an outcome logged more than once per close"
     assert "right_gripper: close commanded" not in err, "an uncommanded jaw logged a close"
+
+
+def test_grasp_events_carry_what_the_trigger_computed() -> None:
+    """Issue #418: every ATTACH / DETACH goes out on ``/openral/grasp_events`` with the
+    kind, the hand, the jaw measured / commanded / held, and the confirming sample's
+    source stamp (sim clock in sim) — never the node clock."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+    from openral_msgs.msg import GraspEvent as GraspEventMsg
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_grasp_events")
+        listener = rclpy.create_node("test_vision_attachment_grasp_events_rx")
+        try:
+            got: list[Any] = []
+            listener.create_subscription(
+                GraspEventMsg,
+                "/openral/grasp_events",
+                got.append,
+                QoSProfile(
+                    depth=10,
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                ),
+            )
+            bridge = VisionAttachmentBridge(
+                node, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+            )
+            bridge.setup()
+            leg = bridge._legs[0]
+            assert leg.joint_name == "left_gripper"
+            fired: list[tuple[bool, int]] = []  # (attached after, stamp) at each flip
+
+            def step(command: float, q: float, stamp_ns: int) -> None:
+                bridge.observe_command(
+                    Action(
+                        control_mode=ControlMode.JOINT_POSITION,
+                        horizon=1,
+                        joint_names=["left_gripper"],
+                        joint_targets=[[command]],
+                    )
+                )
+                before = leg.trigger.attached
+                bridge.observe_joint_state(
+                    JointState(
+                        name=["left_gripper", "right_gripper"],
+                        position=[q, 0.0],
+                        effort=[0.0, 0.0],
+                        stamp_ns=stamp_ns,
+                    )
+                )
+                if leg.trigger.attached != before:
+                    fired.append((leg.trigger.attached, stamp_ns))
+
+            # Closed on a 0.2 rad object, then commanded open and the jaw opens past it.
+            for tick in range(12):
+                step(0.0, 0.2, _at(tick))
+            for tick in range(12, 24):
+                step(1.0, 0.4, _at(tick))
+            deadline = time.monotonic() + 5.0
+            while len(got) < 2 and time.monotonic() < deadline:
+                rclpy.spin_once(listener, timeout_sec=0.1)
+            bridge.teardown()
+        finally:
+            listener.destroy_node()
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    assert [attached for attached, _ in fired] == [True, False]
+    assert [m.kind for m in got] == [GraspEventMsg.KIND_ATTACH, GraspEventMsg.KIND_DETACH]
+    attach, detach = got
+    for msg, (_, stamp_ns) in zip(got, fired, strict=True):
+        assert msg.gripper_joint == "left_gripper"
+        assert msg.hand_link == leg.producer.attach_link
+        assert msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec == stamp_ns
+    assert (attach.jaw_measured, attach.jaw_commanded, attach.hold_position) == (0.2, 0.0, 0.2)
+    # The DETACH reports the hold it released, not the trigger's cleared one.
+    assert (detach.jaw_measured, detach.jaw_commanded, detach.hold_position) == (0.4, 1.0, 0.2)
 
 
 # ── Review findings on PR #346: release cap, jaw_at, released witness, REGRASP keep ──

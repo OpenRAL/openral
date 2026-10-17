@@ -28,7 +28,8 @@ find_package(sensor_msgs REQUIRED)
 
 # ── Core library (octree → grid; ROS-graph-free, unit-testable) ───────────────
 
-add_library(octree_to_grid src/octree_to_grid.cpp src/payload_clearing.cpp src/self_filter.cpp)
+add_library(octree_to_grid src/octree_to_grid.cpp src/payload_clearing.cpp src/self_filter.cpp
+  src/identity_clearing.cpp)
 target_include_directories(octree_to_grid
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -81,6 +82,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_occupancy_persistence octree_to_grid)
   ament_add_gtest(test_payload_clearing test/test_payload_clearing.cpp)
   target_link_libraries(test_payload_clearing octree_to_grid)
+  ament_add_gtest(test_identity_clearing test/test_identity_clearing.cpp)
+  target_link_libraries(test_identity_clearing octree_to_grid)
   # The real node, in-process: its class is the private src/ header.
   # The FK equivalence test links the kernel library: a TEST-only dependency,
   # so the filter's runtime stays in Layer 2 (see self_filter.hpp).

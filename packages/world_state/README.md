@@ -25,6 +25,8 @@ ros2 run openral_world_state world_state_node \
 | --- | --- |
 | `openral_world_state_ros/lifecycle_node.py` | The managed lifecycle node. Wraps `WorldStateAggregator`; stub `RobotDescription` is built at `configure` time from the `robot_name` parameter. Owns the fast/slow `WorldStateStamped` publishers and the snapshot-to-message translator (`build_world_state_stamped_msg`). |
 | `scripts/world_state_node` | Console entry point for `ros2 run`. |
+| `openral_world_state_ros/object_tracker_node.py` | The #418 object-tracker lifecycle node (see "Object tracker" below). Wraps `openral_world_state.object_tracker.TrackerSession`. |
+| `scripts/object_tracker_node` | Its console entry point. |
 | `CMakeLists.txt` | `ament_cmake_python` install for the Python package + script. |
 | `package.xml` | ROS package manifest (depends on `openral_msgs` for the `WorldStateStamped` IDL). |
 
@@ -49,6 +51,7 @@ ros2 run openral_world_state world_state_node \
 | `policy_state_staleness_limit_s` | double | `5.0` | Separate staleness window for the step-locked `/openral/policy_state`. |
 | `camera_names` | string[] | `[""]` (none) | One `sensor_msgs/Image` subscription on `camera_topic(<name>)` per entry. |
 | `attachment_state_topic` | string | `/openral/attachment_state` | `AttachmentState` input relayed onto `WorldStateStamped`. |
+| `tracked_objects_topic` | string | `/openral/tracked_objects` | The object tracker's `TrackedObjectSet`, relayed as `WorldStateStamped.tracked_objects`; `tracked_objects_valid` false once no set arrived for 1.5 s (`DEFAULT_TRACKED_OBJECTS_STALE_S`). |
 | `direct_image_frame_sensors` | string[] | `[""]` (none) | Cameras the co-located sensor leg writes directly; their image callback keeps the thumbnail span but does not re-write the aggregator. |
 
 ## Topics
@@ -58,6 +61,7 @@ ros2 run openral_world_state world_state_node \
 | Sub | `/joint_states` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/JointState` |
 | Sub | `/openral/policy_state` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `std_msgs/Float32MultiArray` |
 | Sub | `/openral/attachment_state` (configurable) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
+| Sub | `/openral/tracked_objects` (configurable) | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
 | Sub | `camera_topic(<name>)` per `camera_names` entry | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` |
 | Pub | `/openral/world_state_fast` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
 | Pub | `/openral/world_state_slow` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/WorldStateStamped` |
@@ -168,6 +172,60 @@ ObjectsMetadata.camera_frame_id + camera_intrinsics             ─┘          
                                                                              │
                             WorldState.detected_objects (frame_id="map") ──► WorldStateStamped.detected_object_*
 ```
+
+## Object tracker (issue #418)
+
+`object_tracker_node` grounds the objects a goal names (`GraspDeclaration.target_queries`,
+`PlaceDeclaration.destination_query`) as standing queries, fits each one to a set that
+contains it, confirms it on the voxel map, tracks its identity, binds it at the HAL
+trigger's ATTACH and releases it at DETACH or when the measured jaw opens. Every decision is
+in the ROS-free `TrackerSession` (`python/world_state/.../object_tracker/session.py`); the
+node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is not `off`.
+
+| Mode | What leaves the node |
+| --- | --- |
+| `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`). The aggregator relays the set on `world_state_fast` and the kernel ingests it (K1, refusals logged), with no decision change: no `TRACKED_OBJECT` binding exists and K2 / K5 are off. Allowed on `deploy run`. |
+| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`). Sim-only until Safety-WG review. |
+| `on` | As `bind`; the kernel additionally keys grasp exemptions on tracked ids (K2). Sim-only. |
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `robot_yaml` | — | Manifest; the tracks' frame is its `base_frame`. |
+| `mode` | `shadow` | `shadow` / `bind` / `on` (`bind`/`on` refused with `hal_mode:=real`). |
+| `hal_mode` | `sim` | |
+| `cameras` | none | Depth cameras: `camera_topic(<cam>, DEPTH_IMAGE / DEPTH_CAMERA_INFO / ROBOT_MASK)`. |
+| `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
+| `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
+| `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
+| `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G active-search budget (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`): a structlog `object_tracker.query_escalation` (WARN / ERROR), a `world_state.object_query` span on the declaration's skill trace, and a `FailureTrigger` (`KIND_OBJECT_QUERY`) on `/openral/failure/world_state`, where the reasoner runs `find-object` (unresolved) or hands off to a human (exhausted). |
+| `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. |
+| `released_clear_timeout_s` | `3.0` | How long a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge) unless the track leaves RELEASED first. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
+| `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
+| `segment_service` / `locate_service` | `/openral/perception/segment_in_view` / `""` | `locate_service` empty: no open-vocabulary detector, seeds and refreshes only. |
+| `mask_tf_wait_s` | `0.3` | Wall seconds a depth frame waits for its robot mask and tf before it is used for ageing only. |
+| `heartbeat_hz` | `2.0` | `tracked_objects` (and, while joint states are fresh, `attachment_state`) heartbeat. |
+| `process_hz` | `15.0` | Frame loop. |
+| `attachment_evidence_timeout_s` | `1.0` | No joint state for this long (node clock): the `attachment_state` heartbeat stops and the kernel's copy ages out. |
+
+| Direction | Topic | QoS | Message |
+| --- | --- | --- | --- |
+| Sub | `camera_topic(<cam>, DEPTH_IMAGE)`, `…DEPTH_CAMERA_INFO`, `…ROBOT_MASK` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/Image`, `CameraInfo`, `Image` (mono8) |
+| Sub | `/openral/world_voxels` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/OccupancyVoxels` |
+| Sub | `/joint_states` | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `sensor_msgs/JointState` |
+| Sub | `/openral/grasp_events` | RELIABLE / VOLATILE / KEEP_LAST=10 | `openral_msgs/GraspEvent` |
+| Sub | `/openral/grasp_declaration`, `/openral/place_declaration` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/GraspDeclaration`, `PlaceDeclaration` |
+| Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
+| Pub | `/openral/attachment_state` (`bind`/`on`) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
+| Client | `segment_service`, `locate_service` | | `SegmentInView`, `LocateInView` |
+
+Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint states,
+grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall
+time at every activate, so a restarted tracker never regresses one (the kernel refuses a
+regressing `tracked_objects` revision until it is re-activated).
+
+Covered by `tests/unit/test_object_tracker_session.py` and the live
+`tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:
+grounding, relay, staleness, `bind`-mode `TRACKED_OBJECT` binding, restart revision).
 
 ## See also
 

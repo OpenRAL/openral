@@ -99,23 +99,36 @@ _MAX_CARRIED_SAMPLE_AGE_NS = 5_000_000_000
 
 
 def joint_state_republish_stamp_ns(
-    node_now_ns: int, sample_stamp_ns: int, *, wall_now_ns: int | None = None
+    node_now_ns: int,
+    sample_stamp_ns: int,
+    *,
+    wall_now_ns: int | None = None,
+    sim_time_ns: int | None = None,
 ) -> int:
-    """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
+    """Stamp for the HAL's ``~/joint_states`` republish: the time the sample shows.
 
-    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every HAL (a
-    sim-attached HAL stamps its post-step read too), while the node's clock may be sim
-    time, so the absolute stamp cannot be copied. The grasp trigger alone reads sim
-    snapshots on the sim clock instead (``grasp_trigger_state``). The
-    sample's AGE can: consumers that pair joint states with other sensors by stamp (the
-    robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
-    instead of as fresh at every republish. An age that is negative or implausibly large
+    A sample on the node's own sim clock (``sim_time_ns``: the post-step frame's sim
+    time, when this node publishes ``/clock`` from those same frames) is stamped with
+    that sim time, exactly. Its wall-clock age must not be used there: a sim slower than
+    real time republishes one frame several times, and subtracting each republish's
+    growing WALL age from the SIM clock labelled one pose with stamps reaching back
+    seconds (issue #418 run sf_dr2, Isaac at ~0.13x real time: 0.07-2.0 s early, 689 of
+    1639 samples out of order). The robot self-filter, which poses the arm at a cloud's
+    stamp from these samples, then posed it at another instant and kept its returns.
+
+    Otherwise a HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) while the
+    node's clock may differ, so the absolute stamp cannot be copied; the sample's AGE
+    can: consumers that pair joint states with other sensors by stamp (the robot
+    self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale, instead
+    of as fresh at every republish. An age that is negative or implausibly large
     (another clock domain) falls back to ``node_now_ns``, the previous behaviour.
 
     Args:
         node_now_ns: The node clock's now, in nanoseconds.
         sample_stamp_ns: The HAL's ``JointState.stamp_ns``.
         wall_now_ns: Wall-clock now; ``time.time_ns()`` when omitted.
+        sim_time_ns: The sample's sim time when the node's clock IS that sim clock,
+            else ``None``.
 
     Returns:
         The stamp to publish, in the node's clock domain.
@@ -125,9 +138,13 @@ def joint_state_republish_stamp_ns(
         9999999900
         >>> joint_state_republish_stamp_ns(10_000_000_000, 0, wall_now_ns=1_000)
         10000000000
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 900, sim_time_ns=9_800_000_000)
+        9800000000
     """
     import time
 
+    if sim_time_ns is not None and sim_time_ns > 0:
+        return int(sim_time_ns)
     wall = time.time_ns() if wall_now_ns is None else wall_now_ns
     age = wall - int(sample_stamp_ns)
     if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
@@ -1347,8 +1364,15 @@ if _ROS2_AVAILABLE:
 
             msg = RosJointState()
             now = self.get_clock().now()
+            # This node's /clock is published from these same frames: on it, the
+            # frame's sim time is the stamp, never the republish's wall age.
+            own_sim_time = (
+                frame.sim_time_ns if frame is not None and self._clock_pub is not None else None
+            )
             msg.header.stamp = type(now)(
-                nanoseconds=joint_state_republish_stamp_ns(now.nanoseconds, state.stamp_ns),
+                nanoseconds=joint_state_republish_stamp_ns(
+                    now.nanoseconds, state.stamp_ns, sim_time_ns=own_sim_time
+                ),
                 clock_type=now.clock_type,
             ).to_msg()
             msg.name = list(state.name)
@@ -2141,6 +2165,9 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_place_target_freeze_s", 0.0),
                     ("vision_attachment_place_target_search_depth_m", 0.20),
                     ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
+                    # False when the #418 object tracker owns /openral/attachment_state
+                    # (DeployRuntime.object_tracking bind | on): the bridge publishes nothing.
+                    ("vision_attachment_publish_attachment_state", True),
                 ],
             )
             self._bridge: Any = None
@@ -2813,6 +2840,9 @@ if _ROS2_AVAILABLE:
                     )
                     .get_parameter_value()
                     .double_value,
+                    publish_attachment_state=gp("vision_attachment_publish_attachment_state")
+                    .get_parameter_value()
+                    .bool_value,
                 ),
             )
             self._vision_attachment.setup()

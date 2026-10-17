@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -547,8 +548,9 @@ void place_self_primitives(const SelfModel& model, const std::vector<tf2::Transf
 }
 
 void SelfMask::set(const std::vector<PayloadPrimitive>& primitives, double padding_m,
-                   const std::vector<const SelfHull*>& hulls) {
-  padding_m_ = std::isfinite(padding_m) && padding_m > 0.0 ? padding_m : 0.0;
+                   const std::vector<const SelfHull*>& hulls,
+                   const std::vector<double>& extra_padding_m) {
+  const double base = std::isfinite(padding_m) && padding_m > 0.0 ? padding_m : 0.0;
   entries_.clear();
   entries_.reserve(primitives.size());
   for (std::size_t i = 0; i < primitives.size(); ++i) {
@@ -559,7 +561,12 @@ void SelfMask::set(const std::vector<PayloadPrimitive>& primitives, double paddi
     e.hull = i < hulls.size() && prim.shape_type == Wire::SHAPE_BOX ? hulls[i] : nullptr;
     e.local_from_frame = prim.pose.inverse();
     e.center = prim.pose.getOrigin();
-    const double reach = primitive_bounding_radius(prim) + padding_m_;
+    const double extra =
+        i < extra_padding_m.size() && std::isfinite(extra_padding_m[i]) && extra_padding_m[i] > 0.0
+            ? extra_padding_m[i]
+            : 0.0;
+    e.padding = std::min(base + extra, std::max(base, kMaxSelfFilterPaddingM));
+    const double reach = primitive_bounding_radius(prim) + e.padding;
     e.reach_sq = reach * reach;
     entries_.push_back(e);
   }
@@ -571,15 +578,347 @@ bool SelfMask::contains(const tf2::Vector3& p) const noexcept {
       continue;
     }
     const tf2::Vector3 local = e.local_from_frame * p;
-    if (primitive_surface_distance(e.primitive, local) > padding_m_) {
+    if (primitive_surface_distance(e.primitive, local) > e.padding) {
       continue;  // outside the box's shell, so outside the hull's (hull ⊆ box)
     }
     if (e.hull == nullptr ||
-        self_hull_distance(*e.hull, local, padding_m_, padding_m_) <= padding_m_) {
+        self_hull_distance(*e.hull, local, e.padding, e.padding) <= e.padding) {
       return true;
     }
   }
   return false;
+}
+
+JointStateVerdict joint_state_at(const std::deque<JointSample>& history, std::int64_t stamp_ns,
+                                 double period_s, double max_skew_s, std::vector<double>& q,
+                                 std::vector<double>& qdot) {
+  if (history.empty()) {
+    return JointStateVerdict::kNoState;
+  }
+  const auto period_ns = static_cast<std::int64_t>(period_s * 1e9);
+  const auto skew_ns = static_cast<std::int64_t>(max_skew_s * 1e9);
+  const auto hi =
+      std::lower_bound(history.begin(), history.end(), stamp_ns,
+                       [](const JointSample& s, std::int64_t t) { return s.stamp_ns < t; });
+  const JointSample* a = nullptr;
+  const JointSample* b = nullptr;
+  std::int64_t nearest_ns = 0;
+  if (hi != history.end() && hi->stamp_ns == stamp_ns) {
+    // Exactly a sample: its pose; its rate from a neighbour if one is close enough.
+    q = hi->q;
+    const JointSample* n = hi != history.begin()            ? &*std::prev(hi)
+                           : std::next(hi) != history.end() ? &*std::next(hi)
+                                                            : nullptr;
+    qdot.assign(q.size(), 0.0);
+    if (n != nullptr && std::llabs(n->stamp_ns - stamp_ns) <= 2 * period_ns) {
+      const double dt = 1e-9 * static_cast<double>(stamp_ns - n->stamp_ns);
+      for (std::size_t d = 0; d < q.size() && d < n->q.size(); ++d) {
+        qdot[d] = (q[d] - n->q[d]) / dt;
+      }
+    }
+    return JointStateVerdict::kOk;
+  }
+  if (hi != history.end() && hi != history.begin()) {
+    a = &*std::prev(hi);
+    b = &*hi;
+    nearest_ns = std::min(stamp_ns - a->stamp_ns, b->stamp_ns - stamp_ns);
+  } else {
+    if (history.size() < 2) {
+      return JointStateVerdict::kExtrapolation;
+    }
+    const bool after = hi == history.end();
+    a = after ? &history[history.size() - 2] : &history[0];
+    b = after ? &history[history.size() - 1] : &history[1];
+    nearest_ns = after ? stamp_ns - b->stamp_ns : a->stamp_ns - stamp_ns;
+    if (nearest_ns > period_ns) {
+      return JointStateVerdict::kExtrapolation;
+    }
+  }
+  if (b->stamp_ns - a->stamp_ns > 2 * period_ns || b->stamp_ns <= a->stamp_ns) {
+    return JointStateVerdict::kGap;
+  }
+  if (nearest_ns > skew_ns) {
+    return JointStateVerdict::kNoState;
+  }
+  const double dt = 1e-9 * static_cast<double>(b->stamp_ns - a->stamp_ns);
+  const double alpha = 1e-9 * static_cast<double>(stamp_ns - a->stamp_ns) / dt;
+  const std::size_t n = std::min(a->q.size(), b->q.size());
+  q.resize(n);
+  qdot.resize(n);
+  for (std::size_t d = 0; d < n; ++d) {
+    qdot[d] = (b->q[d] - a->q[d]) / dt;
+    q[d] = a->q[d] + alpha * (b->q[d] - a->q[d]);
+  }
+  return JointStateVerdict::kOk;
+}
+
+void self_primitive_motion(const SelfModel& model, const std::vector<tf2::Transform>& link_a,
+                           const std::vector<tf2::Transform>& link_b, std::vector<double>& out) {
+  out.resize(model.primitives.size());
+  for (std::size_t k = 0; k < model.primitives.size(); ++k) {
+    const auto link = static_cast<std::size_t>(model.primitive_link[k]);
+    const tf2::Transform pa = link_a[link] * model.primitives[k].pose;
+    const tf2::Transform pb = link_b[link] * model.primitives[k].pose;
+    const double angle = pa.getRotation().angleShortestPath(pb.getRotation());
+    out[k] = (pb.getOrigin() - pa.getOrigin()).length() +
+             primitive_bounding_radius(model.primitives[k]) * angle;
+  }
+}
+
+namespace {
+
+constexpr double kInfinityM = std::numeric_limits<double>::infinity();
+
+// Entry parameter `t >= 0` of the ray `o + t*d` into the convex polytope
+// {x : lo[i] <= n_i·x <= hi[i]}; 0 when `o` is inside, +inf on a miss.
+double slab_entry(const tf2::Vector3& o, const tf2::Vector3& d, const double (*axes)[3],
+                  const double* lo, const double* hi, int n_axes) noexcept {
+  double t_near = 0.0;
+  double t_far = kInfinityM;
+  for (int i = 0; i < n_axes; ++i) {
+    const tf2::Vector3 n(axes[i][0], axes[i][1], axes[i][2]);
+    const double s = n.dot(o);
+    const double ds = n.dot(d);
+    if (std::fabs(ds) < 1e-12) {
+      if (s < lo[i] || s > hi[i]) {
+        return kInfinityM;
+      }
+      continue;
+    }
+    double t1 = (lo[i] - s) / ds;
+    double t2 = (hi[i] - s) / ds;
+    if (t1 > t2) {
+      std::swap(t1, t2);
+    }
+    t_near = std::max(t_near, t1);
+    t_far = std::min(t_far, t2);
+    if (t_near > t_far) {
+      return kInfinityM;
+    }
+  }
+  return t_near;
+}
+
+// Entry of `o + t*d` (t >= 0) into the ball of radius `r` about `c`.
+double sphere_entry(const tf2::Vector3& o, const tf2::Vector3& d, const tf2::Vector3& c,
+                    double r) noexcept {
+  const tf2::Vector3 oc = o - c;
+  const double a = d.dot(d);
+  const double b = oc.dot(d);
+  const double disc = b * b - a * (oc.dot(oc) - r * r);
+  if (disc < 0.0) {
+    return kInfinityM;
+  }
+  const double sq = std::sqrt(disc);
+  if ((-b + sq) / a < 0.0) {
+    return kInfinityM;
+  }
+  return std::max(0.0, (-b - sq) / a);
+}
+
+// Entry into the capsule `{x : dist(x, z-segment [-h, h]) <= r}`, local frame:
+// the union of the two end balls and the finite cylinder between them.
+double capsule_entry(const tf2::Vector3& o, const tf2::Vector3& d, double r, double h) noexcept {
+  double t = std::min(sphere_entry(o, d, tf2::Vector3(0, 0, -h), r),
+                      sphere_entry(o, d, tf2::Vector3(0, 0, h), r));
+  const double a = d.x() * d.x() + d.y() * d.y();
+  if (h > 0.0 && a > 1e-18) {
+    const double b = o.x() * d.x() + o.y() * d.y();
+    const double disc = b * b - a * (o.x() * o.x() + o.y() * o.y() - r * r);
+    if (disc >= 0.0) {
+      const double sq = std::sqrt(disc);
+      const double t_in = (-b - sq) / a;
+      const double t_out = (-b + sq) / a;
+      // The z-interval of the slab |z| <= h along the ray, intersected with the
+      // radial interval [t_in, t_out].
+      double z_lo = 0.0;
+      double z_hi = kInfinityM;
+      if (std::fabs(d.z()) < 1e-12) {
+        if (std::fabs(o.z()) > h) {
+          z_lo = kInfinityM;
+        }
+      } else {
+        z_lo = (-h - o.z()) / d.z();
+        z_hi = (h - o.z()) / d.z();
+        if (z_lo > z_hi) {
+          std::swap(z_lo, z_hi);
+        }
+      }
+      const double lo = std::max({t_in, z_lo, 0.0});
+      const double hi = std::min(t_out, z_hi);
+      if (lo <= hi) {
+        t = std::min(t, lo);
+      }
+    }
+  }
+  return t;
+}
+
+constexpr double kBoxAxes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+// Entry of the camera ray `t*d` (camera frame) into one primitive.
+double primitive_entry(const PayloadPrimitive& prim, const SelfHull* hull,
+                       const tf2::Transform& local_from_cam, const tf2::Vector3& d) noexcept {
+  const tf2::Vector3 o = local_from_cam.getOrigin();
+  const tf2::Vector3 dl = local_from_cam.getBasis() * d;
+  switch (prim.shape_type) {
+  case Wire::SHAPE_SPHERE:
+    return sphere_entry(o, dl, tf2::Vector3(0, 0, 0), prim.radius);
+  case Wire::SHAPE_CAPSULE:
+    return capsule_entry(o, dl, prim.radius, prim.half_length);
+  default: {
+    if (hull != nullptr) {
+      // ponytail: the 26-DOP, not the exact hull (we hold no hull faces); the
+      // DOP contains the hull, so the silhouette can only grow.
+      return slab_entry(o, dl, kSelfDopAxis, hull->dop_lo, hull->dop_hi, kSelfDopAxes);
+    }
+    const double lo[3] = {-prim.half_extents.x(), -prim.half_extents.y(), -prim.half_extents.z()};
+    const double hi[3] = {prim.half_extents.x(), prim.half_extents.y(), prim.half_extents.z()};
+    return slab_entry(o, dl, kBoxAxes, lo, hi, 3);
+  }
+  }
+}
+
+// `dst[p] = 1` iff some `src` pixel within Chebyshev distance `k` of `p` is set.
+void dilate(const std::vector<std::uint8_t>& src, std::vector<std::uint8_t>& dst,
+            std::vector<std::uint8_t>& tmp, std::size_t w, std::size_t h, int k) {
+  const auto kk = static_cast<std::size_t>(std::max(k, 0));
+  tmp.assign(w * h, 0);
+  dst.assign(w * h, 0);
+  for (std::size_t y = 0; y < h; ++y) {
+    for (std::size_t x = 0; x < w; ++x) {
+      if (src[y * w + x] == 0) {
+        continue;
+      }
+      const std::size_t x0 = x >= kk ? x - kk : 0;
+      const std::size_t x1 = std::min(w - 1, x + kk);
+      std::fill(tmp.begin() + static_cast<std::ptrdiff_t>(y * w + x0),
+                tmp.begin() + static_cast<std::ptrdiff_t>(y * w + x1 + 1), 1);
+    }
+  }
+  for (std::size_t y = 0; y < h; ++y) {
+    const std::size_t y0 = y >= kk ? y - kk : 0;
+    const std::size_t y1 = std::min(h - 1, y + kk);
+    for (std::size_t x = 0; x < w; ++x) {
+      if (tmp[y * w + x] == 0) {
+        continue;
+      }
+      for (std::size_t yy = y0; yy <= y1; ++yy) {
+        dst[yy * w + x] = 1;
+      }
+    }
+  }
+}
+
+}  // namespace
+
+void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
+                       const std::vector<const SelfHull*>& hulls,
+                       const std::vector<double>& backstop_margin_m, const float* depth_m,
+                       const PinholeCamera& cam, int uncertain_px, RobotMaskScratch& s,
+                       std::vector<std::uint8_t>& mask) {
+  const std::size_t w = cam.width;
+  const std::size_t h = cam.height;
+  const std::size_t n = w * h;
+  s.z_robot.assign(n, std::numeric_limits<float>::infinity());
+  s.backstop.assign(n, 0);
+  s.inside.assign(n, 0);
+  mask.assign(n, kRobotMaskFree);
+  if (n == 0 || !(cam.fx > 0.0) || !(cam.fy > 0.0)) {
+    return;
+  }
+  constexpr double kNearM = 1e-3;
+  for (std::size_t k = 0; k < primitives.size(); ++k) {
+    const PayloadPrimitive& prim = primitives[k];
+    const SelfHull* hull =
+        k < hulls.size() && prim.shape_type == Wire::SHAPE_BOX ? hulls[k] : nullptr;
+    const double margin = k < backstop_margin_m.size() ? backstop_margin_m[k] : 0.0;
+    const tf2::Vector3 c = prim.pose.getOrigin();
+    const double r = primitive_bounding_radius(prim) + margin;
+    if (c.z() + r <= kNearM) {
+      continue;  // wholly behind the camera
+    }
+    // The footprint: the projection of the bounding sphere's cube, or the whole
+    // image when that cube reaches behind the image plane.
+    std::size_t u0 = 0;
+    std::size_t u1 = w - 1;
+    std::size_t v0 = 0;
+    std::size_t v1 = h - 1;
+    if (c.z() - r > kNearM) {
+      double umin = kInfinityM;
+      double umax = -kInfinityM;
+      double vmin = kInfinityM;
+      double vmax = -kInfinityM;
+      for (int corner = 0; corner < 8; ++corner) {
+        const double x = c.x() + ((corner & 1) != 0 ? r : -r);
+        const double y = c.y() + ((corner & 2) != 0 ? r : -r);
+        const double z = c.z() + ((corner & 4) != 0 ? r : -r);
+        umin = std::min(umin, cam.fx * x / z + cam.cx);
+        umax = std::max(umax, cam.fx * x / z + cam.cx);
+        vmin = std::min(vmin, cam.fy * y / z + cam.cy);
+        vmax = std::max(vmax, cam.fy * y / z + cam.cy);
+      }
+      if (umax < 0.0 || vmax < 0.0 || umin > static_cast<double>(w - 1) ||
+          vmin > static_cast<double>(h - 1)) {
+        continue;
+      }
+      u0 = static_cast<std::size_t>(std::max(0.0, std::floor(umin)));
+      v0 = static_cast<std::size_t>(std::max(0.0, std::floor(vmin)));
+      u1 = static_cast<std::size_t>(std::min(static_cast<double>(w - 1), std::ceil(umax)));
+      v1 = static_cast<std::size_t>(std::min(static_cast<double>(h - 1), std::ceil(vmax)));
+    }
+    const tf2::Transform local_from_cam = prim.pose.inverse();
+    for (std::size_t v = v0; v <= v1; ++v) {
+      for (std::size_t u = u0; u <= u1; ++u) {
+        const std::size_t p = v * w + u;
+        const tf2::Vector3 d((static_cast<double>(u) - cam.cx) / cam.fx,
+                             (static_cast<double>(v) - cam.cy) / cam.fy, 1.0);
+        const double t = primitive_entry(prim, hull, local_from_cam, d);
+        if (t < static_cast<double>(s.z_robot[p])) {
+          s.z_robot[p] = static_cast<float>(t);  // d.z = 1: t IS the depth
+        }
+        const float dm = depth_m[p];
+        if ((s.backstop[p] == 0 || s.inside[p] == 0) && std::isfinite(dm) && dm > 0.0F) {
+          const tf2::Vector3 local = local_from_cam * (d * static_cast<double>(dm));
+          const double surface = primitive_surface_distance(prim, local);
+          if (s.backstop[p] == 0 && surface <= margin &&
+              (hull == nullptr || self_hull_distance(*hull, local, margin, margin) <= margin)) {
+            s.backstop[p] = 1;
+          }
+          // The return is on (or in) this link, not seen past it.
+          if (surface <= kRobotMaskArmMarginM) {
+            s.inside[p] = 1;
+          }
+        }
+      }
+    }
+  }
+  s.robot.assign(n, 0);
+  s.not_robot.assign(n, 1);
+  for (std::size_t p = 0; p < n; ++p) {
+    const float dm = depth_m[p];
+    const double zr = static_cast<double>(s.z_robot[p]);
+    if (std::isfinite(dm) && dm > 0.0F && zr <= static_cast<double>(dm) + kRobotMaskDepthTolM &&
+        (static_cast<double>(dm) <= zr + kRobotMaskSeeThroughM || s.inside[p] != 0)) {
+      s.robot[p] = 1;
+      s.not_robot[p] = 0;
+    }
+  }
+  dilate(s.robot, s.near_robot, s.tmp, w, h, uncertain_px);
+  dilate(s.not_robot, s.near_free, s.tmp, w, h, uncertain_px);
+  for (std::size_t p = 0; p < n; ++p) {
+    const float dm = depth_m[p];
+    const bool no_return = !(std::isfinite(dm) && dm > 0.0F);
+    if (s.backstop[p] != 0) {
+      mask[p] = kRobotMaskRobot;
+    } else if (uncertain_px > 0 && s.near_robot[p] != 0 && s.near_free[p] != 0) {
+      mask[p] = kRobotMaskUncertain;
+    } else if (s.robot[p] != 0) {
+      mask[p] = kRobotMaskRobot;
+    } else if (no_return && std::isfinite(s.z_robot[p])) {
+      mask[p] = kRobotMaskUncertain;
+    }
+  }
 }
 
 SelfFilterStats filter_xyz_points(const std::uint8_t* data, std::size_t n_points,

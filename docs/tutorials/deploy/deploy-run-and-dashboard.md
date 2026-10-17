@@ -567,6 +567,24 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   openral deploy run --config scenes/deploy/so100_pick_cube.yaml --hal port=/dev/ttyUSB1
   ```
 
+- `runtime.object_tracking` (issue #418): `deploy run` allows only `shadow` (the object
+  tracker publishes `/openral/tracked_objects`; the safety kernel ingests the set (K1, it
+  may log `safety.tracked_objects_rejected`) but no decision changes); `bind` / `on` are
+  sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
+  field can be overridden without editing it, e.g.
+  `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
+  `on` also makes the tracked objects the safety kernel's grasp-exemption source
+  (`tracked_grasp_exemption_enabled`, issue #418 K2): a finger is exempt only against
+  the cells of the one nearest eligible tracked target per hand, cover-checked on the
+  kernel's own grid, instead of the HAL's measured region. It needs
+  `runtime.grasp_allowance_enabled: true`; the launch refuses `on` without it.
+  With `runtime.workspace_contact_enabled: true`, `on` also narrows workspace contact
+  to explained cells (`workspace_explained_cells_enabled`, issue #418 K7). A slow hand
+  in the workspace is then tolerated only against cells that one of these explains: an
+  eligible tracked object's box, the declared static geometry, or the measured support
+  beside such an object. Anything else in the workspace stops the hand, for example a
+  person's hand in the tote or a carton that grounding missed.
+
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.
   Keep your E-stop within reach.

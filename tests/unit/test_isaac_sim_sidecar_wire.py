@@ -14,6 +14,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -26,7 +27,7 @@ msgpack = pytest.importorskip("msgpack", reason="sidecar-wire group (msgpack) no
 from openral_core import RobotDescription, SceneSpec, SimEnvironment, TaskSpec  # noqa: E402
 from openral_core.schemas import PhysicsBackend  # noqa: E402
 from openral_hal.sim_attached import SimAttachedHAL  # noqa: E402
-from openral_sim.backends.isaac_sim import _IsaacSimSidecar  # noqa: E402
+from openral_sim.backends.isaac_sim import _FRAME_KEYS, _IsaacSimSidecar  # noqa: E402
 from openral_sim.sidecar import (  # noqa: E402
     SidecarClient,
     decode_ndarray,
@@ -59,6 +60,7 @@ class _FakeSidecar:
         null_time_base: bool = False,
         obs_extra: dict[str, Any] | None = None,
         sim_time_ns: int | None = None,
+        tick_ns: int = 0,
     ) -> None:
         self.port = port
         self.obs_height = obs_height
@@ -72,6 +74,10 @@ class _FakeSidecar:
         # the ``sim_time_ns`` reset/step replies carry (None = left out).
         self.obs_extra = obs_extra or {}
         self.sim_time_ns = sim_time_ns
+        # Sim time each step advances (needs ``sim_time_ns``), and the ``frames``
+        # field of every step request (None = left out, i.e. "render").
+        self.tick_ns = tick_ns
+        self.frames_requests: list[str | None] = []
         self.last_action: npt.NDArray[Any] | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._stop = threading.Event()
@@ -109,8 +115,15 @@ class _FakeSidecar:
                     reply["sim_time_ns"] = self.sim_time_ns
             elif endpoint == "step":
                 self.last_action = np.asarray(data["action"], dtype=np.float32)
+                frames = data.get("frames")
+                self.frames_requests.append(frames)
+                obs = self._obs()
+                if frames == "none":  # the real sidecar renders nothing and sends no frames
+                    obs = {k: v for k, v in obs.items() if k not in _FRAME_KEYS}
+                if self.sim_time_ns is not None:
+                    self.sim_time_ns += self.tick_ns
                 reply = {
-                    "observation": self._obs(),
+                    "observation": obs,
                     "reward": 1.5,
                     "terminated": False,
                     "truncated": True,
@@ -118,6 +131,9 @@ class _FakeSidecar:
                 }
                 if self.sim_time_ns is not None:
                     reply["sim_time_ns"] = self.sim_time_ns
+            elif endpoint == "refresh_frames":
+                self.frames_requests.append("refresh")
+                reply = {"observation": self._obs()}
             elif endpoint == "close":
                 reply = {"ok": True}
             else:
@@ -457,7 +473,6 @@ class TestImageTime:
     _FRAMES: ClassVar[dict[str, Any]] = {
         "images": {"top": np.full((64, 48, 3), 9, dtype=np.uint8)},
         "image_time_ns": {"top": _IMAGE_NS, "head_zed": _IMAGE_NS - _TICK_NS},
-        "depth_points": {"head_zed": np.asarray([[1.0, 0.0, 0.5]], dtype=np.float32)},
         "depth_frames": {
             "head_zed": {
                 "depth": np.ones((4, 6), dtype=np.float32),
@@ -571,6 +586,61 @@ class TestImageTime:
                 rclpy.shutdown()
                 hal.env.close()
 
+    def test_on_the_sim_clock_each_frame_is_stamped_with_its_sim_time(self) -> None:
+        """Issue #418: on ``use_sim_time`` the stamp is the frame time itself.
+
+        The age form (node now minus ``sim_now - frame_time``) was early whenever the
+        node's clock trailed the HAL's newest sim time, and the robot self-filter then
+        posed the arm before the instant the cloud shows.
+        """
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core import CameraTopicKind, camera_topic
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.parameter import Parameter
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import Image, PointCloud2
+
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            rclpy.init()
+            # Sim time with no /clock yet: the node's now (0) trails the sim by seconds.
+            node = rclpy.create_node(
+                "test_isaac_frame_sim_stamps",
+                parameter_overrides=[Parameter("use_sim_time", value=True)],
+            )
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: dict[str, int] = {}
+
+            def keep(key: str) -> Any:
+                def cb(msg: Any) -> None:
+                    got[key] = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+
+                return cb
+
+            for key, kind, topic in (
+                ("image", Image, camera_topic("top")),
+                ("cloud", PointCloud2, camera_topic("head_zed", CameraTopicKind.POINTS)),
+            ):
+                node.create_subscription(kind, topic, keep(key), qos_profile_sensor_data)
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._setup_depth()
+                times = hal.read_image_times()
+                bridge._publish_images()
+                bridge._publish_depth_clouds_from_obs()
+                deadline = time.monotonic() + 5.0
+                while len(got) < 2 and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert got == {"image": times["top"], "cloud": times["head_zed"]}, (got, times)
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
 
 class TestJointEfforts:
     """The sidecar's measured joint efforts cross the wire into ``/joint_states.effort``.
@@ -603,3 +673,259 @@ class TestJointEfforts:
             assert hal.read_state().effort == []
         finally:
             hal.env.close()
+
+
+class TestFramesOnDemand:
+    """A step can skip rendering; the rollout then reuses its last frames.
+
+    Rendering is most of an Isaac step's cost, so ``sim run`` renders the policy's
+    observation only when it infers and the deploy-sim HAL only when a camera publish
+    is due. Real wire, real OpenArm manifest and ``SimAttachedHAL``; the sidecar is
+    the ZMQ boundary double, which like the real one sends no frames on a
+    ``frames="none"`` step.
+    """
+
+    _FRAMES: ClassVar[dict[str, Any]] = {
+        "images": {"top": np.full((8, 6, 3), 9, dtype=np.uint8)},
+        "image_time_ns": {"top": _IMAGE_NS},
+    }
+
+    def test_a_none_step_reuses_the_last_frames_and_is_one_shot(self) -> None:
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                rollout.reset(seed=0)
+                rollout.step(np.zeros(7, dtype=np.float32))
+                rollout.set_frames_next_step("none")
+                obs = rollout.step(np.zeros(7, dtype=np.float32)).observation
+                rollout.step(np.zeros(7, dtype=np.float32))
+                rollout.set_frames_next_step("fresh")
+                rollout.step(np.zeros(7, dtype=np.float32))
+            finally:
+                rollout.close()
+        # The frames the reply left out are the previous step's, with their own time.
+        np.testing.assert_array_equal(obs["images"]["top"], self._FRAMES["images"]["top"])
+        assert obs["image_time_ns"] == {"top": _IMAGE_NS}
+        assert s.frames_requests == [None, "none", None, "fresh"]
+
+    def test_an_unknown_mode_is_refused(self, sidecar: _FakeSidecar) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        scene, task = _scene_task()
+        rollout = _make_rollout(sidecar.port, scene, task)
+        try:
+            with pytest.raises(ROSConfigError, match="frames must be one of"):
+                rollout.set_frames_next_step("sometimes")
+        finally:
+            rollout.close()
+
+    def test_hal_renders_once_per_frame_period(self) -> None:
+        # 30 Hz ticks, a 10 Hz camera: a fresh frame every third step, starting now.
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 30,
+            obs_extra=self._FRAMES,
+            sim_time_ns=_STATE_NS,
+            tick_ns=_TICK_NS,
+        ) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                hal.set_frame_period_s(0.1)
+                for _ in range(7):
+                    assert hal.idle_step()
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-7:] == ["fresh", "none", "none", "fresh", "none", "none", "fresh"]
+        # The reused frames still reach the camera publisher.
+        assert set(hal.read_images()) == {"top"}
+
+    def test_hal_refresh_renders_without_stepping(self) -> None:
+        # The attachment barrier holds the runner: the HAL asks for the present
+        # state's frames, and the sidecar renders them without a physics step.
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 30,
+            obs_extra=self._FRAMES,
+            sim_time_ns=_STATE_NS,
+            tick_ns=_TICK_NS,
+        ) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                hal.set_frame_period_s(0.1)
+                hal.idle_step()
+                hal.idle_step()  # a "none" step: no frames in its reply
+                before = hal.sim_time_ns()
+                assert hal.refresh_frames()
+                assert hal.sim_time_ns() == before  # nothing stepped
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-3:] == ["fresh", "none", "refresh"]
+        assert set(hal.read_images()) == {"top"}
+
+    def test_a_reused_depth_frame_keeps_its_identity_so_it_is_published_once(self) -> None:
+        # The sensor bridge and the HAL's cloud cache tell a new frame from a reused one
+        # by identity: a no-render step must hand back the SAME frame, not a rebuilt copy.
+        depth = {
+            "head_zed": {
+                "depth": np.ones((4, 6), dtype=np.float32),
+                "rgb": np.zeros((4, 6, 3), dtype=np.uint8),
+                "k": np.asarray([3.0, 3.0, 3.0, 2.0]),
+                "optical_in_base": np.eye(4),
+            }
+        }
+        extra = {**self._FRAMES, "depth_frames": depth}
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 30,
+            obs_extra=extra,
+            sim_time_ns=_STATE_NS,
+            tick_ns=_TICK_NS,
+        ) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                hal.set_frame_period_s(1.0)  # every step but the first renders nothing
+                hal.idle_step()
+                frame, cloud = (
+                    hal.read_depth_frames()["head_zed"],
+                    hal.read_depth_clouds()["head_zed"],
+                )
+                for _ in range(3):
+                    hal.idle_step()
+                    assert hal.read_depth_frames()["head_zed"] is frame
+                    assert hal.read_depth_clouds()["head_zed"] is cloud
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-3:] == ["none", "none", "none"]
+
+    def test_hal_without_a_frame_period_renders_every_step(self) -> None:
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30, sim_time_ns=_STATE_NS) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                for _ in range(3):
+                    assert hal.idle_step()
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-3:] == [None, None, None]
+
+
+class TestSimRunnerFramesOnDemand:
+    """``sim run`` asks for fresh frames exactly when the policy will infer.
+
+    A real ``ChunkedExecutor`` (chunk of 4, synchronous) behind the policy and the
+    real rollout over the wire; the video is off, so every other step renders nothing.
+    """
+
+    def test_fresh_before_each_inference_none_between(self) -> None:
+        from types import SimpleNamespace
+
+        from openral_rskill.executor import ChunkedExecutor
+        from openral_sim.sim_runner import SimRunner
+
+        executor = ChunkedExecutor(chunk_fn=lambda _b: [[0.0]] * 4, chunk_size=4, prefetch_at=0)
+        executor.start()
+        policy = SimpleNamespace(_chunk_executor=executor)
+        scene, task = _scene_task()
+        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30) as s:
+            runner = SimRunner.__new__(SimRunner)  # only the frame-request seam is exercised
+            runner._env = _make_rollout(s.port, scene, task)
+            runner._policy = policy  # type: ignore[assignment]  # reason: executor-only stand-in
+            runner._recorder = None
+            runner._env_cfg = SimpleNamespace(record_video=False)  # type: ignore[assignment]  # reason: only record_video is read
+            try:
+                runner._env.reset(seed=0)
+                for step in range(8):
+                    runner._step_idx = step
+                    executor.select_action({})
+                    runner._request_frames_for_next_step()
+                    runner._env.step(np.zeros(7, dtype=np.float32))
+            finally:
+                runner._env.close()
+        assert s.frames_requests == ["none", "none", "none", "fresh"] * 2
+
+
+class TestDetach:
+    """``SidecarClient.detach`` leaves a spawned child running and out of the exit reaper."""
+
+    def test_detached_child_survives_and_leaves_the_reaper(self) -> None:
+        import subprocess
+
+        from openral_sim import sidecar as sc
+
+        client = SidecarClient(
+            name="isaac",
+            host="127.0.0.1",
+            port=_free_port(),
+            timeout_ms=1_000,
+            boot_timeout_s=1.0,
+            launch_argv=["sleep", "30"],
+            auto_spawn=True,
+        )
+        client._spawn()  # the real spawn path: own session, registered for the reaper
+        child = client._child
+        assert child is not None and child in sc._spawned_children
+        try:
+            assert client.detach() == child.pid
+            assert child not in sc._spawned_children
+            assert child.poll() is None  # still running
+            client.close()  # nothing left to terminate
+            assert child.poll() is None
+        finally:
+            child.kill()
+            child.wait(timeout=5)
+        assert isinstance(child, subprocess.Popen)
+
+
+class TestLogPath:
+    """A spawned sidecar with ``log_path`` writes there, not to our stdout.
+
+    A kept-alive sidecar outlives the run; inheriting our stdout would keep a pipeline
+    reading it (``openral sim run ... | tee``) open forever (found live on Spark).
+    """
+
+    def test_child_output_goes_to_the_file_and_not_our_pipe(self, tmp_path: Path) -> None:
+        import subprocess
+        import sys
+
+        log = tmp_path / "sidecar.log"
+        script = (
+            "import sys; from openral_sim.sidecar import SidecarClient\n"
+            f"c = SidecarClient(name='t', host='127.0.0.1', port={_free_port()}, timeout_ms=100,"
+            " boot_timeout_s=1.0, launch_argv=['sh', '-c', 'echo booted; sleep 30'],"
+            f" auto_spawn=True, log_path=__import__('pathlib').Path({str(log)!r}))\n"
+            "c._spawn(); print(c.detach(), flush=True)\n"
+        )
+        # The parent exits at once; our read of its stdout must end even though the
+        # detached child is still running.
+        out = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=20, check=True
+        )
+        pid = int(out.stdout.strip().splitlines()[-1])
+        try:
+            deadline = time.monotonic() + 5.0
+            while "booted" not in (log.read_text() if log.exists() else ""):
+                assert time.monotonic() < deadline, "child output never reached the log"
+                time.sleep(0.05)
+            # Only the child prints a bare "booted" line (our spawn log quotes its argv).
+            assert "booted" not in out.stdout.splitlines()
+        finally:
+            import os
+            import signal
+
+            os.killpg(pid, signal.SIGKILL)

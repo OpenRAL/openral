@@ -176,6 +176,39 @@ def _commercial_deployment() -> bool:
     )
 
 
+def ungrounded_target_queries(queries: Any, tracked: Any, key: str) -> list[str]:
+    """Labels of ``queries`` the tracker has not grounded for declaration ``key`` (#418).
+
+    A query is grounded when ``tracked`` (a ``TrackedObjectSet``, or ``None`` before the
+    first set) holds at least ``min_instances`` tracks of its label and role, keyed
+    ``key`` (the kernel's ``declaration_key``), CONFIRMED / OCCLUDED / BOUND — the
+    tracker's own ``RESOLVED`` rule.
+
+    Example:
+        >>> from openral_core import ObjectQuery
+        >>> ungrounded_target_queries(
+        ...     [ObjectQuery(label="orange", count="one", role="target")], None, "obj:orange@1"
+        ... )
+        ['orange']
+    """
+    from openral_core import TrackStatus
+
+    counted = {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.BOUND}
+    objects = tracked.objects if tracked is not None else ()
+    return [
+        q.label
+        for q in queries
+        if sum(
+            o.label == q.label
+            and o.role is q.role
+            and o.declaration_key == key
+            and o.status in counted
+            for o in objects
+        )
+        < q.min_instances
+    ]
+
+
 def _failure_kind_for_exception(exc: BaseException) -> int:
     """Map a caught exception onto an ``ExecuteRskill.Result.failure_kind``.
 
@@ -359,6 +392,21 @@ if _ROS2_AVAILABLE:
             # place allowance. Default off; the deploy launch turns it on with
             # the HAL's `vision_attachment_place_target_enabled`.
             self.declare_parameter("place_approach_enabled", False)
+            # Issue #418: the deploy's DeployRuntime.object_tracking (off | shadow | bind |
+            # on). Not "off": the declarations armed per goal also carry the standing
+            # `object_queries_json` (a JSON list of core.ObjectQuery — TARGET/CONTEXT ones
+            # become GraspDeclaration.target_queries, the DESTINATION one
+            # PlaceDeclaration.destination_query) for the Layer-2 object tracker. A goal's
+            # own queries win. "off" leaves both declarations exactly as before.
+            self.declare_parameter("object_tracking", "off")
+            self.declare_parameter("object_queries_json", "")
+            # Issue #418 design step 1.4: with tracking on, a goal whose armed grasp
+            # declaration carries TARGET queries waits up to `grounding_wait_s` (graph
+            # clock: sim time in sim) for each to ground on /openral/tracked_objects;
+            # `grounding_required` refuses it (ROSPerceptionStale) when one does not.
+            # No default on the tracking path: tracking on with 0 refuses configure.
+            self.declare_parameter("grounding_wait_s", 0.0)
+            self.declare_parameter("grounding_required", False)
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -373,6 +421,8 @@ if _ROS2_AVAILABLE:
             self._safety_status_sub: Any = None
             self._safety_status: Any = None
             self._safety_status_recv_monotonic: float = 0.0
+            # Newest NON-latching kernel drop (DROP_* + detail) and when it arrived.
+            self._last_drop: tuple[float, str] | None = None
             self._episode_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
@@ -400,6 +450,9 @@ if _ROS2_AVAILABLE:
             self._active_place_declaration: Any = None
             # The grasp-phase declaration currently on the wire, or ``None``.
             self._active_grasp_declaration: Any = None
+            # Issue #418: the newest /openral/tracked_objects set (TrackedObjectSet), or
+            # ``None``; read by the grounding wait.
+            self._tracked_set: Any = None
             # Why the execution budget last lapsed (true elapsed + kind), so an
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_miss: BudgetMiss | None = None
@@ -415,6 +468,10 @@ if _ROS2_AVAILABLE:
             self._chunks_published: int = 0
             self._estop_latched: bool = False
             self._cancel_requested: bool = False
+            # Issue #418: set when the tracker exhausts a query of this goal's armed
+            # declaration (/openral/failure/world_state); the goal then ends along the
+            # cancel path with this typed failure (FAILURE_OBJECT_NOT_FOUND).
+            self._object_not_found: Any = None
             # Serializes ``_execute_cb`` bodies now that the action server
             # lives in a reentrant callback group: goals still execute one
             # at a time (single-resident-skill invariant), only the action
@@ -453,6 +510,17 @@ if _ROS2_AVAILABLE:
                     "robot_description was not supplied; rskill_runner_node "
                     "needs a RobotDescription to construct the HAL "
                     "(use compose_so100_runtime)."
+                )
+                return TransitionCallbackReturn.FAILURE
+            tracking = (
+                self.get_parameter("object_tracking").get_parameter_value().string_value or "off"
+            )
+            if tracking != "off" and not (
+                self.get_parameter("grounding_wait_s").get_parameter_value().double_value > 0.0
+            ):
+                self.get_logger().error(
+                    f"object_tracking={tracking!r} needs grounding_wait_s > 0 (issue #418; "
+                    "no default on the tracking path)."
                 )
                 return TransitionCallbackReturn.FAILURE
             if self._aggregator is None:
@@ -511,6 +579,7 @@ if _ROS2_AVAILABLE:
                 # subscription and no new layer edge: the fact is already
                 # here, it just never reached the blocking wait.
                 safety_abort_getter=self._safety_abort_reason,
+                drop_reason_getter=self._safety_drop_reason,
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
                 ),
@@ -639,6 +708,36 @@ if _ROS2_AVAILABLE:
             from openral_msgs.msg import GraspDeclaration as _GraspDeclarationMsg
 
             self._grasp_declaration_msg_cls: Any = _GraspDeclarationMsg
+            from openral_msgs.msg import ObjectQuery as _ObjectQueryMsg
+
+            self._object_query_msg_cls: Any = _ObjectQueryMsg
+            # Issue #418: the tracker's set, for the grounding wait (QoS as published),
+            # and its query escalations (an exhausted one ends the goal it belongs to).
+            if tracking != "off":
+                from openral_msgs.msg import FailureTrigger as _FailureTriggerMsg
+
+                self._object_query_sub = self.create_subscription(
+                    _FailureTriggerMsg,
+                    "/openral/failure/world_state",
+                    self._on_world_state_failure,
+                    QoSProfile(
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.VOLATILE,
+                        depth=50,
+                    ),
+                )
+                from openral_msgs.msg import TrackedObjectSet as _TrackedObjectSetMsg
+
+                self._tracked_sub = self.create_subscription(
+                    _TrackedObjectSetMsg,
+                    "/openral/tracked_objects",
+                    self._on_tracked_objects,
+                    QoSProfile(
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.VOLATILE,
+                        depth=1,
+                    ),
+                )
             self._grasp_declaration_pub = self.create_publisher(
                 _GraspDeclarationMsg,
                 "/openral/grasp_declaration",
@@ -1117,6 +1216,7 @@ if _ROS2_AVAILABLE:
                 ROSConfigError,
                 ROSError,
                 ROSEStopRequested,
+                ROSPerceptionStale,
                 ROSSafetyViolation,
             )
             from openral_msgs.action import ExecuteRskill
@@ -1132,6 +1232,7 @@ if _ROS2_AVAILABLE:
                 self._active_skill_revision = revision
                 self._chunks_published = 0
                 self._cancel_requested = False
+                self._object_not_found = None
                 self._last_deadline_miss = None
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
@@ -1158,6 +1259,10 @@ if _ROS2_AVAILABLE:
                     # that does not validate refuses the goal (ROSConfigError, below).
                     self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
                     self._arm_grasp_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
+                    # Issue #418: wait for the armed TARGET queries to ground; refuses the
+                    # goal (ROSPerceptionStale) under grounding_required. Before the skill
+                    # loads: no motion on a refusal, and the detector is not yet evicted.
+                    self._await_grounding(goal_handle)
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
                     skill = self._acquire_skill(
@@ -1171,7 +1276,7 @@ if _ROS2_AVAILABLE:
                         goal_params_json=getattr(req, "goal_params_json", ""),
                     )
                     self._check_skill_control_rate(skill, span)
-                except (ROSConfigError, ROSCapabilityMismatch) as exc:
+                except (ROSConfigError, ROSCapabilityMismatch, ROSPerceptionStale) as exc:
                     span.record_exception(exc)
                     self.get_logger().error(
                         f"rskill_runner.goal_rejected: kind={type(exc).__name__} reason={exc!s}"
@@ -1302,6 +1407,19 @@ if _ROS2_AVAILABLE:
                     # Honour cancel — drain then idle-hold (F1 design).
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         self._drain_and_idle_hold(skill)
+                        not_found = self._object_not_found
+                        if not_found is not None:
+                            # Issue #418: the reasoner abandoned this goal's object; a typed
+                            # failure, recorded on this goal's rskill.execute span.
+                            span.record_exception(not_found)
+                            result.success = False
+                            result.failure_reason = f"{type(not_found).__name__}: {not_found!s}"
+                            # Only this cancel cause; a ROSObjectNotInMemory raised elsewhere
+                            # stays FAILURE_PERCEPTION_STALE (_failure_kind_for_exception).
+                            result.failure_kind = ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND
+                            self._finalize_goal(goal_handle, "abort")
+                            self._reset_active_goal()
+                            return result
                         result.success = False
                         result.failure_reason = "cancelled"
                         result.failure_kind = ExecuteRskill.Result.FAILURE_CANCELLED
@@ -2263,7 +2381,9 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSConfigError
 
             try:
-                declaration = self._resolve_place_declaration(request)
+                declaration = self._with_queries(
+                    self._resolve_place_declaration(request), place=True
+                )
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.place_declaration_rejected: {exc!s}")
                 raise ROSConfigError(
@@ -2328,6 +2448,181 @@ if _ROS2_AVAILABLE:
             self._active_place_declaration = declaration if declaration.active else None
             return True
 
+        def _tracking_queries(self) -> tuple[Any, ...]:
+            """The standing ``ObjectQuery`` s this deploy tracks, ``()`` with tracking off.
+
+            Raises:
+                ValueError: ``object_queries_json`` does not validate.
+            """
+            from openral_core import ObjectQuery
+            from pydantic import TypeAdapter
+
+            mode = self.get_parameter("object_tracking").get_parameter_value().string_value
+            raw = self.get_parameter("object_queries_json").get_parameter_value().string_value
+            if (mode or "off") == "off" or not raw:
+                return ()
+            return tuple(TypeAdapter(list[ObjectQuery]).validate_json(raw))
+
+        def _on_tracked_objects(self, msg: Any) -> None:
+            """Keep the tracker's newest set (issue #418 grounding wait)."""
+            from openral_core import TrackedObjectSet
+
+            try:
+                self._tracked_set = TrackedObjectSet.from_idl(msg)
+            except ValueError as exc:  # pydantic.ValidationError; a bad set grounds nothing
+                self.get_logger().error(f"rskill_runner.tracked_objects_rejected: {exc!s}")
+                self._tracked_set = None
+
+        def _on_world_state_failure(self, msg: Any) -> None:
+            """End the goal whose object query the tracker exhausted (issue #418).
+
+            An ``exhausted`` ``ObjectQueryEvidence`` whose goal is keyed by this goal's
+            armed grasp or place declaration (``"<kind>:<target_id>@<stamp_ns>"``) is the
+            reasoner's human-handoff rung: the goal ends along the cancel path with
+            ``ROSObjectNotInMemory`` (``FAILURE_OBJECT_NOT_FOUND``) instead of running on
+            to its deadline.
+            """
+            from openral_core import FailureEvidence, ObjectQueryEvidence
+            from openral_observability.failure_bus import KIND_OBJECT_QUERY
+            from pydantic import TypeAdapter, ValidationError
+
+            if int(msg.kind) != KIND_OBJECT_QUERY:
+                return
+            adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+            try:
+                evidence = adapter.validate_json(msg.evidence_json)
+            except ValidationError as exc:
+                self.get_logger().error(f"rskill_runner.object_query_undecodable: {exc!s}")
+                return
+            if not isinstance(evidence, ObjectQueryEvidence) or evidence.escalation != "exhausted":
+                return
+            keys = {
+                f"{kind}:{d.target_id}@{d.stamp_ns}"
+                for kind, d in (
+                    ("grasp", self._active_grasp_declaration),
+                    ("place", self._active_place_declaration),
+                )
+                if d is not None
+            }
+            if evidence.goal_id not in keys:
+                return
+            with self._goal_lock:
+                if self._active_goal is None:
+                    return
+                self._object_not_found = evidence.to_exception()
+                self._cancel_requested = True
+            self.get_logger().error(
+                f"rskill_runner.object_not_found goal={evidence.goal_id} "
+                f"label={evidence.label!r}: ending the goal (FAILURE_OBJECT_NOT_FOUND)"
+            )
+
+        def _await_grounding(self, goal_handle: Any) -> None:
+            """Wait up to ``grounding_wait_s`` for the armed TARGET queries to ground.
+
+            Only queries that rode the armed grasp declaration count (with none in force
+            the tracker never got them, and nothing is waited for). A query is grounded
+            when the tracker's newest set holds ``min_instances`` CONFIRMED / OCCLUDED /
+            BOUND tracks of its label and role keyed to this declaration
+            (``ungrounded_target_queries``). Logs ``grounding_ready`` or
+            ``grounding_incomplete``.
+
+            Raises:
+                ROSPerceptionStale: ``grounding_required`` and a query is still ungrounded
+                    after the wait.
+            """
+            from openral_core import ObjectRole
+            from openral_core.exceptions import ROSPerceptionStale
+
+            decl = self._active_grasp_declaration
+            queries = (
+                tuple(q for q in decl.target_queries if q.role is ObjectRole.TARGET)
+                if decl is not None
+                else ()
+            )
+            if not queries:
+                return
+            key = f"{decl.target_id}@{decl.stamp_ns}"  # the tracker's / kernel's declaration_key
+            wait_s = self.get_parameter("grounding_wait_s").get_parameter_value().double_value
+            required = self.get_parameter("grounding_required").get_parameter_value().bool_value
+            clock = self.get_clock()
+            start_ns = clock.now().nanoseconds
+            # ponytail: polled on the graph clock (sim time in sim); a stalled /clock
+            # holds the wait until cancel / E-stop. Event-driven if that ever matters.
+            while True:
+                missing = ungrounded_target_queries(queries, self._tracked_set, key)
+                waited_s = (clock.now().nanoseconds - start_ns) / 1e9
+                if not missing:
+                    self.get_logger().info(
+                        f"rskill_runner.grounding_ready key={key} waited_s={waited_s:.2f}"
+                    )
+                    return
+                if (
+                    waited_s >= wait_s
+                    or self._estop_latched
+                    or self._cancel_requested
+                    or goal_handle.is_cancel_requested
+                ):
+                    break
+                time.sleep(0.05)
+            detail = (
+                f"grounding_incomplete: target queries {missing} not grounded within "
+                f"grounding_wait_s={wait_s:g}s (declaration {key})"
+            )
+            if required and not (self._estop_latched or self._cancel_requested):
+                raise ROSPerceptionStale(f"grounding_required: {detail}")
+            self.get_logger().warning(
+                f"rskill_runner.{detail}; proceeding with no exemption for them"
+            )
+
+        def _with_queries(self, declaration: Any, *, place: bool) -> Any:
+            """``declaration`` with this deploy's tracking queries attached (issue #418).
+
+            A grasp declaration gets the TARGET/CONTEXT queries as ``target_queries`` (each
+            hinted with the declared hand's gripper joint when it names one), a place
+            declaration the DESTINATION one as ``destination_query``; a declaration that
+            already carries its own (a reasoner's goal) keeps them. With no declaration in
+            force the queries cannot ride, and that is logged, never armed implicitly: a
+            place declaration lets the sim attest a place witness.
+            """
+            from openral_core import ObjectRole
+
+            queries = self._tracking_queries()
+            if place:
+                queries = tuple(q for q in queries if q.role is ObjectRole.DESTINATION)
+            else:
+                queries = tuple(q for q in queries if q.role is not ObjectRole.DESTINATION)
+            if not queries:
+                return declaration
+            kind = "place" if place else "grasp"
+            if declaration is None:
+                self.get_logger().warning(
+                    f"rskill_runner.{kind}_queries_unarmed: object tracking names "
+                    f"{[q.label for q in queries]} but no {kind} declaration is in force "
+                    "for this goal, so the tracker gets no such query"
+                )
+                return None
+            if place:
+                if declaration.destination_query is not None:
+                    return declaration
+                return declaration.model_copy(update={"destination_query": queries[0]})
+            if declaration.target_queries:
+                return declaration
+            from openral_core import hand_joint
+
+            hand = (
+                hand_joint(self._description, declaration.contact_links)
+                if self._description is not None
+                else None
+            )
+            return declaration.model_copy(
+                update={
+                    "target_queries": tuple(
+                        q if q.hand is not None else q.model_copy(update={"hand": hand})
+                        for q in queries
+                    )
+                }
+            )
+
         def _resolve_grasp_declaration(self, request: Any) -> Any:
             """The grasp declaration in force for this goal, or ``None``.
 
@@ -2385,7 +2680,9 @@ if _ROS2_AVAILABLE:
             from openral_core.exceptions import ROSConfigError
 
             try:
-                declaration = self._resolve_grasp_declaration(request)
+                declaration = self._with_queries(
+                    self._resolve_grasp_declaration(request), place=False
+                )
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.grasp_declaration_rejected: {exc!s}")
                 return
@@ -2424,7 +2721,7 @@ if _ROS2_AVAILABLE:
         def _publish_grasp_declaration(self, declaration: Any) -> bool:
             """Put one grasp declaration on the wire and remember what is in force."""
             msg = self._grasp_declaration_msg_cls()
-            declaration.fill_idl(msg)
+            declaration.fill_idl(msg, query_factory=self._object_query_msg_cls)
             try:
                 if not self._publish_unless_shut_down(
                     self._grasp_declaration_pub, msg, "grasp declaration"
@@ -2463,6 +2760,24 @@ if _ROS2_AVAILABLE:
             """
             self._safety_status = msg
             self._safety_status_recv_monotonic = time.monotonic()
+            code = int(getattr(msg, "drop_reason", 0))
+            if code >= 100 and not bool(getattr(msg, "latched", False)):  # SafetyStatus DROP_*
+                detail = str(getattr(msg, "detail", "") or "")
+                label = _drop_reason_label(code, type(msg))
+                self._last_drop = (
+                    self._safety_status_recv_monotonic,
+                    f"{_SAFETY_STATUS_TOPIC}:{label}" + (f" ({detail})" if detail else ""),
+                )
+
+        def _safety_drop_reason(self, since_monotonic: float) -> str | None:
+            """The newest non-latching kernel drop received at or after ``since_monotonic``.
+
+            Injected into ``ROSPublishingHAL`` as ``drop_reason_getter``: a fail-closed drop
+            (``voxel_stale``, ``state_unavailable``, ...) latches nothing, so the apply-wait
+            times out; this names the typed cause in the timeout error. Non-blocking.
+            """
+            drop = self._last_drop
+            return drop[1] if drop is not None and drop[0] >= since_monotonic else None
 
         def _safety_abort_reason(self) -> str | None:
             """Return why a safety stop is in effect here, or ``None``.

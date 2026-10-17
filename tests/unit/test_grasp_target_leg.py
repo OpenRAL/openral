@@ -30,7 +30,7 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target import (
+from openral_core.perception_geometry import (
     VoxelLattice,
     _in_region,
     margin_grown_region,
@@ -3767,7 +3767,7 @@ def test_a_named_search_box_grounds_to_the_lone_instance_in_it() -> None:
 
 def test_a_named_search_box_refuses_a_broad_fit_outside_its_target() -> None:
     """A map-confirmed camera fit may swell past the one object named at dispatch."""
-    from openral_hal._object_primitives import PrimitiveFit, PrimitiveTracker, map_confirms
+    from openral_core.object_primitives import PrimitiveFit, PrimitiveTracker, map_confirms
 
     from tests.unit.test_object_primitives import _DECK_Z, _PROPS_XY, _props
 
@@ -3931,7 +3931,7 @@ def test_a_map_confirmed_grasp_target_is_frozen_and_only_the_map_retracts_it(
     two-voxel nudge that leaves the carton wholly inside the box is no retraction: the box
     still holds one body, the target.
     """
-    from openral_hal._object_primitives import PrimitiveFit, PrimitiveTracker
+    from openral_core.object_primitives import PrimitiveFit, PrimitiveTracker
 
     with _live_leg(
         f"test_frozen_{case}", grasp_target_premeasure=True, grasp_target_approach_m=0.20

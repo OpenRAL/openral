@@ -90,3 +90,8 @@ float64 contact_force_threshold_n
 # `search_box.geometry[]` MUST be empty.
 bool search_box_valid
 PlaceRegion search_box
+
+# Optional class of the destination (a plate, a bowl; issue #418), role
+# "destination". The tracker grounds it; it arms nothing.
+bool destination_query_valid
+ObjectQuery destination_query

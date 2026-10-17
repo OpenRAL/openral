@@ -20,6 +20,33 @@ import argparse
 import json
 import time
 
+#: Graph-clock seconds past the goal's deadline before the helper gives up: the runner
+#: ends an overrun goal itself (``deadline_exceeded``) and has to unwind first.
+GRAPH_MARGIN_S = 30.0
+#: Wall seconds past the deadline when no ``/clock`` is published (a real-time graph).
+WALL_MARGIN_S = 180.0
+#: Wall seconds after which the helper gives up whatever the graph clock says.
+WALL_CAP_S = 3600.0
+
+
+def _overran(*, sim_elapsed_s: float | None, wall_elapsed_s: float, deadline_s: float) -> bool:
+    """Whether the goal ran past what the helper waits for.
+
+    The goal's deadline is on the graph clock: a sim at 0.17x needs ~6 min of wall for a
+    60 s deadline (#418 r4po_on3 gave up on wall time with the goal still running).
+
+    Example:
+        >>> _overran(sim_elapsed_s=40.7, wall_elapsed_s=240.0, deadline_s=60.0)
+        False
+        >>> _overran(sim_elapsed_s=None, wall_elapsed_s=241.0, deadline_s=60.0)
+        True
+    """
+    if wall_elapsed_s > WALL_CAP_S:
+        return True
+    if sim_elapsed_s is None:
+        return wall_elapsed_s > deadline_s + WALL_MARGIN_S
+    return sim_elapsed_s > deadline_s + GRAPH_MARGIN_S
+
 
 def main(argv: list[str] | None = None) -> int:
     """Send one ``ExecuteRskill`` goal and print its terminal status as JSON.
@@ -46,9 +73,17 @@ def main(argv: list[str] | None = None) -> int:
     import rclpy  # reason: ROS import, deferred so --help works without it
     from openral_msgs.action import ExecuteRskill  # reason: as above
     from rclpy.action import ActionClient  # reason: as above
+    from rosgraph_msgs.msg import Clock  # reason: as above
 
     rclpy.init()
     node = rclpy.create_node("validation_matrix_dispatch")
+    sim_now: list[float] = []
+
+    def on_clock(msg: object) -> None:
+        clock = msg.clock  # type: ignore[attr-defined]  # reason: ROS msg
+        sim_now[:] = [clock.sec + clock.nanosec * 1e-9]
+
+    node.create_subscription(Clock, "/clock", on_clock, 10)
     client = ActionClient(node, ExecuteRskill, "/openral/execute_rskill")
     if not client.wait_for_server(timeout_sec=args.server_timeout_s):
         raise RuntimeError("/openral/execute_rskill unavailable")
@@ -74,14 +109,39 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"goal rejected for rskill {args.rskill_id!r}")
 
     result_future = goal_handle.get_result_async()
-    # The action's own deadline plus a teardown margin: a policy that overruns
-    # its deadline still has to unwind the graph before a result appears.
-    hard_deadline = time.monotonic() + args.deadline_s + 180.0
-    while not result_future.done() and time.monotonic() < hard_deadline:
+    # The action's own deadline (graph clock) plus a teardown margin: a policy that
+    # overruns its deadline still has to unwind the graph before a result appears.
+    wall0 = time.monotonic()
+    sim0 = sim_now[0] if sim_now else None
+    while not result_future.done() and not _overran(
+        sim_elapsed_s=None if sim0 is None or not sim_now else sim_now[0] - sim0,
+        wall_elapsed_s=time.monotonic() - wall0,
+        deadline_s=args.deadline_s,
+    ):
         rclpy.spin_once(node, timeout_sec=0.05)
 
     if not result_future.done():
-        print(json.dumps({"latest_chunk": latest_chunk, "status": -1, "success": False}))
+        # Never a bare -1: cancel the goal and say why the helper stopped waiting.
+        goal_handle.cancel_goal_async()
+        end = time.monotonic() + 5.0
+        while time.monotonic() < end:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        print(
+            json.dumps(
+                {
+                    "latest_chunk": latest_chunk,
+                    "status": -1,
+                    "success": False,
+                    "failure_reason": (
+                        f"dispatch_timeout: no result {args.deadline_s:.0f} s (graph clock) "
+                        f"+ margin after the goal; cancelled "
+                        f"(graph clock {'seen' if sim_now else 'absent'})"
+                    ),
+                    "rskill_id": args.rskill_id,
+                },
+                sort_keys=True,
+            )
+        )
         return 1
 
     response = result_future.result()

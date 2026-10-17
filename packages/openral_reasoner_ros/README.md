@@ -9,7 +9,7 @@ A thin rclpy lifecycle node around
 Subscribes to:
 
 - `/openral/world_state_slow` (`openral_msgs/WorldStateStamped`, 5 Hz)
-- `/openral/failure/{hal,sensor,rskill,safety,wam,critic}` (`openral_msgs/FailureTrigger`)
+- `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` (`openral_msgs/FailureTrigger`)
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
 
@@ -20,6 +20,14 @@ heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
 - `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
 - `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
   on `severity ≥ SEVERITY_FAIL`.
+- `/openral/failure/world_state` (Tier B, issue #418 Addendum G): the object
+  tracker's `KIND_OBJECT_QUERY` escalations (`ObjectQueryEvidence`, typed failure
+  `ROSObjectNotInMemory`) take a ladder rung instead (`object_query_step`):
+  `unresolved` (WARN) forces a tick with the `find-object` playbook hint;
+  `exhausted` (FAIL) is human handoff — the question ("I can't find the orange;
+  where should I look?") on `/openral/prompt`, the active task abandoned and the
+  in-flight goal cancelled (`object_not_found`); the runner ends it with
+  `FAILURE_OBJECT_NOT_FOUND`.
 - `/openral/prompt` (Tier D) always preempts.
 
 All preemptions are subject to the 100 ms min-interval.
@@ -70,6 +78,14 @@ telling the LLM to disambiguate (recall the object and pass its `node_id`, or
 look for it). Naming a target arms
 nothing: the runner strips any region, the HAL producers measure, and the
 kernel trusts only the measured region — its trust boundary is unchanged.
+
+With object tracking on (param `object_tracking`, the deploy's
+`DeployRuntime.object_tracking`, issue #418) the declarations also carry the
+named classes as `ObjectQuery`s for the Layer-2 object tracker
+(`GraspDeclaration.target_queries`, `PlaceDeclaration.destination_query`),
+beside the unchanged search box. A label several live detections carry is then
+not refused: it grounds as one `count="all"` query with no search box, and the
+tracker grounds every instance (the policy's choice is resolved at binding).
 Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
 2D answer is not lifted), and the lift must run in the robot base frame
 (`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,

@@ -306,6 +306,26 @@ time, as with a real camera's latency (issue #361). `sim run` hands the policy
 the latest frame with the current state, as a real robot would; it does not align
 the state to the image time.
 
+**Frames are rendered on demand.** Rendering is most of an Isaac step's cost (25 of
+47 ms per step on the tote scene, GB10), so neither caller renders every tick:
+`sim run` renders the policy's observation only on the step before it infers (a
+chunked policy reads images once per chunk) and the video at 10 Hz, and `deploy
+sim` renders once per camera/depth publish period (`camera_publish_rate_hz`,
+`depth_publish_rate_hz`). A frame rendered for the policy or a publish is
+*fresh*: the scene keeps rendering until every camera's frame shows that step's
+state, so it carries no pipeline lag; steps in between reuse the last frames,
+which keep the `image_time_ns` of the state they show. The sidecar boots Kit's zero-delay experience when the install ships it, so a frame trails the physics by ~2 renders instead of ~4 and a fresh frame needs half the catch-up. Depth cameras ship their registered RGB-D frame only; the HAL deprojects it into the published point cloud, each point coloured by its own pixel. A recorder or
+`OPENRAL_DUMP_OBS_TICK` brings back a render every step. Render the cameras at the
+size the policy consumes (`camera_render_height`): a policy that resizes to 224 px
+gains nothing from a 720p raster.
+
+**Keep Isaac open between runs.** Kit's boot costs 10–15 s per `sim run`. With
+`--keep-sim-open` (`backend_options.keep_alive`) the sidecar stays up when the run
+ends, and the next run of the same scene adopts it: same launch arguments and the
+same sidecar code (the `launch_id` its ping reports), never a different scene or
+checkout. The first run without the flag ends it. For several seeds of one scene,
+`--n-episodes N` in one run is simpler still.
+
 **Pickable objects** go in `backend_options.objects` (validated by
 `IsaacSimOptions`, so a typo fails at load):
 

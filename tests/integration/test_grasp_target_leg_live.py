@@ -188,7 +188,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
 
     from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
     from openral_core.geometry import homogeneous_from_quat_xyz
-    from openral_hal._grasp_target import lowered_to_support
+    from openral_core.perception_geometry import lowered_to_support
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,

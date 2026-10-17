@@ -325,18 +325,28 @@ class OmDetTurboDetector:
         return self._detect_classes(frame_bgr, width, height, sensor_id, self._labels)
 
     def detect_with_query(
-        self, frame_bgr: bytes, width: int, height: int, sensor_id: str, query: str
+        self,
+        frame_bgr: bytes,
+        width: int,
+        height: int,
+        sensor_id: str,
+        query: str,
+        score_threshold: float | None = None,
     ) -> ObjectsMetadata | None:
         """One-shot detect for ``query`` without mutating the persistent vocabulary.
 
         Backs the read-only ``locate_in_view`` service: a reasoner
         query ("is X in view right now?") must not change what the continuous
-        leg detects. ``query`` is parsed via ``query_to_classes``.
+        leg detects. ``query`` is parsed via ``query_to_classes``. ``score_threshold``
+        overrides the configured floor for this call only (#418: the object tracker's
+        prompt boxes are filtered downstream, so it asks lower).
 
         Raises:
             ROSConfigError: If ``query`` yields no non-empty class.
         """
-        return self._detect_classes(frame_bgr, width, height, sensor_id, query_to_classes(query))
+        return self._detect_classes(
+            frame_bgr, width, height, sensor_id, query_to_classes(query), score_threshold
+        )
 
     def _detect_classes(
         self,
@@ -345,6 +355,7 @@ class OmDetTurboDetector:
         height: int,
         sensor_id: str,
         classes: list[str],
+        score_threshold: float | None = None,
     ) -> ObjectsMetadata | None:
         """Run OmDet over ``classes`` on one BGR frame; shared by detect()/detect_with_query()."""
         import numpy as np  # noqa: PLC0415 — lazy: keep numpy off the import path
@@ -365,7 +376,7 @@ class OmDetTurboDetector:
             outputs,
             text_labels=classes,
             target_sizes=[(height, width)],
-            threshold=self._score_threshold,
+            threshold=self._score_threshold if score_threshold is None else score_threshold,
             nms_threshold=self._nms_threshold,
         )[0]
 
@@ -377,7 +388,7 @@ class OmDetTurboDetector:
             height=height,
             model_id=self._model_id,
             sensor_id=sensor_id,
-            score_threshold=self._score_threshold,
+            score_threshold=self._score_threshold if score_threshold is None else score_threshold,
         )
 
     def close(self) -> None:

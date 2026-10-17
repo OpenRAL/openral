@@ -76,7 +76,7 @@ def _constant_skill_resolver() -> Any:
 
 @contextmanager
 def _harness(
-    place_declaration_json: str, *, approach: bool = False
+    place_declaration_json: str, *, approach: bool = False, params: dict[str, Any] | None = None
 ) -> Iterator[tuple[Any, Any, list[Any]]]:
     """Compose the real runtime with a scene-committed declaration installed."""
     import rclpy
@@ -96,6 +96,7 @@ def _harness(
             rclpy.parameter.Parameter("place_declaration_json", value=place_declaration_json),
             rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
             rclpy.parameter.Parameter("place_approach_enabled", value=approach),
+            *(rclpy.parameter.Parameter(k, value=v) for k, v in (params or {}).items()),
         ]
     )
 
@@ -513,3 +514,53 @@ def test_the_goal_scope_place_backstop_never_exceeds_120_s(
     with _harness("", approach=True) as (_, runtime, _seen):
         declaration = runtime.skill_runner_node._goal_scope_place_declaration(deadline_s)
     assert declaration.timeout_s == pytest.approx(expected_s)
+
+
+# ── Object tracking (issue #418): the destination query rides the place declaration ──
+
+_BANANA_QUERIES = (
+    '[{"label": "banana", "count": "one", "role": "target"},'
+    ' {"label": "bowl", "count": "one", "role": "destination"}]'
+)
+
+
+def test_tracking_on_attaches_the_destination_query() -> None:
+    from openral_core import ObjectQuery
+
+    with _harness(
+        _scene_declaration_json(),
+        params={
+            "object_tracking": "on",
+            "object_queries_json": _BANANA_QUERIES,
+            "grounding_wait_s": 0.2,
+        },
+    ) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].destination_query_valid
+    assert ObjectQuery.from_idl(active[0].destination_query) == ObjectQuery(
+        label="bowl", count="one", role="destination"
+    )
+    assert not seen[-1].active
+
+
+def test_tracking_never_arms_a_place_declaration_on_its_own() -> None:
+    """No scene declaration, no place approach: the destination query cannot ride, and
+    no place declaration (which would let the sim attest a place witness) is armed."""
+    with _harness(
+        "",
+        params={
+            "object_tracking": "on",
+            "object_queries_json": _BANANA_QUERIES,
+            "grounding_wait_s": 0.2,
+        },
+    ) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    assert seen == []

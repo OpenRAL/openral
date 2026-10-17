@@ -18,7 +18,15 @@ Two responsibilities, both pure-Python (``openral_core`` only):
 
 from __future__ import annotations
 
-from openral_core import Pose6D, SceneGraph, SpatialNodeKind, SpatialRelationKind
+from typing import Literal
+
+from openral_core import (
+    ObjectQueryEvidence,
+    Pose6D,
+    SceneGraph,
+    SpatialNodeKind,
+    SpatialRelationKind,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -157,3 +165,74 @@ def format_search_frontier(candidates: list[SearchCandidate], target_text: str) 
     ]
     lines.extend(f"- {c.reason} [place {c.place_node_id}]" for c in candidates)
     return "\n".join(lines)
+
+
+class ObjectQueryStep(BaseModel):
+    """The ladder rung an object-query escalation takes (issue #418 Addendum G).
+
+    Attributes:
+        rung: ``"find_object"`` (run the bounded ``find-object`` playbook; the tracker's
+            ``RESOLVED`` query is its done predicate) or ``"human_handoff"`` (the search
+            budget is spent: the terminal rung of the replanning ladder).
+        label: The object the prompt names.
+        reflection: The strategy hint the reasoner's context carries for this step.
+        handoff_prompt: The question to the human, on ``"human_handoff"`` only.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rung: Literal["find_object", "human_handoff"]
+    label: str
+    reflection: str
+    handoff_prompt: str | None = None
+
+
+def object_query_step(evidence: ObjectQueryEvidence) -> ObjectQueryStep:
+    """Map a tracker escalation onto its replanning-ladder rung.
+
+    ``unresolved`` starts the bounded active search (the ``find-object`` playbook, which
+    feeds the tracker and ends when the tracker resolves the query); ``exhausted`` (the
+    tracker's search budget, ``search_max_s``, is spent) is human handoff. Never a retry
+    of the manipulation skill: it would act on an object no one has found.
+
+    Example:
+        >>> from openral_core import ObjectRole
+        >>> ev = ObjectQueryEvidence(
+        ...     escalation="exhausted",
+        ...     goal_id="grasp:obj:orange@1",
+        ...     query_id="0",
+        ...     label="orange",
+        ...     role=ObjectRole.TARGET,
+        ...     waited_s=60.0,
+        ...     attempts=9,
+        ... )
+        >>> object_query_step(ev).handoff_prompt
+        "I can't find the orange; where should I look?"
+    """
+    seen = (
+        f" (last seen near {tuple(round(v, 2) for v in evidence.last_seen.pose.xyz)} in "
+        f"{evidence.last_seen.frame_id})"
+        if evidence.last_seen is not None
+        else ""
+    )
+    if evidence.escalation == "unresolved":
+        return ObjectQueryStep(
+            rung="find_object",
+            label=evidence.label,
+            reflection=(
+                f"The tracker cannot see the {evidence.label!r} the goal names"
+                f"{seen} after {evidence.waited_s:.0f} s: run the find-object playbook for "
+                f"{evidence.label!r}; it is done when the tracker resolves the query. Do not "
+                "re-dispatch the manipulation skill until then."
+            ),
+        )
+    return ObjectQueryStep(
+        rung="human_handoff",
+        label=evidence.label,
+        reflection=(
+            f"Active search for {evidence.label!r} exhausted after {evidence.waited_s:.0f} s "
+            f"and {evidence.attempts} detection attempt(s){seen}: human input or a new goal "
+            "is required; do not repeat the same search."
+        ),
+        handoff_prompt=f"I can't find the {evidence.label}; where should I look?",
+    )
