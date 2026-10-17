@@ -7832,3 +7832,280 @@ TEST(ExplainedCells, TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomis
   EXPECT_GT(stricter, 20) << "K7 must really narrow the workspace somewhere";
   EXPECT_GT(relaxed, 20) << "and still tolerate explained cells somewhere";
 }
+
+// ── Issue #418 (hazard OT-10 amendment): a bound payload's measured cells cannot stop it ──
+//
+// The payload-vs-VOXEL check only. A cell is the payload's own when its VOLUME meets a
+// measured / grown BOX primitive of THIS payload, it stands above the track's floor, is no
+// declared static cell and meets no other settled track's box.
+namespace {
+
+constexpr int kPoN = 20;
+constexpr double kPoRes = 0.02;
+constexpr double kPoMargin = 0.01;
+
+int po_cell(double v) { return static_cast<int>(std::floor((v + 0.2) / kPoRes)); }
+std::size_t po_index(double x, double y, double z) {
+  return static_cast<std::size_t>(po_cell(x) + kPoN * (po_cell(y) + kPoN * po_cell(z)));
+}
+
+osk::AttachedPrimitive po_box(double x, double y, double z, double hx, double hy, double hz,
+                              osk::PrimitiveSource source) {
+  osk::AttachedPrimitive p;
+  p.kind = osk::AttachedShapeKind::kBox;
+  p.half_extents = {hx, hy, hz};
+  p.pose_in_object = translate(x, y, z);
+  p.source = source;
+  return p;
+}
+
+struct PayloadRig {
+  osk::CollisionModel model;
+  osk::CollisionScratch scratch;
+  osk::AttachedModel att;
+  std::vector<std::uint8_t> occ = std::vector<std::uint8_t>(kPoN * kPoN * kPoN, 0);
+  std::vector<std::uint8_t> static_mask = std::vector<std::uint8_t>(kPoN * kPoN * kPoN, 0);
+  osk::PayloadOwnCells own;
+  osk::VoxelGrid grid;
+
+  explicit PayloadRig(const std::vector<osk::AttachedPrimitive>& prims) {
+    scratch.link_world = {identity(), identity()};
+    append_object(att, 1, identity(), prims);
+    grid.pose.t = {-0.2, -0.2, -0.2};
+    grid.resolution = kPoRes;
+    grid.sx = grid.sy = grid.sz = kPoN;
+    own.valid = true;
+    own.armed = 1;
+    own.floor_z[0] = -0.1;
+  }
+  void cell(double x, double y, double z) { occ[po_index(x, y, z)] = 1; }
+  osk::CollisionHit check(bool with_table = true) {
+    grid.occupancy = occ.data();
+    grid.payload_own = with_table ? &own : nullptr;
+    return osk::check_attached_voxel_collision(model, att, scratch, grid, kPoMargin);
+  }
+};
+
+constexpr auto kFb = osk::PrimitiveSource::kFallback;
+constexpr auto kMe = osk::PrimitiveSource::kMeasured;
+constexpr auto kGr = osk::PrimitiveSource::kGrown;
+
+}  // namespace
+
+TEST(PayloadOwnCells, AnOwnCellInsideAMeasuredPrimitiveIsExemptAndThePayloadMovesOn) {
+  // The pinch-volume fallback holds the cell too; the measured fit explains it.
+  PayloadRig rig({po_box(0, 0, 0, 0.06, 0.06, 0.06, kFb), po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);
+  ASSERT_TRUE(rig.check(false).hit) << "without the table the payload stops on its own cell";
+  const auto with = rig.check();
+  EXPECT_FALSE(with.hit);
+  EXPECT_GE(with.payload_own_pairs, 1);
+  EXPECT_LT(with.payload_own_min_distance, 0.0) << "disclosed at its true (negative) depth";
+}
+
+TEST(PayloadOwnCells, AGrownPrimitiveExplainsItsCellsToo) {
+  PayloadRig rig({po_box(0, 0, 0, 0.06, 0.06, 0.06, kFb), po_box(0, 0, 0, 0.03, 0.03, 0.03, kGr)});
+  rig.cell(0.01, 0.01, 0.01);
+  EXPECT_FALSE(rig.check().hit);
+}
+
+TEST(PayloadOwnCells, ACellInsideTheFallbackPrimitiveOnlyStillStops) {
+  // A neighbour inside the pinch volume, outside everything measured.
+  PayloadRig rig({po_box(0, 0, 0, 0.08, 0.08, 0.08, kFb), po_box(0, 0, 0, 0.02, 0.02, 0.02, kMe)});
+  rig.cell(0.05, 0.01, 0.01);
+  EXPECT_TRUE(rig.check().hit);
+  // And a payload with no measured primitive at all explains nothing, whatever the table says.
+  PayloadRig bare({po_box(0, 0, 0, 0.08, 0.08, 0.08, kFb)});
+  bare.cell(0.01, 0.01, 0.01);
+  EXPECT_TRUE(bare.check().hit);
+}
+
+TEST(PayloadOwnCells, ACellOfAnotherSettledTracksBoxInsideTheMeasuredBoxStillStops) {
+  PayloadRig rig({po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);
+  rig.own.n_others = 1;
+  rig.own.other_box[0] = translate(0.02, 0.0, 0.0);  // a neighbour's box holds the cell
+  rig.own.other_half[0] = {0.03, 0.03, 0.03};
+  EXPECT_TRUE(rig.check().hit);
+  // The payload's OWN track is not another body: marked own, the cell is exempt again.
+  rig.own.own[0] = 1U;
+  EXPECT_FALSE(rig.check().hit);
+}
+
+TEST(PayloadOwnCells, ACellAtOrBelowTheFloorIsTheSupportAndStillStops) {
+  PayloadRig rig({po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);  // centre z = 0.01
+  rig.own.floor_z[0] = 0.01;
+  EXPECT_TRUE(rig.check().hit) << "at the floor";
+  rig.own.floor_z[0] = 0.02;
+  EXPECT_TRUE(rig.check().hit) << "below the floor";
+  rig.own.floor_z[0] = 0.0099;
+  EXPECT_FALSE(rig.check().hit) << "strictly above it";
+  rig.own.floor_z[0] = std::nan("");
+  EXPECT_TRUE(rig.check().hit) << "an unknown floor exempts nothing";
+}
+
+TEST(PayloadOwnCells, ADeclaredStaticCellStillStops) {
+  PayloadRig rig({po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);
+  rig.static_mask[po_index(0.01, 0.01, 0.01)] = 1;
+  rig.own.static_cells = rig.static_mask.data();
+  rig.own.static_cells_n = rig.static_mask.size();
+  EXPECT_TRUE(rig.check().hit);
+  rig.static_mask[po_index(0.01, 0.01, 0.01)] = 0;
+  EXPECT_FALSE(rig.check().hit) << "a declared table that does not mark the cell";
+  rig.own.static_cells_n = rig.static_mask.size() - 1;  // a table for another grid layout
+  EXPECT_TRUE(rig.check().hit) << "cannot say which cells are static: nothing is exempt";
+}
+
+TEST(PayloadOwnCells, AHandSizedBodyJustOutsideTheMeasuredPrimitiveStillStops) {
+  // The measured box ends at x = 0.019; the cell [0.02, 0.04] starts 1 mm beyond it, inside the
+  // margin of the box (it trips) but its volume does not meet the evidence.
+  PayloadRig rig({po_box(0, 0, 0, 0.019, 0.03, 0.03, kMe)});
+  rig.cell(0.03, 0.01, 0.01);
+  EXPECT_TRUE(rig.check().hit);
+  // The same cell one millimetre inside the evidence is the payload's own.
+  PayloadRig inside({po_box(0, 0, 0, 0.021, 0.03, 0.03, kMe)});
+  inside.cell(0.03, 0.01, 0.01);
+  EXPECT_FALSE(inside.check().hit);
+}
+
+TEST(PayloadOwnCells, AnUnarmedInvalidOrMissingTableExemptsNothing) {
+  PayloadRig rig({po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);
+  rig.own.armed = 0;
+  EXPECT_TRUE(rig.check().hit) << "the binding is not valid";
+  rig.own.armed = 2;  // another object's bit
+  EXPECT_TRUE(rig.check().hit);
+  rig.own.armed = 1;
+  rig.own.valid = false;
+  EXPECT_TRUE(rig.check().hit) << "a stale or refused tracked set";
+  rig.own.valid = true;
+  EXPECT_FALSE(rig.check().hit);
+  EXPECT_TRUE(rig.check(false).hit) << "no table";
+}
+
+TEST(PayloadOwnCells, ANonFiniteOrNonBoxPrimitiveExplainsNothing) {
+  PayloadRig nan_box({po_box(0, 0, 0, std::nan(""), 0.03, 0.03, kMe)});
+  nan_box.grid.occupancy = nan_box.occ.data();
+  nan_box.grid.payload_own = &nan_box.own;
+  EXPECT_FALSE(osk::payload_own_cell_exempts(
+      nan_box.grid, nan_box.att, 0, identity(), po_index(0.01, 0.01, 0.01),
+      osk::Vec3{0.01, 0.01, 0.01}, osk::Vec3{0.21, 0.21, 0.21}));
+  EXPECT_FALSE(osk::payload_own_cell_exempts(
+      nan_box.grid, nan_box.att, 0, identity(), po_index(0.01, 0.01, 0.01),
+      osk::Vec3{std::nan(""), 0.01, 0.01}, osk::Vec3{0.21, 0.21, 0.21}));
+  osk::AttachedPrimitive sphere = po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe);
+  sphere.kind = osk::AttachedShapeKind::kSphere;
+  sphere.radius = 0.05;
+  PayloadRig ball({sphere});
+  ball.cell(0.01, 0.01, 0.01);
+  EXPECT_TRUE(ball.check().hit);
+}
+
+TEST(PayloadOwnCells, AnotherPayloadsEvidenceDoesNotExplainThisOne) {
+  PayloadRig rig({po_box(0.1, 0, 0, 0.02, 0.02, 0.02, kMe)});
+  append_object(rig.att, 1, identity(), {po_box(0, 0, 0, 0.03, 0.03, 0.03, kMe)});
+  rig.cell(0.01, 0.01, 0.01);  // inside object 1's measured box only
+  rig.own.armed = 0b01;        // object 0 armed, object 1 not
+  EXPECT_TRUE(rig.check().hit);
+  rig.own.armed = 0b10;
+  rig.own.floor_z[1] = -0.1;
+  EXPECT_FALSE(rig.check().hit) << "object 1's own cell, object 1 armed";
+}
+
+TEST(PayloadOwnCells, TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes) {
+  // trips_with ⊆ trips_without, and every removed cell satisfies the rule written out
+  // independently (axis-aligned boxes: an AABB overlap test). Fixed seed; each occupied cell is
+  // checked alone so the trip set is exact.
+  std::mt19937 rng(20261017U);
+  std::uniform_real_distribution<double> pos(-0.1, 0.1);
+  std::uniform_real_distribution<double> half(0.01, 0.05);
+  std::bernoulli_distribution coin(0.5), sparse(0.1);
+  int trials_removed = 0;
+  int trials_kept = 0;
+  for (int trial = 0; trial < 200; ++trial) {
+    std::vector<osk::AttachedPrimitive> prims;
+    std::vector<std::array<double, 6>> boxes;  // centre + half, for the independent rule
+    std::vector<osk::PrimitiveSource> srcs;
+    const int n_prims = 1 + static_cast<int>(rng() % 3U);
+    for (int p = 0; p < n_prims; ++p) {
+      const osk::PrimitiveSource s = rng() % 3U == 0U ? kFb : (coin(rng) ? kMe : kGr);
+      const std::array<double, 6> b{pos(rng), pos(rng), pos(rng), half(rng), half(rng), half(rng)};
+      prims.push_back(po_box(b[0], b[1], b[2], b[3], b[4], b[5], s));
+      boxes.push_back(b);
+      srcs.push_back(s);
+    }
+    PayloadRig rig(prims);
+    rig.own.floor_z[0] = pos(rng) - 0.05;
+    const int n_others = static_cast<int>(rng() % 3U);
+    std::vector<std::array<double, 6>> others;
+    for (int k = 0; k < n_others; ++k) {
+      const std::array<double, 6> b{pos(rng), pos(rng), pos(rng), half(rng), half(rng), half(rng)};
+      others.push_back(b);
+      rig.own.other_box[static_cast<std::size_t>(k)] = translate(b[0], b[1], b[2]);
+      rig.own.other_half[static_cast<std::size_t>(k)] = {b[3], b[4], b[5]};
+      if (coin(rng) && k == 0) {
+        rig.own.own[0] |= 1U;  // the first "other" is this payload's own track
+      }
+    }
+    rig.own.n_others = static_cast<std::size_t>(n_others);
+    std::vector<std::size_t> cells;
+    for (std::size_t i = 0; i < rig.occ.size(); ++i) {
+      if (sparse(rng) && rng() % 7U == 0U) {
+        cells.push_back(i);
+      }
+      if (rng() % 11U == 0U) {
+        rig.static_mask[i] = 1;
+      }
+    }
+    rig.own.static_cells = rig.static_mask.data();
+    rig.own.static_cells_n = rig.static_mask.size();
+    int removed = 0;
+    int kept = 0;
+    for (const std::size_t idx : cells) {
+      std::fill(rig.occ.begin(), rig.occ.end(), 0);
+      rig.occ[idx] = 1;
+      const bool without = rig.check(false).hit;
+      const bool with = rig.check().hit;
+      EXPECT_TRUE(!with || without) << "trial " << trial << " cell " << idx << ": a NEW trip";
+      if (!without) {
+        continue;
+      }
+      // The independent rule: AABB overlap with a measured / grown box, above the floor, no static
+      // cell, no overlap with another (non-own) settled box.
+      const int i = static_cast<int>(idx % kPoN), j = static_cast<int>((idx / kPoN) % kPoN),
+                k = static_cast<int>(idx / (kPoN * kPoN));
+      const std::array<double, 3> c{-0.2 + (i + 0.5) * kPoRes, -0.2 + (j + 0.5) * kPoRes,
+                                    -0.2 + (k + 0.5) * kPoRes};
+      const auto overlaps = [&](const std::array<double, 6>& b) {
+        for (int a = 0; a < 3; ++a) {
+          if (std::abs(c[a] - b[a]) > b[3 + a] + 0.5 * kPoRes) {
+            return false;
+          }
+        }
+        return true;
+      };
+      bool own_ev = false;
+      for (std::size_t p = 0; p < boxes.size(); ++p) {
+        own_ev = own_ev || (srcs[p] != kFb && overlaps(boxes[p]));
+      }
+      bool blocked = rig.static_mask[idx] != 0 || !(c[2] > rig.own.floor_z[0]);
+      for (std::size_t o = 0; o < others.size(); ++o) {
+        if (!(o == 0 && (rig.own.own[0] & 1U) != 0U)) {
+          blocked = blocked || overlaps(others[o]);
+        }
+      }
+      EXPECT_EQ(with, !(own_ev && !blocked)) << "trial " << trial << " cell " << idx;
+      removed += !with ? 1 : 0;
+      kept += with ? 1 : 0;
+    }
+    trials_removed += removed > 0 ? 1 : 0;
+    trials_kept += kept > 0 ? 1 : 0;
+  }
+  std::printf("[ info     ] payload-own property: trials with a removed stop %d / 200, with a kept "
+              "stop %d / 200\n",
+              trials_removed, trials_kept);
+  EXPECT_GT(trials_removed, 20) << "the exemption must really remove stops somewhere";
+  EXPECT_GT(trials_kept, 20) << "and still stop on every other cell somewhere";
+}

@@ -65,7 +65,7 @@ _SHADOW = {
     _RUNTIME: {"object_tracking"},
 }
 _BIND = {**_SHADOW, _HAL: {"vision_attachment_publish_attachment_state"}, _KERNEL: _K5}
-_ON = {**_BIND, _KERNEL: _K5 | {"tracked_grasp_exemption_enabled"}}
+_ON = {**_BIND, _KERNEL: _K5 | {"tracked_grasp_exemption_enabled", "payload_own_cells_enabled"}}
 
 
 def _graph(tmp: Path, mode: str) -> dict[tuple[str, str], dict[str, Any]]:
@@ -139,5 +139,6 @@ def test_each_mode_switches_only_its_own_consumers(
     hal = now[_HAL].get("vision_attachment_publish_attachment_state", True)
     assert hal is (mode == "shadow"), "the HAL publishes attachment_state only in shadow"
     assert now[_KERNEL]["tracked_grasp_exemption_enabled"] is (mode == "on")
+    assert now[_KERNEL]["payload_own_cells_enabled"] is (mode == "on")
     assert bool(now[_KERNEL].get("tracked_release_jaw_joints")) is (mode in ("bind", "on"))
     assert now[_FILTER]["robot_mask_enabled"] is True

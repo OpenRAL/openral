@@ -487,3 +487,52 @@ TEST(NoAlloc, TheExplainedCellsCheckIsAllocationFree) {
   EXPECT_TRUE(std::isfinite(sink));
   EXPECT_EQ(explained, 2000);
 }
+
+TEST(NoAlloc, ThePayloadOwnCellExemptionIsAllocationFree) {
+  // Issue #418 OT-10 amendment: the exemption runs inside the payload-vs-voxel sweep on every
+  // candidate; like the sweep it must not allocate.
+  osk::CollisionModel m;
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  osk::AttachedModel att;
+  att.objects.assign(1, osk::AttachedObject{});
+  att.primitives.assign(2, osk::AttachedPrimitive{});
+  att.touch_links.assign(1, 0);
+  att.objects[0].attach_link = 1;
+  att.objects[0].prim_count = 2;
+  for (int p = 0; p < 2; ++p) {
+    att.primitives[static_cast<std::size_t>(p)].kind = osk::AttachedShapeKind::kBox;
+    att.primitives[static_cast<std::size_t>(p)].half_extents = {0.03, 0.03, 0.03};
+  }
+  att.primitives[1].source = osk::PrimitiveSource::kMeasured;
+  att.n_objects = 1;
+  att.n_primitives = 2;
+  std::vector<std::uint8_t> occ(20 * 20 * 20, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 37) {
+    occ[i] = 1;
+  }
+  osk::PayloadOwnCells own;
+  own.valid = true;
+  own.armed = 1;
+  own.floor_z[0] = -0.3;
+  own.n_others = 2;
+  own.other_box[0].t = {0.1, 0.0, 0.0};
+  own.other_half[0] = {0.02, 0.02, 0.02};
+  own.other_box[1].t = {-0.1, 0.0, 0.0};
+  own.other_half[1] = {0.02, 0.02, 0.02};
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.2, -0.2, -0.2};
+  grid.resolution = 0.02;
+  grid.sx = grid.sy = grid.sz = 20;
+  grid.occupancy = occ.data();
+  grid.payload_own = &own;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int pairs = 0;
+  for (int i = 0; i < 2000; ++i) {
+    pairs += osk::check_attached_voxel_collision(m, att, s, grid, 0.01).payload_own_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_GT(pairs, 0) << "the loop really exercised the exemption";
+}

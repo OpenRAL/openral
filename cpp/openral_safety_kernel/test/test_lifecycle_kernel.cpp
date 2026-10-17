@@ -3913,6 +3913,17 @@ struct GraspBeat {
   std::int64_t tracked_confirmed_ns{0};  ///< last_confirmed_stamp_ns; 0 = the stream stamp
   /// Issue #418 K7: the measured support under it (grid z); far below the rig's cells.
   double tracked_support_z{-1.0};
+  /// Issue #418 OT-10 amendment: the carried payload's primitive evidence (wire
+  /// `geometry_source`: 0 fallback, 1 measured, 2 grown, anything else unknown), its half
+  /// extent, the attachment's evidence_ref, and the track's clearing floor (grid z).
+  std::uint8_t payload_source{0};
+  double payload_half{0.01};
+  std::string payload_evidence_ref{};
+  double tracked_floor_z{-1.0};
+  /// A second settled track in the same set (`trk:2`, a neighbour), centred at `other_x`.
+  bool other_track{false};
+  double other_x{0.0};
+  double other_half{0.02};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3929,10 +3940,12 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     obj.pose_in_link.orientation.w = 1.0;
     openral_msgs::msg::AttachedCollisionPrimitive prim;
     prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
-    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.shape_dimensions = {b.payload_half, b.payload_half, b.payload_half};
     prim.pose_in_object.orientation.w = 1.0;
+    prim.geometry_source = b.payload_source;
     obj.primitives.push_back(prim);
     obj.evidence_kind = b.evidence_kind;
+    obj.evidence_ref = b.payload_evidence_ref;
     obj.epoch = b.epoch;
     msg.attached_objects.push_back(obj);
   }
@@ -3956,6 +3969,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     o.status = b.tracked_status;
     o.provisional = b.tracked_provisional;
     o.support_z = b.tracked_support_z;
+    o.floor_z = b.tracked_floor_z;
     o.box.frame_id = b.tracked_frame;
     o.box.pose.position.x = b.tracked_x;
     o.box.pose.orientation.w = 1.0;
@@ -3971,6 +3985,17 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
       o.tight.push_back(hull);
     }
     set.objects.push_back(o);
+    if (b.other_track) {
+      openral_msgs::msg::TrackedObject n = o;
+      n.object_id = "trk:2";
+      n.role = "context";
+      n.status = "confirmed";
+      n.provisional = false;
+      n.box.pose.position.x = b.other_x;
+      n.box.half_extents.x = n.box.half_extents.y = n.box.half_extents.z = b.other_half;
+      n.tight.clear();
+      set.objects.push_back(n);
+    }
   }
   if (!b.second_attach_link.empty()) {
     openral_msgs::msg::AttachedCollisionObject obj;
@@ -7544,5 +7569,138 @@ TEST_F(LifecycleKernelTest, ExplainedCellsRefuseToConfigureOutsideTheirScope) {
   EXPECT_FALSE(malformed.configure()) << "a malformed line refuses the whole file";
   std::filesystem::remove(bad);
   GraspRig ok("kernel_k7_cfg_ok", k7_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+// ── Issue #418 (hazard OT-10 amendment): a bound payload's measured cells cannot stop it ──
+//
+// A tracked payload on link0 at the hand (K3 passes), carried into the rig's one occupied cell
+// (x in [0.140, 0.165]). Without the exemption the payload latches on its own cell; with it,
+// only the payload's MEASURED / GROWN primitive can explain the cell.
+namespace {
+
+std::vector<rclcpp::Parameter> own_params(bool enabled = true, bool k2 = true,
+                                          const std::string& hal_mode = "sim") {
+  auto params = tracked_payload_params();
+  if (k2) {
+    params.emplace_back("tracked_grasp_exemption_enabled", true);
+  }
+  params.emplace_back("hal_mode", hal_mode);
+  if (enabled) {
+    params.emplace_back("payload_own_cells_enabled", true);
+  }
+  return params;
+}
+
+// Arm and attach at the hand, then carry the payload onto the cell; true when it was accepted.
+bool own_payload_passes(const std::string& name, const std::function<void(GraspBeat&)>& edit,
+                        std::vector<rclcpp::Parameter> params = own_params(),
+                        bool* latched = nullptr) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = declared_target_voxels();  // one cell, x in [0.140, 0.165]
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  edit(b);
+  rig.warm(&b, 0.0, 300);
+  if (!rig.offer(&b, 0.0)) {
+    ADD_FAILURE() << name << ": the 70 mm clear payload must pass";
+    return false;
+  }
+  b.payload_x = 0.1525;  // the payload box is the cell
+  b.payload_half = 0.0125;
+  // The attachment revision stays: a new revision re-baselines the embedded-residue exemption
+  // with the payload already on the cell, which would hide what this test is about.
+  rig.warm(&b, 0.0, 100);
+  const bool ok = rig.offer(&b, 0.0);
+  if (latched != nullptr) {
+    *latched = rig.node->fault_latched();
+  }
+  return ok;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APayloadStopsOnItsOwnCellWithoutTheExemption) {
+  bool latched = false;
+  EXPECT_FALSE(own_payload_passes(
+      "kernel_own_off", [](GraspBeat& b) { b.payload_source = 1; }, own_params(/*enabled=*/false),
+      &latched));
+  EXPECT_TRUE(latched);
+}
+
+TEST_F(LifecycleKernelTest, ABoundPayloadsMeasuredOrGrownCellCannotStopIt) {
+  for (const std::uint8_t source : {std::uint8_t{1}, std::uint8_t{2}}) {
+    EXPECT_TRUE(own_payload_passes("kernel_own_on_" + std::to_string(source),
+                                   [source](GraspBeat& b) { b.payload_source = source; }))
+        << "source " << static_cast<int>(source);
+  }
+}
+
+TEST_F(LifecycleKernelTest, AFallbackOrUnknownOrMissingTagExemptsNothing) {
+  // 0: the pinch-volume fallback / a publisher that never sets the field; 7: a code this
+  // kernel does not know. Both are fallback.
+  for (const std::uint8_t source : {std::uint8_t{0}, std::uint8_t{7}}) {
+    bool latched = false;
+    EXPECT_FALSE(own_payload_passes(
+        "kernel_own_tag_" + std::to_string(source),
+        [source](GraspBeat& b) { b.payload_source = source; }, own_params(), &latched))
+        << "source " << static_cast<int>(source);
+    EXPECT_TRUE(latched);
+  }
+}
+
+TEST_F(LifecycleKernelTest, ACellBelowTheTracksFloorOrInAnotherSettledTracksBoxStillStops) {
+  EXPECT_FALSE(own_payload_passes("kernel_own_floor", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.tracked_floor_z = 0.5;  // the cell (z = 0) is under the support top
+  })) << "at or below the floor is the support";
+  EXPECT_FALSE(own_payload_passes("kernel_own_other", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.other_track = true;  // a neighbour's settled box holds the cell
+    b.other_x = 0.1525;
+    b.other_half = 0.05;
+  })) << "another settled track's cell is that body's";
+  EXPECT_TRUE(own_payload_passes("kernel_own_other_far", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.other_track = true;  // control: the same neighbour well away from the cell
+    b.other_x = -0.3;
+    b.other_half = 0.05;
+  })) << "a neighbour that does not hold the cell changes nothing";
+}
+
+TEST_F(LifecycleKernelTest, AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox) {
+  // PINCH_FALLBACK + `provisional:trk:1` (the tracker's box of exactly one candidate rides as a
+  // measured primitive): that candidate is the payload's own track; the fallback part is not.
+  EXPECT_TRUE(own_payload_passes("kernel_own_prov_one", [](GraspBeat& b) {
+    b.evidence_kind = "pinch_fallback";
+    b.payload_evidence_ref = "provisional:trk:1";
+    b.tracked_status = "confirmed";
+    b.tracked_provisional = true;
+    b.payload_source = 1;
+  }));
+  // Several candidates may be neighbours, an unnamed one has no track: no own track, no exemption.
+  for (const char* ref : {"provisional:trk:1,trk:2", "ambiguous:trk:1", "untracked_grasp", ""}) {
+    EXPECT_FALSE(own_payload_passes(std::string("kernel_own_prov_") + std::to_string(*ref),
+                                    [ref](GraspBeat& b) {
+                                      b.evidence_kind = "pinch_fallback";
+                                      b.payload_evidence_ref = ref;
+                                      b.tracked_status = "confirmed";
+                                      b.tracked_provisional = true;
+                                      b.payload_source = 1;
+                                    }))
+        << ref;
+  }
+}
+
+TEST_F(LifecycleKernelTest, ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions) {
+  // Without K2 (object_tracking on) it has no tracked set to stand on; off sim it is refused
+  // exactly as K2 and K5 are; with both it configures.
+  GraspRig no_k2("kernel_own_cfg_nok2", own_params(true, /*k2=*/false));
+  EXPECT_FALSE(no_k2.configure()) << "no K2";
+  GraspRig real("kernel_own_cfg_real", own_params(true, true, "real"));
+  EXPECT_FALSE(real.configure()) << "not sim";
+  GraspRig ok("kernel_own_cfg_ok", own_params());
   EXPECT_TRUE(ok.configure());
 }

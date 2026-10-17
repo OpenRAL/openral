@@ -240,6 +240,14 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
         f("on", grasp_allowance_enabled=False)
 
 
+def test_only_on_with_k2_lets_a_bound_payloads_measured_cells_stand(launch_module: object) -> None:
+    f = launch_module._payload_own_cells  # type: ignore[attr-defined]
+    for mode in ("off", "shadow", "bind"):
+        assert f(mode, tracked_grasp_exemption_enabled=True) is False
+    assert f("on", tracked_grasp_exemption_enabled=True) is True
+    assert f("on", tracked_grasp_exemption_enabled=False) is False
+
+
 def test_only_on_with_workspace_contact_narrows_it_to_explained_cells(
     launch_module: object,
 ) -> None:

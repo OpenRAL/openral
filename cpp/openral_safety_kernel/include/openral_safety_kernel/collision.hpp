@@ -569,6 +569,7 @@ enum class GraspRegionStatus : std::uint8_t {
 
 struct TrackedGraspTable;     // issue #418 K2, defined below
 struct WorkspaceExplanation;  // issue #418 K7, defined below
+struct PayloadOwnCells;       // issue #418 OT-10 amendment, defined below
 
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
@@ -608,6 +609,10 @@ struct VoxelGrid {
   /// Issue #418 K7: non-null = workspace contact is narrowed to EXPLAINED cells
   /// (`WorkspaceExplanation`, `workspace_cell_explained`). Null = the #349 rule.
   const WorkspaceExplanation* workspace_explained{nullptr};
+  /// Issue #418 (hazard OT-10 amendment, Safety-WG review pending): non-null and valid = a bound
+  /// payload's MEASURED / GROWN cells cannot stop that payload (`PayloadOwnCells`,
+  /// `payload_own_cell_exempts`). Null = no such exemption (today's payload check).
+  const PayloadOwnCells* payload_own{nullptr};
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -688,6 +693,21 @@ struct CollisionHit {
   /// cell centre lies outside the workspace box, 5 the cell is not explained (issue
   /// #418 K7: no tracked object, declared static collider or measured support).
   int workspace_denied{0};
+  /// Payload-own-cell disclosure (issue #418 OT-10 amendment), never a decision: how many
+  /// (payload, cell) pairs within the margin this check tolerated as the payload's own measured
+  /// or grown cells, and the deepest one. 0 / +inf when none.
+  int payload_own_pairs{0};
+  double payload_own_min_distance{std::numeric_limits<double>::infinity()};
+};
+
+/// Where a payload primitive's geometry came from (issue #418, hazard OT-10 amendment). Mirrors
+/// `openral_msgs/AttachedCollisionPrimitive.SOURCE_*`; a value the kernel does not know, and a
+/// publisher that never sets the field, is `kFallback`. Only `kMeasured` and `kGrown` can
+/// explain the payload's own cells (`payload_own_cell_exempts`).
+enum class PrimitiveSource : std::uint8_t {
+  kFallback = 0,  ///< pinch volume, or boxes of candidates that may not be the held object
+  kMeasured = 1,  ///< the tracked / single provisional object's own fitted geometry
+  kGrown = 2,     ///< cells observed to move with the hand (in-hand growth)
 };
 
 /// Convex shape of a collision object rigidly attached to a robot link
@@ -727,6 +747,8 @@ struct AttachedPrimitive {
   /// producer that shipped no refinement (or shipped one that failed the
   /// containment proof at ingest) is checked as the plain box.
   int hull_index{-1};
+  /// Issue #418 OT-10 amendment: the evidence behind this primitive (default: none).
+  PrimitiveSource source{PrimitiveSource::kFallback};
 };
 
 /// One collision object rigidly attached to a robot link (a grasped payload).
@@ -846,6 +868,7 @@ struct AttachedPrimitiveInput {
   double half_length{0.0};
   Vec3 half_extents{};
   Transform pose_in_object{};
+  PrimitiveSource source{PrimitiveSource::kFallback};  ///< wire `geometry_source`
   /// Wire stage-2 refinement, still UNVALIDATED. `has_tight` false (the
   /// default, and every pre-#266 publisher) means the box is the model.
   /// `ingest_attached_objects` proves containment before any of this reaches
@@ -1618,6 +1641,44 @@ struct WorkspaceExplanation {
 /// no `grid.workspace_explained`, a non-finite centre or a degenerate grid.
 /// Allocation-free.
 bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcept;
+
+/// Issue #418 (hazard OT-10 amendment, Safety-WG review pending): "a bound payload's measured
+/// cells cannot stop that payload". Filled by the lifecycle node per candidate; every field
+/// fails closed (an unarmed object, an unset floor, a missing table exempts nothing).
+///
+/// `armed` bit i: object i's binding is valid right now (not retired, K3's off-hand check
+/// passes, its track is settled and the tracked stream is fresh) and names a floor.
+/// `floor_z[i]`: the payload's track `floor_z` (support top + one cell, base frame): a cell whose
+/// centre is not strictly above it is the support, never the payload.
+/// `other_box[0..n_others)`: every OTHER settled track's box (confirmed / occluded / bound, not
+/// retired), robot base frame; `own[i]` bit k marks `other_box[k]` as payload i's own track,
+/// which does not count as another body.
+/// `static_cells` (the grid's layout, `static_cells_n` long): the declared static collider cells,
+/// padded as K7 pads them.
+struct PayloadOwnCells {
+  bool valid{false};
+  std::uint8_t armed{0};
+  std::array<double, 8> floor_z{};
+  std::size_t n_others{0};
+  std::array<Transform, kMaxTrackedObjects> other_box{};
+  std::array<Vec3, kMaxTrackedObjects> other_half{};
+  std::array<std::uint32_t, 8> own{};
+  const std::uint8_t* static_cells{nullptr};
+  std::size_t static_cells_n{0};
+};
+
+/// Does a bound payload's own measured evidence explain the occupied cell `cell_idx` (centre
+/// `center` in the base frame, `local` in the grid's axes) for object `object_index`? True only
+/// when ALL hold: the table is valid and the object armed; the cell's volume intersects a
+/// `kMeasured` or `kGrown` BOX primitive of THIS payload (the exact oriented-box vs cube
+/// separating-axis test, as K2's `grasp_cell_exempt`); its centre lies strictly above the
+/// object's `floor_z`; it is not a declared static collider cell; and its volume intersects no
+/// OTHER settled track's box. A `kFallback` primitive, a non-box shape, a non-finite number or
+/// an unarmed object explains nothing. It exempts only the payload-vs-VOXEL pair: never payload
+/// vs robot links, never a hand link vs a cell. Allocation-free.
+bool payload_own_cell_exempts(const VoxelGrid& grid, const AttachedModel& attached,
+                              std::size_t object_index, const Transform& object_xf,
+                              std::size_t cell_idx, const Vec3& center, const Vec3& local) noexcept;
 
 /// Mark in `mask` (the grid's layout, `mask_n` long) every cell of `grid` that
 /// holds one of `base_points` — exactly the octomap bridge's

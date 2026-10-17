@@ -280,6 +280,11 @@ bool decode_attached_primitive(const openral_msgs::msg::AttachedCollisionPrimiti
       prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
       prim.pose_in_object.orientation.w);
   decode_tight_geometry(prim, out);
+  // Issue #418 OT-10 amendment: the evidence behind the primitive. 0 and every code this kernel
+  // does not know is FALLBACK, which explains nothing.
+  out.source = prim.geometry_source == 1   ? PrimitiveSource::kMeasured
+               : prim.geometry_source == 2 ? PrimitiveSource::kGrown
+                                           : PrimitiveSource::kFallback;
   return true;
 }
 
@@ -501,6 +506,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // ever adds stops. Set by the launch for `object_tracking: on` only; configure
   // refuses it without `workspace_contact_enabled` (itself sim-only).
   this->declare_parameter<bool>("workspace_explained_cells_enabled", false);
+  this->declare_parameter<bool>("payload_own_cells_enabled", false);
   // The declared static geometry as base-frame surface points, one `x y z` per
   // line — the SAME file the octomap bridge marks into every grid
   // (`static_points_file`). K7 reads it to know which cells are a declared static
@@ -964,6 +970,49 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "(%zu points from '%s') or the measured support within %g m of such an object "
                 "explains; every other cell in the workspace trips as outside it",
                 static_points_.size(), points_file.c_str(), kExplainedSupportReachM);
+  }
+  // Issue #418 (hazard OT-10 amendment): a bound payload's measured cells cannot stop it. Every
+  // refusal fails configure: an exemption whose scope the kernel cannot state is not run.
+  payload_own_enabled_ = this->get_parameter("payload_own_cells_enabled").as_bool();
+  payload_own_ = PayloadOwnCells{};
+  voxel_grid_.payload_own = nullptr;
+  payload_own_logged_n_ = static_cast<std::size_t>(-1);
+  if (payload_own_enabled_) {
+    const auto refuse = [this](const std::string& why) {
+      RCLCPP_ERROR(this->get_logger(), "payload_own_cells_enabled refused: %s, hal_mode=%s",
+                   why.c_str(), this->get_parameter("hal_mode").as_string().c_str());
+      payload_own_enabled_ = false;
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    };
+    if (!tracked_grasp_enabled_) {
+      return refuse("it requires tracked_grasp_exemption_enabled (object_tracking on)");
+    }
+    if (!attached_collision_enabled_) {
+      return refuse(
+          "it exempts the payload-vs-voxel check and requires attached_collision_enabled");
+    }
+    if (this->get_parameter("hal_mode").as_string() != "sim") {
+      return refuse("sim-only until Safety-WG review (issue #418, hazard OT-10)");
+    }
+    if (!workspace_explained_enabled_) {
+      // K7 loads the declared static colliders; without K7 this exemption needs them too.
+      const std::string points_file = this->get_parameter("static_points_file").as_string();
+      if (!points_file.empty()) {
+        std::string error;
+        if (!load_static_points(points_file, static_points_, error)) {
+          return refuse("static_points_file: " + error);
+        }
+      }
+      static_cells_.assign(world_voxel_max_cells_, 0);
+    }
+    RCLCPP_WARN(this->get_logger(),
+                "safety.payload_own_cells enabled (issue #418 OT-10 amendment, Safety-WG review "
+                "pending): a bound payload's measured / grown cells (not its pinch-volume "
+                "fallback) cannot stop that payload when they stand above the track's floor, are "
+                "no declared static cell (%zu points) and meet no other settled track's box; "
+                "payload vs robot links and every hand check are unchanged",
+                static_points_.size());
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -1806,6 +1855,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         const std::size_t explaining = fill_workspace_explained();
         span->SetAttribute("safety.workspace_explained_objects", static_cast<int64_t>(explaining));
       }
+      if (payload_own_enabled_) {
+        // #418 OT-10 amendment: a bound payload's measured cells cannot stop that payload.
+        voxel_grid_.payload_own = &payload_own_;
+        span->SetAttribute("safety.payload_own_armed", static_cast<int64_t>(fill_payload_own()));
+      }
       const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
       workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
       ws_hand_contact_ = false;
@@ -2000,6 +2054,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                             amargin, collision_scale_proximity_m_);
             note_slack(hit, amargin);
             disclose_workspace(hit, step, "payload@");
+            if (hit.payload_own_pairs > 0) {
+              const auto wall = std::chrono::steady_clock::now();
+              if (wall - payload_own_last_warn_ >= std::chrono::seconds(1)) {
+                payload_own_last_warn_ = wall;
+                RCLCPP_WARN(this->get_logger(),
+                            "safety.payload_own_cells step=%d pairs=%d deepest=%.1f mm: the "
+                            "payload's own measured cells tolerated (never a stop's evidence)",
+                            step, hit.payload_own_pairs, hit.payload_own_min_distance * 1000.0);
+              }
+            }
             if (hit.hit) {
               // ADR-0098: when declared target geometry adjudicated the pair,
               // hit.min_distance is the distance to that BODY, not the cell
@@ -2093,9 +2157,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                                                      voxel_grid_, world_voxel_margin_m_);
             ws_hand_contact_ = touch.hit || touch.workspace_pairs > 0;
             if (!ws_hand_contact_ && attached_collision_enabled_ && attached_model_.n_objects > 0) {
+              // The own-cell exemption is a payload-vs-voxel relaxation only; whether the hand
+              // touches anything is measured without it.
+              const PayloadOwnCells* const saved_own = voxel_grid_.payload_own;
+              voxel_grid_.payload_own = nullptr;
               const auto ptouch = check_attached_voxel_collision(collision_model_, attached_model_,
                                                                  collision_scratch_, voxel_grid_,
                                                                  attached_collision_margin_m_);
+              voxel_grid_.payload_own = saved_own;
               ws_hand_contact_ = ptouch.hit || ptouch.workspace_pairs > 0;
             }
           }
@@ -3449,8 +3518,8 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
   voxel_grid_.sz = static_cast<int>(msg->size_z);
-  if (workspace_explained_enabled_) {
-    refresh_static_cells();  // #418 K7: once per change of the grid's lattice
+  if (workspace_explained_enabled_ || payload_own_enabled_) {
+    refresh_static_cells();  // #418 K7 / OT-10: once per change of the grid's lattice
   }
   // A grid that re-frames invalidates any region declared against the old frame
   // — the allowance would otherwise apply to a volume in the wrong place.
@@ -4057,6 +4126,7 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
     entry.visible_cells = obj.visible_cells;
     entry.cover_ok = false;
     entry.support_z = obj.support_z;  // K7; non-finite = no measured support
+    entry.floor_z = obj.floor_z;      // OT-10 amendment; non-finite = none
   }
   if (reason != nullptr) {
     if (tracked_refusal_reason_ != reason) {
@@ -4086,14 +4156,55 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
     binding = AttachedBinding{};
     binding.epoch = wire.epoch;
     binding.tracked = wire.evidence_kind == "tracked_object";
+    const auto ensure_fk = [&]() {
+      if (!fk_done) {
+        // The MEASURED configuration, base dofs zeroed exactly as the candidate
+        // path's FK does, into the binding's own scratch.
+        std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+        for (const int d : collision_base_dofs_) {
+          q_fk_[static_cast<std::size_t>(d)] = 0.0;
+        }
+        forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+        fk_done = true;
+      }
+    };
     if (!binding.tracked) {
-      continue;  // legacy and PINCH_FALLBACK payloads: today's rules, unchanged
+      // Legacy and PINCH_FALLBACK payloads: today's rules, unchanged. The one thing a fallback
+      // payload may carry is the measured box of EXACTLY ONE provisional candidate it names
+      // (`provisional:<id>`); that candidate, if live, settled and at the hand, is its own track
+      // for the payload-own-cell exemption (OT-10 amendment). Several or ambiguous candidates
+      // may be neighbours: no own track, no exemption.
+      if (payload_own_enabled_ && wire.evidence_kind == "pinch_fallback" &&
+          wire.evidence_ref.rfind("provisional:", 0) == 0 &&
+          wire.evidence_ref.find(',') == std::string::npos && measured_state_fresh()) {
+        const std::string id = wire.evidence_ref.substr(std::string("provisional:").size());
+        for (std::size_t k = 0; k < tracked_n_; ++k) {
+          const TrackedEntry& e = tracked_[k];
+          if (!e.live || !e.provisional || e.object_id != id) {
+            continue;
+          }
+          ensure_fk();
+          const double cell = voxel_grid_.resolution > 0.0 ? voxel_grid_.resolution : 0.0;
+          if (tracked_box_meets_hand(collision_model_, binding_scratch_, attached_model_,
+                                     attached_model_.objects[i], e.box.pose, e.box.half_extents,
+                                     cell) &&
+              !tracked_retired_.contains(e.id_hash, e.epoch) && std::isfinite(e.floor_z)) {
+            binding.own_armed = true;
+            binding.own_track = static_cast<int>(k);
+            binding.own_floor_z = e.floor_z;
+          }
+          break;
+        }
+      }
+      continue;
     }
     const TrackedEntry* entry = nullptr;
+    int entry_k = -1;
     for (std::size_t k = 0; k < tracked_n_; ++k) {
       if (tracked_[k].live && tracked_[k].epoch == wire.epoch &&
           tracked_[k].object_id == wire.object_id) {
         entry = &tracked_[k];
+        entry_k = static_cast<int>(k);
         break;
       }
     }
@@ -4108,22 +4219,20 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
     } else if (!measured_state_fresh()) {
       binding.off_hand = "no_measured_state";
     } else {
-      if (!fk_done) {
-        // The MEASURED configuration, base dofs zeroed exactly as the candidate
-        // path's FK does, into the binding's own scratch.
-        std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
-        for (const int d : collision_base_dofs_) {
-          q_fk_[static_cast<std::size_t>(d)] = 0.0;
-        }
-        forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
-        fk_done = true;
-      }
+      ensure_fk();
       const double cell = voxel_grid_.resolution > 0.0 ? voxel_grid_.resolution : 0.0;
       if (!tracked_box_meets_hand(collision_model_, binding_scratch_, attached_model_,
                                   attached_model_.objects[i], entry->box.pose,
                                   entry->box.half_extents, cell)) {
         binding.off_hand = "box_off_hand";
       }
+    }
+    // OT-10 amendment: a K3-valid, unretired binding with a floor owns its measured cells.
+    if (payload_own_enabled_ && binding.off_hand == nullptr && entry != nullptr &&
+        !tracked_retired_.contains(entry->id_hash, entry->epoch) && std::isfinite(entry->floor_z)) {
+      binding.own_armed = true;
+      binding.own_track = entry_k;
+      binding.own_floor_z = entry->floor_z;
     }
     if (binding.off_hand != nullptr) {
       const auto wall = std::chrono::steady_clock::now();
@@ -4136,6 +4245,65 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
       }
     }
   }
+}
+
+std::size_t SafetyKernelLifecycleNode::fill_payload_own() {
+  PayloadOwnCells& t = payload_own_;
+  t.valid = false;
+  t.armed = 0;
+  t.n_others = 0;
+  t.own.fill(0);
+  t.floor_z.fill(std::numeric_limits<double>::quiet_NaN());
+  t.static_cells = nullptr;
+  t.static_cells_n = 0;
+  // Fail closed: a tracked set the kernel does not hold, one in another frame, a grid it cannot
+  // cover-check or an attachment stream that is no longer fresh exempts nothing.
+  const bool frame_ok = refresh_tracked_cover();
+  if (!frame_ok || tracked_n_ == 0 || voxel_overflow_ || !tracked_stream_fresh()) {
+    return 0;
+  }
+  std::array<int, kMaxTrackedObjects> slot{};
+  slot.fill(-1);
+  for (std::size_t k = 0; k < tracked_n_ && k < slot.size(); ++k) {
+    const TrackedEntry& e = tracked_[k];
+    // Every settled track is "another body" to a payload that is not its own: confirmed /
+    // occluded / bound (provisional or not), never a retired identity.
+    if (!e.live || tracked_retired_.contains(e.id_hash, e.epoch)) {
+      continue;
+    }
+    slot[k] = static_cast<int>(t.n_others);
+    t.other_box[t.n_others] = e.box.pose;
+    t.other_half[t.n_others] = e.box.half_extents;
+    ++t.n_others;
+  }
+  std::size_t armed = 0;
+  for (std::size_t i = 0; i < attached_model_.n_objects && i < 8; ++i) {
+    const AttachedBinding& b = attached_binding_[i];
+    if (!b.own_armed || b.own_track < 0 || static_cast<std::size_t>(b.own_track) >= slot.size() ||
+        slot[static_cast<std::size_t>(b.own_track)] < 0) {
+      continue;
+    }
+    t.armed = static_cast<std::uint8_t>(t.armed | (1U << i));
+    t.floor_z[i] = b.own_floor_z;
+    t.own[i] |= 1U << static_cast<unsigned>(slot[static_cast<std::size_t>(b.own_track)]);
+    ++armed;
+  }
+  const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
+  if (static_ok) {
+    t.static_cells = static_cells_.data();
+    t.static_cells_n = static_cast<std::size_t>(voxel_grid_.sx) *
+                       static_cast<std::size_t>(voxel_grid_.sy) *
+                       static_cast<std::size_t>(voxel_grid_.sz);
+  }
+  t.valid = armed > 0;
+  if (armed != payload_own_logged_n_) {
+    payload_own_logged_n_ = armed;
+    RCLCPP_INFO(this->get_logger(),
+                "safety.payload_own_armed objects=%zu of=%zu others=%zu static_cells=%zu", armed,
+                attached_model_.n_objects, t.n_others,
+                static_ok ? static_cells_marked_ : std::size_t{0});
+  }
+  return armed;
 }
 
 void SafetyKernelLifecycleNode::union_bound_geometry(
@@ -4206,8 +4374,15 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
       for (const auto& p : in.primitives) {
         AttachedPrimitiveInput q = p;
         q.pose_in_object = rigid_compose(to_union, p.pose_in_object);
-        if (std::any_of(grown.begin(), grown.begin() + static_cast<std::ptrdiff_t>(n),
-                        [&q](const AttachedPrimitiveInput& h) { return same_primitive(h, q); })) {
+        const auto held_same =
+            std::find_if(grown.begin(), grown.begin() + static_cast<std::ptrdiff_t>(n),
+                         [&q](const AttachedPrimitiveInput& h) { return same_primitive(h, q); });
+        if (held_same != grown.begin() + static_cast<std::ptrdiff_t>(n)) {
+          // The same geometry published again keeps its place in the union; a publisher that
+          // later says it is only fallback downgrades it (the evidence can only get weaker).
+          if (q.source == PrimitiveSource::kFallback) {
+            held_same->source = PrimitiveSource::kFallback;
+          }
           continue;
         }
         if (n == kMaxBoundPrimitives) {
