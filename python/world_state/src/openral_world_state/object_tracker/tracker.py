@@ -13,6 +13,7 @@ visibility change, no request.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
@@ -128,6 +129,8 @@ class CameraFrame:
 
 #: ``_apply_mask``: try the next (smaller) candidate.
 _NEXT = object()
+#: Source seconds between INFO reports of one ``(key, reason)`` refusal.
+REFUSAL_LOG_PERIOD_S = 5.0
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -191,6 +194,10 @@ class ObjectTracker:
         self.store = TrackStore(frame_id)
         self.queries = QueryBook(search_start_s=p.search_start_s, search_max_s=p.search_max_s)
         self._sched = Scheduler(segment_hz=p.segment_hz, budget_wall_s=p.segment_budget_wall_s)
+        #: Every refusal so far by ``(key, reason)``: ``<label>@<camera>`` for a fit,
+        #: ``camera:<name>`` for a frame (the node publishes it; see ``_refuse``).
+        self.refusal_counts: Counter[tuple[str, str]] = Counter()
+        self._refusal_logged_ns: dict[tuple[str, str], int] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -241,8 +248,9 @@ class ObjectTracker:
         """
         self._now_ns = max(self._now_ns, frame.stamp_ns, grid_stamp_ns if grid else 0)
         usable = frame.t_base_from_cam is not None and frame.robot_mask is not None
-        if not usable:
-            log.debug("object_tracker.ageing_only", camera=frame.camera, stamp_ns=frame.stamp_ns)
+        if not usable:  # ageing only
+            why = "no_camera_pose" if frame.t_base_from_cam is None else "no_robot_mask"
+            self._refuse(f"camera:{frame.camera}", why, stamp_ns=frame.stamp_ns)
         bound_fits: list[tuple[str, ContainingFit]] = []
         for res in results:
             req = self._sched.complete(res.request_id)
@@ -251,10 +259,15 @@ class ObjectTracker:
             if (req.camera, req.stamp_ns) != (frame.camera, frame.stamp_ns):
                 log.warning("object_tracker.result_frame_mismatch", request_id=res.request_id)
             elif usable and req.service == "locate_in_view":
+                if not res.boxes_xyxy:
+                    self._refuse(f"{req.label}@{req.camera}", "locate_found_nothing")
                 self._pending += [
                     replace(req, service="segment_in_view", box_xyxy=b, served_ns=-1, request_id=0)
                     for b in res.boxes_xyxy
                 ]
+            elif usable and (res.mask is None or grid is None):
+                why = "no_mask" if res.mask is None else "no_grid"
+                self._refuse(f"{req.label}@{req.camera}", why)
             elif usable and res.mask is not None and grid is not None:
                 masks = (res.mask, *res.alternatives)
                 for n, mask in enumerate(masks, start=1):
@@ -290,6 +303,24 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _refuse(self, key: str, why: str, **numbers: object) -> None:
+        """Count a refusal and report it at INFO, rate-limited per ``(key, why)``.
+
+        ``object_tracker.refused`` at most once per ``REFUSAL_LOG_PERIOD_S`` source
+        seconds per ``(key, why)``, with the running count.
+
+        Never DEBUG-only: #418 restock grounded nothing for whole trials and no reason was
+        visible at INFO.
+        """
+        k = (key, why)
+        self.refusal_counts[k] += 1
+        last = self._refusal_logged_ns.get(k)
+        if last is None or self._now_ns - last >= REFUSAL_LOG_PERIOD_S * 1e9:
+            self._refusal_logged_ns[k] = self._now_ns
+            log.info(
+                "object_tracker.refused", key=key, why=why, count=self.refusal_counts[k], **numbers
+            )
 
     def _support(self, grid: VoxelLattice, surface: NDArray[np.float64]) -> float | None:
         """The lowest the support under ``surface`` can be, or ``None`` when none is measured.
@@ -339,13 +370,14 @@ class ObjectTracker:
             min_depth_m=fp.min_depth_m,
             max_depth_m=fp.max_depth_m,
         )
+        key = f"{req.label}@{req.camera}"
         if len(raw) < fp.min_points:
-            log.debug("object_tracker.fit_refused", why="too_few_points", label=req.label)
+            self._refuse(key, "too_few_points", points=len(raw), min_points=fp.min_points)
             return None
         surface = raw @ t_cam[:3, :3].T + t_cam[:3, 3]
         support_z = self._support(grid, surface)
         if support_z is None:
-            log.info("object_tracker.fit_refused", why="no_support", label=req.label)
+            self._refuse(key, "no_support", points=len(raw))
             return None
         fit = containing_fit(
             mask,
@@ -363,11 +395,11 @@ class ObjectTracker:
         )
         log.debug("object_tracker.fit", label=req.label, refusal=fit.refusal, **fit.assumptions)
         if fit.box is None or fit.tight is None:
-            log.info("object_tracker.fit_refused", why=fit.refusal, label=req.label)
+            self._refuse(key, str(fit.refusal), points=len(raw))
             return None
         vis = visible_fraction(fit.box, frame.depth_m, frame.robot_mask, frame.intrinsics, t_cam)
         if vis is not None and vis < self.params.theta_vis:
-            log.info("object_tracker.fit_deferred", why="occluded", visible=vis, label=req.label)
+            self._refuse(key, "occluded", visible=round(vis, 3), theta_vis=self.params.theta_vis)
             return None
         return fit, support_z
 
@@ -400,7 +432,7 @@ class ObjectTracker:
                 others=self._other_boxes(centroid),
             )  # fmt: skip
             if split.kind == "map_split":
-                log.info("object_tracker.candidate_split", label=req.label, why=split.why)
+                self._refuse(f"{req.label}@{req.camera}", "candidate_split", detail=split.why)
                 return _NEXT
         oid, kind = associate(self.store.all(), centroid, voxel_m=grid.resolution)
         if kind == "tie":

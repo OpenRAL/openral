@@ -524,6 +524,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._pub_attach = self.create_publisher(
                     AttachmentStateMsg, "/openral/attachment_state", latched_1
                 )
+            # Every fit / grounding refusal by (key, reason), so a tracker that grounds
+            # nothing says why on the graph too (#418 restock), not only in its log.
+            from diagnostic_msgs.msg import DiagnosticArray
+
+            self._pub_diag = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
+            self._diag_ns = 0
             # Addendum G escalations reach the reasoner on the failure bus.
             self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
             self._failure_bus.create_publisher()
@@ -859,8 +865,32 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 place.model_copy(update={"region": None}).fill_idl(msg.place_declaration)
             self._pub_attach.publish(msg)
 
+        def _publish_refusals(self) -> None:
+            """``/diagnostics``: the tracker's refusal counts, at most every 5 s."""
+            from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+
+            now = int(self.get_clock().now().nanoseconds)
+            if self.session is None or now - self._diag_ns < 5 * _NS:
+                return
+            self._diag_ns = now
+            counts = self.session.tracker.refusal_counts
+            status = DiagnosticStatus(
+                level=DiagnosticStatus.OK,
+                name="openral_object_tracker: refusals",
+                hardware_id=self.session.frame_id,
+                message=f"{sum(counts.values())} refusals",
+                values=[
+                    KeyValue(key=f"{k}|{why}", value=str(n))
+                    for (k, why), n in sorted(counts.items())
+                ],
+            )
+            msg = DiagnosticArray(status=[status])
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self._pub_diag.publish(msg)
+
         def _heartbeat(self) -> None:
             self._publish_tracked(force=True)
+            self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)
             timeout = float(self._p("attachment_evidence_timeout_s")) * _NS
             if self._joint_rx_ns and now - self._joint_rx_ns <= timeout:

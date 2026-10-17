@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import numpy as np
+import pytest
 from openral_core import ObjectQuery, ObjectQueryStatus, ObjectRole, TrackStatus
 from openral_world_state.object_tracker import (
     CameraFrame,
@@ -220,3 +222,61 @@ def test_a_served_seed_prompt_moves_on_to_the_next_raised_top() -> None:
     assert "locate" in served, served
     first = served[: served.index("locate")]
     assert first and len(first) == len(set(first)), served  # no seed cell twice in a round
+
+
+def _recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record the tracker module's log calls, whatever logging the process configured."""
+    from openral_world_state.object_tracker import tracker as tracker_mod
+
+    events: list[dict[str, object]] = []
+
+    class _Rec:
+        def __getattr__(self, level: str) -> Callable[..., None]:
+            def emit(event: str, **kw: object) -> None:
+                events.append({"event": event, "log_level": level, **kw})
+
+            return emit
+
+    monkeypatch.setattr(tracker_mod, "log", _Rec())
+    return events
+
+
+def test_a_refusal_is_an_info_event_rate_limited_and_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#418 r4 restock: zero fits and no reason anywhere at INFO. Every refusal is now an
+    ``object_tracker.refused`` INFO event (key, reason, numbers), at most once per 5 source
+    seconds per (key, reason), with a running count the node can publish."""
+    logs = _recorded(monkeypatch)
+    tr = _tracker()
+    depth, _ = render([_BANANA], _RIG)
+    for k in range(12):  # 12 frames 1 s apart with no camera pose: ageing only
+        frame = CameraFrame(_RIG.name, k * _S, depth, _RIG.k, None, np.zeros(depth.shape, np.uint8))
+        tr.feed(frame, grid=None, grid_stamp_ns=0, wall_s=float(k))
+    events = [e for e in logs if e["event"] == "object_tracker.refused"]
+    assert all(e["log_level"] == "info" for e in events)
+    assert [(e["key"], e["why"], e["count"]) for e in events] == [
+        (f"camera:{_RIG.name}", "no_camera_pose", 1),
+        (f"camera:{_RIG.name}", "no_camera_pose", 6),
+        (f"camera:{_RIG.name}", "no_camera_pose", 11),
+    ]
+    assert tr.refusal_counts[(f"camera:{_RIG.name}", "no_camera_pose")] == 12
+
+
+def test_a_mask_with_too_few_points_says_so_with_its_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openral_world_state.object_tracker.scheduler import TrackerRequest
+
+    logs = _recorded(monkeypatch)
+    tr = _tracker()
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    mask = np.zeros(depth.shape, bool)
+    mask[0, 0] = True  # one pixel
+    req = TrackerRequest("segment_in_view", _RIG.name, 1, 1, 0, "banana")
+    assert tr._fit(req, mask, frame, grid_from_depth(depth, _RIG)) is None
+    (event,) = [e for e in logs if e["event"] == "object_tracker.refused"]
+    assert event["why"] == "too_few_points" and event["key"] == f"banana@{_RIG.name}"
+    assert isinstance(event["points"], int) and event["points"] <= 1
+    assert event["min_points"] == tr.params.fit.min_points
