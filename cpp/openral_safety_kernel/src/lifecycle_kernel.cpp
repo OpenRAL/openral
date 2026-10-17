@@ -4877,10 +4877,11 @@ void SafetyKernelLifecycleNode::refresh_static_cells() {
                 g.resolution);
     return;
   }
-  static_cells_marked_ =
-      mark_static_cells(voxel_grid_, static_points_, static_cells_.data(), static_cells_.size());
-  RCLCPP_INFO(this->get_logger(), "safety.workspace_static_cells marked=%zu of %zu points",
-              static_cells_marked_, static_points_.size());
+  static_cells_marked_ = mark_static_cells(voxel_grid_, static_points_, static_cells_.data(),
+                                           static_cells_.size(), kExplainedStaticPadCells);
+  RCLCPP_INFO(this->get_logger(),
+              "safety.workspace_static_cells marked=%zu of %zu points (+%zu cell pad)",
+              static_cells_marked_, static_points_.size(), kExplainedStaticPadCells);
 }
 
 bool SafetyKernelLifecycleNode::load_static_points(const std::string& path, std::vector<Vec3>& out,

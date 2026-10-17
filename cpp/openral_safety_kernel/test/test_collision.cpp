@@ -7618,6 +7618,67 @@ TEST(ExplainedCells, DeclaredStaticCellsAreTheCellsTheBridgeMarks) {
       << "a mask shorter than the grid marks nothing";
 }
 
+TEST(ExplainedCells, ADeclaredStaticCellIsPaddedByOneCellAndNoMore) {
+  // #418 restock r7rs02_on2 / r7rs02_on3 / r8rs02_on1..2: the stop cells sit 17.5 mm (1.2
+  // cells of 15 mm) outside the declared SourceToteCollision/Wall_Left fixture, the tote wall
+  // as the camera sees it. K7's static explanation is the declared cells plus ONE cell.
+  std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+  osk::VoxelGrid grid = k2_grid(occ);
+  std::vector<std::uint8_t> mask(occ.size(), 7);
+  const std::vector<osk::Vec3> points = {{0.001, 0.001, 0.001}};  // cell (0.01, 0.01, 0.01)
+  EXPECT_EQ(osk::mark_static_cells(grid, points, mask.data(), mask.size(), 1), 1U)
+      << "the count is the declared cells, not the padded ones";
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), 1), 27) << "a 3 x 3 x 3 block about the cell";
+  osk::WorkspaceExplanation e;
+  e.static_cells = mask.data();
+  e.static_cells_n = mask.size();
+  grid.workspace_explained = &e;
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01})) << "declared";
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.03, 0.03, -0.01})) << "one cell off";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.05, 0.01, 0.01}))
+      << "two cells off: a body just outside the padded box is not the wall";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.05}));
+  // Unpadded stays what the bridge marks (the existing contract).
+  EXPECT_EQ(osk::mark_static_cells(grid, points, mask.data(), mask.size()), 1U);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), 1), 1);
+  // Padding at the lattice edge never wraps to the far side.
+  const std::vector<osk::Vec3> edge = {{-0.199, -0.199, -0.199}};
+  EXPECT_EQ(osk::mark_static_cells(grid, edge, mask.data(), mask.size(), 1), 1U);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), 1), 8) << "the corner's 2 x 2 x 2 block";
+  EXPECT_EQ(mask[static_cast<std::size_t>(k2_cell(0.19, 0.19, 0.19))], 0);
+}
+
+TEST(ExplainedCells, AHandSizedBodyJustOutsideThePaddedWallStillStops) {
+  // The workspace tolerates a slow hand in a live grasp region; K7 narrows that to explained
+  // cells. The 6 x 6 x 4 cm blob is "the tote wall as the camera sees it" when a declared wall
+  // lies one cell off it, and "a body" when it lies two: padded by one cell the first is
+  // explained and tolerated, the second still stops exactly as without any static geometry.
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(0.03, 0.03, 0.05);  // a finger on the blob
+  auto hits = [&](double declared_shift, int pad) {
+    const auto occ = k2_occ(k7_hand_blob());
+    osk::VoxelGrid grid = k2_grid(occ);
+    grid.workspace_region = k7_workspace();
+    std::vector<osk::Vec3> declared;
+    for (const auto& c : k7_hand_blob()) {
+      declared.push_back({c[0] - declared_shift, c[1], c[2]});
+    }
+    std::vector<std::uint8_t> mask(occ.size(), 0);
+    osk::mark_static_cells(grid, declared, mask.data(), mask.size(), pad);
+    osk::WorkspaceExplanation e;
+    e.static_cells = mask.data();
+    e.static_cells_n = mask.size();
+    grid.workspace_explained = &e;
+    return osk::check_voxel_collision(m, s, grid, kK2Margin).hit;
+  };
+  EXPECT_TRUE(hits(0.04, 0)) << "unpadded, a wall two cells off is not explained";
+  EXPECT_TRUE(hits(0.02, 0)) << "unpadded, a wall one cell off is not explained";
+  EXPECT_FALSE(hits(0.02, 1)) << "padded by one cell, the wall one cell off is the wall";
+  EXPECT_TRUE(hits(0.04, 1)) << "two cells past the declared wall: a body, it stops";
+  EXPECT_FALSE(hits(0.0, 0)) << "the blob exactly on the declared wall is tolerated as before";
+}
+
 TEST(ExplainedCells, TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomisedGrids) {
   // The K7 property, with and without K2's tracked table in force:
   //   trips(#349) ⊆ trips(K7) ⊆ trips(no workspace)   [trips_with ⊆ trips_without]
@@ -7667,9 +7728,19 @@ TEST(ExplainedCells, TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomis
       grasp_boxes.push_back({o.x, o.y, o.z, o.hx, o.hy, o.hz});
     }
     auto e = k7_explanation(objects);
+    // The declared static cells, padded by one cell half the time (the kernel pads them by one).
+    std::vector<std::uint8_t> padded(mask.size(), 0);
     if (coin(rng)) {
-      e.static_cells = mask.data();
-      e.static_cells_n = mask.size();
+      const osk::VoxelGrid lattice = k2_grid(occ);
+      std::vector<osk::Vec3> declared;
+      for (std::size_t c = 0; c < mask.size(); ++c) {
+        if (mask[c] != 0) {
+          declared.push_back(base_centre(lattice, static_cast<int>(c)));
+        }
+      }
+      osk::mark_static_cells(lattice, declared, padded.data(), padded.size(), coin(rng) ? 1 : 0);
+      e.static_cells = padded.data();
+      e.static_cells_n = padded.size();
     }
     const bool with_k2 = coin(rng);
     const auto table = k2_table(m, grasp_boxes);

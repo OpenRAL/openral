@@ -1578,6 +1578,12 @@ bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexc
 /// support explains nothing.
 inline constexpr double kExplainedSupportReachM = 0.05;
 
+/// How many cells K7 pads a declared static collider's cells by when it asks "is this
+/// cell the declared wall?" (issue #418 restock, OT-11 amendment 2026-10-17; Safety-WG
+/// review pending). One 15 mm cell: the camera's wall sits about a cell off the declared
+/// collision box. **A placeholder to be measured**, not a tuned constant.
+inline constexpr std::size_t kExplainedStaticPadCells = 1;
+
 /// Issue #418 K7, explained cells for workspace contact (hazard OT-11;
 /// Safety-WG review pending). While `VoxelGrid::workspace_explained` points at
 /// one, a (hand link, cell) pair the #349 workspace would tolerate is tolerated
@@ -1619,8 +1625,16 @@ bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcep
 /// Clears `mask` first; points outside the grid are ignored. Returns the number
 /// of marked cells; 0 (nothing marked) for a degenerate grid or a mask shorter
 /// than the grid. Not on the hot path: once per change of the grid's geometry.
+///
+/// `pad_cells` (K7 only; default 0 = exactly the bridge's cells): after marking, every
+/// cell within that many cells (Chebyshev) of a marked one is marked too — the declared
+/// collider seen by a camera one cell off it (#418 restock: the tote wall's stop cells
+/// were 17.5 mm outside the declared fixture at 15 mm cells). The returned count is the
+/// DECLARED cells, not the padded ones. Never wraps across the lattice edge. Only the
+/// explanation widens: K7 stays a narrowing of the #349 workspace.
 std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,
-                              std::uint8_t* mask, std::size_t mask_n) noexcept;
+                              std::uint8_t* mask, std::size_t mask_n,
+                              std::size_t pad_cells = 0) noexcept;
 
 /// Does a tracked object's box meet the hand that carries `object`, at the
 /// configuration FK'd into `scratch` (issue #418 K3, the binding check)?
