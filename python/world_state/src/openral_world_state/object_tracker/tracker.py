@@ -425,6 +425,7 @@ class ObjectTracker:
                 occupied_cells=0,
                 last_fit_stamp_ns=frame.stamp_ns,
                 last_confirmed_stamp_ns=0,
+                provisional=fit.provisional,
             )
         else:
             old = self.store.get(oid)
@@ -434,6 +435,20 @@ class ObjectTracker:
                 return None
             if old.status is TrackStatus.BOUND:
                 return oid, fit
+            if fit.provisional and not old.provisional:
+                # A fit through the robot never replaces geometry measured clear of it.
+                log.info("object_tracker.provisional_refit_ignored", object_id=oid)
+                return None
+            if old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
+                others = self._other_boxes(centroid)
+                verdict = cover_verdict(
+                    grid, cells, fit.box, support_z=support_z, own=hands, others=others
+                )
+                if verdict.kind == "map_split":
+                    # A mask that took in a neighbour too never replaces a confirmed box: the
+                    # track would go SPLIT and its next fit take a new id (a swap).
+                    log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
+                    return None
             refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
             track = old.model_copy(
                 update={
@@ -445,6 +460,7 @@ class ObjectTracker:
                     "last_fit_stamp_ns": frame.stamp_ns,
                     "status": TrackStatus.TENTATIVE if refit else old.status,
                     "identity_inferred": old.identity_inferred or kind == "inferred",
+                    "provisional": fit.provisional,
                 }
             )
             self.store.replace(track)
@@ -560,9 +576,10 @@ class ObjectTracker:
                     rect = project_box(seed, frame.intrinsics, t_cam)
                     within = None if rect is None else tuple(float(v) for v in rect[0])
                     seg = replace(base, service="segment_in_view", point_uv=uv)
-                    out.append(replace(seg, within_xyxy=within))
+                    out.append(replace(seg, within_xyxy=within, seed_cell=hit[1]))
                     continue
-                skip.clear()  # every seed cell tried: start over, and ask the detector
+                # Every seed cell tried: the detector's turn. The cells start over once a
+                # locate is actually served (``_mark_served``), not merely offered here.
             out.append(base)
         for t in tracks:
             served = max(t.last_fit_stamp_ns, self._served.get(t.object_id, -1))
@@ -609,6 +626,12 @@ class ObjectTracker:
     def _mark_served(self, req: TrackerRequest) -> None:
         if req.object_id is not None:
             self._served[req.object_id] = self._now_ns
+        if req.query_key is not None and req.seed_cell is not None:
+            # The seed's next prompt is another raised top; the detector gets its turn once
+            # every one was tried, and the cells start over after it.
+            self._prompted.setdefault(req.query_key, set()).add(req.seed_cell)
+        elif req.query_key is not None and req.service == "locate_in_view":
+            self._prompted.pop(req.query_key, None)
         if req.query_key is not None and (q := self.queries.get(*req.query_key)) is not None:
             q.last_served_ns = self._now_ns
             if req.service == "segment_in_view" and req.box_xyxy is not None:

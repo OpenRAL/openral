@@ -175,9 +175,9 @@ def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
     assert top < rig.support_z + 0.06 + 2 * RES  # not lifted toward the arm
 
 
-def test_a_robot_wider_than_the_occluder_band_defers_the_fit() -> None:
+def test_a_robot_wider_than_the_occluder_band_makes_the_fit_provisional() -> None:
     """The arm over a plate's near rim: it touches the mask and reaches past the band, so
-    whatever it hides may exceed what the band re-adds. Never fitted through the robot."""
+    whatever it hides may exceed what the band re-adds. The fit is PROVISIONAL."""
     rig = _RIGS["so101_top"]
     x, y = rig.centre_xy
     plate = cylinder((x, y), 0.08, rig.support_z, rig.support_z + 0.02)
@@ -188,8 +188,10 @@ def test_a_robot_wider_than_the_occluder_band_defers_the_fit() -> None:
     robot[arm] = ROBOT_PIXEL
     depth[arm] = float(depth[labels == 1].min()) - 0.15
     fit = _fit(rig, [plate], robot_mask=robot, depth=depth)
-    assert fit.refusal == "a4_robot_occluder_wide" and fit.box is None
+    assert fit.refusal == "" and fit.box is not None and fit.provisional
     assert fit.assumptions["a4_robot_beyond_band_px"] > 0
+    clear = _fit(rig, [plate])
+    assert clear.refusal == "" and not clear.provisional
 
 
 def test_the_detector_box_restores_a_rim_the_mask_lost() -> None:

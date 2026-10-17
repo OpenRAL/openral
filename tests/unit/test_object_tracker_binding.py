@@ -29,6 +29,7 @@ from openral_core.perception_geometry import VoxelLattice
 from openral_world_state.object_tracker.binding import (
     MAX_PRIMITIVES,
     BindOutcome,
+    GraspBinder,
 )
 from openral_world_state.object_tracker.pinch import HandModel
 
@@ -208,3 +209,65 @@ def test_regrasp_unions_until_the_cap_then_refuses() -> None:
         assert nxt.attachment.geometry_revision == before.geometry_revision + 1
         before = nxt.attachment
     assert refused and len(before.primitives) == MAX_PRIMITIVES
+
+
+def test_a_neighbour_whose_geometry_misses_the_pinch_centre_is_not_bound() -> None:
+    """p2po_on2 (Spark, on-mode): the SO-101 closed on the ungrounded orange_3 while the
+    tracked orange_1's padded box still met the swept pinch volume, and the tracker bound
+    orange_1. A track binds only if its measured geometry holds the pinch centre within one
+    cell: here its k-DOP misses it by 4 cm, so the grasp is an untracked PINCH_FALLBACK."""
+    import json
+    from pathlib import Path
+
+    from openral_core import TrackedObject
+
+    rec = json.loads((Path(__file__).parent / "_p2po_on2_attach.json").read_text())
+    d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    binder = GraspBinder(HandModel(d, "gripper"), frame_id=d.base_frame, cell_m=0.015)
+    orange_1 = TrackedObject.model_validate(rec["track"])
+    store = DictStore([orange_1])
+    b = binder.on_attach(store, rec["positions"], stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED and b.candidates == ()
+    assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    kept = store.get(orange_1.object_id)
+    assert kept is not None and kept.status is TrackStatus.CONFIRMED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_provisional_track_never_becomes_the_payload(robot: str) -> None:
+    """#418 decision (2026-10-17): a track fitted through the robot may be exempted over,
+    but the grasp that meets it falls back to PINCH_FALLBACK and asks for a re-ground (the
+    clear refit after lift); the track itself is not bound."""
+    binder, q, centre = arm_at_hold(robot)
+    held = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024))
+    store = DictStore([held.model_copy(update={"provisional": True})])
+    b = binder.on_attach(store, q, stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED and b.reground and b.candidates == ()
+    assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    kept = store.get("trk:1")
+    assert kept is not None and kept.status is TrackStatus.CONFIRMED and kept.provisional
+    clear = DictStore([held])
+    assert binder.on_attach(clear, q, stamp_ns=11).outcome is BindOutcome.TRACKED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
+    """DROID r2dr_on1: a 17 cm banana's containing box, bound at the pinch volume, reached the
+    Franka's wrist (payload x panda_link7). Nothing held lies behind the palm, so the bound
+    primitives are cut at the palm plane; the part in front of it is still held."""
+    binder, q, centre = arm_at_hold(robot)
+    big = track("trk:1", binder.frame_id, centre, (0.12, 0.12, 0.12))
+    b = binder.on_attach(DictStore([big]), q, stamp_ns=10)
+    assert b.outcome is BindOutcome.TRACKED
+    pinch = binder.hand.pinch_in_link(q[ROBOTS[robot][0]])
+    a = pinch.axes[:, 1]
+    t_ao = homogeneous_from_quat_xyz(
+        b.attachment.pose_in_link.xyz, b.attachment.pose_in_link.quat_xyzw
+    )
+    reach = []
+    for p in b.attachment.primitives:
+        t = t_ao @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
+        corners = _corners((t[:3, 3], t[:3, :3], np.asarray(p.shape.half_extents_m)))
+        assert (corners @ a).min() >= pinch.palm_m - 1e-6
+        reach.append((corners @ a).max())
+    assert max(reach) > pinch.palm_m + 0.1  # what lies in front of the palm is still held

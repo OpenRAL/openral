@@ -185,7 +185,7 @@ def associate(
     Returns:
         ``(object_id, kind)`` with ``kind`` one of ``"continuity"``, ``"inferred"`` (a
         LOST / RELEASED track inside its gate), ``"new"`` (``object_id`` is ``None``) or
-        ``"tie"`` (``None``: update nothing).
+        ``"tie"`` (``None``: update nothing). A SPLIT track takes no fit by continuity.
 
     Example:
         >>> from openral_core import FitKind, ObjectRole, PlaceRegion, Pose6D
@@ -221,7 +221,17 @@ def associate(
         (None, 'new')
     """
     c = np.asarray(centroid, dtype=np.float64)
-    near = [t for t in tracks if t.status in LIVE and (_holds(t, c) or _gap(t, c) <= voxel_m)]
+    # A SPLIT track's box holds two bodies on the map: it captures no fit by containment,
+    # or a neighbour's fit inside it would take its identity (a swap; PickOrange, a
+    # provisional box over orange_1 took orange_3's fit). The new fit mints its own track
+    # and the split one ages out.
+    near = [
+        t
+        for t in tracks
+        if t.status in LIVE
+        and t.status is not TrackStatus.SPLIT
+        and (_holds(t, c) or _gap(t, c) <= voxel_m)
+    ]
     if near:
         near.sort(key=lambda t: _gap(t, c))
         if len(near) > 1 and _gap(near[1], c) - _gap(near[0], c) <= voxel_m:

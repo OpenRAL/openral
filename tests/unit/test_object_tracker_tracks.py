@@ -144,3 +144,124 @@ def test_a_candidate_that_splits_on_the_map_hands_over_to_the_next() -> None:
     assert track.status is TrackStatus.CONFIRMED
     x, y = _RIG.centre_xy  # labels == 1 is the first orange, at x - 0.08
     assert np.linalg.norm(np.asarray(track.box.pose.xyz[:2]) - (x - 0.08, y)) < 0.02
+
+
+def _arm_beside(labels: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """A robot region (an arm 10 cm nearer) touching the first object's mask and reaching
+    past the occluder band: what makes a fit PROVISIONAL."""
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 25))
+    robot[arm] = 255
+    hidden = depth.copy()
+    hidden[arm] = float(depth[labels == 1].min()) - 0.10
+    return robot, hidden
+
+
+def _ground(tr: ObjectTracker, depth: np.ndarray, labels: np.ndarray, robot: np.ndarray,
+            stamp: int, wall: float) -> float:  # fmt: skip
+    """One query -> locate -> segment round on a frame with ``robot`` as its robot mask."""
+    frame = CameraFrame(_RIG.name, stamp, depth, _RIG.k, _RIG.t, robot)
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=stamp, wall_s=wall)
+    for _ in range(4):
+        if not out.requests:
+            break
+        req = out.requests[0]
+        rows, cols = np.nonzero(labels == 1)
+        box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+        res = (
+            TrackerResult(req.request_id, boxes_xyxy=(box,))
+            if req.service == "locate_in_view"
+            else TrackerResult(req.request_id, mask=labels == 1)
+        )
+        wall += 1.0
+        out = tr.feed(frame, grid=grid, grid_stamp_ns=stamp, wall_s=wall, results=[res])
+    for req in out.requests:  # leave nothing in flight (same wall: nothing new goes out)
+        tr.feed(frame, grid=grid, grid_stamp_ns=stamp, wall_s=wall,
+                results=[TrackerResult(req.request_id)])  # fmt: skip
+    return wall
+
+
+def test_a_fit_through_the_robot_is_provisional_until_a_clear_refit() -> None:
+    """#418 decision (2026-10-17): an arm hiding more than the occluder band makes the fit
+    PROVISIONAL, yet the track confirms (K2 may exempt over it); a provisional refit never
+    overwrites a clear one, and a clear refit clears the flag."""
+    orange = _oranges(0.05)[1:2]
+    depth, labels = render(orange, _RIG)
+    robot, hidden = _arm_beside(labels, depth)
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    wall = _ground(tr, hidden, labels, robot, stamp=1, wall=0.0)
+    (track,) = tr.store.all()
+    assert track.provisional and track.status is TrackStatus.CONFIRMED  # exemption-eligible
+    wall = _ground(tr, depth, labels, np.zeros_like(robot), stamp=2, wall=wall + 1.0)
+    (track,) = tr.store.all()
+    assert not track.provisional and track.last_fit_stamp_ns == 2  # the clear refit clears it
+    _ground(tr, hidden, labels, robot, stamp=3, wall=wall + 1.0)
+    (track,) = tr.store.all()
+    assert not track.provisional and track.last_fit_stamp_ns == 2  # never overwritten
+
+
+def test_a_split_track_never_takes_a_neighbours_fit() -> None:
+    """A SPLIT box holds two bodies; a fit centred inside it is a new object, never the
+    split track's continuation (PickOrange r2po_shadow3: a swap among static oranges)."""
+    tr, _ = _grounded(_oranges(0.05))
+    a = _get(tr, "trk:1")
+    big = a.model_copy(
+        update={
+            "status": TrackStatus.SPLIT,
+            "box": a.box.model_copy(update={"half_extents": (0.12, 0.05, 0.05)}),
+        }
+    )
+    others = [t for t in tr.store.all() if t.object_id != "trk:1"]
+    inside = (a.box.pose.xyz[0] + 0.08, a.box.pose.xyz[1], a.box.pose.xyz[2])
+    assert associate([big], inside, voxel_m=RES) == (None, "new")
+    assert associate([big.model_copy(update={"status": TrackStatus.CONFIRMED})], inside,
+                     voxel_m=RES)[0] == "trk:1"  # fmt: skip
+    assert others  # the scene still holds the neighbours
+
+
+def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
+    """PickOrange r3po_on1: a mask over orange_1 and orange_3 refit the CONFIRMED orange_1
+    track, which went SPLIT, so orange_1's next fit took a new id. A refit that splits on
+    the map is ignored: the confirmed box and id stay."""
+    oranges = _oranges(0.08)[:2]
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    depth, labels = render(oranges, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    (locate,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    rows, cols = np.nonzero(labels == 1)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,
+                  results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))])  # fmt: skip
+    (seg,) = out.requests
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=1.1,
+                  results=[TrackerResult(seg.request_id, mask=labels == 1)])  # fmt: skip
+    (fitted,) = out.tracked.objects
+    assert fitted.status is TrackStatus.CONFIRMED
+    # Its box as an earlier, wider (provisional-era) fit left it: wide enough to hold the
+    # centroid of a mask over both oranges.
+    wide = fitted.box.model_copy(update={"half_extents": (0.06, 0.06, fitted.box.half_extents[2])})
+    tr.store.replace(fitted.model_copy(update={"box": wide}))
+    before = _get(tr, fitted.object_id)
+    # A refresh prompt answered with a mask over both oranges.
+    t2 = 6_000_000_000  # past the count-all search window: refreshes compete again
+    frame2 = CameraFrame(_RIG.name, t2, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    req = None
+    for n in range(40):  # cycle the detector's turns until the track's refresh comes up
+        out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n)
+        if not out.requests:
+            continue
+        if out.requests[0].object_id == before.object_id:
+            req = out.requests[0]
+            break
+        tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
+                results=[TrackerResult(out.requests[0].request_id)])  # fmt: skip
+    assert req is not None
+    out = tr.feed(frame2, grid=grid, grid_stamp_ns=t2, wall_s=3.0 + n,
+                  results=[TrackerResult(req.request_id, mask=labels > 0)])  # fmt: skip
+    after = _get(tr, before.object_id)
+    assert after.status is TrackStatus.CONFIRMED and after.box == before.box

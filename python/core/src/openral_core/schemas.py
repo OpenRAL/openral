@@ -5099,6 +5099,11 @@ class TrackedObject(BaseModel):
         attach_link: Link the object is bound to while ``BOUND``.
         pose_in_link: Attach-time object pose, ``frame_id == attach_link``.
         identity_inferred: Re-associated after release/loss by proximity, not continuity.
+        provisional: The last fit was taken while the robot hid more of the object than the
+            occluder band re-adds (A4 not held), so ``box`` / ``tight`` may under-contain it.
+            Such geometry may only shrink what is exempted or cleared (K2 exemption,
+            octomap identity clearing); it never becomes payload geometry. Cleared by the
+            first fit with the robot back inside the band.
 
     Example:
         >>> box = PlaceRegion(
@@ -5153,6 +5158,7 @@ class TrackedObject(BaseModel):
     attach_link: str | None = None
     pose_in_link: Pose6D | None = None
     identity_inferred: bool = False
+    provisional: bool = False
 
     @model_validator(mode="after")
     def _validate_track(self) -> TrackedObject:
@@ -5220,6 +5226,7 @@ class TrackedObject(BaseModel):
                 else None
             ),
             identity_inferred=bool(msg.identity_inferred),  # type: ignore[attr-defined]
+            provisional=bool(msg.provisional),  # type: ignore[attr-defined]
         )
 
     def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
@@ -5257,6 +5264,7 @@ class TrackedObject(BaseModel):
                 pose.orientation.w,
             ) = self.pose_in_link.quat_xyzw
         msg.identity_inferred = bool(self.identity_inferred)  # type: ignore[attr-defined]
+        msg.provisional = bool(self.provisional)  # type: ignore[attr-defined]
 
 
 class TrackedObjectSet(BaseModel):
