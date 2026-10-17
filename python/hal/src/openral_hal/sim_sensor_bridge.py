@@ -234,8 +234,23 @@ def _rgb8_image(rgb: Any, *, frame_id: str, stamp: Any) -> Any:
     return msg
 
 
-def frame_stamp_ns(node_now_ns: int, frame_time_ns: int | None, sim_now_ns: int | None) -> int:
-    """Stamp for a sim sensor frame: the node's now minus the frame's age on the sim clock.
+def frame_stamp_ns(
+    node_now_ns: int,
+    frame_time_ns: int | None,
+    sim_now_ns: int | None,
+    *,
+    on_sim_clock: bool = False,
+) -> int:
+    """Stamp for a sim sensor frame: the sim time it shows.
+
+    On the sim clock itself (``on_sim_clock``: the node's ROS time is driven by
+    ``/clock``, which the HAL publishes from this same sim) the stamp IS
+    ``frame_time_ns``. Otherwise it is the node's now minus the frame's age on the sim
+    clock, as below. The age form alone was early on the sim clock: the node's clock
+    follows ``/clock`` one publish behind the HAL's newest ``sim_now_ns``, so a frame read
+    right after a step was stamped one or more control periods before the time it shows
+    (issue #418 run sf_dr2: robot returns matched the joint state 67-400 ms after the
+    cloud stamp), and the robot self-filter posed the arm too early.
 
     A renderer can deliver a frame steps after the physics state it shows (Isaac's
     RTX pipeline: 4 steps, 133 ms at 30 Hz), and the HAL reports the sim time each
@@ -251,12 +266,19 @@ def frame_stamp_ns(node_now_ns: int, frame_time_ns: int | None, sim_now_ns: int 
         9867000000
         >>> frame_stamp_ns(10_000_000_000, None, 2_133_000_000)
         10000000000
+        >>> frame_stamp_ns(2_066_000_000, 2_000_000_000, 2_133_000_000, on_sim_clock=True)
+        2000000000
     """
     if frame_time_ns is None or sim_now_ns is None:
         return node_now_ns
     from openral_hal.lifecycle import joint_state_republish_stamp_ns
 
-    return joint_state_republish_stamp_ns(node_now_ns, frame_time_ns, wall_now_ns=sim_now_ns)
+    return joint_state_republish_stamp_ns(
+        node_now_ns,
+        frame_time_ns,
+        wall_now_ns=sim_now_ns,
+        sim_time_ns=frame_time_ns if on_sim_clock else None,
+    )
 
 
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
@@ -3169,8 +3191,13 @@ class SimSensorBridge:
         return (times if isinstance(times, dict) else {}), sim_now_ns
 
     def _frame_stamp(self, now: Any, frame_time_ns: int | None, sim_now_ns: int | None) -> Any:
-        """``frame_stamp_ns`` as a header stamp in ``now``'s clock."""
-        ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns)
+        """``frame_stamp_ns`` as a header stamp in ``now``'s clock.
+
+        The node's clock is the sim clock when its ROS time is active (``use_sim_time``,
+        ``/clock`` published by this HAL node from the same sim the frame times are on).
+        """
+        on_sim_clock = bool(getattr(self._node.get_clock(), "ros_time_is_active", False))
+        ns = frame_stamp_ns(now.nanoseconds, frame_time_ns, sim_now_ns, on_sim_clock=on_sim_clock)
         return type(now)(nanoseconds=ns, clock_type=now.clock_type).to_msg()
 
     def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:

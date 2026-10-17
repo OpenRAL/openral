@@ -571,6 +571,61 @@ class TestImageTime:
                 rclpy.shutdown()
                 hal.env.close()
 
+    def test_on_the_sim_clock_each_frame_is_stamped_with_its_sim_time(self) -> None:
+        """Issue #418: on ``use_sim_time`` the stamp is the frame time itself.
+
+        The age form (node now minus ``sim_now - frame_time``) was early whenever the
+        node's clock trailed the HAL's newest sim time, and the robot self-filter then
+        posed the arm before the instant the cloud shows.
+        """
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core import CameraTopicKind, camera_topic
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.parameter import Parameter
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import Image, PointCloud2
+
+        with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            rclpy.init()
+            # Sim time with no /clock yet: the node's now (0) trails the sim by seconds.
+            node = rclpy.create_node(
+                "test_isaac_frame_sim_stamps",
+                parameter_overrides=[Parameter("use_sim_time", value=True)],
+            )
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            got: dict[str, int] = {}
+
+            def keep(key: str) -> Any:
+                def cb(msg: Any) -> None:
+                    got[key] = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+
+                return cb
+
+            for key, kind, topic in (
+                ("image", Image, camera_topic("top")),
+                ("cloud", PointCloud2, camera_topic("head_zed", CameraTopicKind.POINTS)),
+            ):
+                node.create_subscription(kind, topic, keep(key), qos_profile_sensor_data)
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._setup_depth()
+                times = hal.read_image_times()
+                bridge._publish_images()
+                bridge._publish_depth_clouds_from_obs()
+                deadline = time.monotonic() + 5.0
+                while len(got) < 2 and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert got == {"image": times["top"], "cloud": times["head_zed"]}, (got, times)
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
 
 class TestJointEfforts:
     """The sidecar's measured joint efforts cross the wire into ``/joint_states.effort``.
