@@ -239,7 +239,10 @@ def instance_prompt(
     occupied = {(i, j, k) for i, j, k in ijk.tolist()}
     top = np.array([(i, j, k + 1) not in occupied for i, j, k in ijk.tolist()], dtype=bool)
     tops, top_ijk = centers[top], ijk[top]
-    raised = tops[:, 2] > float(tops[:, 2].min()) + grid.resolution
+    # "More than one cell above" on a lattice is "two or more cells": half a cell of margin
+    # keeps a support the octree marks in two layers in places (a counter top on a layer
+    # boundary) from reading as raised wherever its upper layer shows (float equality).
+    raised = tops[:, 2] > float(tops[:, 2].min()) + 1.5 * grid.resolution
     tops, top_ijk = tops[raised], top_ijk[raised]
     free = np.array([(i, j, k) not in skip for i, j, k in top_ijk.tolist()], dtype=bool)
     for region in covered:

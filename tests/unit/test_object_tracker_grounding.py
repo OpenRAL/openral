@@ -187,3 +187,36 @@ def test_a_count_all_query_keeps_its_turn_while_another_stays_unresolved() -> No
         tr.feed(frame, grid=grid, grid_stamp_ns=n, wall_s=wall,
                 results=[TrackerResult(req.request_id)])  # fmt: skip
     assert labels.count("orange") >= 2 and labels.count("plate") >= 2, labels
+
+
+def test_a_served_seed_prompt_moves_on_to_the_next_raised_top() -> None:
+    """A map-seeded prompt that does not ground (here: answered empty) is not re-issued on
+    the same cell; the next raised top in the seed gets it, then the detector (PickOrange:
+    one seed cell monopolised every turn)."""
+    from openral_core import PlaceRegion, Pose6D
+
+    from tests.unit._tracker_scenes import sphere
+
+    x, y = _RIG.centre_xy
+    solids = [sphere((x + d, y, _RIG.support_z + 0.024), 0.024) for d in (-0.06, 0.06)]
+    seed = PlaceRegion(
+        frame_id=_RIG.frame,
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        half_extents=(0.12, 0.08, 0.07),
+    )
+    tr = ObjectTracker(_RIG.frame)
+    q = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET, seed=seed)
+    tr.open_query("g", "q0", q, "k@0", stamp_ns=0)
+    depth, _ = render(solids, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * 0.015)
+    served = []
+    for n in range(60):
+        out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=float(n))
+        req = out.requests[0]
+        served.append(req.seed_cell if req.service == "segment_in_view" else "locate")
+        tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=float(n),
+                results=[TrackerResult(req.request_id)])  # fmt: skip
+    assert "locate" in served, served
+    first = served[: served.index("locate")]
+    assert first and len(first) == len(set(first)), served  # no seed cell twice in a round
