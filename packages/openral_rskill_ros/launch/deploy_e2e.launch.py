@@ -353,7 +353,7 @@ def _static_points_file(
     if kernel_cells:
         # One centre per cell the bridge marks, as the bridge reads the points (5 decimals).
         keys = np.unique(np.floor(np.round(points, 5) / resolution_m).astype(np.int64), axis=0)
-        points = (keys + 0.5) * resolution_m
+        points = np.asarray((keys + 0.5) * resolution_m, dtype=np.float64)
         out = out.with_name(out.name.replace("openral_static_points_", "openral_static_cells_"))
     if not out.exists():
         partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
