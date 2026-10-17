@@ -421,6 +421,8 @@ if _ROS2_AVAILABLE:
             self._safety_status_sub: Any = None
             self._safety_status: Any = None
             self._safety_status_recv_monotonic: float = 0.0
+            # Newest NON-latching kernel drop (DROP_* + detail) and when it arrived.
+            self._last_drop: tuple[float, str] | None = None
             self._episode_pub: Any = None
             self._episode_counter: int = 0
             # Set once a goal-end publish found the context already shut down.
@@ -577,6 +579,7 @@ if _ROS2_AVAILABLE:
                 # subscription and no new layer edge: the fact is already
                 # here, it just never reached the blocking wait.
                 safety_abort_getter=self._safety_abort_reason,
+                drop_reason_getter=self._safety_drop_reason,
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
                 ),
@@ -2757,6 +2760,24 @@ if _ROS2_AVAILABLE:
             """
             self._safety_status = msg
             self._safety_status_recv_monotonic = time.monotonic()
+            code = int(getattr(msg, "drop_reason", 0))
+            if code >= 100 and not bool(getattr(msg, "latched", False)):  # SafetyStatus DROP_*
+                detail = str(getattr(msg, "detail", "") or "")
+                label = _drop_reason_label(code, type(msg))
+                self._last_drop = (
+                    self._safety_status_recv_monotonic,
+                    f"{_SAFETY_STATUS_TOPIC}:{label}" + (f" ({detail})" if detail else ""),
+                )
+
+        def _safety_drop_reason(self, since_monotonic: float) -> str | None:
+            """The newest non-latching kernel drop received at or after ``since_monotonic``.
+
+            Injected into ``ROSPublishingHAL`` as ``drop_reason_getter``: a fail-closed drop
+            (``voxel_stale``, ``state_unavailable``, ...) latches nothing, so the apply-wait
+            times out; this names the typed cause in the timeout error. Non-blocking.
+            """
+            drop = self._last_drop
+            return drop[1] if drop is not None and drop[0] >= since_monotonic else None
 
         def _safety_abort_reason(self) -> str | None:
             """Return why a safety stop is in effect here, or ``None``.
