@@ -60,6 +60,7 @@ from openral_core.perception_geometry import (
 from openral_world_state.object_tracker.binding import Binding, BindOutcome, GraspBinder
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
+from openral_world_state.object_tracker.stall import JawStallDetector
 from openral_world_state.object_tracker.tracker import (
     CameraFrame,
     ObjectTracker,
@@ -131,6 +132,12 @@ class TrackerSession:
             RELEASED first. MUST equal the kernel's ``tracked_release_timeout_s`` and the
             voxel bridge's ``released_clear_timeout_s`` (all default 3.0 s).
         params: Tracker calibration.
+        derive_attach: The tracker reads a stalled jaw itself (``JawStallDetector``: commanded
+            jaw vs the median measured jaw, the manifest's ``stall_gap``) and binds as an ATTACH
+            does, so a hold the HAL's position-stall trigger misses (a chattering jaw, a command
+            past its band) is still bound. ``bind`` / ``on`` on a sim HAL only; the HAL trigger
+            and the legacy / real path are unchanged, and a real ATTACH for the same close is
+            never doubled.
         require_hands: Refuse a gripper the binder cannot model (``bind`` / ``on``); in
             ``shadow`` such a hand is logged and skipped.
 
@@ -155,6 +162,7 @@ class TrackerSession:
         released_clear_timeout_s: float = 3.0,
         params: TrackerParams | None = None,
         require_hands: bool = False,
+        derive_attach: bool = False,
     ) -> None:
         """Model every gripper and start with no tracks and no goals."""
         self.description = description
@@ -167,6 +175,7 @@ class TrackerSession:
         # Released TRACKED_OBJECT bindings still on the wire: object_id -> (record, stamp).
         self._released: dict[str, tuple[AttachedCollisionObject, int]] = {}
         self.binders: dict[str, GraspBinder] = {}
+        self._stall: dict[str, JawStallDetector] = {}
         for joint in description.joints:
             if joint.role != "gripper":
                 continue
@@ -178,6 +187,13 @@ class TrackerSession:
                 log.warning("object_tracker.hand_unbindable", joint=joint.name, error=str(exc))
                 continue
             self.binders[joint.name] = GraspBinder(hand, frame_id=self.frame_id, cell_m=cell_m)
+            cal = joint.closure_calibration
+            if derive_attach and cal is not None:
+                self._stall[joint.name] = JawStallDetector(
+                    cal.closed_position,
+                    cal.closed_rest_offset + cal.stall_gap,
+                    cal.settle_tolerance,
+                )
         self._joints = frozenset(j.name for j in description.joints)
         self.positions: dict[str, float] = {}
         self.grid: VoxelLattice | None = None
@@ -187,6 +203,9 @@ class TrackerSession:
         self.attachment_changes = 0  # bumped whenever the held set changes
         self._monitors: dict[str, JawReleaseMonitor] = {}
         self._attach_ns: dict[str, int] = {}
+        # Per gripper: the tracker's own stalled-jaw read, and the joints whose CURRENT hold it
+        # bound (a real ATTACH for that close is then a duplicate, not a second bind).
+        self._derived: set[str] = set()
         self._goals: dict[str, _Goal | None] = {"grasp": None, "place": None, "deploy": None}
         self._now_ns = 0
 
@@ -243,6 +262,12 @@ class TrackerSession:
                     ):
                         self.attachment_changes += 1
 
+    def on_jaw_command(self, gripper_joint: str, target: float, stamp_ns: int) -> None:
+        """Fold the approved command for a gripper joint into the derived-attach read."""
+        detector = self._stall.get(gripper_joint)
+        if detector is not None and math.isfinite(target):
+            detector.command(target, stamp_ns)
+
     def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
         """Fold measured joints in (manifest names); run the jaw-open release rule."""
         self.positions.update(positions)
@@ -255,6 +280,16 @@ class TrackerSession:
             if jaw is not None and monitor.observe(jaw, stamp_ns):
                 log.info("object_tracker.jaw_open_release", hand=joint, jaw=jaw)
                 self._release(joint, stamp_ns)
+        for joint, detector in self._stall.items():
+            jaw = positions.get(joint)
+            if jaw is None or not math.isfinite(jaw) or not detector.update(jaw, stamp_ns):
+                continue
+            held = detector.held_median
+            log.info("object_tracker.derived_attach", hand=joint, jaw=held, stamp_ns=stamp_ns)
+            self._derived.add(joint)
+            self.on_grasp_event(
+                GraspEventKind.ATTACH, joint, jaw=held, hold=held, stamp_ns=stamp_ns, derived=True
+            )
 
     def on_grasp_declaration(self, decl: GraspDeclaration) -> None:
         """A grasp declaration (or its retraction) from dispatch."""
@@ -269,15 +304,34 @@ class TrackerSession:
         queries = () if decl.destination_query is None else (decl.destination_query,)
         self._set_goal("place", decl.target_id, decl.stamp_ns, decl.active, queries)
 
-    def on_grasp_event(
-        self, kind: GraspEventKind, gripper_joint: str, *, jaw: float, hold: float, stamp_ns: int
+    def on_grasp_event(  # noqa: PLR0911  # reason: each event names its own outcome
+        self,
+        kind: GraspEventKind,
+        gripper_joint: str,
+        *,
+        jaw: float,
+        hold: float,
+        stamp_ns: int,
+        derived: bool = False,
     ) -> Binding | None:
-        """Bind, grow or release at the HAL trigger's event; the held binding after it."""
+        """Bind, grow or release at the HAL trigger's event; the held binding after it.
+
+        ``derived`` marks the tracker's own stalled-jaw read (``derive_attach``): a real ATTACH
+        for a hold it already bound is a duplicate and returns the held binding untouched.
+        """
         self._tick(stamp_ns)
         binder = self.binders.get(gripper_joint)
         if binder is None:
             log.warning("object_tracker.grasp_event_unknown_hand", hand=gripper_joint)
             return None
+        detector = self._stall.get(gripper_joint)
+        if kind is GraspEventKind.ATTACH and not derived and detector is not None:
+            if gripper_joint in self._derived and binder.held is not None:
+                log.info("object_tracker.attach_duplicate", hand=gripper_joint)
+                return binder.held
+            detector.suppress()  # the HAL's trigger covers this hold
+        elif kind is GraspEventKind.DETACH:
+            self._derived.discard(gripper_joint)
         if not math.isfinite(jaw):  # the HAL had no measured jaw: the newest sample
             jaw = self.positions.get(gripper_joint, math.nan)
         if not math.isfinite(jaw):
@@ -452,6 +506,10 @@ class TrackerSession:
         binder = self.binders[joint]
         held = binder.held
         self._monitors.pop(joint, None)
+        self._derived.discard(joint)
+        detector = self._stall.get(joint)
+        if detector is not None:
+            detector.reset()  # a regrasp after this release may derive again
         if held is None:
             return
         if held.outcome is BindOutcome.TRACKED and self._joints <= self.positions.keys():

@@ -4193,6 +4193,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "released_clear_timeout_s": tracked_release_timeout_s,
                     "release_dwell_s": _TRACKED_RELEASE_DWELL_S,
                     "object_queries_json": object_queries_json,
+                    # The declared static geometry (the kernel's cells file): a body wholly
+                    # inside it is the declared wall, not a foreign object, in the SPLIT test.
+                    "static_cells_file": (
+                        _static_points_file(
+                            static_geometry_file, _octomap_resolution(hal_mode), kernel_cells=True
+                        )
+                        if static_geometry_file
+                        else ""
+                    ),
                     # The first on-demand locator, if any; none = seeds and refreshes only.
                     "locate_service": (
                         f"/openral/perception/{locator_specs[0]['segment']}/locate_in_view"

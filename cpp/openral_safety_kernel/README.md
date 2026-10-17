@@ -1298,6 +1298,15 @@ payload, cell) that the workspace tolerates stays tolerated only when the cell i
    static geometry the launch hands to the octomap bridge, written as one centre per cell the
    bridge marks (`_static_cells_file`). It marks them into the grid with the bridge's indexing
    (`mark_static_cells`), and re-marks only when the grid's pose, resolution or size changes.
+   **Padded by one cell (OT-11 amendment, 2026-10-17, Safety-WG review pending).** The
+   explained set is the declared cells plus every cell within ONE cell of one
+   (`kExplainedStaticPadCells`): #418 restock's stop cells (r7rs02_on2/on3, r8rs02_on1/2) sat 17.5 mm,
+   about 1.2 of the 15 mm cells, outside the declared `SourceToteCollision/Wall_Left` box: the wall
+   as the camera sees it. Only the explanation widens, so K7 stays a narrowing of the #349
+   workspace (`trips(#349) ⊆ trips(K7) ⊆ trips(no workspace)` over randomised grids, with the
+   declared cells padded half the time); a hand-sized body two cells past the declared wall still
+   stops (`ExplainedCells.AHandSizedBodyJustOutsideThePaddedWallStillStops`) and one cell off is
+   tolerated; an arm link and a cell outside the workspace are unchanged. Padding never wraps.
    Static geometry is declared for fixed-base robots only, whose octree accumulates in the base
    frame, so the grid is the base frame's lattice. On any other lattice, where a centre could fall
    in a neighbouring cell, the kernel explains no cell as static (WARN

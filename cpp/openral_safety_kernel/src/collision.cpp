@@ -3149,7 +3149,8 @@ bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcep
 }
 
 std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,
-                              std::uint8_t* mask, std::size_t mask_n) noexcept {
+                              std::uint8_t* mask, std::size_t mask_n,
+                              std::size_t pad_cells) noexcept {
   if (mask == nullptr || !grid_lattice_sound(grid)) {
     return 0;
   }
@@ -3166,6 +3167,44 @@ std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& ba
     if (idx >= 0 && mask[static_cast<std::size_t>(idx)] == 0) {
       mask[static_cast<std::size_t>(idx)] = 1;
       ++marked;
+    }
+  }
+  if (pad_cells > 0 && marked > 0) {
+    // Grow the declared cells (value 1) into 2s first, so the growth never chains: a cell
+    // padded in this pass is not itself a seed of the same pass.
+    const long sx = static_cast<long>(grid.sx);
+    const long sy = static_cast<long>(grid.sy);
+    const long sz = static_cast<long>(grid.sz);
+    const long r = static_cast<long>(pad_cells);
+    for (long k = 0; k < sz; ++k) {
+      for (long j = 0; j < sy; ++j) {
+        for (long i = 0; i < sx; ++i) {
+          if (mask[static_cast<std::size_t>(i + sx * (j + sy * k))] != 1) {
+            continue;
+          }
+          for (long dk = -r; dk <= r; ++dk) {
+            for (long dj = -r; dj <= r; ++dj) {
+              for (long di = -r; di <= r; ++di) {
+                const long ni = i + di;
+                const long nj = j + dj;
+                const long nk = k + dk;
+                if (ni < 0 || nj < 0 || nk < 0 || ni >= sx || nj >= sy || nk >= sz) {
+                  continue;
+                }
+                std::uint8_t& cell = mask[static_cast<std::size_t>(ni + sx * (nj + sy * nk))];
+                if (cell == 0) {
+                  cell = 2;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    for (std::size_t c = 0; c < cells; ++c) {
+      if (mask[c] == 2) {
+        mask[c] = 1;
+      }
     }
   }
   return marked;
