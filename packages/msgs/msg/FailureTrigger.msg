@@ -27,6 +27,10 @@ uint8 KIND_HUMAN               = 7
 uint8 KIND_WAM                 = 8
 uint8 KIND_REASONER_TIMEOUT    = 9
 uint8 KIND_COLLISION           = 10
+# Issue #418 Addendum G: a standing object query the World State tracker could not
+# resolve (``unresolved``: start the bounded find-object search) or whose search
+# budget is spent (``exhausted``: human handoff). Evidence: ObjectQueryEvidence.
+uint8 KIND_OBJECT_QUERY        = 11
 uint8 KIND_SUPPRESSED_SUMMARY  = 254
 uint8 kind
 

@@ -16,10 +16,12 @@ from __future__ import annotations
 from importlib.metadata import version as _pkg_version
 
 from openral_reasoner.active_search import (
+    ObjectQueryStep,
     SearchBudget,
     SearchCandidate,
     SearchProgress,
     format_search_frontier,
+    object_query_step,
     plan_active_search,
 )
 from openral_reasoner.context import (
@@ -102,6 +104,7 @@ __all__ = [
     "MemoryEntry",
     "MemoryStore",
     "MissionState",
+    "ObjectQueryStep",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
     "PreparedTick",
@@ -130,6 +133,7 @@ __all__ = [
     "ground_place_target",
     "hand_joint",
     "load_ladder_state",
+    "object_query_step",
     "placement_queries",
     "plan_active_search",
     "recall_object_tool_to_query",

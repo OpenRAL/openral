@@ -56,6 +56,8 @@ from openral_core.schemas import (
     JointType,
     LinkCollisionGeometry,
     MimicJoint,
+    ObjectQueryEvidence,
+    ObjectRole,
     OccupancyGridRef,
     PhysicsBackend,
     PlaceDeclaration,
@@ -533,6 +535,18 @@ _collision_evidence_st = st.builds(
     min_distance_m=_safe_float,
 )
 
+_object_query_evidence_st = st.builds(
+    ObjectQueryEvidence,
+    escalation=st.sampled_from(["unresolved", "exhausted"]),
+    goal_id=_name,
+    query_id=_name,
+    label=_name,
+    role=st.sampled_from(list(ObjectRole)),
+    waited_s=st.floats(min_value=0.0, max_value=1e4, allow_nan=False),
+    attempts=st.integers(min_value=0, max_value=10_000),
+    last_seen=st.none(),
+)
+
 # ─── Round-trip helper ────────────────────────────────────────────────────────
 
 _FUZZ_SETTINGS = settings(
@@ -797,6 +811,13 @@ def test_fuzz_occupancy_grid_ref(instance: OccupancyGridRef) -> None:
 def test_fuzz_collision_evidence(instance: CollisionEvidence) -> None:
     """CollisionEvidence round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(CollisionEvidence, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_object_query_evidence_st)
+def test_fuzz_object_query_evidence(instance: ObjectQueryEvidence) -> None:
+    """ObjectQueryEvidence (issue #418) round-trips and validates against its schema."""
+    _round_trip_and_validate(ObjectQueryEvidence, instance)
 
 
 @_FUZZ_SETTINGS

@@ -52,15 +52,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
-from openral_core import IntrinsicsPinhole, ObjectsMetadata
+from openral_core import IntrinsicsPinhole, ObjectQueryEvidence, ObjectsMetadata
 from openral_core.exceptions import ROSConfigError
+from openral_world_state.object_tracker.grounding import QueryEscalation, StandingQuery
 
 log = logging.getLogger(__name__)
+slog = structlog.get_logger(__name__)
 
 __all__ = [
     "backproject_pixel",
     "detector_boxes",
+    "escalation_evidence",
     "image_array",
     "intrinsics_from_info",
     "main",
@@ -241,6 +245,40 @@ class _Camera:
     masks: dict[int, NDArray[np.uint8]] = field(default_factory=dict)
 
 
+def escalation_evidence(
+    escalation: QueryEscalation, query: StandingQuery, attempts: int
+) -> ObjectQueryEvidence:
+    """The typed failure evidence for one tracker escalation (issue #418 Addendum G).
+
+    ``waited_s`` is the source time since the query's current search started; ``attempts``
+    the detection requests the node issued for it.
+
+    Example:
+        >>> from openral_core import ObjectQuery, ObjectQueryStatus
+        >>> q = StandingQuery(
+        ...     "grasp:obj:orange@1",
+        ...     "0",
+        ...     ObjectQuery(label="orange", count="one", role="target"),
+        ...     "obj:orange@1",
+        ...     ObjectQueryStatus.EXHAUSTED,
+        ...     since_ns=0,
+        ... )
+        >>> e = QueryEscalation("exhausted", q.goal_id, "0", "orange", None, 60 * _NS)
+        >>> escalation_evidence(e, q, 9).waited_s
+        60.0
+    """
+    return ObjectQueryEvidence(
+        escalation=escalation.kind,
+        goal_id=escalation.goal_id,
+        query_id=escalation.query_id,
+        label=escalation.label,
+        role=query.query.role,
+        waited_s=max(0.0, (escalation.stamp_ns - query.since_ns) / _NS),
+        attempts=attempts,
+        last_seen=escalation.last_seen,
+    )
+
+
 def _stamp_ns(stamp: Any) -> int:  # reason: builtin_interfaces/Time
     return int(stamp.sec) * _NS + int(stamp.nanosec)
 
@@ -288,6 +326,13 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     from openral_msgs.msg import TrackedObject as TrackedObjectMsg
     from openral_msgs.msg import TrackedObjectSet as TrackedObjectSetMsg
     from openral_msgs.srv import LocateInView, SegmentInView
+    from openral_observability import FailureBusPublisher, FailureSource, world_state_span
+    from openral_observability import semconv as _semconv
+    from openral_observability.failure_bus import (
+        KIND_OBJECT_QUERY,
+        SEVERITY_FAIL,
+        SEVERITY_WARN,
+    )
     from openral_world_state.object_tracker import (
         CameraFrame,
         TrackerRequest,
@@ -298,6 +343,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         TrackerSession,
         TrackingMode,
     )
+    from openral_world_state.object_tracker.tracker import TrackerParams
     from pydantic import TypeAdapter
     from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -353,6 +399,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("process_hz", 15.0)
             self.declare_parameter("joint_states_topic", "/joint_states")
             self.declare_parameter("attachment_evidence_timeout_s", 1.0)
+            # Addendum G active-search budget (source seconds): an unresolved query
+            # escalates after search_start_s, is EXHAUSTED after search_max_s.
+            self.declare_parameter("search_start_s", TrackerParams().search_start_s)
+            self.declare_parameter("search_max_s", TrackerParams().search_max_s)
+            self._failure_bus: Any = None
+            self._attempts: dict[tuple[str, str], int] = {}
             self.session: TrackerSession | None = None
             self.mode = TrackingMode.SHADOW
             self._cams: dict[str, _Camera] = {}
@@ -399,6 +451,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     release_dwell_s=float(self._p("release_dwell_s")),
                     released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
                     require_hands=mode is not TrackingMode.SHADOW,
+                    params=TrackerParams(
+                        search_start_s=float(self._p("search_start_s")),
+                        search_max_s=float(self._p("search_max_s")),
+                    ),
                 )
                 raw = str(self._p("object_queries_json"))
                 if raw:
@@ -468,6 +524,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._pub_attach = self.create_publisher(
                     AttachmentStateMsg, "/openral/attachment_state", latched_1
                 )
+            # Addendum G escalations reach the reasoner on the failure bus.
+            self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
+            self._failure_bus.create_publisher()
             self._segment = self.create_client(SegmentInView, str(self._p("segment_service")))
             if self._p("locate_service"):
                 self._locate = self.create_client(LocateInView, str(self._p("locate_service")))
@@ -488,10 +547,14 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self.create_timer(1.0 / float(self._p("process_hz")), self._process),
                 self.create_timer(1.0 / float(self._p("heartbeat_hz")), self._heartbeat),
             ]
+            if self._failure_bus is not None:
+                self._failure_bus.start()
             return TransitionCallbackReturn.SUCCESS
 
         def on_deactivate(self, state: object) -> TransitionCallbackReturn:
             self._active = False
+            if self._failure_bus is not None:
+                self._failure_bus.stop()
             for t in self._timers:
                 self.destroy_timer(t)
             self._timers = []
@@ -508,6 +571,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 if cli is not None:
                     self.destroy_client(cli)
             self._pub_tracked = self._pub_attach = self._segment = self._locate = None
+            if self._failure_bus is not None:
+                self._failure_bus.destroy()
+                self._failure_bus = None
+            self._attempts.clear()
             self._cams.clear()
             self._tf_listener = self._tf_buffer = None
             self.session = None
@@ -618,9 +685,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             assert self.session is not None
             out = self.session.on_frame(frame, wall_s=time.monotonic(), results=results)
             for e in out.escalations:
-                self.get_logger().warning(
-                    f"object tracker query {e.goal_id}/{e.query_id} ({e.label!r}): {e.kind}"
-                )
+                self._escalate(e)
             self._publish_tracked()
             self._publish_attachment()
             if out.requests:
@@ -636,6 +701,54 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if self._active and self.session is not None:
                 self._feed(frame, optical_frame, stamp_msg, (result,))
 
+        def _escalate(self, e: QueryEscalation) -> None:
+            """Record one Addendum G escalation and send it to the reasoner.
+
+            Typed failure ``ROSObjectNotInMemory`` (``ObjectQueryEvidence``): a structlog
+            event (WARN unresolved, ERROR exhausted), a ``world_state.object_query`` span
+            parented on the goal's skill-execution trace (its declaration's ``trace_id``)
+            with the exception recorded, and a ``FailureTrigger`` on
+            ``/openral/failure/world_state`` carrying that trace id (the recorded bag
+            keeps it, CLAUDE.md §1.8). The tracker acts on none of it.
+            """
+            assert self.session is not None
+            query = self.session.tracker.queries.get(e.goal_id, e.query_id)
+            if query is None:  # the goal closed in the same tick: nothing to escalate
+                return
+            evidence = escalation_evidence(e, query, self._attempts.get(query.key, 0))
+            exc = evidence.to_exception()
+            s = self.session
+            decl = {"grasp": s.grasp_declaration, "place": s.place_declaration}.get(
+                e.goal_id.split(":", 1)[0]
+            )
+            trace_id = decl.trace_id if decl is not None else ""
+            rskill_id = decl.rskill_id if decl is not None else ""
+            attrs = {
+                "escalation": evidence.escalation,
+                "goal_id": evidence.goal_id,
+                "query_id": evidence.query_id,
+                "label": evidence.label,
+                "role": evidence.role.value,
+                "waited_s": evidence.waited_s,
+                "attempts": evidence.attempts,
+                "error_type": type(exc).__name__,
+            }
+            with world_state_span(
+                _semconv.SPAN_WORLD_STATE_OBJECT_QUERY, traceparent=trace_id, **attrs
+            ) as span:
+                span.record_exception(exc)
+                exhausted = evidence.escalation == "exhausted"
+                emit = slog.error if exhausted else slog.warning
+                emit("object_tracker.query_escalation", error=str(exc), **attrs)
+                if self._failure_bus is not None:
+                    self._failure_bus.publish(
+                        kind=KIND_OBJECT_QUERY,
+                        severity=SEVERITY_FAIL if exhausted else SEVERITY_WARN,
+                        evidence=evidence,
+                        rskill_id=rskill_id,
+                        trace_id=trace_id or None,
+                    )
+
         def _issue(
             self,
             req: TrackerRequest,
@@ -643,6 +756,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             optical_frame: str,
             stamp_msg: Any,
         ) -> None:
+            if req.query_key is not None:
+                self._attempts[req.query_key] = self._attempts.get(req.query_key, 0) + 1
             empty = TrackerResult(req.request_id)
             if req.service == "locate_in_view":
                 if self._locate is None or not self._locate.service_is_ready():
