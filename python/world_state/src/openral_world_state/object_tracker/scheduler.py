@@ -61,6 +61,8 @@ class TrackerRequest:
         point_uv: Positive point prompt, pixels.
         within_xyxy: A bound the picked mask must lie in (pixels), never sent to the
             segmenter as a prompt (a map seed's image rectangle).
+        seed_cell: The lattice cell a map-seeded prompt sits on, so a served one is not
+            prompted again before every other raised top in the seed was.
         request_id: Assigned by ``Scheduler.next``; 0 until issued.
     """
 
@@ -75,6 +77,7 @@ class TrackerRequest:
     box_xyxy: tuple[float, float, float, float] | None = None
     point_uv: tuple[float, float] | None = None
     within_xyxy: tuple[float, float, float, float] | None = None
+    seed_cell: tuple[int, int, int] | None = None
     request_id: int = 0
 
 

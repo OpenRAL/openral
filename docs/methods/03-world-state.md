@@ -133,10 +133,16 @@ _Containing fit (#418 step 3, the #266 rule): `C = cone(dilate(S)) ∩ {z ≥ su
 - const `ROBOT_PIXEL = 255` — `robot_filter` mask value for robot pixels (0 is free). (L64)
 - const `UNCERTAIN_PIXEL = 128` — `robot_filter` mask value for the uncertain band around the robot. (L65)
 - `class FitParams(BaseModel)` — Frozen calibration: `k_px` (mask + extrinsic error), `w_occ_px` (occluder band), `eps_m` (A2/A3 tolerance), `occluder_tol_m`, `min_points`, `min_depth_valid`, depth range. Every value a calibration point. (L71)
-- `@dataclass ContainingFit` — `box` (gravity-aligned, min-area yaw, +½ cell sides/top, bottom on the support), `tight` (one box primitive whose stage-2 hull is the 64-vertex polytope), `surface` (`P`, base frame), `support_z`, `assumptions` (A1-A4 evidence: `a1_border_clear`, `a2_gap_m`, `a3_depth_valid`, `a4_occluder_px`), `refusal`. (L102)
-- `containing_fit(mask, depth_m, robot_mask, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, stamp_ns, params=None, detector_box=None) -> ContainingFit` — `detector_box` (the open-vocabulary detector box the mask was prompted with; never a track's own projection) joins the silhouette and its non-robot depths the front cut, so a mask that lost a rim the detector saw is still contained (A1); Robot pixels leave the mask, the uncertain band and an occluder band (where a nearer surface or the robot cuts the boundary) re-enter, `k_px` dilation; the surface `P` and the front plane come from the mask pixels the filter is sure are not the robot (a robot or uncertain-band pixel never lifts the prism or the front cut: logged `a5_robot_band_px`); the cone over the silhouette's 16-direction outer polygon between the front plane and the support, union the prism of `P`'s footprint: exactly 64 vertices, no hull solver, no inward step. Refuses `a4_robot_occluder_wide` (the robot touches the mask and reaches past the occluder band: never fitted through the robot), `too_few_points`, `a1_border_truncated` (mask touches the image border), `a2_below_support` (a surface point under the support), `a3_depth_invalid`, `ray_misses_support`, and the grasp-region caps. A4 (a hidden part wider than the occluder band) is logged, not provable here — the tracker's `θ_vis` gate covers it. (L180)
-- `project_box(box, intrinsics, t_base_from_cam) -> tuple[tuple[int, int, int, int], float] | None` — A box's clipped image rectangle and nearest optical depth; `None` behind the camera or outside the image. (L381)
-- `visible_fraction(box, depth_m, robot_mask, intrinsics, t_base_from_cam, *, tol_m=0.01) -> float | None` — Z-buffered fraction of the box's image rectangle not covered by the robot (robot or uncertain), a nearer surface, or missing depth; `None` out of view. Ceiling: an occluder between the box's nearest corner and the object's surface counts as visible. (L404)
+- `@dataclass ContainingFit` — `provisional` (the robot touches the mask and reaches past the occluder band: may under-contain; replaces the old `a4_robot_occluder_wide` refusal); `box` (gravity-aligned, min-area yaw, +½ cell sides/top, bottom on the support), `tight` (one box primitive whose stage-2 hull is the 64-vertex polytope), `surface` (`P`, base frame), `support_z`, `assumptions` (A1-A4 evidence: `a1_border_clear`, `a2_gap_m`, `a3_depth_valid`, `a4_occluder_px`), `refusal`. (L102)
+- `containing_fit(mask, depth_m, robot_mask, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, stamp_ns, params=None, detector_box=None) -> ContainingFit` — `detector_box` (the open-vocabulary detector box the mask was prompted with; never a track's own projection) joins the silhouette and its non-robot depths the front cut, so a mask that lost a rim the detector saw is still contained (A1); Robot pixels leave the mask, the uncertain band and an occluder band (where a nearer surface or the robot cuts the boundary) re-enter, `k_px` dilation; the surface `P` and the front plane come from the mask pixels the filter is sure are not the robot (a robot or uncertain-band pixel never lifts the prism or the front cut: logged `a5_robot_band_px`); the cone over the silhouette's 16-direction outer polygon between the front plane and the support, union the prism of `P`'s footprint: exactly 64 vertices, no hull solver, no inward step. Marks `provisional` (the robot touches the mask and reaches past the occluder band; a provisional refit never replaces a clear track's geometry and a clear refit clears the flag), refuses `too_few_points`, `a1_border_truncated` (mask touches the image border), `a2_below_support` (a surface point under the support), `a3_depth_invalid`, `ray_misses_support`, and the grasp-region caps. A4 (a hidden part wider than the occluder band) is logged, not provable here — the tracker's `θ_vis` gate covers it. (L184)
+- `project_box(box, intrinsics, t_base_from_cam) -> tuple[tuple[int, int, int, int], float] | None` — A box's clipped image rectangle and nearest optical depth; `None` behind the camera or outside the image. (L387)
+- `visible_fraction(box, depth_m, robot_mask, intrinsics, t_base_from_cam, *, tol_m=0.01) -> float | None` — Z-buffered fraction of the box's image rectangle not covered by the robot (robot or uncertain), a nearer surface, or missing depth; `None` out of view. Ceiling: an occluder between the box's nearest corner and the object's surface counts as visible. (L410)
+
+### `python/world_state/src/openral_world_state/object_tracker/multi_view.py`
+_Multi-view containing fit (#418 phase 4): `K = conv(C_primary) ∩ cone_j ∩ …` — only second views' silhouette cones intersect, never their front cut or prism; pure numpy, no scipy._
+
+- `@dataclass MultiViewFit` — `fit` (the multi-view `ContainingFit`, or the primary single-view fit on any fallback), `fit_kind` (`MULTI_VIEW_CONE` when a cone cut the result, else `SILHOUETTE_CONE`), `refusals` (per view index: `primary` / `fallback:<why>`, `contributed`, or why the view did not cut: its own fit refusal such as `a1_border_truncated`, `cone_layout`, `silhouette_too_small`). (L56)
+- `intersect_views(views, *, resolution, frame_id, stamp_ns) -> MultiViewFit` — `views` are `(containing_fit result, T_base_from_optical)` per depth camera. A second view cuts only when its own fit was not refused (A1 border clear) and its cone holds every measured surface point of every view (a too-small silhouette is refused whole). `K` is exact (plane-triple vertex enumeration), reduced outwards to the 64-vertex hull cap (two horizontal slabs' 16-direction outer polygons when `K` has more), boxed by `fit._boxed`; falls back (logged `object_tracker.multi_view_fallback`) on `no_second_view`, `empty_intersection`, `views_disagree` (a measured point outside the result) or `no_gain` (box not smaller). Not wired into `ObjectTracker.feed` yet: the tracker fits per depth frame, one camera at a time. (L157)
 
 ### `python/world_state/src/openral_world_state/object_tracker/cover.py`
 _Size-aware map confirmation (#418 step 4)._
@@ -157,8 +163,8 @@ _Track table, association by continuity, source-time ageing (#418 steps 5-6)._
   - `mint(**fields) -> TrackedObject` — TENTATIVE `trk:<n>`, never reused; past 32 rows the oldest LOST is dropped, else `ROSConfigError`. (L137)
   - `drop(object_id) -> None` — Forget a row. (L160)
   - `snapshot(stamp_ns) -> TrackedObjectSet` — (L165)
-- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180)
-- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L249)
+- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180) A SPLIT track takes no fit by continuity (its box holds two bodies: a neighbour inside it is a new object). The tracker ignores a refit of a CONFIRMED/OCCLUDED track whose new box splits on the map (`split_refit_ignored`).
+- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L259)
 
 ### `python/world_state/src/openral_world_state/object_tracker/grounding.py`
 _Standing queries (#418 Addendum G): a query lives as long as its goal; never a first-frame snapshot._
@@ -184,11 +190,11 @@ _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7
 - const `PRIORITY_DISAGREE = 3` — Tracks the map disagrees with. (L41)
 - const `PRIORITY_BOUND = 4` — Bound-object protrusion checks. (L42)
 - const `PRIORITY_REFRESH = 5` — Oldest visible CONFIRMED refresh and resolved `count: "all"` re-detection. (L43)
-- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv` (prompts), `within_xyxy` (a bound on the mask pick only: a map seed's image rectangle), `request_id` (0 until issued). (L47)
-- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L81)
-  - `in_flight` (property) — (L111)
-  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L115)
-  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L124)
+- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv` (prompts), `within_xyxy` (a bound on the mask pick only: a map seed's image rectangle), `seed_cell` (the lattice cell a map-seeded prompt sits on: a served one is skipped until a locate is served), `request_id` (0 until issued). (L47)
+- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L84)
+  - `in_flight` (property) — (L114)
+  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L118)
+  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L127)
 
 ### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
 _`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._
@@ -217,22 +223,22 @@ _Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (
 ### `python/world_state/src/openral_world_state/object_tracker/binding.py`
 _Issue #418 WP C2, design "Grasp binding and in-hand update". ATTACH binds what meets `J_h`; the bound geometry then only grows (the kernel's K4 union). Logs `object_tracker.bound` / `untracked_grasp` / `ambiguous_grasp` / `bound_geometry_grew` / `bound_geometry_cap` / `protrusion_unexplained`._
 
-- `MAX_PRIMITIVES = 16` (L58) — The kernel's per-object primitive cap (K4).
-- `TRACKED_CONFIDENCE = 0.7` (L60) — A tracked binding's confidence (`region_attachment`'s).
-- `FALLBACK_CONFIDENCE = 0.2` (L62) — A pinch fallback's (the HAL jaw-span fallback's).
-- `class TrackStoreLike(Protocol)` (L72) — The C1 `TrackStore` interface.
-  - `get(object_id) -> TrackedObject | None` (L75) — One track.
-  - `all() -> list[TrackedObject]` (L78) — Every track.
-  - `replace(obj) -> None` (L81) — Store under its id; bumps the set revision.
-- `class BindOutcome(StrEnum)` (L85) — `TRACKED`, `AMBIGUOUS`, `UNTRACKED`.
-- `class Binding(outcome, attachment, candidates, reground)` (L94) — One hand's held payload as published on `/openral/attachment_state`; `reground` asks for a re-ground after lift.
-- `class GraspBinder(hand, *, frame_id, cell_m)` (L168) — One hand. `frame_id` must be the manifest's `base_frame` (FK root), else `ROSConfigError`.
-  - `pinch_in_frame(positions) -> Box` (L193) — `J_h` grown by one cell, in the grid frame.
-  - `object_pose(positions) -> Pose6D` (L199) — The held object frame in the grid frame, `FK(q) · pose_in_link` (the release pose).
-  - `on_attach(store, positions, stamp_ns) -> Binding` (L216) — Candidates: free tracks (TENTATIVE/CONFIRMED/OCCLUDED/SPLIT) of any role whose box meets `J_h`, and RELEASED tracks whose `fall_column` meets it. One: `TRACKED_OBJECT` under the track id (`pose_in_link = T_link⁻¹·T_obj`, the shape — `tight` hulls or the box — unioned with itself slid along `c` onto the pinch axis; a RELEASED one bound re-centred on `J_h` under `epoch + 1`), the track set BOUND. Two or more: `PINCH_FALLBACK` of the pinch box ∪ the candidates' boxes (one enclosing box past 15), object id `pinch:<joint>@<stamp>`, no track touched. None: the pinch fallback alone, `reground=True`.
-  - `on_regrasp(positions, stamp_ns) -> Binding | None` (L387) — Unions the shape slid onto the new pinch axis, `geometry_revision + 1`; `None` when already on it or past the cap (union kept).
-  - `grow_by_protrusion(store, grid, positions, stamp_ns) -> Binding | None` (L400) — Tracked bindings only: occupied cells within the payload's reach of the pinch axis that neither the bound geometry, another non-bound track nor the hand explain (½ cell), 26-connected to the payload; fits the rotation θ about the pinch axis (2° grid, residual < 1 cell, nearest the previous θ) and unions the arc in steps of ≤ one cell at the payload's reach. `None` when nothing protrudes, no θ fits, or the cap would be passed.
-  - `on_release() -> None` (L509) — Forget the held payload.
+- `MAX_PRIMITIVES = 16` (L62) — The kernel's per-object primitive cap (K4).
+- `TRACKED_CONFIDENCE = 0.7` (L64) — A tracked binding's confidence (`region_attachment`'s).
+- `FALLBACK_CONFIDENCE = 0.2` (L66) — A pinch fallback's (the HAL jaw-span fallback's).
+- `class TrackStoreLike(Protocol)` (L76) — The C1 `TrackStore` interface.
+  - `get(object_id) -> TrackedObject | None` (L79) — One track.
+  - `all() -> list[TrackedObject]` (L82) — Every track.
+  - `replace(obj) -> None` (L85) — Store under its id; bumps the set revision.
+- `class BindOutcome(StrEnum)` (L89) — `TRACKED`, `AMBIGUOUS`, `UNTRACKED`.
+- `class Binding(outcome, attachment, candidates, reground)` (L98) — One hand's held payload as published on `/openral/attachment_state`; `reground` asks for a re-ground after lift.
+- `class GraspBinder(hand, *, frame_id, cell_m)` (L236) — One hand. `frame_id` must be the manifest's `base_frame` (FK root), else `ROSConfigError`.
+  - `pinch_in_frame(positions) -> Box` (L261) — `J_h` grown by one cell, in the grid frame.
+  - `object_pose(positions) -> Pose6D` (L267) — The held object frame in the grid frame, `FK(q) · pose_in_link` (the release pose).
+  - `on_attach(store, positions, stamp_ns) -> Binding` (L284) — Provisional candidates are dropped (`provisional_grasp`: never payload geometry; with none left the grasp is an untracked PINCH_FALLBACK with a re-ground). Candidates: free tracks (TENTATIVE/CONFIRMED/OCCLUDED/SPLIT) of any role whose measured geometry holds `J_h`'s centre within one cell (their tight k-DOP when they carry one, else the box; a padded box merely meeting the swept pinch volume bound a tracked neighbour of an ungrounded held orange, p2po_on2), and RELEASED tracks whose `fall_column` meets it. One: `TRACKED_OBJECT` under the track id (`pose_in_link = T_link⁻¹·T_obj`, the shape — `tight` hulls or the box — unioned with itself slid along `c` onto the pinch axis; a RELEASED one bound re-centred on `J_h` under `epoch + 1`), the track set BOUND. Two or more: `PINCH_FALLBACK` of the pinch box ∪ the candidates' boxes (one enclosing box past 15), object id `pinch:<joint>@<stamp>`, no track touched. None: the pinch fallback alone, `reground=True`. A tracked binding's primitives are cut at the palm plane (`_palm_clipped`: nothing held lies behind the palm).
+  - `on_regrasp(positions, stamp_ns) -> Binding | None` (L462) — Unions the shape slid onto the new pinch axis, `geometry_revision + 1`; `None` when already on it or past the cap (union kept).
+  - `grow_by_protrusion(store, grid, positions, stamp_ns) -> Binding | None` (L475) — Tracked bindings only: occupied cells within the payload's reach of the pinch axis that neither the bound geometry, another non-bound track nor the hand explain (½ cell), 26-connected to the payload; fits the rotation θ about the pinch axis (2° grid, residual < 1 cell, nearest the previous θ) and unions the arc in steps of ≤ one cell at the payload's reach. `None` when nothing protrudes, no θ fits, or the cap would be passed.
+  - `on_release() -> None` (L584) — Forget the held payload.
 
 ### `python/world_state/src/openral_world_state/object_tracker/release.py`
 _Issue #418 WP C2, design "Release". Source-clock stamps only._

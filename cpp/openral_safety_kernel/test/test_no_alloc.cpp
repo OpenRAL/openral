@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <string>
 #include <vector>
@@ -420,4 +421,69 @@ TEST(NoAlloc, TheTrackedGraspExemptionIsAllocationFree) {
       << "the tracked grasp exemption allocated; CLAUDE.md §2 forbids this.";
   EXPECT_TRUE(std::isfinite(sink));
   EXPECT_GT(cover, 0U) << "the loop really counted occupied cells";
+}
+
+TEST(NoAlloc, TheExplainedCellsCheckIsAllocationFree) {
+  // Issue #418 K7: every pair the live workspace would tolerate asks whether its
+  // cell is explained (boxes, static cells, support), inside the voxel check.
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}};
+  osk::Obb hand;
+  hand.half_extents = {0.03, 0.03, 0.03};
+  m.box_link = {1};
+  m.boxes = {hand};
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 3) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  std::bitset<osk::kMaxGraspMaskLinks> hands;
+  hands.set(1);
+  ASSERT_EQ(osk::ingest_workspace_region(osk::Transform{}, {0.15, 0.15, 0.15}, hands, 0.5, 0.05,
+                                         grid.workspace_region),
+            osk::GraspRegionStatus::kOk);
+  grid.workspace_region.hand_speed_mps = 0.0;
+  grid.workspace_region.hand_lead_m = 0.0;
+  std::vector<std::uint8_t> static_mask(occ.size(), 0);
+  const std::vector<osk::Vec3> points = {{0.01, 0.01, 0.01}, {-0.03, 0.01, 0.01}};
+  ASSERT_EQ(osk::mark_static_cells(grid, points, static_mask.data(), static_mask.size()), 2U);
+  osk::WorkspaceExplanation e;
+  e.n_objects = 2;
+  e.half_extents[0] = {0.02, 0.02, 0.02};
+  e.box[1].t = {0.05, 0.0, 0.0};
+  e.half_extents[1] = {0.02, 0.02, 0.02};
+  e.support_z[0] = -0.02;
+  e.support_z[1] = std::numeric_limits<double>::quiet_NaN();
+  e.static_cells = static_mask.data();
+  e.static_cells_n = static_mask.size();
+  grid.workspace_explained = &e;
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sink = 0.0;
+  int explained = 0;
+  for (int i = 0; i < 2000; ++i) {
+    s.link_world[1].t.x = (i % 2 == 0) ? 0.0 : 0.05;
+    const auto hit = osk::check_voxel_collision(m, s, grid, 0.02);
+    sink += hit.sweep_min_distance + hit.workspace_denied;
+    explained += osk::workspace_cell_explained(grid, {0.01, 0.01, 0.01}) ? 1 : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the explained-cells check allocated; CLAUDE.md §2 forbids this.";
+  EXPECT_TRUE(std::isfinite(sink));
+  EXPECT_EQ(explained, 2000);
 }

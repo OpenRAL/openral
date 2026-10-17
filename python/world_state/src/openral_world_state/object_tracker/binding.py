@@ -3,8 +3,11 @@
 At ATTACH the hand's pinch volume ``J_h`` (``pinch.HandModel``, at the measured jaw by
 joint-state FK, grown by one cell) is intersected with the tracks:
 
-* free tracks of **any** role whose box meets ``J_h``, and ``RELEASED`` tracks whose fall
-  column meets it (a regrasp before re-grounding);
+* free tracks of **any** role whose measured geometry holds the pinch centre (``J_h``'s
+  centre) within one cell — the tight k-DOP when the track has one, else its box — and
+  ``RELEASED`` tracks whose fall column holds it (a regrasp before re-grounding). A padded
+  box that merely *meets* the swept pinch volume is not enough: a tracked neighbour beside
+  an ungrounded held object would be bound in its place (p2po_on2);
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
   unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
   re-centred on the pinch volume under ``epoch + 1``);
@@ -44,10 +47,11 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
-from openral_core.kinematics import Box, bounding_half_extents, box_gap_lower_bound_m
+from openral_core.kinematics import Box, bounding_half_extents
 from openral_core.perception_geometry import VoxelLattice
+from openral_core.schemas import DOP_AXES
 
-from openral_world_state.object_tracker.pinch import HandModel
+from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
 from openral_world_state.object_tracker.release import fall_column
 
 __all__ = ["BindOutcome", "Binding", "GraspBinder", "TrackStoreLike"]
@@ -107,6 +111,35 @@ class Binding:
     reground: bool
 
 
+def _box_holds(box: Box, point: NDArray[np.float64], tol: float) -> bool:
+    """Whether ``box`` grown by ``tol`` holds ``point``."""
+    c, r, h = box
+    return bool(np.all(np.abs((point - c) @ r) <= h + tol))
+
+
+def _holds(track: TrackedObject, point: NDArray[np.float64], tol: float) -> bool:
+    """Whether ``track``'s measured geometry holds ``point`` within ``tol``.
+
+    The tight k-DOP (``TightCollisionGeometry.dop_lo_m``/``dop_hi_m`` over ``DOP_AXES`` in
+    the primitive's frame; a containing superset of the hull, tighter than the padded box)
+    of any primitive when the track has one, else its box.
+    """
+    tight = [p for p in track.tight if p.tight_geometry is not None]
+    if not tight:
+        return _box_holds(_box(track.box), point, tol)
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    for prim in tight:
+        tg = prim.tight_geometry
+        assert tg is not None  # reason: filtered above
+        t = _t(prim.pose_in_object)
+        proj = axes @ ((point - t[:3, 3]) @ t[:3, :3])
+        if np.all(proj >= np.asarray(tg.dop_lo_m) - tol) and np.all(
+            proj <= np.asarray(tg.dop_hi_m) + tol
+        ):
+            return True
+    return False
+
+
 def _t(pose: Pose6D) -> NDArray[np.float64]:
     return homogeneous_from_quat_xyz(pose.xyz, pose.quat_xyzw)
 
@@ -145,6 +178,41 @@ def _moved(p: AttachedCollisionPrimitive, t: NDArray[np.float64]) -> AttachedCol
     return p.model_copy(
         update={"pose_in_object": _pose(t @ _t(p.pose_in_object), p.pose_in_object.frame_id)}
     )
+
+
+def _palm_clipped(
+    prims: Sequence[AttachedCollisionPrimitive],
+    t_ao: NDArray[np.float64],
+    pinch: PinchVolume,
+    object_id: str,
+) -> list[AttachedCollisionPrimitive]:
+    """``prims`` (object frame, object at ``t_ao`` in the attach link) cut at the palm plane.
+
+    Nothing the hand holds lies behind its palm (the hand is there), so a fitted shape
+    reaching past it — a containing box of a 17 cm banana re-centred on the pinch volume
+    reached the Franka's wrist (DROID r2dr_on1, a payload-vs-panda_link7 false stop) — is
+    replaced by its box in the pinch axes with the back face on the palm plane. That box
+    holds every part of the primitive in front of the palm; a primitive wholly behind it
+    is dropped; one wholly in front is kept as it is (hull and all).
+    """
+    out: list[AttachedCollisionPrimitive] = []
+    a = pinch.axes[:, 1]
+    for p in prims:
+        t = t_ao @ _t(p.pose_in_object)
+        half = np.asarray(bounding_half_extents(p.shape), dtype=np.float64)
+        corners = (_UNIT * half) @ t[:3, :3].T + t[:3, 3]
+        along = corners @ a
+        if along.min() >= pinch.palm_m - _EPS_M:
+            out.append(p)
+            continue
+        if along.max() <= pinch.palm_m:
+            continue
+        local = corners @ pinch.axes
+        lo, hi = local.min(axis=0), local.max(axis=0)
+        lo[1] = pinch.palm_m
+        t_link = _frame(pinch.axes @ ((lo + hi) / 2.0), pinch.axes)
+        out.append(_prim(np.linalg.inv(t_ao) @ t_link, (hi - lo) / 2.0, object_id))
+    return out or list(prims)
 
 
 def _rotation_about(
@@ -218,17 +286,23 @@ class GraspBinder:
     ) -> Binding:
         """Bind whatever meets ``J_h`` at the measured configuration."""
         jh = self.pinch_in_frame(positions)
+        centre = jh[0]
         cands = [
             t
             for t in store.all()
-            if (t.status in _FREE and box_gap_lower_bound_m(_box(t.box), jh) <= 0.0)
+            if (t.status in _FREE and _holds(t, centre, self.cell_m))
             or (
                 t.status is TrackStatus.RELEASED
-                and box_gap_lower_bound_m(_box(fall_column(t, self.cell_m)), jh) <= 0.0
+                and _box_holds(_box(fall_column(t, self.cell_m)), centre, self.cell_m)
             )
         ]
-        ids = tuple(t.object_id for t in cands)
         jaw = positions[self.hand.joint.name]
+        provisional = tuple(t.object_id for t in cands if t.provisional)
+        if provisional:  # never payload geometry (TrackedObject.provisional)
+            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
+                        candidates=provisional, jaw=jaw)  # fmt: skip
+            cands = [t for t in cands if not t.provisional]
+        ids = tuple(t.object_id for t in cands)
         if len(cands) == 1:
             binding = self._bind(store, cands[0], positions, stamp_ns)
         else:
@@ -284,6 +358,7 @@ class GraspBinder:
             prims = shape + (
                 [_moved(p, slide) for p in shape] if np.linalg.norm(shift) > _EPS_M else []
             )
+        prims = _palm_clipped(prims, t_ao, pinch, oid)
         epoch = track.epoch + 1 if released else track.epoch
         pose_in_link = _pose(t_ao, self.hand.attach_link)
         store.replace(

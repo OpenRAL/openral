@@ -316,8 +316,17 @@ def _octomap_resolution(hal_mode: str) -> float:
     return 0.015 if hal_mode == "sim" else 0.02
 
 
-def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
+def _static_points_file(
+    static_geometry_file: str, resolution_m: float, *, kernel_cells: bool = False
+) -> str:
     """Sample the declared static geometry for the octomap bridge; returns the points file.
+
+    With ``kernel_cells`` (issue #418 K7) the file instead holds one centre per grid cell the
+    bridge marks from those points, for the safety kernel's explained cells: static geometry is
+    declared for fixed-base robots only, whose octree accumulates in the base frame, so the
+    bridge's cells are the base frame's ``resolution_m`` lattice, and the kernel uses the file
+    only on that lattice. Thousands of times smaller than the bridge's file, which the kernel
+    would otherwise have to hold in memory.
 
     Surfaces are sampled a quarter cell apart (``openral_safety.static_geometry``), into a
     ``/tmp`` file named by the source and a digest of the points: the same geometry reuses one
@@ -341,13 +350,22 @@ def _static_points_file(static_geometry_file: str, resolution_m: float) -> str:
     out = pathlib.Path(tempfile.gettempdir()) / (
         f"openral_static_points_{pathlib.Path(static_geometry_file).stem}_{digest}.txt"
     )
+    if kernel_cells:
+        # One centre per cell the bridge marks, as the bridge reads the points (5 decimals).
+        keys = np.unique(np.floor(np.round(points, 5) / resolution_m).astype(np.int64), axis=0)
+        points = (keys + 0.5) * resolution_m
+        out = out.with_name(out.name.replace("openral_static_points_", "openral_static_cells_"))
     if not out.exists():
         partial = out.with_name(f"{out.name}.{os.getpid()}.partial")
         write_points_file(points, partial)
         partial.replace(out)
     print(
         f"[deploy_e2e] declared static geometry: {len(geometry.static_geometry)} fixtures, "
-        f"{len(points)} surface points at {resolution_m / 4.0 * 1000:.2f} mm -> {out}",
+        + (
+            f"{len(points)} cell centres at {resolution_m * 1000:.2f} mm (kernel) -> {out}"
+            if kernel_cells
+            else f"{len(points)} surface points at {resolution_m / 4.0 * 1000:.2f} mm -> {out}"
+        ),
         flush=True,
     )
     return str(out)
@@ -1295,6 +1313,25 @@ def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: b
             "tracked objects (issue #418 K2) and needs grasp_allowance_enabled:=true."
         )
     return True
+
+
+def _workspace_explained_cells(object_tracking: str, *, workspace_contact_enabled: bool) -> bool:
+    """The kernel's ``workspace_explained_cells_enabled`` (issue #418 K7): ``on`` + workspace.
+
+    It narrows workspace contact to cells a tracked object, the declared static geometry or the
+    measured support explains, so it only ever adds stops. It has nothing to narrow without the
+    workspace rule, and the kernel refuses it there. ``on`` is already sim-only
+    (``_object_tracking``).
+
+    Example:
+        >>> _workspace_explained_cells("on", workspace_contact_enabled=True)
+        True
+        >>> _workspace_explained_cells("on", workspace_contact_enabled=False)
+        False
+        >>> _workspace_explained_cells("bind", workspace_contact_enabled=True)
+        False
+    """
+    return object_tracking == "on" and workspace_contact_enabled
 
 
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
@@ -2509,6 +2546,16 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             hal_mode=hal_mode,
         )
     )
+    # Issue #418 K7: in `on`, workspace contact is tolerated only on explained cells; the
+    # declared static geometry explains its own cells (the bridge's cells, one centre each).
+    if _workspace_explained_cells(
+        object_tracking, workspace_contact_enabled=workspace_contact_enabled
+    ):
+        kernel_params["workspace_explained_cells_enabled"] = True
+        if static_geometry_file:
+            kernel_params["static_points_file"] = _static_points_file(
+                static_geometry_file, _octomap_resolution(hal_mode), kernel_cells=True
+            )
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         assert coverage is not None  # reason: computed whenever enable_octomap
         kernel_params = {
