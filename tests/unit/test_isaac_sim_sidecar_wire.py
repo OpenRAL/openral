@@ -771,6 +771,45 @@ class TestFramesOnDemand:
         assert s.frames_requests[-3:] == ["fresh", "none", "refresh"]
         assert set(hal.read_images()) == {"top"}
 
+    def test_a_reused_depth_frame_keeps_its_identity_so_it_is_published_once(self) -> None:
+        # The sensor bridge and the HAL's cloud cache tell a new frame from a reused one
+        # by identity: a no-render step must hand back the SAME frame, not a rebuilt copy.
+        depth = {
+            "head_zed": {
+                "depth": np.ones((4, 6), dtype=np.float32),
+                "rgb": np.zeros((4, 6, 3), dtype=np.uint8),
+                "k": np.asarray([3.0, 3.0, 3.0, 2.0]),
+                "optical_in_base": np.eye(4),
+            }
+        }
+        extra = {**self._FRAMES, "depth_frames": depth}
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 30,
+            obs_extra=extra,
+            sim_time_ns=_STATE_NS,
+            tick_ns=_TICK_NS,
+        ) as s:
+            scene, task = _scene_task()
+            hal = SimAttachedHAL(
+                _make_rollout(s.port, scene, task), TestHalTimeBaseGuard._openarm()
+            )
+            try:
+                hal.connect()
+                hal.set_frame_period_s(1.0)  # every step but the first renders nothing
+                hal.idle_step()
+                frame, cloud = (
+                    hal.read_depth_frames()["head_zed"],
+                    hal.read_depth_clouds()["head_zed"],
+                )
+                for _ in range(3):
+                    hal.idle_step()
+                    assert hal.read_depth_frames()["head_zed"] is frame
+                    assert hal.read_depth_clouds()["head_zed"] is cloud
+            finally:
+                hal.env.close()
+        assert s.frames_requests[-3:] == ["none", "none", "none"]
+
     def test_hal_without_a_frame_period_renders_every_step(self) -> None:
         with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30, sim_time_ns=_STATE_NS) as s:
             scene, task = _scene_task()
