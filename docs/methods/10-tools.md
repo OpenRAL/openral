@@ -3,14 +3,17 @@
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
 ### `tools/lifecycle_autostart.py`
-_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, and reasoner._
+_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, reasoner, E-stop sources, and (via its private `_poll_autostart`) the segmenter and the #418 object tracker._
 
 - `--transition-timeout-s` — Per-transition spin budget, default `300.0`; the HAL's budget is derived per scene, not hardcoded — raise the scene's `backend_options.boot_timeout_s` instead of this flag.
 - **Why the HAL's is derived.** The bound must cover the whole `on_configure`, including a sidecar's spawn — some backends need far more than 300 s to boot, so the timeout is set per scene rather than fixed.
 - `--required` (flag) — Treat an absent `change_state` service as a failure (exit 1) instead of informational, so a missing node cannot come up looking healthy; used for the deadman watchdog so a deploy without it refuses to run.
 - **Transitions carry their label as well as their id.** rclpy refuses an invalid labelled `ChangeState` with `success=False`, but an id-only one raises out of the target's service callback and kills the node; with the label, a transition another activator already made redundant is refused harmlessly.
+- **A dropped reply is noticed by polling.** The `change_state` wait is spun in `_POLL_SLICE_S` (2 s) slices with a `get_state` read between them, accepted as soon as the state is the transition's goal (`_GOAL_STATES`: CONFIGURE → `inactive`/`active`, ACTIVATE → `active` only). Jazzy can drop a reply (`failed to send response (timeout)`); the launch_ros event chain then never sends ACTIVATE, which left the segmenter and the tracker INACTIVE for whole #418 trials.
+- `_GOAL_STATES: dict[str, set[str]]` (L44) — per-transition FSM states that mean it landed; `inactive` is not evidence an ACTIVATE advanced.
+- `_POLL_SLICE_S: float` (L47) — slice of the `change_state` wait between `get_state` reads.
 - `_STATE_TO_TRANSITION: dict[str, list[int]]` (L36) — `--target` → the `Transition` constants to drive in order (`inactive` = CONFIGURE; `active` = CONFIGURE then ACTIVATE).
-- `main() -> int` (L127) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
+- `main() -> int` (L146) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
 
 ### `tools/profile_policy_load.py`
 _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.factory.make_policy` against an in-tree rSkill manifest and prints a phase-by-phase summary. Use when a launch or `openral sim run` is slow to first action, to see where the seconds go._
