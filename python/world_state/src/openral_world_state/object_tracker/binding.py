@@ -8,6 +8,8 @@ joint-state FK, grown by one cell) is intersected with the tracks:
   ``RELEASED`` tracks whose fall column holds it (a regrasp before re-grounding). A padded
   box that merely *meets* the swept pinch volume is not enough: a tracked neighbour beside
   an ungrounded held object would be bound in its place (p2po_on2);
+* a grounded candidate (CONFIRMED / OCCLUDED / RELEASED) drops any TENTATIVE / SPLIT one: an
+  unconfirmed fit over the same cells (a mask over two oranges) is no second object;
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
   unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
   re-centred on the pinch volume under ``epoch + 1``);
@@ -74,6 +76,10 @@ _THETA_STEP = math.radians(2.0)
 _EPS_M = 1e-6
 _EPS_RAD = 1e-9
 _FREE = {TrackStatus.TENTATIVE, TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT}
+#: Tracks a hand may bind with confidence: the map confirmed them.
+_GROUNDED = {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.RELEASED}
+#: Tracks whose fit the map has not confirmed (or has refuted as two bodies).
+_UNCONFIRMED = {TrackStatus.TENTATIVE, TrackStatus.SPLIT}
 _UNIT = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
 _N26 = [(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1) if i or j or k]
 #: How far from the pinch centre an untracked payload may grow (m). *Calibration point.*
@@ -327,6 +333,10 @@ class GraspBinder:
             )
         ]
         jaw = positions[self.hand.joint.name]
+        if any(t.status in _GROUNDED for t in cands):
+            # A grounded object beats an unconfirmed fit of the same cells (#418 r6po_dbg9: a
+            # never-confirmed fit over two oranges made orange_2's grasp AMBIGUOUS).
+            cands = [t for t in cands if t.status not in _UNCONFIRMED]
         provisional = [t for t in cands if t.provisional]
         cands = [t for t in cands if not t.provisional]
         ids = tuple(t.object_id for t in cands)
