@@ -2691,16 +2691,17 @@ class IsaacManifestScene(IsaacSceneBase):
             flush=True,
         )
 
-    def _observe(self) -> dict[str, Any]:
-        obs = super()._observe()
+    def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
+        obs = super()._observe(with_frames=with_frames)
         if self._has_base:
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
-        clouds = self._depth_clouds()
-        if clouds:
-            obs["depth_points"] = clouds
-        frames = self._depth_frames()
-        if frames:
-            obs["depth_frames"] = frames
+        if with_frames:
+            clouds = self._depth_clouds()
+            if clouds:
+                obs["depth_points"] = clouds
+            frames = self._depth_frames()
+            if frames:
+                obs["depth_frames"] = frames
         scan = self._scan_ranges()
         if scan is not None:
             obs["scan"] = scan

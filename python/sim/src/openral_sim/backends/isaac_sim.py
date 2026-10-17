@@ -76,7 +76,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -187,6 +187,10 @@ def _scene_default_port(task_id: str, robot_id: str, layout: str, world: str = "
 # dead sidecar).
 _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 900.0
+#: ``step`` frame modes and the observation keys a ``"none"`` step omits; must match
+#: ``FRAME_MODES`` / ``FRAME_KEYS`` in ``tools/_isaac_scene_base.py`` (Isaac interpreter).
+FRAME_MODES = ("render", "fresh", "none")
+_FRAME_KEYS = ("images", "image_time_ns", "depth_points", "depth_frames")
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
 
@@ -388,6 +392,34 @@ class _IsaacSimSidecar(SidecarSimRollout):
     """
 
     layout: IsaacActionLayout | None = None
+    # One-shot frame mode for the next ``step`` (``set_frames_next_step``).
+    _frames_next: str = "render"
+    # The frame keys of the last observation that carried frames, reused by a
+    # ``frames="none"`` step (its reply carries none).
+    _last_frames: dict[str, Any] = field(default_factory=dict)
+
+    def set_frames_next_step(self, frames: str) -> None:
+        """Choose what the NEXT ``step`` renders: ``"render"``, ``"fresh"`` or ``"none"``.
+
+        One-shot: the step after it renders as usual unless asked again, so a caller
+        that never calls this sees no change. ``"none"`` skips rendering (most of an
+        Isaac step's cost) and the observation reuses the previous frames, which keep
+        the ``image_time_ns`` of the state they show. ``"fresh"`` renders until the
+        frames show this step's state (the RTX pipeline otherwise delivers them a few
+        renders late). See ``tools/_isaac_scene_base.py``.
+
+        Example:
+            >>> from openral_sim.backends.isaac_sim import FRAME_MODES
+            >>> FRAME_MODES
+            ('render', 'fresh', 'none')
+        """
+        if frames not in FRAME_MODES:
+            raise ROSConfigError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
+        self._frames_next = frames
+
+    def _step_options(self) -> dict[str, Any]:
+        frames, self._frames_next = self._frames_next, "render"
+        return {} if frames == "render" else {"frames": frames}
 
     def pack_action(
         self,
@@ -518,6 +550,11 @@ class _IsaacSimSidecar(SidecarSimRollout):
         self._sim_dt_per_tick_s = float(dt)
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+        if "images" not in raw and self._last_frames:
+            # A frames="none" step: the sidecar rendered nothing and sent no frames.
+            raw = {**raw, **self._last_frames}
+        else:
+            self._last_frames = {k: raw[k] for k in _FRAME_KEYS if k in raw}
         images_raw = raw.get("images", {})
         images: dict[str, NDArray[np.uint8]] = {
             k: np.asarray(v, dtype=np.uint8) for k, v in images_raw.items()

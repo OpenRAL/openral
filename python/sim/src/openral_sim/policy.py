@@ -65,3 +65,20 @@ class PolicyAdapter(Protocol):
     # The runner checks for this method via ``getattr`` so scripted /
     # mock policies don't need to implement it. See
     # ``openral_sim.SimRunner``.
+
+
+def policy_needs_observation_next(policy: object) -> bool:
+    """Whether the policy's next ``step`` may read the observation's images.
+
+    ``False`` only for an adapter whose chunk executor (the ``_chunk_executor``
+    attribute every chunked adapter keeps) is sure to serve a buffered action
+    without inferring, so the simulator may skip rendering that observation.
+    Anything else, including an adapter without an executor, reads ``True``.
+
+    Example:
+        >>> policy_needs_observation_next(object())
+        True
+    """
+    executor = getattr(policy, "_chunk_executor", None)
+    probe = getattr(executor, "needs_observation_next", None)
+    return bool(probe()) if callable(probe) else True

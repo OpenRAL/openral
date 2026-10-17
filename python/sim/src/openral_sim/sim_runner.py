@@ -33,6 +33,7 @@ from openral_runner.base import InferenceRunnerBase
 from opentelemetry import trace
 
 from openral_sim.factory import make_env, make_policy, make_robot
+from openral_sim.policy import policy_needs_observation_next
 from openral_sim.rollout import (
     DEFAULT_SUCCESS_KEY,
     ROBOT_CONTACTS_INFO_KEY,
@@ -70,6 +71,9 @@ _VIDEO_FRAMES_INFO_KEY = "_openral_video_frames"
 # (BEHAVIOR). Episodes shorter than the cap — every LIBERO / MetaWorld /
 # RoboCasa / RoboTwin protocol — capture every frame exactly as before.
 _VIDEO_FRAME_CAP = 8192
+# Frames on demand (an env with ``set_frames_next_step``, i.e. Isaac): the video is
+# rendered at this rate, the policy's observation only when it infers.
+_ON_DEMAND_VIDEO_HZ = 10.0
 _IMAGE_NDIM = 3
 _GRAYSCALE_CHANNELS = 1
 _RGB_CHANNELS = 3
@@ -755,6 +759,7 @@ class SimRunner(InferenceRunnerBase):
                 if vla_frame is not None:
                     self._buf.vla_input_frames.append(vla_frame)
 
+            self._request_frames_for_next_step()
             # Child span isolates physics time from policy time so reviewers
             # can answer "is the rollout slow because of inference or because
             # of MuJoCo?" without ad-hoc instrumentation.
@@ -832,6 +837,35 @@ class SimRunner(InferenceRunnerBase):
             terminated=terminated,
             truncated=truncated,
         )
+
+    def _request_frames_for_next_step(self) -> None:
+        """Tell an env that renders on demand what the step about to run must render.
+
+        ``"fresh"`` when the policy's next call infers (it reads the images this step
+        returns), ``"render"`` on the video's ``_ON_DEMAND_VIDEO_HZ`` cadence, and for
+        every step while a recorder or an observation dump wants each frame, else
+        ``"none"``. Envs without ``set_frames_next_step`` render every step as before.
+        """
+        set_frames = getattr(self._env, "set_frames_next_step", None)
+        if not callable(set_frames):
+            return
+        if policy_needs_observation_next(self._policy):
+            set_frames("fresh")
+            return
+        every_frame = self._recorder is not None or bool(os.environ.get("OPENRAL_DUMP_OBS_TICK"))
+        if every_frame or (
+            self._env_cfg.record_video and self._step_idx % self._video_render_stride() == 0
+        ):
+            set_frames("render")
+            return
+        set_frames("none")
+
+    def _video_render_stride(self) -> int:
+        """Steps between video renders: the control rate over ``_ON_DEMAND_VIDEO_HZ``."""
+        dt = getattr(self._env, "sim_dt_per_tick_s", None)
+        if not dt:
+            return 1
+        return max(1, round(1.0 / (float(dt) * _ON_DEMAND_VIDEO_HZ)))
 
     # ── Recorder fan-out ──────────────────────────────────────────────────
 

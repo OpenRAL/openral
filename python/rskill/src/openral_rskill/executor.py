@@ -522,6 +522,31 @@ class ChunkedExecutor:
         self._buffer.extend(self._blend_boundary(self._finish_chunk(chunk)))
         return self._pop_and_maybe_prefetch(batch)
 
+    def needs_observation_next(self) -> bool:
+        """Whether the next ``select_action`` call may read its observation.
+
+        ``False`` only when that call is sure to pop a buffered action without
+        launching an inference (foreground or pre-fetch), so a simulator may skip
+        rendering the observation it would pass. Conservative: anything uncertain
+        (an empty buffer, which may merge a pre-fetch or replan, and RTC) reads ``True``.
+
+        Example:
+            >>> ex = ChunkedExecutor(chunk_fn=lambda b: [[0.0]] * 4, chunk_size=4, prefetch_at=0)
+            >>> ex.start()
+            >>> ex.needs_observation_next()  # cold start infers
+            True
+            >>> _ = ex.select_action({})
+            >>> ex.needs_observation_next(), len(ex._buffer)
+            (False, 3)
+        """
+        if self._rtc_enabled or not self._buffer:
+            return True
+        # The next pop leaves len - 1 actions; `_pop_and_maybe_prefetch` launches a
+        # pre-fetch (reading the observation) when the trigger reaches that count and
+        # none is in flight.
+        trigger = self._prefetch_at
+        return bool(self._running and not self._bg_pending and 0 < trigger >= len(self._buffer) - 1)
+
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _pop_and_maybe_prefetch(self, batch: Any) -> Any:

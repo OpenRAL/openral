@@ -44,6 +44,11 @@ scene:
   cameras: ["exterior", "wrist"]
   backend_options:
     boot_timeout_s: 1200
+    # Render small (398x224): pi05 resizes each 1280x720 frame to 224x126 with padding,
+    # and rendering is most of a step's cost (the restock scenes render at 224 too).
+    camera_render_height:
+      exterior: 224
+      wrist: 224
     dome_light:
       intensity: 1500.0
       color: [0.75, 0.75, 0.75]
