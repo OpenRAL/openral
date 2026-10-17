@@ -567,3 +567,28 @@ def test_a_static_neighbour_touching_a_tracked_payload_is_never_taken(robot: str
     q_b = _hand_step(binder, robot, q, 1.0 * CELL)
     for n, qq in enumerate((q, q_b, q_b)):
         assert binder.grow_untracked(store, _grid(frame, neighbour, lo, 60), qq, 20 + n) is None
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+@pytest.mark.parametrize("status", [TrackStatus.TENTATIVE, TrackStatus.SPLIT])
+def test_an_unconfirmed_cluster_track_never_makes_a_grounded_object_ambiguous(
+    robot: str, status: TrackStatus
+) -> None:
+    """r6po_dbg9: orange_2 was grasped with trk:2 (OCCLUDED, its own box) and trk:5, a
+    never-confirmed fit over orange_1 + orange_2 (refused ``cover_already_tracked`` 44 times,
+    then SPLIT) whose 21 x 12 cm box held the pinch centre: AMBIGUOUS, a PINCH_FALLBACK with no
+    identity. A measured, grounded object beats an unconfirmed fit of the same cells."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    held = track("trk:2", frame, centre, (0.024, 0.024, 0.024), status=TrackStatus.OCCLUDED)
+    cluster = track("trk:5", frame, centre + np.array([0.0, 0.0, 0.0]), (0.1, 0.06, 0.04),
+                    status=status)  # fmt: skip
+    store = DictStore([held, cluster])
+    b = binder.on_attach(store, q, stamp_ns=10)
+    assert b.outcome is BindOutcome.TRACKED and b.candidates == ("trk:2",)
+    assert b.attachment.object_id == "trk:2"
+    kept = store.get("trk:5")
+    assert kept is not None and kept.status is status  # untouched: not bound, not cleared
+    # With no grounded object, the unconfirmed track is still the (only) candidate.
+    alone = DictStore([cluster])
+    assert binder.on_attach(alone, q, stamp_ns=11).candidates == ("trk:5",)
