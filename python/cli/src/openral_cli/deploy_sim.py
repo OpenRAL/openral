@@ -47,7 +47,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -2099,6 +2099,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
         confine_sim_scope(env)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
+    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{venv_site}{os.pathsep}{existing}" if existing else venv_site
     venv_bin = os.path.dirname(sys.executable)
@@ -2150,7 +2151,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             _console.print(f"[red]config error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        _reap_orphans_with_log()
+        _reap_orphans_with_log(invocation.hal_mode)
 
         _preflight_palette_deps(
             repo_root=repo_root,
@@ -2298,7 +2299,7 @@ def _ros2_pkg_prefix(pkg: str) -> str | None:
     return out or None
 
 
-def _reap_orphans_with_log() -> None:
+def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
     """Kill orphan openral-graph processes and log the count.
 
     Reap orphan graph processes from a prior crashed/Ctrl-C'd run.
@@ -2320,7 +2321,7 @@ def _reap_orphans_with_log() -> None:
         # scoped by ``ROS_DOMAIN_ID``.
         _console.print("[yellow]orphan reap skipped (OPENRAL_SKIP_ORPHAN_REAP=1)[/yellow]")
         return
-    killed = _kill_orphan_openral_graph_processes()
+    killed = _kill_orphan_openral_graph_processes(_prepare_launch_env(hal_mode=hal_mode))
     if killed:
         _console.print(
             f"[yellow]reaped {killed} orphan openral-graph process(es) from a prior run[/yellow]"
@@ -2432,7 +2433,28 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     )
 
 
-def _kill_orphan_openral_graph_processes() -> int:
+#: Set on every launch env (``_prepare_launch_env``): the checkout a deploy graph runs from.
+#: The orphan sweep reaps only processes carrying this CLI's value (and its domain).
+GRAPH_ROOT_ENV: Final[str] = "OPENRAL_DEPLOY_GRAPH_ROOT"
+
+
+def _graph_identity(env: Mapping[str, str]) -> tuple[str, str]:
+    """``(ROS_DOMAIN_ID, checkout)`` a graph launched with ``env`` runs under."""
+    root = env.get(GRAPH_ROOT_ENV) or str(_repo_root_from(Path(__file__)))
+    return env.get("ROS_DOMAIN_ID") or "0", root
+
+
+def _proc_identity(entry: Path) -> tuple[str, str | None] | None:
+    """``(ROS_DOMAIN_ID, checkout tag)`` from ``/proc/<pid>/environ``; ``None`` if unreadable."""
+    try:
+        raw = (entry / "environ").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return None
+    env = dict(kv.split("=", 1) for kv in raw.decode(errors="replace").split("\x00") if "=" in kv)
+    return env.get("ROS_DOMAIN_ID") or "0", env.get(GRAPH_ROOT_ENV)
+
+
+def _kill_orphan_openral_graph_processes(env: Mapping[str, str] | None = None) -> int:
     """SIGKILL orphaned openral-graph processes from a prior ``openral deploy sim``.
 
     A graceful ``Ctrl-C`` doesn't always propagate through ``ros2
@@ -2450,7 +2472,11 @@ def _kill_orphan_openral_graph_processes() -> int:
       configure step hangs waiting for the robocasa loader.
 
     Match orphans by argv signature so we never reach into other
-    users' processes or unrelated python invocations. Best-effort:
+    users' processes or unrelated python invocations, and only on this graph's own
+    ``ROS_DOMAIN_ID`` and checkout (``GRAPH_ROOT_ENV``, read from each candidate's
+    ``/proc/<pid>/environ``; ``env`` is the launch env, default the CLI's own): another
+    session's graph on the same host, on another domain or from another worktree, is
+    never touched (#418 Spark, 2026-10-17). A process without the tag is not ours. Best-effort:
     SIGKILL failures (permission denied, race) are silently
     skipped. Returns the count of processes killed for logging.
     """
@@ -2461,6 +2487,7 @@ def _kill_orphan_openral_graph_processes() -> int:
         # FileNotFoundError crash inside _run_launch.
         return 0
     me = os.getuid()
+    identity = _graph_identity(os.environ if env is None else env)
     killed = 0
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -2487,6 +2514,8 @@ def _kill_orphan_openral_graph_processes() -> int:
             continue
         if not _cmdline_is_openral_graph_process(cmdline):
             continue
+        if _proc_identity(entry) != identity:
+            continue  # another graph's (domain or checkout), or untagged
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
             killed += 1
@@ -2623,7 +2652,7 @@ def _run_launch(
         # those harnesses reap by domain instead (``_reap_domain`` in
         # ``tools/_ceiling_probe.py``).
         if os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") != "1":
-            _kill_orphan_openral_graph_processes()
+            _kill_orphan_openral_graph_processes(env)
     return proc.returncode if proc.returncode is not None else 0
 
 
