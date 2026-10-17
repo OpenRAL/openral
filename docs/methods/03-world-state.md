@@ -180,7 +180,7 @@ _Standing queries (#418 Addendum G): a query lives as long as its goal; never a 
   - `close_goal(goal_id) -> None` — End a goal's queries. (L152)
   - `ready(goal_id) -> bool` — `grounding_ready`: every query RESOLVED. (L157)
   - `update(tracks, *, now_ns) -> list[QueryEscalation]` — UNRESOLVED → RESOLVING (TENTATIVE/RELEASED match) → RESOLVED (≥ `min_instances` CONFIRMED/OCCLUDED/BOUND); all lost again → UNRESOLVED with the timer restarted; one `unresolved` escalation after `search_start_s`, `EXHAUSTED` + `exhausted` at `search_max_s`, all in source time. (L162)
-  - `due(*, now_ns) -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting more instances) and every other resolved query whose last locate is `continuous_s` of source time old (#418, user 2026-10-17: detection runs for the whole goal, so an object that only becomes visible later, e.g. one the arm hid at goal start, is still picked up; `TrackerParams.continuous_locate_s`).
+  - `due(*, now_ns) -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting more instances) and every other resolved query whose last locate is `continuous_s` of source time old (#418, user 2026-10-17: detection runs for the whole goal, so an object that only becomes visible later, e.g. one the arm hid at goal start, is still picked up; `TrackerParams.continuous_locate_s`). (L196)
 
 ### `python/world_state/src/openral_world_state/object_tracker/scheduler.py`
 _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7)._
