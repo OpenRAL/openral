@@ -394,9 +394,11 @@ class _IsaacSimSidecar(SidecarSimRollout):
     layout: IsaacActionLayout | None = None
     # One-shot frame mode for the next ``step`` (``set_frames_next_step``).
     _frames_next: str = "render"
-    # The frame keys of the last observation that carried frames, reused by a
-    # ``frames="none"`` step (its reply carries none).
-    _last_frames: dict[str, Any] = field(default_factory=dict)
+    # The wrapped frame entries (``images`` / ``image_time_ns`` / ``depth_frames``) of the
+    # last reply that carried frames, reused as the same objects by a ``frames="none"``
+    # step (its reply carries none): consumers tell a new frame from a reused one by
+    # identity (``SimAttachedHAL.read_depth_frames``, the sensor bridge).
+    _wrapped_frames: dict[str, Any] = field(default_factory=dict)
     # ``backend_options.keep_alive``: ``close`` leaves the sidecar running for the
     # next run of the same scene to adopt (``launch_id`` identity) instead of ending it.
     keep_alive: bool = False
@@ -581,12 +583,9 @@ class _IsaacSimSidecar(SidecarSimRollout):
             )
         self._sim_dt_per_tick_s = float(dt)
 
-    def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
-        if "images" not in raw and self._last_frames:
-            # A frames="none" step: the sidecar rendered nothing and sent no frames.
-            raw = {**raw, **self._last_frames}
-        else:
-            self._last_frames = {k: raw[k] for k in _FRAME_KEYS if k in raw}
+    def _wrap_frames(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """The frame entries of a reply that carries frames, in eval-layer shape."""
+        out: dict[str, Any] = {}
         images_raw = raw.get("images", {})
         images: dict[str, NDArray[np.uint8]] = {
             k: np.asarray(v, dtype=np.uint8) for k, v in images_raw.items()
@@ -598,18 +597,37 @@ class _IsaacSimSidecar(SidecarSimRollout):
             w = self.scene.observation_width
             cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
             images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
-        state = np.asarray(raw.get("state", []), dtype=np.float32).reshape(-1)
-        obs: Observation = {
-            "images": images,
-            "state": state,
-            "task": raw.get("task", self.task.instruction),
-        }
+        out["images"] = images
         # Sim time (ns, the sidecar's ``sim_time_ns`` domain) each camera's frame
         # shows, by obs key — the RTX pipeline delivers images a few steps behind the
         # state (issue #361), so they are NOT from this step's time.
         image_times = raw.get("image_time_ns")
         if isinstance(image_times, dict):
-            obs["image_time_ns"] = {str(k): int(v) for k, v in image_times.items()}
+            out["image_time_ns"] = {str(k): int(v) for k, v in image_times.items()}
+        # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
+        # the RGB-D streams a real driver publishes, for the vision attachment leg.
+        # One contract for every backend (``openral_sim.depth_frames``).
+        frames = raw.get("depth_frames")
+        if isinstance(frames, dict):
+            from openral_sim.depth_frames import depth_frame
+
+            out["depth_frames"] = {
+                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
+                for k, v in frames.items()
+                if isinstance(v, dict)
+            }
+        return out
+
+    def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+        if "images" in raw or not self._wrapped_frames:
+            self._wrapped_frames = self._wrap_frames(raw)
+        # else a frames="none" step: the sidecar rendered nothing, the last frames stand.
+        state = np.asarray(raw.get("state", []), dtype=np.float32).reshape(-1)
+        obs: Observation = {
+            **self._wrapped_frames,
+            "state": state,
+            "task": raw.get("task", self.task.instruction),
+        }
         # Real robot joint angles (manifest order), when the sidecar provides
         # them — `openral deploy sim`'s SimAttachedHAL.read_state reads this for
         # a non-MuJoCo backend's /joint_states.
@@ -627,18 +645,6 @@ class _IsaacSimSidecar(SidecarSimRollout):
         base_pose = raw.get("base_pose")
         if base_pose is not None:
             obs["base_pose"] = np.asarray(base_pose, dtype=np.float32).reshape(-1)
-        # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
-        # the RGB-D streams a real driver publishes, for the vision attachment leg.
-        # One contract for every backend (``openral_sim.depth_frames``).
-        frames = raw.get("depth_frames")
-        if isinstance(frames, dict):
-            from openral_sim.depth_frames import depth_frame
-
-            obs["depth_frames"] = {
-                str(k): depth_frame(v["depth"], v["rgb"], v["k"], v["optical_in_base"])
-                for k, v in frames.items()
-                if isinstance(v, dict)
-            }
         # 2-D LaserScan range fan (base_link), when the manifest scene has a lidar
         # — SimSensorBridge publishes it as /scan.
         scan = raw.get("scan")
