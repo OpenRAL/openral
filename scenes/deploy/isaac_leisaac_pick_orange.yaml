@@ -125,7 +125,8 @@ scene:
 # orange_1 (no static collider supports it: `strip_xform_colliders`) and the plate's
 # `on_plate` region, padded 2 cm, plus 10 cm headroom. A scene may declare these two
 # boxes. The producer measures the region and confirms the workspace on the voxel map
-# (`workspace_region` is producer-only). The tool's derived static geometry is not
+# (`workspace_region` is producer-only). The search box is
+# labelled `sim:` (ground truth): it serves the HAL only and never seeds the #418 tracker. The tool's derived static geometry is not
 # used. SIM-ONLY, pending Safety-WG review (ADR + hazard rows owed).
 grasp_declaration:
   target_id: "obj:orange_1"
@@ -136,7 +137,7 @@ grasp_declaration:
     frame_id: base
     pose: {xyz: [0.073808, -0.303396, 0.050843], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: base}
     half_extents: [0.073359, 0.073979, 0.070916]
-    evidence_ref: "reasoner_seed:detection 'orange_1'"
+    evidence_ref: "sim:orange_1"
     stamp_ns: 0
   workspace_box:
     frame_id: base

@@ -124,7 +124,8 @@ scene:
 # maple table, `/World/environment/table/table_01`; its legs left out) and the bowl's
 # `in_bowl` region, padded 2 cm, plus headroom, cut to the 0.5 m half-extent cap around
 # the banana. The producer confirms it on the voxel map (`workspace_region` is
-# producer-only).
+# producer-only). The search box is labelled `sim:` (ground truth): it serves the HAL
+# only and never seeds the #418 tracker.
 # HAZARD-LOG LINE OWED: the table is a MOVABLE support (an enabled, non-kinematic rigid
 # body here and in Arena). The sidecar exports it flagged `dynamic`, so it is never
 # declared static geometry, and the workspace relaxes nothing until the map confirms it.
@@ -138,7 +139,7 @@ grasp_declaration:
     frame_id: panda_link0
     pose: {xyz: [0.509671, -0.115792, 0.021202], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: panda_link0}
     half_extents: [0.099504, 0.134225, 0.063602]
-    evidence_ref: "reasoner_seed:detection 'banana'"
+    evidence_ref: "sim:banana"
     stamp_ns: 0
   workspace_box:
     frame_id: panda_link0

@@ -643,7 +643,10 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     around one instance) becomes the ``seed`` of the TARGET query whose label its
     ``target_id`` names (``obj:orange_1`` → ``orange``, or that placement's ``label``): the
     tracker's map-seeded prompt inside it, so a class no open-vocabulary locator knows
-    still grounds. A seed is a search hint only, never kernel geometry.
+    still grounds. A seed is a search hint only, never kernel geometry. A box whose
+    ``evidence_ref`` is ``sim:`` (measured from the simulator's ground truth) never seeds:
+    a real deploy has no such box, so the tracker is validated without it (logged at INFO
+    as ``deploy.object_query_seed_dropped``).
     """
     runtime = deploy_scene.runtime if deploy_scene is not None else None
     if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
@@ -667,7 +670,27 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
         return ""
     queries = placement_queries(placements)
     decl = deploy_scene.grasp_declaration
-    if decl is not None and decl.search_box is not None:
+    if (
+        decl is not None
+        and decl.search_box is not None
+        and decl.search_box.evidence_ref.startswith("sim:")
+    ):
+        # A box measured from the simulator's ground truth is not a seed a real deploy
+        # has: the tracker must ground the object from its own sensing, so it is validated
+        # without one. The HAL still gets the declaration's search_box unchanged.
+        import structlog
+
+        structlog.get_logger(__name__).info(
+            "deploy.object_query_seed_dropped",
+            target_id=decl.target_id,
+            evidence_ref=decl.search_box.evidence_ref,
+            reason="sim ground truth is not a seed a real deploy has",
+        )
+        _console.print(
+            f"[yellow]object tracking: not seeding {decl.target_id} from "
+            f"{decl.search_box.evidence_ref!r} (sim ground truth)[/yellow]"
+        )
+    elif decl is not None and decl.search_box is not None:
         # The declared object's placement names its label (its detector label, else its
         # scene name), normalised as the queries' labels were.
         obj = decl.target_id.split(":", 1)[-1]

@@ -61,6 +61,54 @@ def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() ->
     ]
 
 
+def _queries(scene: object) -> list[dict[str, object]]:
+    import json
+
+    from openral_cli.deploy_sim import _object_queries_json
+
+    return list(json.loads(_object_queries_json(scene, "Grab orange and place into plate")))
+
+
+def _tracking_pick_orange() -> object:
+    from openral_core import DeployScene
+
+    scene = DeployScene.from_yaml(str(_PICK_ORANGE))
+    assert scene.runtime is not None
+    return scene.model_copy(
+        update={"runtime": scene.runtime.model_copy(update={"object_tracking": "shadow"})}
+    )
+
+
+def test_a_sim_ground_truth_search_box_never_seeds_the_tracker() -> None:
+    """PickOrange's search_box is measured from the sim (``sim:orange_1``): no seed.
+
+    A real deploy has no ground-truth box, so the tracker must ground the orange from its
+    own sensing. The HAL's declaration keeps the box (the legacy path is unchanged).
+    """
+    scene = _tracking_pick_orange()
+    decl = scene.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    assert decl.search_box.evidence_ref.startswith("sim:")
+    assert [q.get("seed") for q in _queries(scene)] == [None, None]
+    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": 8})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("grasp_declaration_json:=")]
+    assert '"evidence_ref":"sim:orange_1"' in raw
+
+
+def test_a_user_declared_search_box_still_seeds_the_tracker() -> None:
+    scene = _tracking_pick_orange()
+    decl = scene.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    box = decl.search_box.model_copy(update={"evidence_ref": "operator:tote_left"})
+    scene = scene.model_copy(
+        update={"grasp_declaration": decl.model_copy(update={"search_box": box})}
+    )
+    seeds = {q["label"]: q.get("seed") for q in _queries(scene)}
+    assert seeds["plate"] is None
+    assert isinstance(seeds["orange"], dict)
+    assert seeds["orange"]["evidence_ref"] == "operator:tote_left"
+
+
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
