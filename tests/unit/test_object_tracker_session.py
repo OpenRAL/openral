@@ -281,3 +281,29 @@ def test_bind_relays_the_workspace_box_while_the_map_confirms_it() -> None:
     assert held is not None and held.stamp_ns == 7 * _S and held.half_extents == ws.half_extents
     s.on_grid(grid_from_depth(render([], _RIG)[0], _RIG, shift_z=10.0), 8 * _S)  # map empty
     assert s.workspace_region() is None
+
+
+def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() -> None:
+    """r7po_on1..3: the policy grasps whichever orange it picks, while the declaration names
+    ``obj:orange_1``. Every live track of the declaration's own query (label + role) carries its
+    key, so the kernel's K2 (``tracked_grasp_eligible n=3 of=5``) exempts the one the hand
+    reaches; a plate (another role) and a lost track do not follow it."""
+    _, _, centre = arm_at_hold("so101_follower")
+    s = _session("so101_follower")
+    oranges = [_mint(s, centre + np.array([0.06 * k, 0.0, 0.0])) for k in range(3)]
+    plate = _mint(s, centre + np.array([0.0, 0.3, 0.0]), "plate")
+    store = s.tracker.store
+    store.replace(store.get(plate).model_copy(update={"role": ObjectRole.DESTINATION}))  # type: ignore[union-attr]
+    d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    decl = GraspDeclaration(
+        target_id="obj:orange_1",
+        contact_links=d.grasp_contact_links(),
+        timeout_s=60.0,
+        stamp_ns=300,
+        active=True,
+        target_queries=(ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET),),
+    )
+    s.on_grasp_declaration(decl)
+    keys = {t.object_id: t.declaration_key for t in store.all()}
+    assert all(keys[o] == "obj:orange_1@300" for o in oranges), keys
+    assert keys[plate] != "obj:orange_1@300", keys
