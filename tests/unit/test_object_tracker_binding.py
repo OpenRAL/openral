@@ -340,3 +340,83 @@ def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
         assert (corners @ a).min() >= pinch.palm_m - 1e-6
         reach.append((corners @ a).max())
     assert max(reach) > pinch.palm_m + 0.1  # what lies in front of the palm is still held
+
+
+def _lift(robot: str, q: dict[str, float]) -> dict[str, float]:
+    """The same hold, the arm lifted (the hand rises and moves, the jaw unchanged)."""
+    lifted = dict(q)
+    if robot == "droid_franka_robotiq":
+        lifted["panda_joint2"] -= 0.15
+        lifted["panda_joint4"] += 0.10
+    else:
+        lifted["shoulder_lift"] -= 0.25
+    return lifted
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_an_untracked_payload_grows_by_cells_that_move_with_the_hand(robot: str) -> None:
+    """#418 r4: a fallback's revision stayed 0 while 2-10 cm of the held object stuck out
+    (C2's in-hand growth ran for TRACKED bindings only). Cells that hold their place in the
+    hand across a hand motion, and left their old place in the world, are the payload; the
+    table the object stood on is not."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    b0 = binder.on_attach(DictStore([]), q, stamp_ns=10)
+    assert b0.outcome is BindOutcome.UNTRACKED
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    r_pinch = t_a[:3, :3] @ binder.hand.axes
+    # A body much longer than any stroke along the pad width, through the pinch centre.
+    half = np.array([0.01, 0.01, 0.15])
+    g = np.stack(np.meshgrid(*[np.arange(-h, h + 1e-9, 0.004) for h in half]), -1).reshape(-1, 3)
+    body_a = g @ r_pinch.T + centre
+    floor = float(body_a[:, 2].min()) - CELL
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    table = np.column_stack([xy + centre[:2], np.full(len(xy), floor)])
+    lo = np.floor((centre - 0.3) / CELL) * CELL
+    q_b = _lift(robot, q)
+    t_b = binder.hand.t_frame_from_attach(frame, q_b)
+    move = t_b @ np.linalg.inv(t_a)
+    assert np.linalg.norm(move[:3, 3]) > 2 * CELL  # the hand really moved
+    body_b = body_a @ move[:3, :3].T + move[:3, 3]
+    store = DictStore([])
+    assert (
+        binder.grow_untracked(store, _grid(frame, np.vstack([body_a, table]), lo, 60), q, 20)
+        is None
+    )
+    grown = binder.grow_untracked(store, _grid(frame, np.vstack([body_b, table]), lo, 60), q_b, 30)
+    assert grown is not None and grown.attachment.geometry_revision == 1
+    assert grown.attachment.primitives[0] == b0.attachment.primitives[0]  # a union only
+    from openral_world_state.object_tracker.binding import _outside_m
+
+    held = binder._held_boxes(q_b)
+    hand = binder.hand.hand_boxes(frame, q_b)
+    grid_b = _grid(frame, body_b, lo, 60)
+    cells = grid_b.occupied_centers()
+    cells = cells[_outside_m(cells, hand) > CELL / 2]
+    assert float(_outside_m(cells, held).max()) < CELL  # the whole body is now payload
+    table_cells = _grid(frame, table, lo, 60).occupied_centers()
+    assert float(_outside_m(table_cells, held).min()) > CELL / 2  # the table is not
+    # Seen again where it is: nothing new.
+    assert (
+        binder.grow_untracked(store, _grid(frame, np.vstack([body_b, table]), lo, 60), q_b, 40)
+        is None
+    )
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_static_cells_never_grow_an_untracked_payload(robot: str) -> None:
+    """The hand moves over a table and a wall with nothing in it: the cells it passes keep
+    their place in the world, so none of them is ever the payload."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    binder.on_attach(DictStore([]), q, stamp_ns=10)
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    table = np.column_stack([xy + centre[:2], np.full(len(xy), centre[2] - 0.03)])
+    wall = np.column_stack(
+        [np.full(len(xy), centre[0] + 0.04), xy[:, 0] + centre[1], xy[:, 1] + centre[2]]
+    )
+    world = np.vstack([table, wall])
+    lo = np.floor((centre - 0.3) / CELL) * CELL
+    store = DictStore([])
+    for i, qq in enumerate((q, _lift(robot, q), q)):
+        assert binder.grow_untracked(store, _grid(frame, world, lo, 60), qq, 20 + i) is None

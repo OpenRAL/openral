@@ -236,6 +236,12 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._tick(source_stamp_ns)
+            if self._joints <= self.positions.keys():
+                for binder in self.binders.values():  # untracked payloads grow on the map
+                    if binder.grow_untracked(
+                        self.tracker.store, grid, self.positions, source_stamp_ns
+                    ):
+                        self.attachment_changes += 1
 
     def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
         """Fold measured joints in (manifest names); run the jaw-open release rule."""
