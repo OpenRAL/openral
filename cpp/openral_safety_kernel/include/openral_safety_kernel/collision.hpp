@@ -567,7 +567,8 @@ enum class GraspRegionStatus : std::uint8_t {
   kOversizeVolume = 6,  ///< a box past kMaxGraspRegionVolumeM3
 };
 
-struct TrackedGraspTable;  // issue #418 K2, defined below
+struct TrackedGraspTable;     // issue #418 K2, defined below
+struct WorkspaceExplanation;  // issue #418 K7, defined below
 
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
@@ -604,6 +605,9 @@ struct VoxelGrid {
   /// Issue #418 K2: the tracked grasp exemption. Non-null and valid = it, not
   /// `grasp_region`, is the grasp exemption source (`TrackedGraspTable`).
   const TrackedGraspTable* tracked_grasp{nullptr};
+  /// Issue #418 K7: non-null = workspace contact is narrowed to EXPLAINED cells
+  /// (`WorkspaceExplanation`, `workspace_cell_explained`). Null = the #349 rule.
+  const WorkspaceExplanation* workspace_explained{nullptr};
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -681,7 +685,8 @@ struct CollisionHit {
   /// Why the reported pair was NOT tolerated by a live workspace (disclosure, #349):
   /// 0 not applicable / exempt, 1 the link is not a hand link, 2 the hand is over its
   /// speed bound (or its speed is unknown), 3 over its lead bound (or unknown), 4 the
-  /// cell centre lies outside the workspace box.
+  /// cell centre lies outside the workspace box, 5 the cell is not explained (issue
+  /// #418 K7: no tracked object, declared static collider or measured support).
   int workspace_denied{0};
 };
 
@@ -1557,6 +1562,57 @@ std::size_t tracked_box_cover(const VoxelGrid& grid, const Transform& box,
 /// the tracker's own expected-cell count (`TrackedObject.visible_cells`).
 bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexcept;
 
+/// How far (m), horizontally, from a tracked object's box the measured support
+/// under it explains a workspace cell (issue #418 K7). **A Safety-WG
+/// placeholder**: a fingertip grazing the table beside the object it grasps (the
+/// PickOrange g4 contact) is within a finger's length of that object. Past it the
+/// support explains nothing.
+inline constexpr double kExplainedSupportReachM = 0.05;
+
+/// Issue #418 K7, explained cells for workspace contact (hazard OT-11;
+/// Safety-WG review pending). While `VoxelGrid::workspace_explained` points at
+/// one, a (hand link, cell) pair the #349 workspace would tolerate is tolerated
+/// only when the cell is EXPLAINED (`workspace_cell_explained`):
+/// * its centre lies in an explaining tracked object's box — any role; the
+///   lifecycle fills only objects confirmed / occluded, (id, epoch) not retired,
+///   confirmed within `grasp_region_max_age_s`, its box cover-checked on the
+///   kernel's own grid (never split / bound / tentative / released / lost);
+/// * or it is a cell of the declared static geometry (`static_cells`, the
+///   same surface points the octomap bridge marks into every grid);
+/// * or it is in the measured support's top layer, or the layer under it, of
+///   one of those objects (centre z within ½ cell of `support_z`, the tracker's
+///   measured top less one cell), within `kExplainedSupportReachM` of its box
+///   horizontally.
+/// Everything else in the workspace — a person's hand in the tote, a body the
+/// tracker never grounded — trips exactly as outside it. A new conjunct on the
+/// #349 rule only: the explained set can never exempt what the workspace would
+/// not, so trips under K7 ⊇ trips under #349, and ⊆ trips with no workspace.
+struct WorkspaceExplanation {
+  std::size_t n_objects{0};
+  std::array<Transform, kMaxTrackedObjects> box{};  ///< robot base frame
+  std::array<Vec3, kMaxTrackedObjects> half_extents{};
+  /// Measured support top less one cell, base-frame z; NaN = none measured.
+  std::array<double, kMaxTrackedObjects> support_z{};
+  /// Per cell of the CURRENT grid (its layout), nonzero = a declared static
+  /// collider's cell. Null, or a length other than the grid's, = none.
+  const std::uint8_t* static_cells{nullptr};
+  std::size_t static_cells_n{0};
+};
+
+/// Is the cell centred at `center` (base frame) explained under K7? False with
+/// no `grid.workspace_explained`, a non-finite centre or a degenerate grid.
+/// Allocation-free.
+bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcept;
+
+/// Mark in `mask` (the grid's layout, `mask_n` long) every cell of `grid` that
+/// holds one of `base_points` — exactly the octomap bridge's
+/// `mark_base_points`, so K7's static cells are the cells the bridge marked.
+/// Clears `mask` first; points outside the grid are ignored. Returns the number
+/// of marked cells; 0 (nothing marked) for a degenerate grid or a mask shorter
+/// than the grid. Not on the hot path: once per change of the grid's geometry.
+std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,
+                              std::uint8_t* mask, std::size_t mask_n) noexcept;
+
 /// Does a tracked object's box meet the hand that carries `object`, at the
 /// configuration FK'd into `scratch` (issue #418 K3, the binding check)?
 ///
@@ -1598,7 +1654,9 @@ const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;
 /// of range), a hand speed that is not finite or above `max_speed_mps`, a hand
 /// lead that is not finite or above `max_lead_m` (a non-finite or non-positive
 /// bound included, either one), a degenerate or non-finite box,
-/// or the cell centre outside the box (exact point-in-OBB). The ADR-0115
+/// or the cell centre outside the box (exact point-in-OBB), or — while
+/// `grid.workspace_explained` is set (issue #418 K7) — a cell that
+/// `workspace_cell_explained` does not explain. The ADR-0115
 /// grasp-target exemption is decided first by `check_voxel_collision`; this is
 /// only asked of pairs it did not exempt. Allocation-free.
 bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept;
