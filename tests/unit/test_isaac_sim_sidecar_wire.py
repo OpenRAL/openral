@@ -14,6 +14,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -789,3 +790,74 @@ class TestSimRunnerFramesOnDemand:
             finally:
                 runner._env.close()
         assert s.frames_requests == ["none", "none", "none", "fresh"] * 2
+
+
+class TestDetach:
+    """``SidecarClient.detach`` leaves a spawned child running and out of the exit reaper."""
+
+    def test_detached_child_survives_and_leaves_the_reaper(self) -> None:
+        import subprocess
+
+        from openral_sim import sidecar as sc
+
+        client = SidecarClient(
+            name="isaac",
+            host="127.0.0.1",
+            port=_free_port(),
+            timeout_ms=1_000,
+            boot_timeout_s=1.0,
+            launch_argv=["sleep", "30"],
+            auto_spawn=True,
+        )
+        client._spawn()  # the real spawn path: own session, registered for the reaper
+        child = client._child
+        assert child is not None and child in sc._spawned_children
+        try:
+            assert client.detach() == child.pid
+            assert child not in sc._spawned_children
+            assert child.poll() is None  # still running
+            client.close()  # nothing left to terminate
+            assert child.poll() is None
+        finally:
+            child.kill()
+            child.wait(timeout=5)
+        assert isinstance(child, subprocess.Popen)
+
+
+class TestLogPath:
+    """A spawned sidecar with ``log_path`` writes there, not to our stdout.
+
+    A kept-alive sidecar outlives the run; inheriting our stdout would keep a pipeline
+    reading it (``openral sim run ... | tee``) open forever (found live on Spark).
+    """
+
+    def test_child_output_goes_to_the_file_and_not_our_pipe(self, tmp_path: Path) -> None:
+        import subprocess
+        import sys
+
+        log = tmp_path / "sidecar.log"
+        script = (
+            "import sys; from openral_sim.sidecar import SidecarClient\n"
+            f"c = SidecarClient(name='t', host='127.0.0.1', port={_free_port()}, timeout_ms=100,"
+            " boot_timeout_s=1.0, launch_argv=['sh', '-c', 'echo booted; sleep 30'],"
+            f" auto_spawn=True, log_path=__import__('pathlib').Path({str(log)!r}))\n"
+            "c._spawn(); print(c.detach(), flush=True)\n"
+        )
+        # The parent exits at once; our read of its stdout must end even though the
+        # detached child is still running.
+        out = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=20, check=True
+        )
+        pid = int(out.stdout.strip().splitlines()[-1])
+        try:
+            deadline = time.monotonic() + 5.0
+            while "booted" not in (log.read_text() if log.exists() else ""):
+                assert time.monotonic() < deadline, "child output never reached the log"
+                time.sleep(0.05)
+            # Only the child prints a bare "booted" line (our spawn log quotes its argv).
+            assert "booted" not in out.stdout.splitlines()
+        finally:
+            import os
+            import signal
+
+            os.killpg(pid, signal.SIGKILL)
