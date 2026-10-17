@@ -18,7 +18,10 @@ LOST match's box rides along as ``last_seen``: a search prior, never kernel geom
 
 ``due`` is the passive-search order (G.2): every query not yet resolved, least recently
 served first (fair: no query is starved by another, nor by the hand), then resolved
-``count: "all"`` queries, which keep detecting.
+``count: "all"`` queries (they keep detecting more instances) and every other resolved query
+whose last locate is ``continuous_s`` of source time old: detection runs
+for the whole goal, so an object that only becomes visible later (one the arm hid at goal
+start) is still picked up, at a modest rate.
 """
 
 from __future__ import annotations
@@ -100,6 +103,7 @@ class QueryBook:
     Args:
         search_start_s: Unresolved source time before active search is requested.
         search_max_s: Unresolved source time before the query is ``EXHAUSTED``.
+        continuous_s: Source seconds between locates of a RESOLVED query. *Calibration point.*
 
     Example:
         >>> from openral_core import ObjectRole
@@ -112,10 +116,13 @@ class QueryBook:
         (['exhausted'], 'exhausted')
     """
 
-    def __init__(self, *, search_start_s: float, search_max_s: float) -> None:
+    def __init__(
+        self, *, search_start_s: float, search_max_s: float, continuous_s: float = 2.0
+    ) -> None:
         """Start with no queries."""
         self._start_ns = int(search_start_s * _NS)
         self._max_ns = int(search_max_s * _NS)
+        self._continuous_ns = int(continuous_s * _NS)
         self._queries: dict[tuple[str, str], StandingQuery] = {}
 
     @property
@@ -186,8 +193,8 @@ class QueryBook:
             log.info("object_tracker.escalation", kind=e.kind, goal_id=e.goal_id, label=e.label)
         return out
 
-    def due(self) -> list[StandingQuery]:
-        """Queries owed a detection, in fair order (module docstring)."""
+    def due(self, *, now_ns: int) -> list[StandingQuery]:
+        """Queries owed a detection at source time ``now_ns``, in fair order (module docstring)."""
         open_ = [
             q
             for q in self._queries.values()
@@ -196,7 +203,8 @@ class QueryBook:
         more = [
             q
             for q in self._queries.values()
-            if q.status is ObjectQueryStatus.RESOLVED and q.query.count == "all"
+            if q.status is ObjectQueryStatus.RESOLVED
+            and (q.query.count == "all" or now_ns - q.last_served_ns >= self._continuous_ns)
         ]
         return sorted(open_, key=lambda q: q.last_served_ns) + sorted(
             more, key=lambda q: q.last_served_ns

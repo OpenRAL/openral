@@ -169,18 +169,18 @@ _Track table, association by continuity, source-time ageing (#418 steps 5-6)._
 ### `python/world_state/src/openral_world_state/object_tracker/grounding.py`
 _Standing queries (#418 Addendum G): a query lives as long as its goal; never a first-frame snapshot._
 
-- `@dataclass StandingQuery` — `(goal_id, query_id)`, the `ObjectQuery`, `declaration_key`, `ObjectQueryStatus`, search start (`since_ns`), fairness key (`last_served_ns`), `escalated`. (L43)
-  - `key` (property) — `(goal_id, query_id)`. (L67)
-  - `matches(track) -> bool` — Same label and role. (L71)
-- `@dataclass QueryEscalation` — Active-search data for the reasoner, never executed by the tracker: `kind` `unresolved` (start `find-object`) / `exhausted` (budget spent → replanning ladder), `last_seen` (last LOST match's box, a search prior). (L77)
-- `class QueryBook(*, search_start_s, search_max_s)` — Every live goal's queries. (L97)
-  - `queries` (property) — (L122)
-  - `get(goal_id, query_id) -> StandingQuery | None` — (L126)
-  - `open(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query at dispatch. (L130)
-  - `close_goal(goal_id) -> None` — End a goal's queries. (L145)
-  - `ready(goal_id) -> bool` — `grounding_ready`: every query RESOLVED. (L150)
-  - `update(tracks, *, now_ns) -> list[QueryEscalation]` — UNRESOLVED → RESOLVING (TENTATIVE/RELEASED match) → RESOLVED (≥ `min_instances` CONFIRMED/OCCLUDED/BOUND); all lost again → UNRESOLVED with the timer restarted; one `unresolved` escalation after `search_start_s`, `EXHAUSTED` + `exhausted` at `search_max_s`, all in source time. (L155)
-  - `due() -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting). (L189)
+- `@dataclass StandingQuery` — `(goal_id, query_id)`, the `ObjectQuery`, `declaration_key`, `ObjectQueryStatus`, search start (`since_ns`), fairness key (`last_served_ns`), `escalated`. (L46)
+  - `key` (property) — `(goal_id, query_id)`. (L70)
+  - `matches(track) -> bool` — Same label and role. (L74)
+- `@dataclass QueryEscalation` — Active-search data for the reasoner, never executed by the tracker: `kind` `unresolved` (start `find-object`) / `exhausted` (budget spent → replanning ladder), `last_seen` (last LOST match's box, a search prior). (L80)
+- `class QueryBook(*, search_start_s, search_max_s, continuous_s=2.0)` — Every live goal's queries. (L100)
+  - `queries` (property) — (L129)
+  - `get(goal_id, query_id) -> StandingQuery | None` — (L133)
+  - `open(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query at dispatch. (L137)
+  - `close_goal(goal_id) -> None` — End a goal's queries. (L152)
+  - `ready(goal_id) -> bool` — `grounding_ready`: every query RESOLVED. (L157)
+  - `update(tracks, *, now_ns) -> list[QueryEscalation]` — UNRESOLVED → RESOLVING (TENTATIVE/RELEASED match) → RESOLVED (≥ `min_instances` CONFIRMED/OCCLUDED/BOUND); all lost again → UNRESOLVED with the timer restarted; one `unresolved` escalation after `search_start_s`, `EXHAUSTED` + `exhausted` at `search_max_s`, all in source time. (L162)
+  - `due(*, now_ns) -> list[StandingQuery]` — Passive-search order: unresolved queries least-recently-served first, then resolved `count: "all"` queries (they keep detecting more instances) and every other resolved query whose last locate is `continuous_s` of source time old (#418, user 2026-10-17: detection runs for the whole goal, so an object that only becomes visible later, e.g. one the arm hid at goal start, is still picked up; `TrackerParams.continuous_locate_s`).
 
 ### `python/world_state/src/openral_world_state/object_tracker/scheduler.py`
 _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7)._
@@ -199,20 +199,20 @@ _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7
 ### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
 _`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._
 
-- `VIEW_WINDOW_S = 0.5` (L143) — Source seconds within which one track's fits from different depth cameras are combined: a refit from camera B is passed with the other cameras' newest clear fits no older than this to `intersect_views` (this fit primary), and the track takes its `fit_kind` (`MULTI_VIEW_CONE` when a second view contributed, else `SILHOUETTE_CONE`); provisional fits neither contribute nor are intersected (`ObjectTracker._combine_views`).
-- `ROBOT_BOX_FRACTION = 0.5` (L148) — A detector box more than this fraction ROBOT pixels is re-prompted (below).
-- `ROBOT_BOX_NEGATIVES = 3` (L150) — Issue #418 (PickOrange orange_3 under the open jaw: the locator boxed the arm as "orange" and SAM segmented the arm): a detector box more than half ROBOT pixels is re-prompted (`ObjectTracker._robot_box_reprompt`) with a positive point on the free pixels in the box that stand above the support -- the connected region lying most beside the robot (`_most_hidden`), at its pixel nearest its centroid -- and negative points on the robot (`TrackerRequest.negative_uv`, sent as `SegmentInView.negative_points`), the box kept as the mask's bound. Logged `object_tracker.robot_box_reprompt`. The fit then goes through the robot (PROVISIONAL) and needs only `TrackerParams.theta_vis_provisional` (0.25) of the object visible, not `theta_vis` (0.5). A served re-prompt clears its pending box; a resolved count-all query that keeps detecting logs `object_tracker.count_all_research` (at most every 5 s).
-- `LOCATE_ROI_PAD = 0.25` (L146) — A locate's crop: the projected search region grown by this fraction of its size on every side. The region is the query's seed, else `ObjectTracker.search_region` (the active grasp declaration's `workspace_box`, set by `ObjectTrackerSession.on_grasp_declaration`); none = the whole frame (`ObjectTracker._locate_roi`). #418 restock: the whole 1920×1080 head frame squashed to omdet's 640×640 left a carton ~40 px and `found` in ~24 % of locates.
-- `REFUSAL_LOG_PERIOD_S = 5.0` (L140) — Source seconds between INFO reports of one `(key, reason)` refusal.
+- `VIEW_WINDOW_S = 0.5` (L146) — Source seconds within which one track's fits from different depth cameras are combined: a refit from camera B is passed with the other cameras' newest clear fits no older than this to `intersect_views` (this fit primary), and the track takes its `fit_kind` (`MULTI_VIEW_CONE` when a second view contributed, else `SILHOUETTE_CONE`); provisional fits neither contribute nor are intersected (`ObjectTracker._combine_views`).
+- `ROBOT_BOX_FRACTION = 0.5` (L151) — A detector box more than this fraction ROBOT pixels is re-prompted (below).
+- `ROBOT_BOX_NEGATIVES = 3` (L153) — Issue #418 (PickOrange orange_3 under the open jaw: the locator boxed the arm as "orange" and SAM segmented the arm): a detector box more than half ROBOT pixels is re-prompted (`ObjectTracker._robot_box_reprompt`) with a positive point on the free pixels in the box that stand above the support -- the connected region lying most beside the robot (`_most_hidden`), at its pixel nearest its centroid -- and negative points on the robot (`TrackerRequest.negative_uv`, sent as `SegmentInView.negative_points`), the box kept as the mask's bound. Logged `object_tracker.robot_box_reprompt`. The fit then goes through the robot (PROVISIONAL) and needs only `TrackerParams.theta_vis_provisional` (0.25) of the object visible, not `theta_vis` (0.5). A served re-prompt clears its pending box; a resolved count-all query that keeps detecting logs `object_tracker.count_all_research` (at most every 5 s).
+- `LOCATE_ROI_PAD = 0.25` (L149) — A locate's crop: the projected search region grown by this fraction of its size on every side. The region is the query's seed, else `ObjectTracker.search_region` (the active grasp declaration's `workspace_box`, set by `ObjectTrackerSession.on_grasp_declaration`); none = the whole frame (`ObjectTracker._locate_roi`). #418 restock: the whole 1920×1080 head frame squashed to omdet's 640×640 left a carton ~40 px and `found` in ~24 % of locates.
+- `REFUSAL_LOG_PERIOD_S = 5.0` (L143) — Source seconds between INFO reports of one `(key, reason)` refusal.
 - `ObjectTracker.refusal_counts: Counter[tuple[str, str]]` — Every refusal by `(key, reason)`: `<label>@<camera>` for a fit (`too_few_points`, `no_support`, the fit's own refusal, `occluded`, `candidate_split`, `locate_found_nothing`, `no_mask`, `no_grid`), `camera:<name>` for a frame (`no_camera_pose`, `no_robot_mask`). Each is reported as an INFO `object_tracker.refused` event (key, why, count, the numbers) at most every `REFUSAL_LOG_PERIOD_S` per key and reason (`_refuse`), never DEBUG-only (#418 restock grounded nothing with no reason at INFO); the node publishes the counts on `/diagnostics` (`openral_object_tracker: refusals`, key `<key>|<why>`) at most every 5 s.
 - `class TrackerParams(BaseModel)` — Frozen calibration: `theta_vis`, `max_age_s`, `lost_s`, `keep_lost_s`, `disagree_grids`, `segment_hz`, `segment_budget_wall_s`, `search_start_s`, `search_max_s`, support probe, `fit: FitParams`. (L73)
-- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L116)
-- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector); `alternatives` (smaller qualifying candidates, largest first: `feed` tries the next when a candidate cannot be fitted or its box splits on the map, and mints a SPLIT track only from the last). (L156)
-- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L175)
-- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L191)
-  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L234)
-  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L246)
-  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L251)
+- `@dataclass CameraFrame` — Depth at its source stamp with intrinsics, `t_base_from_cam` and `robot_mask` (either `None` = ageing only). (L119)
+- `@dataclass TrackerResult` — Answer to an issued request: `mask` (segmenter) or `boxes_xyxy` (detector); `alternatives` (smaller qualifying candidates, largest first: `feed` tries the next when a candidate cannot be fitted or its box splits on the map, and mints a SPLIT track only from the last). (L159)
+- `@dataclass TrackerOutput` — `requests` (≤ 1), `tracked` (`TrackedObjectSet`), `escalations`, `bound_fits` (fits associated with BOUND tracks, for the in-hand update). (L178)
+- `class ObjectTracker(frame_id, params=None)` — `store: TrackStore`, `queries: QueryBook`. (L194)
+  - `open_query(goal_id, query_id, query, declaration_key, *, stamp_ns) -> None` — Start a standing query. (L241)
+  - `close_goal(goal_id) -> None` — End a goal's queries; tracks persist. (L253)
+  - `feed(frame, *, grid, grid_stamp_ns, wall_s, results=(), hand_spaces=()) -> TrackerOutput` — Results (answers on this same frame) → support (ring counted only below the mask's lowest point, truncated one cell under the measured top) → containing fit → `θ_vis` gate → association → mint/refit → immediate cover check; a new grid re-confirms every track (map_split → SPLIT, own-hand split → unchanged and not re-stamped, `disagree_grids` refutations → LOST, RELEASED → CONFIRMED epoch+1 after a fresh fit); visibility (CONFIRMED ↔ OCCLUDED, OCCLUDED never re-fits); source-time ageing; query update and escalations; at most one new request. (L258)
 
 ### `python/world_state/src/openral_world_state/object_tracker/pinch.py`
 _Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (`openral_core.kinematics`), pure numpy over the manifest, no HAL import._

@@ -329,3 +329,22 @@ def test_a_locate_asks_for_the_label_and_its_synonyms() -> None:
     assert req.prompt == "banana, plantain, yellow fruit" and req.label == "banana"
     (plain,) = _tracker().feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
     assert plain.prompt == "banana"
+
+
+def test_every_resolved_query_keeps_locating_at_a_modest_rate() -> None:
+    """#418 (user, 2026-10-17): detection runs for the whole goal, so an object that only
+    becomes visible later (orange_3 once the arm moves) is still picked up. A RESOLVED query
+    is due again once ``continuous_locate_s`` of source time has passed since it was last
+    served (a count-all one keeps its every-turn detection); an open query is always due."""
+    from openral_core import ObjectQueryStatus
+    from openral_world_state.object_tracker.grounding import QueryBook
+
+    book = QueryBook(search_start_s=5.0, search_max_s=60.0, continuous_s=2.0)
+    one = ObjectQuery(label="plate", count="one", role=ObjectRole.DESTINATION)
+    book.open("g", "q0", one, "obj:plate@0", stamp_ns=0)
+    book.open("g", "q1", _QUERY, "obj:banana@0", stamp_ns=0)
+    plate = book.get("g", "q0")
+    assert plate is not None
+    plate.status, plate.last_served_ns = ObjectQueryStatus.RESOLVED, 10 * _S
+    assert [q.query.label for q in book.due(now_ns=11 * _S)] == ["banana"]
+    assert [q.query.label for q in book.due(now_ns=12 * _S)] == ["banana", "plate"]

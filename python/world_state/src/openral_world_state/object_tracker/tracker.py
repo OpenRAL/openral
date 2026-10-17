@@ -75,6 +75,8 @@ class TrackerParams(BaseModel):
 
     Attributes:
         theta_vis: Visible fraction below which an object is OCCLUDED (and never fitted).
+        continuous_locate_s: Source seconds between locates of a RESOLVED query (detection
+            runs for the whole goal; ``QueryBook.due``).
         theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
             exemption-shrinking and payload-union geometry only), so a target the arm half
             hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
@@ -99,6 +101,7 @@ class TrackerParams(BaseModel):
 
     theta_vis: float = Field(default=0.5, gt=0.0, le=1.0)
     theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
+    continuous_locate_s: float = Field(default=2.0, gt=0.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -209,7 +212,11 @@ class ObjectTracker:
         self.params = params or TrackerParams()
         p = self.params
         self.store = TrackStore(frame_id)
-        self.queries = QueryBook(search_start_s=p.search_start_s, search_max_s=p.search_max_s)
+        self.queries = QueryBook(
+            search_start_s=p.search_start_s,
+            search_max_s=p.search_max_s,
+            continuous_s=p.continuous_locate_s,
+        )
         self._sched = Scheduler(segment_hz=p.segment_hz, budget_wall_s=p.segment_budget_wall_s)
         #: Every refusal so far by ``(key, reason)``: ``<label>@<camera>`` for a fit,
         #: ``camera:<name>`` for a frame (the node publishes it; see ``_refuse``).
@@ -724,7 +731,7 @@ class ObjectTracker:
                 prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
                 out.append(replace(r, stamp_ns=stamp, priority=prio))
         tracks = self.store.all()
-        for q in self.queries.due():
+        for q in self.queries.due(now_ns=self._now_ns):
             prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key,
