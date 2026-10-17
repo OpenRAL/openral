@@ -9,7 +9,7 @@ A thin rclpy lifecycle node around
 Subscribes to:
 
 - `/openral/world_state_slow` (`openral_msgs/WorldStateStamped`, 5 Hz)
-- `/openral/failure/{hal,sensor,rskill,safety,wam,critic}` (`openral_msgs/FailureTrigger`)
+- `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` (`openral_msgs/FailureTrigger`)
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
 
@@ -20,6 +20,14 @@ heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
 - `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
 - `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
   on `severity ≥ SEVERITY_FAIL`.
+- `/openral/failure/world_state` (Tier B, issue #418 Addendum G): the object
+  tracker's `KIND_OBJECT_QUERY` escalations (`ObjectQueryEvidence`, typed failure
+  `ROSObjectNotInMemory`) take a ladder rung instead (`object_query_step`):
+  `unresolved` (WARN) forces a tick with the `find-object` playbook hint;
+  `exhausted` (FAIL) is human handoff — the question ("I can't find the orange;
+  where should I look?") on `/openral/prompt`, the active task abandoned and the
+  in-flight goal cancelled (`object_not_found`); the runner ends it with
+  `FAILURE_OBJECT_NOT_FOUND`.
 - `/openral/prompt` (Tier D) always preempts.
 
 All preemptions are subject to the 100 ms min-interval.

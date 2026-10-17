@@ -15,6 +15,7 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -211,8 +212,8 @@ private:
   void ingest_tracked_objects(const openral_msgs::msg::WorldStateStamped& msg);
   // Issue #418 K3 — the binding check. For every accepted attachment whose
   // evidence kind is TRACKED_OBJECT, record in `attached_binding_` whether it
-  // names a live (confirmed / occluded / bound) object of the last accepted set,
-  // same id and epoch, whose box meets the hand (`tracked_box_meets_hand`) at
+  // names a live (confirmed / occluded / bound), non-provisional object of the
+  // last accepted set, same id and epoch, whose box meets the hand (`tracked_box_meets_hand`) at
   // the MEASURED configuration. If not, the binding is off the hand: the payload
   // stays checked, but it is never a grasp handover and arms no support
   // witness. WARN (<= 1 Hz) `safety.attachment_binding_off_hand`.
@@ -239,7 +240,8 @@ private:
   // frozen payload is checked against everything else throughout, is never a
   // handover and arms no witness; a handover latched on it retires. Called after
   // `check_attachment_bindings`, on every world-state message. No-op when no jaw
-  // joint is configured (the default: today's semantics).
+  // joint is configured (the default: today's semantics). Configure refuses it
+  // off `hal_mode: sim`, as it does K2.
   void apply_tracked_release();
   // Issue #418 K2 — record the live grasp declaration's `declaration_key`
   // (active, a target, `timeout_s` in range, not retired). Ingest path only.
@@ -251,6 +253,28 @@ private:
   // per new grid or set). Candidate path: no allocation of its own (its one
   // transition log aside). Returns the count.
   std::size_t fill_tracked_grasp();
+  // Issue #418 K7 — the kernel's cover check on the current grid, re-run once
+  // per new grid or set (shared by K2 and K7). Returns whether the set's frame
+  // is still the grid's.
+  bool refresh_tracked_cover();
+  // The tracked set's stream (world_state_fast) is received, accepted and within
+  // the attached-collision deadline.
+  bool tracked_stream_fresh();
+  // Issue #418 K7 — fill `workspace_explained_` with the tracked objects that
+  // explain workspace cells NOW (any role; confirmed / occluded; (id, epoch) not
+  // retired; confirmed within `grasp_region_max_age_s`; cover-checked; the set's
+  // frame the grid's; the stream fresh) and the declared static cells of the
+  // current grid. Candidate path: no allocation of its own (its one transition
+  // log aside). Returns the object count.
+  std::size_t fill_workspace_explained();
+  // Issue #418 K7 — re-mark `static_cells_` from `static_points_` when the grid's
+  // lattice (pose, resolution, size) changed. World-voxel callback only.
+  void refresh_static_cells();
+  // Issue #418 K7 — the octomap bridge's points-file format (`x y z` per line,
+  // blank lines and `#` comments skipped). False, `out` empty, on any malformed
+  // line, an unreadable file or no points. Configure-time.
+  static bool load_static_points(const std::string& path, std::vector<Vec3>& out,
+                                 std::string& error);
 
   // Is the ingested grasp region in force at `now`, before the handover rule?
   // Dead on: no region, retracted (no region is ingested), `timeout_s`
@@ -427,13 +451,16 @@ private:
     bool live{false};       ///< status confirmed / occluded / bound
     GraspTargetRegion box;  ///< the containing box, validated as a grasp region
     // Issue #418 K2 eligibility inputs, recorded at ingest.
-    bool target{false};      ///< role == "target"
-    bool exemptible{false};  ///< status confirmed / occluded (never bound / split / …)
+    bool target{false};       ///< role == "target"
+    bool exemptible{false};   ///< status confirmed / occluded (never bound / split / …)
+    bool provisional{false};  ///< K2 exemption geometry only, never a K3 binding
     std::string declaration_key;
     std::size_t id_hash{0};          ///< std::hash of object_id (the K6 retirement key)
     std::int64_t confirmed_ns{0};    ///< last_confirmed_stamp_ns (source clock)
     std::uint32_t visible_cells{0};  ///< the tracker's expected-cell count
     bool cover_ok{false};            ///< the kernel's own cover check on the current grid
+    /// Issue #418 K7: measured support top less one cell (grid frame z); NaN = none.
+    double support_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
   std::size_t tracked_n_{0};
@@ -455,6 +482,18 @@ private:
   std::int64_t tracked_decl_stamp_ns_{0};
   double tracked_decl_timeout_s_{0.0};
   std::size_t tracked_grasp_logged_n_{static_cast<std::size_t>(-1)};
+  /// Issue #418 K7, explained cells for workspace contact
+  /// (`workspace_explained_cells_enabled`, requires `workspace_contact_enabled`).
+  /// While on, `workspace_explained_` narrows the #349 workspace exemption to
+  /// explained cells, every candidate.
+  bool workspace_explained_enabled_{false};
+  WorkspaceExplanation workspace_explained_{};
+  std::vector<Vec3> static_points_;         ///< `static_points_file`, base frame
+  std::vector<std::uint8_t> static_cells_;  ///< pre-sized to world_voxel_max_cells
+  std::size_t static_cells_marked_{0};      ///< cells marked for `static_cells_for_`
+  VoxelGrid static_cells_for_{};            ///< the lattice `static_cells_` was marked on
+  bool static_cells_for_valid_{false};
+  std::size_t workspace_explained_logged_n_{static_cast<std::size_t>(-1)};
   /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the
   /// refusal reason (nullptr = a legacy payload or a binding at the hand).
   struct AttachedBinding {

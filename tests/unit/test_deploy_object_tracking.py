@@ -240,6 +240,17 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
         f("on", grasp_allowance_enabled=False)
 
 
+def test_only_on_with_workspace_contact_narrows_it_to_explained_cells(
+    launch_module: object,
+) -> None:
+    """K7 rides `on` and needs the workspace rule it narrows; never off/shadow/bind."""
+    f = launch_module._workspace_explained_cells  # type: ignore[attr-defined]
+    for mode in ("off", "shadow", "bind"):
+        assert f(mode, workspace_contact_enabled=True) is False
+    assert f("on", workspace_contact_enabled=True) is True
+    assert f("on", workspace_contact_enabled=False) is False
+
+
 @pytest.mark.parametrize(
     ("robot", "jaws"),
     [("so101_follower", 1), ("droid_franka_robotiq", 1), ("openarm", 2)],

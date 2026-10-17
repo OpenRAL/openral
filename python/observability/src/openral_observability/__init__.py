@@ -53,6 +53,7 @@ from openral_observability.tracing import (
     safety_span,
     start_reasoner_span,
     traced,
+    world_state_span,
 )
 
 __all__ = [
@@ -78,4 +79,5 @@ __all__ = [
     "start_reasoner_span",
     "system_metrics",
     "traced",
+    "world_state_span",
 ]

@@ -9,6 +9,7 @@ events on six layer-namespaced topics::
     /openral/failure/safety
     /openral/failure/wam
     /openral/failure/critic
+    /openral/failure/world_state
 
 (``rskill`` replaced the original ``skill`` suffix on 2026-05-25, matching
 the carried ``rskill_id`` field on ``FailureTrigger``.)
@@ -60,6 +61,7 @@ __all__ = [
     "KIND_CRITIC",
     "KIND_FORCE",
     "KIND_HUMAN",
+    "KIND_OBJECT_QUERY",
     "KIND_PERCEPTION",
     "KIND_REASONER_TIMEOUT",
     "KIND_SELFVERIFY",
@@ -100,6 +102,7 @@ KIND_HUMAN: int = 7
 KIND_WAM: int = 8
 KIND_REASONER_TIMEOUT: int = 9
 KIND_COLLISION: int = 10
+KIND_OBJECT_QUERY: int = 11
 KIND_SUPPRESSED_SUMMARY: int = 254
 
 SEVERITY_INFO: int = 0
@@ -123,6 +126,7 @@ class FailureSource(str, Enum):
     SAFETY = "safety"
     WAM = "wam"
     CRITIC = "critic"
+    WORLD_STATE = "world_state"  # issue #418: the object tracker's query escalations
 
 
 def topic_for(source: FailureSource) -> str:

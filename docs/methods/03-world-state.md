@@ -138,6 +138,12 @@ _Containing fit (#418 step 3, the #266 rule): `C = cone(dilate(S)) ∩ {z ≥ su
 - `project_box(box, intrinsics, t_base_from_cam) -> tuple[tuple[int, int, int, int], float] | None` — A box's clipped image rectangle and nearest optical depth; `None` behind the camera or outside the image. (L387)
 - `visible_fraction(box, depth_m, robot_mask, intrinsics, t_base_from_cam, *, tol_m=0.01) -> float | None` — Z-buffered fraction of the box's image rectangle not covered by the robot (robot or uncertain), a nearer surface, or missing depth; `None` out of view. Ceiling: an occluder between the box's nearest corner and the object's surface counts as visible. (L410)
 
+### `python/world_state/src/openral_world_state/object_tracker/multi_view.py`
+_Multi-view containing fit (#418 phase 4): `K = conv(C_primary) ∩ cone_j ∩ …` — only second views' silhouette cones intersect, never their front cut or prism; pure numpy, no scipy._
+
+- `@dataclass MultiViewFit` — `fit` (the multi-view `ContainingFit`, or the primary single-view fit on any fallback), `fit_kind` (`MULTI_VIEW_CONE` when a cone cut the result, else `SILHOUETTE_CONE`), `refusals` (per view index: `primary` / `fallback:<why>`, `contributed`, or why the view did not cut: its own fit refusal such as `a1_border_truncated`, `cone_layout`, `silhouette_too_small`). (L56)
+- `intersect_views(views, *, resolution, frame_id, stamp_ns) -> MultiViewFit` — `views` are `(containing_fit result, T_base_from_optical)` per depth camera. A second view cuts only when its own fit was not refused (A1 border clear) and its cone holds every measured surface point of every view (a too-small silhouette is refused whole). `K` is exact (plane-triple vertex enumeration), reduced outwards to the 64-vertex hull cap (two horizontal slabs' 16-direction outer polygons when `K` has more), boxed by `fit._boxed`; falls back (logged `object_tracker.multi_view_fallback`) on `no_second_view`, `empty_intersection`, `views_disagree` (a measured point outside the result) or `no_gain` (box not smaller). Not wired into `ObjectTracker.feed` yet: the tracker fits per depth frame, one camera at a time. (L157)
+
 ### `python/world_state/src/openral_world_state/object_tracker/cover.py`
 _Size-aware map confirmation (#418 step 4)._
 

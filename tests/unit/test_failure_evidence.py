@@ -20,7 +20,11 @@ from openral_core import (
     FailureEvidence,
     ForceEvidence,
     HumanEvidence,
+    ObjectQueryEvidence,
+    ObjectRole,
     PerceptionStaleEvidence,
+    PlaceRegion,
+    Pose6D,
     ReasonerTimeoutEvidence,
     SelfVerifyEvidence,
     SuppressedSummaryEvidence,
@@ -28,7 +32,7 @@ from openral_core import (
     WamEvidence,
     WorkspaceEvidence,
 )
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSObjectNotInMemory, ROSPerceptionStale
 from openral_observability.failure_bus import (
     DEFAULT_RATE_LIMIT_HZ,
     KIND_FORCE,
@@ -69,6 +73,20 @@ _VARIANTS: list[FailureEvidence] = [
     HumanEvidence(actor="slack:adrian", reason="testing the e-stop"),
     WamEvidence(horizon=4, discrepancy=0.27, wam_id="cosmos-1.0"),
     ReasonerTimeoutEvidence(model="claude-opus-4-7", deadline_s=1.0, elapsed_s=1.42),
+    ObjectQueryEvidence(
+        escalation="exhausted",
+        goal_id="grasp:obj:orange_1@17",
+        query_id="0",
+        label="orange",
+        role=ObjectRole.TARGET,
+        waited_s=60.2,
+        attempts=14,
+        last_seen=PlaceRegion(
+            frame_id="base",
+            pose=Pose6D(xyz=(0.07, -0.30, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+            half_extents=(0.03, 0.03, 0.03),
+        ),
+    ),
     SuppressedSummaryEvidence(
         window_s=1.0,
         kinds=[KIND_TIMEOUT, KIND_FORCE],
@@ -147,7 +165,19 @@ def test_topic_for_namespaces_every_source() -> None:
         FailureSource.SAFETY: "/openral/failure/safety",
         FailureSource.WAM: "/openral/failure/wam",
         FailureSource.CRITIC: "/openral/failure/critic",
+        FailureSource.WORLD_STATE: "/openral/failure/world_state",
     }
+
+
+def test_object_query_evidence_records_a_typed_object_not_in_memory_failure() -> None:
+    """Issue #418: the escalation's typed failure is ``ROSObjectNotInMemory`` (§5)."""
+    ev = next(v for v in _VARIANTS if isinstance(v, ObjectQueryEvidence))
+    exc = ev.to_exception()
+    assert isinstance(exc, ROSObjectNotInMemory) and isinstance(exc, ROSPerceptionStale)
+    for part in ("orange", "target", "grasp:obj:orange_1@17/0", "60.2 s", "14 detection"):
+        assert part in str(exc)
+    with pytest.raises(ValidationError):
+        ObjectQueryEvidence.model_validate({**ev.model_dump(), "escalation": "lost"})
 
 
 def test_suppressed_summary_kind_constant() -> None:

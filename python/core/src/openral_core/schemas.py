@@ -45,7 +45,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §5).
-from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError
+from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSObjectNotInMemory
 from openral_core.time_base import scene_control_rate_hz
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -12698,6 +12698,60 @@ class CollisionEvidence(_FailureEvidenceBase):
         return self.horizon_step == CollisionEvidence.REACTIVE_HORIZON_STEP
 
 
+class ObjectQueryEvidence(_FailureEvidenceBase):
+    """Evidence for ``KIND_OBJECT_QUERY`` — a standing object query could not be resolved.
+
+    Issue #418 Addendum G. The World State tracker publishes it on
+    ``/openral/failure/world_state`` when a query stays ``UNRESOLVED`` for its search
+    start (``escalation="unresolved"``: the reasoner runs the bounded ``find-object``
+    playbook) or its search budget is spent (``"exhausted"``: the replanning ladder's
+    human handoff). The typed failure is ``ROSObjectNotInMemory`` (``to_exception``).
+
+    Attributes:
+        kind: Discriminator (always ``"object_query"``).
+        escalation: ``"unresolved"`` or ``"exhausted"``.
+        goal_id: The tracker goal (``"<grasp|place>:<target_id>@<stamp_ns>"``).
+        query_id: The query's key within the goal.
+        label: The query's open-vocabulary label.
+        role: What the object is to the task.
+        waited_s: Source seconds the current search has run.
+        attempts: Detection requests the tracker spent on the query in this goal.
+        last_seen: The last lost match's box, a search prior only (never kernel
+            geometry); ``None`` if never seen.
+
+    Example:
+        >>> ev = ObjectQueryEvidence(
+        ...     escalation="exhausted",
+        ...     goal_id="grasp:obj:orange@1",
+        ...     query_id="0",
+        ...     label="orange",
+        ...     role=ObjectRole.TARGET,
+        ...     waited_s=60.0,
+        ...     attempts=9,
+        ... )
+        >>> type(ev.to_exception()).__name__
+        'ROSObjectNotInMemory'
+    """
+
+    kind: Literal["object_query"] = "object_query"
+    escalation: Literal["unresolved", "exhausted"]
+    goal_id: str = Field(min_length=1)
+    query_id: str
+    label: str = Field(min_length=1)
+    role: ObjectRole
+    waited_s: float = Field(ge=0.0, allow_inf_nan=False)
+    attempts: int = Field(ge=0)
+    last_seen: PlaceRegion | None = None
+
+    def to_exception(self) -> ROSObjectNotInMemory:
+        """The typed failure this evidence records (CLAUDE.md §5)."""
+        return ROSObjectNotInMemory(
+            f"object query {self.escalation}: {self.label!r} ({self.role.value}, query "
+            f"{self.goal_id}/{self.query_id}) not resolved after {self.waited_s:.1f} s and "
+            f"{self.attempts} detection attempt(s)"
+        )
+
+
 class SuppressedSummaryEvidence(_FailureEvidenceBase):
     """Evidence for ``KIND_SUPPRESSED_SUMMARY`` — rolling rate-limit roll-up.
 
@@ -12744,6 +12798,7 @@ FailureEvidence: TypeAlias = (
     | WamEvidence
     | ReasonerTimeoutEvidence
     | CollisionEvidence
+    | ObjectQueryEvidence
     | SuppressedSummaryEvidence
 )
 """Discriminated union for ``FailureTrigger.evidence_json`` payloads.

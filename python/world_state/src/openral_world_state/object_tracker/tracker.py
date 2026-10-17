@@ -574,8 +574,16 @@ class ObjectTracker:
                     # segments what fills a box): SAM's "whole" of a point on one packed
                     # carton is the tote's contents, which the bound refuses.
                     rect = project_box(seed, frame.intrinsics, t_cam)
-                    xy = None if rect is None else [float(v) for v in rect[0]]
-                    within = None if xy is None else (xy[0], xy[1], xy[2], xy[3])
+                    within = (
+                        None
+                        if rect is None
+                        else (
+                            float(rect[0][0]),
+                            float(rect[0][1]),
+                            float(rect[0][2]),
+                            float(rect[0][3]),
+                        )
+                    )
                     seg = replace(base, service="segment_in_view", point_uv=uv)
                     out.append(replace(seg, within_xyxy=within, seed_cell=hit[1]))
                     continue

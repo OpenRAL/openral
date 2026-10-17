@@ -184,7 +184,7 @@ node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is n
 
 | Mode | What leaves the node |
 | --- | --- |
-| `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`); nothing consumes them. Allowed on `deploy run`. |
+| `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`). The aggregator relays the set on `world_state_fast` and the kernel ingests it (K1, refusals logged), with no decision change: no `TRACKED_OBJECT` binding exists and K2 / K5 are off. Allowed on `deploy run`. |
 | `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`). Sim-only until Safety-WG review. |
 | `on` | As `bind`; the kernel additionally keys grasp exemptions on tracked ids (K2). Sim-only. |
 
@@ -196,7 +196,8 @@ node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is n
 | `cameras` | none | Depth cameras: `camera_topic(<cam>, DEPTH_IMAGE / DEPTH_CAMERA_INFO / ROBOT_MASK)`. |
 | `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
 | `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
-| `grounding_required` | `false` | `grounding_incomplete` is logged at error level (refusing the goal is dispatch's). |
+| `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
+| `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G active-search budget (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`): a structlog `object_tracker.query_escalation` (WARN / ERROR), a `world_state.object_query` span on the declaration's skill trace, and a `FailureTrigger` (`KIND_OBJECT_QUERY`) on `/openral/failure/world_state`, where the reasoner runs `find-object` (unresolved) or hands off to a human (exhausted). |
 | `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. |
 | `released_clear_timeout_s` | `3.0` | How long a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge) unless the track leaves RELEASED first. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
 | `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |

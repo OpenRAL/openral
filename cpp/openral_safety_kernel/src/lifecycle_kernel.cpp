@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <limits>
@@ -484,6 +485,19 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // `object_tracking: on` only; configure refuses it without
   // `grasp_allowance_enabled` or off `hal_mode: sim`.
   this->declare_parameter<bool>("tracked_grasp_exemption_enabled", false);
+  // Issue #418 K7 (hazard OT-11; Safety-WG review pending): explained cells for
+  // workspace contact. false (default) = the #349 workspace rule, unchanged; true =
+  // a (hand link, cell) pair the workspace would tolerate is tolerated only on a
+  // cell an explaining tracked object's box, a declared static collider or the
+  // measured support under such an object explains — a NEW conjunct, so it only
+  // ever adds stops. Set by the launch for `object_tracking: on` only; configure
+  // refuses it without `workspace_contact_enabled` (itself sim-only).
+  this->declare_parameter<bool>("workspace_explained_cells_enabled", false);
+  // The declared static geometry as base-frame surface points, one `x y z` per
+  // line — the SAME file the octomap bridge marks into every grid
+  // (`static_points_file`). K7 reads it to know which cells are a declared static
+  // collider. "" = none declared (no cell is explained as static).
+  this->declare_parameter<std::string>("static_points_file", "");
   this->declare_parameter<double>("place_region_max_age_s", 0.0);
   // Manipulation-workspace contact (issue #349, draft; Safety-WG review
   // pending). Default OFF. When on: a hand link (`workspace_contact_links`, the
@@ -683,7 +697,12 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     const auto names = this->get_parameter("collision_joint_names").as_string_array();
     std::string why;
     if (!jaws.empty()) {
-      if (signs.size() != jaws.size()) {
+      if (this->get_parameter("hal_mode").as_string() != "sim") {
+        // Mirrors K2: K5 is not monotone (hazard OT-7), so the kernel keeps it off
+        // real hardware itself, not only the launch's sim-only rule for bind / on.
+        why = "sim-only until Safety-WG review (issue #418, hazard OT-7), hal_mode=" +
+              this->get_parameter("hal_mode").as_string();
+      } else if (signs.size() != jaws.size()) {
         why = "tracked_release_jaw_open_sign must give one +1/-1 per jaw joint";
       } else if (!std::isfinite(release_gap_) || release_gap_ <= 0.0) {
         why = "tracked_release_gap must be finite and > 0";
@@ -878,6 +897,44 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "workspace and a fast or far-leading hand stop as before",
                 listed.c_str(), workspace_max_speed_mps_, workspace_control_period_s_,
                 kWorkspaceCommandFreshPeriods, workspace_max_lead_m_);
+  }
+  // Issue #418 K7. Every refusal fails configure: a narrowing whose explanation
+  // sources the kernel cannot state is not run.
+  workspace_explained_enabled_ = this->get_parameter("workspace_explained_cells_enabled").as_bool();
+  workspace_explained_ = WorkspaceExplanation{};
+  voxel_grid_.workspace_explained = nullptr;
+  static_points_.clear();
+  static_cells_.clear();
+  static_cells_marked_ = 0;
+  static_cells_for_ = VoxelGrid{};
+  static_cells_for_valid_ = false;
+  workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
+  if (workspace_explained_enabled_) {
+    const auto refuse = [this](const std::string& why) {
+      RCLCPP_ERROR(this->get_logger(), "workspace_explained_cells_enabled refused: %s",
+                   why.c_str());
+      workspace_explained_enabled_ = false;
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    };
+    if (!workspace_contact_enabled_) {
+      return refuse("it narrows workspace contact and requires workspace_contact_enabled");
+    }
+    const std::string points_file = this->get_parameter("static_points_file").as_string();
+    if (!points_file.empty()) {
+      std::string error;
+      if (!load_static_points(points_file, static_points_, error)) {
+        return refuse("static_points_file: " + error);
+      }
+    }
+    static_cells_.assign(world_voxel_max_cells_, 0);
+    RCLCPP_WARN(this->get_logger(),
+                "safety.workspace_explained_cells enabled (issue #418 K7, Safety-WG review "
+                "pending): workspace contact is tolerated only on a cell a tracked object's "
+                "box (confirmed / occluded, fresh, cover-checked), a declared static collider "
+                "(%zu points from '%s') or the measured support within %g m of such an object "
+                "explains; every other cell in the workspace trips as outside it",
+                static_points_.size(), points_file.c_str(), kExplainedSupportReachM);
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -1178,6 +1235,13 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   tracked_decl_active_ = false;
   tracked_decl_key_.clear();
   tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
+  workspace_explained_enabled_ = false;
+  workspace_explained_ = WorkspaceExplanation{};
+  voxel_grid_.workspace_explained = nullptr;
+  static_cells_marked_ = 0;
+  static_cells_for_ = VoxelGrid{};
+  static_cells_for_valid_ = false;
+  workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
@@ -1707,6 +1771,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // keeps them +inf, i.e. no exemption.
       const bool workspace_on = workspace_contact_enabled_ && workspace_live();
       voxel_grid_.workspace_region = workspace_on ? workspace_region_ : WorkspaceContactRegion{};
+      if (workspace_explained_enabled_) {
+        // #418 K7: the workspace is narrowed to explained cells, every candidate.
+        voxel_grid_.workspace_explained = &workspace_explained_;
+        const std::size_t explaining = fill_workspace_explained();
+        span->SetAttribute("safety.workspace_explained_objects", static_cast<int64_t>(explaining));
+      }
       const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
       workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
       ws_hand_contact_ = false;
@@ -3029,6 +3099,13 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   tracked_decl_active_ = false;
   tracked_decl_key_.clear();
   tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
+  workspace_explained_enabled_ = false;
+  workspace_explained_ = WorkspaceExplanation{};
+  voxel_grid_.workspace_explained = nullptr;
+  static_cells_marked_ = 0;
+  static_cells_for_ = VoxelGrid{};
+  static_cells_for_valid_ = false;
+  workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
   grasp_latched_epoch_ = 0;
@@ -3343,6 +3420,9 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_grid_.sx = static_cast<int>(msg->size_x);
   voxel_grid_.sy = static_cast<int>(msg->size_y);
   voxel_grid_.sz = static_cast<int>(msg->size_z);
+  if (workspace_explained_enabled_) {
+    refresh_static_cells();  // #418 K7: once per change of the grid's lattice
+  }
   // A grid that re-frames invalidates any region declared against the old frame
   // — the allowance would otherwise apply to a volume in the wrong place.
   if (msg->header.frame_id != voxel_frame_id_) {
@@ -3941,11 +4021,13 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
     entry.live = obj.status == "confirmed" || obj.status == "occluded" || obj.status == "bound";
     entry.target = obj.role == "target";
     entry.exemptible = obj.status == "confirmed" || obj.status == "occluded";
+    entry.provisional = obj.provisional;
     entry.declaration_key = obj.declaration_key;
     entry.id_hash = std::hash<std::string>{}(obj.object_id);
     entry.confirmed_ns = obj.last_confirmed_stamp_ns;
     entry.visible_cells = obj.visible_cells;
     entry.cover_ok = false;
+    entry.support_z = obj.support_z;  // K7; non-finite = no measured support
   }
   if (reason != nullptr) {
     if (tracked_refusal_reason_ != reason) {
@@ -3990,6 +4072,10 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
       binding.off_hand = "no_accepted_set";
     } else if (entry == nullptr) {
       binding.off_hand = "no_live_track";
+    } else if (entry->provisional) {
+      // A provisional fit may under-contain the object: exemption geometry only,
+      // never a payload binding (the tracker never binds one; fail closed anyway).
+      binding.off_hand = "provisional_track";
     } else if (!measured_state_fresh()) {
       binding.off_hand = "no_measured_state";
     } else {
@@ -4631,8 +4717,7 @@ void SafetyKernelLifecycleNode::ingest_tracked_declaration_key(
   tracked_decl_active_ = true;
 }
 
-std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
-  tracked_grasp_.n_objects = 0;
+bool SafetyKernelLifecycleNode::refresh_tracked_cover() {
   const bool frame_ok = !voxel_frame_id_.empty() && tracked_set_frame_ == voxel_frame_id_;
   if (tracked_cover_dirty_) {
     // Once per grid (or set): the kernel's own cover check, on its own grid.
@@ -4645,16 +4730,26 @@ std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
     }
     tracked_cover_dirty_ = false;
   }
+  return frame_ok;
+}
+
+bool SafetyKernelLifecycleNode::tracked_stream_fresh() {
+  const double age_s = (this->now() - attached_stamp_).seconds();
+  return attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+         age_s <= attached_collision_deadline_s_;
+}
+
+std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
+  tracked_grasp_.n_objects = 0;
+  const bool frame_ok = refresh_tracked_cover();
   // The declaration's own liveness: its backstop, no future stamp, and the
   // stream carrying it fresh (exactly `grasp_declaration_live`'s rules).
   const std::int64_t now_ns = this->now().nanoseconds();
   const std::int64_t elapsed_ns = now_ns - tracked_decl_stamp_ns_;
-  const double age_s = (this->now() - attached_stamp_).seconds();
   const bool declaration_live =
       tracked_decl_active_ && elapsed_ns >= 0 &&
       elapsed_ns <= static_cast<std::int64_t>(tracked_decl_timeout_s_ * 1e9) &&
-      attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
-      age_s <= attached_collision_deadline_s_;
+      tracked_stream_fresh();
   if (declaration_live && frame_ok) {
     for (std::size_t k = 0; k < tracked_n_; ++k) {
       const TrackedEntry& e = tracked_[k];
@@ -4676,6 +4771,122 @@ std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
                 static_cast<int>(declaration_live));
   }
   return tracked_grasp_.n_objects;
+}
+
+std::size_t SafetyKernelLifecycleNode::fill_workspace_explained() {
+  WorkspaceExplanation& e = workspace_explained_;
+  e.n_objects = 0;
+  const bool frame_ok = refresh_tracked_cover();
+  // Any role, any declaration: a neighbour carton or the destination plate
+  // explains its own cells. Never split (a foreign body in the box), bound,
+  // tentative, released or lost; never a retired identity, a stale
+  // confirmation, a box the kernel's own grid does not cover, or a set the
+  // stream no longer carries fresh.
+  if (frame_ok && tracked_stream_fresh()) {
+    for (std::size_t k = 0; k < tracked_n_; ++k) {
+      const TrackedEntry& t = tracked_[k];
+      if (!t.exemptible || !t.cover_ok || tracked_retired_.contains(t.id_hash, t.epoch) ||
+          !region_measurement_fresh(t.confirmed_ns, grasp_region_max_age_s_)) {
+        continue;
+      }
+      const std::size_t n = e.n_objects++;
+      e.box[n] = t.box.pose;
+      e.half_extents[n] = t.box.half_extents;
+      e.support_z[n] = t.support_z;
+    }
+  }
+  const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
+  e.static_cells = static_ok ? static_cells_.data() : nullptr;
+  e.static_cells_n = static_ok ? static_cast<std::size_t>(voxel_grid_.sx) *
+                                     static_cast<std::size_t>(voxel_grid_.sy) *
+                                     static_cast<std::size_t>(voxel_grid_.sz)
+                               : 0;
+  if (e.n_objects != workspace_explained_logged_n_) {
+    workspace_explained_logged_n_ = e.n_objects;
+    RCLCPP_INFO(this->get_logger(),
+                "safety.workspace_explained objects=%zu of=%zu static_cells=%zu", e.n_objects,
+                tracked_n_, static_ok ? static_cells_marked_ : std::size_t{0});
+  }
+  return e.n_objects;
+}
+
+void SafetyKernelLifecycleNode::refresh_static_cells() {
+  if (static_points_.empty()) {
+    return;
+  }
+  const VoxelGrid& g = voxel_grid_;
+  const VoxelGrid& c = static_cells_for_;
+  bool same = static_cells_for_valid_ && g.sx == c.sx && g.sy == c.sy && g.sz == c.sz &&
+              g.resolution == c.resolution && g.pose.t.x == c.pose.t.x &&
+              g.pose.t.y == c.pose.t.y && g.pose.t.z == c.pose.t.z;
+  for (int i = 0; same && i < 9; ++i) {
+    same = g.pose.r[i] == c.pose.r[i];
+  }
+  if (same) {
+    return;
+  }
+  static_cells_for_ = voxel_grid_;
+  static_cells_for_.occupancy = nullptr;
+  static_cells_for_valid_ = true;
+  // The file names cells of the base frame's `resolution` lattice (the launch
+  // writes one centre per cell the bridge marks; a fixed-base octree accumulates
+  // in the base frame). On any other lattice a centre could land in a
+  // neighbouring cell, which would explain a cell that is not static: none then.
+  const auto on_lattice = [&](double v) {
+    const double k = v / g.resolution;
+    return std::isfinite(k) && std::fabs(k - std::round(k)) <= 1e-6;
+  };
+  bool aligned = on_lattice(g.pose.t.x) && on_lattice(g.pose.t.y) && on_lattice(g.pose.t.z);
+  for (int i = 0; aligned && i < 9; ++i) {
+    aligned = std::fabs(g.pose.r[i] - ((i % 4 == 0) ? 1.0 : 0.0)) <= 1e-9;
+  }
+  if (!aligned) {
+    static_cells_marked_ = 0;
+    RCLCPP_WARN(this->get_logger(),
+                "safety.workspace_static_cells refused reason=lattice: the grid is not the base "
+                "frame's %g m lattice, so no cell is explained as declared static geometry",
+                g.resolution);
+    return;
+  }
+  static_cells_marked_ =
+      mark_static_cells(voxel_grid_, static_points_, static_cells_.data(), static_cells_.size());
+  RCLCPP_INFO(this->get_logger(), "safety.workspace_static_cells marked=%zu of %zu points",
+              static_cells_marked_, static_points_.size());
+}
+
+bool SafetyKernelLifecycleNode::load_static_points(const std::string& path, std::vector<Vec3>& out,
+                                                   std::string& error) {
+  // The octomap bridge's `load_points_file` format: one `x y z` per line, blank
+  // lines and `#` comments skipped; anything else refuses the whole file.
+  out.clear();
+  std::ifstream in(path);
+  if (!in) {
+    error = "cannot open " + path;
+    return false;
+  }
+  std::string line;
+  std::size_t lineno = 0;
+  while (std::getline(in, line)) {
+    ++lineno;
+    const auto first = line.find_first_not_of(" \t\r");
+    if (first == std::string::npos || line[first] == '#') {
+      continue;
+    }
+    std::istringstream fields(line);
+    Vec3 p{};
+    if (!(fields >> p.x >> p.y >> p.z) || !std::isfinite(p.x) || !std::isfinite(p.y) ||
+        !std::isfinite(p.z)) {
+      error = path + ":" + std::to_string(lineno) + ": expected three finite numbers";
+      out.clear();
+      return false;
+    }
+    out.push_back(p);
+  }
+  if (out.empty()) {
+    error = path + ": no points";
+    return false;
+  }
+  return true;
 }
 
 bool SafetyKernelLifecycleNode::attachment_on_grasp_chain(

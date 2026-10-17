@@ -50,6 +50,7 @@ uint8 FAILURE_PERCEPTION_STALE    = 5    # ROSPerceptionStale
 uint8 FAILURE_PLANNING_ERROR      = 6    # ROSPlanningError (MoveIt approach)
 uint8 FAILURE_DEADLINE_MISSED     = 7    # execution budget lapsed / ROSDeadlineMissed
 uint8 FAILURE_CANCELLED           = 8    # cancel honoured (no exception)
+uint8 FAILURE_OBJECT_NOT_FOUND    = 9    # ROSObjectNotInMemory: the goal's object search was exhausted (issue #418)
 uint8 FAILURE_UNKNOWN             = 255  # untyped non-ROSError escape
 uint8 failure_kind
 ---

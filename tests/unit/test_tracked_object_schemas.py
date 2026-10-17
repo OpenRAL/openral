@@ -21,6 +21,7 @@ from openral_core import (
     DeployScene,
     FitKind,
     GraspDeclaration,
+    JointState,
     ObjectQuery,
     ObjectQueryStatus,
     ObjectRole,
@@ -31,6 +32,7 @@ from openral_core import (
     TrackedObject,
     TrackedObjectSet,
     TrackStatus,
+    WorldState,
 )
 from openral_core.schemas import DOP_AXES, BoxShape, TightCollisionGeometry
 from pydantic import ValidationError
@@ -325,3 +327,143 @@ def test_idl_round_trip_through_built_messages() -> None:
     place_msg = msgs.PlaceDeclaration()
     place.fill_idl(place_msg)
     assert PlaceDeclaration.from_idl(place_msg) == place
+
+
+# --- Every deploy scene, every additive field (issue #418 test matrix A, "Schemas") ---
+
+_DEPLOY_SCENES = sorted((_ROOT / "scenes/deploy").glob("*.yaml"))
+
+
+def _scene_frame(scene: DeployScene) -> str:
+    """The scene robot's manifest base frame, else the scene's own declared frame."""
+    if scene.robot_id and (_ROOT / "robots" / scene.robot_id / "robot.yaml").exists():
+        return RobotDescription.from_yaml(
+            str(_ROOT / "robots" / scene.robot_id / "robot.yaml")
+        ).base_frame
+    if scene.grasp_declaration is not None and scene.grasp_declaration.search_box is not None:
+        return scene.grasp_declaration.search_box.frame_id
+    return "base"
+
+
+@pytest.mark.parametrize("path", _DEPLOY_SCENES, ids=lambda p: p.stem)
+@settings(max_examples=6, suppress_health_check=[HealthCheck.too_slow], deadline=None)
+@given(
+    mode=st.sampled_from(["off", "shadow", "bind", "on"]),
+    wait=st.floats(min_value=0.01, max_value=60.0),
+    required=st.booleans(),
+    n_queries=st.integers(min_value=0, max_value=GraspDeclaration.MAX_TARGET_QUERIES),
+    destination=st.booleans(),
+    epoch=st.integers(min_value=0, max_value=2**31),
+    n_tracks=st.integers(min_value=0, max_value=4),
+)
+def test_fuzz_every_deploy_scene_with_the_additive_fields(
+    path: Path,
+    mode: str,
+    wait: float,
+    required: bool,
+    n_queries: int,
+    destination: bool,
+    epoch: int,
+    n_tracks: int,
+) -> None:
+    """Each scene loads as before, then carries every #418 additive field and round-trips."""
+    scene = DeployScene.from_yaml(str(path))
+    frame = _scene_frame(scene)
+    runtime = DeployRuntime.model_validate(
+        {
+            **(scene.runtime.model_dump() if scene.runtime is not None else {}),
+            "object_tracking": mode,
+            "grounding_wait_s": wait,
+            "grounding_required": required,
+        }
+    )
+    _round_trip(runtime)
+    update: dict[str, object] = {"runtime": runtime}
+    queries = tuple(
+        ObjectQuery(label=f"obj{i}", count="all", role=ObjectRole.TARGET, min_instances=1 + i)
+        for i in range(n_queries)
+    )
+    if scene.grasp_declaration is not None:
+        update["grasp_declaration"] = GraspDeclaration.model_validate(
+            {**scene.grasp_declaration.model_dump(), "target_queries": queries}
+        )
+    place = scene.place_declaration or PlaceDeclaration(
+        target_id="obj:dest", timeout_s=30.0, stamp_ns=0
+    )
+    place = PlaceDeclaration.model_validate(
+        {
+            **place.model_dump(),
+            "destination_query": (
+                ObjectQuery(label="dest", count="one", role=ObjectRole.DESTINATION)
+                if destination
+                else None
+            ),
+        }
+    )
+    _round_trip(place)
+    rebuilt = DeployScene.model_validate({**scene.model_dump(), **update})
+    assert DeployScene.model_validate_json(rebuilt.model_dump_json()) == rebuilt
+    tracked = TrackedObjectSet(
+        frame_id=frame,
+        stamp_ns=epoch,
+        revision=epoch,
+        objects=[_track(frame, object_id=f"trk:{i}", epoch=epoch) for i in range(n_tracks)],
+    )
+    _round_trip(tracked)
+    assert scene.model_dump() == DeployScene.from_yaml(str(path)).model_dump()
+
+
+@pytest.mark.parametrize(("robot", "joint", "link"), _HANDS)
+@settings(max_examples=30, deadline=None)
+@given(
+    epoch=st.integers(min_value=0, max_value=2**32 - 1),
+    revision=st.integers(min_value=0, max_value=2**63 - 1),
+    kind=st.sampled_from(list(AttachmentEvidenceKind)),
+)
+def test_fuzz_attachment_epoch_and_revision_on_real_hands(
+    robot: str, joint: str, link: str, epoch: int, revision: int, kind: AttachmentEvidenceKind
+) -> None:
+    """``epoch``/``geometry_revision`` round-trip (JSON and, when built, the IDL)."""
+    _hand(robot, joint, link)
+    payload = AttachedCollisionObject(
+        object_id="trk:1",
+        attach_link=link,
+        touch_links=[link],
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.02, 0.02, 0.02)),
+                pose_in_object=Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="trk:1"),
+            )
+        ],
+        pose_in_link=Pose6D(xyz=(0, 0, 0.02), quat_xyzw=(0, 0, 0, 1), frame_id=link),
+        confidence=1.0,
+        evidence_kind=kind,
+        stamp_ns=7,
+        epoch=epoch,
+        geometry_revision=revision,
+    )
+    _round_trip(payload)
+    msgs = pytest.importorskip("openral_msgs.msg", reason="openral_msgs not built/sourced")
+    if not hasattr(msgs.AttachedCollisionObject(), "geometry_revision"):
+        pytest.skip("sourced openral_msgs predates issue #418")
+    out = msgs.AttachedCollisionObject()
+    payload.fill_idl(out, primitive_factory=msgs.AttachedCollisionPrimitive)
+    assert (out.epoch, out.geometry_revision) == (epoch, revision)
+    assert AttachedCollisionObject.from_idl(out) == payload
+
+
+def test_world_state_relay_round_trips_with_and_without_a_tracker() -> None:
+    """``WorldState.tracked_objects``: absent stays ``None``; present round-trips."""
+    frame = _scene_box().frame_id
+    joints = JointState(name=["gripper"], position=[0.1], stamp_ns=5)
+    bare = WorldState(stamp_ns=5, joint_state=joints)
+    assert bare.tracked_objects is None
+    _round_trip(bare)
+    with_set = bare.model_copy(
+        update={
+            "tracked_objects": TrackedObjectSet(
+                frame_id=frame, stamp_ns=5, revision=1, objects=[_track(frame)]
+            )
+        }
+    )
+    _round_trip(WorldState.model_validate(with_set.model_dump()))

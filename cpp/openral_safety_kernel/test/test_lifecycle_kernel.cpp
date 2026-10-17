@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <limits>
@@ -25,6 +27,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
@@ -3901,11 +3905,14 @@ struct GraspBeat {
   std::uint64_t tracked_revision{1};
   std::int64_t tracked_stamp_ns{0};      ///< 0 = the stream stamp
   std::size_t tracked_hull_vertices{0};  ///< one tight hull with this many vertices (0 = none)
+  bool tracked_provisional{false};       ///< TrackedObject.provisional
   /// Issue #418 K2 eligibility fields of the tracked object.
   std::string tracked_role{"target"};
   std::string tracked_key{};             ///< "" = "<target_id>@<declaration_stamp_ns>"
   std::uint32_t tracked_visible{0};      ///< visible_cells
   std::int64_t tracked_confirmed_ns{0};  ///< last_confirmed_stamp_ns; 0 = the stream stamp
+  /// Issue #418 K7: the measured support under it (grid z); far below the rig's cells.
+  double tracked_support_z{-1.0};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3947,6 +3954,8 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     o.visible_cells = b.tracked_visible;
     o.last_confirmed_stamp_ns = b.tracked_confirmed_ns != 0 ? b.tracked_confirmed_ns : stream_ns;
     o.status = b.tracked_status;
+    o.provisional = b.tracked_provisional;
+    o.support_z = b.tracked_support_z;
     o.box.frame_id = b.tracked_frame;
     o.box.pose.position.x = b.tracked_x;
     o.box.pose.orientation.w = 1.0;
@@ -6721,6 +6730,8 @@ TEST_F(LifecycleKernelTest, ATrackedBindingOffTheHandIsNeverTheHandover) {
       {"no_live_track", [](GraspBeat& b) { b.tracked_status = "lost"; }},
       {"no_live_track", [](GraspBeat& b) { b.tracked_status = "released"; }},
       {"no_accepted_set", [](GraspBeat& b) { b.tracked_set = false; }},
+      // A provisional fit may under-contain the object: never payload geometry.
+      {"provisional_track", [](GraspBeat& b) { b.tracked_provisional = true; }},
   };
   int n = 0;
   for (const auto& c : cases) {
@@ -7058,6 +7069,7 @@ std::vector<rclcpp::Parameter> release_params() {
       {"tracked_release_dwell_s", 0.1},
       {"tracked_release_clear_m", 0.02},
       {"tracked_release_timeout_s", 0.4},
+      {"hal_mode", std::string("sim")},  // K5 is sim-only until Safety-WG review
   };
 }
 
@@ -7186,6 +7198,26 @@ TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePa
   EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
 }
 
+TEST_F(LifecycleKernelTest, TheTrackedReleaseRefusesToConfigureOffSim) {
+  // Mirrors K2: K5 is not monotone (hazard OT-7), so the kernel itself keeps it
+  // off real hardware, not only the launch's sim-only rule for bind / on.
+  for (const char* mode : {"real", "mock", ""}) {
+    GraspRig off_sim(std::string("kernel_release_cfg_") + (*mode != 0 ? mode : "empty"),
+                     with_param(release_params(), "hal_mode", rclcpp::ParameterValue(mode)));
+    EXPECT_FALSE(off_sim.configure()) << "hal_mode '" << mode << "'";
+  }
+  // Without jaw joints K5 is off, and nothing about it is refused on real.
+  auto off = with_param(release_params(), "hal_mode", rclcpp::ParameterValue("real"));
+  off = with_param(off, "tracked_release_jaw_joints",
+                   rclcpp::ParameterValue(std::vector<std::string>{}));
+  off = with_param(off, "tracked_release_jaw_open_sign",
+                   rclcpp::ParameterValue(std::vector<double>{}));
+  GraspRig real_off("kernel_release_cfg_real_off", off);
+  EXPECT_TRUE(real_off.configure());
+  GraspRig ok("kernel_release_cfg_sim", release_params());
+  EXPECT_TRUE(ok.configure());
+}
+
 // ── Issue #418 K2: the grasp exemption by tracked-object id (hazard OT-6) ───
 //
 // The GraspRig's finger (link0, its TCP the capsule origin at x = 0.05 for
@@ -7246,6 +7278,15 @@ TEST_F(LifecycleKernelTest, OnModeExemptsTheFingerAgainstItsUniqueEligibleTarget
   // The control: the same scene with the source on the legacy region (no
   // region measured) stops, so the pass above is K2's.
   EXPECT_FALSE(k2_passes("kernel_k2_off", [](GraspRig&, GraspBeat&) {}, k2_params(false)));
+}
+
+TEST_F(LifecycleKernelTest, AProvisionalTrackStillServesAsTheK2Exemption) {
+  // A provisional box may under-contain, so it can only shrink what is exempted:
+  // it stays K2 exemption geometry (K3 refuses it as payload).
+  LogCapture logs;
+  EXPECT_TRUE(k2_passes("kernel_k2_provisional", [](GraspRig&, GraspBeat& b) {
+    b.tracked_provisional = true;
+  })) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, EveryIneligibleTrackedTargetStops) {
@@ -7318,5 +7359,173 @@ TEST_F(LifecycleKernelTest, TheTrackedSourceRefusesToConfigureOutsideItsScope) {
   GraspRig real("kernel_k2_cfg_real", k2_params(true, true, "real"));
   EXPECT_FALSE(real.configure()) << "sim-only until Safety-WG review";
   GraspRig ok("kernel_k2_cfg_ok", k2_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+// ── Issue #418 K7: explained cells for workspace contact (hazard OT-11) ──────
+//
+// The #349 workspace rig (link0 a hand link, the hand still, the workspace a
+// 0.10 m cube on the finger), on the K2 grid: two occupied cells centred at
+// x = 0.025 and 0.05, the finger in the second. With #349 alone the slow hand
+// touches them; with K7 they are tolerated only when something explains them.
+namespace {
+
+std::vector<rclcpp::Parameter> k7_params(bool enabled = true, const std::string& points = "",
+                                         bool workspace = true) {
+  auto params = workspace_params(workspace);
+  params.emplace_back("workspace_explained_cells_enabled", enabled);
+  if (!points.empty()) {
+    params.emplace_back("static_points_file", points);
+  }
+  return params;
+}
+
+// A tracked CONTEXT carton (a neighbour, not the target) whose box holds both cells.
+void k7_neighbour(GraspBeat& b) {
+  b.tracked_set = true;
+  b.tracked_status = "confirmed";
+  b.tracked_role = "context";
+  b.tracked_key = "deploy@0";  // any declaration: K7 does not key on it
+  b.tracked_x = 0.0375;
+  b.tracked_half = 0.03;
+}
+
+bool k7_passes(const std::string& name, const std::function<void(GraspRig&, GraspBeat&)>& mutate,
+               std::vector<rclcpp::Parameter> params = k7_params()) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = k2_voxels();
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  mutate(rig, b);
+  rig.warm(&b, 0.0, 300);
+  return rig.offer(&b, 0.0, 600);
+}
+
+std::string k7_points_file(const std::string& name, const std::string& body) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("openral_k7_" + name + "_" + std::to_string(::getpid()) + ".txt");
+  std::ofstream(path) << body;
+  return path.string();
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APersonsHandInTheWorkspaceStopsUnderK7) {
+  // The control: #349 alone tolerates the slow hand on the two cells.
+  EXPECT_TRUE(k7_passes("kernel_k7_off", [](GraspRig&, GraspBeat&) {}, k7_params(false)));
+  // K7 on, nothing explains them (no tracked object, no static geometry, no
+  // support): the person-hand probe stops, and says why.
+  LogCapture logs;
+  EXPECT_FALSE(k7_passes("kernel_k7_probe", [](GraspRig&, GraspBeat&) {})) << logs.joined();
+  EXPECT_GE(logs.count("workspace_denied=5"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_explained_cells enabled"), 1U) << "configure WARNs";
+}
+
+TEST_F(LifecycleKernelTest, AnEligibleTrackedObjectOfAnyRoleExplainsItsCells) {
+  LogCapture logs;
+  EXPECT_TRUE(k7_passes("kernel_k7_neighbour", [](GraspRig&, GraspBeat& b) { k7_neighbour(b); }))
+      << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_explained objects=1 of=1"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
+}
+
+TEST_F(LifecycleKernelTest, EveryUnexplainingTrackedObjectStopsUnderK7) {
+  struct Case {
+    const char* why;
+    std::function<void(GraspRig&, GraspBeat&)> mutate;
+  };
+  const std::vector<Case> cases = {
+      {"split", [](GraspRig&, GraspBeat& b) { b.tracked_status = "split"; }},
+      {"bound", [](GraspRig&, GraspBeat& b) { b.tracked_status = "bound"; }},
+      {"tentative", [](GraspRig&, GraspBeat& b) { b.tracked_status = "tentative"; }},
+      {"released", [](GraspRig&, GraspBeat& b) { b.tracked_status = "released"; }},
+      {"lost", [](GraspRig&, GraspBeat& b) { b.tracked_status = "lost"; }},
+      {"stale",
+       [](GraspRig& r, GraspBeat& b) { b.tracked_confirmed_ns = r.now_ns() - 10'000'000'000LL; }},
+      {"cover", [](GraspRig&, GraspBeat& b) { b.tracked_visible = 5; }},  // needs 3 of 2
+      {"one_cell", [](GraspRig& r, GraspBeat&) { r.voxels.occupancy = {0, 1}; }},
+      {"frame", [](GraspRig&, GraspBeat& b) { b.tracked_frame = "world"; }},
+      {"too_small", [](GraspRig&, GraspBeat& b) { b.tracked_half = 0.005; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    EXPECT_FALSE(k7_passes("kernel_k7_inelig_" + std::to_string(n++),
+                           [&c](GraspRig& r, GraspBeat& b) {
+                             k7_neighbour(b);
+                             c.mutate(r, b);
+                           }))
+        << c.why << ": " << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, DeclaredStaticCellsAreExplainedUnderK7) {
+  // A fixed-base grid is the base frame's own lattice (origin on a multiple of
+  // the resolution): two cells centred at x = 0.0375 and 0.0625, the finger
+  // between them. The launch's cells file holds one centre per static cell.
+  const auto on_lattice = [](GraspRig& r, GraspBeat&) {
+    r.voxels = k2_voxels();
+    r.voxels.origin.x = 0.025;
+    r.voxels.origin.y = -0.025;
+    r.voxels.origin.z = -0.025;
+  };
+  const auto both =
+      k7_points_file("both", "# tote wall\n0.0375 -0.0125 -0.0125\n\n0.0625 -0.0125 -0.0125\n");
+  {
+    LogCapture logs;
+    EXPECT_TRUE(k7_passes("kernel_k7_static", on_lattice, k7_params(true, both))) << logs.joined();
+    EXPECT_EQ(logs.count("safety.workspace_static_cells marked=2 of 2 points"), 1U)
+        << "marked once per lattice, not per grid: " << logs.joined();
+  }
+  // Cells elsewhere in the grid's frame explain nothing here.
+  const auto elsewhere = k7_points_file("elsewhere", "0.5 0.5 0.5\n");
+  EXPECT_FALSE(k7_passes("kernel_k7_static_far", on_lattice, k7_params(true, elsewhere)));
+  {
+    // A grid off the base frame's lattice (the half-cell rig): a centre could
+    // land in a neighbouring cell, so no cell is explained as static.
+    LogCapture logs;
+    EXPECT_FALSE(k7_passes(
+        "kernel_k7_static_offlattice", [](GraspRig& r, GraspBeat&) { r.voxels = k2_voxels(); },
+        k7_params(true, both)));
+    EXPECT_GE(logs.count("safety.workspace_static_cells refused reason=lattice"), 1U)
+        << logs.joined();
+  }
+  std::filesystem::remove(both);
+  std::filesystem::remove(elsewhere);
+}
+
+TEST_F(LifecycleKernelTest, TheMeasuredSupportBesideATrackedObjectIsExplainedUnderK7) {
+  // Four cells along x (0.025 .. 0.10). A tracked object covers the outer two
+  // (its cover check passes on them); the two at the finger are the support
+  // beside it: explained only by the support_z the tracker measured under it.
+  const auto run = [](const std::string& name, double support_z) {
+    GraspRig rig(name, k7_params());
+    rig.voxels = k2_voxels();
+    rig.voxels.size_x = 4;
+    rig.voxels.occupancy.assign(4, 1);
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    k7_neighbour(b);
+    b.tracked_x = 0.0875;
+    b.tracked_half = 0.0249;
+    b.tracked_support_z = support_z;
+    rig.warm(&b, 0.0, 300);
+    return rig.offer(&b, 0.0, 600);
+  };
+  EXPECT_TRUE(run("kernel_k7_support", 0.0)) << "the cells are the support's top layer";
+  EXPECT_FALSE(run("kernel_k7_support_low", -1.0)) << "a support far below explains nothing";
+  EXPECT_FALSE(run("kernel_k7_support_nan", std::numeric_limits<double>::quiet_NaN()));
+}
+
+TEST_F(LifecycleKernelTest, ExplainedCellsRefuseToConfigureOutsideTheirScope) {
+  GraspRig no_ws("kernel_k7_cfg_nows", k7_params(true, "", false));
+  EXPECT_FALSE(no_ws.configure()) << "K7 narrows the workspace rule and needs it";
+  GraspRig missing("kernel_k7_cfg_missing", k7_params(true, "/nonexistent/openral_k7.txt"));
+  EXPECT_FALSE(missing.configure()) << "an unreadable static points file";
+  const auto bad = k7_points_file("bad", "0.1 0.2\n");
+  GraspRig malformed("kernel_k7_cfg_bad", k7_params(true, bad));
+  EXPECT_FALSE(malformed.configure()) << "a malformed line refuses the whole file";
+  std::filesystem::remove(bad);
+  GraspRig ok("kernel_k7_cfg_ok", k7_params());
   EXPECT_TRUE(ok.configure());
 }

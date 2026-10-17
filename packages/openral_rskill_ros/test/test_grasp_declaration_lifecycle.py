@@ -324,6 +324,12 @@ _PICK_ORANGE_QUERIES = (
     '[{"label": "orange", "count": "all", "role": "target"},'
     ' {"label": "plate", "count": "one", "role": "destination"}]'
 )
+#: Tracking on with no tracker running: the goal waits out a short grounding wait.
+_TRACKING_ON: dict[str, Any] = {
+    "object_tracking": "on",
+    "object_queries_json": _PICK_ORANGE_QUERIES,
+    "grounding_wait_s": 0.2,
+}
 
 
 def test_tracking_on_attaches_the_target_queries_with_the_hand_hint() -> None:
@@ -331,7 +337,7 @@ def test_tracking_on_attaches_the_target_queries_with_the_hand_hint() -> None:
 
     with _harness(
         _scene_json(contact_links=("gripper_finger",)),
-        params={"object_tracking": "on", "object_queries_json": _PICK_ORANGE_QUERIES},
+        params=_TRACKING_ON,
     ) as (executor, runtime, seen):
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
@@ -393,9 +399,7 @@ def test_a_reasoner_grounded_three_orange_goal_reaches_the_wire_as_one_count_all
         goal.grasp_declaration_valid = True
         grounded.fill_idl(goal.grasp_declaration, query_factory=ObjectQueryMsg)
 
-    with _harness(
-        "", params={"object_tracking": "on", "object_queries_json": _PICK_ORANGE_QUERIES}
-    ) as (executor, runtime, seen):
+    with _harness("", params=_TRACKING_ON) as (executor, runtime, seen):
         _run_goal(executor, runtime.skill_runner_node, fill_goal=_fill)
         _spin_for(executor, 0.3)
 
@@ -406,3 +410,186 @@ def test_a_reasoner_grounded_three_orange_goal_reaches_the_wire_as_one_count_all
     assert [ObjectQuery.from_idl(q) for q in active[0].target_queries] == [
         ObjectQuery(label="orange", count="all", role="target")
     ]
+
+
+# ── Grounding wait (issue #418 design step 1.4): grounding_wait_s / grounding_required ──
+
+
+def _orange_set(key: str, *, status: str = "confirmed", stamp_ns: int = 1) -> Any:
+    """A tracker's set holding one ``orange`` TARGET track keyed to ``key``."""
+    from openral_core import (
+        FitKind,
+        ObjectRole,
+        PlaceRegion,
+        Pose6D,
+        TrackedObject,
+        TrackedObjectSet,
+        TrackStatus,
+    )
+    from openral_msgs.msg import AttachedCollisionPrimitive
+    from openral_msgs.msg import TrackedObject as ObjectMsg
+    from openral_msgs.msg import TrackedObjectSet as SetMsg
+
+    box = PlaceRegion(
+        frame_id="base",
+        pose=Pose6D(xyz=(0.07, -0.30, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        half_extents=(0.03, 0.03, 0.03),
+    )
+    track = TrackedObject(
+        object_id="trk:1",
+        epoch=0,
+        label="orange",
+        role=ObjectRole.TARGET,
+        declaration_key=key,
+        status=TrackStatus(status),
+        box=box,
+        fit_kind=FitKind.SILHOUETTE_CONE,
+        support_z=0.02,
+        support_ref="map",
+        floor_z=0.035,
+        visible_cells=4,
+        occupied_cells=4,
+        last_fit_stamp_ns=stamp_ns,
+        last_confirmed_stamp_ns=stamp_ns,
+    )
+    msg = SetMsg()
+    tracked = TrackedObjectSet(
+        frame_id="base", stamp_ns=stamp_ns, revision=stamp_ns, objects=[track]
+    )
+    tracked.fill_idl(msg, object_factory=ObjectMsg, primitive_factory=AttachedCollisionPrimitive)
+    return msg
+
+
+def _tracker_stand_in(executor: Any, *, status: str) -> list[Any]:
+    """Publish what a tracker would, keyed to every armed declaration (``status`` track)."""
+    import rclpy
+    from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
+    from openral_msgs.msg import TrackedObjectSet as SetMsg
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    node = rclpy.create_node("openral_grounding_tracker_stand_in")
+    executor.add_node(node)
+    pub = node.create_publisher(
+        SetMsg,
+        "/openral/tracked_objects",
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        ),
+    )
+    keys: list[str] = []
+
+    def _on_decl(msg: Any) -> None:
+        if msg.active:
+            keys.append(f"{msg.target_id}@{msg.stamp_ns}")
+
+    node.create_subscription(
+        GraspDeclarationMsg,
+        "/openral/grasp_declaration",
+        _on_decl,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=10,
+        ),
+    )
+    node.create_timer(0.05, lambda: keys and pub.publish(_orange_set(keys[-1], status=status)))
+    return keys
+
+
+def test_grounding_required_refuses_a_goal_whose_target_never_grounds() -> None:
+    import time
+
+    from openral_msgs.action import ExecuteRskill
+
+    params = {**_TRACKING_ON, "grounding_wait_s": 0.5, "grounding_required": True}
+    with _harness(_scene_json(contact_links=("gripper_finger",)), params=params) as (
+        executor,
+        runtime,
+        seen,
+    ):
+        t0 = time.monotonic()
+        response = _run_goal(executor, runtime.skill_runner_node, deadline_s=3.0)
+        waited = time.monotonic() - t0
+        _spin_for(executor, 0.3)
+    result = response.result
+    assert not result.success
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_PERCEPTION_STALE, (
+        result.failure_reason
+    )
+    assert "ROSPerceptionStale" in result.failure_reason and "orange" in result.failure_reason
+    assert waited >= 0.5, "refused before grounding_wait_s elapsed"
+    assert not seen[-1].active, "the refused goal left its grasp declaration live"
+
+
+def test_grounding_required_refuses_a_target_seen_only_tentatively() -> None:
+    from openral_msgs.action import ExecuteRskill
+
+    params = {**_TRACKING_ON, "grounding_wait_s": 0.5, "grounding_required": True}
+    with _harness(_scene_json(contact_links=("gripper_finger",)), params=params) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        _tracker_stand_in(executor, status="tentative")
+        response = _run_goal(executor, runtime.skill_runner_node, deadline_s=3.0)
+    assert response.result.failure_kind == ExecuteRskill.Result.FAILURE_PERCEPTION_STALE
+
+
+def test_a_confirmed_target_track_grounds_a_required_goal() -> None:
+    from openral_msgs.action import ExecuteRskill
+
+    params = {**_TRACKING_ON, "grounding_wait_s": 2.0, "grounding_required": True}
+    with _harness(_scene_json(contact_links=("gripper_finger",)), params=params) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        keys = _tracker_stand_in(executor, status="confirmed")
+        response = _run_goal(executor, runtime.skill_runner_node, deadline_s=0.4)
+    assert keys, "no declaration was armed"
+    assert response.result.failure_kind != ExecuteRskill.Result.FAILURE_PERCEPTION_STALE, (
+        response.result.failure_reason
+    )
+
+
+def test_without_grounding_required_the_goal_proceeds_after_the_wait() -> None:
+    import time
+
+    from openral_msgs.action import ExecuteRskill
+
+    params = {**_TRACKING_ON, "grounding_wait_s": 0.5, "grounding_required": False}
+    with _harness(_scene_json(contact_links=("gripper_finger",)), params=params) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        t0 = time.monotonic()
+        response = _run_goal(executor, runtime.skill_runner_node, deadline_s=0.4)
+        waited = time.monotonic() - t0
+    assert response.result.failure_kind != ExecuteRskill.Result.FAILURE_PERCEPTION_STALE
+    assert waited >= 0.5, "the goal never waited grounding_wait_s"
+
+
+def test_tracking_on_without_a_grounding_wait_refuses_to_configure() -> None:
+    import rclpy
+    from openral_rskill_ros.compose import compose_so100_runtime
+    from rclpy.lifecycle import TransitionCallbackReturn
+
+    rclpy.init()
+    try:
+        runtime = compose_so100_runtime(skill_resolver=_constant_skill_resolver())
+        node = runtime.skill_runner_node
+        node.set_parameters(
+            [
+                rclpy.parameter.Parameter("object_tracking", value="on"),
+                rclpy.parameter.Parameter("object_queries_json", value=_PICK_ORANGE_QUERIES),
+            ]
+        )
+        assert runtime.world_state_node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_configure() == TransitionCallbackReturn.FAILURE
+        node.destroy_node()
+        runtime.world_state_node.destroy_node()
+    finally:
+        rclpy.shutdown()

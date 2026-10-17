@@ -58,6 +58,7 @@ from openral_core import (
     LocateInViewTool,
     MemorySearchTool,
     MemoryWriteTool,
+    ObjectQueryEvidence,
     ObjectsMetadata,
     QuerySceneTool,
     QueryTaskProgressTool,
@@ -79,7 +80,11 @@ from openral_core import (
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
-from openral_reasoner.active_search import SearchBudget, SearchProgress
+from openral_reasoner.active_search import (
+    SearchBudget,
+    SearchProgress,
+    object_query_step,
+)
 from openral_reasoner.completion import (
     COMPLETION_QUESTION as _COMPLETION_QUESTION,
 )
@@ -273,7 +278,15 @@ _QOS_COMPLETION_CAMERA = QoSProfile(
 # Closed sets from the reasoner+supervisor design §3 / capability review §3.
 # `rskill` was renamed from `skill` on 2026-05-25 (reasoner+supervisor design amendment §5)
 # for consistency with the carried `rskill_id` field.
-_FAILURE_SOURCES: tuple[str, ...] = ("hal", "sensor", "rskill", "safety", "wam", "critic")
+_FAILURE_SOURCES: tuple[str, ...] = (
+    "hal",
+    "sensor",
+    "rskill",
+    "safety",
+    "wam",
+    "critic",
+    "world_state",
+)
 _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change")
 
 # Reward-gated task verification §2 / VLM-adjudicated completion amendment — reward window (s) for
@@ -302,6 +315,7 @@ _DEFAULT_CHECK_FLOOR: float = 0.5
 # a stream).
 _KIND_TIMEOUT: int = 0
 _KIND_CONTROLLER: int = 5
+_KIND_OBJECT_QUERY: int = 11  # issue #418: the object tracker's query escalations
 _SEVERITY_WARN: int = 1
 _SEVERITY_FAIL: int = 2
 
@@ -337,6 +351,7 @@ _FAILURE_TIER_FOR_SOURCE: dict[str, str] = {
     "rskill": "B",
     "wam": "B",
     "critic": "C",
+    "world_state": "B",
 }
 
 # Wrapped task-space layouts (eef pose / base pose / gripper qpos, composed by a sim
@@ -1822,6 +1837,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
         )
         self._renderer.append_failure(record)
+        if source == "world_state" and record.kind == _KIND_OBJECT_QUERY:
+            self._on_object_query(record)
+            return
         # VLM-adjudicated completion §2 — a reward-watcher wake (critic FAIL) while a VLA is in
         # flight is the *primary* stop: cancel the attempt now so the verify
         # gate runs on the reward signal rather than burning the rest of the
@@ -1839,6 +1857,69 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
+
+    def _on_object_query(self, record: FailureEventRecord) -> None:
+        """Take the ladder rung for an object-query escalation (issue #418 Addendum G).
+
+        The failure is already in the context (``append_failure``). ``unresolved`` adds
+        the ``find-object`` strategy hint and forces a tick, so the LLM runs that bounded
+        playbook (its recall / locate lookups count against ``SearchProgress``).
+        ``exhausted`` is the ladder's terminal rung: the handoff question goes out on
+        ``/openral/prompt`` under this node's frame id (not re-consumed) and the active
+        task is abandoned through ``_finish_active_search_handoff``.
+        """
+        from openral_core import FailureEvidence
+        from pydantic import TypeAdapter, ValidationError
+
+        adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+        try:
+            evidence = adapter.validate_json(record.evidence_json)
+        except ValidationError as exc:
+            self.get_logger().error(f"object_query: undecodable evidence: {exc}")
+            return
+        if not isinstance(evidence, ObjectQueryEvidence):
+            self.get_logger().error(f"object_query: unexpected evidence kind {evidence.kind!r}")
+            return
+        step = object_query_step(evidence)
+        self.get_logger().warning(
+            f"object_query: {evidence.escalation} label={evidence.label!r} "
+            f"goal={evidence.goal_id} → {step.rung}"
+        )
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id="(object-query)",
+                outcome="failed",
+                summary=str(evidence.to_exception()),
+                reflection=step.reflection,
+                stamp_ns=record.stamp_ns,
+            )
+        )
+        traceparent = record.trace_id or None
+        if step.rung == "find_object":
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+            return
+        if self._active_rskill_goal is not None:
+            # The goal acts on an object no one found: end it along the cancel path
+            # (the runner, on the same escalation, ends it with FAILURE_OBJECT_NOT_FOUND).
+            goal_handle, _call, _tp = self._active_rskill_goal
+            self._rskill_cancel_reason = "object_not_found"
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception as exc:  # reason: cancel is best-effort; the runner ends it too
+                self.get_logger().error(
+                    f"object_query cancel_goal_async failed: {type(exc).__name__}: {exc}",
+                )
+        if self._prompt_pub is not None and step.handoff_prompt is not None:
+            msg = IDLPromptStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = self.get_name()  # _on_prompt filters it: no further tick
+            msg.text = step.handoff_prompt
+            metadata: dict[str, Any] = {"source": "object_query", "rung": step.rung}
+            if traceparent is not None:
+                metadata["traceparent"] = traceparent
+            msg.metadata_json = json.dumps(metadata, sort_keys=True)
+            self._prompt_pub.publish(msg)
+        self._finish_active_search_handoff(step.reflection, traceparent=traceparent)
 
     def _band_edges(self) -> tuple[float, float]:
         """Three-tier verdict band edges from the active reward calibration (§1/§5).
@@ -5194,6 +5275,25 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # failure path is skipped (no fault to report; the patience path
         # already emitted its KIND_TIMEOUT). Only an operator/e-stop cancel
         # (reason None) is not an attempt.
+        not_found_kind = _failure_kind_value("FAILURE_OBJECT_NOT_FOUND")
+        if cancel_reason == "object_not_found" or (
+            not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind
+        ):
+            # Issue #418: the task was already handed to a human (`_on_object_query`); the
+            # goal's typed end is recorded, never verified against the next task.
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="failed",
+                    summary=result.failure_reason or f"GoalStatus={status}",
+                    reflection=(
+                        "failure_kind=FAILURE_OBJECT_NOT_FOUND: the goal's object was not "
+                        "found and the task was handed to a human; do not retry it."
+                    ),
+                    stamp_ns=now_ns,
+                )
+            )
+            return
         if status == 5 and cancel_reason in ("reward", "patience"):
             self.get_logger().info(
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
