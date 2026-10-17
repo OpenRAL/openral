@@ -160,6 +160,7 @@ _Size-aware map confirmation (#418 step 4)._
   - `JawStallDetector.update(position, stamp_ns) -> bool` (L120) — One measured sample; `True` once per hold.
   - `JawStallDetector.suppress()` (L90) — A real ATTACH covers this hold: never fire for it.
   - `JawStallDetector.reset()` (L94) — Forget the window (a release, a sim reset).
+  - `JawStallDetector.hold_since_ns -> int | None` (L72) — Source time the stall condition first held for the current hold (a late ATTACH names the hand pose the object was grasped at).
   - `JawStallDetector.held_median` (L74) — The window's median jaw (the hold a fired stall reads).
   - `JawStallDetector.latched` (L79) — Whether this hold already fired or was suppressed.
 
