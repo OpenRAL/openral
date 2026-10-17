@@ -529,7 +529,11 @@ def test_tracking_on_attaches_the_destination_query() -> None:
 
     with _harness(
         _scene_declaration_json(),
-        params={"object_tracking": "on", "object_queries_json": _BANANA_QUERIES},
+        params={
+            "object_tracking": "on",
+            "object_queries_json": _BANANA_QUERIES,
+            "grounding_wait_s": 0.2,
+        },
     ) as (executor, runtime, seen):
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
@@ -545,7 +549,14 @@ def test_tracking_on_attaches_the_destination_query() -> None:
 def test_tracking_never_arms_a_place_declaration_on_its_own() -> None:
     """No scene declaration, no place approach: the destination query cannot ride, and
     no place declaration (which would let the sim attest a place witness) is armed."""
-    with _harness("", params={"object_tracking": "on", "object_queries_json": _BANANA_QUERIES}) as (
+    with _harness(
+        "",
+        params={
+            "object_tracking": "on",
+            "object_queries_json": _BANANA_QUERIES,
+            "grounding_wait_s": 0.2,
+        },
+    ) as (
         executor,
         runtime,
         seen,

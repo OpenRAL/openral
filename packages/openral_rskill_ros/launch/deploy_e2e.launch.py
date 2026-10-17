@@ -3011,6 +3011,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # runner's object_tracking is "off".
                 "object_queries_json": object_queries_json,
                 "object_tracking": object_tracking,
+                # Issue #418 step 1.4: the runner waits for its TARGET queries to ground
+                # and, under grounding_required, refuses the goal. Checked present above
+                # (`_object_tracking`) whenever tracking is on.
+                "grounding_wait_s": (
+                    float(LaunchConfiguration("grounding_wait_s").perform(context))
+                    if object_tracking != "off"
+                    else 0.0
+                ),
+                "grounding_required": LaunchConfiguration("grounding_required")
+                .perform(context)
+                .lower()
+                in ("1", "true", "yes"),
                 # Approach-armed grasp target (§2.2): a goal-scope declaration per
                 # goal, only when the exemption is on AND the HAL's grasp-target
                 # leg measures around an approaching hand.

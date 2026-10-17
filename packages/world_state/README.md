@@ -196,7 +196,7 @@ node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is n
 | `cameras` | none | Depth cameras: `camera_topic(<cam>, DEPTH_IMAGE / DEPTH_CAMERA_INFO / ROBOT_MASK)`. |
 | `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
 | `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
-| `grounding_required` | `false` | `grounding_incomplete` is logged at error level (refusing the goal is dispatch's). |
+| `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
 | `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. |
 | `released_clear_timeout_s` | `3.0` | How long a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge) unless the track leaves RELEASED first. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
 | `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
