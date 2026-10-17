@@ -3,8 +3,11 @@
 At ATTACH the hand's pinch volume ``J_h`` (``pinch.HandModel``, at the measured jaw by
 joint-state FK, grown by one cell) is intersected with the tracks:
 
-* free tracks of **any** role whose box meets ``J_h``, and ``RELEASED`` tracks whose fall
-  column meets it (a regrasp before re-grounding);
+* free tracks of **any** role whose measured geometry holds the pinch centre (``J_h``'s
+  centre) within one cell — the tight k-DOP when the track has one, else its box — and
+  ``RELEASED`` tracks whose fall column holds it (a regrasp before re-grounding). A padded
+  box that merely *meets* the swept pinch volume is not enough: a tracked neighbour beside
+  an ungrounded held object would be bound in its place (p2po_on2);
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
   unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
   re-centred on the pinch volume under ``epoch + 1``);
@@ -44,8 +47,9 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
-from openral_core.kinematics import Box, bounding_half_extents, box_gap_lower_bound_m
+from openral_core.kinematics import Box, bounding_half_extents
 from openral_core.perception_geometry import VoxelLattice
+from openral_core.schemas import DOP_AXES
 
 from openral_world_state.object_tracker.pinch import HandModel
 from openral_world_state.object_tracker.release import fall_column
@@ -105,6 +109,35 @@ class Binding:
     attachment: AttachedCollisionObject
     candidates: tuple[str, ...]
     reground: bool
+
+
+def _box_holds(box: Box, point: NDArray[np.float64], tol: float) -> bool:
+    """Whether ``box`` grown by ``tol`` holds ``point``."""
+    c, r, h = box
+    return bool(np.all(np.abs((point - c) @ r) <= h + tol))
+
+
+def _holds(track: TrackedObject, point: NDArray[np.float64], tol: float) -> bool:
+    """Whether ``track``'s measured geometry holds ``point`` within ``tol``.
+
+    The tight k-DOP (``TightCollisionGeometry.dop_lo_m``/``dop_hi_m`` over ``DOP_AXES`` in
+    the primitive's frame; a containing superset of the hull, tighter than the padded box)
+    of any primitive when the track has one, else its box.
+    """
+    tight = [p for p in track.tight if p.tight_geometry is not None]
+    if not tight:
+        return _box_holds(_box(track.box), point, tol)
+    axes = np.asarray(DOP_AXES, dtype=np.float64)
+    for prim in tight:
+        tg = prim.tight_geometry
+        assert tg is not None  # reason: filtered above
+        t = _t(prim.pose_in_object)
+        proj = axes @ ((point - t[:3, 3]) @ t[:3, :3])
+        if np.all(proj >= np.asarray(tg.dop_lo_m) - tol) and np.all(
+            proj <= np.asarray(tg.dop_hi_m) + tol
+        ):
+            return True
+    return False
 
 
 def _t(pose: Pose6D) -> NDArray[np.float64]:
@@ -218,13 +251,14 @@ class GraspBinder:
     ) -> Binding:
         """Bind whatever meets ``J_h`` at the measured configuration."""
         jh = self.pinch_in_frame(positions)
+        centre = jh[0]
         cands = [
             t
             for t in store.all()
-            if (t.status in _FREE and box_gap_lower_bound_m(_box(t.box), jh) <= 0.0)
+            if (t.status in _FREE and _holds(t, centre, self.cell_m))
             or (
                 t.status is TrackStatus.RELEASED
-                and box_gap_lower_bound_m(_box(fall_column(t, self.cell_m)), jh) <= 0.0
+                and _box_holds(_box(fall_column(t, self.cell_m)), centre, self.cell_m)
             )
         ]
         ids = tuple(t.object_id for t in cands)

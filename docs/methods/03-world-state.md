@@ -217,22 +217,22 @@ _Issue #418 WP C2. The hand's pinch volume `J_h` by mimic-aware joint-state FK (
 ### `python/world_state/src/openral_world_state/object_tracker/binding.py`
 _Issue #418 WP C2, design "Grasp binding and in-hand update". ATTACH binds what meets `J_h`; the bound geometry then only grows (the kernel's K4 union). Logs `object_tracker.bound` / `untracked_grasp` / `ambiguous_grasp` / `bound_geometry_grew` / `bound_geometry_cap` / `protrusion_unexplained`._
 
-- `MAX_PRIMITIVES = 16` (L58) — The kernel's per-object primitive cap (K4).
-- `TRACKED_CONFIDENCE = 0.7` (L60) — A tracked binding's confidence (`region_attachment`'s).
-- `FALLBACK_CONFIDENCE = 0.2` (L62) — A pinch fallback's (the HAL jaw-span fallback's).
-- `class TrackStoreLike(Protocol)` (L72) — The C1 `TrackStore` interface.
-  - `get(object_id) -> TrackedObject | None` (L75) — One track.
-  - `all() -> list[TrackedObject]` (L78) — Every track.
-  - `replace(obj) -> None` (L81) — Store under its id; bumps the set revision.
-- `class BindOutcome(StrEnum)` (L85) — `TRACKED`, `AMBIGUOUS`, `UNTRACKED`.
-- `class Binding(outcome, attachment, candidates, reground)` (L94) — One hand's held payload as published on `/openral/attachment_state`; `reground` asks for a re-ground after lift.
-- `class GraspBinder(hand, *, frame_id, cell_m)` (L168) — One hand. `frame_id` must be the manifest's `base_frame` (FK root), else `ROSConfigError`.
-  - `pinch_in_frame(positions) -> Box` (L193) — `J_h` grown by one cell, in the grid frame.
-  - `object_pose(positions) -> Pose6D` (L199) — The held object frame in the grid frame, `FK(q) · pose_in_link` (the release pose).
-  - `on_attach(store, positions, stamp_ns) -> Binding` (L216) — Candidates: free tracks (TENTATIVE/CONFIRMED/OCCLUDED/SPLIT) of any role whose box meets `J_h`, and RELEASED tracks whose `fall_column` meets it. One: `TRACKED_OBJECT` under the track id (`pose_in_link = T_link⁻¹·T_obj`, the shape — `tight` hulls or the box — unioned with itself slid along `c` onto the pinch axis; a RELEASED one bound re-centred on `J_h` under `epoch + 1`), the track set BOUND. Two or more: `PINCH_FALLBACK` of the pinch box ∪ the candidates' boxes (one enclosing box past 15), object id `pinch:<joint>@<stamp>`, no track touched. None: the pinch fallback alone, `reground=True`.
-  - `on_regrasp(positions, stamp_ns) -> Binding | None` (L387) — Unions the shape slid onto the new pinch axis, `geometry_revision + 1`; `None` when already on it or past the cap (union kept).
-  - `grow_by_protrusion(store, grid, positions, stamp_ns) -> Binding | None` (L400) — Tracked bindings only: occupied cells within the payload's reach of the pinch axis that neither the bound geometry, another non-bound track nor the hand explain (½ cell), 26-connected to the payload; fits the rotation θ about the pinch axis (2° grid, residual < 1 cell, nearest the previous θ) and unions the arc in steps of ≤ one cell at the payload's reach. `None` when nothing protrudes, no θ fits, or the cap would be passed.
-  - `on_release() -> None` (L509) — Forget the held payload.
+- `MAX_PRIMITIVES = 16` (L62) — The kernel's per-object primitive cap (K4).
+- `TRACKED_CONFIDENCE = 0.7` (L64) — A tracked binding's confidence (`region_attachment`'s).
+- `FALLBACK_CONFIDENCE = 0.2` (L66) — A pinch fallback's (the HAL jaw-span fallback's).
+- `class TrackStoreLike(Protocol)` (L76) — The C1 `TrackStore` interface.
+  - `get(object_id) -> TrackedObject | None` (L79) — One track.
+  - `all() -> list[TrackedObject]` (L82) — Every track.
+  - `replace(obj) -> None` (L85) — Store under its id; bumps the set revision.
+- `class BindOutcome(StrEnum)` (L89) — `TRACKED`, `AMBIGUOUS`, `UNTRACKED`.
+- `class Binding(outcome, attachment, candidates, reground)` (L98) — One hand's held payload as published on `/openral/attachment_state`; `reground` asks for a re-ground after lift.
+- `class GraspBinder(hand, *, frame_id, cell_m)` (L201) — One hand. `frame_id` must be the manifest's `base_frame` (FK root), else `ROSConfigError`.
+  - `pinch_in_frame(positions) -> Box` (L226) — `J_h` grown by one cell, in the grid frame.
+  - `object_pose(positions) -> Pose6D` (L232) — The held object frame in the grid frame, `FK(q) · pose_in_link` (the release pose).
+  - `on_attach(store, positions, stamp_ns) -> Binding` (L249) — Candidates: free tracks (TENTATIVE/CONFIRMED/OCCLUDED/SPLIT) of any role whose measured geometry holds `J_h`'s centre within one cell (their tight k-DOP when they carry one, else the box; a padded box merely meeting the swept pinch volume bound a tracked neighbour of an ungrounded held orange, p2po_on2), and RELEASED tracks whose `fall_column` meets it. One: `TRACKED_OBJECT` under the track id (`pose_in_link = T_link⁻¹·T_obj`, the shape — `tight` hulls or the box — unioned with itself slid along `c` onto the pinch axis; a RELEASED one bound re-centred on `J_h` under `epoch + 1`), the track set BOUND. Two or more: `PINCH_FALLBACK` of the pinch box ∪ the candidates' boxes (one enclosing box past 15), object id `pinch:<joint>@<stamp>`, no track touched. None: the pinch fallback alone, `reground=True`.
+  - `on_regrasp(positions, stamp_ns) -> Binding | None` (L421) — Unions the shape slid onto the new pinch axis, `geometry_revision + 1`; `None` when already on it or past the cap (union kept).
+  - `grow_by_protrusion(store, grid, positions, stamp_ns) -> Binding | None` (L434) — Tracked bindings only: occupied cells within the payload's reach of the pinch axis that neither the bound geometry, another non-bound track nor the hand explain (½ cell), 26-connected to the payload; fits the rotation θ about the pinch axis (2° grid, residual < 1 cell, nearest the previous θ) and unions the arc in steps of ≤ one cell at the payload's reach. `None` when nothing protrudes, no θ fits, or the cap would be passed.
+  - `on_release() -> None` (L543) — Forget the held payload.
 
 ### `python/world_state/src/openral_world_state/object_tracker/release.py`
 _Issue #418 WP C2, design "Release". Source-clock stamps only._

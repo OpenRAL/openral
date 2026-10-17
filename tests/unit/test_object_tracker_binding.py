@@ -29,6 +29,7 @@ from openral_core.perception_geometry import VoxelLattice
 from openral_world_state.object_tracker.binding import (
     MAX_PRIMITIVES,
     BindOutcome,
+    GraspBinder,
 )
 from openral_world_state.object_tracker.pinch import HandModel
 
@@ -208,3 +209,25 @@ def test_regrasp_unions_until_the_cap_then_refuses() -> None:
         assert nxt.attachment.geometry_revision == before.geometry_revision + 1
         before = nxt.attachment
     assert refused and len(before.primitives) == MAX_PRIMITIVES
+
+
+def test_a_neighbour_whose_geometry_misses_the_pinch_centre_is_not_bound() -> None:
+    """p2po_on2 (Spark, on-mode): the SO-101 closed on the ungrounded orange_3 while the
+    tracked orange_1's padded box still met the swept pinch volume, and the tracker bound
+    orange_1. A track binds only if its measured geometry holds the pinch centre within one
+    cell: here its k-DOP misses it by 4 cm, so the grasp is an untracked PINCH_FALLBACK."""
+    import json
+    from pathlib import Path
+
+    from openral_core import TrackedObject
+
+    rec = json.loads((Path(__file__).parent / "_p2po_on2_attach.json").read_text())
+    d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    binder = GraspBinder(HandModel(d, "gripper"), frame_id=d.base_frame, cell_m=0.015)
+    orange_1 = TrackedObject.model_validate(rec["track"])
+    store = DictStore([orange_1])
+    b = binder.on_attach(store, rec["positions"], stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED and b.candidates == ()
+    assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    kept = store.get(orange_1.object_id)
+    assert kept is not None and kept.status is TrackStatus.CONFIRMED
