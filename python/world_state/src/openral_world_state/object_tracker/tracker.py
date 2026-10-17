@@ -49,6 +49,7 @@ from openral_world_state.object_tracker.fit import (
     visible_fraction,
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.multi_view import intersect_views
 from openral_world_state.object_tracker.scheduler import (
     PRIORITY_BOUND,
     PRIORITY_DISAGREE,
@@ -131,6 +132,9 @@ class CameraFrame:
 _NEXT = object()
 #: Source seconds between INFO reports of one ``(key, reason)`` refusal.
 REFUSAL_LOG_PERIOD_S = 5.0
+#: Source seconds within which fits of one track from different cameras are combined
+#: (``intersect_views``): the object must not have moved between them. *Calibration point.*
+VIEW_WINDOW_S = 0.5
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -198,6 +202,8 @@ class ObjectTracker:
         #: ``camera:<name>`` for a frame (the node publishes it; see ``_refuse``).
         self.refusal_counts: Counter[tuple[str, str]] = Counter()
         self._refusal_logged_ns: dict[tuple[str, str], int] = {}
+        # Per track, per camera: the newest clear fit and its camera pose (multi-view).
+        self._views: dict[str, dict[str, tuple[ContainingFit, NDArray[np.float64], int]]] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -303,6 +309,35 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _combine_views(
+        self, oid: str, camera: str, fit: ContainingFit, frame: CameraFrame, resolution: float
+    ) -> tuple[ContainingFit, FitKind]:
+        """``fit`` intersected with the other cameras' recent clear fits of ``oid``.
+
+        Each camera's newest clear (non-provisional) fit is kept; fits from other cameras
+        no older than ``VIEW_WINDOW_S`` join ``intersect_views`` with this one as the
+        primary. Its own fallbacks (a refused or too-small second silhouette, a measured
+        point outside the result) return this fit unchanged.
+        """
+        assert frame.t_base_from_cam is not None  # reason: only usable frames fit
+        views = self._views.setdefault(oid, {})
+        if not fit.provisional:
+            views[camera] = (fit, frame.t_base_from_cam, frame.stamp_ns)
+        others = [
+            (f, t)
+            for cam, (f, t, stamp) in views.items()
+            if cam != camera and abs(frame.stamp_ns - stamp) <= VIEW_WINDOW_S * 1e9
+        ]
+        if fit.provisional or not others or fit.box is None:
+            return fit, FitKind.SILHOUETTE_CONE
+        out = intersect_views(
+            [(fit, frame.t_base_from_cam), *others],
+            resolution=resolution,
+            frame_id=self.store.frame_id,
+            stamp_ns=frame.stamp_ns,
+        )
+        return out.fit, out.fit_kind
 
     def _refuse(self, key: str, why: str, **numbers: object) -> None:
         """Count a refusal and report it at INFO, rate-limited per ``(key, why)``.
@@ -459,6 +494,7 @@ class ObjectTracker:
                 last_confirmed_stamp_ns=0,
                 provisional=fit.provisional,
             )
+            self._combine_views(track.object_id, req.camera, fit, frame, grid.resolution)
         else:
             old = self.store.get(oid)
             assert old is not None
@@ -482,8 +518,10 @@ class ObjectTracker:
                     log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                     return None
             refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
+            fit, fit_kind = self._combine_views(oid, req.camera, fit, frame, grid.resolution)
             track = old.model_copy(
                 update={
+                    "fit_kind": fit_kind,
                     "box": fit.box,
                     "tight": (fit.tight,),
                     "support_z": support_z,
