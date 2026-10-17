@@ -726,6 +726,12 @@ if _ROS2_AVAILABLE:
                 )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
+            else:
+                # Forward the new revision to the kernel now, not on the next timer tick:
+                # the tick runs on the node clock, which stands still while a sim twin
+                # holds a tick for its attachment perception barrier, and that barrier
+                # waits on the kernel's ack of exactly this revision.
+                self._publish_snapshot(event=True)
 
         def _on_tracked_objects(self, msg: object) -> None:
             """Validate and store the object tracker's newest set (issue #418)."""
@@ -960,19 +966,23 @@ if _ROS2_AVAILABLE:
             objects = self._memory.tick(cands, stamp_ns=stamp_ns, in_fov=in_fov)
             self._aggregator.update_detected_objects(objects)
 
-        def _publish_snapshot(self) -> None:
+        def _publish_snapshot(self, *, event: bool = False) -> None:
             """Timer callback: snapshot → typed WorldStateStamped → publish.
 
             Builds one ``WorldStateStamped`` per fast tick and publishes
             it on the fast topic; every ``_slow_divider`` ticks the same
             message also goes out on the slow topic (single snapshot, two
-            publishers, two rates).
+            publishers, two rates). ``event=True`` is an extra fast-topic publish
+            outside the timer (an attachment revision just ingested): it is not a
+            tick, so the slow-topic cadence is untouched.
             """
             if self._aggregator is None or self._pub_fast is None or self._pub_slow is None:
                 return
             ws = self._aggregator.snapshot()
             msg = build_world_state_stamped_msg(self, ws)
             self._pub_fast.publish(msg)
+            if event:
+                return
             self._tick_count += 1
             if self._tick_count % self._slow_divider == 0:
                 self._pub_slow.publish(msg)
