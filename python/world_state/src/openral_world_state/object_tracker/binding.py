@@ -79,8 +79,16 @@ _N26 = [(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1) if
 #: How far from the pinch centre an untracked payload may grow (m). *Calibration point.*
 #: ponytail: one fixed bound on the search; a manifest field if a gripper carries longer.
 _GROW_RADIUS_M = 0.3
-#: A cell moves with the hand only once the hand moved this many cells between sightings.
+#: A cell moves with the hand only once the hand moved this many cells between sightings. The
+#: threshold separates "its first place is free now" (it left) from "the same cell again" (a
+#: body longer than the step still fills its own first place), so an UNTRACKED / PROVISIONAL
+#: payload, which has no measured box to start from, waits for two cells.
 _RIGID_MIN_MOVE_CELLS = 2.0
+#: ...a TRACKED payload starts from a measured, cleared box and only absorbs loose cells
+#: connected to it that nothing else explains, so half a cell is enough: growth starts on the
+#: first frames of hand motion, not after the object has already moved 3 cm (#418 r6po_dbg8:
+#: the held orange drifted 0.9 cm in the hand within 80 ms of the bind).
+_TRACKED_MIN_MOVE_CELLS = 0.5
 
 
 class TrackStoreLike(Protocol):
@@ -614,7 +622,7 @@ class GraspBinder:
         positions: Mapping[str, float],
         stamp_ns: int,
     ) -> Binding | None:
-        """Grow an UNTRACKED / PROVISIONAL payload by the cells that move with the hand.
+        """Grow an UNTRACKED / PROVISIONAL / TRACKED payload by the cells that move with the hand.
 
         A fallback box cannot know how long an unknown object is (a banana outruns any
         stroke). Occupied cells within ``_GROW_RADIUS_M`` of the pinch centre that neither
@@ -625,10 +633,21 @@ class GraspBinder:
         table under a hand sliding along it keeps its key but not its freed place). The new
         held cells' box (object frame, + half a cell) is unioned (K4: only grows).
         ``None`` when nothing new moved with the hand, or past the primitive cap.
+
+        A TRACKED payload grows the same way (it only ever grows: K4), from half a cell of
+        hand travel (``_TRACKED_MIN_MOVE_CELLS``) instead of two: the clear fit it starts from
+        is measured, and the cells it takes are loose, 26-connected to it, in front of the
+        palm and not another track's, the hand's, or a place the world still holds.
         """
         held_b = self.held
-        if held_b is None or held_b.outcome not in (BindOutcome.UNTRACKED, BindOutcome.PROVISIONAL):
+        if held_b is None or held_b.outcome not in (
+            BindOutcome.UNTRACKED,
+            BindOutcome.PROVISIONAL,
+            BindOutcome.TRACKED,
+        ):
             return None
+        tracked = held_b.outcome is BindOutcome.TRACKED
+        min_move = _TRACKED_MIN_MOVE_CELLS if tracked else _RIGID_MIN_MOVE_CELLS
         if grid.frame_id != self.frame_id:
             raise ROSConfigError(f"grid frame {grid.frame_id!r} != track frame {self.frame_id!r}.")
         cell = grid.resolution
@@ -671,7 +690,7 @@ class GraspBinder:
         ):
             first = self._sighted.setdefault(tuple(key), world)
             if (
-                np.linalg.norm(world - first) >= _RIGID_MIN_MOVE_CELLS * cell
+                np.linalg.norm(world - first) >= min_move * cell
                 and tuple(ijk(first[None])[0].tolist()) not in occupied
             ):
                 rigid.append(world)
