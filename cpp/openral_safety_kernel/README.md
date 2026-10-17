@@ -1060,7 +1060,20 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   `select_tracked_grasp`, `…ATieWithinOneVoxelSelectsNothing`,
   `…AnObjectNeverGoesToTheHandItIsFurtherFrom`. Arm links are never exempt
   (`…ArmLinksAreNeverExempt`); another hand's finger is not exempt by this hand's
-  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Fixed jaws on a
+  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Cell volume, not cell
+  centre (OT-6 amendment, 2026-10-17, Safety-WG review pending; widens K2 by at most half
+  a cell, more on a diagonal):** with a tracked table a cell is exempt for the selected
+  hand's finger when the cell's VOLUME meets the object's box (exact OBB-vs-cube separating
+  axis test, `grasp_cell_exempt`), not only when its centre lies inside. A voxel is occupied
+  when any part of it touches the object, so a cell whose centre is up to half a cell outside
+  the containing box can still be the target's own; the same quantisation argument as the K7
+  static pad, with no extra margin. Per-hand isolation, the selection and the legacy region
+  (centre test) are unchanged; a cell wholly beyond the box still stops
+  (`…ACellWhollyBeyondTheBoxStillStops`); `…ACellWhoseVolumeTouchesTheBoxIsExempt…`; the
+  randomised subset property now expects the volume rule. Evidence: of the four r10 false
+  stops on a box under-cover, exact volume intersection covers 1 (DROID camlong, the cell is
+  8.7 mm from the box by centre but inside by volume); the three PickOrange cells stay
+  2.9-4.0 mm outside. **Fixed jaws on a
   body link (OT-6 amendment, 2026-10-17, Safety-WG review pending):**
   `tracked_grasp_extra_contact_links` (the launch passes the manifest's
   `fixed_jaw_link`s, `RobotDescription.fixed_jaw_links()`: the SO-101's `gripper`,

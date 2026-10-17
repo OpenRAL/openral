@@ -1328,6 +1328,33 @@ GraspBox grasp_box_for(const VoxelGrid& grid, const std::array<int, kMaxGraspHan
   return {};
 }
 
+// #418 K2 (hazard OT-6 amendment 2026-10-17; Safety-WG review pending): is the cell exempt
+// against the selected hand's box? A voxel is occupied when ANY part of it touches the object,
+// so with a tracked table a cell is the target's own when its VOLUME intersects the box (exact
+// OBB-vs-cube separating-axis test), not only when its centre lies inside: widening K2 by at
+// most half a cell (more on the diagonal), the same quantisation argument as the K7 static
+// pad. The legacy region keeps the centre test. A non-finite box or cell never exempts.
+bool grasp_cell_exempt(const VoxelGrid& grid, const GraspBox& gbox, const Transform& grid_from_base,
+                       const Vec3& local_center, const Vec3& voxel_half,
+                       const Vec3& base_center) noexcept {
+  if (gbox.pose == nullptr) {
+    return false;
+  }
+  const TrackedGraspTable* t = grid.tracked_grasp;
+  if (t == nullptr || !t->valid) {
+    return point_in_obb(*gbox.pose, *gbox.half, base_center);
+  }
+  const Vec3& h = *gbox.half;
+  if (!(h.x > 0.0) || !(h.y > 0.0) || !(h.z > 0.0) || !std::isfinite(h.x) || !std::isfinite(h.y) ||
+      !std::isfinite(h.z) || !std::isfinite(local_center.x) || !std::isfinite(local_center.y) ||
+      !std::isfinite(local_center.z)) {
+    return false;
+  }
+  Transform cell;
+  cell.t = local_center;
+  const double gap = box_box_distance(compose(grid_from_base, *gbox.pose), h, cell, voxel_half);
+  return std::isfinite(gap) && gap <= 0.0;
+}
 }  // namespace
 
 namespace {
@@ -1538,7 +1565,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // region never trips and never supplies the reported evidence.
           const Vec3 base_center =
               grasp_link || workspace_link ? apply(grid.pose, voxel.t) : Vec3{};
-          const bool exempt = grasp_link && point_in_obb(*gbox.pose, *gbox.half, base_center);
+          const bool exempt = grasp_link && grasp_cell_exempt(grid, gbox, grid_from_base, voxel.t,
+                                                              voxel_half, base_center);
           // #349: a slow hand link vs a cell centred in the live workspace.
           // Never silent: a tolerated pair within the margin is counted.
           const bool ws_exempt =
@@ -1607,7 +1635,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // stop). Stage 1's lower bound is all its clamped slack needs.
           // #349's workspace exemption joins it here, under the same accounting.
           const Vec3 base_center = grasp_link || workspace_link ? apply(grid.pose, center) : Vec3{};
-          const bool grasp_exempt = grasp_link && point_in_obb(*gbox.pose, *gbox.half, base_center);
+          const bool grasp_exempt =
+              grasp_link &&
+              grasp_cell_exempt(grid, gbox, grid_from_base, center, voxel_half, base_center);
           const bool ws_exempt =
               !grasp_exempt && workspace_link && workspace_contact_exempts(grid, lb, base_center);
           const bool exempt = grasp_exempt || ws_exempt;

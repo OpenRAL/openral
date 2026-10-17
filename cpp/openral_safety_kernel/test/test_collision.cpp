@@ -7134,6 +7134,49 @@ TEST(TrackedGraspExemption, TheSelectedObjectExemptsTheHandsFingers) {
       << "the exempt pairs still reach the sweep minimum at their own depth";
 }
 
+TEST(TrackedGraspExemption, ACellWhoseVolumeTouchesTheBoxIsExemptWithoutItsCentreInside) {
+  // OT-6 amendment (2026-10-17): a voxel is occupied when ANY part of it touches the object, so a
+  // cell is the target's own when its volume meets the box. The cell (0.01,0.01,0.01) spans
+  // [0, 0.02]^3 (kK2Res 0.02); its centre is 5 mm past this box's upper x face (0.005).
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(0.01, 0.01, 0.01);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  ASSERT_TRUE(osk::check_voxel_collision(m, s, grid, kK2Margin).hit);
+  const std::array<double, 6> face{-0.025, 0.01, 0.01, 0.03, 0.02, 0.02};
+  const auto t = k2_table(m, {face});
+  grid.tracked_grasp = &t;
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kK2Margin).hit)
+      << "the cell's volume meets the box: exempt";
+  // The diagonal: both x and y faces 8 mm short of the centre; only the cell's corner is inside.
+  const std::array<double, 6> corner{-0.028, -0.028, 0.01, 0.03, 0.03, 0.02};
+  const auto tc = k2_table(m, {corner});
+  grid.tracked_grasp = &tc;
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kK2Margin).hit)
+      << "a corner touching the box is exempt";
+}
+
+TEST(TrackedGraspExemption, ACellWhollyBeyondTheBoxStillStops) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(0.01, 0.01, 0.01);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(today.hit);
+  // Upper x face at -1 mm: the cell [0, 0.02] is 1 mm clear of the box, more than the exact
+  // volume test allows. Same for a box 1 mm short on the diagonal.
+  const std::array<double, 6> beyond{-0.031, 0.01, 0.01, 0.03, 0.02, 0.02};
+  const auto t = k2_table(m, {beyond});
+  grid.tracked_grasp = &t;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+  const std::array<double, 6> beyond_diag{-0.031, -0.031, 0.01, 0.03, 0.03, 0.02};
+  const auto td = k2_table(m, {beyond_diag});
+  grid.tracked_grasp = &td;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+}
+
 TEST(TrackedGraspExemption, AnUnselectedEligibleObjectExemptsNothing) {
   const osk::CollisionModel m = k2_model();
   osk::CollisionScratch s = k2_scratch();
@@ -7312,7 +7355,7 @@ TEST(TrackedGraspCover, TheThresholdIsHalfTheVisibleCellsAndAtLeastTwo) {
 
 TEST(TrackedGraspExemption, TripsWithAreASubsetOfTripsWithoutOverRandomisedScenes) {
   // trips_with ⊆ trips_without, and every removed pair is (a finger of hand h,
-  // a cell centred in h's selected box) — the K2 property against the
+  // a cell whose volume meets h's selected box) — the K2 property against the
   // no-exemption baseline. Randomised finger poses, boxes and occupancy; fixed
   // seed. Stage 1 only (no hulls), so trip_set enumerates exactly.
   std::mt19937 rng(20261016U);
@@ -7360,8 +7403,11 @@ TEST(TrackedGraspExemption, TripsWithAreASubsetOfTripsWithoutOverRandomisedScene
         if (t.hand_links[h][static_cast<std::size_t>(link)] && sel[h] >= 0) {
           const auto& b = boxes[static_cast<std::size_t>(sel[h])];
           const osk::Vec3 c = base_centre(grid, cell);
-          exempt = std::abs(c.x - b[0]) <= b[3] && std::abs(c.y - b[1]) <= b[4] &&
-                   std::abs(c.z - b[2]) <= b[5];
+          // OT-6 amendment: the cell's VOLUME meets the (axis-aligned) box: half a cell more.
+          constexpr double kHalfCell = 0.5 * kK2Res;
+          exempt = std::abs(c.x - b[0]) <= b[3] + kHalfCell &&
+                   std::abs(c.y - b[1]) <= b[4] + kHalfCell &&
+                   std::abs(c.z - b[2]) <= b[5] + kHalfCell;
         }
       }
       EXPECT_EQ(with.count({link, cell}), exempt ? 0U : 1U)
