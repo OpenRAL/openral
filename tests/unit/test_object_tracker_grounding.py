@@ -280,3 +280,38 @@ def test_a_mask_with_too_few_points_says_so_with_its_numbers(
     assert event["why"] == "too_few_points" and event["key"] == f"banana@{_RIG.name}"
     assert isinstance(event["points"], int) and event["points"] <= 1
     assert event["min_points"] == tr.params.fit.min_points
+
+
+def test_a_locate_is_cropped_to_the_declared_workspace_or_the_seed() -> None:
+    """#418 restock: the whole 1920x1080 head frame squashed to 640x640 left a carton ~40
+    px wide and omdet found it in ~24 % of locates. A locate now carries the projected
+    search region (the query's seed, else the grasp declaration's workspace box) padded by
+    ``LOCATE_ROI_PAD``, normalised to the image, so the locator detects on that crop."""
+    from openral_core import PlaceRegion, Pose6D
+    from openral_world_state.object_tracker.fit import project_box
+    from openral_world_state.object_tracker.tracker import LOCATE_ROI_PAD
+
+    x, y = _RIG.centre_xy
+    region = PlaceRegion(
+        frame_id=_RIG.frame,
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        half_extents=(0.15, 0.12, 0.08),
+    )
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+
+    tr = _tracker()  # no seed, no region: the whole frame
+    (req,) = tr.feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
+    assert req.service == "locate_in_view" and req.roi_norm_xyxy is None
+
+    tr = _tracker()
+    tr.search_region = region
+    (req,) = tr.feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
+    rect = project_box(region, _RIG.k, _RIG.t)
+    assert rect is not None and req.roi_norm_xyxy is not None
+    (c0, r0, c1, r1), _ = rect
+    pw, ph = LOCATE_ROI_PAD * (c1 - c0), LOCATE_ROI_PAD * (r1 - r0)
+    w, h = _RIG.k.width, _RIG.k.height
+    expected = (max(c0 - pw, 0) / w, max(r0 - ph, 0) / h, min(c1 + pw, w) / w, min(r1 + ph, h) / h)
+    assert np.allclose(req.roi_norm_xyxy, expected)
+    assert 0.0 <= req.roi_norm_xyxy[0] < req.roi_norm_xyxy[2] <= 1.0

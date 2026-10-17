@@ -770,6 +770,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     self._answer(frame, optical_frame, stamp_msg, empty)
                     return
                 lreq = LocateInView.Request(query=req.label, camera=req.camera, detector="")
+                lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
                 future = self._locate.call_async(lreq)
 
                 def done_locate(f: Any) -> None:

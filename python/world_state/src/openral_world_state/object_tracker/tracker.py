@@ -135,6 +135,9 @@ REFUSAL_LOG_PERIOD_S = 5.0
 #: Source seconds within which fits of one track from different cameras are combined
 #: (``intersect_views``): the object must not have moved between them. *Calibration point.*
 VIEW_WINDOW_S = 0.5
+#: A locate's crop: the projected search region grown by this fraction of its size on
+#: every side (a seed or workspace box need not be tight in the image). *Calibration point.*
+LOCATE_ROI_PAD = 0.25
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -204,6 +207,9 @@ class ObjectTracker:
         self._refusal_logged_ns: dict[tuple[str, str], int] = {}
         # Per track, per camera: the newest clear fit and its camera pose (multi-view).
         self._views: dict[str, dict[str, tuple[ContainingFit, NDArray[np.float64], int]]] = {}
+        #: Where queried objects are expected (the grasp declaration's workspace box, set
+        #: by the session); a locate is cropped to it when its query has no seed.
+        self.search_region: PlaceRegion | None = None
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -309,6 +315,24 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _locate_roi(
+        self, region: PlaceRegion | None, frame: CameraFrame
+    ) -> tuple[float, float, float, float] | None:
+        """``region``'s image rectangle grown by ``LOCATE_ROI_PAD``, normalised.
+
+        ``None`` when there is no region, it is in another frame, or it misses the image.
+        """
+        if region is None or region.frame_id != self.store.frame_id:
+            return None
+        assert frame.t_base_from_cam is not None  # reason: only usable frames issue
+        rect = project_box(region, frame.intrinsics, frame.t_base_from_cam)
+        if rect is None:
+            return None
+        (c0, r0, c1, r1), _ = rect
+        pw, ph = LOCATE_ROI_PAD * (c1 - c0), LOCATE_ROI_PAD * (r1 - r0)
+        w, h = frame.intrinsics.width, frame.intrinsics.height
+        return (max(c0 - pw, 0) / w, max(r0 - ph, 0) / h, min(c1 + pw, w) / w, min(r1 + ph, h) / h)
 
     def _combine_views(
         self, oid: str, camera: str, fit: ContainingFit, frame: CameraFrame, resolution: float
@@ -625,8 +649,9 @@ class ObjectTracker:
         for q in self.queries.due():
             prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
             base = TrackerRequest(
-                "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key
-            )
+                "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key,
+                roi_norm_xyxy=self._locate_roi(q.query.seed or self.search_region, frame),
+            )  # fmt: skip
             seed = q.query.seed
             if seed is not None and grid is not None and seed.frame_id == grid.frame_id:
                 skip = self._prompted.setdefault(q.key, set())

@@ -259,6 +259,8 @@ class TrackerSession:
     def on_grasp_declaration(self, decl: GraspDeclaration) -> None:
         """A grasp declaration (or its retraction) from dispatch."""
         self.grasp_declaration = decl if decl.active else None
+        # Locates crop to the declared workspace (issue #418 restock: ~40 px cartons).
+        self.tracker.search_region = decl.workspace_box if decl.active else None
         self._set_goal("grasp", decl.target_id, decl.stamp_ns, decl.active, decl.target_queries)
 
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:
