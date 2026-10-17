@@ -1564,7 +1564,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "(docs/reference/manipulation-workspace-contact.md): deploy run refuses it."
         )
     # The #418 tracker owning attachment_state (bind | on) is sim-only until Safety-WG
-    # review; shadow publishes tracked_objects that nothing consumes, so it may run.
+    # review. Shadow may run: the kernel ingests its tracked_objects through K1 (via the
+    # aggregator's world_state_fast), but no TRACKED_OBJECT binding exists and K2 / K5 are
+    # off, so no kernel decision changes.
     if hal_mode == "real" and rt is not None and rt.object_tracking in ("bind", "on"):
         raise ROSConfigError(
             f"runtime.object_tracking={rt.object_tracking!r} is sim-only until Safety-WG "

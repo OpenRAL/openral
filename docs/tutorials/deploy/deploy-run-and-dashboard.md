@@ -568,7 +568,8 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   ```
 
 - `runtime.object_tracking` (issue #418): `deploy run` allows only `shadow` (the object
-  tracker publishes `/openral/tracked_objects`, nothing consumes it); `bind` / `on` are
+  tracker publishes `/openral/tracked_objects`; the safety kernel ingests the set (K1, it
+  may log `safety.tracked_objects_rejected`) but no decision changes); `bind` / `on` are
   sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
   field can be overridden without editing it, e.g.
   `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
