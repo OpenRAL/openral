@@ -28,8 +28,10 @@ from openral_core.kinematics import (
 from openral_core.perception_geometry import VoxelLattice
 from openral_world_state.object_tracker.binding import (
     MAX_PRIMITIVES,
+    Binding,
     BindOutcome,
     GraspBinder,
+    _box,
 )
 from openral_world_state.object_tracker.pinch import HandModel
 
@@ -233,21 +235,88 @@ def test_a_neighbour_whose_geometry_misses_the_pinch_centre_is_not_bound() -> No
     assert kept is not None and kept.status is TrackStatus.CONFIRMED
 
 
+def _payload_boxes(binder: GraspBinder, q: dict[str, float], b: Binding) -> list[Box]:
+    """The attachment's primitives as boxes in the grid frame at ``q``."""
+    att = b.attachment
+    t_fa = binder.hand.t_frame_from_attach(binder.frame_id, q)
+    t_fo = t_fa @ homogeneous_from_quat_xyz(att.pose_in_link.xyz, att.pose_in_link.quat_xyzw)
+    out: list[Box] = []
+    for p in att.primitives:
+        t = t_fo @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
+        out.append((t[:3, 3], t[:3, :3], bounding_half_extents(p.shape)))
+    return out
+
+
+def _outside(points: NDArray[np.float64], boxes: list[Box]) -> float:
+    """Worst distance of ``points`` outside the union of ``boxes`` (m)."""
+    best = np.full(len(points), np.inf)
+    for c, r, h in boxes:
+        local = np.abs((points - c) @ r)
+        best = np.minimum(best, np.linalg.norm(np.maximum(local - h, 0.0), axis=1))
+    return float(best.max())
+
+
 @pytest.mark.parametrize("robot", list(ROBOTS))
-def test_a_provisional_track_never_becomes_the_payload(robot: str) -> None:
-    """#418 decision (2026-10-17): a track fitted through the robot may be exempted over,
-    but the grasp that meets it falls back to PINCH_FALLBACK and asks for a re-ground (the
-    clear refit after lift); the track itself is not bound."""
+def test_a_provisional_track_is_never_the_payload_alone(robot: str) -> None:
+    """#418 r4: a grasp whose only candidate is provisional binds no identity, but its payload
+    is the union of the provisional box and the pinch fallback, cut at the palm: never smaller
+    than either. (The 2026-10-17 rule dropped the box and left a pad-width fallback that
+    under-covered every restock carton by 4-16 cm.)"""
     binder, q, centre = arm_at_hold(robot)
-    held = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024))
+    held = track("trk:1", binder.frame_id, centre, (0.05, 0.05, 0.05))
     store = DictStore([held.model_copy(update={"provisional": True})])
     b = binder.on_attach(store, q, stamp_ns=10)
-    assert b.outcome is BindOutcome.UNTRACKED and b.reground and b.candidates == ()
+    assert b.outcome is BindOutcome.PROVISIONAL and b.reground and b.candidates == ("trk:1",)
     assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    assert not b.attachment.object_id.startswith("trk:")  # nothing is cleared by identity
     kept = store.get("trk:1")
     assert kept is not None and kept.status is TrackStatus.CONFIRMED and kept.provisional
+    boxes = _payload_boxes(binder, q, b)
+    a = binder.hand.t_frame_from_attach(binder.frame_id, q)[:3, :3] @ binder.hand.axes[:, 1]
+    palm = binder.hand.palm_m + float(
+        binder.hand.t_frame_from_attach(binder.frame_id, q)[:3, 3] @ a
+    )
+    corners = _corners(_box(held.box))
+    in_front = corners[corners @ a >= palm + 1e-6]
+    assert _outside(in_front, boxes) < 1e-6  # the provisional box, in front of the palm
+    fb = DictStore([])
+    untracked = _payload_boxes(binder, q, binder.on_attach(fb, q, stamp_ns=11))
+    assert _outside(_corners(untracked[0]), boxes) < 1e-6  # ...and the untracked fallback
     clear = DictStore([held])
-    assert binder.on_attach(clear, q, stamp_ns=11).outcome is BindOutcome.TRACKED
+    assert binder.on_attach(clear, q, stamp_ns=12).outcome is BindOutcome.TRACKED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_the_untracked_fallback_bounds_the_opening_and_the_stroke(robot: str) -> None:
+    """OT-10 bounded: along the closing axis the jaw opening seen before closure (an upper
+    bound on the held width there), along the other two the gripper's full stroke from the
+    manifest; never behind the palm."""
+    binder, q, centre = arm_at_hold(robot)
+    hand = binder.hand
+    joint = hand.joint.name
+    opening = q[joint] + 0.6 * (hand.open_end - q[joint])
+    for jaw in (q[joint], opening, q[joint]):  # opened, then closed onto the object
+        binder.observe_jaw(jaw)
+    b = binder.on_attach(DictStore([]), q, stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED
+    (box,) = _payload_boxes(binder, q, b)
+    t = hand.t_frame_from_attach(binder.frame_id, q)
+    axes = t[:3, :3] @ hand.axes
+    local = (_corners(box) - box[0]) @ axes
+    stroke_half = float(hand.pinch_in_link(hand.open_end).half[0])
+    gap = hand.pinch_in_link(opening)
+    gap_world = (t[:3, :3] @ gap.centre + t[:3, 3], axes, gap.half)
+    assert _outside(_corners(gap_world), [box]) < 1e-6  # the pre-closure gap, whole
+    assert local[:, 0].max() < gap.half[0] + 1e-6  # ...and no wider along the closing axis
+    assert local[:, 2].max() >= stroke_half - 1e-6  # the stroke across the pads
+    jh_centre = (centre - box[0]) @ axes
+    assert local[:, 1].max() - jh_centre[1] >= stroke_half - 1e-6  # ...and past the pinch
+    palm = hand.palm_m + float(t[:3, 3] @ axes[:, 1])
+    assert float((_corners(box) @ axes[:, 1]).min()) >= palm - 1e-6
+    # Without a pre-closure sample the closing axis takes the whole stroke.
+    b2 = binder.on_attach(DictStore([]), q, stamp_ns=11)
+    (box2,) = _payload_boxes(binder, q, b2)
+    assert ((_corners(box2) - box2[0]) @ axes)[:, 0].max() >= stroke_half - 1e-6
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
@@ -267,7 +336,87 @@ def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
     reach = []
     for p in b.attachment.primitives:
         t = t_ao @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
-        corners = _corners((t[:3, 3], t[:3, :3], np.asarray(p.shape.half_extents_m)))
+        corners = _corners((t[:3, 3], t[:3, :3], bounding_half_extents(p.shape)))
         assert (corners @ a).min() >= pinch.palm_m - 1e-6
         reach.append((corners @ a).max())
     assert max(reach) > pinch.palm_m + 0.1  # what lies in front of the palm is still held
+
+
+def _lift(robot: str, q: dict[str, float]) -> dict[str, float]:
+    """The same hold, the arm lifted (the hand rises and moves, the jaw unchanged)."""
+    lifted = dict(q)
+    if robot == "droid_franka_robotiq":
+        lifted["panda_joint2"] -= 0.15
+        lifted["panda_joint4"] += 0.10
+    else:
+        lifted["shoulder_lift"] -= 0.25
+    return lifted
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_an_untracked_payload_grows_by_cells_that_move_with_the_hand(robot: str) -> None:
+    """#418 r4: a fallback's revision stayed 0 while 2-10 cm of the held object stuck out
+    (C2's in-hand growth ran for TRACKED bindings only). Cells that hold their place in the
+    hand across a hand motion, and left their old place in the world, are the payload; the
+    table the object stood on is not."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    b0 = binder.on_attach(DictStore([]), q, stamp_ns=10)
+    assert b0.outcome is BindOutcome.UNTRACKED
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    r_pinch = t_a[:3, :3] @ binder.hand.axes
+    # A body much longer than any stroke along the pad width, through the pinch centre.
+    half = np.array([0.01, 0.01, 0.15])
+    g = np.stack(np.meshgrid(*[np.arange(-h, h + 1e-9, 0.004) for h in half]), -1).reshape(-1, 3)
+    body_a = g @ r_pinch.T + centre
+    floor = float(body_a[:, 2].min()) - CELL
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    table = np.column_stack([xy + centre[:2], np.full(len(xy), floor)])
+    lo = np.floor((centre - 0.3) / CELL) * CELL
+    q_b = _lift(robot, q)
+    t_b = binder.hand.t_frame_from_attach(frame, q_b)
+    move = t_b @ np.linalg.inv(t_a)
+    assert np.linalg.norm(move[:3, 3]) > 2 * CELL  # the hand really moved
+    body_b = body_a @ move[:3, :3].T + move[:3, 3]
+    store = DictStore([])
+    assert (
+        binder.grow_untracked(store, _grid(frame, np.vstack([body_a, table]), lo, 60), q, 20)
+        is None
+    )
+    grown = binder.grow_untracked(store, _grid(frame, np.vstack([body_b, table]), lo, 60), q_b, 30)
+    assert grown is not None and grown.attachment.geometry_revision == 1
+    assert grown.attachment.primitives[0] == b0.attachment.primitives[0]  # a union only
+    from openral_world_state.object_tracker.binding import _outside_m
+
+    held = binder._held_boxes(q_b)
+    hand = binder.hand.hand_boxes(frame, q_b)
+    grid_b = _grid(frame, body_b, lo, 60)
+    cells = grid_b.occupied_centers()
+    cells = cells[_outside_m(cells, hand) > CELL / 2]
+    assert float(_outside_m(cells, held).max()) < CELL  # the whole body is now payload
+    table_cells = _grid(frame, table, lo, 60).occupied_centers()
+    assert float(_outside_m(table_cells, held).min()) > CELL / 2  # the table is not
+    # Seen again where it is: nothing new.
+    assert (
+        binder.grow_untracked(store, _grid(frame, np.vstack([body_b, table]), lo, 60), q_b, 40)
+        is None
+    )
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_static_cells_never_grow_an_untracked_payload(robot: str) -> None:
+    """The hand moves over a table and a wall with nothing in it: the cells it passes keep
+    their place in the world, so none of them is ever the payload."""
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    binder.on_attach(DictStore([]), q, stamp_ns=10)
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    table = np.column_stack([xy + centre[:2], np.full(len(xy), centre[2] - 0.03)])
+    wall = np.column_stack(
+        [np.full(len(xy), centre[0] + 0.04), xy[:, 0] + centre[1], xy[:, 1] + centre[2]]
+    )
+    world = np.vstack([table, wall])
+    lo = np.floor((centre - 0.3) / CELL) * CELL
+    store = DictStore([])
+    for i, qq in enumerate((q, _lift(robot, q), q)):
+        assert binder.grow_untracked(store, _grid(frame, world, lo, 60), qq, 20 + i) is None

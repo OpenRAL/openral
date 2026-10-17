@@ -22,7 +22,12 @@ update); a track set to RELEASED is searched for in its fall column, needs a fre
 fit there, and returns CONFIRMED with ``epoch + 1`` once the map confirms it.
 """
 
-from openral_world_state.object_tracker.cover import CoverVerdict, cover_verdict, surface_cells
+from openral_world_state.object_tracker.cover import (
+    CoverVerdict,
+    cover_verdict,
+    own_cover,
+    surface_cells,
+)
 from openral_world_state.object_tracker.fit import (
     ROBOT_PIXEL,
     UNCERTAIN_PIXEL,
@@ -33,6 +38,7 @@ from openral_world_state.object_tracker.fit import (
     visible_fraction,
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.hidden_side import grow_hidden_side
 from openral_world_state.object_tracker.multi_view import MultiViewFit, intersect_views
 from openral_world_state.object_tracker.scheduler import Scheduler, TrackerRequest
 from openral_world_state.object_tracker.session import GraspEventKind, TrackerSession, TrackingMode
@@ -70,7 +76,9 @@ __all__ = [
     "associate",
     "containing_fit",
     "cover_verdict",
+    "grow_hidden_side",
     "intersect_views",
+    "own_cover",
     "project_box",
     "surface_cells",
     "visible_fraction",

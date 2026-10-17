@@ -61,6 +61,96 @@ def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() ->
     ]
 
 
+def _queries(scene: object) -> list[dict[str, object]]:
+    import json
+
+    from openral_cli.deploy_sim import _object_queries_json
+
+    return list(json.loads(_object_queries_json(scene, "Grab orange and place into plate")))
+
+
+def _tracking_pick_orange() -> object:
+    from openral_core import DeployScene
+
+    scene = DeployScene.from_yaml(str(_PICK_ORANGE))
+    assert scene.runtime is not None
+    return scene.model_copy(
+        update={"runtime": scene.runtime.model_copy(update={"object_tracking": "shadow"})}
+    )
+
+
+def test_a_sim_ground_truth_search_box_never_seeds_the_tracker() -> None:
+    """PickOrange's search_box is measured from the sim (``sim:orange_1``): no seed.
+
+    A real deploy has no ground-truth box, so the tracker must ground the orange from its
+    own sensing. The HAL's declaration keeps the box (the legacy path is unchanged).
+    """
+    scene = _tracking_pick_orange()
+    decl = scene.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    assert decl.search_box.evidence_ref.startswith("sim:")
+    assert [q.get("seed") for q in _queries(scene)] == [None, None]
+    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow", "grounding_wait_s": 8})
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("grasp_declaration_json:=")]
+    assert '"evidence_ref":"sim:orange_1"' in raw
+
+
+def test_a_user_declared_search_box_still_seeds_the_tracker() -> None:
+    scene = _tracking_pick_orange()
+    decl = scene.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    box = decl.search_box.model_copy(update={"evidence_ref": "operator:tote_left"})
+    scene = scene.model_copy(
+        update={"grasp_declaration": decl.model_copy(update={"search_box": box})}
+    )
+    seeds = {q["label"]: q.get("seed") for q in _queries(scene)}
+    assert seeds["plate"] is None
+    assert isinstance(seeds["orange"], dict)
+    assert seeds["orange"]["evidence_ref"] == "operator:tote_left"
+
+
+def test_tracking_without_a_locator_or_seed_refuses_to_configure() -> None:
+    """PickOrange's orange query has no seed (its box is sim ground truth): without an
+    on-demand locator the tracker could never ground it, so deploy sim refuses."""
+    overrides = {
+        "object_tracking": "shadow",
+        "grounding_wait_s": 8,
+        "enable_reasoner": False,
+        "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
+        "preload_prompt": "Grab orange and place into plate",
+    }
+    with pytest.raises(ROSConfigError, match="could never ground"):
+        resolve_launch_invocation(
+            config=_PICK_ORANGE,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_mode="sim",
+            runtime_overrides=overrides,
+            object_detector_locators=[],
+        )
+    argv = resolve_launch_invocation(
+        config=_PICK_ORANGE,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+        runtime_overrides=overrides,
+        object_detector_locators=["omdet-turbo-locator"],
+    ).argv_template
+    assert any(a.startswith("object_queries_json:=") for a in argv)
+    # Tracking off composes no queries, so nothing is refused.
+    resolve_launch_invocation(
+        config=_PICK_ORANGE,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+        runtime_overrides={k: v for k, v in overrides.items() if k.startswith(("enable", "pre"))},
+        object_detector_locators=[],
+    )
+
+
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
@@ -182,3 +272,23 @@ def test_bind_and_on_wire_the_kernels_jaw_open_release(
     assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals)
     assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
     assert f(d, "on") == p
+
+
+def test_a_fixed_jaw_body_link_is_a_k2_only_extra_contact_link() -> None:
+    """The SO-101's fixed jaw is its `gripper` body link (r6po_dbg3, 2026-10-17)."""
+    from openral_core import JointSpec, RobotDescription
+    from pydantic import ValidationError
+
+    so101 = RobotDescription.from_yaml(str(_REPO / "robots/so101_follower/robot.yaml"))
+    assert so101.fixed_jaw_links() == ("gripper",)
+    assert "gripper" not in so101.grasp_contact_links(), "the legacy allowlist is unchanged"
+    assert so101.fixed_jaw_links(gripper_joints=["shoulder_pan"]) == ()
+    for robot in ("openarm", "droid_franka_robotiq"):
+        d = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
+        assert d.fixed_jaw_links() == ()
+    with pytest.raises(ValidationError, match="fixed_jaw_link needs role"):
+        JointSpec(name="j", joint_type="revolute", parent_link="a", child_link="b",
+                  fixed_jaw_link="a")  # fmt: skip
+    ok = JointSpec(name="j", joint_type="revolute", parent_link="a", child_link="b",
+                   role="gripper", fixed_jaw_link="a")  # fmt: skip
+    assert JointSpec.model_validate_json(ok.model_dump_json()) == ok

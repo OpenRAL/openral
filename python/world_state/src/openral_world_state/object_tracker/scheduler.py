@@ -63,6 +63,15 @@ class TrackerRequest:
             segmenter as a prompt (a map seed's image rectangle).
         seed_cell: The lattice cell a map-seeded prompt sits on, so a served one is not
             prompted again before every other raised top in the seed was.
+        roi_norm_xyxy: A locate's region of interest in ``[0, 1]`` of the frame (the
+            projected search region, padded); the locator detects on that crop.
+        prompt: A locate's open-vocabulary text: ``label`` and the query's synonyms,
+            comma-separated; empty = ``label``.
+        negative_uv: Negative point prompts, pixels (robot pixels beside an object the
+            robot half hides).
+        min_score: A locate's detection floor (``TrackerParams.locate_min_score``); 0 = the
+            locator's own threshold.
+        prompt_score: The detector score of the box a segment request came from.
         request_id: Assigned by ``Scheduler.next``; 0 until issued.
     """
 
@@ -78,6 +87,11 @@ class TrackerRequest:
     point_uv: tuple[float, float] | None = None
     within_xyxy: tuple[float, float, float, float] | None = None
     seed_cell: tuple[int, int, int] | None = None
+    roi_norm_xyxy: tuple[float, float, float, float] | None = None
+    prompt: str = ""
+    negative_uv: tuple[tuple[float, float], ...] = ()
+    min_score: float = 0.0
+    prompt_score: float | None = None
     request_id: int = 0
 
 

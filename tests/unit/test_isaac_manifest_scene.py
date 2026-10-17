@@ -1098,6 +1098,22 @@ def test_render_desc_scales_rgb_rasters_and_can_drop_depth() -> None:
     assert all(after[n].intrinsics == before[n].intrinsics for n in untouched)
 
 
+def test_a_depth_camera_takes_an_explicit_render_override() -> None:
+    """#418 restock: head_zed (1920x1080 manifest) rendered at 960x540 on the scene's ask."""
+    from openral_sim.backends.isaac_sim import _render_desc
+
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots/openarm/robot.yaml"))
+    k0 = next(s for s in desc.sensors if s.name == "head_zed").intrinsics
+    assert k0 is not None and (k0.width, k0.height) == (1920, 1080)
+    out, scale = _render_desc(desc, {"head_zed": 540}, depth_cameras=True)
+    k1 = next(s for s in out.sensors if s.name == "head_zed").intrinsics
+    assert k1 is not None and (k1.width, k1.height) == (960, 540)
+    assert k1.fx / k1.width == pytest.approx(k0.fx / k0.width, rel=2e-3)
+    assert scale == {"head_zed": 0.5}
+    # Not named: the manifest raster (3d250308).
+    assert _render_desc(desc, {}, depth_cameras=True)[0] == desc
+
+
 def test_render_options_are_validated() -> None:
     from openral_sim.backends.isaac_sim import IsaacSimOptions
 
@@ -1288,3 +1304,20 @@ def test_object_pose_noise_single_offset_keeps_layouts(_manifest_scene_mod: obje
     old = sample([_noisy(0.0, 0.0, 0.0)], rect, np.random.default_rng(7))
     new = sample([_noisy(0.0, 0.0, 0.0, yaw_offsets_deg=[0.0])], rect, np.random.default_rng(7))
     assert old == new
+
+
+def test_a_depth_camera_renders_at_its_manifest_raster_not_the_policy_width(
+    _manifest_scene_mod: Any,
+) -> None:
+    """#418 restock: the OpenArm head_zed (manifest 1920x1080) rendered at 512x288 because a
+    depth camera was capped at the scene's observation_width -- a policy setting. A carton
+    was ~31 px where the real ZED sees ~110, so the tracker's detector could not find it.
+    A depth camera's raster comes from its sensor spec."""
+    zed = next(
+        s
+        for s in RobotDescription.from_yaml(str(_repo_root() / "robots/openarm/robot.yaml")).sensors
+        if s.name == "head_zed"
+    )
+    assert zed.intrinsics is not None
+    meta = {"modality": zed.modality, "intrinsics": zed.intrinsics.model_dump()}
+    assert _manifest_scene_mod.camera_resolution(meta, 512, 384) == (1920, 1080)

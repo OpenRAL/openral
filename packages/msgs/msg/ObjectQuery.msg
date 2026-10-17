@@ -12,6 +12,8 @@ string role
 string hand
 # CONFIRMED instances that resolve the query (>= 1; exactly 1 for count "one").
 uint32 min_instances
+# Other names for the class, sent with label to an open-vocabulary locator (#418).
+string[] synonyms
 # Optional search hint; seeds prompts only. `seed.geometry[]` MUST be empty.
 bool seed_valid
 PlaceRegion seed

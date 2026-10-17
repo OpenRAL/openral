@@ -1518,6 +1518,9 @@ struct TrackedGraspTable {
   std::size_t n_hands{0};
   /// Bit l of hand h: robot link l is one of hand h's finger (grasp-contact) links.
   std::array<std::bitset<kMaxGraspMaskLinks>, kMaxGraspHands> hand_links{};
+  /// The hand links that are a fixed jaw on a body link (`build_grasp_hands`'
+  /// `extra`): exempt like a finger, never a TCP sample.
+  std::bitset<kMaxGraspMaskLinks> extra_links{};
   /// Per finger link, the mean of its collision primitives' origins (link
   /// frame); a hand's TCP is the mean of its fingers' points (`grasp_hand_tcp`).
   std::array<Vec3, kMaxGraspMaskLinks> link_point{};
@@ -1531,9 +1534,15 @@ struct TrackedGraspTable {
 /// each finger's TCP sample point. Clears `table`'s hands first. False (and no
 /// hands) on an empty allowlist, a bit past the model, a cyclic parent chain,
 /// or more than `kMaxGraspHands` mounts. Configure-time.
+///
+/// `extra` (K2 only, `tracked_grasp_extra_contact_links`; hazard OT-6 amendment,
+/// Safety-WG review pending): fixed jaws that are body links (the SO-101's
+/// `gripper`). They group with `allowlist` (so a fixed jaw that carries the
+/// moving jaw joins that jaw's hand) but never sample the TCP, so the selection
+/// is the allowlist's. False if a hand would hold only extra links.
 bool build_grasp_hands(const CollisionModel& model,
-                       const std::bitset<kMaxGraspMaskLinks>& allowlist,
-                       TrackedGraspTable& table) noexcept;
+                       const std::bitset<kMaxGraspMaskLinks>& allowlist, TrackedGraspTable& table,
+                       const std::bitset<kMaxGraspMaskLinks>& extra = {}) noexcept;
 
 /// Hand `hand`'s TCP in the base frame at the configuration FK'd into
 /// `scratch`: the mean of its finger links' points. NaN for a hand out of

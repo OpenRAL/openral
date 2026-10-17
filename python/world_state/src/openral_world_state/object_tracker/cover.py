@@ -25,7 +25,7 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.object_primitives import map_confirms
 from openral_core.perception_geometry import VoxelLattice
 
-__all__ = ["CoverVerdict", "cover_verdict", "surface_cells"]
+__all__ = ["CoverVerdict", "cover_verdict", "own_cover", "surface_cells"]
 
 Cell = tuple[int, int, int]
 
@@ -75,6 +75,35 @@ def surface_cells(
         keep = ~np.any([_inside(centres, b) for b in exclude], axis=0)
         ijk = ijk[keep]
     return frozenset((int(i), int(j), int(k)) for i, j, k in ijk.tolist())
+
+
+def own_cover(grid: VoxelLattice, cells: frozenset[Cell], others: Sequence[PlaceRegion]) -> int:
+    """``|E ∩ occupied|`` over the cells centred in none of ``others`` (other tracks' boxes).
+
+    A new track's evidence must be its own: #418 PickOrange r6po_dbg4's ghost trk:5 was a
+    mask over two tracked oranges, every occupied cell of it inside their boxes.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> occ = np.ones(8, np.uint8)
+        >>> g = VoxelLattice("b", (0.0, 0.0, 0.0), (0, 0, 0, 1.0), 0.1, (2, 2, 2), occ)
+        >>> left = PlaceRegion(
+        ...     frame_id="b",
+        ...     half_extents=(0.05, 0.1, 0.1),
+        ...     pose=Pose6D(xyz=(0.05, 0.1, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="b"),
+        ... )
+        >>> own_cover(g, frozenset({(0, 0, 0), (1, 0, 0)}), [left])
+        1
+    """
+    if not cells:
+        return 0
+    ijk = np.asarray(sorted(cells), dtype=np.float64)
+    centres = (ijk + 0.5) * grid.resolution @ grid.rotation().T + np.asarray(grid.origin)
+    if others:
+        keep = ~np.any([_inside(centres, b) for b in others], axis=0)
+        cells = frozenset(c for c, k in zip(sorted(cells), keep.tolist(), strict=True) if k)
+    return _occupied_count(grid, cells)
 
 
 def _occupied_count(grid: VoxelLattice, cells: frozenset[Cell]) -> int:

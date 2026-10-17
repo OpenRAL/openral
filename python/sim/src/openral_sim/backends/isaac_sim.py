@@ -1354,9 +1354,11 @@ class IsaacSimOptions(BaseModel):
     keep_alive: bool = False
     # Speed knobs (sim cost, not the scene's look). Physics substeps are no knob: the
     # scene derives them from the control rate (one step = one tick, #355).
-    # RGB sensor name -> render raster height (px). The width, focal lengths and principal
-    # point scale with it (same field of view and lens), and so does the blur sigma: a
-    # policy that resizes to 224 px needs no larger render.
+    # Camera (RGB or depth) sensor name -> render raster height (px). The width, focal
+    # lengths and principal point scale with it (same field of view and lens), and so does
+    # an RGB blur sigma: a policy that resizes to 224 px needs no larger render. A depth
+    # camera renders at its manifest raster unless named here (#418 restock: head_zed
+    # at 1920x1080 cost 3.3x the 512 px tick; the scene asks 540).
     camera_render_height: dict[str, int] = Field(default_factory=dict)
     # False: no depth camera in the scene (no depth render, no point clouds), e.g. when
     # the world-collision check that consumes them is off.
@@ -2278,16 +2280,21 @@ def _camera_render_scale(
 ) -> dict[str, float]:
     """``camera_render_height`` as per-camera scale factors on the manifest raster.
 
-    Refuses names that are not RGB sensors with intrinsics (nothing to scale).
+    Refuses names that are not RGB or depth sensors with intrinsics (nothing to scale).
     """
-    rgb = {s.name: s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None}
-    unknown = sorted(set(camera_render_height) - set(rgb))
+    cams = {
+        s.name: s
+        for s in desc.sensors
+        if s.modality in ("rgb", "depth") and s.intrinsics is not None
+    }
+    unknown = sorted(set(camera_render_height) - set(cams))
     if unknown:
         raise ROSConfigError(
-            f"camera_render_height must name RGB sensors with intrinsics; invalid: {unknown}"
+            "camera_render_height must name RGB or depth sensors with intrinsics; "
+            f"invalid: {unknown}"
         )
     return {
-        name: h / rgb[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
+        name: h / cams[name].intrinsics.height  # type: ignore[union-attr] # reason: filtered above
         for name, h in camera_render_height.items()
     }
 
@@ -2303,6 +2310,14 @@ def _render_desc(
             continue
         k = sensor.intrinsics
         f = scale.get(sensor.name)
+        if f is not None and k is not None:
+            _log.info(
+                "isaac.camera_render_override",
+                camera=sensor.name,
+                modality=sensor.modality,
+                manifest=f"{k.width}x{k.height}",
+                render=f"{round(k.width * f)}x{round(k.height * f)}",
+            )
         sensors.append(
             sensor.model_copy(
                 update={

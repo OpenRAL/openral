@@ -1060,7 +1060,25 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   `select_tracked_grasp`, `…ATieWithinOneVoxelSelectsNothing`,
   `…AnObjectNeverGoesToTheHandItIsFurtherFrom`. Arm links are never exempt
   (`…ArmLinksAreNeverExempt`); another hand's finger is not exempt by this hand's
-  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Eligible**, per
+  object (`…TheOtherHandsFingerIsNotExemptByThisHandsObject`). **Fixed jaws on a
+  body link (OT-6 amendment, 2026-10-17, Safety-WG review pending):**
+  `tracked_grasp_extra_contact_links` (the launch passes the manifest's
+  `fixed_jaw_link`s, `RobotDescription.fixed_jaw_links()`: the SO-101's `gripper`,
+  whose fixed jaw is part of that body) adds those links to their hand for K2
+  only: they group with the hand's fingers by mount and are exempt like a finger
+  against the selected box, but never sample the TCP, so the selection is
+  unchanged (`…AFixedJawBodyJoinsItsHandButNeverMovesTheTcp`). Cells outside the
+  box and the other hand's object still stop them
+  (`…AFixedJawIsExemptOnlyInItsOwnHandsSelectedBox`); the legacy region and
+  `grasp_contact_links` (the declaration check) are untouched
+  (`…AnExtraFixedJawLeavesTheLegacyRegionBitForBit`); the randomised subset
+  property runs with and without it. Configure refuses an unknown name, a hand of
+  extra links alone, or any name with K2 off
+  (`…TheK2ExtraFixedJawsRefuseAnUnknownLinkOrNoK2`). Why: PickOrange r6po_dbg3
+  stopped on `gripper` x voxel inside the CONFIRMED target's box at the grasp —
+  the fixed jaw touching the orange it holds. The amendment widens what K2 may
+  exempt (the whole `gripper` body inside o*'s box, motor housing included), so
+  it is not a subset of the pre-amendment K2. **Eligible**, per
   candidate: role `target`; `declaration_key` equal to the live grasp
   declaration's `<target_id>@<stamp_ns>` (active, a target, `timeout_s` in range
   and not lapsed, not retired, the stream fresh — what the tracker stamps on the

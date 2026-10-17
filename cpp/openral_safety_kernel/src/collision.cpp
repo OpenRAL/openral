@@ -2856,16 +2856,18 @@ double released_payload_clearance(const CollisionModel& model, const CollisionSc
 
 // ── Issue #418 K2: the grasp exemption by tracked-object id ──────────────────
 
-bool build_grasp_hands(const CollisionModel& model,
-                       const std::bitset<kMaxGraspMaskLinks>& allowlist,
-                       TrackedGraspTable& table) noexcept {
+bool build_grasp_hands(const CollisionModel& model, const std::bitset<kMaxGraspMaskLinks>& fingers,
+                       TrackedGraspTable& table,
+                       const std::bitset<kMaxGraspMaskLinks>& extra) noexcept {
   table.n_hands = 0;
   table.hand_links = {};
   table.link_point = {};
+  table.extra_links = extra & ~fingers;
   const std::size_t n = std::min(model.parent.size(), kMaxGraspMaskLinks);
-  if (allowlist.none()) {
+  if (fingers.none()) {
     return false;
   }
+  const std::bitset<kMaxGraspMaskLinks> allowlist = fingers | extra;
   std::array<int, kMaxGraspHands> mounts{};
   for (std::size_t c = 0; c < kMaxGraspMaskLinks; ++c) {
     if (!allowlist[c]) {
@@ -2916,6 +2918,12 @@ bool build_grasp_hands(const CollisionModel& model,
     }
     table.link_point[c] = count > 0 ? scale(sum, 1.0 / count) : Vec3{};
   }
+  for (std::size_t h = 0; h < table.n_hands; ++h) {
+    if ((table.hand_links[h] & fingers).none()) {
+      table.n_hands = 0;
+      return false;  // a hand of extra links alone: no jaw to grasp with
+    }
+  }
   return table.n_hands > 0;
 }
 
@@ -2928,7 +2936,7 @@ Vec3 grasp_hand_tcp(const TrackedGraspTable& table, const CollisionScratch& scra
   Vec3 sum{};
   int count = 0;
   for (std::size_t l = 0; l < kMaxGraspMaskLinks; ++l) {
-    if (!table.hand_links[hand][l]) {
+    if (!table.hand_links[hand][l] || table.extra_links[l]) {
       continue;
     }
     if (l >= scratch.link_world.size()) {

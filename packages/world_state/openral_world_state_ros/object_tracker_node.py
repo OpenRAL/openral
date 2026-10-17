@@ -200,6 +200,26 @@ def backproject_pixel(
     return ((uv[0] - k.cx) * z / k.fx, (uv[1] - k.cy) * z / k.fy, z)
 
 
+def detector_scores(metadata_json: str) -> tuple[float, ...]:
+    """``LocateInView``'s detection scores, parallel to ``detector_boxes``.
+
+    Example:
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="top",
+        ...     model_id="m",
+        ...     frame_width=64,
+        ...     frame_height=48,
+        ...     detections=[{"label": "box", "confidence": 0.2, "bbox_xyxy": (1, 2, 3, 4)}],
+        ... )
+        >>> detector_scores(md.model_dump_json())
+        (0.2,)
+    """
+    if not metadata_json:
+        return ()
+    md = ObjectsMetadata.model_validate(json.loads(metadata_json))
+    return tuple(float(d.confidence) for d in md.detections)
+
+
 def detector_boxes(
     metadata_json: str, k: IntrinsicsPinhole
 ) -> tuple[tuple[float, float, float, float], ...]:
@@ -305,6 +325,7 @@ def main() -> None:
 
 def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     """Build the lifecycle node (class defined here so the module imports without rclpy)."""
+    from geometry_msgs.msg import Point
     from openral_core import (
         GraspDeclaration,
         ObjectQuery,
@@ -524,6 +545,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._pub_attach = self.create_publisher(
                     AttachmentStateMsg, "/openral/attachment_state", latched_1
                 )
+            # Every fit / grounding refusal by (key, reason), so a tracker that grounds
+            # nothing says why on the graph too (#418 restock), not only in its log.
+            from diagnostic_msgs.msg import DiagnosticArray
+
+            self._pub_diag = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
+            self._diag_ns = 0
             # Addendum G escalations reach the reasoner on the failure bus.
             self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
             self._failure_bus.create_publisher()
@@ -763,7 +790,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 if self._locate is None or not self._locate.service_is_ready():
                     self._answer(frame, optical_frame, stamp_msg, empty)
                     return
-                lreq = LocateInView.Request(query=req.label, camera=req.camera, detector="")
+                lreq = LocateInView.Request(
+                    query=req.prompt or req.label, camera=req.camera, detector=""
+                )
+                lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
+                lreq.min_score = float(req.min_score)
                 future = self._locate.call_async(lreq)
 
                 def done_locate(f: Any) -> None:
@@ -773,7 +804,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         if res is not None and res.found
                         else ()
                     )
-                    result = TrackerResult(req.request_id, None, boxes)
+                    scores = (
+                        detector_scores(str(res.metadata_json))
+                        if res is not None and res.found
+                        else ()
+                    )
+                    result = TrackerResult(
+                        req.request_id,
+                        None,
+                        boxes,
+                        box_scores=scores if len(scores) == len(boxes) else (),
+                    )
                     self._answer(frame, optical_frame, stamp_msg, result)
 
                 future.add_done_callback(done_locate)
@@ -791,6 +832,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             sreq.camera = req.camera
             sreq.frame_id = optical_frame
             sreq.tcp_point.x, sreq.tcp_point.y, sreq.tcp_point.z = point
+            for nuv in req.negative_uv:  # robot pixels beside a half-hidden object
+                neg = backproject_pixel(frame.depth_m, frame.intrinsics, nuv)
+                if neg is not None:
+                    pt = Point()
+                    pt.x, pt.y, pt.z = neg
+                    sreq.negative_points.append(pt)
             sreq.box_valid = req.box_xyxy is not None
             if req.box_xyxy is not None:
                 sreq.box_xyxy = [float(v) for v in req.box_xyxy]
@@ -859,8 +906,32 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 place.model_copy(update={"region": None}).fill_idl(msg.place_declaration)
             self._pub_attach.publish(msg)
 
+        def _publish_refusals(self) -> None:
+            """``/diagnostics``: the tracker's refusal counts, at most every 5 s."""
+            from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+
+            now = int(self.get_clock().now().nanoseconds)
+            if self.session is None or now - self._diag_ns < 5 * _NS:
+                return
+            self._diag_ns = now
+            counts = self.session.tracker.refusal_counts
+            status = DiagnosticStatus(
+                level=DiagnosticStatus.OK,
+                name="openral_object_tracker: refusals",
+                hardware_id=self.session.frame_id,
+                message=f"{sum(counts.values())} refusals",
+                values=[
+                    KeyValue(key=f"{k}|{why}", value=str(n))
+                    for (k, why), n in sorted(counts.items())
+                ],
+            )
+            msg = DiagnosticArray(status=[status])
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self._pub_diag.publish(msg)
+
         def _heartbeat(self) -> None:
             self._publish_tracked(force=True)
+            self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)
             timeout = float(self._p("attachment_evidence_timeout_s")) * _NS
             if self._joint_rx_ns and now - self._joint_rx_ns <= timeout:

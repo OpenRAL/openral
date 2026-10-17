@@ -13,6 +13,8 @@ visibility change, no request.
 
 from __future__ import annotations
 
+import math
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
@@ -39,8 +41,9 @@ from openral_core.perception_geometry import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from openral_world_state.object_tracker.cover import Cell, cover_verdict, surface_cells
+from openral_world_state.object_tracker.cover import Cell, cover_verdict, own_cover, surface_cells
 from openral_world_state.object_tracker.fit import (
+    ROBOT_PIXEL,
     ContainingFit,
     FitParams,
     containing_fit,
@@ -48,6 +51,8 @@ from openral_world_state.object_tracker.fit import (
     visible_fraction,
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.hidden_side import grow_hidden_side
+from openral_world_state.object_tracker.multi_view import intersect_views
 from openral_world_state.object_tracker.scheduler import (
     PRIORITY_BOUND,
     PRIORITY_DISAGREE,
@@ -71,6 +76,18 @@ class TrackerParams(BaseModel):
 
     Attributes:
         theta_vis: Visible fraction below which an object is OCCLUDED (and never fitted).
+        locate_min_score: The detection floor the tracker asks its locator for. A box is
+            only a prompt (SAM, the containing fit and map confirmation filter it), so it is
+            lower than a detector's own (OmDet 0.30: restock cartons scored 0.15-0.29).
+        continuous_locate_s: Source seconds between locates of a RESOLVED query (detection
+            runs for the whole goal; ``QueryBook.due``).
+        theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
+            exemption-shrinking and payload-union geometry only), so a target the arm half
+            hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
+        low_score_confirm_grids: Consecutive confirming grids (distinct stamps) a track minted
+            from a prompt under ``LOW_PROMPT_SCORE`` needs before CONFIRMED (one otherwise;
+            #418 r6po_dbg4 ghost trk:5, score 0.171, confirmed on its first grid).
+            *Calibration point.*
         max_age_s: Source seconds without a confirming grid before a track is ineligible.
         lost_s: Source seconds without evidence before an ineligible track is LOST.
         keep_lost_s: Source seconds a LOST track is kept as a re-association prior.
@@ -91,6 +108,10 @@ class TrackerParams(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     theta_vis: float = Field(default=0.5, gt=0.0, le=1.0)
+    theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
+    continuous_locate_s: float = Field(default=2.0, gt=0.0)
+    locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    low_score_confirm_grids: int = Field(default=3, ge=1)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -128,6 +149,20 @@ class CameraFrame:
 
 #: ``_apply_mask``: try the next (smaller) candidate.
 _NEXT = object()
+#: Source seconds between INFO reports of one ``(key, reason)`` refusal.
+REFUSAL_LOG_PERIOD_S = 5.0
+#: Source seconds within which fits of one track from different cameras are combined
+#: (``intersect_views``): the object must not have moved between them. *Calibration point.*
+VIEW_WINDOW_S = 0.5
+#: A locate's crop: the projected search region grown by this fraction of its size on
+#: every side (a seed or workspace box need not be tight in the image). *Calibration point.*
+LOCATE_ROI_PAD = 0.25
+#: A detector box more than this fraction ROBOT pixels is re-prompted on what it hides.
+ROBOT_BOX_FRACTION = 0.5
+#: Negative point prompts placed on the robot in such a box.
+ROBOT_BOX_NEGATIVES = 3
+#: A prompt box scored under this grounds a track that is logged when it confirms.
+LOW_PROMPT_SCORE = 0.3
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -140,6 +175,7 @@ class TrackerResult:
         request_id: The request it answers.
         mask: ``SegmentInView``'s mask (``None``: no object at the prompt).
         boxes_xyxy: ``LocateInView``'s detections, pixels.
+        box_scores: Their detector scores (parallel; empty = unknown).
         alternatives: Smaller qualifying candidates, largest first, each tried in turn
             when the one before it cannot be fitted or splits on the map (a packed
             carton's "part" candidate is several cartons).
@@ -149,6 +185,7 @@ class TrackerResult:
     mask: NDArray[np.bool_] | None = None
     boxes_xyxy: tuple[tuple[float, float, float, float], ...] = ()
     alternatives: tuple[NDArray[np.bool_], ...] = ()
+    box_scores: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,8 +226,28 @@ class ObjectTracker:
         self.params = params or TrackerParams()
         p = self.params
         self.store = TrackStore(frame_id)
-        self.queries = QueryBook(search_start_s=p.search_start_s, search_max_s=p.search_max_s)
+        self.queries = QueryBook(
+            search_start_s=p.search_start_s,
+            search_max_s=p.search_max_s,
+            continuous_s=p.continuous_locate_s,
+        )
         self._sched = Scheduler(segment_hz=p.segment_hz, budget_wall_s=p.segment_budget_wall_s)
+        #: Every refusal so far by ``(key, reason)``: ``<label>@<camera>`` for a fit,
+        #: ``camera:<name>`` for a frame (the node publishes it; see ``_refuse``).
+        self.refusal_counts: Counter[tuple[str, str]] = Counter()
+        self._refusal_logged_ns: dict[tuple[str, str], int] = {}
+        # Per track, per camera: the newest clear fit and its camera pose (multi-view).
+        self._views: dict[str, dict[str, tuple[ContainingFit, NDArray[np.float64], int]]] = {}
+        #: Where queried objects are expected (the grasp declaration's workspace box, set
+        #: by the session); a locate is cropped to it when its query has no seed.
+        self.search_region: PlaceRegion | None = None
+        self._research_logged: dict[tuple[str, str], int] = {}
+        # Tracks minted from a prompt box scored under LOW_PROMPT_SCORE, until they confirm.
+        self._low_score: dict[str, float] = {}
+        # Per low-score track: its run of consecutive confirming grids (last stamp, count).
+        self._low_score_run: dict[str, tuple[int, int]] = {}
+        # Per track: the largest smaller-horizontal extent of its clear (non-provisional) fits.
+        self._clear_size: dict[str, float] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -241,8 +298,9 @@ class ObjectTracker:
         """
         self._now_ns = max(self._now_ns, frame.stamp_ns, grid_stamp_ns if grid else 0)
         usable = frame.t_base_from_cam is not None and frame.robot_mask is not None
-        if not usable:
-            log.debug("object_tracker.ageing_only", camera=frame.camera, stamp_ns=frame.stamp_ns)
+        if not usable:  # ageing only
+            why = "no_camera_pose" if frame.t_base_from_cam is None else "no_robot_mask"
+            self._refuse(f"camera:{frame.camera}", why, stamp_ns=frame.stamp_ns)
         bound_fits: list[tuple[str, ContainingFit]] = []
         for res in results:
             req = self._sched.complete(res.request_id)
@@ -251,10 +309,23 @@ class ObjectTracker:
             if (req.camera, req.stamp_ns) != (frame.camera, frame.stamp_ns):
                 log.warning("object_tracker.result_frame_mismatch", request_id=res.request_id)
             elif usable and req.service == "locate_in_view":
+                if not res.boxes_xyxy:
+                    self._refuse(f"{req.label}@{req.camera}", "locate_found_nothing")
+                scores = res.box_scores or (None,) * len(res.boxes_xyxy)
                 self._pending += [
-                    replace(req, service="segment_in_view", box_xyxy=b, served_ns=-1, request_id=0)
-                    for b in res.boxes_xyxy
-                ]
+                    self._robot_box_reprompt(
+                        replace(
+                            req, service="segment_in_view", box_xyxy=b, served_ns=-1,
+                            request_id=0, prompt_score=sc,
+                        ),
+                        frame,
+                        grid,
+                    )
+                    for b, sc in zip(res.boxes_xyxy, scores, strict=True)
+                ]  # fmt: skip
+            elif usable and (res.mask is None or grid is None):
+                why = "no_mask" if res.mask is None else "no_grid"
+                self._refuse(f"{req.label}@{req.camera}", why)
             elif usable and res.mask is not None and grid is not None:
                 masks = (res.mask, *res.alternatives)
                 for n, mask in enumerate(masks, start=1):
@@ -290,6 +361,136 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _note_low_score(self, object_id: str, score: float | None) -> None:
+        """Remember a track minted from a prompt box under ``LOW_PROMPT_SCORE``."""
+        if score is not None and score < LOW_PROMPT_SCORE:
+            self._low_score[object_id] = score
+
+    def _robot_box_reprompt(
+        self, req: TrackerRequest, frame: CameraFrame, grid: VoxelLattice | None
+    ) -> TrackerRequest:
+        """``req`` re-prompted on the object a mostly-robot detector box hides, else ``req``.
+
+        #418 PickOrange: the open-vocabulary locator boxed the arm over orange_3 as "orange";
+        SAM, prompted with that box, segmented the arm. When more than
+        ``ROBOT_BOX_FRACTION`` of the box is ROBOT, the prompt becomes a positive point on
+        the free (never band, never robot) pixels inside the box that stand above the
+        support -- the connected region of them lying most beside the robot (what it half
+        hides; ``_most_hidden``), at its pixel nearest its centroid -- plus
+        ``ROBOT_BOX_NEGATIVES`` negative points on the robot, the box kept as the bound
+        the mask must lie in. The fit then goes through the robot: PROVISIONAL.
+        """
+        if req.box_xyxy is None or frame.robot_mask is None or frame.t_base_from_cam is None:
+            return req
+        h, w = frame.robot_mask.shape
+        x0, y0 = max(int(req.box_xyxy[0]), 0), max(int(req.box_xyxy[1]), 0)
+        x1, y1 = min(math.ceil(req.box_xyxy[2]), w), min(math.ceil(req.box_xyxy[3]), h)
+        sub = frame.robot_mask[y0:y1, x0:x1]
+        if sub.size == 0 or float((sub == ROBOT_PIXEL).mean()) <= ROBOT_BOX_FRACTION:
+            return req
+        depth = frame.depth_m[y0:y1, x0:x1]
+        free = (sub == 0) & np.isfinite(depth) & (depth > 0)
+        k = frame.intrinsics
+        vv, uu = np.nonzero(free)
+        z = depth[vv, uu]
+        cam = np.stack([(uu + x0 - k.cx) * z / k.fx, (vv + y0 - k.cy) * z / k.fy, z], axis=1)
+        t = frame.t_base_from_cam
+        base_z = cam @ t[2, :3] + t[2, 3]
+        cell = grid.resolution if grid is not None else 0.015
+        support = float(np.percentile(base_z, 10)) if len(base_z) else 0.0
+        above = np.zeros(sub.shape, dtype=bool)
+        above[vv[base_z > support + cell], uu[base_z > support + cell]] = True
+        region = _most_hidden(above, sub == ROBOT_PIXEL)
+        if region is None:
+            self._refuse(f"{req.label}@{req.camera}", "robot_box_nothing_beside")
+            return req
+        ry, rx = np.nonzero(region)
+        cy, cx = ry.mean(), rx.mean()
+        i = int(np.argmin((ry - cy) ** 2 + (rx - cx) ** 2))
+        point = (float(rx[i] + x0), float(ry[i] + y0))
+        robot_v, robot_u = np.nonzero((sub == ROBOT_PIXEL) & np.isfinite(depth) & (depth > 0))
+        order = np.argsort((robot_u - rx[i]) ** 2 + (robot_v - ry[i]) ** 2)
+        negatives = tuple(
+            (float(robot_u[j] + x0), float(robot_v[j] + y0))
+            for j in order[:: max(len(order) // ROBOT_BOX_NEGATIVES, 1)][:ROBOT_BOX_NEGATIVES]
+        )
+        log.info(
+            "object_tracker.robot_box_reprompt",
+            label=req.label,
+            camera=req.camera,
+            robot_fraction=round(float((sub == ROBOT_PIXEL).mean()), 2),
+            region_px=int(region.sum()),
+            point=point,
+        )
+        return replace(
+            req, box_xyxy=None, point_uv=point, within_xyxy=req.box_xyxy, negative_uv=negatives
+        )
+
+    def _locate_roi(
+        self, region: PlaceRegion | None, frame: CameraFrame
+    ) -> tuple[float, float, float, float] | None:
+        """``region``'s image rectangle grown by ``LOCATE_ROI_PAD``, normalised.
+
+        ``None`` when there is no region, it is in another frame, or it misses the image.
+        """
+        if region is None or region.frame_id != self.store.frame_id:
+            return None
+        assert frame.t_base_from_cam is not None  # reason: only usable frames issue
+        rect = project_box(region, frame.intrinsics, frame.t_base_from_cam)
+        if rect is None:
+            return None
+        (c0, r0, c1, r1), _ = rect
+        pw, ph = LOCATE_ROI_PAD * (c1 - c0), LOCATE_ROI_PAD * (r1 - r0)
+        w, h = frame.intrinsics.width, frame.intrinsics.height
+        return (max(c0 - pw, 0) / w, max(r0 - ph, 0) / h, min(c1 + pw, w) / w, min(r1 + ph, h) / h)
+
+    def _combine_views(
+        self, oid: str, camera: str, fit: ContainingFit, frame: CameraFrame, resolution: float
+    ) -> tuple[ContainingFit, FitKind]:
+        """``fit`` intersected with the other cameras' recent clear fits of ``oid``.
+
+        Each camera's newest clear (non-provisional) fit is kept; fits from other cameras
+        no older than ``VIEW_WINDOW_S`` join ``intersect_views`` with this one as the
+        primary. Its own fallbacks (a refused or too-small second silhouette, a measured
+        point outside the result) return this fit unchanged.
+        """
+        assert frame.t_base_from_cam is not None  # reason: only usable frames fit
+        views = self._views.setdefault(oid, {})
+        if not fit.provisional:
+            views[camera] = (fit, frame.t_base_from_cam, frame.stamp_ns)
+        others = [
+            (f, t)
+            for cam, (f, t, stamp) in views.items()
+            if cam != camera and abs(frame.stamp_ns - stamp) <= VIEW_WINDOW_S * 1e9
+        ]
+        if fit.provisional or not others or fit.box is None:
+            return fit, FitKind.SILHOUETTE_CONE
+        out = intersect_views(
+            [(fit, frame.t_base_from_cam), *others],
+            resolution=resolution,
+            frame_id=self.store.frame_id,
+            stamp_ns=frame.stamp_ns,
+        )
+        return out.fit, out.fit_kind
+
+    def _refuse(self, key: str, why: str, **numbers: object) -> None:
+        """Count a refusal and report it at INFO, rate-limited per ``(key, why)``.
+
+        ``object_tracker.refused`` at most once per ``REFUSAL_LOG_PERIOD_S`` source
+        seconds per ``(key, why)``, with the running count.
+
+        Never DEBUG-only: #418 restock grounded nothing for whole trials and no reason was
+        visible at INFO.
+        """
+        k = (key, why)
+        self.refusal_counts[k] += 1
+        last = self._refusal_logged_ns.get(k)
+        if last is None or self._now_ns - last >= REFUSAL_LOG_PERIOD_S * 1e9:
+            self._refusal_logged_ns[k] = self._now_ns
+            log.info(
+                "object_tracker.refused", key=key, why=why, count=self.refusal_counts[k], **numbers
+            )
 
     def _support(self, grid: VoxelLattice, surface: NDArray[np.float64]) -> float | None:
         """The lowest the support under ``surface`` can be, or ``None`` when none is measured.
@@ -339,13 +540,14 @@ class ObjectTracker:
             min_depth_m=fp.min_depth_m,
             max_depth_m=fp.max_depth_m,
         )
+        key = f"{req.label}@{req.camera}"
         if len(raw) < fp.min_points:
-            log.debug("object_tracker.fit_refused", why="too_few_points", label=req.label)
+            self._refuse(key, "too_few_points", points=len(raw), min_points=fp.min_points)
             return None
         surface = raw @ t_cam[:3, :3].T + t_cam[:3, 3]
         support_z = self._support(grid, surface)
         if support_z is None:
-            log.info("object_tracker.fit_refused", why="no_support", label=req.label)
+            self._refuse(key, "no_support", points=len(raw))
             return None
         fit = containing_fit(
             mask,
@@ -363,15 +565,16 @@ class ObjectTracker:
         )
         log.debug("object_tracker.fit", label=req.label, refusal=fit.refusal, **fit.assumptions)
         if fit.box is None or fit.tight is None:
-            log.info("object_tracker.fit_refused", why=fit.refusal, label=req.label)
+            self._refuse(key, str(fit.refusal), points=len(raw))
             return None
         vis = visible_fraction(fit.box, frame.depth_m, frame.robot_mask, frame.intrinsics, t_cam)
-        if vis is not None and vis < self.params.theta_vis:
-            log.info("object_tracker.fit_deferred", why="occluded", visible=vis, label=req.label)
+        floor = self.params.theta_vis_provisional if fit.provisional else self.params.theta_vis
+        if vis is not None and vis < floor:
+            self._refuse(key, "occluded", visible=round(vis, 3), theta_vis=floor)
             return None
         return fit, support_z
 
-    def _apply_mask(  # noqa: PLR0911  # reason: each gate names its own outcome
+    def _apply_mask(  # noqa: PLR0911, PLR0912  # reason: each gate names its own outcome
         self,
         req: TrackerRequest,
         mask: NDArray[np.bool_],
@@ -400,11 +603,13 @@ class ObjectTracker:
                 others=self._other_boxes(centroid),
             )  # fmt: skip
             if split.kind == "map_split":
-                log.info("object_tracker.candidate_split", label=req.label, why=split.why)
+                self._refuse(f"{req.label}@{req.camera}", "candidate_split", detail=split.why)
                 return _NEXT
         oid, kind = associate(self.store.all(), centroid, voxel_m=grid.resolution)
         if kind == "tie":
             return None
+        if fit.provisional and fit.box is not None:
+            fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
             q = self.queries.get(*req.query_key) if req.query_key else None
@@ -427,6 +632,8 @@ class ObjectTracker:
                 last_confirmed_stamp_ns=0,
                 provisional=fit.provisional,
             )
+            self._combine_views(track.object_id, req.camera, fit, frame, grid.resolution)
+            self._note_low_score(track.object_id, req.prompt_score)
         else:
             old = self.store.get(oid)
             assert old is not None
@@ -439,7 +646,7 @@ class ObjectTracker:
                 # A fit through the robot never replaces geometry measured clear of it.
                 log.info("object_tracker.provisional_refit_ignored", object_id=oid)
                 return None
-            if old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
+            if fit.box is not None and old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
                 others = self._other_boxes(centroid)
                 verdict = cover_verdict(
                     grid, cells, fit.box, support_z=support_z, own=hands, others=others
@@ -450,8 +657,10 @@ class ObjectTracker:
                     log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
                     return None
             refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
+            fit, fit_kind = self._combine_views(oid, req.camera, fit, frame, grid.resolution)
             track = old.model_copy(
                 update={
+                    "fit_kind": fit_kind,
                     "box": fit.box,
                     "tight": (fit.tight,),
                     "support_z": support_z,
@@ -464,6 +673,11 @@ class ObjectTracker:
                 }
             )
             self.store.replace(track)
+        if not fit.provisional and fit.box is not None:
+            size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
+            self._clear_size[track.object_id] = max(
+                self._clear_size.get(track.object_id, 0.0), size
+            )
         self._cells[track.object_id] = cells
         self._centroid[track.object_id] = (centroid[0], centroid[1], centroid[2])
         self._disagree.pop(track.object_id, None)
@@ -493,6 +707,8 @@ class ObjectTracker:
                 return  # ineligible until a camera re-fit
             update = {"occupied_cells": v.occupied, "last_confirmed_stamp_ns": stamp_ns}
             if status is TrackStatus.TENTATIVE:
+                if not self._may_confirm(t, grid, cells, others, v.occupied, stamp_ns):
+                    return
                 update["status"] = TrackStatus.CONFIRMED
             elif status is TrackStatus.RELEASED:
                 update.update(status=TrackStatus.CONFIRMED, epoch=t.epoch + 1)
@@ -505,9 +721,102 @@ class ObjectTracker:
             if n >= self.params.disagree_grids:
                 update = {"status": TrackStatus.LOST}
         if v.kind:
+            self._low_score_run.pop(t.object_id, None)  # a refuting grid ends the run
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _measured_size(self, object_id: str | None, label: str) -> tuple[float, str] | None:
+        """How big a provisional track's object is, and where that came from, or ``None``.
+
+        In order: the track's own largest clear fit (its smaller horizontal extent); else the
+        largest such extent among CONFIRMED clear tracks of the same label (#418 PickOrange:
+        orange_1 / orange_2 size orange_3 under the jaw); else unknown (no growth). Never a
+        per-label constant.
+        """
+        if object_id is not None and object_id in self._clear_size:
+            return self._clear_size[object_id], "own_clear_fit"
+        sizes = [
+            2.0 * min(o.box.half_extents[0], o.box.half_extents[1])
+            for o in self.store.all()
+            if o.label == label
+            and o.object_id != object_id
+            and o.status is TrackStatus.CONFIRMED
+            and not o.provisional
+        ]
+        return (max(sizes), "same_label_tracks") if sizes else None
+
+    def _grow_hidden(  # reason: the fit step's own state, passed through
+        self,
+        fit: ContainingFit,
+        object_id: str | None,
+        label: str,
+        frame: CameraFrame,
+        grid: VoxelLattice,
+        support_z: float,
+    ) -> ContainingFit:
+        """``fit`` with its box grown into the robot-hidden side to the measured size.
+
+        PROVISIONAL fits only (K2 exemption geometry; never a payload, K3 refuses it).
+        Issue #418 OT-6 / OT-14 amendment (Safety-WG review pending).
+        """
+        measured = self._measured_size(object_id, label)
+        if measured is None or fit.box is None or frame.t_base_from_cam is None:
+            return fit
+        others = [
+            o.box
+            for o in self.store.all()
+            if o.object_id != object_id and o.status not in (TrackStatus.LOST, TrackStatus.RELEASED)
+        ]
+        box, grown = grow_hidden_side(
+            fit.box,
+            measured[0],
+            depth_m=frame.depth_m,
+            robot_mask=frame.robot_mask,
+            intrinsics=frame.intrinsics,
+            t_base_from_cam=frame.t_base_from_cam,
+            grid=grid,
+            support_z=support_z,
+            others=others,
+        )
+        if not grown:
+            return fit
+        log.info("object_tracker.hidden_side_grown", object_id=object_id, label=label,
+                 size_m=round(measured[0], 4), source=measured[1], grown=grown)  # fmt: skip
+        return replace(fit, box=box)
+
+    def _may_confirm(  # reason: the confirm step's own state, passed through
+        self,
+        t: TrackedObject,
+        grid: VoxelLattice,
+        cells: frozenset[Cell],
+        others: Sequence[PlaceRegion],
+        occupied: int,
+        stamp_ns: int,
+    ) -> bool:
+        """May TENTATIVE ``t``, whose cover just held on the grid at ``stamp_ns``, confirm?
+
+        Its evidence must be its own (OT-13: #418 r6po_dbg4's ghost trk:5 was one mask over
+        two tracked oranges), and a low-score prompt's track needs
+        ``low_score_confirm_grids`` consecutive confirming grids.
+        """
+        if own_cover(grid, cells, others) < max(2, math.ceil(0.5 * occupied)):
+            self._refuse(f"{t.label}@{t.object_id}", "cover_already_tracked", occupied=occupied)
+            self._low_score_run.pop(t.object_id, None)
+            return False
+        score = self._low_score.get(t.object_id)
+        if score is None:
+            return True
+        last, n = self._low_score_run.get(t.object_id, (-1, 0))
+        n = n if stamp_ns == last else n + 1
+        self._low_score_run[t.object_id] = (stamp_ns, n)
+        if n < self.params.low_score_confirm_grids:
+            return False
+        self._low_score.pop(t.object_id)
+        self._low_score_run.pop(t.object_id)
+        log.info("object_tracker.low_score_prompt_confirmed", object_id=t.object_id,
+                 label=t.label, score=score, grids=n)  # fmt: skip
+        return True
 
     def _other_boxes(self, centroid: tuple[float, ...]) -> list[PlaceRegion]:
         """Settled tracks' boxes a new fit at ``centroid`` is not a refit of."""
@@ -552,11 +861,14 @@ class ObjectTracker:
                 prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
                 out.append(replace(r, stamp_ns=stamp, priority=prio))
         tracks = self.store.all()
-        for q in self.queries.due():
+        for q in self.queries.due(now_ns=self._now_ns):
             prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
             base = TrackerRequest(
-                "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key
-            )
+                "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key,
+                roi_norm_xyxy=self._locate_roi(q.query.seed or self.search_region, frame),
+                min_score=self.params.locate_min_score,
+                prompt=", ".join((q.query.label, *q.query.synonyms)),
+            )  # fmt: skip
             seed = q.query.seed
             if seed is not None and grid is not None and seed.frame_id == grid.frame_id:
                 skip = self._prompted.setdefault(q.key, set())
@@ -643,8 +955,65 @@ class ObjectTracker:
             self._prompted.pop(req.query_key, None)
         if req.query_key is not None and (q := self.queries.get(*req.query_key)) is not None:
             q.last_served_ns = self._now_ns
-            if req.service == "segment_in_view" and req.box_xyxy is not None:
+            # A detector box's prompt, as a box or (re-prompted beside the robot) as the
+            # bound of a point: served once, then dropped from the pending prompts.
+            served_box = req.box_xyxy or req.within_xyxy
+            if req.service == "segment_in_view" and served_box is not None:
                 self._pending = [
                     r for r in self._pending
-                    if (r.query_key, r.box_xyxy) != (req.query_key, req.box_xyxy)
+                    if (r.query_key, r.box_xyxy or r.within_xyxy) != (req.query_key, served_box)
                 ]  # fmt: skip
+            if (
+                req.service == "locate_in_view"
+                and q.status is ObjectQueryStatus.RESOLVED
+                and q.query.count == "all"
+                and self._now_ns - self._research_logged.get(q.key, -(10**18)) >= 5 * _NS
+            ):
+                # A resolved count-all query keeps detecting (more instances may appear or
+                # come out from behind the arm); say so at INFO, at most every 5 s.
+                self._research_logged[q.key] = self._now_ns
+                log.info("object_tracker.count_all_research", label=q.query.label,
+                         camera=req.camera, goal_id=q.goal_id)  # fmt: skip
+
+
+#: Pixels within which a free region counts as beside the robot (past the uncertain band).
+_BESIDE_PX = 8
+#: Fewest pixels a region beside the robot needs to be prompted on.
+_BESIDE_MIN_PX = 10
+
+
+def _most_hidden(region: NDArray[np.bool_], robot: NDArray[np.bool_]) -> NDArray[np.bool_] | None:
+    """The 4-connected component of ``region`` most of whose pixels lie beside ``robot``.
+
+    Beside = within ``_BESIDE_PX`` (Chebyshev) of a robot pixel; components under
+    ``_BESIDE_MIN_PX`` pixels or with none beside are ignored; ``None`` when nothing is left.
+    What the robot half hides is mostly beside it; a neighbour merely touching its band is not.
+    """
+    h, w = region.shape
+    k = _BESIDE_PX
+    near = np.zeros_like(robot)
+    for dy in range(-k, k + 1):
+        for dx in range(-k, k + 1):
+            near[max(dy, 0) : h + min(dy, 0), max(dx, 0) : w + min(dx, 0)] |= robot[
+                max(-dy, 0) : h + min(-dy, 0), max(-dx, 0) : w + min(-dx, 0)
+            ]
+    label = np.zeros(region.shape, dtype=np.int32)
+    best, best_score, n = 0, 0.0, 0
+    for sy, sx in zip(*np.nonzero(region), strict=True):
+        if label[sy, sx]:
+            continue
+        n += 1
+        stack, size, beside = [(int(sy), int(sx))], 0, 0
+        label[sy, sx] = n
+        while stack:
+            y, x = stack.pop()
+            size += 1
+            beside += int(near[y, x])
+            for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= ny < h and 0 <= nx < w and region[ny, nx] and not label[ny, nx]:
+                    label[ny, nx] = n
+                    stack.append((ny, nx))
+        score = beside / size
+        if size >= _BESIDE_MIN_PX and score > best_score:
+            best, best_score = n, score
+    return label == best if best else None

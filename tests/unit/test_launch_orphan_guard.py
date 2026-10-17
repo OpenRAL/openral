@@ -1,0 +1,112 @@
+"""A SIGKILLed ``openral deploy sim`` CLI leaves no launch node or sidecar behind (#418).
+
+r4dr_shadow2 (Spark, 2026-10-17): the deploy CLI died without running its teardown and
+the launch's nodes (each in its own process group) and the Isaac sidecar (its own
+session) kept running on the ROS domain, feeding the next trials. ``_run_launch`` now
+starts ``openral_cli._launch_guard``, a stdlib-only process in its own session that
+watches the CLI and reaps every process it ever saw under the launch once the CLI is
+gone, however it died.
+
+Real processes only: a stand-in CLI runs the real ``_run_launch`` over a stand-in launch
+tree (a child in its own process group, a grandchild in its own session, like the
+sidecar), and is then SIGKILLed.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the guard reads /proc")
+
+_TREE = textwrap.dedent(
+    """
+    import os, subprocess, sys, time
+    out = sys.argv[1]
+    sleeper = [sys.executable, "-c", "import time; time.sleep(120)"]
+    node = subprocess.Popen(sleeper, process_group=0)          # a launch node: own group
+    sidecar = subprocess.Popen(sleeper, start_new_session=True)  # the sidecar: own session
+    with open(out, "w") as f:
+        f.write(f"{os.getpid()} {node.pid} {sidecar.pid}")
+    time.sleep(120)
+    """
+)
+
+_CLI = textwrap.dedent(
+    """
+    import sys
+    from openral_cli.deploy_sim import _run_launch
+    tree, out = sys.argv[1], sys.argv[2]
+    _run_launch([sys.executable, tree, out], dict(__import__("os").environ), orphan_guard=True)
+    """
+)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state != "Z"
+
+
+def test_a_sigkilled_cli_leaves_no_launch_node_or_sidecar(tmp_path: Path) -> None:
+    tree = tmp_path / "tree.py"
+    tree.write_text(_TREE)
+    out = tmp_path / "pids"
+    env = {**os.environ, "OPENRAL_SKIP_ORPHAN_REAP": "1"}  # never sweep this host's graphs
+    cli = subprocess.Popen([sys.executable, "-c", _CLI, str(tree), str(out)], env=env)
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 30.0
+        while not (out.exists() and out.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        pids = [int(p) for p in out.read_text().split()]
+        time.sleep(2.0)  # the guard snapshots the tree every half second
+        assert all(_alive(p) for p in pids)
+        cli.send_signal(signal.SIGKILL)
+        cli.wait(timeout=5)
+        deadline = time.monotonic() + 20.0
+        while any(_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not [p for p in pids if _alive(p)], "the launch tree outlived the CLI"
+    finally:
+        for p in pids:
+            with contextlib.suppress(OSError):
+                os.kill(p, signal.SIGKILL)
+        cli.kill()
+
+
+def test_without_the_guard_the_tree_outlives_a_sigkilled_cli(tmp_path: Path) -> None:
+    """The failure the guard removes, reproduced (and cleaned up) for contrast."""
+    tree = tmp_path / "tree.py"
+    tree.write_text(_TREE)
+    out = tmp_path / "pids"
+    env = {**os.environ, "OPENRAL_SKIP_ORPHAN_REAP": "1"}
+    cli = subprocess.Popen(
+        [sys.executable, "-c", _CLI.replace("orphan_guard=True", "orphan_guard=False"),
+         str(tree), str(out)],
+        env=env,
+    )  # fmt: skip
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 30.0
+        while not (out.exists() and out.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        pids = [int(p) for p in out.read_text().split()]
+        cli.send_signal(signal.SIGKILL)
+        cli.wait(timeout=5)
+        time.sleep(3.0)
+        assert all(_alive(p) for p in pids)
+    finally:
+        for p in pids:
+            with contextlib.suppress(OSError):
+                os.kill(p, signal.SIGKILL)

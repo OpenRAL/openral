@@ -998,6 +998,34 @@ def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list[LaunchDesc
     ]
 
 
+def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
+    """Drive ``/<node_name>`` to ACTIVE with the poll-based ``tools/lifecycle_autostart.py``.
+
+    For nodes that are never runtime-deactivated and whose silent INACTIVE breaks a
+    feature: the event-driven ``_autostart_lifecycle`` loses the whole chain when the
+    node's ``change_state`` reply is dropped (Jazzy ``failed to send response
+    (timeout)``: the launch waits forever for the CONFIGURE reply and never sends
+    ACTIVATE). Seen on Spark as a segmenter and an object tracker left INACTIVE for a
+    whole #418 trial. The poll tool reads ``get_state`` instead of trusting the reply.
+    ``output="screen"`` puts a failure in the deploy log rather than a hidden file.
+    """
+    return ExecuteProcess(
+        cmd=[
+            sys.executable,
+            str(_REPO_ROOT / "tools" / "lifecycle_autostart.py"),
+            "--node",
+            f"/{node_name}",
+            "--target",
+            "active",
+            "--service-timeout-s",
+            "60.0",
+            "--transition-timeout-s",
+            str(transition_timeout_s),
+        ],
+        output="screen",
+    )
+
+
 def _resolve_clock_origin(value: str) -> str:
     """Resolve the OpenRAL clock authority origin forwarded by the CLI.
 
@@ -2528,6 +2556,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     kernel_params["tracked_grasp_exemption_enabled"] = _tracked_grasp_exemption(
         object_tracking, grasp_allowance_enabled=grasp_allowance_enabled
     )
+    # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
+    # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
+    if kernel_params["tracked_grasp_exemption_enabled"] and description.fixed_jaw_links():
+        kernel_params["tracked_grasp_extra_contact_links"] = list(description.fixed_jaw_links())
     # How old a producer-measured grasp/place region may be and still exempt anything. The
     # regions are measured off the voxel map, so the bound is derived from that map's own
     # freshness deadline: twice it (the kernel's own default, passed explicitly so the
@@ -4135,7 +4167,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(segmenter)
-        autostart += _autostart_lifecycle(segmenter, "openral_segmenter")
+        autostart.append(_poll_autostart("openral_segmenter", 120.0))
 
     if object_tracking != "off":
         # Issue #418: the Layer-2 object tracker (packages/world_state/README.md).
@@ -4175,7 +4207,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             output="screen",
         )
         extra_nodes.append(tracker)
-        autostart += _autostart_lifecycle(tracker, "openral_object_tracker")
+        autostart.append(_poll_autostart("openral_object_tracker", 60.0))
 
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM

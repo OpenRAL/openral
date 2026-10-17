@@ -308,6 +308,10 @@ inline constexpr double kRobotMaskDepthTolM = 0.005;
 /// hand geometry, or within 10 mm of any other link, is ROBOT.
 inline constexpr double kRobotMaskHandMarginM = 0.0;
 inline constexpr double kRobotMaskArmMarginM = 0.010;
+/// A return this far behind the robot's rendered front, and outside every primitive by
+/// more than `kRobotMaskArmMarginM`, is something the camera sees past the robot's
+/// envelope (a convex hull / 26-DOP spans a gripper's open jaw): not ROBOT (#418).
+inline constexpr double kRobotMaskSeeThroughM = 0.03;
 
 /// A rectified pinhole camera (`CameraInfo.k`), optical frame: +z forward.
 struct PinholeCamera {
@@ -326,6 +330,7 @@ struct RobotMaskScratch {
   std::vector<std::uint8_t> robot;
   std::vector<std::uint8_t> not_robot;
   std::vector<std::uint8_t> backstop;
+  std::vector<std::uint8_t> inside;
   std::vector<std::uint8_t> tmp;
   std::vector<std::uint8_t> near_robot;
   std::vector<std::uint8_t> near_free;
@@ -340,7 +345,9 @@ struct RobotMaskScratch {
 /// Each primitive is rasterised over its projected bounding box only (a ray per
 /// pixel of that footprint against that one primitive), into a z-buffer of the
 /// robot's depth `Z_r`. Pixel `p` is ROBOT iff `Z_r(p) <= D(p) + kRobotMaskDepthTolM`
-/// — so an object in front of a finger stays FREE — or its back-projected
+/// — so an object in front of a finger stays FREE — unless the return lies more than
+/// `kRobotMaskSeeThroughM` behind `Z_r(p)` and outside every primitive by more than
+/// `kRobotMaskArmMarginM` (seen past the envelope: FREE); or its back-projected
 /// return lies within its primitive's backstop margin. A pixel within
 /// `uncertain_px` (Chebyshev) of both a ROBOT and a non-ROBOT z-test pixel is
 /// UNCERTAIN unless the backstop holds it, and so is a pixel the robot covers

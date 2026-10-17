@@ -304,7 +304,10 @@ def test_idl_round_trip_through_built_messages() -> None:
     )
     assert TrackedObjectSet.from_idl(msg) == tracked
 
-    query = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET, seed=_scene_box())
+    query = ObjectQuery(
+        label="orange", count="all", role=ObjectRole.TARGET, seed=_scene_box(),
+        synonyms=("mandarin", "citrus fruit"),
+    )  # fmt: skip
     grasp = GraspDeclaration(
         target_id="obj:orange_1",
         contact_links=("jaw",),

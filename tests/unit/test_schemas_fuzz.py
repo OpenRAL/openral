@@ -56,6 +56,7 @@ from openral_core.schemas import (
     JointType,
     LinkCollisionGeometry,
     MimicJoint,
+    ObjectQuery,
     ObjectQueryEvidence,
     ObjectRole,
     OccupancyGridRef,
@@ -202,6 +203,7 @@ _joint_spec_st = st.builds(
     parent_link=_name,
     child_link=_name,
     closure_calibration=st.none() | _closure_calibration_st,
+    fixed_jaw_link=st.none(),
 )
 
 _end_effector_st = st.builds(
@@ -811,6 +813,23 @@ def test_fuzz_occupancy_grid_ref(instance: OccupancyGridRef) -> None:
 def test_fuzz_collision_evidence(instance: CollisionEvidence) -> None:
     """CollisionEvidence round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(CollisionEvidence, instance)
+
+
+_object_query_st = st.builds(
+    ObjectQuery,
+    label=st.text(min_size=1, max_size=12),
+    count=st.just("all"),
+    role=st.sampled_from(list(ObjectRole)),
+    synonyms=st.tuples(*[st.text(min_size=1, max_size=8)] * 2),
+    min_instances=st.integers(min_value=1, max_value=4),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_object_query_st)
+def test_fuzz_object_query(instance: ObjectQuery) -> None:
+    """ObjectQuery (issue #418, with synonyms) round-trips and validates against its schema."""
+    _round_trip_and_validate(ObjectQuery, instance)
 
 
 @_FUZZ_SETTINGS

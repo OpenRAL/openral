@@ -1191,6 +1191,15 @@ class JointSpec(BaseModel):
             ``role: "gripper"`` joint (``GripperClosureCalibration``). ``None``
             = uncalibrated: the HAL's vision attachment leg refuses to arm a
             trigger on that joint rather than guess thresholds.
+        fixed_jaw_link: For a ``role: "gripper"`` joint whose fixed jaw is
+            part of a body link rather than a finger link of its own (the
+            SO-101: the fixed jaw is the ``gripper`` link, the joint's
+            ``parent_link``), the link that carries that fixed jaw. Read only
+            by the safety kernel's tracked grasp exemption (issue #418 K2,
+            ``tracked_grasp_extra_contact_links``), which may then exempt it
+            against the selected tracked object's box like the moving jaw;
+            the legacy ``grasp_contact_links`` allowlist is unchanged.
+            ``None`` (default) = the jaws are all finger links.
         origin_xyz: Fixed translation (metres) of this joint's frame in
             its ``parent_link`` frame — the URDF ``<joint><origin xyz>``.
             With ``origin_rpy`` and ``axis_xyz`` it gives the
@@ -1223,6 +1232,15 @@ class JointSpec(BaseModel):
     sim_joint_name: str | None = None
     role: JointRole = "unknown"
     closure_calibration: GripperClosureCalibration | None = None
+    fixed_jaw_link: str | None = None
+
+    @model_validator(mode="after")
+    def _fixed_jaw_only_on_a_gripper(self) -> JointSpec:
+        if self.fixed_jaw_link is not None and (self.role != "gripper" or not self.fixed_jaw_link):
+            raise ValueError(
+                f"joint {self.name!r}: fixed_jaw_link needs role 'gripper' and a link name"
+            )
+        return self
 
 
 GripperConvention: TypeAlias = Literal[
@@ -3166,6 +3184,32 @@ class RobotDescription(BaseModel):
                     grown = True
         return tuple(j.child_link for j in grippers) + tuple(mimic) + tuple(fixed)
 
+    def fixed_jaw_links(self, gripper_joints: Iterable[str] | None = None) -> tuple[str, ...]:
+        """The ``role: gripper`` joints' ``fixed_jaw_link`` s not already grasp-contact links.
+
+        The launch passes this as the safety kernel's
+        ``tracked_grasp_extra_contact_links`` when the tracked grasp exemption is on
+        (issue #418 K2, hazard OT-6; Safety-WG review pending). ``gripper_joints``
+        restricts it as in ``grasp_contact_links``.
+
+        Example:
+            >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+            >>> d.fixed_jaw_links()
+            ('gripper',)
+            >>> RobotDescription.from_yaml("robots/openarm/robot.yaml").fixed_jaw_links()
+            ()
+        """
+        wanted = None if gripper_joints is None else set(gripper_joints)
+        contact = set(self.grasp_contact_links(gripper_joints))
+        out: list[str] = []
+        for j in self.joints:
+            link = j.fixed_jaw_link
+            if j.role != "gripper" or link is None or (wanted is not None and j.name not in wanted):
+                continue
+            if link not in contact and link not in out:
+                out.append(link)
+        return tuple(out)
+
     def hand_links(self) -> tuple[str, ...]:
         """The robot's hand links: the jaws, the link carrying them, and the wrist behind it.
 
@@ -3874,6 +3918,9 @@ class ObjectQuery(BaseModel):
         seed: Optional search hint (sim-derived or scene graph) in the grid frame or a
             fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.
         min_instances: CONFIRMED instances that make the query ``RESOLVED``.
+        synonyms: Other names for the same class, sent with ``label`` to an
+            open-vocabulary locator as one class list (``"box, carton"``); empty = the
+            label alone. Additive (#418), never geometry.
 
     Example:
         >>> query = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
@@ -3889,6 +3936,7 @@ class ObjectQuery(BaseModel):
     hand: str | None = None
     seed: PlaceRegion | None = None
     min_instances: int = Field(default=1, ge=1)
+    synonyms: tuple[Annotated[str, Field(min_length=1)], ...] = ()
 
     @model_validator(mode="after")
     def _validate_query(self) -> ObjectQuery:
@@ -3908,6 +3956,7 @@ class ObjectQuery(BaseModel):
             hand=str(msg.hand) or None,  # type: ignore[attr-defined]
             seed=PlaceRegion.from_idl(msg.seed) if bool(msg.seed_valid) else None,  # type: ignore[attr-defined]
             min_instances=int(msg.min_instances),  # type: ignore[attr-defined]
+            synonyms=tuple(str(s) for s in getattr(msg, "synonyms", ())),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -3917,6 +3966,7 @@ class ObjectQuery(BaseModel):
         msg.role = self.role.value  # type: ignore[attr-defined]
         msg.hand = self.hand or ""  # type: ignore[attr-defined]
         msg.min_instances = int(self.min_instances)  # type: ignore[attr-defined]
+        msg.synonyms = list(self.synonyms)  # type: ignore[attr-defined]
         msg.seed_valid = self.seed is not None  # type: ignore[attr-defined]
         if self.seed is not None:
             self.seed.fill_idl(msg.seed)  # type: ignore[attr-defined]

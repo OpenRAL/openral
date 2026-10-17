@@ -3,14 +3,17 @@
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
 ### `tools/lifecycle_autostart.py`
-_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, and reasoner._
+_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, reasoner, E-stop sources, and (via its private `_poll_autostart`) the segmenter and the #418 object tracker._
 
 - `--transition-timeout-s` — Per-transition spin budget, default `300.0`; the HAL's budget is derived per scene, not hardcoded — raise the scene's `backend_options.boot_timeout_s` instead of this flag.
 - **Why the HAL's is derived.** The bound must cover the whole `on_configure`, including a sidecar's spawn — some backends need far more than 300 s to boot, so the timeout is set per scene rather than fixed.
 - `--required` (flag) — Treat an absent `change_state` service as a failure (exit 1) instead of informational, so a missing node cannot come up looking healthy; used for the deadman watchdog so a deploy without it refuses to run.
 - **Transitions carry their label as well as their id.** rclpy refuses an invalid labelled `ChangeState` with `success=False`, but an id-only one raises out of the target's service callback and kills the node; with the label, a transition another activator already made redundant is refused harmlessly.
+- **A dropped reply is noticed by polling.** The `change_state` wait is spun in `_POLL_SLICE_S` (2 s) slices with a `get_state` read between them, accepted as soon as the state is the transition's goal (`_GOAL_STATES`: CONFIGURE → `inactive`/`active`, ACTIVATE → `active` only). Jazzy can drop a reply (`failed to send response (timeout)`); the launch_ros event chain then never sends ACTIVATE, which left the segmenter and the tracker INACTIVE for whole #418 trials.
+- `_GOAL_STATES: dict[str, set[str]]` (L44) — per-transition FSM states that mean it landed; `inactive` is not evidence an ACTIVATE advanced.
+- `_POLL_SLICE_S: float` (L47) — slice of the `change_state` wait between `get_state` reads.
 - `_STATE_TO_TRANSITION: dict[str, list[int]]` (L36) — `--target` → the `Transition` constants to drive in order (`inactive` = CONFIGURE; `active` = CONFIGURE then ACTIVATE).
-- `main() -> int` (L127) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
+- `main() -> int` (L146) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
 
 ### `tools/profile_policy_load.py`
 _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.factory.make_policy` against an in-tree rSkill manifest and prints a phase-by-phase summary. Use when a launch or `openral sim run` is slow to first action, to see where the seconds go._
@@ -174,7 +177,11 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
 
-- `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L24)
+- `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L51)
+- `_overran(*, sim_elapsed_s, wall_elapsed_s, deadline_s) -> bool` (L32) — Issue #418 (r4po_on3/on4: a 0.17x sim, the helper quit on wall time with the goal still running and printed a bare `status: -1`): the wait ends past the goal's deadline on the graph clock (`/clock`) + `GRAPH_MARGIN_S` (30 s), on wall time + `WALL_MARGIN_S` (180 s) only when no `/clock` is published, and always past `WALL_CAP_S` (3600 s). On that timeout the helper cancels the goal and prints a typed `failure_reason` (`dispatch_timeout: …`).
+- `GRAPH_MARGIN_S = 30.0` (L25) — Graph-clock seconds past the deadline before the helper gives up.
+- `WALL_MARGIN_S = 180.0` (L27) — Wall seconds past the deadline when no `/clock` is published.
+- `WALL_CAP_S = 3600.0` (L29) — Wall seconds after which it gives up regardless.
 
 ### `tools/_ceiling_probe.py`
 _One worker of the ceiling battery: one scene, one gate arm, N rounds. Bypasses `validation_matrix.py`'s refusal to disable the octomap check, while reusing its scene materialisation, readiness gate and dispatch tool. Answers: of the runs the kernel stops, how many would have succeeded anyway?_
@@ -269,7 +276,7 @@ _Robot-agnostic, URDF-driven Isaac Sim scene (the sidecar's only scene): imports
 - `strip_urdf_mimics(urdf_text, source_dir) -> str` (L913) — A URDF without `<mimic>` tags, relative mesh paths made absolute, for the Isaac >= 6 converter (its mimic constraint destabilises PhysX articulations).
 - `compose_planar(spawn, odom) -> tuple[float, float, float, float]` (L948) — World `(x, y, z, yaw)` of the base: the spawn pose composed with the planar odometry pose (odometry starts at the spawn). Pure.
 - `look_at_matrix(eye, target) -> NDArray[np.float64]` (L969) — Rotation whose columns are a camera's x (forward) / y (left) / z (up) axes aimed at `target` (Isaac's `world` camera axes); used for `IsaacCameraMount.look_at`. Pure.
-- `camera_resolution(meta, obs_width, obs_height) -> tuple[int, int]` (L986) — A planned camera's render size: its manifest intrinsics' raster (a depth camera keeps that aspect at no more than `obs_width`), else the scene's observation size. Pure.
+- `camera_resolution(meta, obs_width, obs_height) -> tuple[int, int]` (L986) — A planned camera's render size: its manifest intrinsics' raster (a depth camera too: never capped by the policy's `obs_width`), else the scene's observation size. Pure.
 - `camera_hfov_deg(meta) -> float | None` (L1015) — A planned camera's horizontal FOV: its mount's `hfov_deg`, else from the manifest intrinsics (`2·atan(width / 2fx)`), else `None` (Isaac's default lens). Pure.
 - `recolor_robot_materials(stage, robot_prim, colors) -> dict[str, list[float]]` (L673) — Sets the diffuse colour (`UsdPreviewSurface.diffuseColor` / OmniPBR `diffuse_color_constant`) of robot visual materials whose prim name matches an `fnmatch` pattern, only for materials bound under `robot_prim`; called after the URDF import when the spec's `robot_material_colors` is set (upstream meshes carry their own colours). Needs `pxr`.
 - `radial_fold_radius(coeffs) -> float` (L1037) — The largest distorted normalised radius a Brown / rational radial model reaches before it turns over (or hits a pole); tangential terms ignored. Pure.

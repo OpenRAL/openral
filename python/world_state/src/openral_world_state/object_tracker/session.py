@@ -236,10 +236,19 @@ class TrackerSession:
         if source_stamp_ns >= self.grid_stamp_ns:
             self.grid, self.grid_stamp_ns = grid, source_stamp_ns
             self._tick(source_stamp_ns)
+            if self._joints <= self.positions.keys():
+                for binder in self.binders.values():  # untracked payloads grow on the map
+                    if binder.grow_untracked(
+                        self.tracker.store, grid, self.positions, source_stamp_ns
+                    ):
+                        self.attachment_changes += 1
 
     def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
         """Fold measured joints in (manifest names); run the jaw-open release rule."""
         self.positions.update(positions)
+        for joint, binder in self.binders.items():
+            if joint in positions:  # the most open jaw before closure bounds a fallback
+                binder.observe_jaw(positions[joint])
         self._tick(stamp_ns)
         for joint, monitor in list(self._monitors.items()):
             jaw = positions.get(joint)
@@ -250,6 +259,8 @@ class TrackerSession:
     def on_grasp_declaration(self, decl: GraspDeclaration) -> None:
         """A grasp declaration (or its retraction) from dispatch."""
         self.grasp_declaration = decl if decl.active else None
+        # Locates crop to the declared workspace (issue #418 restock: ~40 px cartons).
+        self.tracker.search_region = decl.workspace_box if decl.active else None
         self._set_goal("grasp", decl.target_id, decl.stamp_ns, decl.active, decl.target_queries)
 
     def on_place_declaration(self, decl: PlaceDeclaration) -> None:

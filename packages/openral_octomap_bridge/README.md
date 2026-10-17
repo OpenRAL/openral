@@ -168,7 +168,10 @@ also renders the UNPADDED model into each named depth camera at the depth
 stamp and publishes `/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128
 uncertain, 255 robot; the depth image's header; BEST_EFFORT, KEEP_LAST 5). A
 pixel is robot iff the rendered robot depth is at most the measured depth +
-5 mm (so a held object in front of a finger stays free), or its back-projected
+5 mm (so a held object in front of a finger stays free) and the return is not seen
+past the robot (a return more than 3 cm behind the rendered front and more than 10 mm
+outside every link is not robot: a convex hull or 26-DOP spans a gripper's open jaw,
+#418), or its back-projected
 return is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of
 any other link. Pixels within `robot_mask_uncertain_px` of a robot/non-robot
 boundary, and robot-covered pixels with no return, are uncertain. Each

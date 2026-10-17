@@ -497,7 +497,11 @@ def main(argv: list[str] | None = None) -> int:
         if workspace is None:
             print(f"workspace_box: not derived ({exc})")
     derived = {
-        "search_box": grounded.search_box.model_dump(mode="json")
+        # Measured from the sim's ground truth, so it says so: a `sim:` box is never a
+        # tracker seed (`openral_cli.deploy_sim._object_queries_json`).
+        "search_box": grounded.search_box.model_copy(
+            update={"evidence_ref": f"sim:{obj_name}"}
+        ).model_dump(mode="json")
         if grounded.search_box is not None
         else None,
         "workspace_box": None if workspace is None else workspace.model_dump(mode="json"),

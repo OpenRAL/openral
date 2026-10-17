@@ -914,11 +914,28 @@ std::uint8_t at(const std::vector<std::uint8_t>& m, std::size_t u, std::size_t v
   return m[v * kW + u];
 }
 
+// A depth image that sees the finger where the finger is (`front`, a return inside it)
+// and `background` elsewhere: a disk of `radius_px` around the principal point.
+std::vector<float> finger_scene(float front, float background, int radius_px) {
+  std::vector<float> depth(kW * kH, background);
+  for (std::size_t v = 0; v < kH; ++v) {
+    for (std::size_t u = 0; u < kW; ++u) {
+      const int du = static_cast<int>(u) - 32;
+      const int dv = static_cast<int>(v) - 24;
+      if (du * du + dv * dv <= radius_px * radius_px) {
+        depth[v * kW + u] = front;
+      }
+    }
+  }
+  return depth;
+}
+
 }  // namespace
 
 TEST(SelfFilterRobotMask, AFingerInFrontOfAnObjectIsRobot) {
-  // The object's surface at 0.8 m: the finger (front at 0.48 m) is in front.
-  const auto mask = render(std::vector<float>(kW * kH, 0.8F), 0.0, 2);
+  // The object's surface at 0.8 m; the camera sees the finger (a return inside it, 0.49 m)
+  // over the finger's ~8 px silhouette.
+  const auto mask = render(finger_scene(0.49F, 0.8F, 7), 0.0, 2);
   EXPECT_EQ(at(mask, 32, 24), bridge::kRobotMaskRobot);
   // The silhouette's radius is ~8 px: 7 px out is the band, 20 px out is free.
   EXPECT_EQ(at(mask, 32 + 9, 24), bridge::kRobotMaskUncertain);
@@ -934,7 +951,7 @@ TEST(SelfFilterRobotMask, AnObjectInFrontOfAFingerIsKept) {
 }
 
 TEST(SelfFilterRobotMask, NoReturnOverTheRobotIsUncertainAndTheBackstopCatchesNoise) {
-  std::vector<float> depth(kW * kH, 0.8F);
+  std::vector<float> depth = finger_scene(0.49F, 0.8F, 7);
   depth[24 * kW + 32] = std::nanf("");
   auto mask = render(depth, 0.0, 0);
   EXPECT_EQ(at(mask, 32, 24), bridge::kRobotMaskUncertain) << "the robot covers it, no return";
@@ -959,7 +976,8 @@ TEST(SelfFilterRobotMask, RendersABoxAndAHulledBoxBySlabs) {
     hull.dop_hi[i] = hi[i];
     hull.dop_lo[i] = -hi[i];
   }
-  const std::vector<float> depth(kW * kH, 1.0F);
+  // Returns at the box's centre plane: inside the box wherever a ray meets it.
+  const std::vector<float> depth(kW * kH, 0.5F);
   bridge::RobotMaskScratch scratch;
   std::vector<std::uint8_t> plain;
   std::vector<std::uint8_t> hulled;
@@ -1116,4 +1134,21 @@ TEST(SelfFilterRealData, SimTimeStampedJointStatesRemoveTheArmTheRecordedStampsL
   EXPECT_EQ(kept(sim_time, robot_pts), 0U) << "of " << robot_pts.size() << " arm returns";
   EXPECT_EQ(kept(sim_time, world_pts), world_pts.size())
       << "a world return 4-8 cm from the robot was removed";
+}
+
+TEST(SelfFilterRobotMask, AReturnSeenThroughTheRobotEnvelopeIsNotRobot) {
+  // #418 PickOrange: the top camera saw orange_3 through the SO-101 jaw's gap, inside the
+  // projection of the gripper's convex envelope; every one of its 249 pixels was ROBOT, so
+  // the target could never be grounded at goal start. A return well behind the envelope
+  // (> kRobotMaskSeeThroughM past its front) and outside every primitive by more than the
+  // arm backstop margin is something the camera sees past the robot: not ROBOT.
+  const auto mask = render(std::vector<float>(kW * kH, 0.8F), 0.0, 0);
+  EXPECT_EQ(at(mask, 32, 24), bridge::kRobotMaskFree);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), bridge::kRobotMaskRobot), 0);
+  // A return just past the finger's front, within the see-through tolerance, stays ROBOT
+  // (stereo noise on the finger itself), and so does one inside the finger.
+  const float front = 0.48F;
+  EXPECT_EQ(at(render(std::vector<float>(kW * kH, front + 0.02F), 0.0, 0), 32, 24),
+            bridge::kRobotMaskRobot);
+  EXPECT_EQ(at(render(std::vector<float>(kW * kH, 0.5F), 0.0, 0), 32, 24), bridge::kRobotMaskRobot);
 }

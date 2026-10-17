@@ -47,7 +47,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -643,7 +643,10 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     around one instance) becomes the ``seed`` of the TARGET query whose label its
     ``target_id`` names (``obj:orange_1`` → ``orange``, or that placement's ``label``): the
     tracker's map-seeded prompt inside it, so a class no open-vocabulary locator knows
-    still grounds. A seed is a search hint only, never kernel geometry.
+    still grounds. A seed is a search hint only, never kernel geometry. A box whose
+    ``evidence_ref`` is ``sim:`` (measured from the simulator's ground truth) never seeds:
+    a real deploy has no such box, so the tracker is validated without it (logged at INFO
+    as ``deploy.object_query_seed_dropped``).
     """
     runtime = deploy_scene.runtime if deploy_scene is not None else None
     if deploy_scene is None or runtime is None or runtime.object_tracking == "off" or not prompt:
@@ -667,7 +670,27 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
         return ""
     queries = placement_queries(placements)
     decl = deploy_scene.grasp_declaration
-    if decl is not None and decl.search_box is not None:
+    if (
+        decl is not None
+        and decl.search_box is not None
+        and decl.search_box.evidence_ref.startswith("sim:")
+    ):
+        # A box measured from the simulator's ground truth is not a seed a real deploy
+        # has: the tracker must ground the object from its own sensing, so it is validated
+        # without one. The HAL still gets the declaration's search_box unchanged.
+        import structlog
+
+        structlog.get_logger(__name__).info(
+            "deploy.object_query_seed_dropped",
+            target_id=decl.target_id,
+            evidence_ref=decl.search_box.evidence_ref,
+            reason="sim ground truth is not a seed a real deploy has",
+        )
+        _console.print(
+            f"[yellow]object tracking: not seeding {decl.target_id} from "
+            f"{decl.search_box.evidence_ref!r} (sim ground truth)[/yellow]"
+        )
+    elif decl is not None and decl.search_box is not None:
         # The declared object's placement names its label (its detector label, else its
         # scene name), normalised as the queries' labels were.
         obj = decl.target_id.split(":", 1)[-1]
@@ -682,6 +705,38 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     return json.dumps(
         [q.model_dump(mode="json", exclude_none=True) for q in queries], separators=(",", ":")
     )
+
+
+def _require_groundable_targets(queries_json: str, locators: Sequence[str]) -> None:
+    """Refuse a tracker that could never ground a TARGET query (issue #418).
+
+    The tracker grounds a query through an on-demand locator (``locate_in_view``) or
+    inside its seed box; a TARGET query with neither has nothing to find it with, and a
+    tracker that cannot ground must never run silently.
+
+    Raises:
+        ROSConfigError: Tracking names a TARGET query with no seed and no locator is
+            configured (``--object-detector-locator``).
+
+    Example:
+        >>> _require_groundable_targets('[{"label":"plate","role":"destination"}]', [])
+        >>> _require_groundable_targets('[{"label":"orange","role":"target"}]', ["x.yaml"])
+    """
+    if not queries_json or locators:
+        return
+    blind = [
+        q["label"]
+        for q in json.loads(queries_json)
+        if q.get("role") == "target" and q.get("seed") is None
+    ]
+    if blind:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"object tracking: TARGET quer{'y' if len(blind) == 1 else 'ies'} {blind} "
+            "have no seed and no locator is configured, so the tracker could never ground "
+            "them; pass --object-detector-locator (e.g. omdet-turbo-locator)."
+        )
 
 
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
@@ -1863,6 +1918,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
     # prompt; that is the prompt whose task is graded, so it names the queries.
     queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt or preload_prompt)
+    _require_groundable_targets(queries_json, resolved_object_detector_locators)
     if queries_json:
         argv_template.append(f"object_queries_json:={queries_json}")
 
@@ -2043,6 +2099,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
         confine_sim_scope(env)
     venv_site = sysconfig.get_paths()["purelib"]
     env["OPENRAL_VENV_SITE"] = venv_site
+    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{venv_site}{os.pathsep}{existing}" if existing else venv_site
     venv_bin = os.path.dirname(sys.executable)
@@ -2094,7 +2151,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
             _console.print(f"[red]config error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-        _reap_orphans_with_log()
+        _reap_orphans_with_log(invocation.hal_mode)
 
         _preflight_palette_deps(
             repo_root=repo_root,
@@ -2141,7 +2198,7 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
         # passing ``run_preflight=False`` means it.
         if run_preflight:
             _assert_graph_unoccupied_or_exit(venv_env, hal_mode=invocation.hal_mode)
-        return _run_launch(argv, venv_env)
+        return _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
     finally:
         with contextlib.suppress(OSError):
             Path(hal_params_tmp.name).unlink(missing_ok=True)
@@ -2242,7 +2299,7 @@ def _ros2_pkg_prefix(pkg: str) -> str | None:
     return out or None
 
 
-def _reap_orphans_with_log() -> None:
+def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
     """Kill orphan openral-graph processes and log the count.
 
     Reap orphan graph processes from a prior crashed/Ctrl-C'd run.
@@ -2264,7 +2321,7 @@ def _reap_orphans_with_log() -> None:
         # scoped by ``ROS_DOMAIN_ID``.
         _console.print("[yellow]orphan reap skipped (OPENRAL_SKIP_ORPHAN_REAP=1)[/yellow]")
         return
-    killed = _kill_orphan_openral_graph_processes()
+    killed = _kill_orphan_openral_graph_processes(_prepare_launch_env(hal_mode=hal_mode))
     if killed:
         _console.print(
             f"[yellow]reaped {killed} orphan openral-graph process(es) from a prior run[/yellow]"
@@ -2376,7 +2433,28 @@ def _cmdline_is_openral_graph_process(cmdline: str) -> bool:
     )
 
 
-def _kill_orphan_openral_graph_processes() -> int:
+#: Set on every launch env (``_prepare_launch_env``): the checkout a deploy graph runs from.
+#: The orphan sweep reaps only processes carrying this CLI's value (and its domain).
+GRAPH_ROOT_ENV: Final[str] = "OPENRAL_DEPLOY_GRAPH_ROOT"
+
+
+def _graph_identity(env: Mapping[str, str]) -> tuple[str, str]:
+    """``(ROS_DOMAIN_ID, checkout)`` a graph launched with ``env`` runs under."""
+    root = env.get(GRAPH_ROOT_ENV) or str(_repo_root_from(Path(__file__)))
+    return env.get("ROS_DOMAIN_ID") or "0", root
+
+
+def _proc_identity(entry: Path) -> tuple[str, str | None] | None:
+    """``(ROS_DOMAIN_ID, checkout tag)`` from ``/proc/<pid>/environ``; ``None`` if unreadable."""
+    try:
+        raw = (entry / "environ").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return None
+    env = dict(kv.split("=", 1) for kv in raw.decode(errors="replace").split("\x00") if "=" in kv)
+    return env.get("ROS_DOMAIN_ID") or "0", env.get(GRAPH_ROOT_ENV)
+
+
+def _kill_orphan_openral_graph_processes(env: Mapping[str, str] | None = None) -> int:
     """SIGKILL orphaned openral-graph processes from a prior ``openral deploy sim``.
 
     A graceful ``Ctrl-C`` doesn't always propagate through ``ros2
@@ -2394,7 +2472,11 @@ def _kill_orphan_openral_graph_processes() -> int:
       configure step hangs waiting for the robocasa loader.
 
     Match orphans by argv signature so we never reach into other
-    users' processes or unrelated python invocations. Best-effort:
+    users' processes or unrelated python invocations, and only on this graph's own
+    ``ROS_DOMAIN_ID`` and checkout (``GRAPH_ROOT_ENV``, read from each candidate's
+    ``/proc/<pid>/environ``; ``env`` is the launch env, default the CLI's own): another
+    session's graph on the same host, on another domain or from another worktree, is
+    never touched (#418 Spark, 2026-10-17). A process without the tag is not ours. Best-effort:
     SIGKILL failures (permission denied, race) are silently
     skipped. Returns the count of processes killed for logging.
     """
@@ -2405,6 +2487,7 @@ def _kill_orphan_openral_graph_processes() -> int:
         # FileNotFoundError crash inside _run_launch.
         return 0
     me = os.getuid()
+    identity = _graph_identity(os.environ if env is None else env)
     killed = 0
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -2431,6 +2514,8 @@ def _kill_orphan_openral_graph_processes() -> int:
             continue
         if not _cmdline_is_openral_graph_process(cmdline):
             continue
+        if _proc_identity(entry) != identity:
+            continue  # another graph's (domain or checkout), or untagged
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
             killed += 1
@@ -2476,7 +2561,24 @@ def _spawn_launch(argv: list[str], env: dict[str, str]) -> subprocess.Popen[byte
     return subprocess.Popen(argv, env=env, start_new_session=True, preexec_fn=_default_sigint)  # noqa: PLW1509  # reason: only resets one signal disposition before exec; no locks, no imports
 
 
-def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) -> int:
+def _spawn_orphan_guard(launch_pid: int) -> subprocess.Popen[bytes]:
+    """Start ``_launch_guard.py`` watching this CLI over the launch ``launch_pid``.
+
+    Its own session, so a signal to the CLI's process group (``kill -INT -<pgid>``) does
+    not take it down with the CLI; it reaps the launch tree once the CLI is gone.
+    """
+    return subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("_launch_guard.py")), str(os.getpid()),
+         str(launch_pid)],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+    )  # fmt: skip
+
+
+def _run_launch(
+    argv: list[str], env: dict[str, str], *, grace_s: float = 12.0, orphan_guard: bool = False
+) -> int:
     """Run ``ros2 launch`` in its own session, reaping the whole tree on exit.
 
     The legacy ``subprocess.run(argv)`` left the launch a sibling in the
@@ -2511,10 +2613,18 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
        launch exits, and stage 1+2 alone leak nodes. The signature sweep
        matches every graph process regardless of parentage.
 
+    4. ``orphan_guard``: a stdlib-only watcher (``_launch_guard.py``, own session)
+       snapshots the launch's descendants every 0.5 s and reaps them once this CLI is
+       gone, so a SIGKILLed or crashed CLI, whose ``finally`` never runs, leaves no
+       node or sim sidecar on the ROS domain (#418 r4dr_shadow2). Sim deploys only for
+       now: a real HAL's teardown on its CLI's death is a Safety-WG decision.
+
     Returns the launch process's exit code (0 if it exited via signal
     with no recorded returncode).
     """
     proc = _spawn_launch(argv, env)
+    if orphan_guard:
+        _spawn_orphan_guard(proc.pid)
 
     def _forward(_signum: int, _frame: object) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):
@@ -2542,7 +2652,7 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
         # those harnesses reap by domain instead (``_reap_domain`` in
         # ``tools/_ceiling_probe.py``).
         if os.environ.get("OPENRAL_SKIP_ORPHAN_REAP") != "1":
-            _kill_orphan_openral_graph_processes()
+            _kill_orphan_openral_graph_processes(env)
     return proc.returncode if proc.returncode is not None else 0
 
 
@@ -3871,7 +3981,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         # every node — and the static_transform_publisher /
         # robot_state_publisher / HAL it spawns — is reaped on shutdown
         # instead of orphaning onto ``/tf_static`` + the GPU.
-        returncode = _run_launch(argv, venv_env)
+        returncode = _run_launch(argv, venv_env, orphan_guard=invocation.hal_mode != "real")
         raise typer.Exit(code=returncode)
     finally:
         with contextlib.suppress(OSError):

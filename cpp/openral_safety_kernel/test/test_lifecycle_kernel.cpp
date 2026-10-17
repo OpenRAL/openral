@@ -7362,6 +7362,23 @@ TEST_F(LifecycleKernelTest, TheTrackedSourceRefusesToConfigureOutsideItsScope) {
   EXPECT_TRUE(ok.configure());
 }
 
+TEST_F(LifecycleKernelTest, TheK2ExtraFixedJawsRefuseAnUnknownLinkOrNoK2) {
+  // tracked_grasp_extra_contact_links is K2-only: set without K2 it has no reader,
+  // and a name the collision model does not know would exempt nothing (or the wrong
+  // index). Both refuse configure; a known link configures.
+  const auto extra = [](std::vector<std::string> names, bool enabled = true) {
+    auto p = k2_params(enabled);
+    p.emplace_back("tracked_grasp_extra_contact_links", names);
+    return p;
+  };
+  GraspRig no_k2("kernel_k2_extra_nok2", extra({"link0"}, false));
+  EXPECT_FALSE(no_k2.configure()) << "a K2-only parameter with K2 off";
+  GraspRig unknown("kernel_k2_extra_unknown", extra({"gripper"}));
+  EXPECT_FALSE(unknown.configure()) << "not a collision link";
+  GraspRig ok("kernel_k2_extra_ok", extra({"link0"}));
+  EXPECT_TRUE(ok.configure());
+}
+
 // ── Issue #418 K7: explained cells for workspace contact (hazard OT-11) ──────
 //
 // The #349 workspace rig (link0 a hand link, the hand still, the workspace a

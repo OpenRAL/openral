@@ -11,10 +11,15 @@ joint-state FK, grown by one cell) is intersected with the tracks:
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
   unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
   re-centred on the pinch volume under ``epoch + 1``);
-* two or more: the union of the candidates and the pinch box, ``PINCH_FALLBACK``, no
+* two or more: the union of the candidates and the fallback box, ``PINCH_FALLBACK``, no
   identity (nothing is cleared by identity);
-* none: ``PINCH_FALLBACK``, the pad gap x pad width box past the fingertips, never toward
-  the palm; logged ``untracked_grasp`` and a re-ground is asked for.
+* only PROVISIONAL tracks (fitted through the robot, maybe short): the union of those
+  boxes and the fallback box, ``PINCH_FALLBACK``, no identity, a re-ground asked for;
+* none: ``PINCH_FALLBACK``, the fallback box (``HandModel.fallback_in_link``: the jaw
+  opening seen before closure across the pads, the full stroke along the other two axes);
+  logged ``untracked_grasp`` and a re-ground is asked for.
+
+Every fallback payload is cut at the palm plane.
 
 The bound geometry then only grows (the kernel's K4 unions revisions): a REGRASP unions
 the shape re-centred on the new pinch axis, and unexplained occupied cells 26-connected
@@ -71,6 +76,11 @@ _EPS_RAD = 1e-9
 _FREE = {TrackStatus.TENTATIVE, TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT}
 _UNIT = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
 _N26 = [(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1) if i or j or k]
+#: How far from the pinch centre an untracked payload may grow (m). *Calibration point.*
+#: ponytail: one fixed bound on the search; a manifest field if a gripper carries longer.
+_GROW_RADIUS_M = 0.3
+#: A cell moves with the hand only once the hand moved this many cells between sightings.
+_RIGID_MIN_MOVE_CELLS = 2.0
 
 
 class TrackStoreLike(Protocol):
@@ -91,6 +101,7 @@ class BindOutcome(StrEnum):
 
     TRACKED = "tracked"
     AMBIGUOUS = "ambiguous"
+    PROVISIONAL = "provisional"
     UNTRACKED = "untracked"
 
 
@@ -256,6 +267,17 @@ class GraspBinder:
         self.held: Binding | None = None
         self._shape: list[AttachedCollisionPrimitive] = []  # object frame, revision 0
         self._theta = 0.0
+        self._opening: float | None = None  # the most open jaw since the last ATTACH
+        # Untracked growth: attach-frame cell key -> its grid-frame centre when first seen.
+        self._sighted: dict[tuple[int, int, int], NDArray[np.float64]] = {}
+
+    def observe_jaw(self, jaw: float) -> None:
+        """Fold in a measured jaw; the most open one bounds the next fallback's width."""
+        if math.isfinite(jaw) and (
+            self._opening is None
+            or abs(jaw - self.hand.closed) > abs(self._opening - self.hand.closed)
+        ):
+            self._opening = jaw
 
     # -- geometry -------------------------------------------------------------------
     def pinch_in_frame(self, positions: Mapping[str, float]) -> Box:
@@ -297,18 +319,24 @@ class GraspBinder:
             )
         ]
         jaw = positions[self.hand.joint.name]
-        provisional = tuple(t.object_id for t in cands if t.provisional)
-        if provisional:  # never payload geometry (TrackedObject.provisional)
-            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
-                        candidates=provisional, jaw=jaw)  # fmt: skip
-            cands = [t for t in cands if not t.provisional]
+        provisional = [t for t in cands if t.provisional]
+        cands = [t for t in cands if not t.provisional]
         ids = tuple(t.object_id for t in cands)
         if len(cands) == 1:
             binding = self._bind(store, cands[0], positions, stamp_ns)
+        elif not cands and provisional:
+            # Never identity or payload geometry alone (TrackedObject.provisional), but
+            # measured: unioned with the fallback box it only grows the payload.
+            ids = tuple(t.object_id for t in provisional)
+            binding = self._fallback(provisional, positions, stamp_ns, provisional=True)
+            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
+                        candidates=ids, jaw=jaw)  # fmt: skip
         else:
             binding = self._fallback(cands, positions, stamp_ns)
             event = "object_tracker.ambiguous_grasp" if cands else "object_tracker.untracked_grasp"
             log.warning(event, hand=self.hand.joint.name, candidates=ids, jaw=jaw)
+        self._opening = None
+        self._sighted = {}
         self.held = binding
         log.info(
             "object_tracker.bound",
@@ -388,10 +416,15 @@ class GraspBinder:
         return Binding(BindOutcome.TRACKED, attachment, (oid,), reground=False)
 
     def _fallback(
-        self, cands: Sequence[TrackedObject], positions: Mapping[str, float], stamp_ns: int
+        self,
+        cands: Sequence[TrackedObject],
+        positions: Mapping[str, float],
+        stamp_ns: int,
+        *,
+        provisional: bool = False,
     ) -> Binding:
         oid = f"pinch:{self.hand.joint.name}@{stamp_ns}"
-        fb = self.hand.fallback_in_link(positions[self.hand.joint.name])
+        fb = self.hand.fallback_in_link(positions[self.hand.joint.name], self._opening)
         t_ao = _frame(fb.centre, fb.axes)
         prims = [_prim(np.eye(4), fb.half, oid)]
         t_of = np.linalg.inv(self.hand.t_frame_from_attach(self.frame_id, positions) @ t_ao)
@@ -405,6 +438,7 @@ class GraspBinder:
             prims.append(_prim(_frame((lo + hi) / 2.0, np.eye(3)), (hi - lo) / 2.0, oid))
         else:
             prims += [_prim(t_of @ _frame(c, r), h, oid) for c, r, h in boxes]
+        prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
         self._shape, self._theta = prims[:1], 0.0
         attachment = AttachedCollisionObject(
             object_id=oid,
@@ -414,13 +448,25 @@ class GraspBinder:
             pose_in_link=_pose(t_ao, self.hand.attach_link),
             confidence=FALLBACK_CONFIDENCE,
             evidence_kind=AttachmentEvidenceKind.PINCH_FALLBACK,
-            evidence_ref=("ambiguous:" + ",".join(t.object_id for t in cands))
+            evidence_ref=(
+                ("provisional:" if provisional else "ambiguous:")
+                + ",".join(t.object_id for t in cands)
+            )
             if cands
             else "untracked_grasp",
             stamp_ns=stamp_ns,
         )
-        outcome = BindOutcome.AMBIGUOUS if cands else BindOutcome.UNTRACKED
-        return Binding(outcome, attachment, tuple(t.object_id for t in cands), reground=not cands)
+        outcome = (
+            BindOutcome.PROVISIONAL
+            if provisional
+            else (BindOutcome.AMBIGUOUS if cands else BindOutcome.UNTRACKED)
+        )
+        return Binding(
+            outcome,
+            attachment,
+            tuple(t.object_id for t in cands),
+            reground=provisional or not cands,
+        )
 
     # -- growth ---------------------------------------------------------------------
     def _union(
@@ -561,6 +607,86 @@ class GraspBinder:
             self._theta = theta
         return grown
 
+    def grow_untracked(
+        self,
+        store: TrackStoreLike,
+        grid: VoxelLattice,
+        positions: Mapping[str, float],
+        stamp_ns: int,
+    ) -> Binding | None:
+        """Grow an UNTRACKED / PROVISIONAL payload by the cells that move with the hand.
+
+        A fallback box cannot know how long an unknown object is (a banana outruns any
+        stroke). Occupied cells within ``_GROW_RADIUS_M`` of the pinch centre that neither
+        the hand nor another track explains, 26-connected to the payload and in front of
+        the palm, are keyed in the attach link. A key seen again after the hand moved at
+        least ``_RIGID_MIN_MOVE_CELLS`` cells, whose first grid-frame place is free on this
+        grid, moved with the hand: it is held. The static world fails one of the two (a
+        table under a hand sliding along it keeps its key but not its freed place). The new
+        held cells' box (object frame, + half a cell) is unioned (K4: only grows).
+        ``None`` when nothing new moved with the hand, or past the primitive cap.
+        """
+        held_b = self.held
+        if held_b is None or held_b.outcome not in (BindOutcome.UNTRACKED, BindOutcome.PROVISIONAL):
+            return None
+        if grid.frame_id != self.frame_id:
+            raise ROSConfigError(f"grid frame {grid.frame_id!r} != track frame {self.frame_id!r}.")
+        cell = grid.resolution
+        t_fa = self.hand.t_frame_from_attach(self.frame_id, positions)
+        pinch = self.hand.pinch_in_link(positions[self.hand.joint.name])
+        p = t_fa[:3, :3] @ pinch.centre + t_fa[:3, 3]
+        occ = grid.occupied_centers()
+        near = occ[np.linalg.norm(occ - p, axis=1) <= _GROW_RADIUS_M]
+        if not len(near):
+            return None
+        held = self._held_boxes(positions)
+        mine = set(held_b.candidates)
+        others = [
+            _box(t.box)
+            for t in store.all()
+            if t.object_id not in mine and t.status is not TrackStatus.BOUND
+        ]
+        explained = np.zeros(len(near), dtype=bool)
+        for boxes in (others, self.hand.hand_boxes(self.frame_id, positions)):
+            if boxes:
+                explained |= _outside_m(near, boxes) <= cell / 2.0
+        loose = near[~explained]
+        if not len(loose):
+            return None
+        linked = self._connected(grid, loose, _outside_m(loose, held) <= cell)
+        t_af = np.linalg.inv(t_fa)
+        local = linked @ t_af[:3, :3].T + t_af[:3, 3]
+        front = local @ pinch.axes[:, 1] >= pinch.palm_m  # nothing held lies behind the palm
+        linked, local = linked[front], local[front]
+        lattice = grid.rotation()
+        origin = np.asarray(grid.origin)
+
+        def ijk(x: NDArray[np.float64]) -> NDArray[np.int64]:
+            return np.asarray(np.floor((x - origin) @ lattice / cell), dtype=np.int64)
+
+        occupied = {tuple(v) for v in ijk(occ).tolist()}
+        rigid = []
+        for key, world in zip(
+            np.floor(local / cell + 0.5).astype(int).tolist(), linked, strict=True
+        ):
+            first = self._sighted.setdefault(tuple(key), world)
+            if (
+                np.linalg.norm(world - first) >= _RIGID_MIN_MOVE_CELLS * cell
+                and tuple(ijk(first[None])[0].tolist()) not in occupied
+            ):
+                rigid.append(world)
+        new: NDArray[np.float64] = np.asarray(rigid, dtype=np.float64).reshape(-1, 3)
+        new = new[_outside_m(new, held) > cell / 2.0] if len(new) else new
+        if not len(new):
+            return None
+        t_of = np.linalg.inv(_t(self.object_pose(positions)))
+        pts = new @ t_of[:3, :3].T + t_of[:3, 3]
+        lo, hi = pts.min(axis=0) - cell / 2.0, pts.max(axis=0) + cell / 2.0
+        prim = _prim(
+            _frame((lo + hi) / 2.0, np.eye(3)), (hi - lo) / 2.0, held_b.attachment.object_id
+        )
+        return self._union([prim], stamp_ns, "moves_with_hand")
+
     @staticmethod
     def _connected(
         grid: VoxelLattice, cells: NDArray[np.float64], seed: NDArray[np.bool_]
@@ -584,3 +710,4 @@ class GraspBinder:
     def on_release(self) -> None:
         """Forget the held payload (the track itself goes through ``release.release_track``)."""
         self.held, self._shape, self._theta = None, [], 0.0
+        self._sighted = {}
