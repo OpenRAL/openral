@@ -307,3 +307,88 @@ def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() 
     keys = {t.object_id: t.declaration_key for t in store.all()}
     assert all(keys[o] == "obj:orange_1@300" for o in oranges), keys
     assert keys[plate] != "obj:orange_1@300", keys
+
+
+# ── The tracker's own grasp event (bind/on, sim only; #418 2026-10-17) ────────────────────────
+
+
+def _derived_session(robot: str, derive: bool = True) -> TrackerSession:
+    d = RobotDescription.from_yaml(f"robots/{robot}/robot.yaml")
+    return TrackerSession(
+        d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams(), require_hands=True,
+        derive_attach=derive,
+    )  # fmt: skip
+
+
+def _hold_for(
+    s: TrackerSession,
+    joint: str,
+    q: dict[str, float],
+    jaw: float,
+    *,
+    command: float,
+    t0: int = 10 * _S,
+    seconds: float = 2.0,
+    hz: int = 15,
+) -> None:
+    """Joint states at ``hz`` with the jaw chattering ±0.02 about ``jaw`` and a steady command."""
+    s.on_jaw_command(joint, command, t0)
+    for i in range(int(seconds * hz)):
+        wobble = 0.02 * (1 if i % 2 else -1)
+        s.on_joint_state({**q, joint: jaw + wobble}, t0 + int(i * _S / hz))
+
+
+def test_a_stalled_chattering_jaw_binds_exactly_as_an_attach_does() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _derived_session("so101_follower")
+    oid = _mint(s, centre)
+    _hold_for(s, joint, q, jaw, command=0.10)
+    binding = s.binders[joint].held
+    assert binding is not None and binding.outcome is BindOutcome.TRACKED
+    [att] = s.attachments()
+    assert att.object_id == oid and att.evidence_kind is AttachmentEvidenceKind.TRACKED_OBJECT
+    assert s.tracker.store.get(oid).status is TrackStatus.BOUND  # type: ignore[union-attr]
+
+
+def test_a_derived_bind_is_not_doubled_by_the_hals_attach_for_the_same_close() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _derived_session("so101_follower")
+    oid = _mint(s, centre)
+    _hold_for(s, joint, q, jaw, command=0.10)
+    changes, held = s.attachment_changes, s.binders[joint].held
+    again = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=13 * _S)
+    assert again is held and s.attachment_changes == changes and len(s.attachments()) == 1
+    assert s.tracker.store.get(oid).status is TrackStatus.BOUND  # type: ignore[union-attr]
+
+
+def test_the_hals_attach_first_leaves_nothing_for_the_derived_rule_to_do() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _derived_session("so101_follower")
+    _mint(s, centre)
+    s.on_joint_state(q, 9 * _S)
+    s.on_jaw_command(joint, 0.10, 9 * _S)
+    first = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=10 * _S)
+    changes = s.attachment_changes
+    _hold_for(s, joint, q, jaw, command=0.10, t0=10 * _S + 1)
+    assert s.binders[joint].held is first and s.attachment_changes == changes
+
+
+def test_a_jaw_that_closes_on_nothing_binds_nothing() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, _ = ROBOTS["so101_follower"]
+    s = _derived_session("so101_follower")
+    _mint(s, centre)
+    _hold_for(s, joint, q, 0.10, command=0.10)  # measured at the command: nothing between the pads
+    assert s.binders[joint].held is None and not s.attachments()
+
+
+def test_the_derived_rule_is_off_unless_asked() -> None:
+    _, q, centre = arm_at_hold("so101_follower")
+    joint, _, jaw = ROBOTS["so101_follower"]
+    s = _derived_session("so101_follower", derive=False)  # shadow, and every real HAL
+    _mint(s, centre)
+    _hold_for(s, joint, q, jaw, command=0.10)
+    assert s.binders[joint].held is None and not s.attachments()

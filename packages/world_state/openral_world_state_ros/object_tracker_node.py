@@ -8,7 +8,8 @@ owns the wire:
   ROBOT_MASK)``); ``/openral/world_voxels`` (grid + ``source_stamp``); ``/joint_states``;
   tf2 (``T_base<-cam`` at the depth stamp); the live ``/openral/grasp_declaration`` /
   ``/openral/place_declaration``; ``/openral/grasp_events`` (the HAL trigger's ATTACH /
-  REGRASP / DETACH).
+  REGRASP / DETACH); in bind / on, ``/openral/safe_action`` (the approved gripper command: the
+  tracker derives its own stalled-jaw ATTACH from it, ``JawStallDetector``).
 * **Frames.** A depth frame waits (wall) at most ``mask_tf_wait_s`` for the mask with its
   exact stamp and for tf at that stamp; missing either after that, it is fed for
   **ageing only** (design step 0) — never fitted.
@@ -336,6 +337,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     from openral_core.geometry import homogeneous_from_quat_xyz
     from openral_core.perception_geometry import lattice_from_msg
     from openral_core.schemas import CameraTopicKind
+    from openral_msgs.msg import ActionChunk as ActionChunkMsg
     from openral_msgs.msg import AttachedCollisionObject as AttachedMsg
     from openral_msgs.msg import AttachedCollisionPrimitive as PrimitiveMsg
     from openral_msgs.msg import AttachmentState as AttachmentStateMsg
@@ -444,6 +446,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._attach_key: tuple[int, int, int] | None = None
             self._attach_rev = 0
             self._joint_rx_ns = 0
+            self._joint_order: list[str] = []
 
         def _p(self, name: str) -> Any:  # reason: rclpy parameter value
             return self.get_parameter(name).value
@@ -472,6 +475,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     release_dwell_s=float(self._p("release_dwell_s")),
                     released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
                     require_hands=mode is not TrackingMode.SHADOW,
+                    # The tracker reads a stalled jaw itself in bind/on (sim only, enforced
+                    # above): the HAL trigger is unchanged and a real ATTACH is never doubled.
+                    derive_attach=mode is not TrackingMode.SHADOW,
                     params=TrackerParams(
                         search_start_s=float(self._p("search_start_s")),
                         search_max_s=float(self._p("search_max_s")),
@@ -486,6 +492,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self.get_logger().error(f"object tracker configure refused: {exc}")
                 return TransitionCallbackReturn.FAILURE
             self.mode = mode
+            self._joint_order = [j.name for j in description.joints]
             for j in description.joints:
                 self._aliases[j.name] = j.name
                 if j.sim_joint_name:
@@ -524,6 +531,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 ),
                 self.create_subscription(
                     GraspEventMsg, "/openral/grasp_events", self._on_grasp_event, events_qos
+                ),
+                self.create_subscription(
+                    ActionChunkMsg, "/openral/safe_action", self._on_safe_action, events_qos
                 ),
                 self.create_subscription(
                     GraspDeclarationMsg,
@@ -639,6 +649,29 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._joint_rx_ns = int(self.get_clock().now().nanoseconds)
             self.session.on_joint_state(positions, stamp)
             self._publish_attachment()
+
+        def _on_safe_action(self, msg: Any) -> None:
+            """The approved command's gripper targets, for the tracker's own stalled-jaw read.
+
+            The chunk's last row, like the HAL trigger reads it: a full-dof row at each gripper's
+            manifest index, a compact row positionally by ``joint_names``. A slot of a group is
+            not the applied command and is ignored.
+            """
+            if self.session is None or int(msg.tick_group_size) > 1:
+                return
+            n, flat = int(msg.n_dof), list(msg.flat)
+            if n <= 0 or len(flat) < n:
+                return
+            row, names = flat[-n:], list(msg.joint_names)
+            for joint in self.session.binders:
+                if names:
+                    index = names.index(joint) if joint in names and len(names) == n else None
+                elif n == len(self._joint_order) and joint in self._joint_order:
+                    index = self._joint_order.index(joint)
+                else:
+                    index = None
+                if index is not None:
+                    self.session.on_jaw_command(joint, float(row[index]), self.session.now_ns)
 
         def _on_grasp_event(self, msg: Any) -> None:
             kind = kinds.get(int(msg.kind))
