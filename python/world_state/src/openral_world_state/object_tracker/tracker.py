@@ -439,7 +439,7 @@ class ObjectTracker:
                 # A fit through the robot never replaces geometry measured clear of it.
                 log.info("object_tracker.provisional_refit_ignored", object_id=oid)
                 return None
-            if old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
+            if fit.box is not None and old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
                 others = self._other_boxes(centroid)
                 verdict = cover_verdict(
                     grid, cells, fit.box, support_z=support_z, own=hands, others=others
@@ -574,7 +574,8 @@ class ObjectTracker:
                     # segments what fills a box): SAM's "whole" of a point on one packed
                     # carton is the tote's contents, which the bound refuses.
                     rect = project_box(seed, frame.intrinsics, t_cam)
-                    within = None if rect is None else tuple(float(v) for v in rect[0])
+                    xy = None if rect is None else [float(v) for v in rect[0]]
+                    within = None if xy is None else (xy[0], xy[1], xy[2], xy[3])
                     seg = replace(base, service="segment_in_view", point_uv=uv)
                     out.append(replace(seg, within_xyxy=within, seed_cell=hit[1]))
                     continue
