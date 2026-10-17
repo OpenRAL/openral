@@ -25,7 +25,9 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
 #include <iterator>
@@ -7294,4 +7296,66 @@ TEST(TrackedGraspExemption, TripsWithAreASubsetOfTripsWithoutOverRandomisedScene
     }
   }
   EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
+}
+
+TEST(TrackedGraspExemption, TheCheckStaysInsideTheVoxelP99BudgetOfIssue253) {
+  // Issue #418 matrix A: "p99 within the #253 budget". #253 measured the whole
+  // kernel round trip under a 15 mm grid at p99 0.825 ms (collision-validation-
+  // evidence.md, 2026-09-07). The voxel check with a live K2 table, on a 15 mm grid
+  // with 10 % random occupancy around both hands and four tracked boxes (two
+  // selected), must stay under that on its own, and K2 may add at most a constant
+  // factor over the same check without it.
+  constexpr int kN = 27;  // 0.405 m at 15 mm
+  constexpr double kRes = 0.015;
+  std::mt19937 rng(253U);
+  std::bernoulli_distribution occupied(0.1);
+  std::vector<std::uint8_t> occ(static_cast<std::size_t>(kN * kN * kN), 0);
+  for (auto& c : occ) {
+    c = occupied(rng) ? 1 : 0;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.2, -0.2, -0.2};
+  grid.resolution = kRes;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  s.link_world[kK2LeftMount] = translate(0.02, 0.01, 0.06);
+  s.link_world[kK2RightMount] = translate(-0.08, -0.05, 0.03);
+  s.link_world[kK2Right] = translate(-0.08, -0.05, 0.0);
+  const auto table = k2_table(
+      m,
+      {kK2BoxA, kK2BoxB, {-0.08, -0.05, 0.0, 0.03, 0.03, 0.03}, {0.1, 0.1, 0.1, 0.02, 0.02, 0.02}});
+  osk::VoxelGrid with_grid = grid;
+  with_grid.tracked_grasp = &table;
+  const auto sel = k2_select(table, s);
+  ASSERT_GE(sel[0], 0) << "the left hand selects: the exemption path really runs";
+  ASSERT_GE(sel[1], 0);
+
+  constexpr int kRuns = 4000;
+  int hits = 0;
+  const auto p99_ms = [&](const osk::VoxelGrid& g) {
+    std::vector<double> ms(kRuns);
+    for (auto& t : ms) {
+      const auto t0 = std::chrono::steady_clock::now();
+      const auto r = osk::check_voxel_collision(m, s, g, kK2Margin);
+      const auto t1 = std::chrono::steady_clock::now();
+      hits += r.hit ? 1 : 0;  // keeps the call observable
+      t = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    }
+    std::sort(ms.begin(), ms.end());
+    return ms[static_cast<std::size_t>(0.99 * kRuns)];
+  };
+  p99_ms(with_grid);  // warm caches
+  const double without = p99_ms(grid);
+  const double with = p99_ms(with_grid);
+  RecordProperty("p99_without_ms", std::to_string(without));
+  RecordProperty("p99_with_k2_ms", std::to_string(with));
+  std::printf("[ K2 p99 ] without %.4f ms, with K2 %.4f ms (budget 0.825 ms)\n", without, with);
+  EXPECT_GT(hits, 0) << "the scene trips without K2: the check does real work";
+  EXPECT_LT(with, 0.825) << "the #253 kernel round-trip p99 at 15 mm";
+  EXPECT_LT(with, 3.0 * without + 0.05) << "K2 adds at most a constant factor";
 }
