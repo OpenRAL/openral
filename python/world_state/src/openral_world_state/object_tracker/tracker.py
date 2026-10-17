@@ -511,19 +511,34 @@ class ObjectTracker:
             np.all(np.abs(centers[:, :2] - near) <= reach, axis=1)
             & (centers[:, 2] <= surface[:, 2].max() + grid.resolution)
         ]
-        top = support_top_from_voxels(
-            grid,
-            column,
-            # Anchored on the object's highest seen point, not its centroid: a hollow body
-            # (a bowl) has bare support at its centroid, and an anchor there finds none.
-            near_xy=(float(top_xy[0]), float(top_xy[1])),
-            min_cells=p.support_min_cells,
-            probe_margin_m=p.support_probe_m,
-            # A cell that starts below the lowest seen point: the support's top layer is
-            # often the one the object's own bottom sits in (a bowl on a table at a cell's
-            # mid-height), and the cone is cut a cell under the measured top anyway.
-            surface_centers=centers[centers[:, 2] - 0.5 * grid.resolution < surface[:, 2].min()],
-        )
+        lowest = float(surface[:, 2].min())
+        starts = centers[:, 2] - 0.5 * grid.resolution
+
+        def measure(below: float) -> float | None:
+            return support_top_from_voxels(
+                grid,
+                column,
+                # Anchored on the object's highest seen point, not its centroid: a hollow body
+                # (a bowl) has bare support at its centroid, and an anchor there finds none.
+                near_xy=(float(top_xy[0]), float(top_xy[1])),
+                min_cells=p.support_min_cells,
+                probe_margin_m=p.support_probe_m,
+                surface_centers=centers[starts < below],
+            )
+
+        # A cell that starts below the lowest seen point: the support's top layer is often the
+        # one the object's own bottom sits in (a bowl on a table at a cell's mid-height), and
+        # the cone is cut a cell under the measured top anyway.
+        top = measure(lowest)
+        if top is None:
+            # A support whose surface lies on a layer boundary (#418 r6po_dbg7: the counter at
+            # z 0.0302 over the 0.030 boundary) sits in the layer that starts AT the boundary,
+            # and a seen point a hair under it (0.0300) drops that whole layer above. Only when
+            # nothing is found: the layer starting within one cell above the lowest seen point.
+            top = measure(lowest + grid.resolution)
+            if top is not None:
+                log.info("object_tracker.support_on_layer_boundary", lowest_seen_z=round(lowest, 4),
+                         support_top_z=round(top, 4))  # fmt: skip
         return None if top is None else top - grid.resolution
 
     def _fit(
