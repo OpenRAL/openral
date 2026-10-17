@@ -20,7 +20,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
-| `/clock` | `rosgraph_msgs/Clock` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
+| `/clock` | `rosgraph_msgs/Clock` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | tools/_validation_matrix_dispatch.py (main) |
 | `/cmd_vel` | `geometry_msgs/Twist` | — | packages/openral_nav2_bringup/openral_nav2_bringup/twist_to_action_relay_node.py (main.TwistToActionRelayNode.__init__) [param `cmd_vel_topic`]<br>python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) |
 | `/collision_markers` | `MarkerArray` | tools/viz_collision.py (_run_rviz) | — |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure)<br>python/observability/src/openral_observability/diagnostics.py (DiagnosticsHeartbeat.create_publisher) | — |

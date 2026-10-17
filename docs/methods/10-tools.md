@@ -177,7 +177,11 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
 
-- `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L24)
+- `main(argv=None) -> int` — `--deadline-s` / `--rskill-id` / `--prompt` / `--server-timeout-s`. (L51)
+- `_overran(*, sim_elapsed_s, wall_elapsed_s, deadline_s) -> bool` (L32) — Issue #418 (r4po_on3/on4: a 0.17x sim, the helper quit on wall time with the goal still running and printed a bare `status: -1`): the wait ends past the goal's deadline on the graph clock (`/clock`) + `GRAPH_MARGIN_S` (30 s), on wall time + `WALL_MARGIN_S` (180 s) only when no `/clock` is published, and always past `WALL_CAP_S` (3600 s). On that timeout the helper cancels the goal and prints a typed `failure_reason` (`dispatch_timeout: …`).
+- `GRAPH_MARGIN_S = 30.0` (L25) — Graph-clock seconds past the deadline before the helper gives up.
+- `WALL_MARGIN_S = 180.0` (L27) — Wall seconds past the deadline when no `/clock` is published.
+- `WALL_CAP_S = 3600.0` (L29) — Wall seconds after which it gives up regardless.
 
 ### `tools/_ceiling_probe.py`
 _One worker of the ceiling battery: one scene, one gate arm, N rounds. Bypasses `validation_matrix.py`'s refusal to disable the octomap check, while reusing its scene materialisation, readiness gate and dispatch tool. Answers: of the runs the kernel stops, how many would have succeeded anyway?_
