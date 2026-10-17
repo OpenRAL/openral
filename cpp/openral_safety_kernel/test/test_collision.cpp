@@ -7003,9 +7003,10 @@ osk::VoxelGrid k2_grid(const std::vector<std::uint8_t>& occ) {
 }
 
 osk::TrackedGraspTable k2_table(const osk::CollisionModel& m,
-                                const std::vector<std::array<double, 6>>& boxes) {
+                                const std::vector<std::array<double, 6>>& boxes,
+                                const std::bitset<osk::kMaxGraspMaskLinks>& extra = {}) {
   osk::TrackedGraspTable t;
-  EXPECT_TRUE(osk::build_grasp_hands(m, k2_allowlist(), t));
+  EXPECT_TRUE(osk::build_grasp_hands(m, k2_allowlist(), t, extra));
   t.valid = true;
   for (const auto& b : boxes) {
     t.box[t.n_objects] = translate(b[0], b[1], b[2]);
@@ -7182,6 +7183,87 @@ TEST(TrackedGraspExemption, TheOtherHandsFingerIsNotExemptByThisHandsObject) {
   EXPECT_EQ(hit.link_b, k2_cell(0.05, 0.01, 0.01));
 }
 
+TEST(TrackedGraspHands, AFixedJawBodyJoinsItsHandButNeverMovesTheTcp) {
+  const osk::CollisionModel m = k2_model();
+  const auto plain = k2_table(m, {kK2BoxA});
+  const auto with = k2_table(m, {kK2BoxA}, grasp_mask({kK2LeftMount}));
+  ASSERT_EQ(with.n_hands, 2U);
+  EXPECT_EQ(with.hand_links[0], grasp_mask({kK2LeftMount, kK2LeftA, kK2LeftB}));
+  EXPECT_EQ(with.hand_links[1], plain.hand_links[1]) << "the other hand is untouched";
+  EXPECT_EQ(with.extra_links, grasp_mask({kK2LeftMount}));
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  s.link_world[kK2LeftMount] = translate(0.02, 0.01, 0.09);
+  for (std::size_t h = 0; h < 2; ++h) {
+    const osk::Vec3 a = osk::grasp_hand_tcp(plain, s, h);
+    const osk::Vec3 b = osk::grasp_hand_tcp(with, s, h);
+    EXPECT_DOUBLE_EQ(a.x, b.x);
+    EXPECT_DOUBLE_EQ(a.z, b.z) << "hand " << h << ": the fixed jaw never samples the TCP";
+  }
+  EXPECT_EQ(k2_select(with, s), k2_select(plain, s));
+}
+
+TEST(TrackedGraspHands, AHandOfFixedJawsAloneIsRefused) {
+  const osk::CollisionModel m = k2_model();
+  osk::TrackedGraspTable t;
+  // The right mount as an extra with no right finger allowlisted: a hand with no jaw.
+  EXPECT_FALSE(
+      osk::build_grasp_hands(m, grasp_mask({kK2LeftA, kK2LeftB}), t, grasp_mask({kK2RightMount})));
+  EXPECT_EQ(t.n_hands, 0U);
+  EXPECT_FALSE(osk::build_grasp_hands(m, grasp_mask({}), t, grasp_mask({kK2LeftMount})));
+}
+
+TEST(TrackedGraspExemption, AFixedJawIsExemptOnlyInItsOwnHandsSelectedBox) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  s.link_world[kK2LeftMount] = translate(0.01, 0.01, 0.01);  // the fixed jaw on the target cell
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  const auto t = k2_table(m, {kK2BoxA}, grasp_mask({kK2LeftMount}));
+  grid.tracked_grasp = &t;
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid, kK2Margin).hit)
+      << "the control of ArmLinksAreNeverExempt: now a fixed jaw, exempt in A";
+  // A cell outside A still stops it: the fixed jaw 5 mm from both A's cell at 0.01
+  // and an outside cell at -0.05 (out of the fingers' reach).
+  s.link_world[kK2LeftMount] = translate(-0.02, 0.01, 0.01);
+  auto grid1 = k2_grid(occ);
+  grid1.tracked_grasp = &t;
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, grid1, kK2Margin).hit) << "A's cell only";
+  const auto occ2 = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}, {-0.05, 0.01, 0.01}});
+  auto grid2 = k2_grid(occ2);
+  grid2.tracked_grasp = &t;
+  const auto out = osk::check_voxel_collision(m, s, grid2, kK2Margin);
+  ASSERT_TRUE(out.hit);
+  EXPECT_EQ(out.link_a, kK2LeftMount);
+  EXPECT_EQ(out.link_b, k2_cell(-0.05, 0.01, 0.01));
+  // The RIGHT mount (no extra) on A's cell is never exempt by the left hand's object.
+  s.link_world[kK2LeftMount] = translate(-0.17, -0.17, -0.17);
+  s.link_world[kK2RightMount] = translate(0.03, 0.01, 0.01);
+  const auto right = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(right.hit);
+  EXPECT_EQ(right.link_a, kK2RightMount);
+}
+
+TEST(TrackedGraspExemption, AnExtraFixedJawLeavesTheLegacyRegionBitForBit) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  k2_left_on_target(s);
+  s.link_world[kK2LeftMount] = translate(0.01, 0.01, 0.01);
+  const auto occ = k2_occ({{0.01, 0.01, 0.01}, {0.03, 0.01, 0.01}});
+  auto grid = k2_grid(occ);
+  ASSERT_EQ(osk::ingest_grasp_region(translate(0.02, 0.01, 0.01), osk::Vec3{0.03, 0.02, 0.02},
+                                     grasp_mask({kK2LeftA, kK2LeftB}), grid.grasp_region),
+            osk::GraspRegionStatus::kOk);
+  const auto legacy = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(legacy.hit) << "the legacy region never exempts the mount";
+  EXPECT_EQ(legacy.link_a, kK2LeftMount);
+  osk::TrackedGraspTable off = k2_table(m, {kK2BoxA}, grasp_mask({kK2LeftMount}));
+  off.valid = false;
+  grid.tracked_grasp = &off;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), legacy);
+}
+
 TEST(TrackedGraspExemption, AValidTableReplacesTheLegacyRegion) {
   const osk::CollisionModel m = k2_model();
   osk::CollisionScratch s = k2_scratch();
@@ -7262,7 +7344,8 @@ TEST(TrackedGraspExemption, TripsWithAreASubsetOfTripsWithoutOverRandomisedScene
                        near ? f.y + 0.01 * unit(rng) : pos(rng),
                        near ? f.z + 0.01 * unit(rng) : pos(rng), half(rng), half(rng), half(rng)});
     }
-    const auto t = k2_table(m, boxes);
+    // Odd trials: the left mount is a fixed jaw (K2 extra), as the SO-101's `gripper`.
+    const auto t = k2_table(m, boxes, trial % 2 == 1 ? grasp_mask({kK2LeftMount}) : grasp_mask({}));
     osk::VoxelGrid with_grid = grid;
     with_grid.tracked_grasp = &t;
     const auto sel = k2_select(t, s);

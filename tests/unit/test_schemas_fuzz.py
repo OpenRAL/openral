@@ -203,6 +203,7 @@ _joint_spec_st = st.builds(
     parent_link=_name,
     child_link=_name,
     closure_calibration=st.none() | _closure_calibration_st,
+    fixed_jaw_link=st.none(),
 )
 
 _end_effector_st = st.builds(

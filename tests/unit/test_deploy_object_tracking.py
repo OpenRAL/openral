@@ -272,3 +272,23 @@ def test_bind_and_on_wire_the_kernels_jaw_open_release(
     assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals)
     assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
     assert f(d, "on") == p
+
+
+def test_a_fixed_jaw_body_link_is_a_k2_only_extra_contact_link() -> None:
+    """The SO-101's fixed jaw is its `gripper` body link (r6po_dbg3, 2026-10-17)."""
+    from openral_core import JointSpec, RobotDescription
+    from pydantic import ValidationError
+
+    so101 = RobotDescription.from_yaml(str(_REPO / "robots/so101_follower/robot.yaml"))
+    assert so101.fixed_jaw_links() == ("gripper",)
+    assert "gripper" not in so101.grasp_contact_links(), "the legacy allowlist is unchanged"
+    assert so101.fixed_jaw_links(gripper_joints=["shoulder_pan"]) == ()
+    for robot in ("openarm", "droid_franka_robotiq"):
+        d = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
+        assert d.fixed_jaw_links() == ()
+    with pytest.raises(ValidationError, match="fixed_jaw_link needs role"):
+        JointSpec(name="j", joint_type="revolute", parent_link="a", child_link="b",
+                  fixed_jaw_link="a")  # fmt: skip
+    ok = JointSpec(name="j", joint_type="revolute", parent_link="a", child_link="b",
+                   role="gripper", fixed_jaw_link="a")  # fmt: skip
+    assert JointSpec.model_validate_json(ok.model_dump_json()) == ok

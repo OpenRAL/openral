@@ -165,6 +165,12 @@ joints:
       stall_gap: 0.02
       settle_tolerance: 0.02
       close_band: 0.25
+    # The fixed jaw is part of the `gripper` body link (this joint's parent_link),
+    # not a finger link: the tracked grasp exemption (issue #418 K2) may exempt it
+    # against the selected tracked object like the moving `jaw`. A PickOrange orange
+    # under the open jaw stopped on gripper x voxel inside its confirmed box
+    # (r6po_dbg3, 2026-10-17). Hazard OT-6 amendment; Safety-WG review pending.
+    fixed_jaw_link: "gripper"
 
 # The jaw as a moving link of the collision model, posed from the `gripper`
 # fraction f by the URDF `gripper` joint's origin and axis at q_jaw = 1.7453 * f

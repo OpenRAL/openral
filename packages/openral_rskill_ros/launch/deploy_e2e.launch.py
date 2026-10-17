@@ -2556,6 +2556,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     kernel_params["tracked_grasp_exemption_enabled"] = _tracked_grasp_exemption(
         object_tracking, grasp_allowance_enabled=grasp_allowance_enabled
     )
+    # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
+    # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
+    if kernel_params["tracked_grasp_exemption_enabled"] and description.fixed_jaw_links():
+        kernel_params["tracked_grasp_extra_contact_links"] = list(description.fixed_jaw_links())
     # How old a producer-measured grasp/place region may be and still exempt anything. The
     # regions are measured off the voxel map, so the bound is derived from that map's own
     # freshness deadline: twice it (the kernel's own default, passed explicitly so the

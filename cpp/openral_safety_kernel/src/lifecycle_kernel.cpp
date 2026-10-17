@@ -485,6 +485,14 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // `object_tracking: on` only; configure refuses it without
   // `grasp_allowance_enabled` or off `hal_mode: sim`.
   this->declare_parameter<bool>("tracked_grasp_exemption_enabled", false);
+  // Issue #418 K2 (hazard OT-6 amendment; Safety-WG review pending): fixed jaws that
+  // are body links (the manifest's `fixed_jaw_link`, the SO-101's `gripper`). Read
+  // ONLY by the tracked grasp exemption, which may exempt them against the selected
+  // tracked object's box like the hand's fingers; `grasp_contact_links` (the legacy
+  // region and the declaration check) is unchanged. Configure refuses a name that is
+  // no collision link, a hand of these alone, or any name while K2 is off.
+  this->declare_parameter<std::vector<std::string>>("tracked_grasp_extra_contact_links",
+                                                    std::vector<std::string>{});
   // Issue #418 K7 (hazard OT-11; Safety-WG review pending): explained cells for
   // workspace contact. false (default) = the #349 workspace rule, unchanged; true =
   // a (hand link, cell) pair the workspace would tolerate is tolerated only on a
@@ -660,14 +668,35 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   tracked_grasp_enabled_ = this->get_parameter("tracked_grasp_exemption_enabled").as_bool();
   tracked_grasp_ = TrackedGraspTable{};
   voxel_grid_.tracked_grasp = nullptr;
+  const auto extra_names =
+      this->get_parameter("tracked_grasp_extra_contact_links").as_string_array();
+  if (!extra_names.empty() && !tracked_grasp_enabled_) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "tracked_grasp_extra_contact_links is set but tracked_grasp_exemption_enabled "
+                 "is off: refusing a K2-only parameter with no K2 to read it");
+    envelope_loaded_ = false;
+    return CallbackReturn::FAILURE;
+  }
   if (tracked_grasp_enabled_) {
     const char* why = nullptr;
-    if (!grasp_allowance_enabled_) {
+    std::bitset<kMaxGraspMaskLinks> extra;
+    for (const auto& name : extra_names) {
+      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks) {
+        why = "a tracked_grasp_extra_contact_links name is not a collision link";
+        break;
+      }
+      extra.set(index);
+    }
+    if (why == nullptr && !grasp_allowance_enabled_) {
       why = "it requires grasp_allowance_enabled (the allowlist and the declaration)";
-    } else if (this->get_parameter("hal_mode").as_string() != "sim") {
+    } else if (why == nullptr && this->get_parameter("hal_mode").as_string() != "sim") {
       why = "sim-only until Safety-WG review (issue #418, hazard OT-6)";
-    } else if (!build_grasp_hands(collision_model_, grasp_allowlist_, tracked_grasp_)) {
-      why = "the grasp_contact_links do not group into 1..4 hands";
+    } else if (why == nullptr &&
+               !build_grasp_hands(collision_model_, grasp_allowlist_, tracked_grasp_, extra)) {
+      why = "the grasp_contact_links (with the extra fixed jaws) do not group into 1..4 hands "
+            "each holding a jaw";
     }
     if (why != nullptr) {
       RCLCPP_ERROR(this->get_logger(), "tracked_grasp_exemption_enabled refused: %s, hal_mode=%s",
@@ -679,9 +708,9 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     tracked_grasp_.valid = true;
     RCLCPP_WARN(this->get_logger(),
                 "safety.tracked_grasp_exemption enabled (issue #418 K2, Safety-WG review "
-                "pending): hands=%zu; the tracked-object table replaces the producer region as "
-                "the grasp exemption source",
-                tracked_grasp_.n_hands);
+                "pending): hands=%zu extra_fixed_jaws=%zu; the tracked-object table replaces "
+                "the producer region as the grasp exemption source",
+                tracked_grasp_.n_hands, tracked_grasp_.extra_links.count());
   }
   // Issue #418 K5. Every refusal fails configure: a release rule whose jaw,
   // direction or bounds it cannot state is not run.
