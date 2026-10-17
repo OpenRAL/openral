@@ -90,7 +90,7 @@ def test_it_grows_only_on_the_side_the_robot_hides_and_never_past_the_size() -> 
     box = _box("box_trk3")
     out, grown = _grow(size)
     ((axis, sign, g),) = grown
-    assert 2 * out.half_extents[axis] <= size + 1e-9 < 2 * box.half_extents[axis] + g + _RES
+    assert g > 0 and 2 * out.half_extents[axis] <= size + 1e-9  # grown, never past the size
     # The far face (the side the camera sees clear) has not moved.
     t0 = homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw)
     t1 = homogeneous_from_quat_xyz(out.pose.xyz, out.pose.quat_xyzw)

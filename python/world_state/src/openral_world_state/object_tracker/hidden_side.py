@@ -26,8 +26,6 @@ __all__ = ["grow_hidden_side"]
 
 #: Robot / band pixels of a robot mask (``fit.UNCERTAIN_PIXEL`` and up).
 _ROBOT_MIN = 128
-#: Fraction of the new face's central samples that must lie behind the robot.
-_HIDDEN_FRACTION = 0.5
 
 
 def _local(points: NDArray[np.float64], box: PlaceRegion) -> NDArray[np.float64]:
@@ -118,17 +116,18 @@ def _hidden(  # reason: one frame's evidence, passed through
 ) -> bool:
     """Is ``slab`` (grown onto ``box``) space the robot hides, holding no other body?
 
-    - Its central samples are mostly behind a robot pixel (the measured surface there is the
-      robot, nearer than the sample).
+    - The robot is on this side: some of its central samples lie behind a robot pixel (the
+      measured surface there is the robot, nearer than the sample).
     - No sample lies in ``others`` (another track's box).
-    - No occupied cell centred in it, more than one cell past ``box``, shows the camera a
-      non-robot surface at the cell: a body the camera sees there is not hidden, and is not
-      this object (whose visible surface the fit's box holds to within half a cell). The
+    - Every occupied cell centred in it more than one cell past ``box`` is behind a robot
+      pixel: a cell the camera sees, or sees past, is not hidden, and is no part of this
+      object (whose visible surface the fit's box holds to within half a cell). r6po_dbg5:
+      depth-edge cells between the oranges, seen past, took a grown box to SPLIT. The
       support's own cells (centred within one cell of ``support_z``) are skipped.
 
-    An occupied cell the camera sees *past* (observed free at its centre) is no reason to
-    stop: a partial-volume edge of the object itself reads so (r6po_dbg4: one of orange_3's
-    cells, 2.5 cm), and space observed free holds nothing an exemption could act on.
+    Within one cell of ``box`` a cell the camera sees past is allowed: a partial-volume edge
+    of the object itself reads so (r6po_dbg4: orange_3's cells 6-13 mm past its box, one of
+    them seen 2.5 cm past), and space observed free holds nothing an exemption acts on.
     """
     pts = _samples(slab, 4, 0.9)
     if any(_inside(pts, o).any() for o in others):
@@ -138,8 +137,8 @@ def _hidden(  # reason: one frame's evidence, passed through
         return False  # out of view: unknown, not hidden
     d = depth_m[v, u]
     behind_robot = (robot_mask[v, u] >= _ROBOT_MIN) & np.isfinite(d) & (d < z - tol_m)
-    if behind_robot.mean() < _HIDDEN_FRACTION:
-        return False
+    if not behind_robot.any():
+        return False  # the robot is not on this side: nothing hides it
     cells = _occupied_centres(grid, slab)
     cells = cells[cells[:, 2] > support_z + grid.resolution]
     if len(cells):
@@ -147,11 +146,10 @@ def _hidden(  # reason: one frame's evidence, passed through
         if not cok.all():
             return False
         cd = depth_m[cv, cu]
-        surface = (robot_mask[cv, cu] < _ROBOT_MIN) & np.isfinite(cd)
-        surface &= np.abs(cd - cz) <= grid.resolution
+        robot_front = (robot_mask[cv, cu] >= _ROBOT_MIN) & np.isfinite(cd) & (cd < cz - tol_m)
         out = np.abs(_local(cells, box)) - np.asarray(box.half_extents)
         beyond = np.max(out, axis=1) > grid.resolution
-        if (surface & beyond).any():
+        if (beyond & ~robot_front).any():
             return False
     return True
 
@@ -172,8 +170,9 @@ def grow_hidden_side(  # reason: one frame's evidence, passed through
     """``box`` grown along each horizontal axis toward ``size_m`` where the robot hides it.
 
     Per horizontal axis whose extent is under ``size_m``, the side whose added slab
-    ``_hidden`` accepts, by the largest step in half-cell decrements from the full deficit
-    (so never past ``size_m``, within the size plus one cell). Returns the box and the
+    ``_hidden`` accepts (the robot on that side; every occupied cell more than one cell
+    past the fitted box hidden behind it; no other track's box), by the largest step in
+    half-cell decrements from the full deficit (so never past ``size_m``). Returns the box and the
     ``(axis, sign, grown_m)`` applied. Unchanged without a robot mask, or for a box not
     gravity-aligned.
 
@@ -195,8 +194,8 @@ def grow_hidden_side(  # reason: one frame's evidence, passed through
         ... )
         >>> depth = np.full((48, 64), 0.5)
         >>> robot = np.zeros((48, 64), np.uint8)
-        >>> robot[:, 34:] = 255  # the arm over +x, 0.3 m from the camera
-        >>> depth[:, 34:] = 0.3
+        >>> robot[:, 35:] = 255  # the arm over +x, 0.3 m from the camera
+        >>> depth[:, 35:] = 0.3
         >>> out, grown = grow_hidden_side(
         ...     b,
         ...     0.06,
