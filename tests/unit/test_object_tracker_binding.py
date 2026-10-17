@@ -569,6 +569,51 @@ def test_a_static_neighbour_touching_a_tracked_payload_is_never_taken(robot: str
         assert binder.grow_untracked(store, _grid(frame, neighbour, lo, 60), qq, 20 + n) is None
 
 
+_PAN = {"so101_follower": "shoulder_pan", "droid_franka_robotiq": "panda_joint1"}
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_tracked_payload_never_absorbs_the_support_it_slides_over(robot: str) -> None:
+    """The payload sweep clears the table cells under the payload, so a table cell's first place
+    reads free once the hand has panned over the table: it looks like it moved with the hand.
+    Cells at or under the held track's clearing floor are the support and are never taken
+    (#418 r10dr_on2: the banana swelled onto the table, z <= 0, and stopped on it). Without the
+    floor the same scene grows the payload (the control below)."""
+    binder, q, _ = _tracked_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    floor_z = pc[2] - 0.02  # the held track's box bottom (the fixture's floor_z)
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    slab = np.vstack(  # a thick support just under the held box
+        [
+            np.column_stack([xy + pc[:2], np.full(len(xy), floor_z + (-0.5 - k) * CELL)])
+            for k in range(8)
+        ]
+    )
+    lo = np.floor((pc - 0.35) / CELL) * CELL
+    q_b = dict(q)
+    q_b[_PAN[robot]] += 0.15  # pan the hand ~3-5 cm over the table
+    under = (np.abs(slab[:, 0] - pc[0]) < 0.03) & (np.abs(slab[:, 1] - pc[1]) < 0.03)
+    held = track("trk:1", frame, pc, (0.02, 0.02, 0.02))
+    grew = {}
+    for name, trk in (
+        ("floor", held),
+        ("no floor", held.model_copy(update={"floor_z": -5.0, "support_z": -5.0})),
+    ):
+        b, _, _ = _tracked_hold(robot)
+        store = DictStore([trk])
+        assert b.grow_untracked(store, _grid(frame, slab, lo, 70), q, 20) is None
+        # the sweep has cleared the strip under the old payload pose; the table stays elsewhere
+        out = [
+            b.grow_untracked(store, _grid(frame, slab[~under], lo, 70), q_b, 21 + n)
+            for n in range(3)
+        ]
+        grew[name] = [o for o in out if o is not None]
+    assert grew["no floor"], "the control must absorb the table, or the test proves nothing"
+    assert not grew["floor"]
+
+
 @pytest.mark.parametrize("robot", list(ROBOTS))
 @pytest.mark.parametrize("status", [TrackStatus.TENTATIVE, TrackStatus.SPLIT])
 def test_an_unconfirmed_cluster_track_never_makes_a_grounded_object_ambiguous(
