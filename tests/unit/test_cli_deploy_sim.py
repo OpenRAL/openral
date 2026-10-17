@@ -3247,10 +3247,9 @@ def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
     from openral_cli.deploy_sim import _object_queries_json
 
     orange = _tracking("isaac_leisaac_pick_orange.yaml", "on")
-    seed = orange.grasp_declaration.search_box.model_dump(mode="json", exclude_none=True)
     assert json.loads(_object_queries_json(orange, "Grab orange and place into plate")) == [
-        # obj:orange_1's derived search box seeds the orange class (a search hint only).
-        {"label": "orange", "count": "all", "role": "target", "min_instances": 1, "seed": seed},
+        # obj:orange_1's derived search box is sim ground truth (`sim:`): never a seed.
+        {"label": "orange", "count": "all", "role": "target", "min_instances": 1},
         {"label": "plate", "count": "one", "role": "destination", "min_instances": 1},
     ]
     banana = _tracking("isaac_arena_droid_banana_in_bowl.yaml", "shadow")
@@ -3283,8 +3282,15 @@ def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None
         ]
     }
     options["placement_success"] = success
+    # A user-declared box (non-sim evidence): the scene's own is sim ground truth, never a seed.
+    decl = orange.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    box = decl.search_box.model_copy(update={"evidence_ref": "operator:orange_tray"})
     relabelled = orange.model_copy(
-        update={"scene": orange.scene.model_copy(update={"backend_options": options})}
+        update={
+            "scene": orange.scene.model_copy(update={"backend_options": options}),
+            "grasp_declaration": decl.model_copy(update={"search_box": box}),
+        }
     )
     seeded = {q["label"]: "seed" in q for q in json.loads(_object_queries_json(relabelled, task))}
     assert seeded == {"fruit": True, "orange": False, "plate": False}
