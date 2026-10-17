@@ -190,11 +190,11 @@ _One segmenter/detector request in flight, rate-capped in wall time (#418 step 7
 - const `PRIORITY_DISAGREE = 3` — Tracks the map disagrees with. (L41)
 - const `PRIORITY_BOUND = 4` — Bound-object protrusion checks. (L42)
 - const `PRIORITY_REFRESH = 5` — Oldest visible CONFIRMED refresh and resolved `count: "all"` re-detection. (L43)
-- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv` (prompts), `within_xyxy` (a bound on the mask pick only: a map seed's image rectangle), `seed_cell` (the lattice cell a map-seeded prompt sits on: a served one is skipped until a locate is served), `request_id` (0 until issued). (L47) `roi_norm_xyxy` (issue #418): a locate's region of interest in `[0, 1]` of the frame, sent as `LocateInView.roi_norm_xyxy`.
-- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L87)
-  - `in_flight` (property) — (L117)
-  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L121)
-  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L130)
+- `@dataclass TrackerRequest` — One `locate_in_view` / `segment_in_view` prompt on the frame `(camera, stamp_ns)`: `priority`, fairness `served_ns`, `label`, `query_key` or `object_id`, `box_xyxy` / `point_uv` (prompts), `within_xyxy` (a bound on the mask pick only: a map seed's image rectangle), `seed_cell` (the lattice cell a map-seeded prompt sits on: a served one is skipped until a locate is served), `request_id` (0 until issued). (L47) `roi_norm_xyxy` (issue #418): a locate's region of interest in `[0, 1]` of the frame, sent as `LocateInView.roi_norm_xyxy`. `prompt`: a locate's open-vocabulary text, `label` then the query's `synonyms`, comma-separated (the node sends it as `LocateInView.query`).
+- `class Scheduler(*, segment_hz, budget_wall_s)` — Lowest priority number, then served longest ago; abandons (and logs) a request unanswered past `budget_wall_s`. (L90)
+  - `in_flight` (property) — (L120)
+  - `complete(request_id) -> TrackerRequest | None` — Free the slot; `None` (logged) for an unknown id. (L124)
+  - `next(candidates, *, wall_s) -> TrackerRequest | None` — Issue the best candidate when the slot is free and the rate allows. (L133)
 
 ### `python/world_state/src/openral_world_state/object_tracker/tracker.py`
 _`ObjectTracker` — steps 0-7 per depth frame; pure (no ROS, no clock read)._

@@ -651,6 +651,7 @@ class ObjectTracker:
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key,
                 roi_norm_xyxy=self._locate_roi(q.query.seed or self.search_region, frame),
+                prompt=", ".join((q.query.label, *q.query.synonyms)),
             )  # fmt: skip
             seed = q.query.seed
             if seed is not None and grid is not None and seed.frame_id == grid.frame_id:

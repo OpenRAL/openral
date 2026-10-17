@@ -3874,6 +3874,9 @@ class ObjectQuery(BaseModel):
         seed: Optional search hint (sim-derived or scene graph) in the grid frame or a
             fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.
         min_instances: CONFIRMED instances that make the query ``RESOLVED``.
+        synonyms: Other names for the same class, sent with ``label`` to an
+            open-vocabulary locator as one class list (``"box, carton"``); empty = the
+            label alone. Additive (#418), never geometry.
 
     Example:
         >>> query = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
@@ -3889,6 +3892,7 @@ class ObjectQuery(BaseModel):
     hand: str | None = None
     seed: PlaceRegion | None = None
     min_instances: int = Field(default=1, ge=1)
+    synonyms: tuple[Annotated[str, Field(min_length=1)], ...] = ()
 
     @model_validator(mode="after")
     def _validate_query(self) -> ObjectQuery:
@@ -3908,6 +3912,7 @@ class ObjectQuery(BaseModel):
             hand=str(msg.hand) or None,  # type: ignore[attr-defined]
             seed=PlaceRegion.from_idl(msg.seed) if bool(msg.seed_valid) else None,  # type: ignore[attr-defined]
             min_instances=int(msg.min_instances),  # type: ignore[attr-defined]
+            synonyms=tuple(str(s) for s in getattr(msg, "synonyms", ())),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -3917,6 +3922,7 @@ class ObjectQuery(BaseModel):
         msg.role = self.role.value  # type: ignore[attr-defined]
         msg.hand = self.hand or ""  # type: ignore[attr-defined]
         msg.min_instances = int(self.min_instances)  # type: ignore[attr-defined]
+        msg.synonyms = list(self.synonyms)  # type: ignore[attr-defined]
         msg.seed_valid = self.seed is not None  # type: ignore[attr-defined]
         if self.seed is not None:
             self.seed.fill_idl(msg.seed)  # type: ignore[attr-defined]

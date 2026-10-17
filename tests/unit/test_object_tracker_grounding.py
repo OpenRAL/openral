@@ -315,3 +315,17 @@ def test_a_locate_is_cropped_to_the_declared_workspace_or_the_seed() -> None:
     expected = (max(c0 - pw, 0) / w, max(r0 - ph, 0) / h, min(c1 + pw, w) / w, min(r1 + ph, h) / h)
     assert np.allclose(req.roi_norm_xyxy, expected)
     assert 0.0 <= req.roi_norm_xyxy[0] < req.roi_norm_xyxy[2] <= 1.0
+
+
+def test_a_locate_asks_for_the_label_and_its_synonyms() -> None:
+    """``ObjectQuery.synonyms`` ride the locate as one comma-separated class list (OmDet
+    splits on commas), the label first; without synonyms the prompt is the label."""
+    tr = ObjectTracker(_RIG.frame)
+    q = _QUERY.model_copy(update={"synonyms": ("plantain", "yellow fruit")})
+    tr.open_query("g", "q0", q, "obj:banana@0", stamp_ns=0)
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    (req,) = tr.feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
+    assert req.prompt == "banana, plantain, yellow fruit" and req.label == "banana"
+    (plain,) = _tracker().feed(frame, grid=None, grid_stamp_ns=1, wall_s=0.0).requests
+    assert plain.prompt == "banana"
