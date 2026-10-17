@@ -7058,6 +7058,7 @@ std::vector<rclcpp::Parameter> release_params() {
       {"tracked_release_dwell_s", 0.1},
       {"tracked_release_clear_m", 0.02},
       {"tracked_release_timeout_s", 0.4},
+      {"hal_mode", std::string("sim")},  // K5 is sim-only until Safety-WG review
   };
 }
 
@@ -7184,6 +7185,26 @@ TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePa
   EXPECT_FALSE(r.passes(0.0, 0.03)) << "link2 into the frozen payload: " << logs.joined();
   EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
   EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
+}
+
+TEST_F(LifecycleKernelTest, TheTrackedReleaseRefusesToConfigureOffSim) {
+  // Mirrors K2: K5 is not monotone (hazard OT-7), so the kernel itself keeps it
+  // off real hardware, not only the launch's sim-only rule for bind / on.
+  for (const char* mode : {"real", "mock", ""}) {
+    GraspRig off_sim(std::string("kernel_release_cfg_") + (*mode != 0 ? mode : "empty"),
+                     with_param(release_params(), "hal_mode", rclcpp::ParameterValue(mode)));
+    EXPECT_FALSE(off_sim.configure()) << "hal_mode '" << mode << "'";
+  }
+  // Without jaw joints K5 is off, and nothing about it is refused on real.
+  auto off = with_param(release_params(), "hal_mode", rclcpp::ParameterValue("real"));
+  off = with_param(off, "tracked_release_jaw_joints",
+                   rclcpp::ParameterValue(std::vector<std::string>{}));
+  off = with_param(off, "tracked_release_jaw_open_sign",
+                   rclcpp::ParameterValue(std::vector<double>{}));
+  GraspRig real_off("kernel_release_cfg_real_off", off);
+  EXPECT_TRUE(real_off.configure());
+  GraspRig ok("kernel_release_cfg_sim", release_params());
+  EXPECT_TRUE(ok.configure());
 }
 
 // ── Issue #418 K2: the grasp exemption by tracked-object id (hazard OT-6) ───

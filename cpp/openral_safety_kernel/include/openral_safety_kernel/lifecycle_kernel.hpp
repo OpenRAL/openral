@@ -239,7 +239,8 @@ private:
   // frozen payload is checked against everything else throughout, is never a
   // handover and arms no witness; a handover latched on it retires. Called after
   // `check_attachment_bindings`, on every world-state message. No-op when no jaw
-  // joint is configured (the default: today's semantics).
+  // joint is configured (the default: today's semantics). Configure refuses it
+  // off `hal_mode: sim`, as it does K2.
   void apply_tracked_release();
   // Issue #418 K2 — record the live grasp declaration's `declaration_key`
   // (active, a target, `timeout_s` in range, not retired). Ingest path only.

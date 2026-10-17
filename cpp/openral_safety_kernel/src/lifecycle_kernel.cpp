@@ -683,7 +683,12 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     const auto names = this->get_parameter("collision_joint_names").as_string_array();
     std::string why;
     if (!jaws.empty()) {
-      if (signs.size() != jaws.size()) {
+      if (this->get_parameter("hal_mode").as_string() != "sim") {
+        // Mirrors K2: K5 is not monotone (hazard OT-7), so the kernel keeps it off
+        // real hardware itself, not only the launch's sim-only rule for bind / on.
+        why = "sim-only until Safety-WG review (issue #418, hazard OT-7), hal_mode=" +
+              this->get_parameter("hal_mode").as_string();
+      } else if (signs.size() != jaws.size()) {
         why = "tracked_release_jaw_open_sign must give one +1/-1 per jaw joint";
       } else if (!std::isfinite(release_gap_) || release_gap_ <= 0.0) {
         why = "tracked_release_gap must be finite and > 0";

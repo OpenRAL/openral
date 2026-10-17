@@ -1005,8 +1005,9 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   explicit Safety-WG judgement).** Off unless `tracked_release_jaw_joints` names
   the gripper joints (with `tracked_release_jaw_open_sign`, +1/-1 per joint: the
   direction that opens it); empty is today's semantics, the payload rides the hand
-  until the producer detaches it. When on, configure refuses a sign that is not
-  ±1, an unknown joint, `tracked_release_gap` (joint units) or
+  until the producer detaches it. When on, configure refuses any `hal_mode`
+  but `sim` (as K2 does; sim-only until Safety-WG review,
+  `…TheTrackedReleaseRefusesToConfigureOffSim`), a sign that is not ±1, an unknown joint, `tracked_release_gap` (joint units) or
   `tracked_release_dwell_s` ≤ 0, `tracked_release_clear_m` outside (0, 0.1] (the
   HAL's `MAX_RELEASE_CLEAR_M`) or `tracked_release_timeout_s` outside (0, 10]. A
   `tracked_object` binding at the hand (K3) whose attach or touch link is driven
