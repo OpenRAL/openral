@@ -1,0 +1,1 @@
+jaw_close_replay.npz / jaw_close_chunks.json: measured jaw and approved /openral/safe_action chunks of the camlong runs r12dr_camlong [19,23.5] s, r12po_camlong [8.5,10.6] s, r12rs02_camlong_b [14.5,18.2] s (Spark ~/livesim/418/phase1, 2026-10-17), made by mkreplay.py.

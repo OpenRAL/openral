@@ -163,6 +163,9 @@ _Size-aware map confirmation (#418 step 4)._
   - `JawStallDetector.held_median` (L74) — The window's median jaw (the hold a fired stall reads).
   - `JawStallDetector.latched` (L79) — Whether this hold already fired or was suppressed.
 
+### `python/world_state/src/openral_world_state/object_tracker/commands.py`
+- `jaw_commands(joints, joint_order, *, n_dof, flat, joint_names, tick_group_size, ee_name) -> dict[str, float]` (L26) — Issue #418 (WP C): the gripper targets one safety-approved chunk carries, by gripper joint: a full-dof row at the manifest index, a compact row by `joint_names`, and an ADR-0102 slot group's one-value gripper slot by `ee_name` (arm slots carry none). The node read only the first two and dropped every slot group, so the restock tracker never held a jaw command and the stalled-jaw read never fired (r12rs02_on1/on2/camlong_b).
+
 ### `python/world_state/src/openral_world_state/object_tracker/heartbeat.py`
 - `StarvationFill(*, gap_s=0.4, silent_s=5.0)` (L25) — Issue #418 (WP C): ROS-free cache of the tracker's last published tracked-set and attachment-state messages. `touch` / `joints` / `published` record the main thread's activity; `due(now) -> (tracked | None, attach | None)` returns what a second timer on its own callback group should republish when the main heartbeat is late by `gap_s`, and nothing once the main thread has been silent `silent_s` (a hung tracker is never covered for) or, for the attachment stream, no joint state arrived in `silent_s`. The kernel judges the stream by `attachment_state` age; 2 s wall gaps from a long fit made `r10rs02_camlong` stop on `n=0 of=0`.
 
