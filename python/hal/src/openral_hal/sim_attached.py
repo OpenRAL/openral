@@ -456,6 +456,10 @@ class SimAttachedHAL:
     """
 
     description: RobotDescription
+    # Frames on demand (``set_frame_period_s``): sim period between rendered steps and
+    # the sim time of the last one; ``None`` = render every step. Immutable defaults.
+    _frame_period_ns: int | None = None
+    _last_frame_sim_ns: int | None = None
 
     def __init__(
         self,
@@ -1293,10 +1297,13 @@ class SimAttachedHAL:
         Raises:
             ROSRuntimeError: when ``env.step`` raises.
         """
+        rendered = self._request_frames()
         try:
             step_result = self._env.step(env_action)
         except Exception as exc:
             raise ROSRuntimeError(f"SimAttachedHAL.{source}: env.step failed: {exc}") from exc
+        if rendered:
+            self._last_frame_sim_ns = self._rollout_sim_time_ns()
         # ``StepResult.observation`` carries the rendered camera frames
         # (see ``openral_sim.rollout.StepResult``). Cache so the
         # lifecycle node's camera publisher can serve them without
@@ -1309,6 +1316,40 @@ class SimAttachedHAL:
         for observer in self._post_step_observers:
             observer()
         return True
+
+    def set_frame_period_s(self, period_s: float | None) -> None:
+        """Render camera frames only every ``period_s`` of sim time (``None``: every step).
+
+        For a backend that renders on demand (``env.set_frames_next_step``, Isaac):
+        the sensor bridge passes its fastest camera/depth publish period, so the scene
+        renders ``"fresh"`` frames (showing that step's state) once per publish
+        instead of a lagging frame every control tick. Other backends ignore it.
+
+        Example:
+            >>> SimAttachedHAL.set_frame_period_s.__name__
+            'set_frame_period_s'
+        """
+        self._frame_period_ns = None if period_s is None else int(period_s * 1e9)
+
+    def _request_frames(self) -> bool:
+        """Pick the next step's frame mode on an on-demand backend; ``True`` if it renders."""
+        set_frames = getattr(self._env, "set_frames_next_step", None)
+        if not callable(set_frames) or self._frame_period_ns is None:
+            return True
+        now = self._rollout_sim_time_ns()
+        dt_ns = int((self._sim_dt_per_tick_s or 0.0) * 1e9)
+        last = self._last_frame_sim_ns
+        # Due when a period has passed by the end of this step (half a tick early so a
+        # period that is a whole number of ticks does not slip one), or the sim clock
+        # went back (an episode reset).
+        due = (
+            now is None
+            or last is None
+            or now < last
+            or now + dt_ns - last >= self._frame_period_ns - dt_ns // 2
+        )
+        set_frames("fresh" if due else "none")
+        return due
 
     def _cache_step_result(self, step_result: object) -> None:
         """Cache one backend transition without evaluating or resetting it."""

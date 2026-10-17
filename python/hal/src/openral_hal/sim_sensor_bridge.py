@@ -2903,6 +2903,10 @@ class SimSensorBridge:
 
     def setup(self) -> None:
         """Activate every stream the manifest + HAL support. Idempotent-safe per activate."""
+        # An on-demand renderer (Isaac) only needs frames as often as they are published.
+        set_frame_period = getattr(self._hal, "set_frame_period_s", None)
+        if callable(set_frame_period):
+            set_frame_period(1.0 / max(self._camera_rate_hz, self._depth_rate_hz, 1.0))
         self._setup_cameras()
         self._setup_idle_stepper()
         self._setup_cinecam()

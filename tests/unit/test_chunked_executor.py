@@ -412,3 +412,36 @@ class TestPrefetchTimeAlignment:
             served.append(int(ex.select_action(payload)[0, 0].item()))
         ex.stop()
         assert served == list(range(4 * chunk_size))
+
+
+class TestNeedsObservationNext:
+    """``needs_observation_next`` never says "no" before a call that reads the observation.
+
+    A simulator skips rendering on its "no" (``sim run`` frames on demand), so a wrong
+    "no" would feed the policy a stale image. Checked against the executor's own
+    behaviour: the lazy payload records every call that materialized it.
+    """
+
+    @pytest.mark.parametrize("prefetch_at", [0, 3])
+    def test_every_observation_read_was_announced(self, prefetch_at: int) -> None:
+        chunks = iter(range(1000))
+
+        def chunk_fn(_payload: object) -> list[list[float]]:
+            k = next(chunks)
+            return [[float(k * 10 + i)] for i in range(8)]
+
+        ex = ChunkedExecutor(chunk_fn=chunk_fn, chunk_size=8, prefetch_at=prefetch_at)
+        ex.start()
+        announced, read = [], []
+        try:
+            for _ in range(40):
+                announced.append(ex.needs_observation_next())
+                hits: list[int] = []
+                ex.select_action(lambda h=hits: h.append(1) or {})  # type: ignore[func-returns-value]  # reason: records the read, returns the payload
+                read.append(bool(hits))
+                time.sleep(0.002)  # let a pre-fetch land between steps
+        finally:
+            ex.stop()
+        assert not any(r and not a for a, r in zip(announced, read, strict=True))
+        # Most steps pop a buffered action: those are the renders a simulator saves.
+        assert sum(not a for a in announced) >= 20

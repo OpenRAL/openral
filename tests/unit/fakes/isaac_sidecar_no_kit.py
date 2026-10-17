@@ -29,6 +29,9 @@ from isaac_sidecar import _parse_args, _serve
 class _NoKitScene:
     """Answers the sidecar contract with the robot spec's action width + time base.
 
+    ``step`` takes the real scene's ``frames`` mode and, like it, sends no frame keys
+    on a ``"none"`` step.
+
     ``step`` appends every action it receives (NaN kept, as JSON ``null``) to the
     file named by ``OPENRAL_TEST_ISAAC_ACTIONS_OUT`` when set — the exact vector
     Isaac would have applied. ``sim_dt_per_tick_s`` is what the real scene
@@ -47,14 +50,18 @@ class _NoKitScene:
         del seed
         return self._obs()
 
-    def step(self, action: npt.NDArray[np.float64]) -> dict[str, Any]:
+    def step(self, action: npt.NDArray[np.float64], frames: str = "render") -> dict[str, Any]:
         out = os.environ.get("OPENRAL_TEST_ISAAC_ACTIONS_OUT")
         if out:
             row = [None if np.isnan(v) else float(v) for v in np.asarray(action).reshape(-1)]
             with open(out, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
+        obs = self._obs()
+        if frames == "none":  # as the real scene: no frame keys without a render
+            del obs["images"]
         return {
-            "observation": self._obs(),
+            "observation": obs,
+            "renders": int(frames != "none"),
             "reward": 0.0,
             "terminated": False,
             "truncated": False,

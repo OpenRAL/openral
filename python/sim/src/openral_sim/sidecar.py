@@ -545,7 +545,7 @@ class SidecarSimRollout:
     def step(self, action: NDArray[np.float32]) -> StepResult:
         """Apply one action over the wire and return the wrapped transition."""
         action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
+        reply = self._client.call("step", {"action": action_np, **self._step_options()})
         # Cache the sidecar's elapsed sim time so the
         # deploy-sim HAL can publish /clock. Optional in the wire protocol
         # (older sidecars omit it) → stays None, /clock off.
@@ -577,6 +577,10 @@ class SidecarSimRollout:
         with contextlib.suppress(Exception):
             self._client.call("close")
         self._client.close()
+
+    def _step_options(self) -> dict[str, Any]:
+        """Extra ``step`` request fields beside the action. Default: none."""
+        return {}
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         """Unwrap the sidecar's raw ``observation`` dict — backend-specific."""
