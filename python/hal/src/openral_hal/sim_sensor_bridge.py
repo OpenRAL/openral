@@ -133,6 +133,45 @@ __all__ = [
 ]
 
 
+def grid_settles_attachment(
+    *,
+    source_stamp_ns: int,
+    transparent_depth_ns: int,
+    grid_attachment_revision: int,
+    required_revision: int,
+) -> bool:
+    """Does a world-voxel grid end an attachment's perception barrier?
+
+    It must be later than the transparent depth frame the barrier counted AND carry that
+    attachment's clearing: the octomap bridge stamps every grid with the attachment revision it
+    had applied (``OccupancyVoxels.attachment_revision``, 0 = it certified nothing). A fresh
+    grid the bridge built before it consumed the revision still holds the payload's own cells
+    (#418 r7po_on1: the kernel stopped on the held orange 167 ms before the clear landed).
+    Ordering only: no kernel check is skipped or relaxed.
+
+    Example:
+        >>> grid_settles_attachment(
+        ...     source_stamp_ns=11,
+        ...     transparent_depth_ns=10,
+        ...     grid_attachment_revision=7,
+        ...     required_revision=7,
+        ... )
+        True
+        >>> grid_settles_attachment(
+        ...     source_stamp_ns=11,
+        ...     transparent_depth_ns=10,
+        ...     grid_attachment_revision=6,
+        ...     required_revision=7,
+        ... )
+        False
+    """
+    return source_stamp_ns > transparent_depth_ns and grid_attachment_revision >= required_revision
+
+
+#: Wall seconds the barrier's voxel wait may last before it says so (it still never releases early).
+BARRIER_VOXEL_WARN_S = 5.0
+
+
 def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[float]:
     """Return an ``n_beams``-long list with every beam clamped to ``max_range_m``.
 
@@ -2839,6 +2878,10 @@ class SimSensorBridge:
         self._attachment_depth_frames_remaining: int = 0
         self._attachment_voxel_updates_remaining: int = 0
         self._attachment_expect_voxel_update: bool = False
+        # The attachment revision the armed barrier waits for a cleared grid for, and the
+        # one-shot wall-clock note if that wait runs long (log only: never a release).
+        self._attachment_barrier_revision: int = 0
+        self._barrier_voxel_timer: Any = None
         self._attachment_transparent_depth_stamp_ns: int | None = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
@@ -3983,6 +4026,7 @@ class SimSensorBridge:
             self._attachment_applied_revision = revision
             self._attachment_pending = None
             if masks_new_geometry:
+                self._attachment_barrier_revision = revision
                 self._freeze_preattach_occupancy(revision)
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
@@ -4603,8 +4647,43 @@ class SimSensorBridge:
             self._attachment_transparent_depth_stamp_ns = stamp_ns
             if self._attachment_expect_voxel_update:
                 self._attachment_voxel_updates_remaining = 1
+                self._arm_barrier_voxel_warning(stamp_ns)
             else:
                 self._notify_attachment_perception_ready()
+
+    def _arm_barrier_voxel_warning(self, transparent_stamp_ns: int) -> None:
+        """Say so (WARN, once) if no cleared grid settles the barrier within a wall bound.
+
+        The wait itself is unchanged and never ends early; the runner's own action-applied
+        deadline is the timeout path. The note carries the stamps a replay needs.
+        """
+        import threading
+
+        self._cancel_barrier_voxel_warning()
+        revision = self._attachment_barrier_revision
+
+        def _warn() -> None:
+            if self._attachment_voxel_updates_remaining <= 0:
+                return
+            last = self._voxel_grid_history[-1] if self._voxel_grid_history else {}
+            self._node.get_logger().warning(
+                f"attachment perception barrier: no world_voxels grid carries revision "
+                f"{revision} after the transparent depth stamp {transparent_stamp_ns} ns for "
+                f"{BARRIER_VOXEL_WARN_S:.0f} s (newest grid: source_stamp="
+                f"{last.get('stamp_ns')} ns, "
+                f"attachment_revision={last.get('attachment_revision')});"
+                " still holding the runner (its action-applied deadline is the timeout)"
+            )
+
+        timer = threading.Timer(BARRIER_VOXEL_WARN_S, _warn)
+        timer.daemon = True
+        self._barrier_voxel_timer = timer
+        timer.start()
+
+    def _cancel_barrier_voxel_warning(self) -> None:
+        timer, self._barrier_voxel_timer = self._barrier_voxel_timer, None
+        if timer is not None:
+            timer.cancel()
 
     def _on_attachment_world_voxels(self, msg: object) -> None:
         """Wait for post-depth OctoMap rasterizations before releasing motion.
@@ -4639,14 +4718,27 @@ class SimSensorBridge:
         self._last_voxel_occupancy = msg.occupancy  # type: ignore[attr-defined]  # reason: ROS subscription type
         header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
         source_stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
-        self._voxel_grid_history.append({**self._last_voxel_grid, "stamp_ns": source_stamp_ns})
+        grid_revision = int(msg.attachment_revision)  # type: ignore[attr-defined]  # reason: ROS msg
+        self._voxel_grid_history.append(
+            {
+                **self._last_voxel_grid,
+                "stamp_ns": source_stamp_ns,
+                "attachment_revision": grid_revision,
+            }
+        )
         if self._attachment_voxel_updates_remaining <= 0:
             return
         transparent_stamp_ns = self._attachment_transparent_depth_stamp_ns
-        if transparent_stamp_ns is None or source_stamp_ns <= transparent_stamp_ns:
+        if transparent_stamp_ns is None or not grid_settles_attachment(
+            source_stamp_ns=source_stamp_ns,
+            transparent_depth_ns=transparent_stamp_ns,
+            grid_attachment_revision=grid_revision,
+            required_revision=self._attachment_barrier_revision,
+        ):
             return
         self._attachment_voxel_updates_remaining -= 1
         if self._attachment_voxel_updates_remaining == 0:
+            self._cancel_barrier_voxel_warning()
             self._attachment_expect_voxel_update = False
             self._attachment_transparent_depth_stamp_ns = None
             self._notify_attachment_perception_ready()

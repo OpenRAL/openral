@@ -32,6 +32,7 @@
 
 #include <openral_msgs/msg/attached_collision_object.hpp>
 #include <openral_msgs/msg/attached_collision_primitive.hpp>
+#include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
@@ -74,6 +75,12 @@ protected:
                                                                        rclcpp::QoS(1).reliable());
     world_state_pub_ = peer_->create_publisher<openral_msgs::msg::WorldStateStamped>(
         "/test_world_state_sweep", rclcpp::QoS(1).reliable());
+    grid_sub_ = peer_->create_subscription<openral_msgs::msg::OccupancyVoxels>(
+        "/test_world_voxels_sweep", rclcpp::QoS(10).reliable(),
+        [this](openral_msgs::msg::OccupancyVoxels::ConstSharedPtr g) {
+          const std::lock_guard<std::mutex> lock(mutex_);
+          grid_revisions_.push_back(g->attachment_revision);
+        });
     server_ = peer_->create_service<BBox>(
         "/test_clear_bbox",
         [this](const std::shared_ptr<BBox::Request> req, std::shared_ptr<BBox::Response> /*resp*/) {
@@ -168,7 +175,25 @@ protected:
     return n;
   }
 
+  /// The newest published grid's `attachment_revision` (0 if none yet).
+  std::uint64_t last_grid_revision() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return grid_revisions_.empty() ? 0 : grid_revisions_.back();
+  }
+
+  /// The highest `attachment_revision` any grid has carried.
+  std::uint64_t max_grid_revision() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::uint64_t m = 0;
+    for (const auto r : grid_revisions_) {
+      m = std::max(m, r);
+    }
+    return m;
+  }
+
   std::string static_points_file_;
+  rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr grid_sub_;
+  std::vector<std::uint64_t> grid_revisions_;
   std::shared_ptr<bridge::OctomapVoxelBridge> bridge_;
   std::shared_ptr<rclcpp::Node> peer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
@@ -333,7 +358,8 @@ protected:
                     const std::string& evidence = "", std::int64_t stamp_ns = 0, double x = 0.0) {
     openral_msgs::msg::WorldStateStamped state;
     state.header.stamp = peer_->now();
-    state.tracked_objects_valid = true;
+    state.attachment_revision = revision_;
+    state.tracked_objects_valid = tracked_valid_;
     state.tracked_objects.frame_id = "base_link";
     for (const auto& t : tracks) {
       state.tracked_objects.objects.push_back(t);
@@ -377,6 +403,8 @@ protected:
     spin_for(100ms);
   }
 
+  std::uint64_t revision_{0};
+  bool tracked_valid_{true};
   std::string released_status_;
   std::uint32_t released_epoch_{0};
   const std::vector<tf2::Vector3> release_cells_{line_cell(17), line_cell(18), line_cell(19),
@@ -414,6 +442,38 @@ TEST_F(BridgeIdentitySweep, TheCarryIsBackfilledFromAttachAndKeepsEveryExclusion
   EXPECT_EQ(times_cleared(line_cell(6, 0.0825)), 0) << "cleared below floor_z";
   EXPECT_EQ(times_cleared(line_cell(9)), 0) << "cleared inside another track's box";
   EXPECT_EQ(times_cleared(line_cell(3)), 0) << "cleared declared static geometry";
+}
+
+// ── The grid says which attachment revision it was cleared for (#418 r7po_on1) ──────────
+//
+// The sim HAL's perception barrier releases the runner on a grid that carries the payload's
+// clearing; r7po_on1's kernel stopped on the held orange's own cells because the barrier
+// released on a grid the bridge had built BEFORE it consumed the binding.
+
+TEST_F(BridgeIdentitySweep, AGridIsCertifiedForARevisionOnlyOnceItsBindingIsCleared) {
+  revision_ = 11;
+  // No attachment and no world state yet: nothing to certify.
+  for (int i = 0; i < 4; ++i) {
+    place_hand(0.0, kLineZ);
+    send_octree({line_cell(0), line_cell(1)});
+    spin_for(50ms);
+  }
+  EXPECT_EQ(max_grid_revision(), 0U) << "a grid claimed a revision no state had named";
+  carry("tracked_object");
+  EXPECT_EQ(last_grid_revision(), 11U) << "the grid built with the binding's clearing";
+}
+
+TEST_F(BridgeIdentitySweep, AnUnusableTrackedSetWithholdsTheCertificate) {
+  revision_ = 12;
+  tracked_valid_ = false;   // the bound payload's tracker set is unusable: nothing is cleared
+  carry("tracked_object");  // the binding is on the wire from the 10th world state on
+  EXPECT_EQ(last_grid_revision(), 0U) << "certified a clear that did not happen";
+}
+
+TEST_F(BridgeIdentitySweep, ALeftInPlaceBindingStillCertifiesTheRevision) {
+  revision_ = 13;
+  carry("pinch_fallback");  // stays an obstacle on purpose: nothing for a waiter to wait for
+  EXPECT_EQ(last_grid_revision(), 13U);
 }
 
 TEST_F(BridgeIdentitySweep, APinchFallbackClearsNothing) {

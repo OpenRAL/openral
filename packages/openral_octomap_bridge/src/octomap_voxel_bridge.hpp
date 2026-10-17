@@ -337,12 +337,14 @@ private:
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                            "declared static geometry added %zu cells the camera map lacked", added);
     }
+    clearing_complete_ = true;
     clear_attached_payload(grid, base_to_octomap);
     clear_by_identity(grid, base_to_octomap);
     clear_swept_volume(base_to_octomap);
     const rclcpp::Time produced = this->now();
     grid.header.stamp = produced;
     grid.source_stamp = octree_stamp_;
+    grid.attachment_revision = certified_attachment_revision();
     voxel_pub_->publish(grid);
     // The one number that says how far behind the world this grid is: capture
     // of the newest cloud in it to now. Throttled; the kernel carries the same
@@ -350,6 +352,22 @@ private:
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                          "world_voxels data age %.0f ms at publish (octree received %.0f ms ago)",
                          (produced - octree_stamp_).seconds() * 1e3, octree_age_s * 1e3);
+  }
+
+  /// The attachment revision this grid certifies (`OccupancyVoxels.attachment_revision`):
+  /// the revision of the fresh attachment state the clearing above ran against, provided
+  /// every object it had to clear was cleared (a TF it lacked, geometry it could not place
+  /// or an unusable tracked set withhold it: 0). A consumer waiting for the held object's
+  /// cells to leave the map (the sim HAL's perception barrier) must see this number reach
+  /// the revision it armed for. Objects left in the map ON PURPOSE (a pinch fallback, an
+  /// ambiguous binding) do not withhold it: there is nothing to wait for.
+  std::uint64_t certified_attachment_revision() const {
+    const auto state = world_state_;
+    if (!attached_clear_enabled_ || state == nullptr || !clearing_complete_) {
+      return 0;
+    }
+    const double age_s = (this->now() - rclcpp::Time(state->header.stamp)).seconds();
+    return age_s > attached_state_timeout_s_ ? 0 : state->attachment_revision;
   }
 
   /// Remove the grasped payload's own cells from the grid about to be
@@ -400,6 +418,7 @@ private:
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "attachment state is %.3f s old (> %.3f s): clearing nothing", age_s,
                            attached_state_timeout_s_);
+      clearing_complete_ = false;
       return;
     }
 
@@ -438,6 +457,7 @@ private:
                       "vision_attachment.tf_frames)",
                       object.attach_link.c_str(), object.attach_link.c_str());
         }
+        clearing_complete_ = false;
         return;
       }
       tf2::Transform base_from_link;
@@ -448,6 +468,7 @@ private:
                              "payload %s carries geometry or a support attestation this bridge "
                              "cannot place: clearing nothing",
                              object.object_id.c_str());
+        clearing_complete_ = false;
         return;
       }
       // The window's reference point is the first primitive's origin lifted
@@ -665,6 +686,11 @@ private:
     if (age_s > attached_state_timeout_s_ || !tracked_set_usable(*state, base_frame_)) {
       // Pending poses and remembered boxes dropped: less is cleared, and a box is never
       // vacated across a gap in which nobody watched it.
+      for (const auto& object : state->attached_objects) {
+        if (object.evidence_kind == kTrackedObjectEvidence) {
+          clearing_complete_ = false;  // a tracker binding this tick could not clear
+        }
+      }
       identity_carries_.clear();
       identity_homes_.clear();
       identity_was_bound_.clear();
@@ -715,6 +741,7 @@ private:
                              "identity clear: TF %s <- %s unavailable (%s): %s stays in the map",
                              base_frame_.c_str(), link_frame.c_str(), ex.what(),
                              object.object_id.c_str());
+        clearing_complete_ = false;
         continue;
       }
       tf2::Transform base_from_link;
@@ -727,6 +754,7 @@ private:
                              "identity clear: %s carries geometry or a track set this bridge "
                              "cannot place: clearing nothing for it",
                              object.object_id.c_str());
+        clearing_complete_ = false;
         continue;
       }
       grid_cleared += clear_identity_cells(grid, pieces, keep);
@@ -1032,6 +1060,8 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
+  /// False once any clearing step of the grid being built withheld what it owed.
+  bool clearing_complete_{true};
   rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
