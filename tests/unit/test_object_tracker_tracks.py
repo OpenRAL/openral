@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from openral_core import ObjectQuery, ObjectQueryStatus, ObjectRole, TrackedObject, TrackStatus
+from openral_core import (
+    ObjectQuery,
+    ObjectQueryStatus,
+    ObjectRole,
+    Pose6D,
+    TrackedObject,
+    TrackStatus,
+)
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker import (
     CameraFrame,
@@ -14,6 +21,7 @@ from openral_world_state.object_tracker import (
     containing_fit,
     visible_fraction,
 )
+from openral_world_state.object_tracker.release import release_track
 
 from tests.unit._tracker_scenes import RES, Solid, grid_from_depth, render, so101_top, sphere, step
 
@@ -265,3 +273,51 @@ def test_a_two_object_refit_never_replaces_a_confirmed_box() -> None:
                   results=[TrackerResult(req.request_id, mask=labels > 0)])  # fmt: skip
     after = _get(tr, before.object_id)
     assert after.status is TrackStatus.CONFIRMED and after.box == before.box
+
+
+def test_a_released_orange_among_three_identical_reassociates_to_itself() -> None:
+    """Release re-association with identical neighbours: only the fall column decides.
+
+    trk:2 is bound, released 10 cm above its spot and lands 3 cm aside; its neighbours
+    (identical oranges 9 cm away) keep their ids and epochs, and the landed one comes back
+    as trk:2, epoch 1, ``identity_inferred`` — never as a neighbour, never a new id.
+    """
+    oranges = _oranges(0.09)
+    tr, wall = _grounded(oranges)
+    before = {o.object_id: o for o in tr.store.all()}
+    two = before["trk:2"]
+    x, y, z = two.box.pose.xyz
+    tr.store.replace(
+        TrackedObject.model_validate(
+            {
+                **two.model_dump(),
+                "status": TrackStatus.BOUND,
+                "bound_hand": "gripper",
+                "attach_link": "jaw",
+                "pose_in_link": Pose6D(xyz=(0, 0, 0), quat_xyzw=(0, 0, 0, 1), frame_id="jaw"),
+            }
+        )
+    )
+    released = release_track(
+        tr.store,
+        "trk:2",
+        object_pose=Pose6D(xyz=(x, y, z + 0.10), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        support_z=_RIG.support_z,
+        cell_m=RES,
+        stamp_ns=50_000_000,
+    )
+    assert released is not None and released.status is TrackStatus.RELEASED
+    cx, cy = _RIG.centre_xy
+    landed = [oranges[0], sphere((cx, cy + 0.03, _RIG.support_z + _R), _R), oranges[2]]
+    for n in range(1, 6):
+        out, wall = step(tr, _RIG, landed, stamp_ns=n * 100_000_000, wall_s=wall + 1)
+    by_id = {o.object_id: o for o in out.tracked.objects}
+    assert sorted(by_id) == ["trk:1", "trk:2", "trk:3"], "no new id for the landed orange"
+    back = by_id["trk:2"]
+    assert back.status is TrackStatus.CONFIRMED and back.epoch == 1 and back.identity_inferred
+    assert abs(back.box.pose.xyz[1] - (cy + 0.03)) < RES
+    for other in ("trk:1", "trk:3"):
+        assert by_id[other].epoch == 0 and not by_id[other].identity_inferred
+        np.testing.assert_allclose(
+            by_id[other].box.pose.xyz[:2], before[other].box.pose.xyz[:2], atol=RES
+        )
