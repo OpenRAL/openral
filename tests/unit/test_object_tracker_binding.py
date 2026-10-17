@@ -420,3 +420,150 @@ def test_static_cells_never_grow_an_untracked_payload(robot: str) -> None:
     store = DictStore([])
     for i, qq in enumerate((q, _lift(robot, q), q)):
         assert binder.grow_untracked(store, _grid(frame, world, lo, 60), qq, 20 + i) is None
+
+
+# ── In-hand growth of a TRACKED payload (#418 r6po_dbg8, 2026-10-17) ────────────────────
+#
+# The bound orange_3 was no longer where the payload said: in the gripper frame the orange
+# drifted 0.9 cm in 80 ms (inhand.py on the bag), then fell out 1.5 cm at 8.03 s. The payload
+# is fixed in the link at bind and only rotation-about-the-pinch-axis growth ran for tracked
+# binds; the cells that moved with the hand but stuck out of the payload were never taken.
+
+
+def _tracked_hold(robot: str) -> tuple[GraspBinder, dict[str, float], NDArray[np.float64]]:
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    r = binder.hand.t_frame_from_attach(frame, q)[:3, :3] @ binder.hand.axes  # c, a, b
+    held = track("trk:1", frame, centre, (0.02, 0.02, 0.02))
+    store = DictStore([held])
+    assert binder.on_attach(store, q, stamp_ns=10).outcome is BindOutcome.TRACKED
+    return binder, q, r
+
+
+def _body(
+    centre: NDArray[np.float64], r: NDArray[np.float64], lo: float, hi: float
+) -> NDArray[np.float64]:
+    """A 3 x 3 cm (closing, width) body long along the pinch approach axis, ``lo..hi`` about
+    ``centre``, sampled at 2 mm: the real orange is wider than its fit by a few mm."""
+    half = np.array([0.015, 0.015, 0.015])
+    axes = (
+        np.arange(-half[0], half[0] + 1e-9, 0.002),
+        np.arange(lo, hi + 1e-9, 0.002),
+        np.arange(-half[2], half[2] + 1e-9, 0.002),
+    )
+    g = np.stack(np.meshgrid(*axes), -1).reshape(-1, 3)
+    return g @ r.T + centre
+
+
+def _hand_step(
+    binder: GraspBinder, robot: str, q: dict[str, float], step_m: float
+) -> dict[str, float]:
+    """``q`` with the hand lifted by about ``step_m`` (``_lift`` scaled; small-angle linear)."""
+    t0 = binder.hand.t_frame_from_attach(binder.frame_id, q)
+    full = binder.hand.t_frame_from_attach(binder.frame_id, _lift(robot, q))
+    k = step_m / float(np.linalg.norm(full[:3, 3] - t0[:3, 3]))
+    lifted = _lift(robot, q)
+    return {n: q[n] + k * (lifted[n] - q[n]) for n in q}
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_tracked_payload_grows_by_cells_that_move_with_the_hand_within_a_cell_of_travel(
+    robot: str,
+) -> None:
+    """The payload (a 4 cm cube) stops 1.5 cm short of the real body along the approach axis;
+    the hand lifts one cell (a clear bind needs half a cell; an untracked payload waits for
+    two) and the cells that came along are payload."""
+    from openral_world_state.object_tracker.binding import _outside_m
+
+    binder, q, r = _tracked_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    body_a = _body(pc, r, -0.02, 0.035)  # reaches 1.5 cm past the cube along the approach axis
+    q_b = _hand_step(binder, robot, q, 1.0 * CELL)  # the lift: one cell
+    t_b = binder.hand.t_frame_from_attach(frame, q_b)
+    move = t_b @ np.linalg.inv(t_a)
+    assert abs(float(np.linalg.norm(move[:3, 3])) - CELL) < 0.2 * CELL
+    body_b = body_a @ move[:3, :3].T + move[:3, 3]
+    floor = float(body_a[:, 2].min()) - 2 * CELL
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    table = np.column_stack([xy + pc[:2], np.full(len(xy), floor)])
+    lo = np.floor((pc - 0.3) / CELL) * CELL
+    store = DictStore([])
+    assert binder.grow_untracked(
+        store, _grid(frame, np.vstack([body_a, table]), lo, 60), q, 20) is None  # fmt: skip
+    grown = binder.grow_untracked(store, _grid(frame, np.vstack([body_b, table]), lo, 60), q_b, 30)
+    assert grown is not None and grown.attachment.geometry_revision == 1
+    assert grown.attachment.object_id == "trk:1" and grown.outcome is BindOutcome.TRACKED
+    hand = binder.hand.hand_boxes(frame, q_b)
+    cells = _grid(frame, body_b, lo, 60).occupied_centers()
+    cells = cells[_outside_m(cells, hand) > CELL / 2]
+    assert float(_outside_m(cells, binder._held_boxes(q_b)).max()) < CELL  # all payload now
+    table_cells = _grid(frame, table, lo, 60).occupied_centers()
+    assert float(_outside_m(table_cells, binder._held_boxes(q_b)).min()) > CELL / 2
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_tracked_payload_follows_a_body_that_slips_out_along_the_approach_axis(
+    robot: str,
+) -> None:
+    """r6po_dbg8: the held orange drifted 0.87 cm along the pinch APPROACH axis (and 0.12 cm
+    along the closing axis) in 80 ms, towards the fingertips, then fell out (inhand.py,
+    slipaxis.py on the bag). Sightings at four hand poses: the body, shifted 2 cm against the travel
+    between the second and the third, is taken once it has been seen to travel with the hand."""
+    from openral_world_state.object_tracker.binding import _outside_m
+
+    binder, q, r = _tracked_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    q_b = _hand_step(binder, robot, q, 1.0 * CELL)
+    q_c = _hand_step(binder, robot, q_b, 1.0 * CELL)
+    q_d = _hand_step(binder, robot, q_c, 1.0 * CELL)
+    store = DictStore([])
+    lo = np.floor((pc - 0.3) / CELL) * CELL
+    # The slab a slip adds is told from the world by the place it left: it shows on the side of
+    # the body the hand travels away from (occupancy alone cannot tell a moving interior cell
+    # from a static one), so the slip goes against the hand's travel, along the pinch axis most
+    # parallel to it (the approach axis in dbg8).
+    t_step = binder.hand.t_frame_from_attach(frame, q_b)[:3, 3] - t_a[:3, 3]
+    k_axis = int(np.argmax(np.abs(r.T @ t_step)))
+    slip = -0.02 * float(np.sign(r[:, k_axis] @ t_step)) * r[:, k_axis]
+    poses = []
+    for qq, shifted in ((q, False), (q_b, False), (q_c, True), (q_d, True)):
+        t = binder.hand.t_frame_from_attach(frame, qq)
+        move = t @ np.linalg.inv(t_a)
+        body = _body(pc + (slip if shifted else 0.0), r, -0.02, 0.02) @ move[:3, :3].T + move[:3, 3]
+        poses.append((qq, body))
+    assert binder.held is not None
+    before = binder.held.attachment
+    stick: list[float] = []
+    for n, (qq, body) in enumerate(poses):
+        grid = _grid(frame, body, lo, 60)
+        grown = binder.grow_untracked(store, grid, qq, 20 + n)
+        cells = grid.occupied_centers()
+        cells = cells[_outside_m(cells, binder.hand.hand_boxes(frame, qq)) > CELL / 2]
+        stick.append(float(_outside_m(cells, binder._held_boxes(qq)).max()))
+        if grown is not None:
+            assert n >= 2, "nothing sticks out before the slip"
+            assert grown.attachment.primitives[: len(before.primitives)] == before.primitives
+    # The cells seen to leave their place are payload now; the slab's interior, which
+    # occupancy alone cannot tell from a static cell, is not taken. The stick-out shrinks.
+    assert binder.held is not None and binder.held.attachment.geometry_revision >= 1
+    assert stick[3] < stick[2] - 1e-6, stick
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_static_neighbour_touching_a_tracked_payload_is_never_taken(robot: str) -> None:
+    """A body that keeps its place in the world while the hand moves is not held: the 0.5-cell
+    threshold must not make the static world payload."""
+    binder, q, r = _tracked_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    neighbour = _body(pc + 0.045 * r[:, 1], r, 0.0, 0.03)  # touches the cube's approach face
+    lo = np.floor((pc - 0.3) / CELL) * CELL
+    store = DictStore([])
+    q_b = _hand_step(binder, robot, q, 1.0 * CELL)
+    for n, qq in enumerate((q, q_b, q_b)):
+        assert binder.grow_untracked(store, _grid(frame, neighbour, lo, 60), qq, 20 + n) is None
