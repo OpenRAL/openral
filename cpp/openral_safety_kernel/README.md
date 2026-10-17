@@ -963,11 +963,11 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   (`…ARefusedTrackedSetMakesEveryObjectIneligible`,
   `…ATrackedSetWhoseRevisionGoesBackIsRefused`). The set is data only; the binding
   check is its one reader. An attachment whose `evidence_kind` is `tracked_object`
-  is **at the hand** only if it names a live (confirmed / occluded / bound) object
-  of the last accepted set, same `object_id` and `epoch`, whose box meets the
+  is **at the hand** only if it names a live (confirmed / occluded / bound),
+  non-`provisional` object of the last accepted set, same `object_id` and `epoch`, whose box meets the
   carrying attachment's own links within one voxel at the **measured**
   configuration (`tracked_box_meets_hand`, kernel FK with mimic joints). Otherwise
-  it is **off the hand** (`reason=no_accepted_set|no_live_track|no_measured_state|box_off_hand`,
+  it is **off the hand** (`reason=no_accepted_set|no_live_track|provisional_track|no_measured_state|box_off_hand`,
   WARN `safety.attachment_binding_off_hand` at most 1 Hz): it stays a checked
   payload — never dropped (`…AnOffHandBindingIsStillCheckedAsAPayload`) — but it
   arms no support witness and is never a grasp handover; a declaration naming it
@@ -979,7 +979,13 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   (`…ARetiredTrackedIdentityNeverReArmsButANewEpochDoes`). Legacy producers
   (`evidence_kind` other than `tracked_object`, `pinch_fallback` included) keep
   every rule above unchanged, the declaration-keyed retirement included; the two
-  keys coexist. Nothing here exempts anything new: every change only refuses.
+  keys coexist. A `provisional` track (`TrackedObject.provisional`: its fit was
+  taken with the robot hiding more than the occluder band, so its box may
+  under-contain) stays K2 exemption geometry — a short box exempts less
+  (`…AProvisionalTrackStillServesAsTheK2Exemption`) — but is never accepted as
+  payload binding geometry (`reason=provisional_track`); the tracker never binds
+  one, and the kernel fails closed if it does. Nothing here exempts anything
+  new: every change only refuses.
 * **Monotone bound geometry (issue #418 K4, draft — Safety-WG review pending).**
   A `tracked_object` payload's geometry is the union the kernel holds for its
   (`object_id`, `epoch`, attach link), in the frame of that binding's first

@@ -51,3 +51,8 @@ geometry_msgs/Pose pose_in_link
 
 # True when re-association after release/loss was by proximity, not continuity.
 bool identity_inferred
+
+# True when the last fit was taken with the robot hiding more of the object than the
+# occluder band re-adds: the geometry may serve exemptions and identity clearing only,
+# never a payload (issue #418, PROVISIONAL).
+bool provisional

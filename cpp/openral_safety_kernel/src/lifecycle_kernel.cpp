@@ -3946,6 +3946,7 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
     entry.live = obj.status == "confirmed" || obj.status == "occluded" || obj.status == "bound";
     entry.target = obj.role == "target";
     entry.exemptible = obj.status == "confirmed" || obj.status == "occluded";
+    entry.provisional = obj.provisional;
     entry.declaration_key = obj.declaration_key;
     entry.id_hash = std::hash<std::string>{}(obj.object_id);
     entry.confirmed_ns = obj.last_confirmed_stamp_ns;
@@ -3995,6 +3996,10 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
       binding.off_hand = "no_accepted_set";
     } else if (entry == nullptr) {
       binding.off_hand = "no_live_track";
+    } else if (entry->provisional) {
+      // A provisional fit may under-contain the object: exemption geometry only,
+      // never a payload binding (the tracker never binds one; fail closed anyway).
+      binding.off_hand = "provisional_track";
     } else if (!measured_state_fresh()) {
       binding.off_hand = "no_measured_state";
     } else {

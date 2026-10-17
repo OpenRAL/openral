@@ -211,8 +211,8 @@ private:
   void ingest_tracked_objects(const openral_msgs::msg::WorldStateStamped& msg);
   // Issue #418 K3 — the binding check. For every accepted attachment whose
   // evidence kind is TRACKED_OBJECT, record in `attached_binding_` whether it
-  // names a live (confirmed / occluded / bound) object of the last accepted set,
-  // same id and epoch, whose box meets the hand (`tracked_box_meets_hand`) at
+  // names a live (confirmed / occluded / bound), non-provisional object of the
+  // last accepted set, same id and epoch, whose box meets the hand (`tracked_box_meets_hand`) at
   // the MEASURED configuration. If not, the binding is off the hand: the payload
   // stays checked, but it is never a grasp handover and arms no support
   // witness. WARN (<= 1 Hz) `safety.attachment_binding_off_hand`.
@@ -428,8 +428,9 @@ private:
     bool live{false};       ///< status confirmed / occluded / bound
     GraspTargetRegion box;  ///< the containing box, validated as a grasp region
     // Issue #418 K2 eligibility inputs, recorded at ingest.
-    bool target{false};      ///< role == "target"
-    bool exemptible{false};  ///< status confirmed / occluded (never bound / split / …)
+    bool target{false};       ///< role == "target"
+    bool exemptible{false};   ///< status confirmed / occluded (never bound / split / …)
+    bool provisional{false};  ///< K2 exemption geometry only, never a K3 binding
     std::string declaration_key;
     std::size_t id_hash{0};          ///< std::hash of object_id (the K6 retirement key)
     std::int64_t confirmed_ns{0};    ///< last_confirmed_stamp_ns (source clock)

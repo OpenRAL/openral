@@ -3901,6 +3901,7 @@ struct GraspBeat {
   std::uint64_t tracked_revision{1};
   std::int64_t tracked_stamp_ns{0};      ///< 0 = the stream stamp
   std::size_t tracked_hull_vertices{0};  ///< one tight hull with this many vertices (0 = none)
+  bool tracked_provisional{false};       ///< TrackedObject.provisional
   /// Issue #418 K2 eligibility fields of the tracked object.
   std::string tracked_role{"target"};
   std::string tracked_key{};             ///< "" = "<target_id>@<declaration_stamp_ns>"
@@ -3947,6 +3948,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     o.visible_cells = b.tracked_visible;
     o.last_confirmed_stamp_ns = b.tracked_confirmed_ns != 0 ? b.tracked_confirmed_ns : stream_ns;
     o.status = b.tracked_status;
+    o.provisional = b.tracked_provisional;
     o.box.frame_id = b.tracked_frame;
     o.box.pose.position.x = b.tracked_x;
     o.box.pose.orientation.w = 1.0;
@@ -6721,6 +6723,8 @@ TEST_F(LifecycleKernelTest, ATrackedBindingOffTheHandIsNeverTheHandover) {
       {"no_live_track", [](GraspBeat& b) { b.tracked_status = "lost"; }},
       {"no_live_track", [](GraspBeat& b) { b.tracked_status = "released"; }},
       {"no_accepted_set", [](GraspBeat& b) { b.tracked_set = false; }},
+      // A provisional fit may under-contain the object: never payload geometry.
+      {"provisional_track", [](GraspBeat& b) { b.tracked_provisional = true; }},
   };
   int n = 0;
   for (const auto& c : cases) {
@@ -7267,6 +7271,15 @@ TEST_F(LifecycleKernelTest, OnModeExemptsTheFingerAgainstItsUniqueEligibleTarget
   // The control: the same scene with the source on the legacy region (no
   // region measured) stops, so the pass above is K2's.
   EXPECT_FALSE(k2_passes("kernel_k2_off", [](GraspRig&, GraspBeat&) {}, k2_params(false)));
+}
+
+TEST_F(LifecycleKernelTest, AProvisionalTrackStillServesAsTheK2Exemption) {
+  // A provisional box may under-contain, so it can only shrink what is exempted:
+  // it stays K2 exemption geometry (K3 refuses it as payload).
+  LogCapture logs;
+  EXPECT_TRUE(k2_passes("kernel_k2_provisional", [](GraspRig&, GraspBeat& b) {
+    b.tracked_provisional = true;
+  })) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, EveryIneligibleTrackedTargetStops) {
