@@ -58,7 +58,7 @@ streams). Every service below is read-only with respect to actuation.
 
 | File | Role |
 | --- | --- |
-| `ExecuteRskill.action` | Goal/result/feedback for invoking an installed rSkill. Goal carries `rskill_id`, `revision`, `prompt`, deadline, and the optional `place_declaration_valid` / `place_declaration` pair (ADR-0097, additive and defaulted off — every pre-ADR-0097 caller keeps today's behaviour) plus its grasp-phase sibling `grasp_declaration_valid` / `grasp_declaration` (same posture); result carries `success` + free-text `failure_reason` + `trace_id` + the typed `failure_kind` uint8 (`FAILURE_NONE`=0 … `FAILURE_CANCELLED`=8, `FAILURE_UNKNOWN`=255); feedback streams `progress` / `chunk_index` / `chunks_total` / executor `state`. |
+| `ExecuteRskill.action` | Goal/result/feedback for invoking an installed rSkill. Goal carries `rskill_id`, `revision`, `prompt`, deadline, and the optional `place_declaration_valid` / `place_declaration` pair (ADR-0097, additive and defaulted off — every pre-ADR-0097 caller keeps today's behaviour) plus its grasp-phase sibling `grasp_declaration_valid` / `grasp_declaration` (same posture); result carries `success` + free-text `failure_reason` + `trace_id` + the typed `failure_kind` uint8 (`FAILURE_NONE`=0 … `FAILURE_CANCELLED`=8, `FAILURE_OBJECT_NOT_FOUND`=9 (issue #418: the goal ended because its object search was exhausted, `ROSObjectNotInMemory`), `FAILURE_UNKNOWN`=255); feedback streams `progress` / `chunk_index` / `chunks_total` / executor `state`. |
 
 ## Schema lineage
 

@@ -25,7 +25,9 @@ heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
   `ROSObjectNotInMemory`) take a ladder rung instead (`object_query_step`):
   `unresolved` (WARN) forces a tick with the `find-object` playbook hint;
   `exhausted` (FAIL) is human handoff — the question ("I can't find the orange;
-  where should I look?") on `/openral/prompt` and the active task abandoned.
+  where should I look?") on `/openral/prompt`, the active task abandoned and the
+  in-flight goal cancelled (`object_not_found`); the runner ends it with
+  `FAILURE_OBJECT_NOT_FOUND`.
 - `/openral/prompt` (Tier D) always preempts.
 
 All preemptions are subject to the 100 ms min-interval.

@@ -466,6 +466,10 @@ if _ROS2_AVAILABLE:
             self._chunks_published: int = 0
             self._estop_latched: bool = False
             self._cancel_requested: bool = False
+            # Issue #418: set when the tracker exhausts a query of this goal's armed
+            # declaration (/openral/failure/world_state); the goal then ends along the
+            # cancel path with this typed failure (FAILURE_OBJECT_NOT_FOUND).
+            self._object_not_found: Any = None
             # Serializes ``_execute_cb`` bodies now that the action server
             # lives in a reentrant callback group: goals still execute one
             # at a time (single-resident-skill invariant), only the action
@@ -704,8 +708,21 @@ if _ROS2_AVAILABLE:
             from openral_msgs.msg import ObjectQuery as _ObjectQueryMsg
 
             self._object_query_msg_cls: Any = _ObjectQueryMsg
-            # Issue #418: the tracker's set, for the grounding wait (QoS as published).
+            # Issue #418: the tracker's set, for the grounding wait (QoS as published),
+            # and its query escalations (an exhausted one ends the goal it belongs to).
             if tracking != "off":
+                from openral_msgs.msg import FailureTrigger as _FailureTriggerMsg
+
+                self._object_query_sub = self.create_subscription(
+                    _FailureTriggerMsg,
+                    "/openral/failure/world_state",
+                    self._on_world_state_failure,
+                    QoSProfile(
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.VOLATILE,
+                        depth=50,
+                    ),
+                )
                 from openral_msgs.msg import TrackedObjectSet as _TrackedObjectSetMsg
 
                 self._tracked_sub = self.create_subscription(
@@ -1212,6 +1229,7 @@ if _ROS2_AVAILABLE:
                 self._active_skill_revision = revision
                 self._chunks_published = 0
                 self._cancel_requested = False
+                self._object_not_found = None
                 self._last_deadline_miss = None
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
@@ -1386,6 +1404,19 @@ if _ROS2_AVAILABLE:
                     # Honour cancel — drain then idle-hold (F1 design).
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         self._drain_and_idle_hold(skill)
+                        not_found = self._object_not_found
+                        if not_found is not None:
+                            # Issue #418: the reasoner abandoned this goal's object; a typed
+                            # failure, recorded on this goal's rskill.execute span.
+                            span.record_exception(not_found)
+                            result.success = False
+                            result.failure_reason = f"{type(not_found).__name__}: {not_found!s}"
+                            # Only this cancel cause; a ROSObjectNotInMemory raised elsewhere
+                            # stays FAILURE_PERCEPTION_STALE (_failure_kind_for_exception).
+                            result.failure_kind = ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND
+                            self._finalize_goal(goal_handle, "abort")
+                            self._reset_active_goal()
+                            return result
                         result.success = False
                         result.failure_reason = "cancelled"
                         result.failure_kind = ExecuteRskill.Result.FAILURE_CANCELLED
@@ -2438,6 +2469,49 @@ if _ROS2_AVAILABLE:
             except ValueError as exc:  # pydantic.ValidationError; a bad set grounds nothing
                 self.get_logger().error(f"rskill_runner.tracked_objects_rejected: {exc!s}")
                 self._tracked_set = None
+
+        def _on_world_state_failure(self, msg: Any) -> None:
+            """End the goal whose object query the tracker exhausted (issue #418).
+
+            An ``exhausted`` ``ObjectQueryEvidence`` whose goal is keyed by this goal's
+            armed grasp or place declaration (``"<kind>:<target_id>@<stamp_ns>"``) is the
+            reasoner's human-handoff rung: the goal ends along the cancel path with
+            ``ROSObjectNotInMemory`` (``FAILURE_OBJECT_NOT_FOUND``) instead of running on
+            to its deadline.
+            """
+            from openral_core import FailureEvidence, ObjectQueryEvidence
+            from openral_observability.failure_bus import KIND_OBJECT_QUERY
+            from pydantic import TypeAdapter, ValidationError
+
+            if int(msg.kind) != KIND_OBJECT_QUERY:
+                return
+            adapter: TypeAdapter[FailureEvidence] = TypeAdapter(FailureEvidence)
+            try:
+                evidence = adapter.validate_json(msg.evidence_json)
+            except ValidationError as exc:
+                self.get_logger().error(f"rskill_runner.object_query_undecodable: {exc!s}")
+                return
+            if not isinstance(evidence, ObjectQueryEvidence) or evidence.escalation != "exhausted":
+                return
+            keys = {
+                f"{kind}:{d.target_id}@{d.stamp_ns}"
+                for kind, d in (
+                    ("grasp", self._active_grasp_declaration),
+                    ("place", self._active_place_declaration),
+                )
+                if d is not None
+            }
+            if evidence.goal_id not in keys:
+                return
+            with self._goal_lock:
+                if self._active_goal is None:
+                    return
+                self._object_not_found = evidence.to_exception()
+                self._cancel_requested = True
+            self.get_logger().error(
+                f"rskill_runner.object_not_found goal={evidence.goal_id} "
+                f"label={evidence.label!r}: ending the goal (FAILURE_OBJECT_NOT_FOUND)"
+            )
 
         def _await_grounding(self, goal_handle: Any) -> None:
             """Wait up to ``grounding_wait_s`` for the armed TARGET queries to ground.

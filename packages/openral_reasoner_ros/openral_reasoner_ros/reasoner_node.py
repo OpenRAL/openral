@@ -1898,6 +1898,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if step.rung == "find_object":
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
             return
+        if self._active_rskill_goal is not None:
+            # The goal acts on an object no one found: end it along the cancel path
+            # (the runner, on the same escalation, ends it with FAILURE_OBJECT_NOT_FOUND).
+            goal_handle, _call, _tp = self._active_rskill_goal
+            self._rskill_cancel_reason = "object_not_found"
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception as exc:  # reason: cancel is best-effort; the runner ends it too
+                self.get_logger().error(
+                    f"object_query cancel_goal_async failed: {type(exc).__name__}: {exc}",
+                )
         if self._prompt_pub is not None and step.handoff_prompt is not None:
             msg = IDLPromptStamped()
             msg.header.stamp = self.get_clock().now().to_msg()
@@ -5264,6 +5275,25 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # failure path is skipped (no fault to report; the patience path
         # already emitted its KIND_TIMEOUT). Only an operator/e-stop cancel
         # (reason None) is not an attempt.
+        not_found_kind = _failure_kind_value("FAILURE_OBJECT_NOT_FOUND")
+        if cancel_reason == "object_not_found" or (
+            not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind
+        ):
+            # Issue #418: the task was already handed to a human (`_on_object_query`); the
+            # goal's typed end is recorded, never verified against the next task.
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="failed",
+                    summary=result.failure_reason or f"GoalStatus={status}",
+                    reflection=(
+                        "failure_kind=FAILURE_OBJECT_NOT_FOUND: the goal's object was not "
+                        "found and the task was handed to a human; do not retry it."
+                    ),
+                    stamp_ns=now_ns,
+                )
+            )
+            return
         if status == 5 and cancel_reason in ("reward", "patience"):
             self.get_logger().info(
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "

@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (52)
+## Topics (53)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -40,6 +40,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/estop_cleared` | `std_msgs/Empty` | python/cli/src/openral_cli/estop.py (estop_reset_command)<br>python/observability/src/openral_observability/dashboard/estop_publisher.py (EstopPublisher._start) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) |
 | `/openral/failure/rskill` | `openral_msgs/FailureTrigger` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) | — |
 | `/openral/failure/safety` | `openral_msgs/FailureTrigger` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure) | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
+| `/openral/failure/world_state` | `openral_msgs/FailureTrigger` | — | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) |
 | `/openral/grasp_declaration` | `openral_msgs/GraspDeclaration` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure)<br>python/hal/src/openral_hal/_grasp_target_leg.py (GraspTargetLeg.setup)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_grasp_declaration) |
 | `/openral/grasp_events` | `openral_msgs/GraspEvent` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/world_state/openral_world_state_ros/object_tracker_node.py (make_object_tracker_node.ObjectTrackerNode.on_configure) |
 | `/openral/human_estop` | `std_msgs/Empty` | — | packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure) |
