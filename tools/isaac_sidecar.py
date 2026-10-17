@@ -9,7 +9,8 @@ environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
     ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash"}
     reset->{"observation"}
-    step->{"observation","reward","terminated","truncated","info"}
+    step{action, frames?}->{"observation","reward","terminated","truncated","info","renders"}
+        frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
@@ -299,7 +300,10 @@ def _serve(
                     "sim_time_ns": scene.sim_time_ns(),
                 }
             elif endpoint == "step":
-                reply = scene.step(np.asarray(data["action"], dtype=np.float32))
+                reply = scene.step(
+                    np.asarray(data["action"], dtype=np.float32),
+                    frames=str(data.get("frames", "render")),
+                )
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
             elif endpoint == "contacts":
