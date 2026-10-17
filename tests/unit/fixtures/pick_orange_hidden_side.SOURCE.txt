@@ -1,0 +1,4 @@
+Source: Spark ~/livesim/418/phase1/r6po_dbg4 (PickOrange, object_tracking on, batch d0b9bf58, 2026-10-17), made by ~/livesim/418/phase1/mkgrow.py.
+depth_m / robot_mask: /openral/cameras/top_depth depth image and robot mask at sim 5.633 s (the last frame before the 5.72 s gripper x voxel stop), cropped rows 81:299 cols 194:484; k = (fx, fy, cx - 194, cy - 81).
+t_base_from_cam: the tf chain base <- top_depth optical frame. voxels: /p418/world_voxels_cloud_2hz at sim 5.617 s cropped to x[-0.2,0.22] y[-0.42,-0.12] z[0,0.16].
+box_trkN: tracked.jsonl boxes (xyz, quat_xyzw, half extents) at sim 5.617 s; prov_trkN their provisional flag. stop_cells: the five voxel centres (mm-rounded) the gripper hit at the checked configuration, all orange_3 by GT (stopcell.py).

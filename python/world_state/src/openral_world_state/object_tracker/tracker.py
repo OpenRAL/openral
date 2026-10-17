@@ -51,6 +51,7 @@ from openral_world_state.object_tracker.fit import (
     visible_fraction,
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.hidden_side import grow_hidden_side
 from openral_world_state.object_tracker.multi_view import intersect_views
 from openral_world_state.object_tracker.scheduler import (
     PRIORITY_BOUND,
@@ -245,6 +246,8 @@ class ObjectTracker:
         self._low_score: dict[str, float] = {}
         # Per low-score track: its run of consecutive confirming grids (last stamp, count).
         self._low_score_run: dict[str, tuple[int, int]] = {}
+        # Per track: the largest smaller-horizontal extent of its clear (non-provisional) fits.
+        self._clear_size: dict[str, float] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -571,7 +574,7 @@ class ObjectTracker:
             return None
         return fit, support_z
 
-    def _apply_mask(  # noqa: PLR0911  # reason: each gate names its own outcome
+    def _apply_mask(  # noqa: PLR0911, PLR0912  # reason: each gate names its own outcome
         self,
         req: TrackerRequest,
         mask: NDArray[np.bool_],
@@ -605,6 +608,8 @@ class ObjectTracker:
         oid, kind = associate(self.store.all(), centroid, voxel_m=grid.resolution)
         if kind == "tie":
             return None
+        if fit.provisional and fit.box is not None:
+            fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
         floor = support_z + grid.resolution
         if oid is None:
             q = self.queries.get(*req.query_key) if req.query_key else None
@@ -668,6 +673,11 @@ class ObjectTracker:
                 }
             )
             self.store.replace(track)
+        if not fit.provisional and fit.box is not None:
+            size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
+            self._clear_size[track.object_id] = max(
+                self._clear_size.get(track.object_id, 0.0), size
+            )
         self._cells[track.object_id] = cells
         self._centroid[track.object_id] = (centroid[0], centroid[1], centroid[2])
         self._disagree.pop(track.object_id, None)
@@ -715,6 +725,65 @@ class ObjectTracker:
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _measured_size(self, object_id: str | None, label: str) -> tuple[float, str] | None:
+        """How big a provisional track's object is, and where that came from, or ``None``.
+
+        In order: the track's own largest clear fit (its smaller horizontal extent); else the
+        largest such extent among CONFIRMED clear tracks of the same label (#418 PickOrange:
+        orange_1 / orange_2 size orange_3 under the jaw); else unknown (no growth). Never a
+        per-label constant.
+        """
+        if object_id is not None and object_id in self._clear_size:
+            return self._clear_size[object_id], "own_clear_fit"
+        sizes = [
+            2.0 * min(o.box.half_extents[0], o.box.half_extents[1])
+            for o in self.store.all()
+            if o.label == label
+            and o.object_id != object_id
+            and o.status is TrackStatus.CONFIRMED
+            and not o.provisional
+        ]
+        return (max(sizes), "same_label_tracks") if sizes else None
+
+    def _grow_hidden(  # reason: the fit step's own state, passed through
+        self,
+        fit: ContainingFit,
+        object_id: str | None,
+        label: str,
+        frame: CameraFrame,
+        grid: VoxelLattice,
+        support_z: float,
+    ) -> ContainingFit:
+        """``fit`` with its box grown into the robot-hidden side to the measured size.
+
+        PROVISIONAL fits only (K2 exemption geometry; never a payload, K3 refuses it).
+        Issue #418 OT-6 / OT-14 amendment (Safety-WG review pending).
+        """
+        measured = self._measured_size(object_id, label)
+        if measured is None or fit.box is None or frame.t_base_from_cam is None:
+            return fit
+        others = [
+            o.box
+            for o in self.store.all()
+            if o.object_id != object_id and o.status not in (TrackStatus.LOST, TrackStatus.RELEASED)
+        ]
+        box, grown = grow_hidden_side(
+            fit.box,
+            measured[0],
+            depth_m=frame.depth_m,
+            robot_mask=frame.robot_mask,
+            intrinsics=frame.intrinsics,
+            t_base_from_cam=frame.t_base_from_cam,
+            grid=grid,
+            support_z=support_z,
+            others=others,
+        )
+        if not grown:
+            return fit
+        log.info("object_tracker.hidden_side_grown", object_id=object_id, label=label,
+                 size_m=round(measured[0], 4), source=measured[1], grown=grown)  # fmt: skip
+        return replace(fit, box=box)
 
     def _may_confirm(  # reason: the confirm step's own state, passed through
         self,
