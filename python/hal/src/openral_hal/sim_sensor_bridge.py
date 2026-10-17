@@ -2882,6 +2882,8 @@ class SimSensorBridge:
         # one-shot wall-clock note if that wait runs long (log only: never a release).
         self._attachment_barrier_revision: int = 0
         self._barrier_voxel_timer: Any = None
+        # Wall/sim clocks when the barrier opened, for the per-grasp wait log.
+        self._barrier_t0: tuple[float, int] | None = None
         self._attachment_transparent_depth_stamp_ns: int | None = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
@@ -4027,6 +4029,7 @@ class SimSensorBridge:
             self._attachment_pending = None
             if masks_new_geometry:
                 self._attachment_barrier_revision = revision
+                self._barrier_t0 = (time.monotonic(), int(self._node.get_clock().now().nanoseconds))
                 self._freeze_preattach_occupancy(revision)
                 self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
                 self._attachment_expect_voxel_update = (
@@ -4630,6 +4633,14 @@ class SimSensorBridge:
 
     def _notify_attachment_perception_ready(self) -> None:
         """Release a deferred action acknowledgement after map-clearing frames."""
+        t0, self._barrier_t0 = self._barrier_t0, None
+        if t0 is not None:
+            self._node.get_logger().info(
+                "attachment perception barrier released: revision "
+                f"{self._attachment_barrier_revision} waited "
+                f"{time.monotonic() - t0[0]:.2f} s wall / "
+                f"{(int(self._node.get_clock().now().nanoseconds) - t0[1]) * 1e-9:.2f} s sim"
+            )
         callback = self._on_attachment_perception_ready
         if callable(callback):
             callback()

@@ -45,6 +45,7 @@ Usage::
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -58,6 +59,7 @@ from numpy.typing import NDArray
 from openral_core import IntrinsicsPinhole, ObjectQueryEvidence, ObjectsMetadata
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.object_tracker.grounding import QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.heartbeat import StarvationFill
 
 log = logging.getLogger(__name__)
 slog = structlog.get_logger(__name__)
@@ -308,14 +310,17 @@ def main() -> None:
     """Entry point for ``ros2 run openral_world_state object_tracker_node``."""
     import rclpy
     from openral_observability import configure_observability
-    from rclpy.executors import ExternalShutdownException
+    from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 
     configure_observability(service_name="openral.object_tracker")
     rclpy.init()
     node = make_object_tracker_node()
     try:
         try:
-            rclpy.spin(node)
+            # Two threads: the callback group of the heartbeat fill runs beside a long fit.
+            executor = MultiThreadedExecutor(num_threads=2)
+            executor.add_node(node)
+            executor.spin()
         except (KeyboardInterrupt, ExternalShutdownException):
             pass  # context already shut down by the SIGINT handler
         finally:
@@ -449,6 +454,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._attach_key: tuple[int, int, int] | None = None
             self._attach_rev = 0
             self._joint_rx_ns = 0
+            # Keeps /openral/tracked_objects and /openral/attachment_state alive while a long
+            # fit holds the executor (the kernel gates on the attachment stamp's age).
+            self._fill: StarvationFill[Any] = StarvationFill()
+            self._fill_group: Any = None
             self._joint_order: list[str] = []
 
         def _p(self, name: str) -> Any:  # reason: rclpy parameter value
@@ -584,13 +593,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
 
         def on_activate(self, state: object) -> TransitionCallbackReturn:
             # Wall-time seed: a restarted or re-activated tracker never regresses a revision.
+            from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
             self._rev_base = time.time_ns()
             self._last_tracked_rev = -1
+            self._fill_group = MutuallyExclusiveCallbackGroup()
             self._attach_key = None
             self._active = True
             self._timers = [
                 self.create_timer(1.0 / float(self._p("process_hz")), self._process),
                 self.create_timer(1.0 / float(self._p("heartbeat_hz")), self._heartbeat),
+                self.create_timer(0.25, self._fill_tick, callback_group=self._fill_group),
             ]
             if self._failure_bus is not None:
                 self._failure_bus.start()
@@ -644,6 +657,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 return
             stamp = _stamp_ns(msg.source_stamp) or _stamp_ns(msg.header.stamp)
             self.session.on_grid(lattice_from_msg(msg), stamp)
+            self._fill.touch(time.monotonic())
 
         def _on_joints(self, msg: Any) -> None:
             if self.session is None:
@@ -655,6 +669,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             }
             stamp = _stamp_ns(msg.header.stamp) or int(self.get_clock().now().nanoseconds)
             self._joint_rx_ns = int(self.get_clock().now().nanoseconds)
+            self._fill.joints(time.monotonic())
+            self._fill.touch(time.monotonic())
             self.session.on_joint_state(positions, stamp)
             self._publish_attachment()
 
@@ -720,6 +736,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         def _process(self) -> None:
             if self.session is None or not self._active:
                 return
+            self._fill.touch(time.monotonic())
             for cam in self._cams.values():
                 if cam.pending is None or cam.info is None:
                     continue
@@ -756,6 +773,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._escalate(e)
             self._publish_tracked()
             self._publish_attachment()
+            self._fill.touch(time.monotonic())
             if out.requests:
                 self._issue(out.requests[0], frame, optical_frame, stamp_msg)
 
@@ -914,6 +932,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 msg, object_factory=TrackedObjectMsg, primitive_factory=PrimitiveMsg
             )
             self._pub_tracked.publish(msg)
+            self._fill.published(time.monotonic(), tracked=msg)
 
         def _publish_attachment(self, *, heartbeat: bool = False) -> None:
             s = self.session
@@ -946,6 +965,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if place is not None:
                 place.model_copy(update={"region": None}).fill_idl(msg.place_declaration)
             self._pub_attach.publish(msg)
+            self._fill.published(time.monotonic(), attach=msg)
 
         def _publish_refusals(self) -> None:
             """``/diagnostics``: the tracker's refusal counts, at most every 5 s."""
@@ -970,7 +990,20 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             msg.header.stamp = self.get_clock().now().to_msg()
             self._pub_diag.publish(msg)
 
+        def _fill_tick(self) -> None:
+            """Republish the last messages when a long callback has starved the heartbeat."""
+            if not self._active:
+                return
+            tracked, attach = self._fill.due(time.monotonic())
+            if tracked is not None and self._pub_tracked is not None:
+                self._pub_tracked.publish(tracked)
+            if attach is not None and self._pub_attach is not None:
+                fresh = copy.deepcopy(attach)
+                fresh.header.stamp = self.get_clock().now().to_msg()
+                self._pub_attach.publish(fresh)
+
         def _heartbeat(self) -> None:
+            self._fill.touch(time.monotonic())
             self._publish_tracked(force=True)
             self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)

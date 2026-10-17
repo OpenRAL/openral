@@ -647,7 +647,9 @@ class GraspBinder:
         A TRACKED payload grows the same way (it only ever grows: K4), from half a cell of
         hand travel (``_TRACKED_MIN_MOVE_CELLS``) instead of two: the clear fit it starts from
         is measured, and the cells it takes are loose, 26-connected to it, in front of the
-        palm and not another track's, the hand's, or a place the world still holds.
+        palm and not another track's, the hand's, or a place the world still holds. Cells at or
+        under the held tracks' ``floor_z`` (the support top + one cell) are the support and are
+        never taken: the payload sweep clears them, which would make a flat support look held.
         """
         held_b = self.held
         if held_b is None or held_b.outcome not in (
@@ -679,7 +681,15 @@ class GraspBinder:
         for boxes in (others, self.hand.hand_boxes(self.frame_id, positions)):
             if boxes:
                 explained |= _outside_m(near, boxes) <= cell / 2.0
-        loose = near[~explained]
+        # The support is never the payload: a cell at or under the clearing floor of a track
+        # this payload is (the support top + one cell) is the table or shelf it stood on. The
+        # payload sweep clears those cells from the octree while the payload overlaps them, so
+        # their first place reads "free" and a flat support looks like it moved with the hand
+        # (#418 r10dr_on2: the banana swelled onto the table, z <= 0, and stopped on it).
+        floor = max(
+            (t.floor_z for t in (store.get(i) for i in mine) if t is not None), default=-math.inf
+        )
+        loose = near[~explained & (near[:, 2] > floor)]
         if not len(loose):
             return None
         linked = self._connected(grid, loose, _outside_m(loose, held) <= cell)

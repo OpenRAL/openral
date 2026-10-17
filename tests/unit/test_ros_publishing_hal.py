@@ -369,6 +369,34 @@ def test_single_action_ack_timeout_is_bounded() -> None:
         hal._wait_for_group_applied(action)
 
 
+def test_ack_timeout_names_the_kernel_drop_seen_during_the_wait() -> None:
+    """A fail-closed drop latches nothing, so the apply-wait times out: say why (r10dr_on1)."""
+
+    class _StubNode:
+        pass
+
+    seen: list[float] = []
+
+    def _drop(since: float) -> str | None:
+        seen.append(since)
+        return "/openral/safety_status:drop_voxel_unavailable (voxel_stale)"
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),
+        description=_so100_like_description(),
+        action_applied_timeout_s=0.01,
+        drop_reason_getter=_drop,
+    )
+    action = Action(
+        control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0] * 6], tick_index=73
+    )
+    with pytest.raises(
+        ROSRuntimeError, match=r"tick 73 was not applied within 0.01 s.*voxel_stale"
+    ):
+        hal._wait_for_group_applied(action)
+    assert len(seen) == 1 and seen[0] > 0.0
+
+
 @pytest.mark.skipif(
     not _rclpy_available(),
     reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
