@@ -267,7 +267,7 @@ def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
     reach = []
     for p in b.attachment.primitives:
         t = t_ao @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
-        corners = _corners((t[:3, 3], t[:3, :3], np.asarray(p.shape.half_extents_m)))
+        corners = _corners((t[:3, 3], t[:3, :3], bounding_half_extents(p.shape)))
         assert (corners @ a).min() >= pinch.palm_m - 1e-6
         reach.append((corners @ a).max())
     assert max(reach) > pinch.palm_m + 0.1  # what lies in front of the palm is still held
