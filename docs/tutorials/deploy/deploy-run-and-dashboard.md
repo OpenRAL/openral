@@ -577,6 +577,12 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   the cells of the one nearest eligible tracked target per hand, cover-checked on the
   kernel's own grid, instead of the HAL's measured region. It needs
   `runtime.grasp_allowance_enabled: true`; the launch refuses `on` without it.
+  With `runtime.workspace_contact_enabled: true`, `on` also narrows workspace contact
+  to explained cells (`workspace_explained_cells_enabled`, issue #418 K7). A slow hand
+  in the workspace is then tolerated only against cells that one of these explains: an
+  eligible tracked object's box, the declared static geometry, or the measured support
+  beside such an object. Anything else in the workspace stops the hand, for example a
+  person's hand in the tote or a carton that grounding missed.
 
 - The C++ safety kernel sits between the policy and the motors: Python
   proposes, C++ disposes, and `ROSSafetyViolation` is never silently caught.

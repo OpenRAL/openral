@@ -206,3 +206,25 @@ def test_the_same_geometry_reuses_one_points_file(launch_module: Any, tmp_path: 
         assert not list(first.parent.glob(f"{first.name}.*.partial"))
     finally:
         first.unlink(missing_ok=True)
+
+
+def test_the_kernels_cells_file_names_exactly_the_cells_the_bridge_marks(
+    launch_module: Any, tmp_path: Path
+) -> None:
+    """Issue #418 K7: one centre per cell of the bridge's points, on the base frame's lattice."""
+    geometry = _cell_geometry(tmp_path)
+    res = 0.015
+    bridge = Path(launch_module._static_points_file(str(geometry), res))
+    cells = Path(launch_module._static_points_file(str(geometry), res, kernel_cells=True))
+    try:
+        assert cells != bridge
+        # The bridge's marking on a fixed-base grid: floor of each point it reads, per cell.
+        marked = {tuple(k) for k in np.floor(np.loadtxt(bridge) / res).astype(np.int64)}
+        centres = np.loadtxt(cells)
+        keys = np.floor(centres / res).astype(np.int64)
+        assert {tuple(k) for k in keys} == marked
+        assert len(centres) == len(marked), "one centre per cell"
+        assert np.allclose(centres, (keys + 0.5) * res), "each point is its cell's centre"
+    finally:
+        bridge.unlink(missing_ok=True)
+        cells.unlink(missing_ok=True)
