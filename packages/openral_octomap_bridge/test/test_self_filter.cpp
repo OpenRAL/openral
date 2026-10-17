@@ -972,3 +972,148 @@ TEST(SelfFilterRobotMask, RendersABoxAndAHulledBoxBySlabs) {
   EXPECT_EQ(at(plain, 50, 42), bridge::kRobotMaskRobot);
   EXPECT_EQ(at(hulled, 50, 42), bridge::kRobotMaskFree);
 }
+
+// ---------------------------------------------------------------------------
+// Real data (issue #418): the sf_dr2 frame that seeded a ghost voxel.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The manifest's whole collision model (chain + every box and its tight geometry),
+// the arrays the deploy launch hands the kernel and this filter.
+bridge::SelfModelParams manifest_model(const YAML::Node& robot) {
+  std::vector<std::pair<double, double>> limits;
+  std::vector<int> mimicked;
+  auto p = manifest_chain(robot, limits, mimicked);
+  for (const auto& geom : robot["collision_geometry"]) {
+    const auto name = geom["link_name"].as<std::string>();
+    const auto it = std::find(p.link_names.begin(), p.link_names.end(), name);
+    if (it == p.link_names.end() || geom["shape"]["shape"].as<std::string>() != "box") {
+      continue;
+    }
+    p.box_link.push_back(it - p.link_names.begin());
+    const auto he = geom["shape"]["half_extents_m"].as<std::vector<double>>();
+    p.box_half_extents.insert(p.box_half_extents.end(), he.begin(), he.end());
+    const auto o = geom["origin_xyz_rpy"].as<std::vector<double>>();
+    p.box_origin_xyzrpy.insert(p.box_origin_xyzrpy.end(), o.begin(), o.end());
+    const auto tight = geom["tight_geometry"];
+    if (!tight) {
+      p.box_hull.push_back(-1);
+      continue;
+    }
+    p.box_hull.push_back(static_cast<std::int64_t>(p.hull_vertex_first.size()));
+    const auto lo = tight["dop_lo_m"].as<std::vector<double>>();
+    const auto hi = tight["dop_hi_m"].as<std::vector<double>>();
+    p.hull_dop_lo.insert(p.hull_dop_lo.end(), lo.begin(), lo.end());
+    p.hull_dop_hi.insert(p.hull_dop_hi.end(), hi.begin(), hi.end());
+    p.hull_vertex_first.push_back(static_cast<std::int64_t>(p.hull_vertices.size() / 3));
+    for (const auto& v : tight["hull_vertices_m"]) {
+      const auto xyz = v.as<std::vector<double>>();
+      p.hull_vertices.insert(p.hull_vertices.end(), xyz.begin(), xyz.end());
+    }
+    p.hull_vertex_count.push_back(static_cast<std::int64_t>(p.hull_vertices.size() / 3) -
+                                  p.hull_vertex_first.back());
+  }
+  return p;
+}
+
+std::vector<tf2::Vector3> points_of(const YAML::Node& n) {
+  std::vector<tf2::Vector3> out;
+  for (const auto& p : n) {
+    const auto v = p.as<std::vector<double>>();
+    out.emplace_back(v[0], v[1], v[2]);
+  }
+  return out;
+}
+
+// The node's mask for one cloud: joint states interpolated at the stamp, padding
+// grown by each primitive's motion over `velocity_padding_dt_s` (0.02 s), as
+// `RobotSelfFilter::on_cloud` builds it.
+bool real_frame_mask(const bridge::SelfModel& model, const YAML::Node& fx,
+                     const YAML::Node& history, bridge::SelfMask& mask) {
+  std::deque<bridge::JointSample> h;
+  for (const auto& s : history) {  // inserted by stamp, as `on_joint_state` does
+    bridge::JointSample sample{s["stamp_ns"].as<std::int64_t>(), s["q"].as<std::vector<double>>()};
+    const auto at = std::upper_bound(
+        h.begin(), h.end(), sample.stamp_ns,
+        [](std::int64_t t, const bridge::JointSample& x) { return t < x.stamp_ns; });
+    h.insert(at, sample);
+  }
+  std::vector<double> q;
+  std::vector<double> qdot;
+  if (bridge::joint_state_at(h, fx["cloud_stamp_ns"].as<std::int64_t>(),
+                             fx["joint_state_period_s"].as<double>(), 0.1, q,
+                             qdot) != bridge::JointStateVerdict::kOk) {
+    return false;
+  }
+  std::vector<double> later(q.size());
+  for (std::size_t d = 0; d < q.size(); ++d) {
+    later[d] = q[d] + qdot[d] * 0.02;
+  }
+  std::vector<tf2::Transform> now_w;
+  std::vector<tf2::Transform> later_w;
+  bridge::self_forward_kinematics(model, q.data(), q.size(), now_w);
+  bridge::self_forward_kinematics(model, later.data(), later.size(), later_w);
+  std::vector<double> motion;
+  bridge::self_primitive_motion(model, now_w, later_w, motion);
+  const auto t = fx["cloud_from_root"]["xyz"].as<std::vector<double>>();
+  const auto r = fx["cloud_from_root"]["quat_xyzw"].as<std::vector<double>>();
+  const tf2::Transform cloud_from_root(tf2::Quaternion(r[0], r[1], r[2], r[3]),
+                                       tf2::Vector3(t[0], t[1], t[2]));
+  std::vector<bridge::PayloadPrimitive> prims;
+  std::vector<const bridge::SelfHull*> hulls;
+  bridge::place_self_primitives(model, now_w, cloud_from_root, prims, &hulls);
+  mask.set(prims, 0.02, hulls, motion);
+  return true;
+}
+
+std::size_t kept(const bridge::SelfMask& mask, const std::vector<tf2::Vector3>& pts) {
+  return static_cast<std::size_t>(std::count_if(
+      pts.begin(), pts.end(), [&](const tf2::Vector3& p) { return !mask.contains(p); }));
+}
+
+}  // namespace
+
+TEST(SelfFilterRealData, SimTimeStampedJointStatesRemoveTheArmTheRecordedStampsLeft) {
+  // sf_dr2 (Isaac 6.1 deploy sim, ~0.13x real time): the HAL stamped each
+  // republish of a post-step frame "node now minus its WALL age", so one pose
+  // carried stamps reaching seconds into the past. At this cloud's stamp the
+  // filter interpolated a pose 15-25 mm / up to 10 deg from the one the camera
+  // saw, and kept 30 returns lying on the robot (left_bar 14, left_distal_phalanx
+  // 12, left_outer_knuckle 4); two of them became voxel 1352907, which stopped
+  // panda_link7 against itself. With each frame stamped at its sim time (the
+  // HAL fix) the same cloud loses every robot return and keeps the world.
+  const auto manifest = repo_root() / "robots" / "droid_franka_robotiq" / "robot.yaml";
+  const auto fixture = repo_root() / "packages" / "openral_octomap_bridge" / "test" / "data" /
+                       "sf_dr2_ghost_frame.yaml";
+  if (!std::filesystem::exists(manifest) || !std::filesystem::exists(fixture)) {
+    GTEST_SKIP() << "no " << manifest << " / " << fixture << " (not a source checkout)";
+  }
+  const YAML::Node robot = YAML::LoadFile(manifest.string());
+  const YAML::Node fx = YAML::LoadFile(fixture.string());
+  bridge::SelfModel model;
+  std::string error;
+  ASSERT_TRUE(bridge::build_self_model(manifest_model(robot), model, error)) << error;
+  ASSERT_EQ(model.primitives.size(), 17U);
+  const auto names = fx["joint_names"].as<std::vector<std::string>>();
+  for (std::size_t d = 0; d < names.size(); ++d) {
+    ASSERT_EQ(robot["joints"][d]["name"].as<std::string>(), names[d]) << "dof column " << d;
+  }
+  const auto leaked = points_of(fx["leaked_points"]);
+  const auto robot_pts = points_of(fx["robot_points"]);
+  const auto world_pts = points_of(fx["world_points"]);
+  ASSERT_EQ(leaked.size(), 30U);
+
+  bridge::SelfMask recorded;
+  ASSERT_TRUE(real_frame_mask(model, fx, fx["recorded_history"], recorded));
+  const std::size_t recorded_kept = kept(recorded, leaked);
+  RecordProperty("robot_returns_kept_recorded_stamps", static_cast<int>(recorded_kept));
+  EXPECT_GT(recorded_kept, 0U) << "the recorded stamps pose the hand off its returns";
+
+  bridge::SelfMask sim_time;
+  ASSERT_TRUE(real_frame_mask(model, fx, fx["sim_time_history"], sim_time));
+  EXPECT_EQ(kept(sim_time, leaked), 0U) << "a robot return survived the sim-time pose";
+  EXPECT_EQ(kept(sim_time, robot_pts), 0U) << "of " << robot_pts.size() << " arm returns";
+  EXPECT_EQ(kept(sim_time, world_pts), world_pts.size())
+      << "a world return 4-8 cm from the robot was removed";
+}
