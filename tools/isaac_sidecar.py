@@ -7,7 +7,7 @@ Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
 environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects","robot_spec_hash","launch_id"}
     reset->{"observation"}
     step{action, frames?}->{"observation","reward","terminated","truncated","info","renders"}
         frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
@@ -71,6 +71,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
     p.add_argument("--headless", action="store_true")
+    p.add_argument(
+        "--launch-id",
+        default="",
+        help="opaque launch identity echoed by ping (openral_sim isaac_sim._launch_id)",
+    )
     p.add_argument(
         "--layout",
         default="manifest",
@@ -234,6 +239,7 @@ def main(argv: list[str]) -> int:
             robot=args.robot,
             objects=args.objects_json or "",
             robot_spec_hash=hashlib.sha256(robot_spec_json.encode("utf-8")).hexdigest(),
+            launch_id=args.launch_id,
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -259,6 +265,7 @@ def _serve(
     robot: str,
     objects: str,
     robot_spec_hash: str,
+    launch_id: str = "",
 ) -> int:
     import msgpack
     import zmq
@@ -291,6 +298,7 @@ def _serve(
                     "robot": robot,
                     "objects": objects,
                     "robot_spec_hash": robot_spec_hash,
+                    "launch_id": launch_id,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the

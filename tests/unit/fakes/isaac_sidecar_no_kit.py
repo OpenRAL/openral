@@ -76,6 +76,10 @@ class _NoKitScene:
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     Path(os.environ["OPENRAL_TEST_ISAAC_ARGV_OUT"]).write_text(json.dumps(argv))
+    spawns = os.environ.get("OPENRAL_TEST_ISAAC_SPAWNS_OUT")
+    if spawns:  # one line per boot: tells an adopted sidecar from a fresh one
+        with open(spawns, "a", encoding="utf-8") as fh:
+            fh.write(f"{os.getpid()}\n")
     action_dim = 0
     sim_dt_per_tick_s: float | None = None
     if args.robot_spec:
@@ -97,6 +101,7 @@ def main(argv: list[str]) -> int:
             robot=args.robot,
             objects=args.objects_json or "",
             robot_spec_hash=hashlib.sha256(Path(args.robot_spec).read_bytes()).hexdigest(),
+            launch_id=args.launch_id,
         )
     )
 

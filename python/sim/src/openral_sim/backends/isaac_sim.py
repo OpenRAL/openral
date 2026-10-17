@@ -397,6 +397,27 @@ class _IsaacSimSidecar(SidecarSimRollout):
     # The frame keys of the last observation that carried frames, reused by a
     # ``frames="none"`` step (its reply carries none).
     _last_frames: dict[str, Any] = field(default_factory=dict)
+    # ``backend_options.keep_alive``: ``close`` leaves the sidecar running for the
+    # next run of the same scene to adopt (``launch_id`` identity) instead of ending it.
+    keep_alive: bool = False
+
+    def close(self) -> None:
+        """End the sidecar, or with ``keep_alive`` leave it running for the next run.
+
+        Kept alive, the next ``sim run`` of the same scene (same launch arguments and
+        sidecar code: the ``launch_id`` in its ping) adopts it and skips Kit's boot; a
+        run without ``keep_alive`` ends it when it closes. Logged either way.
+        """
+        if not self.keep_alive:
+            super().close()
+            return
+        pid = self._client.detach()
+        _log.info(
+            "isaac_sidecar_kept_alive",
+            port=self._client.port,
+            pid=pid,
+            stop="run once without keep_alive (sim run without --keep-sim-open), or kill the pid",
+        )
 
     def set_frames_next_step(self, frames: str) -> None:
         """Choose what the NEXT ``step`` renders: ``"render"``, ``"fresh"`` or ``"none"``.
@@ -1324,6 +1345,9 @@ class IsaacSimOptions(BaseModel):
     # (decimation 1), not per 1/30 s. Physics substeps still follow this rate.
     # None = the robot's own rate.
     control_freq_hz: float | None = Field(default=None, gt=0.0)
+    # Leave the sidecar running when the rollout closes, so the next run of this scene
+    # adopts it instead of booting Kit again (`openral sim run --keep-sim-open`).
+    keep_alive: bool = False
     # Speed knobs (sim cost, not the scene's look). Physics substeps are no knob: the
     # scene derives them from the control rate (one step = one tick, #355).
     # RGB sensor name -> render raster height (px). The width, focal lengths and principal
@@ -2850,7 +2874,6 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
     )
-    launch_argv += ["--robot-spec", robot_spec_path]
     robot_spec_hash = hashlib.sha256(Path(robot_spec_path).read_bytes()).hexdigest()
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
@@ -2860,6 +2883,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         launch_argv += ["--spawn-pose", *spawn_args]
     if objects_json:
         launch_argv += ["--objects-json", objects_json]
+    launch_id = _launch_id(launch_argv, robot_spec_hash)
+    launch_argv += ["--robot-spec", robot_spec_path, "--launch-id", launch_id]
 
     client = SidecarClient(
         name="isaac",
@@ -2871,6 +2896,12 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         auto_spawn=auto_spawn,
         # Reject (loudly) an already-running sidecar on this port that serves a
         # different scene, instead of silently adopting its wrong layout.
+        # A kept-alive sidecar outlives this run: it must not hold our stdout open.
+        log_path=(
+            Path.home() / ".cache" / "openral" / "isaac-sidecar" / f"sidecar-{port}.log"
+            if opts.keep_alive
+            else None
+        ),
         expected_identity={
             "task": env_cfg.task.id,
             "layout": layout,
@@ -2880,6 +2911,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "robot": robot_id,
             "objects": objects_json,
             "robot_spec_hash": robot_spec_hash,
+            "launch_id": launch_id,
         },
     )
     try:
@@ -2901,4 +2933,33 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         task=env_cfg.task,
         _client=client,
         layout=IsaacActionLayout.from_description(desc),
+        keep_alive=opts.keep_alive,
     )
+
+
+#: Sidecar source files whose content is part of ``_launch_id`` (beside the script).
+_SIDECAR_SOURCES = ("isaac_sidecar.py", "_isaac_scene_base.py", "isaac_manifest_scene.py")
+
+
+def _launch_id(launch_argv: list[str], robot_spec_hash: str) -> str:
+    """Identity of a sidecar launch: its arguments and the sidecar code it runs.
+
+    A kept-alive sidecar (``keep_alive``) is adopted only by a run whose launch would
+    be identical (instruction, observation size, step budget, interpreter, script
+    path, the robot spec by content, not its temp path) and whose checkout carries
+    the same sidecar sources, so a run never steps a scene built from other code.
+
+    Example:
+        >>> a = _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "t"], "h")
+        >>> a == _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "t"], "h")
+        True
+        >>> a == _launch_id(["/py", "/nonexistent/isaac_sidecar.py", "--task", "u"], "h")
+        False
+    """
+    digest = hashlib.sha256()
+    digest.update(json.dumps([launch_argv, robot_spec_hash]).encode("utf-8"))
+    tools = Path(launch_argv[1]).parent
+    for name in _SIDECAR_SOURCES:
+        with contextlib.suppress(OSError):
+            digest.update(name.encode("utf-8") + (tools / name).read_bytes())
+    return digest.hexdigest()

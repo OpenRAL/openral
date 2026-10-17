@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -311,3 +312,51 @@ def test_fixed_joints_take_no_slot_but_pad_named_rows() -> None:
         None,
     )
     _nan_eq(out, [0.7, NAN])
+
+
+def test_keep_alive_leaves_the_sidecar_for_the_next_run_to_adopt(
+    recorded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``keep_alive``: closing leaves the sidecar up, the same launch adopts it.
+
+    Real factory and wire against the sidecar's real serve loop (no-Kit scene); the
+    first run without ``keep_alive`` ends it, and its port is free again.
+    """
+    import socket
+
+    import yaml
+    from openral_hal.sim_bringup import build_sim_env_from_yaml
+
+    spawns = tmp_path / "spawns.txt"
+    monkeypatch.setenv("OPENRAL_TEST_ISAAC_SPAWNS_OUT", str(spawns))
+    src = yaml.safe_load(
+        (_REPO_ROOT / "scenes" / "deploy" / "isaac_panda_mobile_warehouse.yaml").read_text()
+    )
+
+    def scene(keep: bool) -> str:
+        doc = dict(src)
+        doc["scene"] = {
+            **doc["scene"],
+            "backend_options": {**doc["scene"].get("backend_options", {}), "keep_alive": keep},
+        }
+        path = tmp_path / f"scene_{keep}.yaml"
+        path.write_text(yaml.safe_dump(doc))
+        return str(path)
+
+    env, _ = build_sim_env_from_yaml(scene(True))
+    port = env._client.port  # type: ignore[attr-defined]  # reason: Isaac rollout internals under test
+    env.close()  # kept alive
+    env, _ = build_sim_env_from_yaml(scene(True))
+    env.close()  # adopted, kept alive again
+    assert len(spawns.read_text().split()) == 1  # booted once
+    env, _ = build_sim_env_from_yaml(scene(False))
+    env.close()  # adopted, then ended: the sidecar `close` endpoint stops its loop
+    assert len(spawns.read_text().split()) == 1
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                break
+        time.sleep(0.1)
+    else:
+        pytest.fail(f"sidecar still bound on {port} after a run without keep_alive")

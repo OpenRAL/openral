@@ -319,6 +319,13 @@ which keep the `image_time_ns` of the state they show. A recorder or
 size the policy consumes (`camera_render_height`): a policy that resizes to 224 px
 gains nothing from a 720p raster.
 
+**Keep Isaac open between runs.** Kit's boot costs 10–15 s per `sim run`. With
+`--keep-sim-open` (`backend_options.keep_alive`) the sidecar stays up when the run
+ends, and the next run of the same scene adopts it: same launch arguments and the
+same sidecar code (the `launch_id` its ping reports), never a different scene or
+checkout. The first run without the flag ends it. For several seeds of one scene,
+`--n-episodes N` in one run is simpler still.
+
 **Pickable objects** go in `backend_options.objects` (validated by
 `IsaacSimOptions`, so a typo fails at load):
 

@@ -35,6 +35,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -221,6 +222,10 @@ class SidecarClient:
     # (e.g. two Isaac scenes that collided on one port). Keys absent from the ping
     # reply are skipped (back-compat with sidecars that don't report identity).
     expected_identity: dict[str, Any] | None = None
+    # When set, a spawned child writes its stdout/stderr to this file (appended)
+    # instead of inheriting ours: a sidecar meant to outlive this process (`detach`)
+    # must not hold our stdout open, or a pipeline reading it (`| tee`, CI) never ends.
+    log_path: Path | None = None
     _ctx: Any = None
     _socket: Any = None
     _child: subprocess.Popen[bytes] | None = field(default=None)
@@ -268,7 +273,10 @@ class SidecarClient:
             child = self._child
             rc = child.poll() if child is not None else None
             self._terminate_child()
-            raise self._boot_failure_error(endpoint, rc)
+            err = self._boot_failure_error(endpoint, rc)
+            if self.log_path is not None:  # "the sidecar stdout above" is in this file
+                raise ROSConfigError(f"{err} Sidecar output: {self.log_path}") from err
+            raise err
         _log.info("sidecar_connected", sidecar=self.name, endpoint=endpoint, mode="auto-spawned")
 
     def _boot_failure_error(self, endpoint: str, returncode: int | None) -> ROSConfigError:
@@ -349,6 +357,24 @@ class SidecarClient:
                 self._socket.close()
             self._socket = None
         self._terminate_child()
+
+    def detach(self) -> int | None:
+        """Close the socket but leave the sidecar running for a later client to adopt.
+
+        The child we spawned (if any) leaves the process-exit reaper, so it outlives
+        this process. Returns its pid (``None`` when we adopted it or spawned none).
+        A later ``connect`` to the same port adopts it when its ping identity matches;
+        a ``close`` (or the sidecar ``close`` endpoint) ends it.
+        """
+        if self._socket is not None:
+            with contextlib.suppress(Exception):
+                self._socket.close()
+            self._socket = None
+        child, self._child = self._child, None
+        if child is None:
+            return None
+        _deregister_spawned_child(child)
+        return child.pid
 
     # ── internals ────────────────────────────────────────────────────────────
 
@@ -457,14 +483,23 @@ class SidecarClient:
         # would shadow the sidecar venv's own numpy with an ABI-incompatible build
         # → "No module named 'numpy._core._multiarray_umath'" at sidecar boot.
         child_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
-        self._child = subprocess.Popen(
-            self.launch_argv,
-            stdout=None,
-            stderr=None,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            env=child_env,
-        )
+        out: Any = None
+        if self.log_path is not None:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            out = self.log_path.open("ab")
+            _log.info("sidecar_output_to_file", sidecar=self.name, path=str(self.log_path))
+        try:
+            self._child = subprocess.Popen(
+                self.launch_argv,
+                stdout=out,
+                stderr=subprocess.STDOUT if out is not None else None,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                env=child_env,
+            )
+        finally:
+            if out is not None:
+                out.close()  # the child holds its own copy of the descriptor
         # Reap this detached child if the owning process exits without calling
         # close() (crash / SIGTERM) — otherwise it leaks GPU memory + the port.
         _register_spawned_child(self._child)
