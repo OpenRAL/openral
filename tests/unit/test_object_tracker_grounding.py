@@ -175,7 +175,7 @@ def test_a_count_all_query_keeps_its_turn_while_another_stays_unresolved() -> No
     q_all = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
     tr.open_query("g", "q0", q_all, "k@0", stamp_ns=0)
     _, wall = step(tr, _RIG, [orange], stamp_ns=0, wall_s=0.0)
-    assert tr.queries.get("g", "q0").status is ObjectQueryStatus.RESOLVED
+    assert _status(tr) is ObjectQueryStatus.RESOLVED
     plate = ObjectQuery(label="plate", count="one", role=ObjectRole.DESTINATION)
     tr.open_query("g", "q1", plate, "k@0", stamp_ns=0)
     depth, _ = render([orange], _RIG)
