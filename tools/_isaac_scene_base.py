@@ -53,7 +53,7 @@ _SUBSTEP_RATIO_TOL = 0.01
 #: ``step`` frame modes (see the module docstring).
 FRAME_MODES = ("render", "fresh", "none")
 #: Observation keys read from rendered frames; a ``frames="none"`` step omits them.
-FRAME_KEYS = ("images", "image_time_ns", "depth_points", "depth_frames")
+FRAME_KEYS = ("images", "image_time_ns", "depth_frames")
 #: Extra renders a ``"fresh"`` step may spend draining the RTX pipeline.
 _MAX_CATCHUP_RENDERS = 8
 #: Isaac's default physics rate, the rate the finger contacts were validated at;
@@ -274,6 +274,18 @@ class IsaacSceneBase:
 
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_rgb is None else self._last_rgb.copy()
+
+    def refresh_frames(self) -> dict[str, Any]:
+        """Render the current state until its frames are current; the observation.
+
+        No physics step: sim time does not move. For a caller that holds the stepping
+        (the deploy-sim attachment barrier) and needs a frame of the present state.
+        """
+        self._before_render()
+        self._world.render()
+        self._last_renders = 1
+        self._catch_up_frames()
+        return self._observe()
 
     def _catch_up_frames(self) -> None:
         """Render until every timed camera's frame shows the current sim time.

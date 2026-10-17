@@ -3994,6 +3994,14 @@ class SimSensorBridge:
                 )
                 if self._attachment_depth_frames_remaining == 0:
                     self._notify_attachment_perception_ready()
+                else:
+                    # The barrier holds the runner, so the sim does not step and its
+                    # clock (which paces the depth timer) stands still: a backend that
+                    # renders on demand renders the frame now and it is published now,
+                    # or none goes out until the idle stepper's hold (2 s) runs out.
+                    refresh = getattr(self._hal, "refresh_frames", None)
+                    if callable(refresh) and refresh():
+                        self._publish_depth_clouds()
             elif self.attachment_action_ack_ready():
                 self._node.get_logger().info(
                     f"attachment revision {revision} masks no new geometry; "
@@ -5260,9 +5268,9 @@ class SimSensorBridge:
     def _publish_depth_clouds_from_obs(self) -> None:
         """Publish the HAL's ready ``base_link`` clouds, and its registered RGB-D frames.
 
-        Non-MuJoCo path: the backend (Isaac scene) already deprojected each depth
-        camera to a ``(N, 3)`` cloud in ``base_link`` (Isaac owns the camera
-        convention), surfaced via ``hal.read_depth_clouds()``. We just wrap each in
+        Non-MuJoCo path: the HAL derives each depth camera's ``(N, 3)`` ``base_link``
+        cloud from the backend's registered RGB-D frame, coloured per pixel
+        (``hal.read_depth_clouds()`` / ``read_depth_cloud_colours()``). We just wrap each in
         a ``PointCloud2`` stamped ``base_link`` — no ray-cast, no per-camera optical
         TF (``base_link`` is already on /tf via /odom). octomap lifts it into the
         world map exactly as it does the MuJoCo clouds. A backend that also renders
@@ -5277,8 +5285,10 @@ class SimSensorBridge:
         frame_times, sim_now_ns = self._frame_times()
         read_frames = getattr(self._hal, "read_depth_frames", None)
         frames = read_frames() if callable(read_frames) else {}
+        read_colours = getattr(self._hal, "read_depth_cloud_colours", None)
+        colours = read_colours() if callable(read_colours) and clouds else {}
         if clouds:
-            from openral_hal.depth_cloud import colours_from_frame, pointcloud2_from_points_xyz
+            from openral_hal.depth_cloud import pointcloud2_from_points_xyz
 
             base_frame_id = getattr(self._description, "base_frame", "base_link")
             for name, pub in self._depth_pubs.items():
@@ -5292,17 +5302,12 @@ class SimSensorBridge:
                     continue
                 self._depth_clouds_published[name] = pts
                 stamp = self._frame_stamp(now, frame_times.get(name), sim_now_ns)
-                # Coloured from the same camera's newest registered RGB, for viewers: the
-                # robot self filter strips it from octomap's input and publishes it,
-                # robot removed, on /openral/world_cloud/self_filtered_rgb.
-                frame = frames.get(name)
-                rgb = (
-                    colours_from_frame(pts, frame["rgb"], frame["k"], frame["optical_in_base"])
-                    if frame is not None
-                    and frame["rgb"].ndim == 3  # noqa: PLR2004  # reason: (H, W, C) colour only
-                    and frame["rgb"].shape[:2] == frame["depth"].shape[:2]
-                    else None
-                )
+                # Each point coloured from the pixel it came from, for viewers: the robot
+                # self filter strips it from octomap's input and publishes it, robot
+                # removed, on /openral/world_cloud/self_filtered_rgb.
+                rgb = colours.get(name)
+                if rgb is not None and len(rgb) != len(pts):
+                    rgb = None
                 cloud = pointcloud2_from_points_xyz(
                     pts, frame_id=base_frame_id, stamp=stamp, rgb=rgb
                 )

@@ -171,6 +171,36 @@ def _check_required_versions(requirements: list[str]) -> None:
         )
 
 
+def _zero_delay_experience(isaac_root: str | None) -> str | None:
+    """Isaac's zero-delay Kit experience file, when the install ships one.
+
+    It runs the RTX pipeline without the default frames in flight, so a camera frame
+    trails the physics by ~2 renders instead of ~4 (measured on Isaac 6.1): a
+    ``frames="fresh"`` step then needs about half the catch-up renders, which are
+    most of its cost in a deploy scene. ``None`` keeps Kit's default experience.
+
+    Example:
+        >>> _zero_delay_experience("/nonexistent") is None
+        True
+    """
+    candidates = []
+    if isaac_root:
+        candidates.append(os.path.join(isaac_root, "apps", "isaacsim.exp.base.zero_delay.kit"))
+    try:
+        import isaacsim  # pip install: the apps live beside the package
+
+        package_file = getattr(isaacsim, "__file__", None)  # None for a namespace package
+        if package_file:
+            candidates.append(
+                os.path.join(
+                    os.path.dirname(package_file), "apps", "isaacsim.exp.base.zero_delay.kit"
+                )
+            )
+    except ImportError:
+        pass
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     if args.site_dir:
@@ -191,7 +221,13 @@ def main(argv: list[str]) -> int:
     #    on a live SimulationApp.
     from isaacsim import SimulationApp
 
-    sim_app = SimulationApp({"headless": bool(args.headless)})
+    experience = _zero_delay_experience(isaac_root)
+    print(f"[isaac_sidecar] Kit experience: {experience or 'default'}", flush=True)
+    sim_app = (
+        SimulationApp({"headless": bool(args.headless)}, experience=experience)
+        if experience
+        else SimulationApp({"headless": bool(args.headless)})
+    )
     if args.headless:
         # Kit keeps rendering its 1280x720 editor viewport every frame even headless;
         # nothing reads it and it costs ~20 % of a scene step (26 -> 20.5 ms measured
@@ -312,6 +348,8 @@ def _serve(
                     np.asarray(data["action"], dtype=np.float32),
                     frames=str(data.get("frames", "render")),
                 )
+            elif endpoint == "refresh_frames":
+                reply = {"observation": scene.refresh_frames()}
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
             elif endpoint == "contacts":
