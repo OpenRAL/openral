@@ -39,6 +39,28 @@ def test_deploy_sim_forwards_the_runtime_override_and_leaves_off_unchanged() -> 
     assert not [a for a in off if a.startswith(("object_tracking:=", "grounding_"))]
 
 
+def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() -> None:
+    """No reasoner means no initial task; the preload prompt is the graded one."""
+    import json
+
+    argv = _argv(
+        _PICK_ORANGE,
+        "sim",
+        {
+            "object_tracking": "shadow",
+            "grounding_wait_s": 8,
+            "enable_reasoner": False,
+            "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
+            "preload_prompt": "Grab orange and place into plate",
+        },
+    )
+    (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("object_queries_json:=")]
+    assert [(q["label"], q["role"]) for q in json.loads(raw)] == [
+        ("orange", "target"),
+        ("plate", "destination"),
+    ]
+
+
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
@@ -107,6 +129,15 @@ def test_the_launch_refuses_an_incomplete_posture(
         object_tracking(mode, **{**_OK, **change})  # type: ignore[operator]
 
 
+def test_a_locator_caches_every_tracked_camera_under_its_own_name(launch_module: object) -> None:
+    """The tracker asks locate_in_view on its depth camera; the locator must hold its frame."""
+    f = launch_module._locator_cameras  # type: ignore[attr-defined]
+    cams, infos = f("top", "/openral/cameras/top/image", ["top=/info"], ("top_depth", "top"))
+    assert cams == ["top=/openral/cameras/top/image", "top_depth=/openral/cameras/top_depth/image"]
+    assert infos == ["top=/info", "top_depth=/openral/cameras/top_depth/camera_info"]
+    assert f("top", "/t", [""], ()) == (["top=/t"], [""])  # nothing tracked: unchanged
+
+
 def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
     launch_module: object,
 ) -> None:
@@ -117,3 +148,26 @@ def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(
     assert f("on", grasp_allowance_enabled=True) is True
     with pytest.raises(ROSConfigError, match="grasp_allowance_enabled"):
         f("on", grasp_allowance_enabled=False)
+
+
+@pytest.mark.parametrize(
+    ("robot", "jaws"),
+    [("so101_follower", 1), ("droid_franka_robotiq", 1), ("openarm", 2)],
+)
+def test_bind_and_on_wire_the_kernels_jaw_open_release(
+    launch_module: object, robot: str, jaws: int
+) -> None:
+    """K5 runs in bind/on with the tracker's own gap and dwell; never in off/shadow."""
+    from openral_core import RobotDescription
+
+    f = launch_module._tracked_release_params  # type: ignore[attr-defined]
+    d = RobotDescription.from_yaml(str(_REPO / "robots" / robot / "robot.yaml"))
+    for mode in ("off", "shadow"):
+        assert f(d, mode) == {}
+    p = f(d, "bind")
+    assert len(p["tracked_release_jaw_joints"]) == jaws
+    assert set(p["tracked_release_jaw_open_sign"]) <= {1.0, -1.0}
+    cals = [j.closure_calibration for j in d.joints if j.name in p["tracked_release_jaw_joints"]]
+    assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals)
+    assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
+    assert f(d, "on") == p

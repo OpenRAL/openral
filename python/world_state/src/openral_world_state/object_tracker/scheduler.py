@@ -59,6 +59,8 @@ class TrackerRequest:
         object_id: Track it refreshes, if any.
         box_xyxy: Box prompt, pixels.
         point_uv: Positive point prompt, pixels.
+        within_xyxy: A bound the picked mask must lie in (pixels), never sent to the
+            segmenter as a prompt (a map seed's image rectangle).
         request_id: Assigned by ``Scheduler.next``; 0 until issued.
     """
 
@@ -72,6 +74,7 @@ class TrackerRequest:
     object_id: str | None = None
     box_xyxy: tuple[float, float, float, float] | None = None
     point_uv: tuple[float, float] | None = None
+    within_xyxy: tuple[float, float, float, float] | None = None
     request_id: int = 0
 
 

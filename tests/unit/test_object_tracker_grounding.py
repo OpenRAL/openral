@@ -88,3 +88,102 @@ def test_tf_or_mask_missing_ages_only() -> None:
     frame = CameraFrame(_RIG.name, 0, depth, _RIG.k, None, np.zeros(depth.shape, np.uint8))
     out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=0, wall_s=0.0)
     assert out.requests == () and out.tracked.objects == []
+
+
+def test_a_seeded_prompt_is_bounded_by_the_seed_rectangle() -> None:
+    """A map-seeded point prompt carries its seed's image rectangle, so the mask pick keeps
+    only candidates inside it (SAM's "whole" of a packed carton is the tote's contents)."""
+    from openral_core import PlaceRegion, Pose6D
+    from openral_world_state.object_tracker.fit import project_box
+
+    x, y = _RIG.centre_xy
+    seed = PlaceRegion(
+        frame_id=_RIG.frame,
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+        half_extents=(0.12, 0.12, 0.07),
+    )
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY.model_copy(update={"seed": seed}), "obj:banana@0", stamp_ns=0)
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=1, wall_s=0.0)
+    (req,) = out.requests
+    rect = project_box(seed, _RIG.k, _RIG.t)
+    assert req.service == "segment_in_view" and req.point_uv is not None and rect is not None
+    assert req.box_xyxy is None  # a bound on the pick, never SAM's box prompt
+    assert req.within_xyxy == tuple(float(v) for v in rect[0])
+    x0, y0, x1, y1 = req.within_xyxy
+    assert x0 <= req.point_uv[0] <= x1 and y0 <= req.point_uv[1] <= y1
+
+
+def test_a_low_body_grounds_when_the_support_tops_out_mid_cell() -> None:
+    """A bowl on a table whose top face lies mid-cell: the object's bottom shares the table's
+    top layer, and that layer must still count as its support (DROID, 2026-10-17)."""
+    from tests.unit._tracker_scenes import RES, cylinder
+
+    x, y = _RIG.centre_xy
+    bowl = cylinder((x, y), 0.08, _RIG.support_z, _RIG.support_z + 0.05)
+    q = ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION)
+    for shift in (0.0, 0.25 * RES, 0.5 * RES, 0.75 * RES):
+        tr = ObjectTracker(_RIG.frame)
+        tr.open_query("g", "q0", q, "obj:bowl@0", stamp_ns=0)
+        out, _ = step(tr, _RIG, [bowl], stamp_ns=0, wall_s=0.0, shift_z=shift)
+        assert [o.label for o in out.tracked.objects] == ["bowl"], shift
+
+
+def test_a_hollow_body_grounds_on_the_support_around_it() -> None:
+    """A bowl seen from above is a ring: the table shows through its middle, so the support
+    search is anchored on the body's highest seen point, not its centroid (DROID bowl)."""
+    from tests.unit._tracker_scenes import RES, sphere
+
+    x, y = _RIG.centre_xy
+    ring = [
+        sphere((x + 0.06 * math.cos(a), y + 0.06 * math.sin(a), _RIG.support_z + 0.015), 0.015)
+        for a in np.linspace(0, 2 * math.pi, 14, endpoint=False)
+    ]
+    depth, labels = render(ring, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    tr = ObjectTracker(_RIG.frame)
+    q = ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION)
+    tr.open_query("g", "q0", q, "obj:bowl@0", stamp_ns=0)
+    (locate,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    rows, cols = np.nonzero(labels > 0)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,
+        results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))],
+    )  # fmt: skip
+    (seg,) = out.requests
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=1.1,
+        results=[TrackerResult(seg.request_id, mask=labels > 0)],
+    )  # fmt: skip
+    assert [o.label for o in out.tracked.objects] == ["bowl"]
+
+
+def test_a_count_all_query_keeps_its_turn_while_another_stays_unresolved() -> None:
+    """Three oranges and a plate: one orange resolves "all", but within the search window
+    the oranges still get detector turns beside the unresolved plate (PickOrange)."""
+    from tests.unit._tracker_scenes import sphere
+
+    x, y = _RIG.centre_xy
+    orange = sphere((x, y, _RIG.support_z + 0.024), 0.024)
+    tr = ObjectTracker(_RIG.frame, TrackerParams(search_start_s=5.0, search_max_s=60.0))
+    q_all = ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET)
+    tr.open_query("g", "q0", q_all, "k@0", stamp_ns=0)
+    _, wall = step(tr, _RIG, [orange], stamp_ns=0, wall_s=0.0)
+    assert tr.queries.get("g", "q0").status is ObjectQueryStatus.RESOLVED
+    plate = ObjectQuery(label="plate", count="one", role=ObjectRole.DESTINATION)
+    tr.open_query("g", "q1", plate, "k@0", stamp_ns=0)
+    depth, _ = render([orange], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    labels = []
+    for n in range(1, 7):
+        wall += 1.0
+        frame = CameraFrame(_RIG.name, n, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+        req = tr.feed(frame, grid=grid, grid_stamp_ns=n, wall_s=wall).requests[0]
+        labels.append(req.label)
+        tr.feed(frame, grid=grid, grid_stamp_ns=n, wall_s=wall,
+                results=[TrackerResult(req.request_id)])  # fmt: skip
+    assert labels.count("orange") >= 2 and labels.count("plate") >= 2, labels

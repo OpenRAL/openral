@@ -17,7 +17,8 @@ border is refused: the cone misses what the frame cut off); A2 the object rests 
 measured support (a surface point under it is refused: truncating there would cut the
 solid); A3 depth is right within ``eps_m``; A4 no hidden part lies outside the prism and
 more than ``w_occ_px`` behind an occluder (weakest in packed totes; logged as the
-occluder pixel count).
+occluder pixel count) -- and no part hidden behind the robot is nearer the camera than the
+object's own measured front (the front cut ignores robot pixels; logged as ``a5``).
 
 The polytope is represented exactly by a few vertices: in optical-depth parametrisation the
 front cut is the plane ``z_opt = z_front`` for every ray and the support is a plane, so
@@ -109,7 +110,10 @@ class ContainingFit:
         surface: ``(N, 3)`` mask depth points ``P`` in the base frame (the cover's ``E``).
         support_z: The support the fit was truncated at.
         assumptions: A1-A4 evidence for the trace (``a1_border_clear``, ``a2_gap_m``,
-            ``a3_depth_valid``, ``a4_occluder_px``).
+            ``a3_depth_valid``, ``a4_occluder_px``, ``a4_robot_beyond_band_px``: robot pixels
+            past the occluder band where the robot touches the mask (refused when any),
+            ``a5_robot_band_px``: silhouette pixels
+            on or beside the robot, whose depth never sets the front cut).
         refusal: Empty when fitted, else why not.
     """
 
@@ -145,6 +149,14 @@ def _neighbour_max(values: NDArray[np.float64]) -> NDArray[np.float64]:
     return out
 
 
+def _rect(box: tuple[float, float, float, float], shape: tuple[int, ...]) -> NDArray[np.bool_]:
+    """The pixels of ``box`` (``x0, y0, x1, y1``), clipped to ``shape``."""
+    out = np.zeros(shape[:2], dtype=bool)
+    c0, r0 = max(math.floor(box[0]), 0), max(math.floor(box[1]), 0)
+    out[r0 : max(math.ceil(box[3]), 0), c0 : max(math.ceil(box[2]), 0)] = True
+    return out
+
+
 def _outer_polygon(points: NDArray[np.float64]) -> NDArray[np.float64]:
     """``(16, 2)`` vertices of the 16-direction polygon that contains ``points``.
 
@@ -165,7 +177,7 @@ def _refused(
     return ContainingFit(None, None, surface, support_z, notes, why)
 
 
-def containing_fit(
+def containing_fit(  # noqa: PLR0911, PLR0915  # reason: one named refusal per assumption
     mask: NDArray[np.bool_],
     depth_m: NDArray[np.float64],
     robot_mask: NDArray[np.uint8] | None,
@@ -177,6 +189,7 @@ def containing_fit(
     frame_id: str,
     stamp_ns: int,
     params: FitParams | None = None,
+    detector_box: tuple[float, float, float, float] | None = None,
 ) -> ContainingFit:
     """Fit the set ``C`` that contains the object one mask shows (module docstring).
 
@@ -192,6 +205,10 @@ def containing_fit(
         frame_id: The grid frame.
         stamp_ns: Depth stamp, carried on the box.
         params: Calibration (``FitParams()`` when ``None``).
+        detector_box: The open-vocabulary detector's box (pixels, ``x0, y0, x1, y1``) the
+            mask was prompted with, if any: its rectangle joins the silhouette (A1), so a
+            mask that lost a rim the detector saw is still contained. Never a track's own
+            projected box (that would only ever grow itself).
 
     Returns:
         A ``ContainingFit``; ``refusal`` names the failed gate.
@@ -218,8 +235,16 @@ def containing_fit(
         np.zeros(mask.shape, dtype=bool) if robot_mask is None else robot_mask == UNCERTAIN_PIXEL
     )
     s0 = np.asarray(mask, dtype=bool) & ~robot
+    # ``P``, the object's measured points: the mask's pixels the filter is sure are not
+    # the robot. Its uncertain band straddles the arm's edge and may hold arm returns; it
+    # widens the cone below, never the prism or the front cut.
+    sure = s0 & ~uncertain
     raw, valid_fraction = backproject_masked_depth(
-        s0, depth_m, intrinsics, min_depth_m=p.min_depth_m, max_depth_m=p.max_depth_m
+        sure if sure.any() else s0,
+        depth_m,
+        intrinsics,
+        min_depth_m=p.min_depth_m,
+        max_depth_m=p.max_depth_m,
     )
     surface = raw @ t_base_from_cam[:3, :3].T + t_base_from_cam[:3, 3]
     notes: dict[str, float | bool] = {"a3_depth_valid": valid_fraction}
@@ -241,7 +266,23 @@ def containing_fit(
     mask_depth = _neighbour_max(np.where(s0 & usable, d, -np.inf))
     nearer = ring & (robot | (usable & (d < mask_depth - p.occluder_tol_m)))
     notes["a4_occluder_px"] = float(nearer.sum())
+    # Never fitted through the robot (design step 1.5): the bands re-add a hidden part up to
+    # ``w_occ_px`` behind an occluder, so a robot region that touches the mask (across the
+    # filter's uncertain band) and reaches past that band may hide more of the object than
+    # the fit can contain — the arm over a plate's near rim cut 2.7 cm off it. Deferred:
+    # the map holds the track until the arm moves on.
+    reach = p.k_px + 1 + p.w_occ_px
+    touch = _dilate(s0, p.k_px + 1) & robot
+    beyond = _dilate(s0, reach + 1) & ~_dilate(s0, reach) & robot
+    notes["a4_robot_beyond_band_px"] = float(beyond.sum()) if touch.any() else 0.0
+    if notes["a4_robot_beyond_band_px"] > 0:
+        return _refused("a4_robot_occluder_wide", surface, support_z, notes)
     silhouette = s0 | (uncertain & _dilate(s0, p.k_px + 1)) | _dilate(nearer, p.w_occ_px)
+    measured = sure
+    if detector_box is not None:
+        rect = _rect(detector_box, silhouette.shape)
+        silhouette |= rect
+        measured = sure | (rect & ~robot & ~uncertain)  # the lost rim's depth sets the front
     sil = _dilate(silhouette, p.k_px)
 
     rows, cols = np.nonzero(sil)
@@ -256,7 +297,17 @@ def containing_fit(
     if not (np.all(rays[:, 2] < 0.0) and origin[2] > support_z):
         return _refused("ray_misses_support", surface, support_z, notes)
     z_support = (support_z - origin[2]) / rays[:, 2]
-    z_front = min(float(d[sil & usable].min()) - p.eps_m, float(z_support.min()))
+    # The front cut is the object's own measured front: the mask's pixels the robot filter
+    # is sure are not the robot. Never a robot or robot-adjacent (uncertain) pixel's depth:
+    # the arm hovers well above what it works over and cannot hold the object, and the
+    # filter's uncertain band straddles the arm's edge, so either would lift the cone to
+    # the arm (a head camera over a tote: +27 cm). The bands keep widening the cone
+    # laterally; a hidden part nearer than that front behind the robot is A4 (logged, a5).
+    front = measured & usable
+    if not front.any():
+        front = sil & usable & ~robot
+    notes["a5_robot_band_px"] = float((sil & (robot | uncertain)).sum())
+    z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
     verts = np.concatenate(

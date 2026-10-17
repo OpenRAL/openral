@@ -29,6 +29,7 @@ from openral_core import (
     TrackedObjectSet,
     TrackStatus,
 )
+from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_core.object_primitives import instance_prompt
 from openral_core.perception_geometry import (
     VoxelLattice,
@@ -40,14 +41,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from openral_world_state.object_tracker.cover import Cell, cover_verdict, surface_cells
 from openral_world_state.object_tracker.fit import (
-    ROBOT_PIXEL,
     ContainingFit,
     FitParams,
     containing_fit,
     project_box,
     visible_fraction,
 )
-from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation
+from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
 from openral_world_state.object_tracker.scheduler import (
     PRIORITY_BOUND,
     PRIORITY_DISAGREE,
@@ -126,6 +126,12 @@ class CameraFrame:
     robot_mask: NDArray[np.uint8] | None
 
 
+#: ``_apply_mask``: try the next (smaller) candidate.
+_NEXT = object()
+#: Tracks whose boxes stand for a measured object: a body inside one is that object.
+_SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
+
+
 @dataclass(frozen=True)
 class TrackerResult:
     """The answer to an issued ``TrackerRequest`` (by ``request_id``).
@@ -134,11 +140,15 @@ class TrackerResult:
         request_id: The request it answers.
         mask: ``SegmentInView``'s mask (``None``: no object at the prompt).
         boxes_xyxy: ``LocateInView``'s detections, pixels.
+        alternatives: Smaller qualifying candidates, largest first, each tried in turn
+            when the one before it cannot be fitted or splits on the map (a packed
+            carton's "part" candidate is several cartons).
     """
 
     request_id: int
     mask: NDArray[np.bool_] | None = None
     boxes_xyxy: tuple[tuple[float, float, float, float], ...] = ()
+    alternatives: tuple[NDArray[np.bool_], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,7 +218,7 @@ class ObjectTracker:
         self.queries.close_goal(goal_id)
         self._pending = [r for r in self._pending if not r.query_key or r.query_key[0] != goal_id]
 
-    def feed(
+    def feed(  # noqa: PLR0912  # reason: one flat pass over steps 0-7
         self,
         frame: CameraFrame,
         *,
@@ -246,8 +256,14 @@ class ObjectTracker:
                     for b in res.boxes_xyxy
                 ]
             elif usable and res.mask is not None and grid is not None:
-                bound = self._apply_mask(req, res.mask, frame, grid, grid_stamp_ns, hand_spaces)
-                if bound is not None:
+                masks = (res.mask, *res.alternatives)
+                for n, mask in enumerate(masks, start=1):
+                    bound = self._apply_mask(
+                        req, mask, frame, grid, grid_stamp_ns, hand_spaces, last=n == len(masks)
+                    )
+                    if bound is not _NEXT:
+                        break
+                if isinstance(bound, tuple):
                     bound_fits.append(bound)
         if grid is not None and grid_stamp_ns > self._grid_ns:
             self._grid_ns = grid_stamp_ns
@@ -279,13 +295,14 @@ class ObjectTracker:
         """The lowest the support under ``surface`` can be, or ``None`` when none is measured.
 
         ``support_top_from_voxels`` over the column around the mask's points, its ring
-        counted only on cells below the lowest seen point (A2: nothing above it can be what
-        the object stands on, so a neighbour's flank never becomes the support). The
+        counted only on cells that start below the lowest seen point (A2: nothing above it
+        can be what the object stands on, so a neighbour's flank never becomes the support). The
         measured top face is quantised up to one cell above the real surface; the cone is
         truncated one cell lower, and the clearing floor stays at the measured top.
         """
         p = self.params
         near = surface[:, :2].mean(axis=0)
+        top_xy = surface[int(np.argmax(surface[:, 2])), :2]
         spread = float(np.ptp(surface[:, :2], axis=0).max()) / 2
         reach = spread + p.support_probe_m + grid.resolution
         centers = grid.occupied_centers()
@@ -296,10 +313,15 @@ class ObjectTracker:
         top = support_top_from_voxels(
             grid,
             column,
-            near_xy=(float(near[0]), float(near[1])),
+            # Anchored on the object's highest seen point, not its centroid: a hollow body
+            # (a bowl) has bare support at its centroid, and an anchor there finds none.
+            near_xy=(float(top_xy[0]), float(top_xy[1])),
             min_cells=p.support_min_cells,
             probe_margin_m=p.support_probe_m,
-            surface_centers=centers[centers[:, 2] < surface[:, 2].min()],
+            # A cell that starts below the lowest seen point: the support's top layer is
+            # often the one the object's own bottom sits in (a bowl on a table at a cell's
+            # mid-height), and the cone is cut a cell under the measured top anyway.
+            surface_centers=centers[centers[:, 2] - 0.5 * grid.resolution < surface[:, 2].min()],
         )
         return None if top is None else top - grid.resolution
 
@@ -311,7 +333,7 @@ class ObjectTracker:
         t_cam = frame.t_base_from_cam
         fp = self.params.fit
         raw, _ = backproject_masked_depth(
-            mask & (frame.robot_mask != ROBOT_PIXEL) if frame.robot_mask is not None else mask,
+            mask & (frame.robot_mask == 0) if frame.robot_mask is not None else mask,
             frame.depth_m,
             frame.intrinsics,
             min_depth_m=fp.min_depth_m,
@@ -336,6 +358,8 @@ class ObjectTracker:
             frame_id=self.store.frame_id,
             stamp_ns=frame.stamp_ns,
             params=fp,
+            # A detector's box (a query prompt), never a track's own projected box.
+            detector_box=req.box_xyxy if req.object_id is None else None,
         )
         log.debug("object_tracker.fit", label=req.label, refusal=fit.refusal, **fit.assumptions)
         if fit.box is None or fit.tight is None:
@@ -347,7 +371,7 @@ class ObjectTracker:
             return None
         return fit, support_z
 
-    def _apply_mask(
+    def _apply_mask(  # noqa: PLR0911  # reason: each gate names its own outcome
         self,
         req: TrackerRequest,
         mask: NDArray[np.bool_],
@@ -355,14 +379,29 @@ class ObjectTracker:
         grid: VoxelLattice,
         grid_stamp_ns: int,
         hands: Sequence[PlaceRegion],
-    ) -> tuple[str, ContainingFit] | None:
+        *,
+        last: bool = True,
+    ) -> tuple[str, ContainingFit] | None | object:
+        """Fit ``mask`` into a track; ``_NEXT`` when a smaller candidate should be tried.
+
+        Not the ``last`` candidate: a refused fit, or one whose box holds two bodies on the
+        map (``map_split``), hands over to the next one instead of minting a SPLIT track.
+        """
         fitted = self._fit(req, mask, frame, grid)
         if fitted is None:
-            return None
+            return None if last else _NEXT
         fit, support_z = fitted
         surface = fit.surface
         centroid = tuple(float(v) for v in surface.mean(axis=0))
         cells = surface_cells(grid, surface, exclude=hands)
+        if not last and fit.box is not None:
+            split = cover_verdict(
+                grid, cells, fit.box, support_z=support_z, own=hands,
+                others=self._other_boxes(centroid),
+            )  # fmt: skip
+            if split.kind == "map_split":
+                log.info("object_tracker.candidate_split", label=req.label, why=split.why)
+                return _NEXT
         oid, kind = associate(self.store.all(), centroid, voxel_m=grid.resolution)
         if kind == "tie":
             return None
@@ -426,7 +465,10 @@ class ObjectTracker:
         cells = self._cells.get(t.object_id)
         if cells is None or t.status in (TrackStatus.BOUND, TrackStatus.LOST):
             return
-        v = cover_verdict(grid, cells, t.box, support_z=t.support_z, own=hands)
+        others = [
+            o.box for o in self.store.all() if o.object_id != t.object_id and o.status in _SETTLED
+        ]
+        v = cover_verdict(grid, cells, t.box, support_z=t.support_z, own=hands, others=others)
         status = t.status
         update: dict[str, object] = {}
         if not v.kind:
@@ -450,6 +492,18 @@ class ObjectTracker:
             log.debug("object_tracker.cover", object_id=t.object_id, kind=v.kind, why=v.why)
         if update:
             self.store.replace(t.model_copy(update=update))
+
+    def _other_boxes(self, centroid: tuple[float, ...]) -> list[PlaceRegion]:
+        """Settled tracks' boxes a new fit at ``centroid`` is not a refit of."""
+        c = np.asarray(centroid[:3], dtype=np.float64)
+        out = []
+        for o in self.store.all():
+            if o.status not in _SETTLED:
+                continue
+            t = homogeneous_from_quat_xyz(o.box.pose.xyz, o.box.pose.quat_xyzw)
+            if not np.all(np.abs((c - t[:3, 3]) @ t[:3, :3]) <= np.asarray(o.box.half_extents)):
+                out.append(o.box)
+        return out
 
     def _visibility(self, frame: CameraFrame) -> None:
         assert frame.t_base_from_cam is not None
@@ -479,12 +533,11 @@ class ObjectTracker:
         for r in self._pending:
             q = self.queries.get(*r.query_key) if r.query_key else None
             if r.camera == frame.camera and q is not None:
-                resolved = q.status is ObjectQueryStatus.RESOLVED
-                prio = PRIORITY_REFRESH if resolved else PRIORITY_QUERY
+                prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
                 out.append(replace(r, stamp_ns=stamp, priority=prio))
         tracks = self.store.all()
         for q in self.queries.due():
-            prio = PRIORITY_REFRESH if q.status is ObjectQueryStatus.RESOLVED else PRIORITY_QUERY
+            prio = PRIORITY_QUERY if self._searching(q) else PRIORITY_REFRESH
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key
             )
@@ -500,7 +553,14 @@ class ObjectTracker:
                 )
                 uv = project_point(hit[0], cam_from_base, frame.intrinsics) if hit else None
                 if hit is not None and uv is not None:
-                    out.append(replace(base, service="segment_in_view", point_uv=uv))
+                    # The seed's image rectangle rides along as a bound on the mask pick,
+                    # not as SAM's box prompt (a seed is wider than the instance, and SAM
+                    # segments what fills a box): SAM's "whole" of a point on one packed
+                    # carton is the tote's contents, which the bound refuses.
+                    rect = project_box(seed, frame.intrinsics, t_cam)
+                    within = None if rect is None else tuple(float(v) for v in rect[0])
+                    seg = replace(base, service="segment_in_view", point_uv=uv)
+                    out.append(replace(seg, within_xyxy=within))
                     continue
                 skip.clear()  # every seed cell tried: start over, and ask the detector
             out.append(base)
@@ -533,6 +593,18 @@ class ObjectTracker:
                 )
             )  # fmt: skip
         return out
+
+    def _searching(self, q: StandingQuery) -> bool:
+        """Whether ``q`` still competes at query priority.
+
+        Unresolved, or a ``count: "all"`` query inside its first ``search_start_s`` of
+        source time: one instance resolves it, but the others are still to be grounded,
+        and at refresh priority an unresolved neighbour query (a plate) would starve it.
+        """
+        if q.status is not ObjectQueryStatus.RESOLVED:
+            return True
+        window = int(self.params.search_start_s * _NS)
+        return q.query.count == "all" and self._now_ns - q.since_ns < window
 
     def _mark_served(self, req: TrackerRequest) -> None:
         if req.object_id is not None:

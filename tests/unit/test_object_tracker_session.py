@@ -261,3 +261,23 @@ def test_a_grasp_event_without_a_measured_jaw_uses_the_newest_sample() -> None:
     s.on_joint_state(q, 10)  # the measured jaw at the hold
     binding = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=nan, hold=nan, stamp_ns=20)
     assert binding is not None and binding.attachment.object_id == oid
+
+
+def test_bind_relays_the_workspace_box_while_the_map_confirms_it() -> None:
+    """With the HAL producer stood down (bind/on) the tracker confirms the declaration's
+    workspace_box on its own grid, the producer's rule, and stamps it with the grid."""
+    s = _session("droid_franka_robotiq")
+    x, y = _RIG.centre_xy
+    ws = PlaceRegion(
+        frame_id=s.frame_id,
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=s.frame_id),
+        half_extents=(0.15, 0.15, 0.08),
+    )
+    s.on_grasp_declaration(_decl(1).model_copy(update={"workspace_box": ws}))
+    assert s.workspace_region() is None  # no grid yet
+    depth, _ = render([_BANANA], _RIG)
+    s.on_grid(grid_from_depth(depth, _RIG), 7 * _S)
+    held = s.workspace_region()
+    assert held is not None and held.stamp_ns == 7 * _S and held.half_extents == ws.half_extents
+    s.on_grid(grid_from_depth(render([], _RIG)[0], _RIG, shift_z=10.0), 8 * _S)  # map empty
+    assert s.workspace_region() is None

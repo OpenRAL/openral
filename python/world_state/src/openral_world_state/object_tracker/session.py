@@ -51,7 +51,11 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
 from openral_core.kinematics import Box, box_gap_lower_bound_m
-from openral_core.perception_geometry import VoxelLattice
+from openral_core.perception_geometry import (
+    WORKSPACE_MIN_COVER,
+    VoxelLattice,
+    region_covers_occupied,
+)
 
 from openral_world_state.object_tracker.binding import Binding, BindOutcome, GraspBinder
 from openral_world_state.object_tracker.pinch import HandModel
@@ -324,6 +328,24 @@ class TrackerSession:
         """Every hand's held payload (joint order), then the released ones still on the wire."""
         held = [b.held.attachment for b in self.binders.values() if b.held is not None]
         return held + [record for record, _ in self._released.values()]
+
+    def workspace_region(self) -> PlaceRegion | None:
+        """The live grasp declaration's ``workspace_box``, map-confirmed, or ``None``.
+
+        What the HAL producer confirms (``WORKSPACE_MIN_COVER`` of its footprint occupied
+        on the newest grid, the same box re-stamped with the grid's ``source_stamp``),
+        here for ``bind`` / ``on``, where the producer stands down: without it the
+        kernel's workspace contact never applies. A box in another frame is not
+        confirmed; the kernel ages the stamp out when grids stop.
+        """
+        decl, grid = self.grasp_declaration, self.grid
+        if decl is None or decl.workspace_box is None or grid is None:
+            return None
+        box = decl.workspace_box
+        if box.frame_id != grid.frame_id:
+            return None
+        _, covered = region_covers_occupied(grid, box, min_fraction=WORKSPACE_MIN_COVER)
+        return box.model_copy(update={"stamp_ns": self.grid_stamp_ns}) if covered else None
 
     def hand_spaces(self) -> list[PlaceRegion]:
         """Each hand's collision boxes (grid frame), at the measured configuration."""

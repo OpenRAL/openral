@@ -93,6 +93,7 @@ def cover_verdict(
     *,
     support_z: float,
     own: Sequence[PlaceRegion] = (),
+    others: Sequence[PlaceRegion] = (),
 ) -> CoverVerdict:
     """Confirm a track's box on one grid: size-aware cover, then one body.
 
@@ -102,6 +103,9 @@ def cover_verdict(
         box: The track's containing box.
         support_z: The support the box stands on.
         own: The declared hands' own spaces, grid frame.
+        others: The other confirmed tracks' boxes, grid frame: a second body wholly inside
+            one of them is that object, not a foreign body (design step 4: the closure
+            cells minus other tracks).
 
     Example:
         >>> import numpy as np
@@ -124,10 +128,10 @@ def cover_verdict(
     if hit < need:
         return CoverVerdict(len(cells), hit, "map_disagrees", f"{hit}/{len(cells)} expected cells")
     pad = 0.5 * grid.resolution
-    kind, why = map_confirms(grid, box, support_z=support_z, min_cover=0.0, pad_m=pad)
+    kind, why = map_confirms(grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=others)
     if kind == "map_split" and own:
         own_kind, _ = map_confirms(
-            grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=own
+            grid, box, support_z=support_z, min_cover=0.0, pad_m=pad, own=[*others, *own]
         )
         if not own_kind:
             return CoverVerdict(len(cells), hit, "map_split_own", why)

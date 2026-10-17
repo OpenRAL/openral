@@ -20,9 +20,11 @@ owns the wire:
 * **Outputs.** ``/openral/tracked_objects`` (``TrackedObjectSet``; RELIABLE, VOLATILE,
   KEEP_LAST 1) on every change and as a ``heartbeat_hz`` heartbeat. In ``bind`` / ``on``
   the node also owns ``/openral/attachment_state`` (RELIABLE, TRANSIENT_LOCAL, KEEP_LAST
-  1): every hand's binding plus the live declarations relayed **without** any region
-  (dispatch never measures one; region exemptions stay the HAL producer's, which is
-  gated off in these modes), heartbeated only while joint states are fresh. In
+  1): every hand's binding plus the live declarations relayed **without** a target
+  region (dispatch never measures one; the HAL producer is gated off in these modes) but
+  with the grasp declaration's ``workspace_box`` as ``workspace_region`` while the
+  tracker's own grid confirms it (``TrackerSession.workspace_region``, the producer's
+  rule), heartbeated only while joint states are fresh. In
   ``shadow`` nothing but ``tracked_objects`` and the logged predicted bindings leaves
   the node.
 * **Revisions** are seeded from wall time (ns) at every activate plus the store's own
@@ -62,7 +64,7 @@ __all__ = [
     "image_array",
     "intrinsics_from_info",
     "main",
-    "pick_mask",
+    "pick_masks",
 ]
 
 #: ``SegmentInView`` server the HAL's vision bridge also calls.
@@ -119,40 +121,59 @@ def intrinsics_from_info(msg: Any) -> IntrinsicsPinhole:  # reason: duck-typed C
     )
 
 
-def pick_mask(
+def _bbox_iou(mask: NDArray[np.bool_], box: tuple[float, float, float, float]) -> float:
+    """IoU of ``mask``'s pixel bounding rectangle with ``box`` (``x0, y0, x1, y1``)."""
+    rows, cols = np.nonzero(mask)
+    mx0, my0, mx1, my1 = cols.min(), rows.min(), cols.max() + 1, rows.max() + 1
+    ix = max(0.0, min(mx1, box[2]) - max(mx0, box[0]))
+    iy = max(0.0, min(my1, box[3]) - max(my0, box[1]))
+    inter = ix * iy
+    union = (mx1 - mx0) * (my1 - my0) + (box[2] - box[0]) * (box[3] - box[1]) - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def pick_masks(
     masks: Sequence[NDArray[np.bool_]],
     box_xyxy: tuple[float, float, float, float] | None,
+    within_xyxy: tuple[float, float, float, float] | None = None,
     *,
     inside_fraction: float = 0.9,
-) -> NDArray[np.bool_] | None:
-    """One mask from the segmenter's nested candidates, for a **containing** fit.
+) -> list[NDArray[np.bool_]]:
+    """The segmenter's qualifying nested candidates, best first, for a **containing** fit.
 
-    The largest candidate (a subpart under-contains the object), except that with a box
-    prompt only candidates with at least ``inside_fraction`` of their pixels inside the
-    box qualify (the "whole" that spills onto the support is not the boxed object).
-    ``None`` when nothing qualifies.
-
-    ponytail: area ranking only; the HAL's nested-body veto (``target_region_from_masks``)
-    is not run here — the tracker's support / cover / one-body checks refuse a mask that
-    swallowed what the object stands on.
+    With a box prompt (a detector's box, or a track's projected box) the candidates at
+    least ``inside_fraction`` inside it, the one whose own rectangle matches the box best
+    first: the detector already said how far the object reaches, and SAM's nested
+    candidates are a subpart, the object and the object spilled onto what it stands on.
+    Without one, the candidates inside ``within_xyxy`` (a map seed's rectangle) or all of
+    them, largest first (a subpart under-contains). The tracker falls back to the next
+    candidate only when one cannot be fitted or splits on the map. *Calibration point:*
+    ``inside_fraction``.
 
     Example:
-        >>> a = np.zeros((4, 4), bool)
-        >>> a[1:3, 1:3] = True
-        >>> b = np.ones((4, 4), bool)
-        >>> int(pick_mask([a, b], None).sum()), int(pick_mask([a, b], (1, 1, 3, 3)).sum())
-        (16, 4)
+        >>> a = np.zeros((8, 8), bool)
+        >>> a[3:5, 3:5] = True
+        >>> b = np.ones((8, 8), bool)
+        >>> [int(m.sum()) for m in pick_masks([a, b], None)]
+        [64, 4]
+        >>> [int(m.sum()) for m in pick_masks([a, b], None, (3, 3, 5, 5))]
+        [4]
+        >>> [int(m.sum()) for m in pick_masks([b, a], (2, 2, 6, 6))]
+        [4]
     """
     ok = [m for m in masks if m.any()]
+    bound = box_xyxy if box_xyxy is not None else within_xyxy
+    if bound is not None:
+        x0, y0, x1, y1 = (round(v) for v in bound)
+        ok = [
+            m
+            for m in ok
+            if m[max(y0, 0) : max(y1, 0), max(x0, 0) : max(x1, 0)].sum()
+            >= inside_fraction * m.sum()
+        ]
     if box_xyxy is not None:
-        x0, y0, x1, y1 = (round(v) for v in box_xyxy)
-        inside = []
-        for m in ok:
-            sub = m[max(y0, 0) : max(y1, 0), max(x0, 0) : max(x1, 0)]
-            if sub.sum() >= inside_fraction * m.sum():
-                inside.append(m)
-        ok = inside
-    return max(ok, key=lambda m: int(m.sum())) if ok else None
+        return sorted(ok, key=lambda m: -_bbox_iou(m, box_xyxy))
+    return sorted(ok, key=lambda m: -int(m.sum()))
 
 
 def backproject_pixel(
@@ -667,8 +688,11 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     if res is not None and res.ok
                     else []
                 )
-                mask = pick_mask(masks, req.box_xyxy)
-                self._answer(frame, optical_frame, stamp_msg, TrackerResult(req.request_id, mask))
+                ok = pick_masks(masks, req.box_xyxy, req.within_xyxy)
+                result = TrackerResult(
+                    req.request_id, ok[0] if ok else None, alternatives=tuple(ok[1:])
+                )
+                self._answer(frame, optical_frame, stamp_msg, result)
 
             future.add_done_callback(done_segment)
 
@@ -710,7 +734,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             grasp, place = s.grasp_declaration, s.place_declaration
             msg.grasp_declaration_valid = grasp is not None
             if grasp is not None:  # dispatch's own declaration: no region, nothing exempted
-                grasp.model_copy(update={"region": None, "workspace_region": None}).fill_idl(
+                # The producer's workspace confirmation, redone on the tracker's grid.
+                ws = s.workspace_region()
+                grasp.model_copy(update={"region": None, "workspace_region": ws}).fill_idl(
                     msg.grasp_declaration, query_factory=ObjectQueryMsg
                 )
             msg.place_declaration_valid = place is not None

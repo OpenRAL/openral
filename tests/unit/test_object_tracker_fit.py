@@ -59,8 +59,9 @@ def _solid(kind: str, rig: Rig, dx: float, dy: float, a: float, b: float, c: flo
 
 def _fit(rig: Rig, solids: list[Solid], **kw: Any) -> ContainingFit:
     depth, labels = render(solids, rig)
+    depth = kw.pop("depth", depth)
     return containing_fit(
-        labels == 1,
+        kw.pop("mask", labels == 1),
         depth,
         kw.pop("robot_mask", np.zeros(depth.shape, np.uint8)),
         rig.k,
@@ -147,6 +148,66 @@ def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
     fit = _fit(rig, [solid], robot_mask=robot)
     assert fit.refusal == "" and fit.assumptions["a4_occluder_px"] > 0
     assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+
+
+def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
+    """A head camera over a tote sees a finger next to the carton, 10 cm nearer (no wider
+    than the occluder band): the band widens the cone laterally, but the cut stays at the
+    carton's own front."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    solid = box((x, y, rig.support_z + 0.03), (0.03, 0.02, 0.03), 0.0)
+    depth, labels = render([solid], rig)
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() + 1, cols.max() + 5))
+    robot[arm] = ROBOT_PIXEL
+    depth[arm] = float(depth[labels == 1].min()) - 0.10
+    # The filter's uncertain band straddles the arm's edge: two of its columns are arm.
+    edge = (slice(rows.min(), rows.max() + 1), slice(cols.max() - 1, cols.max() + 1))
+    robot[edge] = UNCERTAIN_PIXEL
+    depth[edge] = float(depth[labels == 1].min()) - 0.10
+    fit = _fit(rig, [solid], robot_mask=robot, depth=depth)
+    assert fit.refusal == "" and fit.assumptions["a5_robot_band_px"] > 0
+    assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+    assert fit.box is not None
+    top = fit.box.pose.xyz[2] + fit.box.half_extents[2]
+    assert top < rig.support_z + 0.06 + 2 * RES  # not lifted toward the arm
+
+
+def test_a_robot_wider_than_the_occluder_band_defers_the_fit() -> None:
+    """The arm over a plate's near rim: it touches the mask and reaches past the band, so
+    whatever it hides may exceed what the band re-adds. Never fitted through the robot."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    plate = cylinder((x, y), 0.08, rig.support_z, rig.support_z + 0.02)
+    depth, labels = render([plate], rig)
+    rows, cols = np.nonzero(labels == 1)
+    robot = np.zeros(depth.shape, np.uint8)
+    arm = (slice(rows.min(), rows.max() + 1), slice(cols.max() - 10, cols.max() + 20))
+    robot[arm] = ROBOT_PIXEL
+    depth[arm] = float(depth[labels == 1].min()) - 0.15
+    fit = _fit(rig, [plate], robot_mask=robot, depth=depth)
+    assert fit.refusal == "a4_robot_occluder_wide" and fit.box is None
+    assert fit.assumptions["a4_robot_beyond_band_px"] > 0
+
+
+def test_the_detector_box_restores_a_rim_the_mask_lost() -> None:
+    """SAM's plate mask lost its near rim (8 px); the detector's box still holds it (A1)."""
+    rig = _RIGS["so101_top"]
+    x, y = rig.centre_xy
+    plate = cylinder((x, y), 0.08, rig.support_z, rig.support_z + 0.02)
+    _, labels = render([plate], rig)
+    full = labels == 1
+    rows, cols = np.nonzero(full)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    lost = full & (np.arange(full.shape[0])[:, None] < rows.max() - 8)
+    pts = surface_samples(plate)
+    without = _fit(rig, [plate], mask=lost)
+    assert without.refusal == "" and not _in_box(pts, without.box).all()  # the A1 failure
+    fit = _fit(rig, [plate], mask=lost, detector_box=box)
+    assert fit.refusal == "" and _in_box(pts, fit.box).all()
+    assert inside_hull(pts, _hull_base(fit)).all()
 
 
 def test_refusals_name_the_broken_assumption() -> None:

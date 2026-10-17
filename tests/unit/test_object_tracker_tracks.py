@@ -113,3 +113,34 @@ def test_track_store_contract() -> None:
     with pytest.raises(ROSConfigError, match="unknown"):
         store.replace(t.model_copy(update={"object_id": "trk:99"}))
     assert [o.object_id for o in store.all()] == ["trk:1", "trk:2", "trk:3"]
+
+
+def test_a_candidate_that_splits_on_the_map_hands_over_to_the_next() -> None:
+    """SAM's "part" of a point on one of two separate oranges can hold both: its box splits
+    on the map, so the next (smaller) candidate is fitted instead of minting a SPLIT track."""
+    oranges = _oranges(0.08)[:2]
+    depth, labels = render(oranges, _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    # The counter's top mid-cell, as a real octree has it (on a layer boundary the counter's
+    # own returns would round into the layer above and join the two oranges).
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    tr = ObjectTracker(_RIG.frame)
+    tr.open_query("g", "q0", _QUERY, "obj:orange_1@0", stamp_ns=0)
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0)
+    (locate,) = out.requests
+    rows, cols = np.nonzero(labels == 1)  # the detector boxed the first orange
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=1.0,
+        results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))],
+    )  # fmt: skip
+    (seg,) = out.requests  # the detector box's prompt, on the same frame
+    both, one = labels > 0, labels == 1
+    out = tr.feed(
+        frame, grid=grid, grid_stamp_ns=1, wall_s=2.1,
+        results=[TrackerResult(seg.request_id, mask=both, alternatives=(one,))],
+    )  # fmt: skip
+    (track,) = out.tracked.objects
+    assert track.status is TrackStatus.CONFIRMED
+    x, y = _RIG.centre_xy  # labels == 1 is the first orange, at x - 0.08
+    assert np.linalg.norm(np.asarray(track.box.pose.xyz[:2]) - (x - 0.08, y)) < 0.02

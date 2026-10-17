@@ -293,7 +293,7 @@ def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec 
 
 
 def projection_geometry(
-    spec: SensorSpec,
+    spec: SensorSpec | None,
     *,
     width: int,
     height: int,
@@ -308,7 +308,10 @@ def projection_geometry(
     the returned notes so the caller can log it (CLAUDE.md §1.4).
 
     Args:
-        spec: The camera's manifest ``SensorSpec``.
+        spec: The camera's manifest ``SensorSpec``; ``None`` for a camera the manifest
+            does not declare (a scene's simulated depth camera the object tracker fits
+            with, issue #418), which then needs both the live ``CameraInfo`` and an image
+            header frame: there is no manifest value to fall back to.
         width: Width of the cached frame (pixels).
         height: Height of the cached frame (pixels).
         header_frame_id: ``header.frame_id`` of the cached image; blank when
@@ -323,7 +326,8 @@ def projection_geometry(
 
     Raises:
         ROSConfigError: The live ``CameraInfo`` is uncalibrated, or there is no
-            live K and the manifest declares no intrinsics either.
+            live K and the manifest declares no intrinsics either, or a camera with no
+            ``SensorSpec`` lacks the live K or the image header frame.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -340,6 +344,20 @@ def projection_geometry(
     from openral_hal.depth_cloud import intrinsics_from_camera_info
 
     fallbacks: list[str] = []
+    if spec is None:
+        frame = header_frame_id.strip()
+        if camera_info is None or not frame:
+            raise ROSConfigError(
+                "a camera with no SensorSpec in the robot manifest projects only through its "
+                "live CameraInfo and its image header frame; "
+                f"camera_info={'set' if camera_info is not None else 'missing'}, "
+                f"header frame_id={frame!r}"
+            )
+        return (
+            scale_intrinsics_to(intrinsics_from_camera_info(camera_info), width, height),
+            frame,
+            (),
+        )
     if camera_info is not None:
         base = intrinsics_from_camera_info(camera_info)
     elif spec.intrinsics is not None:
@@ -781,13 +799,9 @@ def _node_class() -> type:
                 response.failure_reason = stale
                 self.get_logger().warning(response.failure_reason)
                 return response
+            # A camera the manifest does not declare (a scene's simulated depth camera)
+            # projects through its live CameraInfo and image header only.
             spec = sensor_spec_by_name(self._description, camera)
-            if spec is None:
-                response.failure_reason = (
-                    f"ROSConfigError: camera {camera!r} has no SensorSpec in the robot manifest"
-                )
-                self.get_logger().warning(response.failure_reason)
-                return response
             camera_info = self._infos.get(camera)
             if camera in self._info_topics and camera_info is None:
                 # Configured for the live K but none has arrived: refuse rather

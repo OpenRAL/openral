@@ -79,6 +79,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import IntrinsicsPinhole
 
 __all__ = [
+    "WORKSPACE_MIN_COVER",
     "TargetRefusal",
     "TargetRegionFit",
     "TargetSeed",
@@ -101,6 +102,15 @@ __all__ = [
     "target_seed_from_voxels",
     "track_region",
 ]
+
+#: A declared manipulation workspace (``GraspDeclaration.workspace_box``) is confirmed
+#: while occupied cells centred in it cover at least this fraction of its footprint
+#: (``region_covers_occupied``) on a fresh grid. A tote interior holding its cartons
+#: covers most of its floor; a box declared over empty space (a wrong pose, the tote
+#: taken away) covers none. 10 % keeps a nearly-emptied tote confirmed while a stray
+#: cell or two cannot confirm an empty volume. Shared by the HAL grasp-target producer
+#: and the #418 object tracker. *Calibration point.*
+WORKSPACE_MIN_COVER = 0.10
 
 # Unit-quaternion tolerance, the same one bucket2_markers.occupied_voxel_centers applies:
 # an unset OccupancyVoxels.orientation is all zeros, never identity.

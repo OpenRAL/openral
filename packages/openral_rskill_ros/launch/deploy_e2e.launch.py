@@ -1191,6 +1191,81 @@ def _object_tracking(
     return mode, tracked
 
 
+def _locator_cameras(
+    det_camera: str,
+    det_image_topic: str,
+    det_camera_infos: list[str],
+    tracked_cameras: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    """An on-demand locator's ``cameras`` / ``camera_infos`` (``id=topic`` entries).
+
+    The detector camera first (the primary a request with no ``camera`` gets), then
+    every object-tracker camera (issue #418) under its own name with its registered RGB
+    stream: the tracker asks ``locate_in_view`` on the depth camera it fits with, and a
+    locator that cached only the detector camera answers "no frame for camera".
+
+    Example:
+        >>> cams, infos = _locator_cameras("top", "/cam/top", [""], ("top_depth",))
+        >>> cams
+        ['top=/cam/top', 'top_depth=/openral/cameras/top_depth/image']
+        >>> infos
+        ['top_depth=/openral/cameras/top_depth/camera_info']
+    """
+    extra = [c for c in tracked_cameras if c != det_camera]
+    cameras = [f"{det_camera}={det_image_topic}"]
+    cameras += [f"{c}={camera_topic(c, CameraTopicKind.IMAGE)}" for c in extra]
+    infos = [i for i in det_camera_infos if i]
+    infos += [f"{c}={camera_topic(c, CameraTopicKind.CAMERA_INFO)}" for c in extra]
+    return cameras, infos or [""]
+
+
+#: The jaw-open release dwell (source seconds) the kernel (K5) and the tracker share.
+_TRACKED_RELEASE_DWELL_S = 0.3
+
+
+def _tracked_release_params(description: object, object_tracking: str) -> dict[str, object]:
+    """The kernel's K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
+
+    Every calibrated gripper joint (``role: gripper`` with a ``closure_calibration``), its
+    open direction (away from ``closed_position``, which is an end of its
+    ``position_limits``), the release gap the tracker's own monitor uses (half the
+    ``stall_gap``; the largest when hands differ, so the kernel never releases before
+    the tracker) and the shared dwell. Without it the kernel keeps a released payload
+    until the tracker's binding drops off the wire.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> p = _tracked_release_params(d, "bind")
+        >>> p["tracked_release_jaw_joints"], p["tracked_release_jaw_open_sign"]
+        (['gripper'], [1.0])
+        >>> _tracked_release_params(d, "shadow")
+        {}
+    """
+    if object_tracking not in ("bind", "on"):
+        return {}
+    jaws: list[str] = []
+    signs: list[float] = []
+    gaps: list[float] = []
+    for joint in getattr(description, "joints", []):
+        cal = getattr(joint, "closure_calibration", None)
+        if joint.role != "gripper" or cal is None or joint.position_limits is None:
+            continue
+        lo, hi = joint.position_limits
+        jaws.append(joint.name)
+        closed = float(cal.closed_position)
+        signs.append(1.0 if abs(closed - lo) <= abs(closed - hi) else -1.0)
+        gaps.append(float(cal.stall_gap) / 2.0)
+    if not jaws:
+        return {}
+    return {
+        "tracked_release_jaw_joints": jaws,
+        "tracked_release_jaw_open_sign": signs,
+        "tracked_release_gap": max(gaps),
+        "tracked_release_dwell_s": _TRACKED_RELEASE_DWELL_S,
+    }
+
+
 def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: bool) -> bool:
     """The kernel's ``tracked_grasp_exemption_enabled`` (issue #418 K2): true iff ``on``.
 
@@ -2274,6 +2349,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
     kernel_params["use_sim_time"] = use_sim_time
     kernel_params["tracked_release_timeout_s"] = tracked_release_timeout_s
+    kernel_params.update(_tracked_release_params(description, object_tracking))
     # The kernel refuses sim-only rules (workspace contact, #349) on anything but sim.
     kernel_params["hal_mode"] = hal_mode
     # Actuated joint order (length n_dof) so the kernel maps /joint_states (named) into q_meas
@@ -3913,6 +3989,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # continuous detector's camera/topic; the node's mode wiring (detector
         # invocation mode)
         # makes them serve-only (no continuous publish leg). Throttle by engine.
+        locator_cameras, locator_infos = _locator_cameras(
+            det_camera, det_image_topic, det_camera_infos, tracked_cameras
+        )
         for spec in locator_specs:
             locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(spec["engine"], 5.0)
             locator_params = {
@@ -3921,7 +4000,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Cache under the real camera name so locate_in_view(camera="top")
                 # hits — see the continuous detector's primary_camera note above.
                 "primary_camera": det_camera,
-                "camera_infos": det_camera_infos,
+                "cameras": locator_cameras,
+                "camera_infos": locator_infos,
                 "manifest_path": spec["manifest"],
                 "onnx_path": object_detector_onnx,
                 "query": object_detector_query,
@@ -4020,6 +4100,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     .lower()
                     in ("1", "true", "yes"),
                     "released_clear_timeout_s": tracked_release_timeout_s,
+                    "release_dwell_s": _TRACKED_RELEASE_DWELL_S,
                     "object_queries_json": object_queries_json,
                     # The first on-demand locator, if any; none = seeds and refreshes only.
                     "locate_service": (

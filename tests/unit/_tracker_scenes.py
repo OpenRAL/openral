@@ -223,19 +223,24 @@ def surface_samples(solid: Solid, n: int = 400) -> NDArray[np.float64]:
 
 
 def grid_from_depth(
-    depth: NDArray[np.float64], rig: Rig, *, extra: Sequence[tuple[int, int, int]] = ()
+    depth: NDArray[np.float64],
+    rig: Rig,
+    *,
+    extra: Sequence[tuple[int, int, int]] = (),
+    shift_z: float = 0.0,
 ) -> VoxelLattice:
     """What a single-view octomap of ``depth`` holds: every back-projected point's cell.
 
-    The lattice is 0.6 m square around ``rig.centre_xy``, its layer boundary on the support.
-    ``extra`` cells are marked occupied too (a body the camera did not see).
+    The lattice is 0.6 m square around ``rig.centre_xy``, its layer boundary on the support
+    (``shift_z`` moves it: a real octree's layers fall wherever they fall). ``extra`` cells
+    are marked occupied too (a body the camera did not see).
     """
     k, t = rig.k, rig.t
     rows, cols = np.nonzero(depth > 0)
     z = depth[rows, cols]
     pts = np.stack(((cols + 0.5 - k.cx) / k.fx * z, (rows + 0.5 - k.cy) / k.fy * z, z), axis=1)
     pts = pts @ t[:3, :3].T + t[:3, 3]
-    origin = (rig.centre_xy[0] - 0.3, rig.centre_xy[1] - 0.3, rig.support_z - 2 * RES)
+    origin = (rig.centre_xy[0] - 0.3, rig.centre_xy[1] - 0.3, rig.support_z - 2 * RES + shift_z)
     size = (40, 40, 20)
     ijk = np.floor((pts - origin) / RES).astype(np.int64)
     ok = np.all((ijk >= 0) & (ijk < size), axis=1)
@@ -287,6 +292,7 @@ def step(
     extra: Sequence[tuple[int, int, int]] = (),
     hands: Sequence[PlaceRegion] = (),
     answers: int = 8,
+    shift_z: float = 0.0,
 ) -> tuple[TrackerOutput, float]:
     """Feed one frame, answering the requests it raises.
 
@@ -294,7 +300,7 @@ def step(
     """
     depth, labels = render(solids, rig)
     frame = CameraFrame(rig.name, stamp_ns, depth, rig.k, rig.t, np.zeros(depth.shape, np.uint8))
-    grid = grid_from_depth(depth, rig, extra=extra) if with_grid else None
+    grid = grid_from_depth(depth, rig, extra=extra, shift_z=shift_z) if with_grid else None
     out = tracker.feed(frame, grid=grid, grid_stamp_ns=stamp_ns, wall_s=wall_s, hand_spaces=hands)
     escalations = list(out.escalations)
     for n in range(answers + 1):
