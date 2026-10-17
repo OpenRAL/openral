@@ -305,6 +305,7 @@ def main() -> None:
 
 def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
     """Build the lifecycle node (class defined here so the module imports without rclpy)."""
+    from geometry_msgs.msg import Point
     from openral_core import (
         GraspDeclaration,
         ObjectQuery,
@@ -800,6 +801,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             sreq.camera = req.camera
             sreq.frame_id = optical_frame
             sreq.tcp_point.x, sreq.tcp_point.y, sreq.tcp_point.z = point
+            for nuv in req.negative_uv:  # robot pixels beside a half-hidden object
+                neg = backproject_pixel(frame.depth_m, frame.intrinsics, nuv)
+                if neg is not None:
+                    pt = Point()
+                    pt.x, pt.y, pt.z = neg
+                    sreq.negative_points.append(pt)
             sreq.box_valid = req.box_xyxy is not None
             if req.box_xyxy is not None:
                 sreq.box_xyxy = [float(v) for v in req.box_xyxy]

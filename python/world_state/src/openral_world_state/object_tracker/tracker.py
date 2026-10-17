@@ -13,6 +13,7 @@ visibility change, no request.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -42,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from openral_world_state.object_tracker.cover import Cell, cover_verdict, surface_cells
 from openral_world_state.object_tracker.fit import (
+    ROBOT_PIXEL,
     ContainingFit,
     FitParams,
     containing_fit,
@@ -73,6 +75,9 @@ class TrackerParams(BaseModel):
 
     Attributes:
         theta_vis: Visible fraction below which an object is OCCLUDED (and never fitted).
+        theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
+            exemption-shrinking and payload-union geometry only), so a target the arm half
+            hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
         max_age_s: Source seconds without a confirming grid before a track is ineligible.
         lost_s: Source seconds without evidence before an ineligible track is LOST.
         keep_lost_s: Source seconds a LOST track is kept as a re-association prior.
@@ -93,6 +98,7 @@ class TrackerParams(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     theta_vis: float = Field(default=0.5, gt=0.0, le=1.0)
+    theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -138,6 +144,10 @@ VIEW_WINDOW_S = 0.5
 #: A locate's crop: the projected search region grown by this fraction of its size on
 #: every side (a seed or workspace box need not be tight in the image). *Calibration point.*
 LOCATE_ROI_PAD = 0.25
+#: A detector box more than this fraction ROBOT pixels is re-prompted on what it hides.
+ROBOT_BOX_FRACTION = 0.5
+#: Negative point prompts placed on the robot in such a box.
+ROBOT_BOX_NEGATIVES = 3
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -210,6 +220,7 @@ class ObjectTracker:
         #: Where queried objects are expected (the grasp declaration's workspace box, set
         #: by the session); a locate is cropped to it when its query has no seed.
         self.search_region: PlaceRegion | None = None
+        self._research_logged: dict[tuple[str, str], int] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -274,7 +285,13 @@ class ObjectTracker:
                 if not res.boxes_xyxy:
                     self._refuse(f"{req.label}@{req.camera}", "locate_found_nothing")
                 self._pending += [
-                    replace(req, service="segment_in_view", box_xyxy=b, served_ns=-1, request_id=0)
+                    self._robot_box_reprompt(
+                        replace(
+                            req, service="segment_in_view", box_xyxy=b, served_ns=-1, request_id=0
+                        ),
+                        frame,
+                        grid,
+                    )
                     for b in res.boxes_xyxy
                 ]
             elif usable and (res.mask is None or grid is None):
@@ -315,6 +332,66 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _robot_box_reprompt(
+        self, req: TrackerRequest, frame: CameraFrame, grid: VoxelLattice | None
+    ) -> TrackerRequest:
+        """``req`` re-prompted on the object a mostly-robot detector box hides, else ``req``.
+
+        #418 PickOrange: the open-vocabulary locator boxed the arm over orange_3 as "orange";
+        SAM, prompted with that box, segmented the arm. When more than
+        ``ROBOT_BOX_FRACTION`` of the box is ROBOT, the prompt becomes a positive point on
+        the free (never band, never robot) pixels inside the box that stand above the
+        support -- the connected region of them lying most beside the robot (what it half
+        hides; ``_most_hidden``), at its pixel nearest its centroid -- plus
+        ``ROBOT_BOX_NEGATIVES`` negative points on the robot, the box kept as the bound
+        the mask must lie in. The fit then goes through the robot: PROVISIONAL.
+        """
+        if req.box_xyxy is None or frame.robot_mask is None or frame.t_base_from_cam is None:
+            return req
+        h, w = frame.robot_mask.shape
+        x0, y0 = max(int(req.box_xyxy[0]), 0), max(int(req.box_xyxy[1]), 0)
+        x1, y1 = min(math.ceil(req.box_xyxy[2]), w), min(math.ceil(req.box_xyxy[3]), h)
+        sub = frame.robot_mask[y0:y1, x0:x1]
+        if sub.size == 0 or float((sub == ROBOT_PIXEL).mean()) <= ROBOT_BOX_FRACTION:
+            return req
+        depth = frame.depth_m[y0:y1, x0:x1]
+        free = (sub == 0) & np.isfinite(depth) & (depth > 0)
+        k = frame.intrinsics
+        vv, uu = np.nonzero(free)
+        z = depth[vv, uu]
+        cam = np.stack([(uu + x0 - k.cx) * z / k.fx, (vv + y0 - k.cy) * z / k.fy, z], axis=1)
+        t = frame.t_base_from_cam
+        base_z = cam @ t[2, :3] + t[2, 3]
+        cell = grid.resolution if grid is not None else 0.015
+        support = float(np.percentile(base_z, 10)) if len(base_z) else 0.0
+        above = np.zeros(sub.shape, dtype=bool)
+        above[vv[base_z > support + cell], uu[base_z > support + cell]] = True
+        region = _most_hidden(above, sub == ROBOT_PIXEL)
+        if region is None:
+            self._refuse(f"{req.label}@{req.camera}", "robot_box_nothing_beside")
+            return req
+        ry, rx = np.nonzero(region)
+        cy, cx = ry.mean(), rx.mean()
+        i = int(np.argmin((ry - cy) ** 2 + (rx - cx) ** 2))
+        point = (float(rx[i] + x0), float(ry[i] + y0))
+        robot_v, robot_u = np.nonzero((sub == ROBOT_PIXEL) & np.isfinite(depth) & (depth > 0))
+        order = np.argsort((robot_u - rx[i]) ** 2 + (robot_v - ry[i]) ** 2)
+        negatives = tuple(
+            (float(robot_u[j] + x0), float(robot_v[j] + y0))
+            for j in order[:: max(len(order) // ROBOT_BOX_NEGATIVES, 1)][:ROBOT_BOX_NEGATIVES]
+        )
+        log.info(
+            "object_tracker.robot_box_reprompt",
+            label=req.label,
+            camera=req.camera,
+            robot_fraction=round(float((sub == ROBOT_PIXEL).mean()), 2),
+            region_px=int(region.sum()),
+            point=point,
+        )
+        return replace(
+            req, box_xyxy=None, point_uv=point, within_xyxy=req.box_xyxy, negative_uv=negatives
+        )
 
     def _locate_roi(
         self, region: PlaceRegion | None, frame: CameraFrame
@@ -457,8 +534,9 @@ class ObjectTracker:
             self._refuse(key, str(fit.refusal), points=len(raw))
             return None
         vis = visible_fraction(fit.box, frame.depth_m, frame.robot_mask, frame.intrinsics, t_cam)
-        if vis is not None and vis < self.params.theta_vis:
-            self._refuse(key, "occluded", visible=round(vis, 3), theta_vis=self.params.theta_vis)
+        floor = self.params.theta_vis_provisional if fit.provisional else self.params.theta_vis
+        if vis is not None and vis < floor:
+            self._refuse(key, "occluded", visible=round(vis, 3), theta_vis=floor)
             return None
         return fit, support_z
 
@@ -739,8 +817,65 @@ class ObjectTracker:
             self._prompted.pop(req.query_key, None)
         if req.query_key is not None and (q := self.queries.get(*req.query_key)) is not None:
             q.last_served_ns = self._now_ns
-            if req.service == "segment_in_view" and req.box_xyxy is not None:
+            # A detector box's prompt, as a box or (re-prompted beside the robot) as the
+            # bound of a point: served once, then dropped from the pending prompts.
+            served_box = req.box_xyxy or req.within_xyxy
+            if req.service == "segment_in_view" and served_box is not None:
                 self._pending = [
                     r for r in self._pending
-                    if (r.query_key, r.box_xyxy) != (req.query_key, req.box_xyxy)
+                    if (r.query_key, r.box_xyxy or r.within_xyxy) != (req.query_key, served_box)
                 ]  # fmt: skip
+            if (
+                req.service == "locate_in_view"
+                and q.status is ObjectQueryStatus.RESOLVED
+                and q.query.count == "all"
+                and self._now_ns - self._research_logged.get(q.key, -(10**18)) >= 5 * _NS
+            ):
+                # A resolved count-all query keeps detecting (more instances may appear or
+                # come out from behind the arm); say so at INFO, at most every 5 s.
+                self._research_logged[q.key] = self._now_ns
+                log.info("object_tracker.count_all_research", label=q.query.label,
+                         camera=req.camera, goal_id=q.goal_id)  # fmt: skip
+
+
+#: Pixels within which a free region counts as beside the robot (past the uncertain band).
+_BESIDE_PX = 8
+#: Fewest pixels a region beside the robot needs to be prompted on.
+_BESIDE_MIN_PX = 10
+
+
+def _most_hidden(region: NDArray[np.bool_], robot: NDArray[np.bool_]) -> NDArray[np.bool_] | None:
+    """The 4-connected component of ``region`` most of whose pixels lie beside ``robot``.
+
+    Beside = within ``_BESIDE_PX`` (Chebyshev) of a robot pixel; components under
+    ``_BESIDE_MIN_PX`` pixels or with none beside are ignored; ``None`` when nothing is left.
+    What the robot half hides is mostly beside it; a neighbour merely touching its band is not.
+    """
+    h, w = region.shape
+    k = _BESIDE_PX
+    near = np.zeros_like(robot)
+    for dy in range(-k, k + 1):
+        for dx in range(-k, k + 1):
+            near[max(dy, 0) : h + min(dy, 0), max(dx, 0) : w + min(dx, 0)] |= robot[
+                max(-dy, 0) : h + min(-dy, 0), max(-dx, 0) : w + min(-dx, 0)
+            ]
+    label = np.zeros(region.shape, dtype=np.int32)
+    best, best_score, n = 0, 0.0, 0
+    for sy, sx in zip(*np.nonzero(region), strict=True):
+        if label[sy, sx]:
+            continue
+        n += 1
+        stack, size, beside = [(int(sy), int(sx))], 0, 0
+        label[sy, sx] = n
+        while stack:
+            y, x = stack.pop()
+            size += 1
+            beside += int(near[y, x])
+            for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= ny < h and 0 <= nx < w and region[ny, nx] and not label[ny, nx]:
+                    label[ny, nx] = n
+                    stack.append((ny, nx))
+        score = beside / size
+        if size >= _BESIDE_MIN_PX and score > best_score:
+            best, best_score = n, score
+    return label == best if best else None

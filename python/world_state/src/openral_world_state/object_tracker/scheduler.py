@@ -67,6 +67,8 @@ class TrackerRequest:
             projected search region, padded); the locator detects on that crop.
         prompt: A locate's open-vocabulary text: ``label`` and the query's synonyms,
             comma-separated; empty = ``label``.
+        negative_uv: Negative point prompts, pixels (robot pixels beside an object the
+            robot half hides).
         request_id: Assigned by ``Scheduler.next``; 0 until issued.
     """
 
@@ -84,6 +86,7 @@ class TrackerRequest:
     seed_cell: tuple[int, int, int] | None = None
     roi_norm_xyxy: tuple[float, float, float, float] | None = None
     prompt: str = ""
+    negative_uv: tuple[tuple[float, float], ...] = ()
     request_id: int = 0
 
 
