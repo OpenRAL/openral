@@ -1382,7 +1382,9 @@ void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double ma
 
 bool workspace_contact_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
   return workspace_link_slow(grid.workspace_region, link_index) &&
-         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center);
+         point_in_obb(grid.workspace_region.pose, grid.workspace_region.half_extents, center) &&
+         // #418 K7: a new conjunct only — an unexplained cell trips as outside.
+         (grid.workspace_explained == nullptr || workspace_cell_explained(grid, center));
 }
 
 namespace {
@@ -1407,6 +1409,9 @@ int workspace_denial(const VoxelGrid& grid, int link, const Vec3& center) noexce
   }
   if (!point_in_obb(ws.pose, ws.half_extents, center)) {
     return 4;
+  }
+  if (grid.workspace_explained != nullptr && !workspace_cell_explained(grid, center)) {
+    return 5;
   }
   return 0;
 }
@@ -3057,6 +3062,105 @@ bool tracked_cover_sufficient(std::size_t occupied, std::uint32_t visible) noexc
   // max(2, ceil(0.5 * visible)), in integers.
   const std::size_t half_up = (static_cast<std::size_t>(visible) + 1) / 2;
   return occupied >= std::max<std::size_t>(2, half_up);
+}
+
+// ── Issue #418 K7: explained cells for workspace contact ─────────────────────
+
+namespace {
+
+// Horizontal gap (m) from `p` to the box's footprint, in the box's own x / y
+// (the tracker's boxes are gravity-aligned, so those are horizontal). NaN for a
+// non-finite input, which never compares as within reach.
+double footprint_gap(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  const Vec3 d = sub(p, box.t);
+  const double lx = box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z;
+  const double ly = box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z;
+  const double ex = std::max(std::fabs(lx) - half.x, 0.0);
+  const double ey = std::max(std::fabs(ly) - half.y, 0.0);
+  if (!std::isfinite(lx) || !std::isfinite(ly) || !std::isfinite(half.x) ||
+      !std::isfinite(half.y) || !(half.x > 0.0) || !(half.y > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return std::sqrt(ex * ex + ey * ey);
+}
+
+// The cell of `grid` whose (base-frame) point `p` falls in, or -1 outside /
+// degenerate — the octomap bridge's `mark_base_points` indexing.
+long grid_cell_of(const VoxelGrid& grid, const Transform& grid_from_base, const Vec3& p) noexcept {
+  const Vec3 l = apply(grid_from_base, p);
+  const double fx = std::floor(l.x / grid.resolution);
+  const double fy = std::floor(l.y / grid.resolution);
+  const double fz = std::floor(l.z / grid.resolution);
+  // `!(>=)` so a NaN coordinate is outside too.
+  if (!(fx >= 0.0) || !(fy >= 0.0) || !(fz >= 0.0) || fx >= grid.sx || fy >= grid.sy ||
+      fz >= grid.sz) {
+    return -1;
+  }
+  return static_cast<long>(fx) +
+         static_cast<long>(grid.sx) *
+             (static_cast<long>(fy) + static_cast<long>(grid.sy) * static_cast<long>(fz));
+}
+
+bool grid_lattice_sound(const VoxelGrid& grid) noexcept {
+  return grid.sx > 0 && grid.sy > 0 && grid.sz > 0 && grid.resolution > 0.0 &&
+         std::isfinite(grid.resolution);
+}
+
+}  // namespace
+
+bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcept {
+  const WorkspaceExplanation* e = grid.workspace_explained;
+  if (e == nullptr || !std::isfinite(center.x) || !std::isfinite(center.y) ||
+      !std::isfinite(center.z) || !grid_lattice_sound(grid)) {
+    return false;
+  }
+  const double half_cell = 0.5 * grid.resolution;
+  constexpr double kTolM = 1e-9;  // float slack on the layer bounds only
+  const std::size_t n = std::min(e->n_objects, kMaxTrackedObjects);
+  for (std::size_t i = 0; i < n; ++i) {
+    // A tracked object's containing box.
+    if (point_in_obb(e->box[i], e->half_extents[i], center)) {
+      return true;
+    }
+    // The measured support's top layer (or the one under it), near the object.
+    const double s = e->support_z[i];
+    if (std::isfinite(s) && center.z >= s - half_cell - kTolM &&
+        center.z <= s + half_cell + kTolM &&
+        footprint_gap(e->box[i], e->half_extents[i], center) <= kExplainedSupportReachM) {
+      return true;
+    }
+  }
+  // A declared static collider's cell, on this grid's own lattice.
+  const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                     static_cast<std::size_t>(grid.sz);
+  if (e->static_cells != nullptr && e->static_cells_n == cells) {
+    const long idx = grid_cell_of(grid, inverse_rigid(grid.pose), center);
+    return idx >= 0 && e->static_cells[static_cast<std::size_t>(idx)] != 0;
+  }
+  return false;
+}
+
+std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,
+                              std::uint8_t* mask, std::size_t mask_n) noexcept {
+  if (mask == nullptr || !grid_lattice_sound(grid)) {
+    return 0;
+  }
+  const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                     static_cast<std::size_t>(grid.sz);
+  if (mask_n < cells) {
+    return 0;
+  }
+  std::fill(mask, mask + cells, std::uint8_t{0});
+  const Transform grid_from_base = inverse_rigid(grid.pose);
+  std::size_t marked = 0;
+  for (const Vec3& p : base_points) {
+    const long idx = grid_cell_of(grid, grid_from_base, p);
+    if (idx >= 0 && mask[static_cast<std::size_t>(idx)] == 0) {
+      mask[static_cast<std::size_t>(idx)] = 1;
+      ++marked;
+    }
+  }
+  return marked;
 }
 
 }  // namespace openral_safety_kernel

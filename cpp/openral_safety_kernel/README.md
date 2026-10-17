@@ -1248,6 +1248,71 @@ Tests: `WorkspaceContact.*` (`test_collision.cpp`), the `*Workspace*` lifecycle 
 `tests/unit/test_workspace_contact.py` (schema, scene rejection, `hand_links`, launch/CLI, the
 producer on a real lattice).
 
+### Explained cells (issue #418 K7, draft) — default off, sim-only
+
+**Draft for Safety-WG review (hazard OT-11). Off unless `workspace_explained_cells_enabled` is
+set. The launch sets it only for `object_tracking: on` with the workspace rule on.** K7 adds one
+more conjunct to the rule above, so it can only add stops. A pair of (hand link or carried
+payload, cell) that the workspace tolerates stays tolerated only when the cell is **explained**
+(`workspace_cell_explained`). A cell is explained in three cases:
+
+1. **Its centre lies in the box of an explaining tracked object.** The object may have any role
+   (target, neighbour or destination). Explaining means all of the following hold:
+   * status `confirmed` or `occluded`. It is never `split` (a foreign body in the box), `bound`,
+     `tentative`, `released` or `lost`;
+   * (`object_id`, `epoch`) is not K6-retired;
+   * the object was confirmed within `grasp_region_max_age_s` on the source clock;
+   * the box passes the kernel's own cover check on its grid. This is K2's `tracked_box_cover`,
+     run once per grid or set;
+   * the set's frame is the grid's frame;
+   * the world-state stream is fresh.
+
+   The declaration key is not checked, because a neighbour grounded under an earlier prompt still
+   explains its own cells (`fill_workspace_explained`).
+2. **It is a declared static collider's cell.** The kernel reads `static_points_file`, the same
+   static geometry the launch hands to the octomap bridge, written as one centre per cell the
+   bridge marks (`_static_cells_file`). It marks them into the grid with the bridge's indexing
+   (`mark_static_cells`), and re-marks only when the grid's pose, resolution or size changes.
+   Static geometry is declared for fixed-base robots only, whose octree accumulates in the base
+   frame, so the grid is the base frame's lattice. On any other lattice, where a centre could fall
+   in a neighbouring cell, the kernel explains no cell as static (WARN
+   `safety.workspace_static_cells refused reason=lattice`).
+3. **It is in the measured support of an explaining object.** The cell's centre z is within half
+   a cell of the tracker's `support_z` (the measured top less one cell). That is the support's top
+   layer or the layer under it. The cell is also within `kExplainedSupportReachM` (0.05 m, a WG
+   placeholder) of that object's box, measured horizontally. This covers a fingertip that grazes
+   the table beside the object it grasps (PickOrange g4). A body lying on the support sits above
+   that layer, so it is not explained.
+
+Every other cell in the workspace trips exactly as it would outside the workspace. That includes
+a person's hand in the tote and a carton that grounding missed. The stop line says
+`workspace_denied=5`. Three things are unchanged: arm links, cells outside the workspace, and the
+two-hands self-collision rule.
+
+**Property.** `ExplainedCells.TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomisedGrids`
+runs 200 random scenes, with and without K2's table. It checks that trips(#349) ⊆ trips(K7) ⊆
+trips(no workspace). It also checks that the pairs K7 still tolerates are exactly the
+#349-tolerated pairs on an explained cell.
+
+**Fail-closed.**
+* Configure refuses K7 without `workspace_contact_enabled`.
+* Configure refuses an unreadable or malformed `static_points_file`: a point that is not three
+  finite numbers, or a file with no points.
+* A refused or stale tracked set explains no box and no support.
+* A refused grid (overflow) explains no static cell.
+
+**Disclosure.**
+* WARN `safety.workspace_explained_cells enabled ... Safety-WG review pending` at configure.
+* INFO `safety.workspace_explained objects= of= static_cells=` on each change.
+* INFO `safety.workspace_static_cells marked=` on each re-mark.
+* Span attribute `safety.workspace_explained_objects`.
+
+**Tests.**
+* `ExplainedCells.*` in `test_collision.cpp`.
+* In `test_lifecycle_kernel.cpp`: the `*UnderK7` tests, `AnEligibleTrackedObjectOfAnyRoleExplainsItsCells`
+  and `ExplainedCellsRefuseToConfigureOutsideTheirScope`.
+* `NoAlloc.TheExplainedCellsCheckIsAllocationFree`.
+
 ## The contact-force gate (ADR-0100, survey Path C)
 
 Every check above discriminates on **position**. At the instant of a place the

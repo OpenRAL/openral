@@ -7359,3 +7359,276 @@ TEST(TrackedGraspExemption, TheCheckStaysInsideTheVoxelP99BudgetOfIssue253) {
   EXPECT_LT(with, 0.825) << "the #253 kernel round-trip p99 at 15 mm";
   EXPECT_LT(with, 3.0 * without + 0.05) << "K2 adds at most a constant factor";
 }
+
+// ── Issue #418 K7: explained cells for workspace contact (hazard OT-11) ─────
+//
+// The K2 rig (20^3 cells of 20 mm about the base origin). The live workspace
+// is the 0.30 m cube about the origin; the hand links are both left links, the
+// left mount and the right finger; the right MOUNT is an arm link. The hands
+// are still (speed and lead 0), so #349 tolerates every hand pair inside it.
+namespace {
+
+osk::WorkspaceContactRegion k7_workspace(double cx = 0.0, double cy = 0.0, double cz = 0.0,
+                                         double half = 0.15) {
+  osk::WorkspaceContactRegion ws;
+  EXPECT_EQ(osk::ingest_workspace_region(translate(cx, cy, cz), osk::Vec3{half, half, half},
+                                         grasp_mask({kK2LeftMount, kK2LeftA, kK2LeftB, kK2Right}),
+                                         0.5, 0.05, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.0;
+  ws.hand_lead_m = 0.0;
+  return ws;
+}
+
+// One explaining object: box centre, half-extents, and its measured support.
+struct K7Object {
+  double x, y, z, hx, hy, hz;
+  double support_z{std::numeric_limits<double>::quiet_NaN()};
+};
+
+osk::WorkspaceExplanation k7_explanation(const std::vector<K7Object>& objects) {
+  osk::WorkspaceExplanation e;
+  for (const auto& o : objects) {
+    e.box[e.n_objects] = translate(o.x, o.y, o.z);
+    e.half_extents[e.n_objects] = osk::Vec3{o.hx, o.hy, o.hz};
+    e.support_z[e.n_objects] = o.support_z;
+    ++e.n_objects;
+  }
+  return e;
+}
+
+// A person's hand, 6 x 6 x 4 cm, lying in the tote around (0.03, 0.03, 0.02).
+std::vector<std::array<double, 3>> k7_hand_blob() {
+  std::vector<std::array<double, 3>> c;
+  for (const double x : {0.01, 0.03, 0.05}) {
+    for (const double y : {0.01, 0.03, 0.05}) {
+      for (const double z : {0.01, 0.03}) {
+        c.push_back({x, y, z});
+      }
+    }
+  }
+  return c;
+}
+
+}  // namespace
+
+TEST(ExplainedCells, APersonsHandInTheToteStopsWhereTheWorkspaceToleratedIt) {
+  // The finger rests on the hand blob. #349 alone tolerates it (slow hand,
+  // inside the workspace); with K7 nothing explains the blob — a carton tracked
+  // 10 cm away, no static cell there, no support layer — so it stops again.
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(0.03, 0.03, 0.05);
+  const auto occ = k2_occ(k7_hand_blob());
+  osk::VoxelGrid grid = k2_grid(occ);
+  const auto none = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(none.hit);
+  grid.workspace_region = k7_workspace();
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_FALSE(today.hit) << "#349 tolerates the slow hand in the workspace";
+  EXPECT_GE(today.workspace_pairs, 1);
+  const auto carton_far = k7_explanation({{0.13, 0.03, 0.03, 0.02, 0.02, 0.02}});
+  grid.workspace_explained = &carton_far;
+  const auto k7 = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  EXPECT_TRUE(k7.hit) << "an unexplained body in the workspace stops";
+  EXPECT_EQ(k7.link_a, kK2LeftA);
+  EXPECT_EQ(k7.workspace_denied, 5) << "disclosed: the cell is not explained";
+  EXPECT_EQ(k7.workspace_pairs, 0);
+  // Were the blob a tracked object (a carton, any role), it would be explained.
+  const auto carton_here = k7_explanation({{0.03, 0.03, 0.02, 0.031, 0.031, 0.021}});
+  grid.workspace_explained = &carton_here;
+  const auto explained = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  EXPECT_FALSE(explained.hit);
+  EXPECT_EQ(explained.workspace_pairs, today.workspace_pairs);
+}
+
+TEST(ExplainedCells, ArmLinksAndCellsOutsideTheWorkspaceAreUnchanged) {
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2RightMount] = translate(0.03, 0.03, 0.05);  // an arm link on the blob
+  const auto occ = k2_occ(k7_hand_blob());
+  osk::VoxelGrid grid = k2_grid(occ);
+  grid.workspace_region = k7_workspace();
+  const auto today = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(today.hit);
+  const auto all = k7_explanation({{0.0, 0.0, 0.0, 0.2, 0.2, 0.2}});  // explains everything
+  grid.workspace_explained = &all;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), today);
+  // A hand cell outside the workspace: explained or not, it trips as today.
+  grid.workspace_region = k7_workspace(-0.15, -0.15, -0.15, 0.05);
+  s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(0.03, 0.03, 0.05);
+  grid.workspace_explained = nullptr;
+  const auto outside = osk::check_voxel_collision(m, s, grid, kK2Margin);
+  ASSERT_TRUE(outside.hit);
+  grid.workspace_explained = &all;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kK2Margin), outside);
+}
+
+TEST(ExplainedCells, ATrackedBoxOfAnyRoleExplainsOnlyItsCells) {
+  std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+  osk::VoxelGrid grid = k2_grid(occ);
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}))
+      << "no K7 table: nothing is explained (and nothing is asked)";
+  const auto e = k7_explanation({{0.02, 0.0, 0.0, 0.02, 0.02, 0.02}});
+  grid.workspace_explained = &e;
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}));
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.03, -0.01, 0.01}));
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.05, 0.01, 0.01}));
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.03}));
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{nan, 0.01, 0.01}));
+  const osk::WorkspaceExplanation empty;
+  grid.workspace_explained = &empty;
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}));
+}
+
+TEST(ExplainedCells, TheMeasuredSupportLayerNearAnObjectIsExplained) {
+  std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+  osk::VoxelGrid grid = k2_grid(occ);
+  // An object on a table whose top cell layer is centred at z = 0.03: the
+  // tracker's support_z is that measured top (0.04) less one cell = 0.02.
+  const auto e = k7_explanation({{0.05, 0.01, 0.07, 0.02, 0.02, 0.02, 0.02}});
+  grid.workspace_explained = &e;
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.03}))
+      << "the top layer, 2 cm beside the box";
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}))
+      << "the layer under it";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.05}))
+      << "a body lying on the support is above its top layer";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, -0.01}))
+      << "two layers down is not the measured top";
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{-0.01, 0.01, 0.03}))
+      << "4 cm beside the box, inside the 5 cm reach";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{-0.03, 0.01, 0.03}))
+      << "6 cm beside the box, past the reach";
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.05, 0.09, 0.03}))
+      << "past the reach along y";
+  const auto no_support = k7_explanation({{0.05, 0.01, 0.07, 0.02, 0.02, 0.02}});
+  grid.workspace_explained = &no_support;
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.03}))
+      << "no measured support (NaN): nothing explained by it";
+}
+
+TEST(ExplainedCells, DeclaredStaticCellsAreTheCellsTheBridgeMarks) {
+  std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+  osk::VoxelGrid grid = k2_grid(occ);
+  std::vector<std::uint8_t> mask(occ.size(), 7);
+  const std::vector<osk::Vec3> points = {{0.001, 0.001, 0.001},  // cell (0.01, 0.01, 0.01)
+                                         {0.019, 0.019, 0.019},  // the same cell
+                                         {-0.199, -0.199, -0.199},
+                                         {0.25, 0.0, 0.0}};  // outside the grid: ignored
+  EXPECT_EQ(osk::mark_static_cells(grid, points, mask.data(), mask.size()), 2U);
+  EXPECT_EQ(std::count(mask.begin(), mask.end(), 0), static_cast<long>(mask.size()) - 2)
+      << "cleared first";
+  EXPECT_EQ(mask[static_cast<std::size_t>(k2_cell(0.01, 0.01, 0.01))], 1);
+  EXPECT_EQ(mask[0], 1);
+  osk::WorkspaceExplanation e;
+  e.static_cells = mask.data();
+  e.static_cells_n = mask.size();
+  grid.workspace_explained = &e;
+  EXPECT_TRUE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}));
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.03, 0.01, 0.01}));
+  e.static_cells_n = mask.size() - 1;  // not this grid's mask: none
+  EXPECT_FALSE(osk::workspace_cell_explained(grid, osk::Vec3{0.01, 0.01, 0.01}));
+  EXPECT_EQ(osk::mark_static_cells(grid, points, mask.data(), mask.size() - 1), 0U)
+      << "a mask shorter than the grid marks nothing";
+}
+
+TEST(ExplainedCells, TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomisedGrids) {
+  // The K7 property, with and without K2's tracked table in force:
+  //   trips(#349) ⊆ trips(K7) ⊆ trips(no workspace)   [trips_with ⊆ trips_without]
+  // and the pairs K7 still tolerates are exactly the #349-tolerated pairs on an
+  // explained cell. Randomised link poses, occupancy, workspace, explaining
+  // boxes, static cells and supports; fixed seed; stage 1 only (no hulls).
+  std::mt19937 rng(20261017U);
+  std::uniform_real_distribution<double> pos(-0.12, 0.12);
+  std::uniform_real_distribution<double> half(0.01, 0.06);
+  std::uniform_real_distribution<double> ws_half(0.05, 0.15);
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  std::uniform_int_distribution<int> n_boxes(0, 4);
+  std::bernoulli_distribution occupied(0.1);
+  std::bernoulli_distribution static_cell(0.3);
+  std::bernoulli_distribution coin(0.5);
+  const osk::CollisionModel m = k2_model();
+  int stricter = 0;
+  int relaxed = 0;
+  for (int trial = 0; trial < 200; ++trial) {
+    osk::CollisionScratch s = k2_scratch();
+    for (int l = 1; l <= 5; ++l) {
+      s.link_world[static_cast<std::size_t>(l)] = osk::transform_from_xyz_rpy(
+          pos(rng), pos(rng), pos(rng), kPi * unit(rng), kPi * unit(rng), kPi * unit(rng));
+    }
+    std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
+    std::vector<std::uint8_t> mask(occ.size(), 0);
+    for (std::size_t c = 0; c < occ.size(); ++c) {
+      occ[c] = occupied(rng) ? 1 : 0;
+      mask[c] = occ[c] != 0 && static_cell(rng) ? 1 : 0;
+    }
+    std::vector<K7Object> objects;
+    std::vector<std::array<double, 6>> grasp_boxes;
+    const int nb = n_boxes(rng);
+    for (int b = 0; b < nb; ++b) {
+      const auto& f = s.link_world[static_cast<std::size_t>(b % 2 == 0 ? kK2LeftA : kK2Right)].t;
+      const bool near = b < 2;
+      K7Object o{near ? f.x + 0.01 * unit(rng) : pos(rng),
+                 near ? f.y + 0.01 * unit(rng) : pos(rng),
+                 near ? f.z + 0.01 * unit(rng) : pos(rng),
+                 half(rng),
+                 half(rng),
+                 half(rng)};
+      if (coin(rng)) {
+        o.support_z = o.z - o.hz + 0.02 * unit(rng);
+      }
+      objects.push_back(o);
+      grasp_boxes.push_back({o.x, o.y, o.z, o.hx, o.hy, o.hz});
+    }
+    auto e = k7_explanation(objects);
+    if (coin(rng)) {
+      e.static_cells = mask.data();
+      e.static_cells_n = mask.size();
+    }
+    const bool with_k2 = coin(rng);
+    const auto table = k2_table(m, grasp_boxes);
+    osk::VoxelGrid none_grid = k2_grid(occ);
+    if (with_k2) {
+      none_grid.tracked_grasp = &table;
+    }
+    osk::VoxelGrid ws_grid = none_grid;
+    ws_grid.workspace_region =
+        k7_workspace(0.05 * unit(rng), 0.05 * unit(rng), 0.05 * unit(rng), ws_half(rng));
+    osk::VoxelGrid k7_grid = ws_grid;
+    k7_grid.workspace_explained = &e;
+    const auto none = trip_set(m, s, occ, none_grid, kK2Margin);
+    const auto ws = trip_set(m, s, occ, ws_grid, kK2Margin);
+    const auto k7 = trip_set(m, s, occ, k7_grid, kK2Margin);
+    for (const auto& pair : ws) {
+      EXPECT_EQ(k7.count(pair), 1U) << "trial " << trial << ": K7 tolerated a #349 trip";
+    }
+    for (const auto& pair : k7) {
+      EXPECT_EQ(none.count(pair), 1U) << "trial " << trial << ": a NEW trip";
+    }
+    for (const auto& [link, cell] : none) {
+      const osk::Vec3 c = base_centre(none_grid, cell);
+      const bool tolerated = osk::workspace_contact_exempts(ws_grid, link, c) &&
+                             osk::workspace_cell_explained(k7_grid, c);
+      EXPECT_EQ(k7.count({link, cell}), tolerated ? 0U : 1U)
+          << "trial " << trial << " link " << link << " cell " << cell;
+    }
+    stricter += k7.size() != ws.size() ? 1 : 0;
+    relaxed += k7.size() != none.size() ? 1 : 0;
+    const auto full_none = osk::check_voxel_collision(m, s, none_grid, kK2Margin);
+    const auto full_ws = osk::check_voxel_collision(m, s, ws_grid, kK2Margin);
+    const auto full_k7 = osk::check_voxel_collision(m, s, k7_grid, kK2Margin);
+    if (full_ws.hit) {
+      EXPECT_TRUE(full_k7.hit) << "trial " << trial << ": K7 let a #349 stop through";
+    }
+    if (full_k7.hit) {
+      EXPECT_TRUE(full_none.hit) << "trial " << trial << ": a NEW stop";
+      EXPECT_EQ(k7.count({full_k7.link_a, full_k7.link_b}), 1U)
+          << "trial " << trial << ": the evidence names a tolerated pair";
+    }
+  }
+  EXPECT_GT(stricter, 20) << "K7 must really narrow the workspace somewhere";
+  EXPECT_GT(relaxed, 20) << "and still tolerate explained cells somewhere";
+}

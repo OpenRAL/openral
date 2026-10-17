@@ -33,6 +33,7 @@ from openral_world_state.object_tracker.fit import (
     visible_fraction,
 )
 from openral_world_state.object_tracker.grounding import QueryBook, QueryEscalation, StandingQuery
+from openral_world_state.object_tracker.multi_view import MultiViewFit, intersect_views
 from openral_world_state.object_tracker.scheduler import Scheduler, TrackerRequest
 from openral_world_state.object_tracker.session import GraspEventKind, TrackerSession, TrackingMode
 from openral_world_state.object_tracker.tracker import (
@@ -52,6 +53,7 @@ __all__ = [
     "CoverVerdict",
     "FitParams",
     "GraspEventKind",
+    "MultiViewFit",
     "ObjectTracker",
     "QueryBook",
     "QueryEscalation",
@@ -68,6 +70,7 @@ __all__ = [
     "associate",
     "containing_fit",
     "cover_verdict",
+    "intersect_views",
     "project_box",
     "surface_cells",
     "visible_fraction",
