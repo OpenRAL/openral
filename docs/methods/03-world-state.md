@@ -157,8 +157,8 @@ _Track table, association by continuity, source-time ageing (#418 steps 5-6)._
   - `mint(**fields) -> TrackedObject` — TENTATIVE `trk:<n>`, never reused; past 32 rows the oldest LOST is dropped, else `ROSConfigError`. (L137)
   - `drop(object_id) -> None` — Forget a row. (L160)
   - `snapshot(stamp_ns) -> TrackedObjectSet` — (L165)
-- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180)
-- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L249)
+- `associate(tracks, centroid, *, voxel_m) -> tuple[str | None, str]` — `continuity` (a live box holds the centroid or its centre is within a voxel), `tie` (two candidates within one voxel of each other: update nothing, HZ-0115-2), `inferred` (exactly one LOST track within a diameter, or RELEASED track within its fall column), else `new`. (L180) A SPLIT track takes no fit by continuity (its box holds two bodies: a neighbour inside it is a new object).
+- `age_tracks(store, now_ns, *, max_age_s, lost_s, keep_lost_s) -> None` — Source-clock ageing: CONFIRMED/OCCLUDED without a confirming grid → TENTATIVE (ineligible); TENTATIVE/SPLIT without evidence → LOST; LOST forgotten after `keep_lost_s`. BOUND/RELEASED are not aged here. (L259)
 
 ### `python/world_state/src/openral_world_state/object_tracker/grounding.py`
 _Standing queries (#418 Addendum G): a query lives as long as its goal; never a first-frame snapshot._

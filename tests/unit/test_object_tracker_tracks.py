@@ -201,3 +201,22 @@ def test_a_fit_through_the_robot_is_provisional_until_a_clear_refit() -> None:
     _ground(tr, hidden, labels, robot, stamp=3, wall=wall + 1.0)
     (track,) = tr.store.all()
     assert not track.provisional and track.last_fit_stamp_ns == 2  # never overwritten
+
+
+def test_a_split_track_never_takes_a_neighbours_fit() -> None:
+    """A SPLIT box holds two bodies; a fit centred inside it is a new object, never the
+    split track's continuation (PickOrange r2po_shadow3: a swap among static oranges)."""
+    tr, _ = _grounded(_oranges(0.05))
+    a = _get(tr, "trk:1")
+    big = a.model_copy(
+        update={
+            "status": TrackStatus.SPLIT,
+            "box": a.box.model_copy(update={"half_extents": (0.12, 0.05, 0.05)}),
+        }
+    )
+    others = [t for t in tr.store.all() if t.object_id != "trk:1"]
+    inside = (a.box.pose.xyz[0] + 0.08, a.box.pose.xyz[1], a.box.pose.xyz[2])
+    assert associate([big], inside, voxel_m=RES) == (None, "new")
+    assert associate([big.model_copy(update={"status": TrackStatus.CONFIRMED})], inside,
+                     voxel_m=RES)[0] == "trk:1"  # fmt: skip
+    assert others  # the scene still holds the neighbours
