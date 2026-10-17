@@ -56,7 +56,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
 from openral_core.kinematics import Box, bounding_half_extents
 from openral_core.perception_geometry import VoxelLattice
-from openral_core.schemas import DOP_AXES
+from openral_core.schemas import DOP_AXES, MAX_TIGHT_HULL_VERTICES, TightCollisionGeometry
 
 from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
 from openral_world_state.object_tracker.release import fall_column
@@ -213,6 +213,24 @@ def _moved(p: AttachedCollisionPrimitive, t: NDArray[np.float64]) -> AttachedCol
     )
 
 
+def _clip_at_plane(
+    verts: NDArray[np.float64], along: NDArray[np.float64], plane: float
+) -> NDArray[np.float64]:
+    """The vertices of ``conv(verts)`` cut by ``along >= plane``, as a point set.
+
+    Exact for a convex set: the polytope's vertices on the kept side are the original vertices
+    there plus the points where a segment between a kept and a dropped vertex crosses the plane
+    (every such pair is considered, so no edge of the hull is missed).
+    """
+    keep = along >= plane
+    out = [verts[keep]]
+    if keep.any() and not keep.all():
+        a, b = verts[keep][:, None, :], verts[~keep][None, :, :]
+        da, db = (along[keep] - plane)[:, None], (plane - along[~keep])[None, :]
+        out.append((a + (da / (da + db))[..., None] * (b - a)).reshape(-1, 3))
+    return np.asarray(np.unique(np.round(np.concatenate(out), 10), axis=0), dtype=np.float64)
+
+
 def _palm_clipped(
     prims: Sequence[AttachedCollisionPrimitive],
     t_ao: NDArray[np.float64],
@@ -222,14 +240,20 @@ def _palm_clipped(
     """``prims`` (object frame, object at ``t_ao`` in the attach link) cut at the palm plane.
 
     Nothing the hand holds lies behind its palm (the hand is there), so a fitted shape
-    reaching past it — a containing box of a 17 cm banana re-centred on the pinch volume
-    reached the Franka's wrist (DROID r2dr_on1, a payload-vs-panda_link7 false stop) — is
-    replaced by its box in the pinch axes with the back face on the palm plane. That box
-    holds every part of the primitive in front of the palm; a primitive wholly behind it
-    is dropped; one wholly in front is kept as it is (hull and all).
+    reaching past it (a containing box of a 17 cm banana re-centred on the pinch volume reached
+    the Franka's wrist: DROID r2dr_on1, a payload-vs-panda_link7 false stop) is cut by the plane:
+    a primitive wholly behind it is dropped, one wholly in front is kept as it is (hull and all),
+    and one the plane crosses becomes a box in the pinch axes (the broad-phase bound and every
+    other check's geometry) around the EXACT cut of its solid, refined by that cut's 26-DOP and
+    vertices as the kernel's payload-vs-voxel ``tight_geometry`` (OT-16 amendment, 2026-10-18:
+    same containment, tighter representation). The solid is the primitive's hull when it has one,
+    else its box. The new box lies inside the old pinch-axes box (the bounding box of the whole
+    primitive with the back face on the plane) and holds solid ∩ {along >= palm}; a hull of more
+    than ``MAX_TIGHT_HULL_VERTICES`` points keeps the DOP only (a containing superset).
     """
     out: list[AttachedCollisionPrimitive] = []
     a = pinch.axes[:, 1]
+    dop = np.asarray(DOP_AXES, dtype=np.float64)
     for p in prims:
         t = t_ao @ _t(p.pose_in_object)
         half = np.asarray(bounding_half_extents(p.shape), dtype=np.float64)
@@ -240,12 +264,40 @@ def _palm_clipped(
             continue
         if along.max() <= pinch.palm_m:
             continue
-        local = corners @ pinch.axes
+        hull = (
+            np.asarray(p.tight_geometry.hull_vertices_m, dtype=np.float64)
+            if p.tight_geometry is not None and p.tight_geometry.hull_vertices_m
+            else None
+        )
+        solid_local = hull if hull is not None else _UNIT * half
+        solid = solid_local @ t[:3, :3].T + t[:3, 3]
+        cut = _clip_at_plane(solid, solid @ a, pinch.palm_m)
+        if not len(cut):
+            continue
+        local = cut @ pinch.axes
         lo, hi = local.min(axis=0), local.max(axis=0)
         lo[1] = pinch.palm_m
-        t_link = _frame(pinch.axes @ ((lo + hi) / 2.0), pinch.axes)
+        centre = (lo + hi) / 2.0
+        new_half = np.maximum((hi - lo) / 2.0, 1e-6)
+        t_link = _frame(pinch.axes @ centre, pinch.axes)
+        in_box = (cut - pinch.axes @ centre) @ pinch.axes
+        proj = in_box @ dop.T
+        dlo, dhi = proj.min(axis=0), proj.max(axis=0)
+        dlo[:3], dhi[:3] = -new_half, new_half  # the box's own slabs: the cut lies inside them
+        keep_hull = len(in_box) <= MAX_TIGHT_HULL_VERTICES
         out.append(
-            _prim(np.linalg.inv(t_ao) @ t_link, (hi - lo) / 2.0, object_id, p.geometry_source)
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=tuple(float(h) for h in new_half)),
+                pose_in_object=_pose(np.linalg.inv(t_ao) @ t_link, object_id),
+                tight_geometry=TightCollisionGeometry(
+                    dop_lo_m=tuple(float(v) for v in dlo),
+                    dop_hi_m=tuple(float(v) for v in dhi),
+                    hull_vertices_m=tuple((float(x), float(y), float(z)) for x, y, z in in_box)
+                    if keep_hull
+                    else (),
+                ),
+                geometry_source=p.geometry_source,
+            )
         )
     return out or list(prims)
 
