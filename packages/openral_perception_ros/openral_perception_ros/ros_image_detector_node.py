@@ -222,6 +222,16 @@ def stamp_camera_geometry(md: Any, geometry: tuple[str, Any] | None) -> Any:
     )
 
 
+def _takes_score_threshold(detector: Any) -> bool:
+    """Whether ``detector.detect_with_query`` accepts a per-call ``score_threshold``."""
+    import inspect
+
+    try:
+        return "score_threshold" in inspect.signature(detector.detect_with_query).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def crop_bgr(
     bgr: bytes, width: int, height: int, roi_norm_xyxy: Sequence[float]
 ) -> tuple[bytes, int, int, int, int] | None:
@@ -748,8 +758,15 @@ def main(args: Any = None) -> None:
             crop = crop_bgr(bgr, w, h, list(getattr(request, "roi_norm_xyxy", ()) or ()))
             src, sw, sh, ox, oy = crop if crop is not None else (bgr, w, h, 0, 0)
             try:
+                floor = float(getattr(request, "min_score", 0.0) or 0.0)
                 if query and hasattr(self._detector, "detect_with_query"):
-                    md = self._detector.detect_with_query(src, sw, sh, self._sensor_id, query)
+                    md = (
+                        self._detector.detect_with_query(
+                            src, sw, sh, self._sensor_id, query, score_threshold=floor
+                        )
+                        if floor > 0.0 and _takes_score_threshold(self._detector)
+                        else self._detector.detect_with_query(src, sw, sh, self._sensor_id, query)
+                    )
                 else:
                     md = self._detector.detect(src, sw, sh, self._sensor_id)
                 if md is not None and crop is not None:

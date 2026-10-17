@@ -200,6 +200,26 @@ def backproject_pixel(
     return ((uv[0] - k.cx) * z / k.fx, (uv[1] - k.cy) * z / k.fy, z)
 
 
+def detector_scores(metadata_json: str) -> tuple[float, ...]:
+    """``LocateInView``'s detection scores, parallel to ``detector_boxes``.
+
+    Example:
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="top",
+        ...     model_id="m",
+        ...     frame_width=64,
+        ...     frame_height=48,
+        ...     detections=[{"label": "box", "confidence": 0.2, "bbox_xyxy": (1, 2, 3, 4)}],
+        ... )
+        >>> detector_scores(md.model_dump_json())
+        (0.2,)
+    """
+    if not metadata_json:
+        return ()
+    md = ObjectsMetadata.model_validate(json.loads(metadata_json))
+    return tuple(float(d.confidence) for d in md.detections)
+
+
 def detector_boxes(
     metadata_json: str, k: IntrinsicsPinhole
 ) -> tuple[tuple[float, float, float, float], ...]:
@@ -774,6 +794,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     query=req.prompt or req.label, camera=req.camera, detector=""
                 )
                 lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
+                lreq.min_score = float(req.min_score)
                 future = self._locate.call_async(lreq)
 
                 def done_locate(f: Any) -> None:
@@ -783,7 +804,17 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         if res is not None and res.found
                         else ()
                     )
-                    result = TrackerResult(req.request_id, None, boxes)
+                    scores = (
+                        detector_scores(str(res.metadata_json))
+                        if res is not None and res.found
+                        else ()
+                    )
+                    result = TrackerResult(
+                        req.request_id,
+                        None,
+                        boxes,
+                        box_scores=scores if len(scores) == len(boxes) else (),
+                    )
                     self._answer(frame, optical_frame, stamp_msg, result)
 
                 future.add_done_callback(done_locate)

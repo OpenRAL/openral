@@ -75,6 +75,9 @@ class TrackerParams(BaseModel):
 
     Attributes:
         theta_vis: Visible fraction below which an object is OCCLUDED (and never fitted).
+        locate_min_score: The detection floor the tracker asks its locator for. A box is
+            only a prompt (SAM, the containing fit and map confirmation filter it), so it is
+            lower than a detector's own (OmDet 0.30: restock cartons scored 0.15-0.29).
         continuous_locate_s: Source seconds between locates of a RESOLVED query (detection
             runs for the whole goal; ``QueryBook.due``).
         theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
@@ -102,6 +105,7 @@ class TrackerParams(BaseModel):
     theta_vis: float = Field(default=0.5, gt=0.0, le=1.0)
     theta_vis_provisional: float = Field(default=0.25, gt=0.0, le=1.0)
     continuous_locate_s: float = Field(default=2.0, gt=0.0)
+    locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -151,6 +155,8 @@ LOCATE_ROI_PAD = 0.25
 ROBOT_BOX_FRACTION = 0.5
 #: Negative point prompts placed on the robot in such a box.
 ROBOT_BOX_NEGATIVES = 3
+#: A prompt box scored under this grounds a track that is logged when it confirms.
+LOW_PROMPT_SCORE = 0.3
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 
@@ -163,6 +169,7 @@ class TrackerResult:
         request_id: The request it answers.
         mask: ``SegmentInView``'s mask (``None``: no object at the prompt).
         boxes_xyxy: ``LocateInView``'s detections, pixels.
+        box_scores: Their detector scores (parallel; empty = unknown).
         alternatives: Smaller qualifying candidates, largest first, each tried in turn
             when the one before it cannot be fitted or splits on the map (a packed
             carton's "part" candidate is several cartons).
@@ -172,6 +179,7 @@ class TrackerResult:
     mask: NDArray[np.bool_] | None = None
     boxes_xyxy: tuple[tuple[float, float, float, float], ...] = ()
     alternatives: tuple[NDArray[np.bool_], ...] = ()
+    box_scores: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +236,8 @@ class ObjectTracker:
         #: by the session); a locate is cropped to it when its query has no seed.
         self.search_region: PlaceRegion | None = None
         self._research_logged: dict[tuple[str, str], int] = {}
+        # Tracks minted from a prompt box scored under LOW_PROMPT_SCORE, until they confirm.
+        self._low_score: dict[str, float] = {}
         self._cells: dict[str, frozenset[Cell]] = {}
         self._centroid: dict[str, tuple[float, float, float]] = {}
         self._disagree: dict[str, int] = {}
@@ -291,16 +301,18 @@ class ObjectTracker:
             elif usable and req.service == "locate_in_view":
                 if not res.boxes_xyxy:
                     self._refuse(f"{req.label}@{req.camera}", "locate_found_nothing")
+                scores = res.box_scores or (None,) * len(res.boxes_xyxy)
                 self._pending += [
                     self._robot_box_reprompt(
                         replace(
-                            req, service="segment_in_view", box_xyxy=b, served_ns=-1, request_id=0
+                            req, service="segment_in_view", box_xyxy=b, served_ns=-1,
+                            request_id=0, prompt_score=sc,
                         ),
                         frame,
                         grid,
                     )
-                    for b in res.boxes_xyxy
-                ]
+                    for b, sc in zip(res.boxes_xyxy, scores, strict=True)
+                ]  # fmt: skip
             elif usable and (res.mask is None or grid is None):
                 why = "no_mask" if res.mask is None else "no_grid"
                 self._refuse(f"{req.label}@{req.camera}", why)
@@ -339,6 +351,11 @@ class ObjectTracker:
         )
 
     # -- step 1/3/6: a mask becomes a fit, the fit a track ---------------------------------
+
+    def _note_low_score(self, object_id: str, score: float | None) -> None:
+        """Remember a track minted from a prompt box under ``LOW_PROMPT_SCORE``."""
+        if score is not None and score < LOW_PROMPT_SCORE:
+            self._low_score[object_id] = score
 
     def _robot_box_reprompt(
         self, req: TrackerRequest, frame: CameraFrame, grid: VoxelLattice | None
@@ -604,6 +621,7 @@ class ObjectTracker:
                 provisional=fit.provisional,
             )
             self._combine_views(track.object_id, req.camera, fit, frame, grid.resolution)
+            self._note_low_score(track.object_id, req.prompt_score)
         else:
             old = self.store.get(oid)
             assert old is not None
@@ -673,6 +691,9 @@ class ObjectTracker:
             update = {"occupied_cells": v.occupied, "last_confirmed_stamp_ns": stamp_ns}
             if status is TrackStatus.TENTATIVE:
                 update["status"] = TrackStatus.CONFIRMED
+                if (score := self._low_score.pop(t.object_id, None)) is not None:
+                    log.info("object_tracker.low_score_prompt_confirmed", object_id=t.object_id,
+                             label=t.label, score=score)  # fmt: skip
             elif status is TrackStatus.RELEASED:
                 update.update(status=TrackStatus.CONFIRMED, epoch=t.epoch + 1)
                 self._released.discard(t.object_id)
@@ -736,6 +757,7 @@ class ObjectTracker:
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q.last_served_ns, q.query.label, q.key,
                 roi_norm_xyxy=self._locate_roi(q.query.seed or self.search_region, frame),
+                min_score=self.params.locate_min_score,
                 prompt=", ".join((q.query.label, *q.query.synonyms)),
             )  # fmt: skip
             seed = q.query.seed

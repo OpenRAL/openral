@@ -69,6 +69,9 @@ class TrackerRequest:
             comma-separated; empty = ``label``.
         negative_uv: Negative point prompts, pixels (robot pixels beside an object the
             robot half hides).
+        min_score: A locate's detection floor (``TrackerParams.locate_min_score``); 0 = the
+            locator's own threshold.
+        prompt_score: The detector score of the box a segment request came from.
         request_id: Assigned by ``Scheduler.next``; 0 until issued.
     """
 
@@ -87,6 +90,8 @@ class TrackerRequest:
     roi_norm_xyxy: tuple[float, float, float, float] | None = None
     prompt: str = ""
     negative_uv: tuple[tuple[float, float], ...] = ()
+    min_score: float = 0.0
+    prompt_score: float | None = None
     request_id: int = 0
 
 

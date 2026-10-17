@@ -16,7 +16,7 @@ from openral_world_state.object_tracker import (
     TrackerResult,
 )
 
-from tests.unit._tracker_scenes import banana, droid_exterior, grid_from_depth, render, step
+from tests.unit._tracker_scenes import answer, banana, droid_exterior, grid_from_depth, render, step
 
 _RIG = droid_exterior()
 _BANANA = banana(_RIG.centre_xy, _RIG.support_z, 0.08, 0.018, 1.2, math.pi / 2)
@@ -348,3 +348,36 @@ def test_every_resolved_query_keeps_locating_at_a_modest_rate() -> None:
     plate.status, plate.last_served_ns = ObjectQueryStatus.RESOLVED, 10 * _S
     assert [q.query.label for q in book.due(now_ns=11 * _S)] == ["banana"]
     assert [q.query.label for q in book.due(now_ns=12 * _S)] == ["banana", "plate"]
+
+
+def test_a_locate_asks_down_to_the_tracker_threshold_and_low_score_prompts_are_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#418 restock: OmDet scored every carton 0.15-0.29 at head_zed's raster, under the
+    locator's own 0.30, so nothing grounded. A locate box is only a prompt (SAM, the
+    containing fit and map confirmation are the filters), so the tracker asks the locator
+    down to ``TrackerParams.locate_min_score`` (0.15), and a track a prompt under
+    ``LOW_PROMPT_SCORE`` (0.30) grounded says so at INFO, with its score, when confirmed."""
+    logs = _recorded(monkeypatch)
+    tr = _tracker()
+    depth, labels = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    grid = grid_from_depth(depth, _RIG)
+    (req,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    assert req.service == "locate_in_view" and req.min_score == 0.15
+    # Answer the locate with the banana's box at 0.2 and let the rest run.
+    box = answer(req, labels).boxes_xyxy
+    res = TrackerResult(req.request_id, boxes_xyxy=box, box_scores=(0.2,) * len(box))
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.6, results=[res])
+    wall = 0.6
+    for _ in range(6):
+        if not out.requests:
+            break
+        wall += 0.6
+        out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=wall,
+                      results=[answer(out.requests[0], labels)])  # fmt: skip
+    (track,) = tr.store.all()
+    assert track.status is TrackStatus.CONFIRMED
+    (event,) = [e for e in logs if e["event"] == "object_tracker.low_score_prompt_confirmed"]
+    assert event["log_level"] == "info" and event["score"] == 0.2
+    assert event["object_id"] == track.object_id

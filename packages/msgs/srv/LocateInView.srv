@@ -33,11 +33,14 @@
 #                   frame: the detector runs on that crop and answers in full-frame
 #                   pixels. Empty = the whole frame (issue #418: the object tracker
 #                   crops to its projected search region).
+#   min_score     — optional detection floor for this call; 0 = the detector's own
+#                   threshold (issue #418: a tracker prompt box is filtered downstream).
 
 string query
 string camera
 string detector
 float64[] roi_norm_xyxy
+float32 min_score
 ---
 bool found
 string camera
