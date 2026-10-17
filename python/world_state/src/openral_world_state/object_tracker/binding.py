@@ -51,7 +51,7 @@ from openral_core.kinematics import Box, bounding_half_extents
 from openral_core.perception_geometry import VoxelLattice
 from openral_core.schemas import DOP_AXES
 
-from openral_world_state.object_tracker.pinch import HandModel
+from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
 from openral_world_state.object_tracker.release import fall_column
 
 __all__ = ["BindOutcome", "Binding", "GraspBinder", "TrackStoreLike"]
@@ -178,6 +178,41 @@ def _moved(p: AttachedCollisionPrimitive, t: NDArray[np.float64]) -> AttachedCol
     return p.model_copy(
         update={"pose_in_object": _pose(t @ _t(p.pose_in_object), p.pose_in_object.frame_id)}
     )
+
+
+def _palm_clipped(
+    prims: Sequence[AttachedCollisionPrimitive],
+    t_ao: NDArray[np.float64],
+    pinch: PinchVolume,
+    object_id: str,
+) -> list[AttachedCollisionPrimitive]:
+    """``prims`` (object frame, object at ``t_ao`` in the attach link) cut at the palm plane.
+
+    Nothing the hand holds lies behind its palm (the hand is there), so a fitted shape
+    reaching past it — a containing box of a 17 cm banana re-centred on the pinch volume
+    reached the Franka's wrist (DROID r2dr_on1, a payload-vs-panda_link7 false stop) — is
+    replaced by its box in the pinch axes with the back face on the palm plane. That box
+    holds every part of the primitive in front of the palm; a primitive wholly behind it
+    is dropped; one wholly in front is kept as it is (hull and all).
+    """
+    out: list[AttachedCollisionPrimitive] = []
+    a = pinch.axes[:, 1]
+    for p in prims:
+        t = t_ao @ _t(p.pose_in_object)
+        half = np.asarray(bounding_half_extents(p.shape), dtype=np.float64)
+        corners = (_UNIT * half) @ t[:3, :3].T + t[:3, 3]
+        along = corners @ a
+        if along.min() >= pinch.palm_m - _EPS_M:
+            out.append(p)
+            continue
+        if along.max() <= pinch.palm_m:
+            continue
+        local = corners @ pinch.axes
+        lo, hi = local.min(axis=0), local.max(axis=0)
+        lo[1] = pinch.palm_m
+        t_link = _frame(pinch.axes @ ((lo + hi) / 2.0), pinch.axes)
+        out.append(_prim(np.linalg.inv(t_ao) @ t_link, (hi - lo) / 2.0, object_id))
+    return out or list(prims)
 
 
 def _rotation_about(
@@ -323,6 +358,7 @@ class GraspBinder:
             prims = shape + (
                 [_moved(p, slide) for p in shape] if np.linalg.norm(shift) > _EPS_M else []
             )
+        prims = _palm_clipped(prims, t_ao, pinch, oid)
         epoch = track.epoch + 1 if released else track.epoch
         pose_in_link = _pose(t_ao, self.hand.attach_link)
         store.replace(

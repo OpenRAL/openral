@@ -248,3 +248,26 @@ def test_a_provisional_track_never_becomes_the_payload(robot: str) -> None:
     assert kept is not None and kept.status is TrackStatus.CONFIRMED and kept.provisional
     clear = DictStore([held])
     assert binder.on_attach(clear, q, stamp_ns=11).outcome is BindOutcome.TRACKED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_bound_payload_never_reaches_behind_the_palm(robot: str) -> None:
+    """DROID r2dr_on1: a 17 cm banana's containing box, bound at the pinch volume, reached the
+    Franka's wrist (payload x panda_link7). Nothing held lies behind the palm, so the bound
+    primitives are cut at the palm plane; the part in front of it is still held."""
+    binder, q, centre = arm_at_hold(robot)
+    big = track("trk:1", binder.frame_id, centre, (0.12, 0.12, 0.12))
+    b = binder.on_attach(DictStore([big]), q, stamp_ns=10)
+    assert b.outcome is BindOutcome.TRACKED
+    pinch = binder.hand.pinch_in_link(q[ROBOTS[robot][0]])
+    a = pinch.axes[:, 1]
+    t_ao = homogeneous_from_quat_xyz(
+        b.attachment.pose_in_link.xyz, b.attachment.pose_in_link.quat_xyzw
+    )
+    reach = []
+    for p in b.attachment.primitives:
+        t = t_ao @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
+        corners = _corners((t[:3, 3], t[:3, :3], np.asarray(p.shape.half_extents_m)))
+        assert (corners @ a).min() >= pinch.palm_m - 1e-6
+        reach.append((corners @ a).max())
+    assert max(reach) > pinch.palm_m + 0.1  # what lies in front of the palm is still held
