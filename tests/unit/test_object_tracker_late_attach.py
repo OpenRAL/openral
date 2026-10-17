@@ -39,6 +39,7 @@ def _run(
     follows: bool,
     status: TrackStatus = TrackStatus.SPLIT,
     confirmed_ago_s: float = 0.0,
+    provisional: bool = False,
 ) -> tuple[object, object, NDArray[np.float64], NDArray[np.float64]]:
     """Hold 0.35 s, lift by ``lift_m``, keep the jaw stalled until the derived read fires."""
     binder, q, centre = arm_at_hold(robot)
@@ -48,7 +49,11 @@ def _run(
     t0 = 10 * _S
     s.tracker.store.replace(
         s.tracker.store.get(oid).model_copy(  # type: ignore[union-attr]
-            update={"status": status, "last_confirmed_stamp_ns": t0 - int(confirmed_ago_s * _S)}
+            update={
+                "status": status,
+                "provisional": provisional,
+                "last_confirmed_stamp_ns": t0 - int(confirmed_ago_s * _S),
+            }
         )
     )
     q_up = _hand_step(binder, robot, q, lift_m) if lift_m > 0 else q
@@ -94,3 +99,14 @@ def test_a_track_last_confirmed_long_before_the_hold_is_not_revived() -> None:
     assert (
         binder.held is not None and binder.held.outcome is not BindOutcome.TRACKED
     )  # a fallback bind
+
+
+def test_a_provisional_track_binds_late_as_a_provisional_payload_carried_with_the_hand() -> None:
+    """Restock tracks are fitted through the robot (provisional): the late bind keeps that rule."""
+    _, binder, carried, q_up = _run("so101_follower", lift_m=0.05, follows=True, provisional=True)
+    assert binder.held is not None and binder.held.outcome is BindOutcome.PROVISIONAL
+    boxes = binder._held_boxes(q_up)
+    near = min(np.linalg.norm(b[0] - carried) for b in boxes)
+    assert near < 0.05, (
+        near
+    )  # the measured box rides with the hand: a primitive sits at the carried object

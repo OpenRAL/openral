@@ -417,52 +417,72 @@ class TrackerSession:
         """
         detector = self._stall.get(joint)
         hold_ns = detector.hold_since_ns if detector is not None else None
-        if hold_ns is None or not _LATE_MIN_NS <= stamp_ns - hold_ns <= _LATE_MAX_NS:
+
+        def skip(why: str, **kv: object) -> None:
+            log.info("object_tracker.late_attach_skipped", hand=joint, why=why, **kv)
+
+        if hold_ns is None:
+            skip("no_hold_read", detector=detector is not None)
+            return None
+        if not _LATE_MIN_NS <= stamp_ns - hold_ns <= _LATE_MAX_NS:
+            skip("lag_out_of_range", lag_s=(stamp_ns - hold_ns) / _NS)
             return None
         if self.grid is None or not self._joint_history:
+            skip("no_grid_or_history")
             return None
         t, sample = min(self._joint_history, key=lambda s: abs(s[0] - hold_ns))
         if abs(t - hold_ns) > _JOINT_SAMPLE_MAX_AGE_NS:
+            skip("no_joint_sample_at_hold")
             return None
         hold_q = {**sample, joint: positions[joint]}
         now_c = binder.pinch_in_frame(positions)[0]
         hold_c = binder.pinch_in_frame(hold_q)[0]
-        if float(np.linalg.norm(now_c - hold_c)) > _LATE_MAX_TRAVEL_M:
+        travel = float(np.linalg.norm(now_c - hold_c))
+        if travel > _LATE_MAX_TRAVEL_M:
+            skip("hand_travelled", travel_m=travel)
             return None
         store = self.tracker.store
         cands = [
             o
             for o in store.all()
             if o.status in _LATE_STATUSES
-            and not o.provisional
             and o.last_confirmed_stamp_ns >= hold_ns - _LATE_CONFIRM_NS
             and _holds(o, hold_c, binder.cell_m)
         ]
-        if len(cands) != 1:
-            return None
-        track = cands[0]
         t_now = binder.hand.t_frame_from_attach(self.frame_id, positions)
         t_hold = binder.hand.t_frame_from_attach(self.frame_id, hold_q)
-        carried = t_now @ np.linalg.inv(t_hold) @ _t(track.box.pose)
-        w, x, y, z = rotation_to_quat_wxyz(carried[:3, :3])
-        region = PlaceRegion(
-            frame_id=self.frame_id,
-            pose=Pose6D(
-                xyz=(float(carried[0, 3]), float(carried[1, 3]), float(carried[2, 3])),
-                quat_xyzw=(x, y, z, w),
+        move = t_now @ np.linalg.inv(t_hold)
+        carried_ok = []
+        for track in cands:
+            carried = move @ _t(track.box.pose)
+            w, x, y, z = rotation_to_quat_wxyz(carried[:3, :3])
+            region = PlaceRegion(
                 frame_id=self.frame_id,
-            ),
-            half_extents=track.box.half_extents,
-        )
-        _, covered = region_covers_occupied(self.grid, region, min_fraction=_LATE_MIN_COVER)
-        if not covered:
-            log.info("object_tracker.late_attach_refused", hand=joint, object_id=track.object_id,
-                     why="carried_box_not_occupied")  # fmt: skip
+                pose=Pose6D(
+                    xyz=(float(carried[0, 3]), float(carried[1, 3]), float(carried[2, 3])),
+                    quat_xyzw=(x, y, z, w),
+                    frame_id=self.frame_id,
+                ),
+                half_extents=track.box.half_extents,
+            )
+            _, covered = region_covers_occupied(self.grid, region, min_fraction=_LATE_MIN_COVER)
+            if covered:
+                carried_ok.append(track)
+        if not carried_ok:
+            skip(
+                "carried_box_not_occupied" if cands else "no_candidate",
+                tracks=[(o.object_id, o.status.value, o.provisional) for o in store.all()],
+            )
             return None
-        if track.status in (TrackStatus.SPLIT, TrackStatus.LOST):
-            store.replace(track.model_copy(update={"status": TrackStatus.OCCLUDED}))
-        log.info("object_tracker.late_attach", hand=joint, object_id=track.object_id,
-                 lag_s=(stamp_ns - hold_ns) / _NS)  # fmt: skip
+        for track in carried_ok:
+            if track.status in (TrackStatus.SPLIT, TrackStatus.LOST):
+                store.replace(track.model_copy(update={"status": TrackStatus.OCCLUDED}))
+        log.info(
+            "object_tracker.late_attach",
+            hand=joint,
+            objects=[o.object_id for o in carried_ok],
+            lag_s=(stamp_ns - hold_ns) / _NS,
+        )
         return hold_q
 
     def on_frame(
