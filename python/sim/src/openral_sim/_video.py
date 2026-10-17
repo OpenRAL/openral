@@ -19,10 +19,15 @@ the strict runner populates uniformly.
 Implementation notes
 --------------------
 * Uses imageio + imageio-ffmpeg for MP4 muxing (libx264, yuv420p).
-* State plot is rendered with a headless matplotlib figure once per
-  frame and rasterised into the canvas; this is slower than a static
-  plot but yields a *moving cursor* on the time axis that follows the
-  rollout, which is what makes the video useful for debugging.
+* State plot is rendered once with a headless matplotlib figure; each
+  frame copies that raster and paints the *moving cursor* (the time axis
+  position that follows the rollout) with numpy, so a frame costs no
+  matplotlib redraw.
+* The video is written at most at ``_MAX_VIDEO_FPS``: a faster control rate
+  (a 60 Hz robot) is sampled down, so playback stays real-time while every
+  per-frame cost (resize, annotate, encode) drops by the same factor. Panels
+  are built per written frame, and a source frame that is the same object as
+  the previous one (a policy preview held between inferences) is reused.
 * If ``vla_input_frames`` is empty (mock / scripted policies that don't
   consume images), the top panel falls back to the rollout/world stream.
 * If ``joint_positions`` is empty (env doesn't expose ``state``), the
@@ -57,6 +62,12 @@ _GRAYSCALE_NDIM = 2
 _MAX_LEGEND_JOINTS = 8
 _LABEL_PAD = 6
 _LABEL_BAR_H = 24
+# Highest frame rate a debug video is written at (see module docstring).
+_MAX_VIDEO_FPS = 30
+# Cursor colour and opacity (matplotlib "red", alpha 0.7) and half-width in pixels.
+_CURSOR_RGB = np.array([255, 0, 0], dtype=np.float32)
+_CURSOR_ALPHA = 0.7
+_CURSOR_HALF_W = 1
 
 
 def save_episode_mp4(
@@ -74,7 +85,8 @@ def save_episode_mp4(
             panel when present; otherwise ``frames`` (rollout/world) is used
             as the fallback. ``joint_positions`` populates the bottom plot.
         path: Destination ``.mp4`` file. Parent directories are created.
-        fps: Playback frame rate.
+        fps: The rate the steps were recorded at (playback is real-time); the
+            file is written at ``min(fps, _MAX_VIDEO_FPS)``, sampling steps.
         title: Optional title text rendered above the joint plot.
 
     Returns:
@@ -114,14 +126,14 @@ def save_episode_mp4(
     show_two = result.num_input_cameras > 1 and bool(result.vla_input_frames)
 
     states = _stack_padded_states(result.joint_positions, n)
-    if show_two:
-        top_w = _TILE_SIZE * 2
-        top_seq = _resize_sequence(result.vla_input_frames, top_w, _TILE_SIZE, target_len=n)
-    else:
-        top_w = _TILE_SIZE * 2
-        # Pick whichever stream is non-empty; prefer the rollout view.
-        primary = result.frames or result.vla_input_frames
-        top_seq = _resize_sequence(primary, top_w, _TILE_SIZE, target_len=n)
+    # Multi-cam: the stitched policy-input grid; else whichever stream is
+    # non-empty, preferring the rollout view.
+    source = result.vla_input_frames if show_two else (result.frames or result.vla_input_frames)
+    label = (
+        f"policy inputs ({result.num_input_cameras} cams)" if show_two else "rollout / policy view"
+    )
+    out_fps = min(fps, _MAX_VIDEO_FPS)
+    steps = _sampled_steps(n, fps, out_fps)
 
     plot_renderer = _JointPlotRenderer(
         states=states,
@@ -136,23 +148,25 @@ def save_episode_mp4(
     writer = iio.get_writer(
         str(path),
         format="ffmpeg",  # type: ignore[arg-type]  # reason: imageio v2 stubs type format as Format enum but accept plugin strings at runtime
-        fps=fps,
+        fps=out_fps,
         codec="libx264",
         quality=8,
         macro_block_size=1,  # no resize; we build exact-size canvases
         pixelformat="yuv420p",
     )
     try:
-        for i in range(n):
-            if show_two:
-                top = _annotate_panel(
-                    top_seq[i], f"policy inputs ({result.num_input_cameras} cams)"
+        last_src: NDArray[np.uint8] | None = None
+        top: NDArray[np.uint8] = np.zeros((_TILE_SIZE, _TOP_W, 3), dtype=np.uint8)
+        for i in steps:
+            src = _frame_at(source, i, n)
+            if src is None or src is not last_src:
+                panel = (
+                    _resize_frame(src, _TOP_W, _TILE_SIZE)
+                    if src is not None
+                    else np.zeros((_TILE_SIZE, _TOP_W, 3), dtype=np.uint8)
                 )
-            else:
-                top = _annotate_panel(
-                    top_seq[i],
-                    "rollout / policy view",
-                )  # already (H, 2W, 3) when single-panel
+                top = _annotate_panel(panel, label)
+                last_src = src
             plot = plot_renderer.render_at_step(i)  # (PLOT_H, CANVAS_W, 3)
             canvas = np.concatenate([top, plot], axis=0)  # (CANVAS_H, CANVAS_W, 3)
             writer.append_data(canvas)
@@ -179,28 +193,32 @@ def _stack_padded_states(
     return arr
 
 
-def _resize_sequence(
-    frames: list[NDArray[np.uint8]],
-    width: int,
-    height: int,
-    *,
-    target_len: int,
-) -> list[NDArray[np.uint8]]:
-    """Resize a sequence of HWC uint8 frames to (height, width). Black-fill if empty.
+def _sampled_steps(n: int, fps: int, out_fps: int) -> list[int]:
+    """The step shown by each written frame when ``fps`` steps/s play at ``out_fps``.
 
-    If ``frames`` is shorter than ``target_len``, the last frame is held;
-    if longer, it is sampled uniformly.
+    Example:
+        >>> _sampled_steps(6, 60, 30)
+        [0, 2, 4]
+        >>> _sampled_steps(3, 15, 30)
+        [0, 1, 2]
+    """
+    if out_fps >= fps:
+        return list(range(n))
+    count = max(1, -(-n * out_fps // fps))  # ceil
+    return [min(n - 1, round(k * fps / out_fps)) for k in range(count)]
+
+
+def _frame_at(frames: list[NDArray[np.uint8]], step: int, n_steps: int) -> NDArray[np.uint8] | None:
+    """The frame for ``step`` of ``n_steps``: sampled uniformly, the last held; ``None`` if empty.
+
+    Example:
+        >>> f = [np.zeros((1, 1, 3), np.uint8), np.ones((1, 1, 3), np.uint8)]
+        >>> [int(_frame_at(f, s, 4)[0, 0, 0]) for s in range(4)]
+        [0, 0, 1, 1]
     """
     if not frames:
-        black = np.zeros((height, width, 3), dtype=np.uint8)
-        return [black] * target_len
-    out: list[NDArray[np.uint8]] = []
-    n = len(frames)
-    for i in range(target_len):
-        # Map step i ∈ [0, target_len) → frame index ∈ [0, n).
-        idx = min(int(i * n / max(target_len, 1)), n - 1)
-        out.append(_resize_frame(frames[idx], width, height))
-    return out
+        return None
+    return frames[min(int(step * len(frames) / max(n_steps, 1)), len(frames) - 1)]
 
 
 def _annotate_panel(frame: NDArray[np.uint8], label: str) -> NDArray[np.uint8]:
@@ -240,9 +258,10 @@ def _resize_frame(
 class _JointPlotRenderer:
     """Renders the bottom observation-state panel with a moving time cursor.
 
-    Draws the static line plot once and only updates the vertical cursor
-    per frame — keeps the per-step cost cheap (~1 ms vs ~30 ms for a full
-    redraw).
+    Draws the static line plot once, then per frame copies that raster and
+    paints the vertical cursor with numpy at the step's pixel column (from the
+    axes' data transform), blended like the matplotlib line it replaces. No
+    matplotlib draw per frame.
     """
 
     def __init__(
@@ -297,22 +316,31 @@ class _JointPlotRenderer:
             ax.tick_params(axis="both", labelsize=7)
             ax.grid(True, alpha=0.3)
 
-        # Vertical cursor we'll move per-frame.
-        self._cursor = ax.axvline(0, color="red", linewidth=1.2, alpha=0.7)
         fig.tight_layout(pad=0.5)
         self._fig = fig
         self._ax = ax
         self._plt = plt
-        # Cache the static background once.
+        # Cache the static background once, and where the cursor may go: the axes'
+        # pixel rows, and each step's pixel column (display y runs bottom-up).
         self._fig.canvas.draw()
         self._static_rgb = self._snapshot()
+        bbox = ax.get_window_extent()
+        h = self._static_rgb.shape[0]
+        self._rows = slice(max(0, round(h - bbox.y1)), min(h, round(h - bbox.y0)))
+        self._x_of = ax.transData
 
     def render_at_step(self, step: int) -> NDArray[np.uint8]:
         if self._n == 0:
             return self._static_rgb
-        self._cursor.set_xdata([step])
-        self._fig.canvas.draw()
-        return self._snapshot()
+        # Agg snaps a 1-px line to the pixel left of the transformed centre.
+        x = int(float(self._x_of.transform((step, 0.0))[0]) - 0.5)
+        cols = slice(max(0, x - _CURSOR_HALF_W), min(self._width, x + _CURSOR_HALF_W + 1))
+        out = self._static_rgb.copy()
+        band = out[self._rows, cols].astype(np.float32)
+        out[self._rows, cols] = (band * (1.0 - _CURSOR_ALPHA) + _CURSOR_RGB * _CURSOR_ALPHA).astype(
+            np.uint8
+        )
+        return out
 
     def _snapshot(self) -> NDArray[np.uint8]:
         # Pull the rendered canvas into an RGB array sized to (H, W).
