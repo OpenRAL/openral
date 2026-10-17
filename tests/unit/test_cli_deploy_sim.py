@@ -1873,8 +1873,16 @@ def test_terminate_launch_group_graceful_sigint_path() -> None:
             os.killpg(pgid, signal.SIGKILL)
 
 
-def test_run_launch_returns_exit_code_and_leaves_no_orphans() -> None:
-    """``_run_launch`` runs a real command, returns its code, reaps the group."""
+def test_run_launch_returns_exit_code_and_leaves_no_orphans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_run_launch`` runs a real command, returns its code, reaps the group.
+
+    The host-wide argv sweep stays off: it kills every live deploy graph on the machine,
+    and this test killed a running #418 Spark trial's launch, runtime, HAL and kernel
+    (r4dr_shadow2, 2026-10-17), leaving its other nodes orphaned on the ROS domain.
+    """
+    monkeypatch.setenv("OPENRAL_SKIP_ORPHAN_REAP", "1")
     rc = _run_launch(
         [sys.executable, "-c", "import sys; sys.exit(7)"],
         dict(os.environ),
