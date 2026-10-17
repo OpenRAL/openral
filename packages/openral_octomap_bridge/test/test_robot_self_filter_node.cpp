@@ -485,7 +485,13 @@ TEST_F(RobotMaskNode, PublishesTheRobotSilhouetteWithTheDepthStamp) {
   depth.height = 48;
   depth.encoding = "32FC1";
   depth.step = 64 * 4;
-  const std::vector<float> metres(64 * 48, 1.0F);  // a wall behind the arm
+  // A wall behind the arm, and the arm (the capsule, front at 0.45 m) where it is seen.
+  std::vector<float> metres(64 * 48, 1.0F);
+  for (int v = 20; v <= 28; ++v) {
+    for (int u = 28; u <= 36; ++u) {
+      metres[static_cast<std::size_t>(v * 64 + u)] = 0.47F;
+    }
+  }
   depth.data.resize(depth.step * depth.height);
   std::memcpy(depth.data.data(), metres.data(), depth.data.size());
   depth_pub->publish(depth);

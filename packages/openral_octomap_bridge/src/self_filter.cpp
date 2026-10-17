@@ -822,6 +822,7 @@ void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
   const std::size_t n = w * h;
   s.z_robot.assign(n, std::numeric_limits<float>::infinity());
   s.backstop.assign(n, 0);
+  s.inside.assign(n, 0);
   mask.assign(n, kRobotMaskFree);
   if (n == 0 || !(cam.fx > 0.0) || !(cam.fy > 0.0)) {
     return;
@@ -877,11 +878,16 @@ void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
           s.z_robot[p] = static_cast<float>(t);  // d.z = 1: t IS the depth
         }
         const float dm = depth_m[p];
-        if (s.backstop[p] == 0 && std::isfinite(dm) && dm > 0.0F) {
+        if ((s.backstop[p] == 0 || s.inside[p] == 0) && std::isfinite(dm) && dm > 0.0F) {
           const tf2::Vector3 local = local_from_cam * (d * static_cast<double>(dm));
-          if (primitive_surface_distance(prim, local) <= margin &&
+          const double surface = primitive_surface_distance(prim, local);
+          if (s.backstop[p] == 0 && surface <= margin &&
               (hull == nullptr || self_hull_distance(*hull, local, margin, margin) <= margin)) {
             s.backstop[p] = 1;
+          }
+          // The return is on (or in) this link, not seen past it.
+          if (surface <= kRobotMaskArmMarginM) {
+            s.inside[p] = 1;
           }
         }
       }
@@ -891,8 +897,9 @@ void render_robot_mask(const std::vector<PayloadPrimitive>& primitives,
   s.not_robot.assign(n, 1);
   for (std::size_t p = 0; p < n; ++p) {
     const float dm = depth_m[p];
-    if (std::isfinite(dm) && dm > 0.0F &&
-        static_cast<double>(s.z_robot[p]) <= static_cast<double>(dm) + kRobotMaskDepthTolM) {
+    const double zr = static_cast<double>(s.z_robot[p]);
+    if (std::isfinite(dm) && dm > 0.0F && zr <= static_cast<double>(dm) + kRobotMaskDepthTolM &&
+        (static_cast<double>(dm) <= zr + kRobotMaskSeeThroughM || s.inside[p] != 0)) {
       s.robot[p] = 1;
       s.not_robot[p] = 0;
     }
