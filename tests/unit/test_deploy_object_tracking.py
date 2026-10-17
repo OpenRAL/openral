@@ -109,6 +109,48 @@ def test_a_user_declared_search_box_still_seeds_the_tracker() -> None:
     assert seeds["orange"]["evidence_ref"] == "operator:tote_left"
 
 
+def test_tracking_without_a_locator_or_seed_refuses_to_configure() -> None:
+    """PickOrange's orange query has no seed (its box is sim ground truth): without an
+    on-demand locator the tracker could never ground it, so deploy sim refuses."""
+    overrides = {
+        "object_tracking": "shadow",
+        "grounding_wait_s": 8,
+        "enable_reasoner": False,
+        "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
+        "preload_prompt": "Grab orange and place into plate",
+    }
+    with pytest.raises(ROSConfigError, match="could never ground"):
+        resolve_launch_invocation(
+            config=_PICK_ORANGE,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_mode="sim",
+            runtime_overrides=overrides,
+            object_detector_locators=[],
+        )
+    argv = resolve_launch_invocation(
+        config=_PICK_ORANGE,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+        runtime_overrides=overrides,
+        object_detector_locators=["omdet-turbo-locator"],
+    ).argv_template
+    assert any(a.startswith("object_queries_json:=") for a in argv)
+    # Tracking off composes no queries, so nothing is refused.
+    resolve_launch_invocation(
+        config=_PICK_ORANGE,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_mode="sim",
+        runtime_overrides={k: v for k, v in overrides.items() if k.startswith(("enable", "pre"))},
+        object_detector_locators=[],
+    )
+
+
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
         _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})

@@ -707,6 +707,38 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     )
 
 
+def _require_groundable_targets(queries_json: str, locators: Sequence[str]) -> None:
+    """Refuse a tracker that could never ground a TARGET query (issue #418).
+
+    The tracker grounds a query through an on-demand locator (``locate_in_view``) or
+    inside its seed box; a TARGET query with neither has nothing to find it with, and a
+    tracker that cannot ground must never run silently.
+
+    Raises:
+        ROSConfigError: Tracking names a TARGET query with no seed and no locator is
+            configured (``--object-detector-locator``).
+
+    Example:
+        >>> _require_groundable_targets('[{"label":"plate","role":"destination"}]', [])
+        >>> _require_groundable_targets('[{"label":"orange","role":"target"}]', ["x.yaml"])
+    """
+    if not queries_json or locators:
+        return
+    blind = [
+        q["label"]
+        for q in json.loads(queries_json)
+        if q.get("role") == "target" and q.get("seed") is None
+    ]
+    if blind:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"object tracking: TARGET quer{'y' if len(blind) == 1 else 'ies'} {blind} "
+            "have no seed and no locator is configured, so the tracker could never ground "
+            "them; pass --object-detector-locator (e.g. omdet-turbo-locator)."
+        )
+
+
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
     """Derive the deploy_e2e.launch.py bundle args from a deploy memory-bundle dir.
 
@@ -1884,6 +1916,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # direct-dispatch deploy (no reasoner, so no initial task) runs the cell's preload
     # prompt; that is the prompt whose task is graded, so it names the queries.
     queries_json = _object_queries_json(deploy_scene, _resolved_initial_prompt or preload_prompt)
+    _require_groundable_targets(queries_json, resolved_object_detector_locators)
     if queries_json:
         argv_template.append(f"object_queries_json:={queries_json}")
 
