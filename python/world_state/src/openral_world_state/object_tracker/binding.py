@@ -11,10 +11,15 @@ joint-state FK, grown by one cell) is intersected with the tracks:
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
   unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
   re-centred on the pinch volume under ``epoch + 1``);
-* two or more: the union of the candidates and the pinch box, ``PINCH_FALLBACK``, no
+* two or more: the union of the candidates and the fallback box, ``PINCH_FALLBACK``, no
   identity (nothing is cleared by identity);
-* none: ``PINCH_FALLBACK``, the pad gap x pad width box past the fingertips, never toward
-  the palm; logged ``untracked_grasp`` and a re-ground is asked for.
+* only PROVISIONAL tracks (fitted through the robot, maybe short): the union of those
+  boxes and the fallback box, ``PINCH_FALLBACK``, no identity, a re-ground asked for;
+* none: ``PINCH_FALLBACK``, the fallback box (``HandModel.fallback_in_link``: the jaw
+  opening seen before closure across the pads, the full stroke along the other two axes);
+  logged ``untracked_grasp`` and a re-ground is asked for.
+
+Every fallback payload is cut at the palm plane.
 
 The bound geometry then only grows (the kernel's K4 unions revisions): a REGRASP unions
 the shape re-centred on the new pinch axis, and unexplained occupied cells 26-connected
@@ -91,6 +96,7 @@ class BindOutcome(StrEnum):
 
     TRACKED = "tracked"
     AMBIGUOUS = "ambiguous"
+    PROVISIONAL = "provisional"
     UNTRACKED = "untracked"
 
 
@@ -256,6 +262,15 @@ class GraspBinder:
         self.held: Binding | None = None
         self._shape: list[AttachedCollisionPrimitive] = []  # object frame, revision 0
         self._theta = 0.0
+        self._opening: float | None = None  # the most open jaw since the last ATTACH
+
+    def observe_jaw(self, jaw: float) -> None:
+        """Fold in a measured jaw; the most open one bounds the next fallback's width."""
+        if math.isfinite(jaw) and (
+            self._opening is None
+            or abs(jaw - self.hand.closed) > abs(self._opening - self.hand.closed)
+        ):
+            self._opening = jaw
 
     # -- geometry -------------------------------------------------------------------
     def pinch_in_frame(self, positions: Mapping[str, float]) -> Box:
@@ -297,18 +312,23 @@ class GraspBinder:
             )
         ]
         jaw = positions[self.hand.joint.name]
-        provisional = tuple(t.object_id for t in cands if t.provisional)
-        if provisional:  # never payload geometry (TrackedObject.provisional)
-            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
-                        candidates=provisional, jaw=jaw)  # fmt: skip
-            cands = [t for t in cands if not t.provisional]
+        provisional = [t for t in cands if t.provisional]
+        cands = [t for t in cands if not t.provisional]
         ids = tuple(t.object_id for t in cands)
         if len(cands) == 1:
             binding = self._bind(store, cands[0], positions, stamp_ns)
+        elif not cands and provisional:
+            # Never identity or payload geometry alone (TrackedObject.provisional), but
+            # measured: unioned with the fallback box it only grows the payload.
+            ids = tuple(t.object_id for t in provisional)
+            binding = self._fallback(provisional, positions, stamp_ns, provisional=True)
+            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
+                        candidates=ids, jaw=jaw)  # fmt: skip
         else:
             binding = self._fallback(cands, positions, stamp_ns)
             event = "object_tracker.ambiguous_grasp" if cands else "object_tracker.untracked_grasp"
             log.warning(event, hand=self.hand.joint.name, candidates=ids, jaw=jaw)
+        self._opening = None
         self.held = binding
         log.info(
             "object_tracker.bound",
@@ -388,10 +408,15 @@ class GraspBinder:
         return Binding(BindOutcome.TRACKED, attachment, (oid,), reground=False)
 
     def _fallback(
-        self, cands: Sequence[TrackedObject], positions: Mapping[str, float], stamp_ns: int
+        self,
+        cands: Sequence[TrackedObject],
+        positions: Mapping[str, float],
+        stamp_ns: int,
+        *,
+        provisional: bool = False,
     ) -> Binding:
         oid = f"pinch:{self.hand.joint.name}@{stamp_ns}"
-        fb = self.hand.fallback_in_link(positions[self.hand.joint.name])
+        fb = self.hand.fallback_in_link(positions[self.hand.joint.name], self._opening)
         t_ao = _frame(fb.centre, fb.axes)
         prims = [_prim(np.eye(4), fb.half, oid)]
         t_of = np.linalg.inv(self.hand.t_frame_from_attach(self.frame_id, positions) @ t_ao)
@@ -405,6 +430,7 @@ class GraspBinder:
             prims.append(_prim(_frame((lo + hi) / 2.0, np.eye(3)), (hi - lo) / 2.0, oid))
         else:
             prims += [_prim(t_of @ _frame(c, r), h, oid) for c, r, h in boxes]
+        prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
         self._shape, self._theta = prims[:1], 0.0
         attachment = AttachedCollisionObject(
             object_id=oid,
@@ -414,13 +440,25 @@ class GraspBinder:
             pose_in_link=_pose(t_ao, self.hand.attach_link),
             confidence=FALLBACK_CONFIDENCE,
             evidence_kind=AttachmentEvidenceKind.PINCH_FALLBACK,
-            evidence_ref=("ambiguous:" + ",".join(t.object_id for t in cands))
+            evidence_ref=(
+                ("provisional:" if provisional else "ambiguous:")
+                + ",".join(t.object_id for t in cands)
+            )
             if cands
             else "untracked_grasp",
             stamp_ns=stamp_ns,
         )
-        outcome = BindOutcome.AMBIGUOUS if cands else BindOutcome.UNTRACKED
-        return Binding(outcome, attachment, tuple(t.object_id for t in cands), reground=not cands)
+        outcome = (
+            BindOutcome.PROVISIONAL
+            if provisional
+            else (BindOutcome.AMBIGUOUS if cands else BindOutcome.UNTRACKED)
+        )
+        return Binding(
+            outcome,
+            attachment,
+            tuple(t.object_id for t in cands),
+            reground=provisional or not cands,
+        )
 
     # -- growth ---------------------------------------------------------------------
     def _union(

@@ -240,6 +240,9 @@ class TrackerSession:
     def on_joint_state(self, positions: Mapping[str, float], stamp_ns: int) -> None:
         """Fold measured joints in (manifest names); run the jaw-open release rule."""
         self.positions.update(positions)
+        for joint, binder in self.binders.items():
+            if joint in positions:  # the most open jaw before closure bounds a fallback
+                binder.observe_jaw(positions[joint])
         self._tick(stamp_ns)
         for joint, monitor in list(self._monitors.items()):
             jaw = positions.get(joint)

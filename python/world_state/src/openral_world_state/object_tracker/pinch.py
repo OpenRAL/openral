@@ -195,19 +195,34 @@ class HandModel:
             self.axes @ ((lo3 + hi3) / 2.0), self.axes, (hi3 - lo3) / 2.0, self.palm_m
         )
 
-    def fallback_in_link(self, jaw: float) -> PinchVolume:
-        """The ``PINCH_FALLBACK`` payload: pad gap x pad width, past the fingertips.
+    @property
+    def open_end(self) -> float:
+        """The end of the jaw's ``position_limits`` farther from the closed end."""
+        lo, hi = self.joint.position_limits or (self.closed, self.closed)
+        return lo if abs(lo - self.closed) > abs(hi - self.closed) else hi
 
-        ``J_h`` extended along the approach by half the pad gap beyond the fingertips (a
-        held body centred between the pads reaches that far past them); its back face
-        stays on or in front of the palm plane.
+    def fallback_in_link(self, jaw: float, opening: float | None = None) -> PinchVolume:
+        """The ``PINCH_FALLBACK`` payload (OT-10, bounded), in the attach link.
+
+        Along the closing axis: ``J_h`` at ``opening``, the jaw measured just before
+        closure (the held width there is at most that gap); the whole stroke when no
+        opening was seen. Along the approach and the pad width: the gripper's full stroke
+        (the pad gap at the manifest's open end), from ``J_h``'s centre at ``jaw``. Its
+        back face stays on or in front of the palm plane.
         """
         j = self.pinch_in_link(jaw)
-        ext = float(j.half[0])
-        a = j.axes[:, 1]
-        return PinchVolume(
-            j.centre + a * ext / 2.0, j.axes, j.half + np.array([0.0, ext / 2.0, 0.0]), j.palm_m
+        gap = self.pinch_in_link(self.open_end if opening is None else opening)
+        stroke_half = float(self.pinch_in_link(self.open_end).half[0])
+        jc, gc = j.centre @ self.axes, gap.centre @ self.axes
+        lo = np.array([gc[0] - gap.half[0], self.palm_m, jc[2] - max(j.half[2], stroke_half)])
+        hi = np.array(
+            [
+                gc[0] + gap.half[0],
+                max(jc[1] + j.half[1], jc[1] + stroke_half),
+                jc[2] + max(j.half[2], stroke_half),
+            ]
         )
+        return PinchVolume(self.axes @ ((lo + hi) / 2.0), self.axes, (hi - lo) / 2.0, self.palm_m)
 
     def hand_boxes(self, frame: str, positions: Mapping[str, float]) -> list[Box]:
         """The hand's collision primitives as boxes in ``frame`` by FK at ``positions``."""
