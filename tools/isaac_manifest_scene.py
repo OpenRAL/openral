@@ -987,9 +987,11 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
     """A planned camera's render ``(width, height)``: its manifest intrinsics' raster.
 
     A policy camera renders at the raster its checkpoint was trained on, so its aspect
-    survives the policy's resize. A depth camera keeps its aspect at no more than the
-    scene's width: its cloud and registered frames cross the wire every step. A camera
-    with no intrinsics takes the scene's ``observation_width``/``height``.
+    survives the policy's resize. A depth camera renders at its sensor spec's raster too:
+    its consumers (octomap, the object tracker's detector and segmenter) see what the real
+    sensor sees, never a raster set by the policy's ``observation_width`` (#418: the OpenArm
+    head_zed was capped to 512x288 and a carton shrank to ~31 px). A camera with no
+    intrinsics takes the scene's ``observation_width``/``height``.
 
     Example:
         >>> camera_resolution(
@@ -999,7 +1001,7 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
         >>> camera_resolution(
         ...     {"modality": "depth", "intrinsics": {"width": 1920, "height": 1080}}, 512, 384
         ... )
-        (512, 288)
+        (1920, 1080)
         >>> camera_resolution({"modality": "rgb"}, 512, 384)
         (512, 384)
     """
@@ -1007,8 +1009,6 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
     w, h = int(k.get("width") or 0), int(k.get("height") or 0)
     if w <= 0 or h <= 0:
         return obs_width, obs_height
-    if meta.get("modality") == "depth" and w > obs_width:
-        return obs_width, max(1, round(h * obs_width / w))
     return w, h
 
 

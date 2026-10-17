@@ -1302,3 +1302,20 @@ def test_object_pose_noise_single_offset_keeps_layouts(_manifest_scene_mod: obje
     old = sample([_noisy(0.0, 0.0, 0.0)], rect, np.random.default_rng(7))
     new = sample([_noisy(0.0, 0.0, 0.0, yaw_offsets_deg=[0.0])], rect, np.random.default_rng(7))
     assert old == new
+
+
+def test_a_depth_camera_renders_at_its_manifest_raster_not_the_policy_width(
+    _manifest_scene_mod: Any,
+) -> None:
+    """#418 restock: the OpenArm head_zed (manifest 1920x1080) rendered at 512x288 because a
+    depth camera was capped at the scene's observation_width -- a policy setting. A carton
+    was ~31 px where the real ZED sees ~110, so the tracker's detector could not find it.
+    A depth camera's raster comes from its sensor spec."""
+    zed = next(
+        s
+        for s in RobotDescription.from_yaml(str(_repo_root() / "robots/openarm/robot.yaml")).sensors
+        if s.name == "head_zed"
+    )
+    assert zed.intrinsics is not None
+    meta = {"modality": zed.modality, "intrinsics": zed.intrinsics.model_dump()}
+    assert _manifest_scene_mod.camera_resolution(meta, 512, 384) == (1920, 1080)
