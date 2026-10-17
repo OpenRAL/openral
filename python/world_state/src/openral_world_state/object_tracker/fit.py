@@ -33,7 +33,7 @@ Pure numpy, no ROS, no clock. Every default is a *calibration point* (CLAUDE.md 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from numpy.typing import NDArray
@@ -111,10 +111,13 @@ class ContainingFit:
         support_z: The support the fit was truncated at.
         assumptions: A1-A4 evidence for the trace (``a1_border_clear``, ``a2_gap_m``,
             ``a3_depth_valid``, ``a4_occluder_px``, ``a4_robot_beyond_band_px``: robot pixels
-            past the occluder band where the robot touches the mask (refused when any),
+            past the occluder band where the robot touches the mask (``provisional`` when any),
             ``a5_robot_band_px``: silhouette pixels
             on or beside the robot, whose depth never sets the front cut).
         refusal: Empty when fitted, else why not.
+        provisional: The robot touches the mask and reaches past the occluder band, so the
+            fit may under-contain what it hides (A4 not held): good for exemptions and
+            identity clearing only (``TrackedObject.provisional``), never a payload.
     """
 
     box: PlaceRegion | None
@@ -123,6 +126,7 @@ class ContainingFit:
     support_z: float
     assumptions: dict[str, float | bool] = field(default_factory=dict)
     refusal: str = ""
+    provisional: bool = False
 
 
 def _dilate(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
@@ -177,7 +181,7 @@ def _refused(
     return ContainingFit(None, None, surface, support_z, notes, why)
 
 
-def containing_fit(  # noqa: PLR0911, PLR0915  # reason: one named refusal per assumption
+def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     mask: NDArray[np.bool_],
     depth_m: NDArray[np.float64],
     robot_mask: NDArray[np.uint8] | None,
@@ -266,17 +270,18 @@ def containing_fit(  # noqa: PLR0911, PLR0915  # reason: one named refusal per a
     mask_depth = _neighbour_max(np.where(s0 & usable, d, -np.inf))
     nearer = ring & (robot | (usable & (d < mask_depth - p.occluder_tol_m)))
     notes["a4_occluder_px"] = float(nearer.sum())
-    # Never fitted through the robot (design step 1.5): the bands re-add a hidden part up to
-    # ``w_occ_px`` behind an occluder, so a robot region that touches the mask (across the
-    # filter's uncertain band) and reaches past that band may hide more of the object than
-    # the fit can contain — the arm over a plate's near rim cut 2.7 cm off it. Deferred:
-    # the map holds the track until the arm moves on.
+    # The bands re-add a hidden part up to ``w_occ_px`` behind an occluder, so a robot
+    # region that touches the mask (across the filter's uncertain band) and reaches past
+    # that band may hide more of the object than the fit can contain — the arm over a
+    # plate's near rim cut 2.7 cm off it. Such a fit is PROVISIONAL (#418 decision
+    # 2026-10-17): an under-contained box may only shrink what is exempted or cleared, so
+    # it serves K2 and identity clearing, never a payload, until a fit with the robot back
+    # inside the band clears the flag.
     reach = p.k_px + 1 + p.w_occ_px
     touch = _dilate(s0, p.k_px + 1) & robot
     beyond = _dilate(s0, reach + 1) & ~_dilate(s0, reach) & robot
     notes["a4_robot_beyond_band_px"] = float(beyond.sum()) if touch.any() else 0.0
-    if notes["a4_robot_beyond_band_px"] > 0:
-        return _refused("a4_robot_occluder_wide", surface, support_z, notes)
+    provisional = notes["a4_robot_beyond_band_px"] > 0
     silhouette = s0 | (uncertain & _dilate(s0, p.k_px + 1)) | _dilate(nearer, p.w_occ_px)
     measured = sure
     if detector_box is not None:
@@ -318,7 +323,8 @@ def containing_fit(  # noqa: PLR0911, PLR0915  # reason: one named refusal per a
             np.column_stack((footprint, np.full(len(footprint), top))),
         )
     )
-    return _boxed(verts, surface, support_z, resolution, frame_id, stamp_ns, notes)
+    fit = _boxed(verts, surface, support_z, resolution, frame_id, stamp_ns, notes)
+    return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
 
 
 def _boxed(

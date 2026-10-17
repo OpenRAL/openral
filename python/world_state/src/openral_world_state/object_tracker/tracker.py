@@ -425,6 +425,7 @@ class ObjectTracker:
                 occupied_cells=0,
                 last_fit_stamp_ns=frame.stamp_ns,
                 last_confirmed_stamp_ns=0,
+                provisional=fit.provisional,
             )
         else:
             old = self.store.get(oid)
@@ -434,6 +435,10 @@ class ObjectTracker:
                 return None
             if old.status is TrackStatus.BOUND:
                 return oid, fit
+            if fit.provisional and not old.provisional:
+                # A fit through the robot never replaces geometry measured clear of it.
+                log.info("object_tracker.provisional_refit_ignored", object_id=oid)
+                return None
             refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
             track = old.model_copy(
                 update={
@@ -445,6 +450,7 @@ class ObjectTracker:
                     "last_fit_stamp_ns": frame.stamp_ns,
                     "status": TrackStatus.TENTATIVE if refit else old.status,
                     "identity_inferred": old.identity_inferred or kind == "inferred",
+                    "provisional": fit.provisional,
                 }
             )
             self.store.replace(track)

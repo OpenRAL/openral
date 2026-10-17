@@ -231,3 +231,20 @@ def test_a_neighbour_whose_geometry_misses_the_pinch_centre_is_not_bound() -> No
     assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
     kept = store.get(orange_1.object_id)
     assert kept is not None and kept.status is TrackStatus.CONFIRMED
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_provisional_track_never_becomes_the_payload(robot: str) -> None:
+    """#418 decision (2026-10-17): a track fitted through the robot may be exempted over,
+    but the grasp that meets it falls back to PINCH_FALLBACK and asks for a re-ground (the
+    clear refit after lift); the track itself is not bound."""
+    binder, q, centre = arm_at_hold(robot)
+    held = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024))
+    store = DictStore([held.model_copy(update={"provisional": True})])
+    b = binder.on_attach(store, q, stamp_ns=10)
+    assert b.outcome is BindOutcome.UNTRACKED and b.reground and b.candidates == ()
+    assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    kept = store.get("trk:1")
+    assert kept is not None and kept.status is TrackStatus.CONFIRMED and kept.provisional
+    clear = DictStore([held])
+    assert binder.on_attach(clear, q, stamp_ns=11).outcome is BindOutcome.TRACKED

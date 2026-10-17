@@ -261,8 +261,13 @@ class GraspBinder:
                 and _box_holds(_box(fall_column(t, self.cell_m)), centre, self.cell_m)
             )
         ]
-        ids = tuple(t.object_id for t in cands)
         jaw = positions[self.hand.joint.name]
+        provisional = tuple(t.object_id for t in cands if t.provisional)
+        if provisional:  # never payload geometry (TrackedObject.provisional)
+            log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
+                        candidates=provisional, jaw=jaw)  # fmt: skip
+            cands = [t for t in cands if not t.provisional]
+        ids = tuple(t.object_id for t in cands)
         if len(cands) == 1:
             binding = self._bind(store, cands[0], positions, stamp_ns)
         else:
