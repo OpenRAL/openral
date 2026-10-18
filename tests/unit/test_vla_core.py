@@ -14,6 +14,7 @@ exposes ``select_action(batch) -> Tensor``. That's fixture, not mock.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -556,6 +557,43 @@ class TestCloneChunkOutput:
         assert _clone_chunk_output(None, torch) is None
         assert _clone_chunk_output(3.5, torch) == 3.5
         assert _clone_chunk_output({"n": 7}, torch) == {"n": 7}
+
+
+class TestStageSafetensorsOnHost:
+    """lerobot reads a checkpoint through host memory, with the identical weights."""
+
+    @pytest.fixture(autouse=True)
+    def _require_lerobot(self) -> None:
+        pytest.importorskip(
+            "lerobot", reason="install the VLA stack to exercise the lerobot loader"
+        )
+
+    def test_load_is_patched_inside_and_restored_after(self) -> None:
+        from lerobot.policies import pretrained
+        from openral_rskill._vla_core import stage_safetensors_on_host
+
+        before = pretrained.load_model_as_safetensor
+        with stage_safetensors_on_host():
+            assert pretrained.load_model_as_safetensor is not before
+        assert pretrained.load_model_as_safetensor is before
+
+    def test_a_device_request_loads_the_same_weights(self, tmp_path: Path) -> None:
+        """A real safetensors file loaded with `device="meta"` (which would fail to fill a CPU
+        model) fills it when staged, and matches a plain CPU load tensor for tensor."""
+        import torch
+        from lerobot.policies import pretrained
+        from openral_rskill._vla_core import stage_safetensors_on_host
+        from safetensors.torch import save_model
+
+        src = torch.nn.Linear(4, 3)
+        save_model(src, str(tmp_path / "model.safetensors"))
+        staged = torch.nn.Linear(4, 3)
+        with stage_safetensors_on_host():
+            pretrained.load_model_as_safetensor(
+                staged, str(tmp_path / "model.safetensors"), strict=True, device="meta"
+            )
+        assert torch.equal(staged.weight, src.weight)
+        assert torch.equal(staged.bias, src.bias)
 
 
 # ── suppress_hf_weight_init / assert_all_parameters_finite ────────────────────

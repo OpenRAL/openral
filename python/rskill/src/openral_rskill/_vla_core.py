@@ -1888,6 +1888,51 @@ def suppress_hf_weight_init() -> Iterator[None]:
         PreTrainedModel._init_weights = original  # type: ignore[method-assign]  # reason: restore
 
 
+@contextmanager
+def stage_safetensors_on_host() -> Iterator[None]:
+    """Make lerobot read a checkpoint into host memory, then move the model once.
+
+    ``PreTrainedPolicy.from_pretrained`` loads ``model.safetensors`` with
+    ``safetensors.torch.load_model(..., device=<policy device>)``: every tensor goes
+    from the mmap straight to the GPU, one ``cudaMemcpy`` each, then
+    ``load_state_dict`` copies it back into the CPU-resident model, and
+    ``policy.to(device)`` finally moves the model. On the GB10 (unified memory) that
+    per-tensor mmap-to-device path runs at ~190 MB/s: 6.7 s of the 9 s SmolVLA load
+    (1.2 GB, 500 tensors), against 1.0 s to read the same file to host memory.
+    Loading with ``device="cpu"`` gives the identical weights (the model is on the CPU
+    at that point and moves afterwards).
+
+    Process-global for the duration (patches ``lerobot.policies.pretrained``), so it
+    must not wrap a block loading models on several threads at once; the skill runner
+    serialises loads behind its resident-skill lock.
+
+    Yields:
+        Nothing; the caller's ``from_pretrained`` runs with host-staged reads.
+
+    Example:
+        >>> from openral_rskill._vla_core import stage_safetensors_on_host
+        >>> with stage_safetensors_on_host():
+        ...     pass  # SmolVLAPolicy.from_pretrained(...) goes here
+    """
+    try:
+        from lerobot.policies import pretrained
+    except ImportError:  # lerobot is an opt-in extra
+        yield
+        return
+
+    original = pretrained.load_model_as_safetensor
+
+    def _on_host(model: Any, filename: Any, **kwargs: Any) -> Any:  # reason: safetensors signature
+        kwargs["device"] = "cpu"
+        return original(model, filename, **kwargs)
+
+    pretrained.load_model_as_safetensor = _on_host
+    try:
+        yield
+    finally:
+        pretrained.load_model_as_safetensor = original
+
+
 def assert_all_parameters_finite(
     policy: Any, *, repo_id: str
 ) -> None:  # reason: torch.nn.Module without importing torch here

@@ -628,10 +628,11 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
             # values nothing reads. Guarded below — see suppress_hf_weight_init.
             from openral_rskill._vla_core import (
                 assert_all_parameters_finite,
+                stage_safetensors_on_host,
                 suppress_hf_weight_init,
             )
 
-            with suppress_hf_weight_init():
+            with suppress_hf_weight_init(), stage_safetensors_on_host():
                 policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
             assert_all_parameters_finite(policy, repo_id=repo_id)
         with _smolvla_phase("to_device", device=device):
