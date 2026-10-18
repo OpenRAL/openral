@@ -461,6 +461,8 @@ class SimAttachedHAL:
     # the sim time of the last one; ``None`` = render every step. Immutable defaults.
     _frame_period_ns: int | None = None
     _last_frame_sim_ns: int | None = None
+    # ``release_env`` ran (the kept-alive sidecar was handed over).
+    _env_released: bool = False
 
     def __init__(
         self,
@@ -793,6 +795,21 @@ class SimAttachedHAL:
             if self._active_task:
                 self._emit_placement_grade_final()
         self._connected = False
+
+    def release_env(self) -> None:
+        """Hand a ``keep_alive`` backend's sidecar over to the next launch (process teardown).
+
+        Called once by the lifecycle node as its process exits, never on a cleanup that a
+        configure may follow. Only a backend the scene opted in (``backend_options.keep_alive``)
+        is closed: its ``close`` detaches the sidecar from this process's exit reaper, so the
+        next deploy sim of the same scene adopts it instead of booting Kit again. Any other
+        env is left to its owner, as before. Idempotent.
+        """
+        env = self._env
+        if getattr(env, "keep_alive", False) is not True or self._env_released:
+            return
+        self._env_released = True
+        env.close()
 
     def read_state(self) -> JointState:
         """Read live joint state from the env's MJCF qpos via the description.

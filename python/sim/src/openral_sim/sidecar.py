@@ -55,6 +55,9 @@ _log = structlog.get_logger(__name__)
 
 _NDARRAY_SENTINEL = "__ndarray__"
 
+#: Environment marker of a sidecar spawned to outlive its client (``SidecarClient.keep_alive``).
+KEPT_ALIVE_ENV = "OPENRAL_SIDECAR_KEPT_ALIVE"
+
 # Sidecars spawn detached (own session) so a terminal Ctrl-C during the slow
 # boot can't kill them. The cost is that a HARD-killed ``openral`` (SIGTERM
 # from ``timeout`` / an orchestrator, or a crash before the backend's
@@ -226,6 +229,10 @@ class SidecarClient:
     # instead of inheriting ours: a sidecar meant to outlive this process (`detach`)
     # must not hold our stdout open, or a pipeline reading it (`| tee`, CI) never ends.
     log_path: Path | None = None
+    #: The sidecar is meant to outlive this client (``detach``); marks its environment so a
+    #: launch guard that reaps a dead deploy's descendants (``openral_cli._launch_guard``)
+    #: leaves it for the next run to adopt.
+    keep_alive: bool = False
     _ctx: Any = None
     _socket: Any = None
     _child: subprocess.Popen[bytes] | None = field(default=None)
@@ -483,6 +490,8 @@ class SidecarClient:
         # would shadow the sidecar venv's own numpy with an ABI-incompatible build
         # → "No module named 'numpy._core._multiarray_umath'" at sidecar boot.
         child_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+        if self.keep_alive:
+            child_env[KEPT_ALIVE_ENV] = "1"
         out: Any = None
         if self.log_path is not None:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)

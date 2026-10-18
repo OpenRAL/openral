@@ -1183,6 +1183,9 @@ if _ROS2_AVAILABLE:
                 return
             try:
                 hal.disconnect()
+                release_env = getattr(hal, "release_env", None)
+                if callable(release_env):
+                    release_env()
             except Exception as exc:  # reason: a teardown fault must not mask process exit
                 self.get_logger().error(f"HAL disconnect failed during shutdown: {exc}")
 

@@ -208,9 +208,11 @@ _`openral deploy sim` — boot the full ROS graph against a digital-twin HAL via
 ### `python/cli/src/openral_cli/_launch_guard.py`
 _Issue #418 (r4dr_shadow2): a SIGKILLed or crashed `openral deploy sim` CLI never runs `_run_launch`'s teardown, and `ros2 launch` puts each node in its own process group (a sim sidecar in its own session), so they outlived it on the ROS domain. Stdlib only, run as a script._
 
-- `main(argv) -> int` (L91) — `<cli_pid> <launch_pid>`: every `POLL_S` (0.5 s) snapshot the launch's descendants by `/proc` ppid (pid + start time, so a reused pid is never signalled); once the CLI's pid is gone or reused, SIGTERM everything seen, SIGKILL what is left after `GRACE_S` (5 s).
-- `POLL_S = 0.5` (L26) — Snapshot period (s).
-- `GRACE_S = 5.0` (L27) — SIGTERM to SIGKILL grace (s).
+- `main(argv) -> int` (L92) — `<cli_pid> <launch_pid>`: every `POLL_S` (0.5 s) snapshot the launch's descendants by `/proc` ppid (pid + start time, so a reused pid is never signalled); once the CLI's pid is gone or reused, SIGTERM everything seen, SIGKILL what is left after `GRACE_S` (5 s). A process whose environment carries `OPENRAL_SIDECAR_KEPT_ALIVE=1` (an Isaac sidecar spawned with `keep_alive`) is left running for the next run to adopt.
+- `KEPT_ALIVE_ENV = b'OPENRAL_SIDECAR_KEPT_ALIVE=1'` (L30) — environment entry that exempts a sidecar from the reap (`openral_sim.sidecar.KEPT_ALIVE_ENV`).
+- `_kept_alive(pid) -> bool` (L71) — whether `/proc/<pid>/environ` carries it.
+- `POLL_S = 0.5` (L27) — Snapshot period (s).
+- `GRACE_S = 5.0` (L28) — SIGTERM to SIGKILL grace (s).
 
 ### `python/cli/src/openral_cli/dataset.py`
 _`openral dataset` Typer app + `push` subcommand._

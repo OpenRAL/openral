@@ -1572,7 +1572,10 @@ class IsaacManifestScene(IsaacSceneBase):
         self._rest_s: dict[str, float] = {}
         self._last_pos: dict[str, NDArray[np.float64]] = {}
         self._last_quat: dict[str, NDArray[np.float64]] = {}
-        self._activate_placement_success(robot_spec.get("placement_success"))
+        # The rubric the scene boots with: every reset returns to it (a deploy sim goal's
+        # `set_task` rubric must not outlive the episode on a kept-alive sidecar).
+        self._boot_placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
+        self._activate_placement_success(self._boot_placement_success)
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -2563,10 +2566,7 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
-        self._placement_grade = "fail"
-        self._rest_s.clear()
-        self._last_pos.clear()
-        self._last_quat.clear()
+        self._activate_placement_success(self._boot_placement_success)
         # A reset teleports the robot: no finite-difference link speed across it.
         self._body_positions = {}
         self._prev_body_positions = {}

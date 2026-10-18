@@ -174,6 +174,21 @@ _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS gr
 - `class Monitor` (L164) — Owns the ROS subscriptions + state for the attachment/failure/place/voxel recording described above; `__init__(node, sink, snap_dir)`.
 - `main() -> int` (L434) — CLI: `sys.argv[1]`=output path, `[2]`=snapshot dir; creates the node, runs `Monitor`, spins until SIGINT/SIGTERM, writes `monitor_started`/`monitor_stopped` markers.
 
+### `tools/deploy_sim_batch.py`
+_Runs a batch of `deploy sim` episodes on one Isaac sidecar (`--mode persistent`: a fresh ROS graph per episode against a kept-alive sidecar the new HAL adopts and resets with the episode's seed; `--mode fresh`: the baseline, a sidecar per episode). Between episodes: domain quiet, no leftover graph process, sidecar answering; else the sidecar is ended and `batch.json` records a `restarts` entry. `compare A B` prints outcome, boot/total wall time and the max difference of the sidecar's initial ground truth per episode. Sim only; nothing here clears an e-stop._
+
+- `episode_scene(scene, *, seed, keep_alive, port) -> dict` (L47) — The scene dict one episode launches (seed, sidecar port, keep-alive).
+- `sidecar_pids(port) -> list[int]` (L67) — Pids of this user's sidecars serving `port`.
+- `sidecar_call(port, endpoint, timeout_ms=4000) -> dict | None` (L83) — One request to the sidecar; `None` when it does not answer.
+- `graph_leaks(domain) -> list[str]` (L112) — Deploy-graph processes of this user still alive on the ROS domain.
+- `domain_nodes(env) -> list[str]` (L128) — ROS node names on the domain (`ros2 node list --no-daemon`).
+- `run_batch(args) -> int` (L181) — The episode loop.
+- `compare(a, b) -> int` (L332) — Side-by-side per-episode report of two batches.
+- `main(argv=None) -> int` (L360) — `run` (default) or `compare A B`.
+- `const READY_MARKERS = ('HAL activated at',)` (L43) — Log lines that mean the HAL is up.
+- `const PRELOAD_MARKER = 'rskill_runner.preload_done'` (L44) — Added to the ready markers when the scene preloads a skill.
+- `const REPO` (L42) — Repo root (the checkout the script runs from).
+
 ### `tools/_validation_matrix_dispatch.py`
 _Private helper of `validation_matrix.py`. Sends one `ExecuteRskill` goal at the live graph (the matrix runs with the reasoner off) and prints one JSON line — the run's `goal.log`. Needs ROS 2 sourced._
 

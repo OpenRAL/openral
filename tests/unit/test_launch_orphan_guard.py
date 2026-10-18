@@ -110,3 +110,40 @@ def test_without_the_guard_the_tree_outlives_a_sigkilled_cli(tmp_path: Path) -> 
         for p in pids:
             with contextlib.suppress(OSError):
                 os.kill(p, signal.SIGKILL)
+
+
+def test_a_sidecar_marked_kept_alive_survives_the_cli_that_spawned_it(tmp_path: Path) -> None:
+    """`--keep-sim-open` on a deploy: the sidecar outlives its CLI for the next run to
+    adopt, while the rest of the launch tree is still reaped."""
+    from openral_sim.sidecar import KEPT_ALIVE_ENV
+
+    tree = tmp_path / "tree.py"
+    tree.write_text(
+        _TREE.replace(
+            "start_new_session=True)",
+            f'start_new_session=True, env={{**os.environ, "{KEPT_ALIVE_ENV}": "1"}})',
+        )
+    )
+    out = tmp_path / "pids"
+    env = {**os.environ, "OPENRAL_SKIP_ORPHAN_REAP": "1"}
+    cli = subprocess.Popen([sys.executable, "-c", _CLI, str(tree), str(out)], env=env)
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 30.0
+        while not (out.exists() and out.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        pids = [int(p) for p in out.read_text().split()]
+        time.sleep(2.0)
+        cli.send_signal(signal.SIGKILL)
+        cli.wait(timeout=5)
+        node, sidecar = pids[1], pids[2]
+        deadline = time.monotonic() + 20.0
+        while _alive(node) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(node), "the launch node outlived the CLI"
+        assert _alive(sidecar), "the kept-alive sidecar was reaped with the launch"
+    finally:
+        for p in pids:
+            with contextlib.suppress(OSError):
+                os.kill(p, signal.SIGKILL)
+        cli.kill()

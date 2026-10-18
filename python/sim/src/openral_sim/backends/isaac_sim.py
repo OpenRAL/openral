@@ -2921,6 +2921,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         auto_spawn=auto_spawn,
         # Reject (loudly) an already-running sidecar on this port that serves a
         # different scene, instead of silently adopting its wrong layout.
+        keep_alive=opts.keep_alive,
         # A kept-alive sidecar outlives this run: it must not hold our stdout open.
         log_path=(
             Path.home() / ".cache" / "openral" / "isaac-sidecar" / f"sidecar-{port}.log"

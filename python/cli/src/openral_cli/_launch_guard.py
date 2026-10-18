@@ -11,7 +11,8 @@ the ROS domain (#418 r4dr_shadow2). This process, in its own session so a signal
 CLI's group does not reach it, snapshots every descendant of the launch every
 ``POLL_S`` and, once the CLI's pid is gone (or reused), SIGTERMs every process it ever
 saw that is still the same process (pid + start time), then SIGKILLs what is left after
-``GRACE_S``. Stdlib only: it must start fast and never import the CLI.
+``GRACE_S``. A sidecar marked kept alive (``KEPT_ALIVE_ENV``) is left running.
+Stdlib only: it must start fast and never import the CLI.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from pathlib import Path
 
 POLL_S = 0.5
 GRACE_S = 5.0
+#: ``openral_sim.sidecar.KEPT_ALIVE_ENV`` (this module is stdlib-only, so it repeats the name).
+KEPT_ALIVE_ENV = b"OPENRAL_SIDECAR_KEPT_ALIVE=1"
 
 
 def _stat(pid: int) -> tuple[int, int] | None:
@@ -65,7 +68,17 @@ def _snapshot(seen: dict[int, int]) -> None:
                 todo.append(child)
 
 
+def _kept_alive(pid: int) -> bool:
+    """Whether ``pid`` is a sidecar spawned to outlive its deploy (``--keep-sim-open``)."""
+    try:
+        return KEPT_ALIVE_ENV in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return False
+
+
 def _reap(seen: dict[int, int]) -> None:
+    for pid in [p for p in seen if _kept_alive(p)]:
+        del seen[pid]  # the next run adopts it; ending it is the run that is not kept alive
     for sig, wait_s in ((signal.SIGTERM, GRACE_S), (signal.SIGKILL, 0.0)):
         for pid, start in seen.items():
             if _same(pid, start):
