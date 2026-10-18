@@ -56,6 +56,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -2677,7 +2678,9 @@ class IsaacManifestScene(IsaacSceneBase):
         if with_frames:
             # The HAL derives each depth camera's cloud from these frames
             # (SimAttachedHAL.read_depth_clouds): no point cloud crosses the wire.
+            t_depth = time.perf_counter()
             frames = self._depth_frames()
+            self.depth_frames_ms = (time.perf_counter() - t_depth) * 1e3
             if frames:
                 obs["depth_frames"] = frames
         scan = self._scan_ranges()

@@ -31,6 +31,7 @@ import io
 import os
 import re
 import sys
+import time
 import traceback
 from typing import Any
 
@@ -43,6 +44,39 @@ os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
 
 
 # ── msgpack ndarray codec (matches openral_sim.backends.isaac_sim) ────────────
+
+
+class _StepTiming:
+    """Mean per-step wall time (ms) by frame mode, printed every 100 steps of a mode
+    (``OPENRAL_SIDECAR_TIMING=1``): physics, catch-up renders, observation assembly,
+    reply packing, send, whole handler, reply size."""
+
+    def __init__(self) -> None:
+        self._sums: dict[str, dict[str, float]] = {}
+        self._n: dict[str, int] = {}
+        self.sized = False
+
+    def add(self, mode: str, parts: dict[str, float]) -> None:
+        sums = self._sums.setdefault(mode, {})
+        for k, v in parts.items():
+            sums[k] = sums.get(k, 0.0) + float(v)
+        self._n[mode] = self._n.get(mode, 0) + 1
+        if self._n[mode] % 100 == 0:
+            n = 100.0
+            line = " ".join(f"{k}={v / n:.1f}" for k, v in sums.items())
+            print(f"[sidecar_timing] frames={mode} n={self._n[mode]} mean_ms: {line}", flush=True)
+            sums.clear()
+
+
+def _nbytes_tree(obj: Any, prefix: str = "") -> dict[str, float]:
+    """MB of every ndarray in a reply, by key path (depth_frames/head_zed/rgb ...)."""
+    if isinstance(obj, np.ndarray):
+        return {prefix: obj.nbytes / 1e6}
+    out: dict[str, float] = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.update(_nbytes_tree(v, f"{prefix}/{k}"))
+    return out
 
 
 def _encode_ndarray(obj: Any) -> Any:
@@ -312,8 +346,10 @@ def _serve(
     print(f"[isaac_sidecar] serving on tcp://{host}:{port}", flush=True)
 
     running = True
+    timing = _StepTiming() if os.environ.get("OPENRAL_SIDECAR_TIMING") == "1" else None
     while running:
         raw = sock.recv()
+        t_req = time.perf_counter()
         req = msgpack.unpackb(raw, object_hook=_decode_ndarray, raw=False)
         endpoint = req.get("endpoint")
         data = req.get("data", {}) or {}
@@ -369,7 +405,36 @@ def _serve(
                 reply = {"error": f"unknown endpoint {endpoint!r}"}
         except Exception as exc:
             reply = {"error": f"{type(exc).__name__}: {exc}"}
-        sock.send(msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True))
+        t_pack = time.perf_counter()
+        payload = msgpack.packb(reply, default=_encode_ndarray, use_bin_type=True)
+        t_sent = time.perf_counter()
+        sock.send(payload)
+        if (
+            timing is not None
+            and endpoint == "step"
+            and data.get("frames") == "fresh"
+            and not timing.sized
+        ):
+            timing.sized = True
+            sizes = _nbytes_tree(reply)
+            print(
+                "[sidecar_timing] reply MB by array: "
+                + ", ".join(
+                    f"{k}={v:.2f}" for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:10]
+                ),
+                flush=True,
+            )
+        if timing is not None and endpoint == "step":
+            timing.add(
+                str(data.get("frames", "render")),
+                {
+                    **getattr(scene, "last_step_timing", {}),
+                    "pack": (t_sent - t_pack) * 1e3,
+                    "send": (time.perf_counter() - t_sent) * 1e3,
+                    "bytes": len(payload) / 1e6,
+                    "handler": (t_pack - t_req) * 1e3,
+                },
+            )
 
     sock.close(linger=0)
     ctx.term()

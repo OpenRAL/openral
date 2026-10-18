@@ -43,6 +43,7 @@ keys and the client reuses its last frames, still stamped with the time they sho
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 import numpy as np
@@ -181,20 +182,34 @@ class IsaacSceneBase:
         # Render only the final substep — it is the frame the obs reads — and only
         # when the caller wants frames this step.
         render = frames != "none"
+        t0 = time.perf_counter()
         for _ in range(self._substeps() - 1):
             self._world.step(render=False)
         if render:
             self._before_render()
         self._world.step(render=render)
         self._last_renders = int(render)
+        t1 = time.perf_counter()
         if frames == "fresh":
             self._catch_up_frames()
+        t2 = time.perf_counter()
         self._step_idx += 1
         reward, terminated = self._reward_terminated()
         info: dict[str, Any] = {self.success_key: bool(terminated)}
         info.update(self._extra_info())
+        t3 = time.perf_counter()
+        observation = self._observe(with_frames=render)
+        #: Where this step's wall time went (ms), read by the sidecar's timing log.
+        self.last_step_timing = {
+            "physics": (t1 - t0) * 1e3,
+            "catch_up": (t2 - t1) * 1e3,
+            "rest": (t3 - t2) * 1e3,
+            "observe": (time.perf_counter() - t3) * 1e3,
+            "renders": self._last_renders,
+            "depth_frames": getattr(self, "depth_frames_ms", 0.0) if render else 0.0,
+        }
         return {
-            "observation": self._observe(with_frames=render),
+            "observation": observation,
             "renders": self._last_renders,
             "reward": float(reward),
             "terminated": bool(terminated),
