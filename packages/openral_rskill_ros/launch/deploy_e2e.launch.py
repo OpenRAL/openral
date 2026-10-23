@@ -5153,9 +5153,9 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Comma-separated depth cameras the robot self-filter also renders a robot "
-                "mask for (/openral/cameras/<cam>/robot_mask, mono8: 0 free, 128 "
-                "uncertain, 255 robot, at the depth stamp; issue #418). Empty = off. Only "
-                "where the self-filter runs (a camera that sees the robot)."
+                f"mask for ({camera_topic('<cam>', CameraTopicKind.ROBOT_MASK)}, mono8: 0 "
+                "free, 128 uncertain, 255 robot, at the depth stamp; issue #418). Empty = off. "
+                "Only where the self-filter runs (a camera that sees the robot)."
             ),
         ),
         DeclareLaunchArgument(

@@ -7,8 +7,9 @@ parameters are diffed against ``off``, and the diff must be exactly the consumer
 mode owns:
 
 * ``shadow``: the tracker node is added; the self-filter renders robot masks for the
-  tracked camera; the segmenter caches its frames; the runtime and the reasoner are told
-  the mode. The HAL and the kernel are untouched.
+  tracked camera; the segmenter caches its frames and serves it on the tracker's frame
+  wait and skew budget; the runtime and the reasoner are told the mode. The HAL and the
+  kernel are untouched.
 * ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` and the
   kernel's jaw-open release (K5).
 * ``on``: adds the kernel's tracked grasp exemption (K2), its contact-link list,
@@ -61,7 +62,7 @@ _K5 = {
 }
 _SHADOW = {
     _FILTER: _MASK,
-    _SEGMENTER: {"cameras", "camera_infos"},
+    _SEGMENTER: {"cameras", "camera_infos", "camera_request_deadlines", "camera_max_frame_skews"},
     _REASONER: {"object_tracking"},
     _RUNTIME: {"object_tracking", "grounding_wait_s"},
 }
