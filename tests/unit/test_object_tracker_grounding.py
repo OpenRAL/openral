@@ -180,7 +180,10 @@ def test_segment_service_failure_is_preserved_as_query_refusal() -> None:
 def test_unusable_frame_is_query_evidence_not_a_negative_locate(
     pose_present: bool, mask_present: bool, reason: str
 ) -> None:
-    from openral_world_state_ros.object_tracker_node import escalation_evidence
+    escalation_evidence = pytest.importorskip(
+        "openral_world_state_ros.object_tracker_node",
+        reason="the tracker node's package (packages/world_state) is not on the path",
+    ).escalation_evidence
 
     tr = _tracker()
     depth, _ = render([], _RIG)
@@ -210,7 +213,10 @@ def test_unusable_frame_is_query_evidence_not_a_negative_locate(
 
 
 def test_zero_attempts_without_observations_reports_unavailable() -> None:
-    from openral_world_state_ros.object_tracker_node import escalation_evidence
+    escalation_evidence = pytest.importorskip(
+        "openral_world_state_ros.object_tracker_node",
+        reason="the tracker node's package (packages/world_state) is not on the path",
+    ).escalation_evidence
 
     tr = _tracker()
     query = tr.queries.get("g", "q0")
@@ -221,7 +227,10 @@ def test_zero_attempts_without_observations_reports_unavailable() -> None:
 
 
 def test_completed_empty_locate_remains_object_not_found() -> None:
-    from openral_world_state_ros.object_tracker_node import escalation_evidence
+    escalation_evidence = pytest.importorskip(
+        "openral_world_state_ros.object_tracker_node",
+        reason="the tracker node's package (packages/world_state) is not on the path",
+    ).escalation_evidence
 
     tr = _tracker()
     depth, _ = render([], _RIG)

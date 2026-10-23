@@ -23,7 +23,9 @@ _REAL = _REPO / "scenes/deploy/galaxea_a1_bench.yaml"
 _LAUNCH = _REPO / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
 
 
-def _argv(config: Path, mode: str, overrides: dict[str, object]) -> list[str]:
+def _argv(
+    config: Path, mode: str, overrides: dict[str, object], locators: tuple[str, ...] = ()
+) -> list[str]:
     return resolve_launch_invocation(
         config=config,
         robot_override=None,
@@ -31,6 +33,7 @@ def _argv(config: Path, mode: str, overrides: dict[str, object]) -> list[str]:
         reset_to_pose_service=None,
         hal_mode=mode,
         runtime_overrides=overrides,
+        object_detector_locators=list(locators),
     ).argv_template
 
 
@@ -64,6 +67,8 @@ def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() ->
             "preload_rskill_id": "OpenRAL/rskill-smolvla-so101-leisaac_pick_orange-bf16",
             "preload_prompt": "Grab orange and place into plate",
         },
+        # The orange has no seed: without a locator deploy sim refuses to configure.
+        locators=("omdet-turbo-locator",),
     )
     (raw,) = [a.split(":=", 1)[1] for a in argv if a.startswith("object_queries_json:=")]
     assert [(q["label"], q["role"]) for q in json.loads(raw)] == [

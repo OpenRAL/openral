@@ -12,11 +12,14 @@ from openral_perception_ros.ros_image_detector_node import (
     new_locate_frame_history,
     select_locate_frame,
 )
-from openral_world_state_ros.object_tracker_node import (
-    _locate_source_stamp_failure_reason,
-    _response_camera_failure_reason,
-    _segment_response_failure_reason,
+
+_node = pytest.importorskip(
+    "openral_world_state_ros.object_tracker_node",
+    reason="the tracker node's package (packages/world_state) is not on the path",
 )
+_locate_source_stamp_failure_reason = _node._locate_source_stamp_failure_reason
+_response_camera_failure_reason = _node._response_camera_failure_reason
+_segment_response_failure_reason = _node._segment_response_failure_reason
 
 
 def test_image_source_stamp_uses_header_time() -> None:

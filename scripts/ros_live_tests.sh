@@ -272,6 +272,10 @@ ISOLATED_TARGETS=(
     tests/integration/test_nav2_scan_filter_live.py
     tests/integration/test_object_lift_real_camera_live.py
     tests/integration/test_object_lift_world_state.py
+    # Issue #418 object tracker: node lifecycle, query escalation, kernel K2/K5 wiring.
+    tests/integration/test_object_query_escalation_live.py
+    tests/integration/test_object_tracker_node_live.py
+    tests/integration/test_object_tracking_kernel_live.py
     tests/integration/test_panda_mobile_hal_lifecycle.py
     tests/integration/test_real_hal_estop_ros2_control_live.py
     tests/integration/test_record_profile_full_live.py

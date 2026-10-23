@@ -4956,7 +4956,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # only the producer measures). The runner stamps and attributes them at goal start.
         grounded = self._grounded_declarations
         self._grounded_declarations = None
-        from unique_identifier_msgs.msg import (  # type: ignore[import-untyped] # reason: ROS IDL
+        from unique_identifier_msgs.msg import (  # type: ignore[import-untyped,import-not-found,unused-ignore]  # reason: ROS IDL
             UUID,
         )
 

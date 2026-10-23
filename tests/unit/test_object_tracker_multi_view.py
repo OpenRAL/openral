@@ -22,9 +22,11 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_world_state.object_tracker import ContainingFit, containing_fit, intersect_views
 
 from tests.unit._tracker_scenes import RES, RIGS, Rig, inside_hull, render, surface_samples
-from tests.unit.test_object_tracker_fit import _solid
 
 pytest.importorskip("scipy", reason="the test's hull containment uses scipy ConvexHull")
+
+# After the scipy skip: that module skips at import without scipy.
+_solid = pytest.importorskip("tests.unit.test_object_tracker_fit")._solid
 
 _RIGS = {name: make() for name, make in RIGS.items()}
 
