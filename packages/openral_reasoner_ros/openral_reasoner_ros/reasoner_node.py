@@ -42,6 +42,7 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from openral_world_state import SpatialMemory
@@ -83,7 +84,9 @@ from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import (
     SearchBudget,
     SearchProgress,
+    object_query_matches_invocation,
     object_query_step,
+    object_query_task_is_current,
 )
 from openral_reasoner.completion import (
     COMPLETION_QUESTION as _COMPLETION_QUESTION,
@@ -129,6 +132,7 @@ from openral_reasoner.grounding import (
 )
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
+    DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
     MissionState,
     TaskLocateBudget,
@@ -337,6 +341,7 @@ _SKILL_FAILURE_KIND_NAMES: dict[int, str] = {
 _EXECUTE_SKILL_SERVER_PROBE_S: float = 0.1
 _EXECUTE_SKILL_SERVER_RETRY_S: float = 0.25
 _LIFECYCLE_SERVER_PROBE_S: float = 0.1
+_LOCATE_FAILURE_REASON_MAX = 128
 
 # Reasoner+supervisor design, 2026-05-25 amendment — trigger taxonomy. Maps each failure
 # source to its tier so the reasoner_node stamps a ``reasoner.tier``
@@ -1039,6 +1044,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # dispatch: the runner serves one goal at a time, and a forced tick
         # mid-execution would otherwise double-dispatch blind.
         self._rskill_inflight: bool = False
+        self._active_dispatch_identity: tuple[str, str | None] | None = None
+        self._active_dispatch_task_id: str | None = None
+        self._active_dispatch_attempts: int | None = None
+        self._active_dispatch_mission_generation: int | None = None
+        self._mission_generation: int = 0
         # Set while a dispatch waits for /openral/execute_rskill (monotonic s),
         # and the one-shot timer that re-probes for it.
         self._execute_server_wait_deadline: float | None = None
@@ -1071,6 +1081,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # Crash-safe ladder persistence (`ladder_state_path` param): the
         # snapshot file, or None when persistence is disabled.
         self._ladder_state_path: pathlib.Path | None = None
+        # A spent object-query recovery budget stays stopped across ticks and restarts
+        # until a genuine operator goal replaces the mission.
+        self._object_query_blocked_task_id: str | None = None
+        self._object_query_recovery_pending: bool = False
+        self._active_object_query_invocation_id: str | None = None
         self._execute_rskill_client: Any = None  # rclpy.action.ActionClient
         # Lifecycle clients are cached per target node — one
         # ``<node>/change_state`` client per peer.
@@ -1391,6 +1406,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         except (OSError, ValueError, ROSConfigError) as exc:
             self.get_logger().warning(f"grasp/place target grounding unavailable: {exc!s}")
             return
+        self._renderer.set_robot_model(render_robot_self_model(self._robot_description))
         voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
         if voxel_m <= 0.0 and gripper_hands(self._robot_description):
             raise ROSConfigError(
@@ -1563,8 +1579,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._query_scene_client = None
         self._query_task_progress_client = None
         self._active_rskill_goal = None
+        self._active_object_query_invocation_id = None
         self._rskill_cancel_reason = None
         self._rskill_inflight = False
+        self._active_dispatch_identity = None
+        self._active_dispatch_task_id = None
+        self._active_dispatch_attempts = None
+        self._active_dispatch_mission_generation = None
         self._active_dispatch_generation = None
         self._cancel_dispatch_watchdog()
         self._resident_vla_id = None
@@ -1859,15 +1880,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
 
     def _on_object_query(self, record: FailureEventRecord) -> None:
-        """Take the ladder rung for an object-query escalation (issue #418 Addendum G).
-
-        The failure is already in the context (``append_failure``). ``unresolved`` adds
-        the ``find-object`` strategy hint and forces a tick, so the LLM runs that bounded
-        playbook (its recall / locate lookups count against ``SearchProgress``).
-        ``exhausted`` is the ladder's terminal rung: the handoff question goes out on
-        ``/openral/prompt`` under this node's frame id (not re-consumed) and the active
-        task is abandoned through ``_finish_active_search_handoff``.
-        """
+        """Cancel unsafe manipulation, then recover within the persisted task budget."""
         from openral_core import FailureEvidence
         from pydantic import TypeAdapter, ValidationError
 
@@ -1880,10 +1893,28 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if not isinstance(evidence, ObjectQueryEvidence):
             self.get_logger().error(f"object_query: unexpected evidence kind {evidence.kind!r}")
             return
-        step = object_query_step(evidence)
+        if not self._rskill_inflight or not object_query_matches_invocation(
+            evidence,
+            active_invocation_id=self._active_object_query_invocation_id,
+        ):
+            self.get_logger().info(
+                f"object_query: ignoring stale failure goal={evidence.goal_id!r} "
+                f"invocation={evidence.invocation_id!r}"
+            )
+            return
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        invocation_task_changed = not object_query_task_is_current(
+            dispatch_task_id=self._active_dispatch_task_id,
+            dispatch_mission_generation=self._active_dispatch_mission_generation,
+            current_task_id=active.task_id if active is not None else None,
+            current_mission_generation=self._mission_generation,
+        )
+        attempts = self._active_dispatch_attempts
+        step = object_query_step(evidence, attempts=attempts)
         self.get_logger().warning(
             f"object_query: {evidence.escalation} label={evidence.label!r} "
-            f"goal={evidence.goal_id} → {step.rung}"
+            f"reason={evidence.reason!r} goal={evidence.goal_id} → {step.rung}"
         )
         self._renderer.append_execution(
             ExecutionEventRecord(
@@ -1894,32 +1925,57 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 stamp_ns=record.stamp_ns,
             )
         )
-        traceparent = record.trace_id or None
-        if step.rung == "find_object":
-            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+        if invocation_task_changed:
+            self._rskill_cancel_reason = "object_query_old_task"
+            self._object_query_recovery_pending = True
+            if self._active_rskill_goal is not None:
+                self._active_rskill_goal[0].cancel_goal_async()
             return
-        if self._active_rskill_goal is not None:
-            # The goal acts on an object no one found: end it along the cancel path
-            # (the runner, on the same escalation, ends it with FAILURE_OBJECT_NOT_FOUND).
+        if step.rung == "blocked" and active is not None:
+            self._object_query_blocked_task_id = active.task_id
+            self._persist_ladder_state()
+        if self._rskill_inflight:
+            # The current geometry is no longer safe to act on. Wait for the result callback
+            # before starting another reasoner pass.
+            self._rskill_cancel_reason = (
+                "object_query_recovery" if step.rung == "recover" else "object_query_blocked"
+            )
+            self._object_query_recovery_pending = True
+            if self._active_rskill_goal is None:
+                return  # accepted handle arrives later; its callback issues the cancel
             goal_handle, _call, _tp = self._active_rskill_goal
-            self._rskill_cancel_reason = "object_not_found"
             try:
                 goal_handle.cancel_goal_async()
             except Exception as exc:  # reason: cancel is best-effort; the runner ends it too
                 self.get_logger().error(
                     f"object_query cancel_goal_async failed: {type(exc).__name__}: {exc}",
                 )
-        if self._prompt_pub is not None and step.handoff_prompt is not None:
-            msg = IDLPromptStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.get_name()  # _on_prompt filters it: no further tick
-            msg.text = step.handoff_prompt
-            metadata: dict[str, Any] = {"source": "object_query", "rung": step.rung}
-            if traceparent is not None:
-                metadata["traceparent"] = traceparent
-            msg.metadata_json = json.dumps(metadata, sort_keys=True)
-            self._prompt_pub.publish(msg)
-        self._finish_active_search_handoff(step.reflection, traceparent=traceparent)
+            return
+        if step.rung == "recover":
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+
+    def _finish_object_query_cancel(
+        self,
+        cancel_reason: str | None,
+        task_id: str | None = None,
+        mission_generation: int | None = None,
+    ) -> None:
+        """Resume only after the failed goal is terminal; blocked tasks stay idle."""
+        self._object_query_recovery_pending = False
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if (
+            cancel_reason == "object_query_recovery"
+            and task_id is not None
+            and active is not None
+            and object_query_task_is_current(
+                dispatch_task_id=task_id,
+                dispatch_mission_generation=mission_generation,
+                current_task_id=active.task_id,
+                current_mission_generation=self._mission_generation,
+            )
+        ):
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
 
     def _band_edges(self) -> tuple[float, float]:
         """Three-tier verdict band edges from the active reward calibration (§1/§5).
@@ -2030,6 +2086,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         if should_rebuild_mission(source, msg.metadata_json, self._renderer.mission):
             mission = MissionState.from_prompt(msg.text)
             if not mission.is_empty():
+                self._mission_generation += 1
+                self._object_query_blocked_task_id = None
                 self._renderer.set_mission(mission)
                 self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
                 self._reset_task_locate_budget()  # fresh goal, fresh budget
@@ -2186,6 +2244,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                     collective_nudges=dict(self._collective_decompose_nudges),
                     locate_task_id=self._task_locate_budget.task_id,
                     locate_count=self._task_locate_budget.count,
+                    object_query_blocked_task_id=self._object_query_blocked_task_id,
                 ),
             )
         except OSError as exc:
@@ -2213,6 +2272,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._subdivide_offered = set(restored.subdivide_offered)
         self._collective_decompose_nudges = dict(restored.collective_nudges)
         self._task_locate_budget.restore(restored.locate_task_id, restored.locate_count)
+        self._object_query_blocked_task_id = restored.object_query_blocked_task_id
         if (
             restored.mission is not None
             and not restored.mission.is_empty()
@@ -2876,6 +2936,12 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 for the four event tiers, or ``"heartbeat"`` (default) for the
                 periodic timer. Recorded on the OTel span as ``reasoner.tier``.
         """
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if self._object_query_recovery_pending:
+            return
+        if active is not None and active.task_id == self._object_query_blocked_task_id:
+            return
         if self._tick_in_flight:
             prev = self._queued_tick
             if prev is None or (force and not prev[0]):
@@ -3491,6 +3557,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             self.get_logger().warning(
                 "dispatch: locate_in_view — openral_msgs/srv/LocateInView not built; skipping",
             )
+            self._publish_locate_in_view_failure(
+                call, "locate_service_type_unavailable", traceparent=traceparent
+            )
             return
         # On-demand detectors as prompt-able reasoner tools — route to the chosen on-demand
         # locator's namespaced service; empty ``detector`` falls back to the deployment default (or
@@ -3527,6 +3596,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r} "
                 f"detector={detector!r} — {service} not on graph; skipping",
             )
+            self._publish_locate_in_view_failure(
+                call, "locate_service_unavailable", traceparent=traceparent
+            )
             return
         req = LocateInView.Request()
         req.query = call.query
@@ -3541,6 +3613,55 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             f"detector={call.detector!r} → {service}",
         )
 
+    def _publish_locate_in_view_failure(
+        self,
+        call: LocateInViewTool,
+        failure_reason: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Prompt with a bounded service cause without claiming object absence."""
+        if self._prompt_pub is None:
+            self.get_logger().warning(
+                f"dispatch: locate_in_view failed before prompt publisher was active: "
+                f"{failure_reason[:_LOCATE_FAILURE_REASON_MAX]}"
+            )
+            return
+        reason = " ".join(str(failure_reason).split())[:_LOCATE_FAILURE_REASON_MAX]
+        within_budget = self._spatial_search.record_attempt()
+        if within_budget:
+            self._locate_escalated.discard(call.query)
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "detector" if within_budget else self.get_name()
+        msg.text = (
+            f"locate_in_view could not check {call.query!r} in camera "
+            f"{call.camera or 'default'!r}; "
+            f"visibility is unknown. failure_reason={reason}. Do not treat this as evidence "
+            "that the object is absent."
+        )
+        handoff_reason: str | None = None
+        if not within_budget:
+            msg.text += (
+                f"\nactive_search: query budget exhausted after "
+                f"{self._spatial_search.attempts} attempts — handing off to a human."
+            )
+            handoff_reason = (
+                f"active search for {call.query!r} exhausted after "
+                f"{self._spatial_search.attempts} attempts; last locate failure: {reason}"
+            )
+        metadata: dict[str, Any] = {
+            "failure_reason": reason,
+            "source": "detector",
+            "tool": call.tool,
+        }
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+        if handoff_reason is not None:
+            self._finish_active_search_handoff(handoff_reason, traceparent=traceparent)
+
     def _on_locate_in_view_response(
         self,
         call: LocateInViewTool,
@@ -3553,9 +3674,22 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             resp = future.result()
         except Exception as exc:  # best-effort; a failed lookup must not kill the tick
             self.get_logger().warning(f"dispatch: locate_in_view response failed: {exc}")
+            reason = f"locate_service_exception:{type(exc).__name__}:{exc}"
+            self._publish_locate_in_view_failure(call, reason, traceparent=traceparent)
+            return
+        if resp is None:
+            self._publish_locate_in_view_failure(
+                call, "locate_service_empty_response", traceparent=traceparent
+            )
             return
         assert self._prompt_pub is not None
         cam = resp.camera or call.camera or "default"
+        failure_reason = " ".join(str(getattr(resp, "failure_reason", "") or "").split())[
+            :_LOCATE_FAILURE_REASON_MAX
+        ]
+        if failure_reason:
+            self._publish_locate_in_view_failure(call, failure_reason, traceparent=traceparent)
+            return
         # A live locate counts as one spatial-search step (active object search §3): a miss
         # consumes budget so a repeated "not visible" terminates in handoff
         # instead of looping; a hit ends the search streak so the next find
@@ -4667,6 +4801,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # LLM can tell a cold-loading goal from a stalled one instead of
         # escalating to the operator mid-load.
         self._rskill_inflight = True
+        self._active_dispatch_identity = (call.rskill_id, traceparent)
+        active = mission.active() if mission is not None else None
+        self._active_dispatch_task_id = active.task_id if active is not None else None
+        self._active_dispatch_attempts = active.attempts if active is not None else None
+        self._active_dispatch_mission_generation = self._mission_generation
         self._dispatch_generation += 1
         generation = self._dispatch_generation
         self._active_dispatch_generation = generation
@@ -4817,6 +4956,13 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # only the producer measures). The runner stamps and attributes them at goal start.
         grounded = self._grounded_declarations
         self._grounded_declarations = None
+        from unique_identifier_msgs.msg import (  # type: ignore[import-untyped] # reason: ROS IDL
+            UUID,
+        )
+
+        action_goal_uuid = uuid4()
+        ros_goal_uuid = UUID(uuid=list(action_goal_uuid.bytes))
+        self._active_object_query_invocation_id = action_goal_uuid.hex
         targets = ""
         if grounded is not None and grounded[0] == generation:
             _, grasp, place = grounded
@@ -4832,6 +4978,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         send_future = self._execute_rskill_client.send_goal_async(
             goal,
             feedback_callback=lambda fb: self._on_execute_rskill_feedback(call.rskill_id, fb),
+            goal_uuid=ros_goal_uuid,
         )
         # Visible to the dispatch watchdog: .done() distinguishes "response
         # arrived but its callback is starved" from a genuinely dead server.
@@ -5065,8 +5212,15 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             "the readiness probe. Releasing the busy latch."
         )
         self.get_logger().error(detail)
+        dispatch_task_id = self._active_dispatch_task_id
+        dispatch_mission_generation = self._active_dispatch_mission_generation
         self._active_dispatch_generation = None
         self._rskill_inflight = False
+        self._active_dispatch_identity = None
+        self._active_dispatch_task_id = None
+        self._active_dispatch_attempts = None
+        self._active_dispatch_mission_generation = None
+        self._active_object_query_invocation_id = None
         self._renderer.set_inflight_skill(None)
         self._reactivate_vram_peers()
         self._set_reward_task("")
@@ -5079,6 +5233,11 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 detail=detail,
             ),
             traceparent=traceparent,
+        )
+        cancel_reason = self._rskill_cancel_reason
+        self._rskill_cancel_reason = None
+        self._finish_object_query_cancel(
+            cancel_reason, dispatch_task_id, dispatch_mission_generation
         )
 
     def _on_execute_rskill_goal_response(
@@ -5122,12 +5281,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 ),
                 traceparent=traceparent,
             )
-            # Single-resident-skill VRAM eviction — the goal never reached the runner; restore the
-            # GPU peers we froze for it so perception resumes.
-            self._active_dispatch_generation = None
-            self._rskill_inflight = False
-            self._renderer.set_inflight_skill(None)
-            self._reactivate_vram_peers()
+            self._release_execute_dispatch_after_response()
             return
         if not goal_handle.accepted:
             self.get_logger().warning(
@@ -5143,12 +5297,7 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 ),
                 traceparent=traceparent,
             )
-            # Single-resident-skill VRAM eviction — goal rejected (skill won't run); restore the GPU
-            # peers.
-            self._active_dispatch_generation = None
-            self._rskill_inflight = False
-            self._renderer.set_inflight_skill(None)
-            self._reactivate_vram_peers()
+            self._release_execute_dispatch_after_response()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
         # The runner will load (or already holds) this policy; remember it so
@@ -5159,7 +5308,8 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # cancel it. Cleared on the terminal result. The busy gate in
         # _dispatch_execute_rskill prevents a second dispatch overwriting it.
         self._active_rskill_goal = (goal_handle, call, traceparent)
-        self._rskill_cancel_reason = None
+        if not self._object_query_recovery_pending:
+            self._rskill_cancel_reason = None
         # Surface "a skill is running" to the LLM's context (the in_flight
         # line in ## EXECUTION) and keep the heartbeat live for mid-run
         # reward polling (ReasonerCore's heartbeat-idle gate reads it).
@@ -5191,6 +5341,34 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 traceparent,
             ),
         )
+        if self._object_query_recovery_pending:
+            self._cancel_accepted_object_query_goal(goal_handle)
+
+    def _release_execute_dispatch_after_response(self) -> None:
+        """Release a rejected/failed dispatch and finish any pending query recovery."""
+        task_id = self._active_dispatch_task_id
+        mission_generation = self._active_dispatch_mission_generation
+        self._active_dispatch_generation = None
+        self._rskill_inflight = False
+        self._active_dispatch_identity = None
+        self._active_dispatch_task_id = None
+        self._active_dispatch_attempts = None
+        self._active_dispatch_mission_generation = None
+        self._active_object_query_invocation_id = None
+        self._renderer.set_inflight_skill(None)
+        self._reactivate_vram_peers()
+        cancel_reason = self._rskill_cancel_reason
+        self._rskill_cancel_reason = None
+        self._finish_object_query_cancel(cancel_reason, task_id, mission_generation)
+
+    def _cancel_accepted_object_query_goal(self, goal_handle: Any) -> None:
+        """Cancel a goal accepted after its object-query failure arrived."""
+        try:
+            goal_handle.cancel_goal_async()
+        except Exception as exc:  # reason: query refusal still blocks dispatch if cancel fails
+            self.get_logger().error(
+                f"object_query cancel_goal_async failed after accept: {type(exc).__name__}: {exc}",
+            )
 
     def _on_execute_rskill_result(
         self,
@@ -5215,6 +5393,14 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         self._active_dispatch_generation = None
         self._active_rskill_goal = None
         self._rskill_inflight = False
+        self._active_dispatch_identity = None
+        self._active_object_query_invocation_id = None
+        dispatch_task_id = self._active_dispatch_task_id
+        dispatch_attempts = self._active_dispatch_attempts
+        dispatch_mission_generation = self._active_dispatch_mission_generation
+        self._active_dispatch_task_id = None
+        self._active_dispatch_attempts = None
+        self._active_dispatch_mission_generation = None
         self._renderer.set_inflight_skill(None)
         cancel_reason = self._rskill_cancel_reason
         self._rskill_cancel_reason = None
@@ -5238,6 +5424,9 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
                 ),
                 traceparent=traceparent,
             )
+            self._finish_object_query_cancel(
+                cancel_reason, dispatch_task_id, dispatch_mission_generation
+            )
             return
         # action_msgs/GoalStatus: STATUS_SUCCEEDED=4, STATUS_ABORTED=6,
         # STATUS_CANCELED=5. We treat aborted/canceled as controller
@@ -5245,6 +5434,17 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         result = wrapped.result
         status = int(wrapped.status)
         now_ns = self.get_clock().now().nanoseconds
+        if self._handle_object_query_result(
+            call,
+            result,
+            status,
+            cancel_reason,
+            now_ns,
+            dispatch_task_id=dispatch_task_id,
+            dispatch_attempts=dispatch_attempts,
+            dispatch_mission_generation=dispatch_mission_generation,
+        ):
+            return
         if status == 4 and result.success:
             self.get_logger().info(
                 f"execute_rskill succeeded rskill_id={call.rskill_id!r} "
@@ -5275,25 +5475,6 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
         # failure path is skipped (no fault to report; the patience path
         # already emitted its KIND_TIMEOUT). Only an operator/e-stop cancel
         # (reason None) is not an attempt.
-        not_found_kind = _failure_kind_value("FAILURE_OBJECT_NOT_FOUND")
-        if cancel_reason == "object_not_found" or (
-            not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind
-        ):
-            # Issue #418: the task was already handed to a human (`_on_object_query`); the
-            # goal's typed end is recorded, never verified against the next task.
-            self._renderer.append_execution(
-                ExecutionEventRecord(
-                    rskill_id=call.rskill_id,
-                    outcome="failed",
-                    summary=result.failure_reason or f"GoalStatus={status}",
-                    reflection=(
-                        "failure_kind=FAILURE_OBJECT_NOT_FOUND: the goal's object was not "
-                        "found and the task was handed to a human; do not retry it."
-                    ),
-                    stamp_ns=now_ns,
-                )
-            )
-            return
         if status == 5 and cancel_reason in ("reward", "patience"):
             self.get_logger().info(
                 f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
@@ -5401,6 +5582,70 @@ class ReasonerNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untype
             ),
             traceparent=traceparent,
         )
+
+    def _handle_object_query_result(
+        self,
+        call: ExecuteRskillTool,
+        result: Any,
+        status: int,
+        cancel_reason: str | None,
+        now_ns: int,
+        *,
+        dispatch_task_id: str | None,
+        dispatch_attempts: int | None,
+        dispatch_mission_generation: int | None,
+    ) -> bool:
+        """Record typed object-query termination and apply the persisted task cap."""
+        not_found_kind = _failure_kind_value("FAILURE_OBJECT_NOT_FOUND")
+        is_query_failure = cancel_reason in (
+            "object_query_recovery",
+            "object_query_blocked",
+            "object_not_found",
+            "object_query_old_task",
+        ) or (not_found_kind != 0 and _rskill_failure_kind(result) == not_found_kind)
+        if not is_query_failure:
+            return False
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id=call.rskill_id,
+                outcome="failed",
+                summary=result.failure_reason or f"GoalStatus={status}",
+                reflection=(
+                    "The object query failed, so the manipulation attempt was canceled. "
+                    "Reobserve and revalidate geometry before any retry."
+                ),
+                stamp_ns=now_ns,
+            )
+        )
+        if cancel_reason == "object_query_old_task":
+            self._object_query_recovery_pending = False
+            return True
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if (
+            active is None
+            or dispatch_task_id is None
+            or not object_query_task_is_current(
+                dispatch_task_id=dispatch_task_id,
+                dispatch_mission_generation=dispatch_mission_generation,
+                current_task_id=active.task_id if active is not None else None,
+                current_mission_generation=self._mission_generation,
+            )
+        ):
+            self._object_query_recovery_pending = False
+            return True
+        if cancel_reason in ("object_query_recovery", "object_query_blocked"):
+            self._finish_object_query_cancel(
+                cancel_reason, dispatch_task_id, dispatch_mission_generation
+            )
+            return True
+        # A runner may report the typed result before the tracker escalation arrives.
+        if dispatch_attempts is not None and dispatch_attempts < DEFAULT_MAX_ATTEMPTS:
+            self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE["world_state"])
+        else:
+            self._object_query_blocked_task_id = active.task_id
+            self._persist_ladder_state()
+        return True
 
     # ── Lifecycle service callback ──────────────────────────────────────────
 

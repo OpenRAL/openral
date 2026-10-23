@@ -576,13 +576,14 @@ class SidecarSimRollout:
     _last_image: NDArray[np.uint8] | None = None
     _action_dim: int | None = None
     _last_sim_time_ns: int | None = None
-    # Sim seconds per ``step`` as the sidecar's ping reports it (Isaac); ``None``
-    # when the protocol does not carry it.
+    # Sim seconds per ``step`` from ping (nominal initially) and, where reported,
+    # reset metadata (actual for Isaac); ``None`` when not carried.
     _sim_dt_per_tick_s: float | None = None
 
     def reset(self, seed: int | None = None) -> Observation:
         """Reset the sidecar env and return its first wrapped observation."""
         reply = self._client.call("reset", {"seed": seed})
+        self._after_reset_reply(reply)
         self._last_sim_time_ns = coerce_sim_time_ns(reply.get("sim_time_ns"))
         return self._wrap_obs(self._client.require(reply, "observation"))
 
@@ -625,6 +626,9 @@ class SidecarSimRollout:
     def _step_options(self) -> dict[str, Any]:
         """Extra ``step`` request fields beside the action. Default: none."""
         return {}
+
+    def _after_reset_reply(self, reply: dict[str, Any]) -> None:
+        """Update backend-specific reset metadata before the HAL validates it."""
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         """Unwrap the sidecar's raw ``observation`` dict — backend-specific."""

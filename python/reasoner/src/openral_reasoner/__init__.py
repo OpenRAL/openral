@@ -21,7 +21,9 @@ from openral_reasoner.active_search import (
     SearchCandidate,
     SearchProgress,
     format_search_frontier,
+    object_query_matches_invocation,
     object_query_step,
+    object_query_task_is_current,
     plan_active_search,
 )
 from openral_reasoner.context import (
@@ -133,7 +135,9 @@ __all__ = [
     "ground_place_target",
     "hand_joint",
     "load_ladder_state",
+    "object_query_matches_invocation",
     "object_query_step",
+    "object_query_task_is_current",
     "placement_queries",
     "plan_active_search",
     "recall_object_tool_to_query",

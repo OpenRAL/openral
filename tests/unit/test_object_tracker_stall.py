@@ -36,8 +36,8 @@ def test_droid_close_two_reads_the_hold_the_hal_trigger_missed() -> None:
     start, target, end = (float(v) for v in _F["dr_closes"][1][:3])
     fired = []
     for t, p in zip(_F["dr_t"], _F["dr_pos"], strict=True):
-        if start <= t <= end:
-            det.command(target, int(t * _NS))
+        if start - 1.0 <= t <= end:  # with the closing that led into the hold
+            det.command(target if t >= start else 1.0, int(t * _NS))
             if det.update(float(p), int(t * _NS)):
                 fired.append(float(t))
     assert len(fired) == 1, fired
@@ -73,9 +73,10 @@ def test_an_empty_droid_close_never_fires() -> None:
 def test_the_median_ignores_chatter_but_not_a_closing_jaw() -> None:
     det = _detector("droid_franka_robotiq", "finger_joint")
     det.command(0.19, 0)
+    det.update(0.9, 0)  # closed into the hold
     rng = np.random.default_rng(0)
     hold = [0.45 + float(x) for x in rng.uniform(-0.03, 0.03, 40)]  # span 0.06, median 0.45
-    fired = [det.update(p, int(i * 0.0667 * _NS)) for i, p in enumerate(hold)]
+    fired = [det.update(p, int((i + 1) * 0.0667 * _NS)) for i, p in enumerate(hold)]
     assert sum(fired) == 1
     closing = _detector("droid_franka_robotiq", "finger_joint")
     closing.command(0.19, 0)
@@ -86,7 +87,8 @@ def test_the_median_ignores_chatter_but_not_a_closing_jaw() -> None:
 def test_a_real_attach_or_the_command_opening_ends_the_hold() -> None:
     det = _detector("droid_franka_robotiq", "finger_joint")
     det.command(0.19, 0)
-    n = 0
+    det.update(0.9, 0)  # closed into the hold
+    n = 1
     while not det.update(0.45, int(n * 0.1 * _NS)):
         n += 1
         assert n < 20
@@ -98,3 +100,18 @@ def test_a_real_attach_or_the_command_opening_ends_the_hold() -> None:
     other.command(0.19, 0)
     other.suppress()  # the HAL's real ATTACH covers this hold
     assert not any(other.update(0.45, int(i * 0.1 * _NS)) for i in range(20))
+
+
+def test_an_open_jaw_under_a_closing_chunk_never_fires() -> None:
+    """Spark banana R322 (2026-10-23): the approved chunk's last row closed while the jaw, still
+    executing earlier rows, sat fully open at 0.9996 -- short of that command and not moving. A
+    derived ATTACH bound the banana where it lay, 9 s before the real grasp. Only a jaw that
+    closed and stopped is a hold; the same jaw closing to 0.45 afterwards still fires once."""
+    det = _detector("droid_franka_robotiq", "finger_joint")
+    det.command(0.18, 0)
+    t = [int(i * 0.0667 * _NS) for i in range(60)]
+    assert not any(det.update(0.9996, s) for s in t[:30]), "open, not yet closing: no hold"
+    closing = [0.9996 - 0.06 * i for i in range(10)]  # 0.9996 -> 0.46
+    hold = [0.45] * 20
+    fired = [det.update(p, s) for p, s in zip(closing + hold, t[30:], strict=True)]
+    assert sum(fired) == 1, fired

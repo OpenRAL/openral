@@ -92,6 +92,15 @@ Parameters:
         request's measured serve time (``frame_wait_budget_s``). The HAL round trip and
         time queued behind another call are not measured here, so they are not budgeted;
         a reply that still lands late is dropped by the HAL, which then falls back.
+    camera_request_deadlines (list[str]): ``"camera=seconds"``: for those cameras both the
+        frame wait and the deadline (the object tracker's cameras, whose requester allows
+        seconds, not the HAL's 0.25 s: Spark restock R282, 2026-10-23, a third of the
+        tracker's head-camera requests were refused before their trailing RGB frame
+        landed). Unlisted cameras keep ``frame_wait_s`` / ``request_deadline_s``.
+    camera_max_frame_skews (list[str]): ``"camera=seconds"``: ``max_frame_skew_s`` for those
+        cameras (parsed as ``camera_request_deadlines``). The tracker's cameras: a 1080p
+        BEST_EFFORT stream loses frames under load (Spark restock R288: the RGB twin of a
+        third of the depth stamps never arrived; its neighbours were 0.2 s off).
 
 **Which frame a request is served from.** The HAL stamps a request with the depth
 frame it will back-project the masks through, and refuses masks cut from a frame
@@ -113,10 +122,11 @@ changes nothing.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
@@ -181,6 +191,34 @@ def frame_wait_budget_s(frame_wait_s: float, request_deadline_s: float, *, serve
         0.0
     """
     return max(0.0, min(frame_wait_s, request_deadline_s - serve_s))
+
+
+def parse_camera_deadlines(entries: Sequence[str], cameras: Collection[str]) -> dict[str, float]:
+    """``"camera=seconds"`` entries (``camera_request_deadlines``, ``camera_max_frame_skews``).
+
+    Raises:
+        ROSConfigError: An entry names a camera not in ``cameras``, or its seconds are not
+            a positive finite number.
+
+    Example:
+        >>> parse_camera_deadlines(["", "head=1.5"], ["wrist", "head"])
+        {'head': 1.5}
+    """
+    from openral_core import ROSConfigError
+
+    out: dict[str, float] = {}
+    for cid, raw in parse_camera_entries(entries).items():
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if cid not in cameras or not math.isfinite(value) or value <= 0.0:
+            raise ROSConfigError(
+                f"per-camera seconds entry {cid}={raw!r}: needs a configured camera and a "
+                "positive finite number of seconds"
+            )
+        out[cid] = value
+    return out
 
 
 _Frame = TypeVar("_Frame")
@@ -468,6 +506,8 @@ def _node_class() -> type:
             self.declare_parameter("max_frame_skew_s", DEFAULT_MAX_FRAME_SKEW_S)
             self.declare_parameter("frame_wait_s", DEFAULT_FRAME_WAIT_S)
             self.declare_parameter("request_deadline_s", DEFAULT_REQUEST_DEADLINE_S)
+            self.declare_parameter("camera_request_deadlines", [""])
+            self.declare_parameter("camera_max_frame_skews", [""])
             # The last served request's frame-found -> reply-built time (``frame_wait_budget_s``).
             self._serve_s = DEFAULT_SERVE_S
             # When the request being served entered the node (``_serve_segment_in_view``).
@@ -527,17 +567,27 @@ def _node_class() -> type:
                 raise ROSConfigError(
                     f"camera_infos names cameras {unknown} that `cameras` does not configure"
                 )
+            self._deadlines = parse_camera_deadlines(
+                list(gp("camera_request_deadlines").get_parameter_value().string_array_value),
+                self._cameras,
+            )
+            self._skews = parse_camera_deadlines(
+                list(gp("camera_max_frame_skews").get_parameter_value().string_array_value),
+                self._cameras,
+            )
 
             import tf2_ros
 
             self._tf_buffer = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-            # Sensor data class per CLAUDE.md §2: BEST_EFFORT / VOLATILE, depth 1
-            # — only the newest frame can answer "what is in the jaws *now*".
+            # Sensor data class per CLAUDE.md §2: BEST_EFFORT / VOLATILE, KEEP_LAST 5. Depth
+            # 1 dropped every frame landing while a callback ran (Spark restock R282: the
+            # tracker's depth-stamped requests found no RGB twin); the cache keeps the
+            # history a stamped request is served from.
             img_qos = QoSProfile(
                 history=QoSHistoryPolicy.KEEP_LAST,
-                depth=1,
+                depth=5,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
                 durability=QoSDurabilityPolicy.VOLATILE,
             )
@@ -735,16 +785,21 @@ def _node_class() -> type:
             gp = self.get_parameter
             started = time.perf_counter()
             # The deadline left after what this request has already spent in the node.
-            remaining_s = gp("request_deadline_s").get_parameter_value().double_value - (
-                started - self._request_started
+            deadline_s = self._deadlines.get(
+                camera, gp("request_deadline_s").get_parameter_value().double_value
             )
+            remaining_s = deadline_s - (started - self._request_started)
             frame, stale = wait_for_frame(
                 lambda: self._frames.get(camera, ()),
                 self._frame_arrived,
                 int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
-                max_skew_s=gp("max_frame_skew_s").get_parameter_value().double_value,
+                max_skew_s=self._skews.get(
+                    camera, gp("max_frame_skew_s").get_parameter_value().double_value
+                ),
                 wait_s=frame_wait_budget_s(
-                    gp("frame_wait_s").get_parameter_value().double_value,
+                    self._deadlines.get(
+                        camera, gp("frame_wait_s").get_parameter_value().double_value
+                    ),
                     remaining_s,
                     serve_s=self._serve_s,
                 ),

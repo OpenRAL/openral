@@ -114,11 +114,12 @@ class TrackerRig:
 
         def segment(req: Any, res: Any) -> Any:  # the ray-cast's own label under the prompt
             p = req.tcp_point
-            uv = project_point((p.x, p.y, p.z), np.eye(4), k)
+            uv = project_point((p.x, p.y, p.z), np.eye(4) if req.frame_id == OPTICAL else rig.t, k)
             n = 0 if uv is None else int(labels[int(uv[1]), int(uv[0])])
             res.ok, res.camera = n > 0, req.camera
             if n:
                 img = Image(height=k.height, width=k.width, encoding="mono8", step=k.width)
+                img.header.stamp, img.header.frame_id = req.stamp, OPTICAL
                 img.data = ((labels == n).astype(np.uint8) * 255).tobytes()
                 res.masks = [img]
             return res

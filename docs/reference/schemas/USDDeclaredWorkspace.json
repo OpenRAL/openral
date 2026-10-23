@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "BoxShape": {
+      "additionalProperties": false,
+      "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
+      "properties": {
+        "shape": {
+          "const": "box",
+          "default": "box",
+          "title": "Shape",
+          "type": "string"
+        },
+        "half_extents_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Half Extents M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "half_extents_m"
+      ],
+      "title": "BoxShape",
+      "type": "object"
+    },
+    "USDLocalPose": {
+      "additionalProperties": false,
+      "description": "Authored transform in a USD object-local or stage frame.",
+      "properties": {
+        "xyz_m": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz M",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        }
+      },
+      "title": "USDLocalPose",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Authored box workspace in the catalog's named USD stage frame.",
+  "properties": {
+    "name": {
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "prim_path": {
+      "pattern": "^/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*$",
+      "title": "Prim Path",
+      "type": "string"
+    },
+    "role": {
+      "enum": [
+        "search",
+        "workspace"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "location": {
+      "enum": [
+        "fixed",
+        "movable"
+      ],
+      "title": "Location",
+      "type": "string"
+    },
+    "shape": {
+      "$ref": "#/$defs/BoxShape"
+    },
+    "pose_in_stage": {
+      "$ref": "#/$defs/USDLocalPose"
+    }
+  },
+  "required": [
+    "name",
+    "prim_path",
+    "role",
+    "location",
+    "shape"
+  ],
+  "title": "USDDeclaredWorkspace",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from tests.unit._tracker_scenes import RIGS, render, sphere
 
@@ -16,7 +17,7 @@ node = pytest.importorskip(
 )
 
 
-def _dilate(mask: np.ndarray, px: int) -> np.ndarray:
+def _dilate(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
     m = mask.copy()
     for _ in range(px):
         p = np.pad(m, 1)

@@ -75,6 +75,29 @@ std::string json_escape(std::string_view in) {
   return out;
 }
 
+bool has_calibration_name(const std::string& reference) noexcept {
+  return reference.find_first_not_of(" \t\n\r\f\v") != std::string::npos;
+}
+
+const char* workspace_denial_reason(int code) noexcept {
+  switch (code) {
+  case 0:
+    return "not_applicable_or_exempt";
+  case 1:
+    return "not_hand_link";
+  case 2:
+    return "hand_speed_over_limit_or_unknown";
+  case 3:
+    return "hand_lead_over_limit_or_unknown";
+  case 4:
+    return "cell_center_outside_workspace";
+  case 5:
+    return "cell_unexplained";
+  default:
+    return nullptr;
+  }
+}
+
 rclcpp::QoS chunk_qos() {
   // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
   // (arm CARTESIAN_DELTA + gripper GRIPPER_POSITION + optional base
@@ -507,6 +530,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // refuses it without `workspace_contact_enabled` (itself sim-only).
   this->declare_parameter<bool>("workspace_explained_cells_enabled", false);
   this->declare_parameter<bool>("payload_own_cells_enabled", false);
+  this->declare_parameter<bool>("pinch_payload_own_cells_enabled", false);
   // The declared static geometry as base-frame surface points, one `x y z` per
   // line — the SAME file the octomap bridge marks into every grid
   // (`static_points_file`). K7 reads it to know which cells are a declared static
@@ -937,6 +961,8 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   // sources the kernel cannot state is not run.
   workspace_explained_enabled_ = this->get_parameter("workspace_explained_cells_enabled").as_bool();
   workspace_explained_ = WorkspaceExplanation{};
+  support_cells_marked_ = 0;
+  support_cells_dirty_ = true;
   voxel_grid_.workspace_explained = nullptr;
   static_points_.clear();
   static_cells_.clear();
@@ -963,12 +989,18 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       }
     }
     static_cells_.assign(world_voxel_max_cells_, 0);
+    support_cells_.assign(world_voxel_max_cells_, 0);
+    support_queue_.assign(world_voxel_max_cells_, 0);
+    support_cells_marked_ = 0;
+    support_cells_dirty_ = true;
     RCLCPP_WARN(this->get_logger(),
                 "safety.workspace_explained_cells enabled (issue #418 K7, Safety-WG review "
                 "pending): workspace contact is tolerated only on a cell a tracked object's "
                 "box (confirmed / occluded, fresh, cover-checked), a declared static collider "
-                "(%zu points from '%s') or the measured support within %g m of such an object "
-                "explains; every other cell in the workspace trips as outside it",
+                "(%zu points from '%s') or the measured support layer under such an object "
+                "(within %g m of it, or connected to that through occupied in-layer cells "
+                "inside the workspace) explains; every other cell in the workspace trips as "
+                "outside it",
                 static_points_.size(), points_file.c_str(), kExplainedSupportReachM);
   }
   // Issue #418 (hazard OT-10 amendment): a bound payload's measured cells cannot stop it. Every
@@ -1013,6 +1045,23 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "no declared static cell (%zu points) and meet no other settled track's box; "
                 "payload vs robot links and every hand check are unchanged",
                 static_points_.size());
+  }
+  pinch_own_enabled_ = this->get_parameter("pinch_payload_own_cells_enabled").as_bool();
+  pinch_floor_ = {};
+  if (pinch_own_enabled_) {
+    if (!payload_own_enabled_) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "pinch_payload_own_cells_enabled refused: it widens payload_own_cells_enabled "
+                   "and requires it");
+      pinch_own_enabled_ = false;
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    RCLCPP_WARN(this->get_logger(),
+                "safety.pinch_payload_own_cells enabled (issue #418 OT-10 amendment, untracked "
+                "holds, Safety-WG review pending): an untracked_grasp hold's pinch-volume cells "
+                "cannot stop that payload above the pinch box's lowest point at the bind, unless "
+                "static or in another settled track's box");
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -1071,6 +1120,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   dq_meas_.assign(ndof, 0.0);
   dq_meas_seen_.assign(ndof, 0);
   dq_meas_stamp_ns_.assign(ndof, 0);
+  q_meas_src_ns_.assign(ndof, 0);
   q_check_.assign(ndof, 0.0);
   q_fk_.assign(ndof, 0.0);
   ws_trip_q_.assign(ndof, 0.0);
@@ -1302,6 +1352,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_retired_overflow_logged_ = false;
   tracked_retired_.clear();
   tracked_n_ = 0;
+  cover_pass_n_ = 0;
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
@@ -1315,6 +1366,8 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
   workspace_explained_enabled_ = false;
   workspace_explained_ = WorkspaceExplanation{};
+  support_cells_marked_ = 0;
+  support_cells_dirty_ = true;
   voxel_grid_.workspace_explained = nullptr;
   static_cells_marked_ = 0;
   static_cells_for_ = VoxelGrid{};
@@ -1690,7 +1743,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (hit.advisory && advisory_refusals_ < place_advisory_max_consecutive_) {
           ++advisory_refusals_;
           last_drop_reason_ = "collision_advisory";
-          publish_collision_failure(*msg, kind, a, b, step, hit.min_distance, q_fk_);
+          publish_collision_failure(*msg, kind, a, b, step, hit, q_fk_);
           RCLCPP_WARN(this->get_logger(),
                       "safety.collision_advisory kind=%s a=%s b=%s step=%d min_distance_m=%g "
                       "sweep_min_distance_m=%g place_target=%s consecutive=%llu/%llu "
@@ -1712,7 +1765,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         last_drop_reason_ = "collision";
         fault_latch_ = true;
         last_estop_at_ = std::chrono::steady_clock::now();
-        publish_collision_failure(*msg, kind, a, b, step, hit.min_distance, q_fk_);
+        publish_collision_failure(*msg, kind, a, b, step, hit, q_fk_);
         set_safety_status(true, openral_msgs::msg::SafetyStatus::KIND_COLLISION, kind,
                           msg->rskill_id, msg->trace_id);
         std_msgs::msg::Empty estop_msg;
@@ -2095,7 +2148,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           // measured contact now, not a predicted one), so it's reported at
           // the step being checked and the whole chunk is refused, exactly
           // as any other hit at that step would be.
-          const auto force = check_contact_force_gate(attached_model_);
+          const auto force = check_contact_force_gate(attached_model_, this->now().nanoseconds(),
+                                                      envelope_.contact_force_threshold_n);
           if (force.tripped) {
             CollisionHit fhit{};
             fhit.hit = true;
@@ -2767,6 +2821,7 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
   // a finite velocity entry forgets its last one, so the workspace speed bound
   // falls back to the commanded speed rather than trusting an old reading.
   const std::int64_t now_ns = this->now().nanoseconds();
+  const std::int64_t src_ns = rclcpp::Time(msg->header.stamp).nanoseconds();
   const std::size_t n = std::min(msg->name.size(), msg->position.size());
   for (std::size_t i = 0; i < n; ++i) {
     const auto it = joint_name_to_dof_.find(msg->name[i]);
@@ -2775,10 +2830,24 @@ void SafetyKernelLifecycleNode::on_joint_state(const sensor_msgs::msg::JointStat
     }
     const std::size_t d = static_cast<std::size_t>(it->second);
     if (d < q_meas_.size()) {
+      const bool has_v = i < msg->velocity.size() && std::isfinite(msg->velocity[i]);
+      double v = has_v ? msg->velocity[i] : 0.0;
+      // A reported velocity is capped at the rate its own measured position moved since
+      // the joint's previous stamped message (Spark R262, 2026-10-22: PhysX reported
+      // wrist_roll at its 10 rad/s limit while it sat 6 mrad from the command, a 1.88 m/s
+      // "hand" that stopped the grasp). Unstamped, repeated or out-of-order messages are
+      // not corroborated: the raw reading stands. Feeds only the #349 workspace speed.
+      // Safety-WG review owed.
+      if (has_v && q_meas_seen_[d] && q_meas_src_ns_[d] > 0 && src_ns > q_meas_src_ns_[d] &&
+          std::isfinite(msg->position[i])) {
+        const double rate = std::abs(msg->position[i] - q_meas_[d]) /
+                            (static_cast<double>(src_ns - q_meas_src_ns_[d]) * 1e-9);
+        v = std::clamp(v, -rate, rate);
+      }
+      q_meas_src_ns_[d] = src_ns > 0 ? src_ns : 0;
       q_meas_[d] = msg->position[i];
       q_meas_seen_[d] = true;
-      const bool has_v = i < msg->velocity.size() && std::isfinite(msg->velocity[i]);
-      dq_meas_[d] = has_v ? msg->velocity[i] : 0.0;
+      dq_meas_[d] = v;
       dq_meas_seen_[d] = has_v ? 1 : 0;
       dq_meas_stamp_ns_[d] = now_ns;
     }
@@ -2966,6 +3035,21 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   // discriminated-union variants exactly. Hand-built JSON; the
   // receiver (reasoner) round-trips via
   // ``TypeAdapter(FailureEvidence).validate_json(...)``.
+  const bool joint_mode =
+      chunk.control_mode <= static_cast<std::uint8_t>(ControlMode::kJointTrajectory);
+  const auto joint_label = [&]() -> std::string {
+    if (v.joint_index == 0xFFFF) {
+      return "ee";
+    }
+    if (joint_mode && collision_joint_names_.size() == envelope_.n_dof &&
+        joint_name_to_dof_.size() == envelope_.n_dof &&
+        v.joint_index < collision_joint_names_.size() &&
+        collision_joint_names_[v.joint_index].find_first_not_of(" \t\r\n\f\v") !=
+            std::string::npos) {
+      return collision_joint_names_[v.joint_index];
+    }
+    return "joint_" + std::to_string(v.joint_index);
+  };
   std::ostringstream oss;
   switch (v.kind) {
   case ViolationKind::kForce: {
@@ -2976,9 +3060,7 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     const double measured = std::abs(v.offending_value);
     const double limit =
         std::abs(v.limit_value) > 0.0 ? std::abs(v.limit_value) : 1e-9;  // schema requires > 0
-    oss << R"({"kind":"force","joint_or_ee":")"
-        << (v.joint_index == 0xFFFF ? std::string{"ee"}
-                                    : std::string{"joint_"} + std::to_string(v.joint_index))
+    oss << R"({"kind":"force","joint_or_ee":")" << json_escape(joint_label())
         << R"(","measured_n":)" << measured << R"(,"limit_n":)" << limit << "}";
     break;
   }
@@ -2996,9 +3078,8 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     const bool is_gripper = std::string_view(v.field) == "gripper_range" &&
                             v.joint_index < envelope_.gripper_ee_names.size();
     const std::string ee_name = is_cartesian ? std::string{"end_effector"}
-                                : is_gripper
-                                    ? json_escape(envelope_.gripper_ee_names[v.joint_index])
-                                    : std::string{"joint_"} + std::to_string(v.joint_index);
+                                : is_gripper ? envelope_.gripper_ee_names[v.joint_index]
+                                             : joint_label();
     const double meas = v.offending_value;
     const double limit = v.limit_value;
     // For non-cartesian violations, embed the 1-D bound into the x axis
@@ -3027,9 +3108,9 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
       box_min_x = std::min(limit, meas - 1e-9);
       box_max_x = std::max(limit, meas + 1e-9);
     }
-    oss << R"({"kind":"workspace","ee_name":")" << ee_name << R"(","measured_xyz":[)" << mx << ","
-        << my << "," << mz << R"(],"box_min":[)" << box_min_x << R"(,0.0,0.0],"box_max":[)"
-        << box_max_x << R"(,0.0,0.0]})";
+    oss << R"({"kind":"workspace","ee_name":")" << json_escape(ee_name) << R"(","measured_xyz":[)"
+        << mx << "," << my << "," << mz << R"(],"box_min":[)" << box_min_x
+        << R"(,0.0,0.0],"box_max":[)" << box_max_x << R"(,0.0,0.0]})";
     break;
   }
   case ViolationKind::kController:
@@ -3044,10 +3125,13 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
         : (v.sub == ControllerSubKind::kEnvelopeUnconfigured) ? "envelope_unconfigured"
                                                               : "controller_error";
     std::ostringstream detail;
-    detail << "field=" << v.field << " joint=" << v.joint_index << " value=" << v.offending_value
-           << " limit=" << v.limit_value;
+    detail << "field=" << v.field;
+    if (v.joint_index != 0xFFFF) {
+      detail << " joint=" << joint_label();
+    }
+    detail << " value=" << v.offending_value << " limit=" << v.limit_value;
     oss << R"({"kind":"controller","controller_name":"openral_safety_kernel","state":")" << state
-        << R"(","detail":")" << detail.str() << R"("})";
+        << R"(","detail":")" << json_escape(detail.str()) << R"("})";
     break;
   }
   }
@@ -3186,6 +3270,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_retired_overflow_logged_ = false;
   tracked_retired_.clear();
   tracked_n_ = 0;
+  cover_pass_n_ = 0;
   tracked_have_revision_ = false;
   tracked_revision_ = 0;
   tracked_refusal_reason_.clear();
@@ -3199,6 +3284,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   tracked_grasp_logged_n_ = static_cast<std::size_t>(-1);
   workspace_explained_enabled_ = false;
   workspace_explained_ = WorkspaceExplanation{};
+  support_cells_marked_ = 0;
+  support_cells_dirty_ = true;
   voxel_grid_.workspace_explained = nullptr;
   static_cells_marked_ = 0;
   static_cells_for_ = VoxelGrid{};
@@ -3236,6 +3323,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_model_.hull_vertices.assign(
       attached_max_primitives_ * static_cast<std::size_t>(kMaxTightHullVertices), Vec3{});
   attached_labels_.assign(attached_max_objects_, std::string{});
+  attached_evidence_kinds_.assign(attached_max_objects_, std::string{});
+  attached_evidence_refs_.assign(attached_max_objects_, std::string{});
   attached_binding_.assign(attached_max_objects_, AttachedBinding{});
   bound_slot_.assign(attached_max_objects_, -1);
   attached_ingest_scratch_.clear();
@@ -3446,7 +3535,7 @@ double SafetyKernelLifecycleNode::velocity_scale_for(double slack_m) const noexc
 
 void SafetyKernelLifecycleNode::publish_collision_failure(
     const openral_msgs::msg::ActionChunk& chunk, const char* collision_kind,
-    const std::string& link_a, const std::string& link_b, int horizon_step, double min_distance,
+    const std::string& link_a, const std::string& link_b, int horizon_step, const CollisionHit& hit,
     const std::vector<double>& joint_positions) {
   openral_msgs::msg::FailureTrigger trigger;
   trigger.header.stamp = this->now();
@@ -3462,9 +3551,10 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   // evidence exists to adjudicate. Every number here must round-trip exactly.
   std::ostringstream oss;
   oss << std::setprecision(std::numeric_limits<double>::max_digits10);
-  oss << R"({"kind":"collision","collision_kind":")" << collision_kind << R"(","link_a":")"
-      << link_a << R"(","link_b_or_object":")" << link_b << R"(","horizon_step":)" << horizon_step
-      << R"(,"min_distance_m":)" << min_distance << R"(,"joint_positions_rad":[)";
+  oss << R"({"kind":"collision","collision_kind":")" << json_escape(collision_kind)
+      << R"(","link_a":")" << json_escape(link_a) << R"(","link_b_or_object":")"
+      << json_escape(link_b) << R"(","horizon_step":)" << horizon_step << R"(,"min_distance_m":)"
+      << hit.min_distance << R"(,"joint_positions_rad":[)";
   for (std::size_t i = 0; i < joint_positions.size(); ++i) {
     if (i != 0) {
       oss << ',';
@@ -3472,6 +3562,54 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
     oss << joint_positions[i];
   }
   oss << ']';
+  constexpr std::size_t kEvidenceStringMax = 256;
+  const bool joint_names_usable =
+      collision_joint_names_.size() == joint_positions.size() &&
+      std::all_of(
+          collision_joint_names_.begin(), collision_joint_names_.end(),
+          [](const auto& name) { return !name.empty() && name.size() <= kEvidenceStringMax; });
+  if (joint_names_usable) {
+    oss << R"(,"joint_names":[)";
+    for (std::size_t i = 0; i < collision_joint_names_.size(); ++i) {
+      if (i != 0) {
+        oss << ',';
+      }
+      oss << '"' << json_escape(collision_joint_names_[i]) << '"';
+    }
+    oss << ']';
+  }
+  if (std::isfinite(hit.sweep_min_distance)) {
+    oss << R"(,"sweep_min_distance_m":)" << hit.sweep_min_distance;
+  }
+  if (const char* reason = workspace_denial_reason(hit.workspace_denied); reason != nullptr) {
+    oss << R"(,"workspace_denial_reason":")" << reason << '"';
+  }
+  oss << R"(,"workspace_contact_active":)"
+      << (voxel_grid_.workspace_region.valid ? "true" : "false");
+  const bool grasp_active =
+      tracked_grasp_enabled_ ? tracked_grasp_.n_objects > 0 : voxel_grid_.grasp_region.valid;
+  oss << R"(,"grasp_exemption_active":)" << (grasp_active ? "true" : "false")
+      << R"(,"depth_is_box_bound":)" << (hit.depth_is_box_bound ? "true" : "false");
+  // Expose accepted wire provenance only when the named pair contains that
+  // attached object. Keep both values paired and omit malformed or overlong
+  // producer text rather than truncating it into a different reference.
+  for (std::size_t i = 0; i < attached_labels_.size(); ++i) {
+    if (attached_labels_[i].empty()) {
+      continue;
+    }
+    const std::string attached_name = "attached:" + attached_labels_[i];
+    if (link_a != attached_name && link_b != attached_name) {
+      continue;
+    }
+    const auto& evidence_kind = attached_evidence_kinds_[i];
+    const auto& evidence_ref = attached_evidence_refs_[i];
+    if (!evidence_kind.empty() && !evidence_ref.empty() &&
+        evidence_kind.size() <= kEvidenceStringMax && evidence_ref.size() <= kEvidenceStringMax) {
+      oss << R"(,"payload_evidence_kind":")" << json_escape(evidence_kind)
+          << R"(","payload_evidence_ref":")" << json_escape(evidence_ref) << '"';
+    }
+    break;
+  }
   // WHICH grid this index addresses (#275). The cell is named only as
   // `voxel_<n>`, an index into a grid the kernel does not republish, and the
   // published window is snapped to the source lattice -- so a base drift
@@ -3495,6 +3633,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
     return;
   }
   tracked_cover_dirty_ = true;  // #418 K2: the cover check runs once per grid
+  support_cells_dirty_ = true;  // #418 K7: so does the connected support layer
   const std::size_t cells = static_cast<std::size_t>(msg->size_x) * msg->size_y * msg->size_z;
   // The grid's lattice is the source map's, so `orientation` is load-bearing
   // geometry, not metadata. An unset field is the all-zero quaternion, which is
@@ -3651,7 +3790,8 @@ void SafetyKernelLifecycleNode::on_world_state(
       const auto& force = obj.contact_force;
       // The magnitude is Newtons ONLY under a named calibration (survey §21.7).
       // Both conditions are resolved here so the hot path reads two bools.
-      in.contact_force_calibrated = force.magnitude_calibrated && !force.calibration_ref.empty();
+      in.contact_force_calibrated =
+          force.magnitude_calibrated && has_calibration_name(force.calibration_ref);
       // Scoping: the measured contact must be against the surface the
       // declaration named. `target_id` matches the declared target outright, or
       // names a surface that is part of it — the same rule the support
@@ -3669,6 +3809,7 @@ void SafetyKernelLifecycleNode::on_world_state(
           !declared_target.empty() && (force.target_id == declared_target ||
                                        force.target_id.rfind(declared_target + ":", 0) == 0);
       in.contact_force_magnitude = force.magnitude_n;
+      in.contact_force_stamp_ns = force.stamp_ns;
       if (!std::isfinite(in.contact_force_magnitude) || in.contact_force_magnitude < 0.0) {
         in.has_contact_force_witness = false;
         in.contact_force_calibrated = false;
@@ -3713,9 +3854,12 @@ void SafetyKernelLifecycleNode::on_world_state(
     }
     return;
   }
-  // Labels parallel the accepted objects (object_id for evidence).
+  // Labels and provenance parallel the accepted objects. Provenance is copied
+  // only for diagnostic FailureTrigger evidence; it never reaches a check.
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     attached_labels_[i] = wire[i].object_id;
+    attached_evidence_kinds_[i] = wire[i].evidence_kind;
+    attached_evidence_refs_[i] = wire[i].evidence_ref;
   }
   check_attachment_bindings(*msg);
   apply_tracked_release();
@@ -3863,12 +4007,24 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   // Attributability first (HZ-0097-2 mitigation 1): a wrong declaration must be
   // reconstructible from the trace whether or not it ends up arming anything.
   place_declaration_target_ = declaration.target_id;
-  place_declaration_stamp_ns_ = declaration.stamp_ns;
-  place_declaration_timeout_s_ = declaration.timeout_s;
   if (!declaration.active) {
     announce_dropped("retracted");
     return;
   }
+  if (declaration.stamp_ns <= 0 || !std::isfinite(declaration.timeout_s) ||
+      declaration.timeout_s <= 0.0 || declaration.timeout_s > kMaxPlaceForceGateTimeoutS) {
+    if (refusal_is_new("invalid_liveness", declaration.target_id)) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.place_force_gate_rejected reason=invalid_liveness stamp_ns=%ld "
+                  "timeout_s=%g target=%s",
+                  static_cast<long>(declaration.stamp_ns), declaration.timeout_s,
+                  declaration.target_id.c_str());
+    }
+    announce_dropped("invalid_liveness");
+    return;
+  }
+  place_declaration_stamp_ns_ = declaration.stamp_ns;
+  place_declaration_timeout_s_ = declaration.timeout_s;
   // Which carried payload the declaration is scoped to. An empty object_id is
   // the direct-dispatch case ("whichever payload is carried"), which the
   // producer resolves at attach time; the kernel maps it onto every accepted
@@ -3893,6 +4049,9 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
     attached_model_.force_gate.valid = true;
     attached_model_.force_gate.object_mask = object_mask;
     attached_model_.force_gate.threshold_n = threshold_n;
+    attached_model_.force_gate.declaration_stamp_ns = declaration.stamp_ns;
+    attached_model_.force_gate.declaration_timeout_s = declaration.timeout_s;
+    attached_model_.force_gate.witness_max_age_s = attached_collision_deadline_s_;
   } else if (threshold_n > kMaxContactForceThresholdN &&
              refusal_is_new("force_threshold_out_of_range", declaration.target_id)) {
     RCLCPP_WARN(this->get_logger(),
@@ -4117,7 +4276,9 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
     entry.object_id = obj.object_id;
     entry.epoch = obj.epoch;
     entry.live = obj.status == "confirmed" || obj.status == "occluded" || obj.status == "bound";
+    entry.released = obj.status == "released";
     entry.target = obj.role == "target";
+    entry.contact = entry.target || obj.role == "destination";
     entry.exemptible = obj.status == "confirmed" || obj.status == "occluded";
     entry.provisional = obj.provisional;
     entry.declaration_key = obj.declaration_key;
@@ -4150,6 +4311,9 @@ void SafetyKernelLifecycleNode::ingest_tracked_objects(
 void SafetyKernelLifecycleNode::check_attachment_bindings(
     const openral_msgs::msg::WorldStateStamped& msg) {
   bool fk_done = false;
+  for (auto& f : pinch_floor_) {
+    f.seen = false;
+  }
   for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
     const auto& wire = msg.attached_objects[i];
     AttachedBinding& binding = attached_binding_[i];
@@ -4194,6 +4358,56 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
             binding.own_floor_z = e.floor_z;
           }
           break;
+        }
+      } else if (pinch_own_enabled_ && wire.evidence_kind == "pinch_fallback" &&
+                 wire.evidence_ref == "untracked_grasp" && measured_state_fresh()) {
+        // An untracked hold: the pinch volume is the object in the hand. Its floor is the
+        // box's lowest point the first time this hold is seen (the fingers closed above the
+        // support), kept while the hold lasts (Spark R191 / R194 / R200 / R203 / R206).
+        PinchFloor* f = nullptr;
+        for (auto& c : pinch_floor_) {
+          if (c.used && c.object_id == wire.object_id && c.attach_link == wire.attach_link) {
+            f = &c;
+            break;
+          }
+        }
+        if (f == nullptr) {
+          for (auto& c : pinch_floor_) {
+            if (!c.used) {
+              const AttachedObject& obj = attached_model_.objects[i];
+              if (obj.attach_link < 0 ||
+                  static_cast<std::size_t>(obj.attach_link) >= collision_model_.n_links) {
+                break;  // frozen or unknown: no hand, no hold
+              }
+              ensure_fk();
+              const Transform object_xf = rigid_compose(
+                  binding_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)],
+                  obj.pose_in_link);
+              double low = std::numeric_limits<double>::infinity();
+              for (int p = 0; p < obj.prim_count; ++p) {
+                const AttachedPrimitive& prim =
+                    attached_model_.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+                const Transform x = rigid_compose(object_xf, prim.pose_in_object);
+                const double reach = std::abs(x.r[6]) * prim.half_extents.x +
+                                     std::abs(x.r[7]) * prim.half_extents.y +
+                                     std::abs(x.r[8]) * prim.half_extents.z;
+                low = std::min(low, x.t.z - reach);
+              }
+              if (std::isfinite(low)) {
+                c = PinchFloor{wire.object_id, wire.attach_link, low, true, false};
+                f = &c;
+                RCLCPP_INFO(this->get_logger(), "safety.pinch_own_floor object=%s floor_z=%.4f",
+                            wire.object_id.c_str(), low);
+              }
+              break;
+            }
+          }
+        }
+        if (f != nullptr) {
+          f->seen = true;
+          binding.own_armed = true;
+          binding.own_fallback = true;
+          binding.own_floor_z = f->floor_z;
         }
       }
       continue;
@@ -4245,12 +4459,18 @@ void SafetyKernelLifecycleNode::check_attachment_bindings(
       }
     }
   }
+  for (auto& f : pinch_floor_) {
+    if (f.used && !f.seen) {
+      f = PinchFloor{};  // the hold ended: the next one is measured afresh
+    }
+  }
 }
 
 std::size_t SafetyKernelLifecycleNode::fill_payload_own() {
   PayloadOwnCells& t = payload_own_;
   t.valid = false;
   t.armed = 0;
+  t.fallback_ok = 0;
   t.n_others = 0;
   t.own.fill(0);
   t.floor_z.fill(std::numeric_limits<double>::quiet_NaN());
@@ -4279,6 +4499,13 @@ std::size_t SafetyKernelLifecycleNode::fill_payload_own() {
   std::size_t armed = 0;
   for (std::size_t i = 0; i < attached_model_.n_objects && i < 8; ++i) {
     const AttachedBinding& b = attached_binding_[i];
+    if (b.own_armed && b.own_fallback && std::isfinite(b.own_floor_z)) {
+      t.armed = static_cast<std::uint8_t>(t.armed | (1U << i));
+      t.fallback_ok = static_cast<std::uint8_t>(t.fallback_ok | (1U << i));
+      t.floor_z[i] = b.own_floor_z;
+      ++armed;
+      continue;
+    }
     if (!b.own_armed || b.own_track < 0 || static_cast<std::size_t>(b.own_track) >= slot.size() ||
         slot[static_cast<std::size_t>(b.own_track)] < 0) {
       continue;
@@ -4331,6 +4558,11 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
     if (e == nullptr) {
       for (auto& c : bound_) {
         if (!c.used || !c.seen) {
+          // A slot another binding left (off this wire) starts fresh: kept `used`, it handed
+          // that binding's K4 union and K5 release to this one (Spark R285, 2026-10-23: the
+          // orange just bound inherited the released one's closed window and frozen box, and
+          // the gripper stopped against it).
+          c.used = false;
           e = &c;
           break;
         }
@@ -4460,6 +4692,35 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
     BoundPayload& e = bound_[static_cast<std::size_t>(bound_slot_[i])];
     AttachedObject& obj = attached_model_.objects[i];
     if (e.release == BoundPayload::Release::kHeld) {
+      // The tracker letting go of this (id, epoch) releases it here too: one release
+      // decision for both sides (2026-10-22 decision; Spark R138: the tracker's jaw rule
+      // fired, this one did not, and the payload rode the hand after the banana fell).
+      // Measured state is needed to freeze it where it was let go. Safety-WG review owed.
+      bool by_tracker = false;
+      for (std::size_t k = 0; fresh && k < tracked_n_; ++k) {
+        by_tracker = by_tracker || (tracked_[k].released && tracked_[k].epoch == e.epoch &&
+                                    tracked_[k].object_id == e.object_id);
+      }
+      if (by_tracker) {
+        fk();
+        e.frozen =
+            rigid_compose(binding_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)],
+                          obj.pose_in_link);
+        e.hand_link = obj.attach_link;
+        e.release = BoundPayload::Release::kWindow;
+        e.window_opened_ns = now;
+        RCLCPP_WARN(this->get_logger(),
+                    "safety.tracked_release object=%s epoch=%u by=tracker: frozen in base, hand "
+                    "and touch links exempt until %g m clear or %g s (#418 K5, not monotone)",
+                    e.object_id.c_str(), static_cast<unsigned>(e.epoch), release_clear_m_,
+                    release_timeout_s_);
+        if (grasp_latched_ && grasp_latched_tracked_ && grasp_latched_object_ == e.object_id &&
+            grasp_latched_epoch_ == e.epoch) {
+          retire_grasp_declaration("tracked_release");
+        }
+      }
+    }
+    if (e.release == BoundPayload::Release::kHeld) {
       // The jaw driving the attach link or a touch link (a mimic follower reads
       // its leader's column).
       for (std::size_t k = 0; e.jaw < 0 && k < release_jaw_cols_.size(); ++k) {
@@ -4539,6 +4800,40 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
     if (e.release == BoundPayload::Release::kClosed) {
       obj.release_hand_link = -1;
       obj.touch_count = 0;  // nothing is exempt against it any more
+      // The frozen box hands over to the map once the map carries the object: the
+      // tracker no longer calls this (id, epoch) bound or released (the two statuses the
+      // octomap bridge clears an identity's cells for) and the map has cells inside the box.
+      // Latched: a hand occluding it on a regrasp must not bring a stale box back around the
+      // fingers (Spark R263, 2026-10-22: the orange's frozen box blocked the regrasp for 16 s).
+      // Neither, and the box stays. Safety-WG review owed.
+      if (!e.in_map && tracked_n_ > 0 && tracked_stream_fresh()) {
+        bool cleared = false;
+        for (std::size_t k = 0; k < tracked_n_; ++k) {
+          const bool bound = tracked_[k].live && !tracked_[k].exemptible;
+          cleared = cleared || ((tracked_[k].released || bound) && tracked_[k].epoch == e.epoch &&
+                                tracked_[k].object_id == e.object_id);
+        }
+        std::size_t cover = 0;
+        for (int p = 0; !cleared && p < obj.prim_count; ++p) {
+          const AttachedPrimitive& prim =
+              attached_model_.primitives[static_cast<std::size_t>(obj.prim_first + p)];
+          const Vec3 half = prim.kind == AttachedShapeKind::kBox
+                                ? prim.half_extents
+                                : Vec3{prim.radius, prim.radius, prim.radius + prim.half_length};
+          cover +=
+              tracked_box_cover(voxel_grid_, rigid_compose(e.frozen, prim.pose_in_object), half);
+        }
+        if (!cleared && tracked_cover_sufficient(cover, 0)) {
+          e.in_map = true;
+          RCLCPP_INFO(this->get_logger(),
+                      "safety.tracked_release_in_map object=%s epoch=%u cells=%zu: the map "
+                      "carries it, the frozen box is dropped",
+                      e.object_id.c_str(), static_cast<unsigned>(e.epoch), cover);
+        }
+      }
+      if (e.in_map) {
+        obj.prim_count = 0;
+      }
     }
   }
 }
@@ -4925,13 +5220,59 @@ bool SafetyKernelLifecycleNode::refresh_tracked_cover() {
   const bool frame_ok = !voxel_frame_id_.empty() && tracked_set_frame_ == voxel_frame_id_;
   if (tracked_cover_dirty_) {
     // Once per grid (or set): the kernel's own cover check, on its own grid.
+    const std::int64_t now = this->now().nanoseconds();
+    const auto max_age_ns = static_cast<std::int64_t>(grasp_region_max_age_s_ * 1e9);
+    bool fk_done = false;
+    std::array<CoverPass, kMaxTrackedObjects> next{};
+    std::size_t next_n = 0;
     for (std::size_t k = 0; k < tracked_n_; ++k) {
       TrackedEntry& e = tracked_[k];
-      e.cover_ok =
-          frame_ok && !voxel_overflow_ &&
-          tracked_cover_sufficient(tracked_box_cover(voxel_grid_, e.box.pose, e.box.half_extents),
-                                   e.visible_cells);
+      const bool usable = frame_ok && !voxel_overflow_;
+      e.cover_ok = usable && tracked_cover_sufficient(
+                                 tracked_box_cover(voxel_grid_, e.box.pose, e.box.half_extents),
+                                 e.visible_cells);
+      const CoverPass* prev = nullptr;
+      for (std::size_t p = 0; p < cover_pass_n_; ++p) {
+        if (cover_pass_[p].id_hash == e.id_hash && cover_pass_[p].epoch == e.epoch) {
+          prev = &cover_pass_[p];
+        }
+      }
+      CoverPass rec{e.id_hash, e.epoch, e.cover_ok ? now : 0, false};
+      if (!e.cover_ok && usable && e.contact && prev != nullptr && prev->pass_ns > 0 &&
+          now - prev->pass_ns >= 0 && now - prev->pass_ns <= max_age_ns &&
+          workspace_region_.valid && measured_state_fresh()) {
+        // Contact hold: a hand at the target hides or bisects it (Isaac R41-R43: 39 of 79
+        // expected cells), so the shortfall is not the object gone; the destination it
+        // places into likewise (R63: the bowl). Never re-stamped: the hold ends
+        // `grasp_region_max_age_s` after the kernel's own last pass.
+        if (!fk_done) {
+          std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+          for (const int d : collision_base_dofs_) {
+            q_fk_[static_cast<std::size_t>(d)] = 0.0;
+          }
+          forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+          fk_done = true;
+        }
+        if (box_meets_hand_links(collision_model_, binding_scratch_, workspace_region_.link_mask,
+                                 e.box.pose, e.box.half_extents, voxel_grid_.resolution)) {
+          e.cover_ok = true;
+          rec.pass_ns = prev->pass_ns;
+          rec.held = true;
+          if (!prev->held) {
+            RCLCPP_WARN(this->get_logger(),
+                        "safety.tracked_cover_held object=%s epoch=%u last_pass_age_s=%.3f "
+                        "max_age_s=%.3f (issue #418 contact hold, Safety-WG review pending)",
+                        e.object_id.c_str(), e.epoch,
+                        static_cast<double>(now - prev->pass_ns) * 1e-9, grasp_region_max_age_s_);
+          }
+        }
+      }
+      if (rec.pass_ns > 0 && next_n < next.size()) {
+        next[next_n++] = rec;
+      }
     }
+    cover_pass_ = next;
+    cover_pass_n_ = next_n;
     tracked_cover_dirty_ = false;
   }
   return frame_ok;
@@ -4977,26 +5318,70 @@ std::size_t SafetyKernelLifecycleNode::fill_tracked_grasp() {
   return tracked_grasp_.n_objects;
 }
 
+namespace {
+
+// Everything `mark_support_cells` reads besides the grid itself, as one bit-comparable
+// array: the explaining objects' boxes and supports, and the workspace's pose / extent.
+template <std::size_t N>
+void support_key(const WorkspaceExplanation& e, const WorkspaceContactRegion& ws,
+                 std::array<double, N>& key) noexcept {
+  static_assert(N == 1 + kMaxTrackedObjects * 16 + 16, "one slot per input");
+  std::size_t k = 0;
+  const std::size_t n = std::min(e.n_objects, kMaxTrackedObjects);
+  key[k++] = static_cast<double>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    key[k++] = e.box[i].t.x;
+    key[k++] = e.box[i].t.y;
+    key[k++] = e.box[i].t.z;
+    for (int r = 0; r < 9; ++r) {
+      key[k++] = e.box[i].r[r];
+    }
+    key[k++] = e.half_extents[i].x;
+    key[k++] = e.half_extents[i].y;
+    key[k++] = e.half_extents[i].z;
+    key[k++] = e.support_z[i];
+  }
+  k = 1 + kMaxTrackedObjects * 16;
+  key[k++] = ws.valid ? 1.0 : 0.0;
+  key[k++] = ws.pose.t.x;
+  key[k++] = ws.pose.t.y;
+  key[k++] = ws.pose.t.z;
+  for (int r = 0; r < 9; ++r) {
+    key[k++] = ws.pose.r[r];
+  }
+  key[k++] = ws.half_extents.x;
+  key[k++] = ws.half_extents.y;
+  key[k++] = ws.half_extents.z;
+}
+
+}  // namespace
+
 std::size_t SafetyKernelLifecycleNode::fill_workspace_explained() {
   WorkspaceExplanation& e = workspace_explained_;
   e.n_objects = 0;
   const bool frame_ok = refresh_tracked_cover();
   // Any role, any declaration: a neighbour carton or the destination plate
-  // explains its own cells. Never split (a foreign body in the box), bound,
+  // explains its own cells. Never split (a foreign body in the box),
   // tentative, released or lost; never a retired identity, a stale
   // confirmation, a box the kernel's own grid does not cover, or a set the
-  // stream no longer carries fresh.
+  // stream no longer carries fresh. A BOUND one explains only its own box's
+  // cells, never a support: the cells the octomap bridge has yet to clear as
+  // the payload's (Spark R245/R253, 2026-10-22: the bind dropped the banana from
+  // this set and the fingertip in its still-mapped cells stopped 0.1 s later).
+  // The cover check ends it once the bridge clears them. Safety-WG review owed.
   if (frame_ok && tracked_stream_fresh()) {
     for (std::size_t k = 0; k < tracked_n_; ++k) {
       const TrackedEntry& t = tracked_[k];
-      if (!t.exemptible || !t.cover_ok || tracked_retired_.contains(t.id_hash, t.epoch) ||
+      const bool bound = t.live && !t.exemptible;
+      if ((!t.exemptible && !bound) || !t.cover_ok ||
+          tracked_retired_.contains(t.id_hash, t.epoch) ||
           !region_measurement_fresh(t.confirmed_ns, grasp_region_max_age_s_)) {
         continue;
       }
       const std::size_t n = e.n_objects++;
       e.box[n] = t.box.pose;
       e.half_extents[n] = t.box.half_extents;
-      e.support_z[n] = t.support_z;
+      e.support_z[n] = bound ? std::numeric_limits<double>::quiet_NaN() : t.support_z;
     }
   }
   const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
@@ -5005,11 +5390,37 @@ std::size_t SafetyKernelLifecycleNode::fill_workspace_explained() {
                                      static_cast<std::size_t>(voxel_grid_.sy) *
                                      static_cast<std::size_t>(voxel_grid_.sz)
                                : 0;
+  // The connected support layer of these objects on this grid, re-marked only
+  // when one of its inputs changed (it is a whole-grid pass, not a per-check one).
+  e.support_cells = nullptr;
+  e.support_cells_n = 0;
+  if (voxel_overflow_ || support_cells_.empty()) {
+    support_cells_marked_ = 0;
+  } else {
+    std::array<double, kSupportKeyN> key{};
+    support_key(e, voxel_grid_.workspace_region, key);
+    if (support_cells_dirty_ ||
+        std::memcmp(key.data(), support_key_.data(), sizeof(double) * kSupportKeyN) != 0) {
+      support_key_ = key;
+      support_cells_dirty_ = false;
+      support_cells_marked_ =
+          mark_support_cells(voxel_grid_, e, support_cells_.data(), support_cells_.size(),
+                             support_queue_.data(), support_queue_.size());
+    }
+    if (support_cells_marked_ > 0) {
+      e.support_cells = support_cells_.data();
+      e.support_cells_n = static_cast<std::size_t>(voxel_grid_.sx) *
+                          static_cast<std::size_t>(voxel_grid_.sy) *
+                          static_cast<std::size_t>(voxel_grid_.sz);
+    }
+  }
   if (e.n_objects != workspace_explained_logged_n_) {
     workspace_explained_logged_n_ = e.n_objects;
     RCLCPP_INFO(this->get_logger(),
-                "safety.workspace_explained objects=%zu of=%zu static_cells=%zu", e.n_objects,
-                tracked_n_, static_ok ? static_cells_marked_ : std::size_t{0});
+                "safety.workspace_explained objects=%zu of=%zu static_cells=%zu "
+                "support_cells=%zu",
+                e.n_objects, tracked_n_, static_ok ? static_cells_marked_ : std::size_t{0},
+                support_cells_marked_);
   }
   return e.n_objects;
 }

@@ -3,14 +3,15 @@
 One ``LocateInView`` / ``SegmentInView`` request in flight at most, issued at most every
 ``1 / segment_hz`` seconds of **wall** time (the GPU's clock, logged apart from the source
 clock every lifetime runs on). Among the candidate prompts the tracker builds each frame,
-the lowest priority number wins, then the one served longest ago (fair round-robin):
+the lowest priority number wins, then the one served longest ago (fair round-robin). When an
+unresolved query and a visible confirmed-track refresh both wait, one query request is followed
+by one refresh request; neither request is removed:
 
 1. unresolved queries (``PRIORITY_QUERY``) — before any confirmed track is refreshed;
-2. RELEASED tracks, searched in their fall column;
-3. tracks the map disagrees with, re-found at their predicted pose;
-4. bound-object protrusion checks;
-5. the oldest visible CONFIRMED refresh, and resolved ``count: "all"`` queries, which keep
-   detecting.
+2. tracks the map disagrees with, re-found at their predicted pose;
+3. bound-object protrusion checks;
+4. the oldest visible CONFIRMED refresh, and resolved ``count: "all"`` queries, which keep
+   detecting. The refresh gets an alternating turn after query work when both are waiting.
 
 OCCLUDED tracks are never prompted: they are the map's job. A request whose answer does
 not come back within ``budget_wall_s`` is abandoned and logged, freeing the slot.
@@ -29,7 +30,6 @@ __all__ = [
     "PRIORITY_DISAGREE",
     "PRIORITY_QUERY",
     "PRIORITY_REFRESH",
-    "PRIORITY_RELEASED",
     "Scheduler",
     "TrackerRequest",
 ]
@@ -37,10 +37,9 @@ __all__ = [
 log = structlog.get_logger(__name__)
 
 PRIORITY_QUERY = 1
-PRIORITY_RELEASED = 2
-PRIORITY_DISAGREE = 3
-PRIORITY_BOUND = 4
-PRIORITY_REFRESH = 5
+PRIORITY_DISAGREE = 2
+PRIORITY_BOUND = 3
+PRIORITY_REFRESH = 4
 
 
 @dataclass(frozen=True)
@@ -123,6 +122,7 @@ class Scheduler:
         self._in_flight: TrackerRequest | None = None
         self._issued_s = -float("inf")
         self._next_id = 1
+        self._refresh_owed = False
 
     @property
     def in_flight(self) -> TrackerRequest | None:
@@ -151,7 +151,17 @@ class Scheduler:
             self._in_flight = None
         if not candidates or wall_s - self._issued_s < self._period_s:
             return None
-        best = min(candidates, key=lambda r: (r.priority, r.served_ns))
+        refreshes = [r for r in candidates if r.priority == PRIORITY_REFRESH]
+        queries = [r for r in candidates if r.priority == PRIORITY_QUERY]
+        if self._refresh_owed and queries and refreshes:
+            # An unresolved query must make progress, but cannot monopolize the one request slot.
+            best = min(refreshes, key=lambda r: r.served_ns)
+            self._refresh_owed = False
+        else:
+            best = min(candidates, key=lambda r: (r.priority, r.served_ns))
+            # Drop stale debt if the query or eligible refresh stopped waiting. Alternation
+            # must not preempt RELEASED, DISAGREE, or BOUND work after the query disappears.
+            self._refresh_owed = best.priority == PRIORITY_QUERY and bool(refreshes)
         self._in_flight = replace(best, request_id=self._next_id)
         self._next_id += 1
         self._issued_s = wall_s

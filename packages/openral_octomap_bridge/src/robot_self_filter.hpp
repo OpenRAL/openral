@@ -11,8 +11,8 @@
 // Joint positions are LINEARLY INTERPOLATED at the stamp between the two
 // samples around it (`joint_state_at`). Every way of not knowing where the
 // robot was when the cloud was captured — samples around the stamp more than
-// two `joint_state_period_s` apart, more than one period of extrapolation past
-// the newest, nothing within `max_joint_state_skew_s`, a joint the model needs
+// two `joint_state_period_s` apart, no bracketing state within the bounded wait,
+// nothing within `max_joint_state_skew_s`, a joint the model needs
 // never reported, no camera transform at the stamp — DROPS THE CLOUD rather than forwarding it
 // unfiltered or filtered against a guessed pose. A dropped cloud is silence downstream: the octree
 // goes stale, the voxel bridge stops republishing (`max_octree_age_s`), and the kernel's world
@@ -20,11 +20,10 @@
 // and stop the robot against itself; filtering it against a stale pose would
 // punch the blind shell into the wrong place, which is the unsafe direction.
 //
-// A held payload (from `/openral/world_state_fast`'s `attached_objects`) is
-// removed the same way. Anything about it that cannot be placed — a stale
-// snapshot, an attach link neither in the model nor in TF, geometry
-// `place_attached_object` refuses — leaves its points IN the cloud: the map
-// keeps occupancy it may not need, which can only stop the robot early.
+// A held payload is removed only with the same unique `tracked_object`
+// binding the voxel bridge requires. Region, segmentation, fallback, stale,
+// malformed, or ambiguous attachments leave their returns in the cloud: their
+// geometry alone does not prove that those sensor points belong to the object.
 //
 // `cloud_out` carries x/y/z only, whatever the input carries: octomap reads
 // nothing else. An input with more fields (a coloured sim cloud's `rgb`) also
@@ -60,6 +59,7 @@
 #include <utility>
 #include <vector>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -74,6 +74,7 @@
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "openral_octomap_bridge/identity_clearing.hpp"
 #include "openral_octomap_bridge/payload_clearing.hpp"
 #include "openral_octomap_bridge/self_filter.hpp"
 
@@ -118,14 +119,23 @@ public:
     padding_m_ = this->declare_parameter<double>("padding_m", 0.02);
     max_skew_s_ = this->declare_parameter<double>("max_joint_state_skew_s", 0.1);
     // The joint-state stream's period: interpolation refuses a gap of more than
-    // two of them and an extrapolation of more than one. The launch passes the
-    // manifest's `1 / action_spec.control_freq_hz`; 0.05 s (20 Hz) bounds the gap
-    // at 0.1 s, the skew bound this node shipped with.
+    // two of them and an extrapolation of more than one. Isaac simulation
+    // launches start unready and receive the connected backend's actual tick
+    // from the HAL over the standard ROS parameter service.
+    period_from_hal_ = this->declare_parameter<bool>("joint_state_period_from_hal", false);
     period_s_ = this->declare_parameter<double>("joint_state_period_s", 0.05);
+    period_ready_ = !period_from_hal_;
     // δt_sync: the stamp error left after interpolation (a camera's
     // exposure-to-stamp offset, the joint-state republish's stamp error). 0.02 s
     // adds 10 mm at 0.5 m/s; the padding cap still bounds the total.
     dt_sync_s_ = this->declare_parameter<double>("velocity_padding_dt_s", 0.02);
+    // Issue #418 (new hazard row owed, Safety-WG review pending): the recent sweep. A
+    // return within the padded volume the robot left over the last `trailing_sweep_s`
+    // is the robot's own trailing / silhouette-edge return, not the world (Spark R16:
+    // two finger-edge returns 15-21 mm outside the hull, landing 0.13 s after the
+    // gripper left that cell, held a mid-air voxel that stopped it 2.4 s later).
+    // 0 = off; the padding cap still bounds the total.
+    trailing_sweep_s_ = this->declare_parameter<double>("trailing_sweep_s", 0.0);
     tf_timeout_s_ = this->declare_parameter<double>("tf_timeout_s", 0.05);
     history_s_ = this->declare_parameter<double>("joint_state_history_s", 2.0);
     attached_enabled_ = this->declare_parameter<bool>("attached_filter_enabled", true);
@@ -153,13 +163,47 @@ public:
                    joint_names.size(), model_.required_dof);
       model_ok_ = false;
     }
-    if (!(period_s_ > 0.0 && period_s_ <= 1.0) || !(dt_sync_s_ >= 0.0 && dt_sync_s_ <= 0.2)) {
+    if ((!period_from_hal_ && !valid_period(period_s_)) || (period_from_hal_ && period_s_ != 0.0) ||
+        !(dt_sync_s_ >= 0.0 && dt_sync_s_ <= 0.2) ||
+        !(trailing_sweep_s_ >= 0.0 && trailing_sweep_s_ <= kMaxTrailingSweepS)) {
       RCLCPP_ERROR(this->get_logger(),
-                   "joint_state_period_s=%g (0, 1] / velocity_padding_dt_s=%g [0, 0.2] out of "
-                   "range: forwarding NOTHING",
-                   period_s_, dt_sync_s_);
+                   "joint_state_period_s=%g (0, 1] / velocity_padding_dt_s=%g [0, 0.2] / "
+                   "trailing_sweep_s=%g [0, %g] out of range: forwarding NOTHING",
+                   period_s_, dt_sync_s_, trailing_sweep_s_, kMaxTrailingSweepS);
       model_ok_ = false;
     }
+    period_on_set_ = this->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter>& parameters) {
+          rcl_interfaces::msg::SetParametersResult result;
+          result.successful = true;
+          for (const auto& parameter : parameters) {
+            if (parameter.get_name() != "joint_state_period_s") {
+              continue;
+            }
+            if (!period_from_hal_ ||
+                parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
+                !valid_period(parameter.as_double())) {
+              result.successful = false;
+              result.reason = "joint_state_period_s requires joint_state_period_from_hal and "
+                              "a finite value in (0, 1]";
+              return result;
+            }
+          }
+          return result;
+        });
+    period_post_set_ = this->add_post_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter>& parameters) {
+          for (const auto& parameter : parameters) {
+            if (parameter.get_name() == "joint_state_period_s") {
+              period_s_ = parameter.as_double();
+              // No sample from the old cadence may be used with the new rule.
+              history_.clear();
+              std::fill(q_.begin(), q_.end(), 0.0);
+              std::fill(seen_.begin(), seen_.end(), 0);
+              period_ready_ = true;
+            }
+          }
+        });
     if (!valid_self_filter_padding(padding_m_)) {
       // Fail closed, as a bad model does: a wider shell hides obstacles the arm
       // can reach, and a negative or non-finite one is a misconfiguration.
@@ -211,6 +255,12 @@ public:
         "cloud_in", rclcpp::SensorDataQoS().keep_last(2),
         [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { on_cloud(msg); });
     setup_robot_masks();
+    sensor_retry_timer_ = this->create_wall_timer(std::chrono::milliseconds(5), [this]() {
+      retry_clouds();
+      for (std::size_t c = 0; c < mask_cameras_.size(); ++c) {
+        retry_masks(c);
+      }
+    });
     stats_timer_ = this->create_wall_timer(std::chrono::seconds(5), [this]() { log_stats(); });
 
     const auto hulled = static_cast<std::size_t>(std::count_if(
@@ -241,6 +291,10 @@ public:
   const Totals& totals() const noexcept { return totals_; }
 
 private:
+  static bool valid_period(double value) {
+    return std::isfinite(value) && value > 0.0 && value <= 1.0;
+  }
+
   std::vector<std::int64_t> declare_ints(const std::string& name) {
     return this->declare_parameter<std::vector<std::int64_t>>(name, std::vector<std::int64_t>{});
   }
@@ -252,6 +306,9 @@ private:
   }
 
   void on_joint_state(const sensor_msgs::msg::JointState::SharedPtr& msg) {
+    if (!period_ready_) {
+      return;
+    }
     const std::size_t n = std::min(msg->name.size(), msg->position.size());
     for (std::size_t i = 0; i < n; ++i) {
       const auto it = dof_of_name_.find(msg->name[i]);
@@ -282,6 +339,13 @@ private:
 
   /// Pose the robot at `stamp` into `q_at_` / `qdot_at_`, or count and warn why not.
   bool joint_state_at_stamp(const rclcpp::Time& stamp, const char* what) {
+    if (!period_ready_) {
+      ++totals_.dropped_no_state;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "joint-state period has not been admitted by the HAL: dropping %s",
+                           what);
+      return false;
+    }
     const auto verdict =
         joint_state_at(history_, stamp.nanoseconds(), period_s_, max_skew_s_, q_at_, qdot_at_);
     if (verdict == JointStateVerdict::kOk) {
@@ -328,11 +392,56 @@ private:
     return false;
   }
 
+  bool state_covers(const builtin_interfaces::msg::Time& stamp) const {
+    const auto ns = rclcpp::Time(stamp, this->get_clock()->get_clock_type()).nanoseconds();
+    return !history_.empty() && history_.front().stamp_ns <= ns && history_.back().stamp_ns >= ns;
+  }
+
   void on_cloud(const sensor_msgs::msg::PointCloud2::SharedPtr& msg) {
     ++totals_.clouds;
     if (!model_ok_) {
       return;
     }
+    retry_clouds();
+    if (state_covers(msg->header.stamp)) {
+      filter_cloud(msg);
+      return;
+    }
+    if (!std::isfinite(max_skew_s_) || max_skew_s_ <= 0.0 ||
+        msg->data.size() > 32U * 1024U * 1024U) {
+      ++totals_.dropped_no_state;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "cloud: matching joint state unavailable or buffer exceeds bounded "
+                           "storage: refusing cloud");
+      return;
+    }
+    if (pending_clouds_.size() == 2) {
+      pending_clouds_.pop_front();
+      ++totals_.dropped_no_state;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "cloud: pending joint-state queue full: oldest cloud refused");
+    }
+    pending_clouds_.push_back({msg, std::chrono::steady_clock::now()});
+  }
+
+  void retry_clouds() {
+    for (auto it = pending_clouds_.begin(); it != pending_clouds_.end();) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now() - it->received).count() >=
+          max_skew_s_) {
+        ++totals_.dropped_no_state;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "cloud: capture-time joint-state wait expired: refusing cloud");
+        it = pending_clouds_.erase(it);
+      } else if (state_covers(it->cloud->header.stamp)) {
+        filter_cloud(it->cloud);
+        it = pending_clouds_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  void filter_cloud(const sensor_msgs::msg::PointCloud2::SharedPtr& msg) {
     const auto t0 = std::chrono::steady_clock::now();
     const rclcpp::Time stamp(msg->header.stamp, this->get_clock()->get_clock_type());
 
@@ -361,6 +470,21 @@ private:
     }
     self_forward_kinematics(model_, q_later_.data(), q_later_.size(), link_later_);
     self_primitive_motion(model_, link_world_, link_later_, motion_);
+    if (trailing_sweep_s_ > 0.0) {
+      // The pose `trailing_sweep_s` ago, from the same history: each primitive is
+      // also padded by how far it has moved since. No such state (a fresh start)
+      // = today's padding, which keeps robot points (a false stop), never erases world.
+      const std::int64_t before_ns =
+          stamp.nanoseconds() - static_cast<std::int64_t>(trailing_sweep_s_ * 1e9);
+      if (joint_state_at(history_, before_ns, period_s_, max_skew_s_, q_before_, qdot_before_) ==
+          JointStateVerdict::kOk) {
+        self_forward_kinematics(model_, q_before_.data(), q_before_.size(), link_before_);
+        self_primitive_motion(model_, link_world_, link_before_, motion_before_);
+        for (std::size_t k = 0; k < motion_.size() && k < motion_before_.size(); ++k) {
+          motion_[k] = std::max(motion_[k], motion_before_[k]);
+        }
+      }
+    }
     primitives_.clear();
     primitive_hulls_.clear();
     place_self_primitives(model_, link_world_, cloud_from_root, primitives_, &primitive_hulls_);
@@ -423,6 +547,16 @@ private:
     }
     std::vector<SupportPatch> patches;  // the grid bridge's concern, not the cloud's
     for (const auto& object : state->attached_objects) {
+      const char* why = "no_robot_root";
+      if (model_.link_names.empty() ||
+          identity_clearing_track(object, *state, model_.link_names.front(), &why) == nullptr) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                             "payload %s evidence '%s' has no unique valid tracked-object "
+                             "binding in the robot root frame (reason=%s); its sensor returns "
+                             "stay in the cloud",
+                             object.object_id.c_str(), object.evidence_kind.c_str(), why);
+        continue;
+      }
       tf2::Transform root_from_link;
       const int link = model_.link_index(object.attach_link);
       if (link >= 0) {
@@ -452,8 +586,15 @@ private:
     }
   }
 
+  struct PendingMask {
+    sensor_msgs::msg::Image::ConstSharedPtr image;
+    sensor_msgs::msg::CameraInfo::ConstSharedPtr info;
+    std::chrono::steady_clock::time_point received;
+  };
+
   struct MaskCamera {
     std::string name;
+    std::deque<PendingMask> pending;
     sensor_msgs::msg::CameraInfo::ConstSharedPtr info;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub;
@@ -472,10 +613,11 @@ private:
       return;
     }
     if (depth.size() != names.size() || info.size() != names.size() || out.size() != names.size() ||
+        names.size() > 16 || !std::isfinite(max_skew_s_) || max_skew_s_ < 0.0 ||
         mask_uncertain_px_ < 0 || mask_uncertain_px_ > 64) {
       RCLCPP_ERROR(this->get_logger(),
                    "robot_mask_* arrays disagree in length or robot_mask_uncertain_px is outside "
-                   "[0, 64]: publishing NO robot mask");
+                   "[0, 64], more than 16 cameras, or invalid skew: publishing NO robot mask");
       return;
     }
     mask_cameras_.resize(names.size());
@@ -492,7 +634,7 @@ private:
           });
       cam.depth_sub = this->create_subscription<sensor_msgs::msg::Image>(
           depth[c], rclcpp::SensorDataQoS().keep_last(2),
-          [this, c](sensor_msgs::msg::Image::ConstSharedPtr msg) { on_depth(c, *msg); });
+          [this, c](sensor_msgs::msg::Image::ConstSharedPtr msg) { on_depth(c, std::move(msg)); });
       RCLCPP_INFO(this->get_logger(), "robot mask: camera %s, depth %s -> %s", names[c].c_str(),
                   depth[c].c_str(), out[c].c_str());
     }
@@ -526,35 +668,95 @@ private:
     return true;
   }
 
-  void on_depth(std::size_t c, const sensor_msgs::msg::Image& img) {
+  void on_depth(std::size_t c, sensor_msgs::msg::Image::ConstSharedPtr image) {
     MaskCamera& cam = mask_cameras_[c];
-    const auto info = cam.info;
+    // Bound retained sensor buffers as well as their count (up to 4K float depth).
+    if (image->data.size() > 32U * 1024U * 1024U ||
+        static_cast<std::uint64_t>(image->width) * image->height > 8U * 1024U * 1024U) {
+      ++totals_.masks_dropped;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "robot mask %s: depth exceeds bounded image storage: no mask",
+                           cam.name.c_str());
+      return;
+    }
+    retry_masks(c);
+    if (publish_mask(c, *image, cam.info)) {
+      return;
+    }
+    if (max_skew_s_ == 0.0) {
+      ++totals_.masks_dropped;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "robot mask %s: capture-time TF/joint state unavailable and no wait "
+                           "allowed: no mask",
+                           cam.name.c_str());
+      return;
+    }
+    if (cam.pending.size() == 2) {
+      cam.pending.pop_front();
+      ++totals_.masks_dropped;
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "robot mask %s: pending sensor queue full: oldest depth refused",
+                           cam.name.c_str());
+    }
+    cam.pending.push_back({std::move(image), cam.info, std::chrono::steady_clock::now()});
+  }
+
+  void retry_masks(std::size_t c) {
+    auto& pending = mask_cameras_[c].pending;
+    for (auto it = pending.begin(); it != pending.end();) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now() - it->received).count() >=
+          max_skew_s_) {
+        ++totals_.masks_dropped;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                             "robot mask %s: capture-time TF/joint-state wait expired: no mask",
+                             mask_cameras_[c].name.c_str());
+        it = pending.erase(it);
+      } else if (publish_mask(c, *it->image, it->info)) {
+        it = pending.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // False means capture-time camera TF or a bracketing joint state is still pending.
+  bool publish_mask(std::size_t c, const sensor_msgs::msg::Image& img,
+                    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& info) {
+    MaskCamera& cam = mask_cameras_[c];
     const rclcpp::Time stamp(img.header.stamp, this->get_clock()->get_clock_type());
-    if (info == nullptr || info->width != img.width || info->height != img.height ||
-        !depth_metres(img)) {
+    if (stamp.nanoseconds() <= 0 || info == nullptr || info->width != img.width ||
+        info->height != img.height || img.width == 0 || img.height == 0) {
       ++totals_.masks_dropped;
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "robot mask %s: no matching CameraInfo or an unreadable depth image "
                            "(%s): no mask",
                            cam.name.c_str(), img.encoding.c_str());
-      return;
+      return true;
     }
-    if (!joint_state_at_stamp(stamp, "depth image")) {
-      ++totals_.masks_dropped;
-      return;
+    if (!state_covers(img.header.stamp)) {
+      return false;
     }
     tf2::Transform cam_from_root;
     try {
       const auto tf_msg =
           tf_buffer_->lookupTransform(img.header.frame_id, model_.link_names.front(), stamp,
-                                      rclcpp::Duration::from_seconds(tf_timeout_s_));
+                                      rclcpp::Duration::from_seconds(0.0));
       tf2::fromMsg(tf_msg.transform, cam_from_root);
-    } catch (const tf2::TransformException& ex) {
+    } catch (const tf2::TransformException&) {
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                            "robot mask %s: waiting at most %g s for exact-stamp camera TF",
+                            cam.name.c_str(), max_skew_s_);
+      return false;
+    }
+    if (!depth_metres(img)) {
       ++totals_.masks_dropped;
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                           "robot mask %s: TF %s at the depth stamp unavailable (%s): no mask",
-                           cam.name.c_str(), img.header.frame_id.c_str(), ex.what());
-      return;
+                           "robot mask %s: unreadable depth image: no mask", cam.name.c_str());
+      return true;
+    }
+    if (!joint_state_at_stamp(stamp, "depth image")) {
+      ++totals_.masks_dropped;
+      return true;
     }
     // The UNPADDED model at the depth stamp; never a payload (it is an object).
     self_forward_kinematics(model_, q_at_.data(), q_at_.size(), mask_link_world_);
@@ -578,11 +780,12 @@ private:
                       mask_uncertain_px_, mask_scratch_, out->data);
     cam.pub->publish(std::move(out));
     ++totals_.masks_published;
+    return true;
   }
 
   void log_stats() {
     if (window_clouds_ == 0 && totals_.dropped_no_state == 0 && totals_.dropped_no_tf == 0 &&
-        totals_.masks_published == 0) {
+        totals_.masks_published == 0 && totals_.masks_dropped == 0) {
       return;
     }
     const double removed_pct =
@@ -624,6 +827,8 @@ private:
   double padding_m_{0.02};
   double max_skew_s_{0.1};
   double period_s_{0.05};
+  bool period_from_hal_{false};
+  bool period_ready_{true};
   double dt_sync_s_{0.02};
   double tf_timeout_s_{0.05};
   double history_s_{2.0};
@@ -633,9 +838,19 @@ private:
   std::vector<tf2::Transform> link_world_;
   std::vector<tf2::Transform> link_later_;
   std::vector<double> motion_;  ///< per robot primitive: its motion within δt_sync
+  double trailing_sweep_s_{0.0};
+  std::vector<double> q_before_;
+  std::vector<double> qdot_before_;
+  std::vector<tf2::Transform> link_before_;
+  std::vector<double> motion_before_;  ///< per robot primitive: its motion since `trailing_sweep_s`
   std::vector<PayloadPrimitive> primitives_;
   std::vector<const SelfHull*> primitive_hulls_;  ///< parallel to the robot's primitives
   SelfMask mask_;
+  struct PendingCloud {
+    sensor_msgs::msg::PointCloud2::SharedPtr cloud;
+    std::chrono::steady_clock::time_point received;
+  };
+  std::deque<PendingCloud> pending_clouds_;
   // Robot mask (`robot_mask_enabled`).
   std::vector<MaskCamera> mask_cameras_;
   std::vector<double> mask_margin_;  ///< per robot primitive: its backstop margin
@@ -659,6 +874,9 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr viewer_pub_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
+  rclcpp::TimerBase::SharedPtr sensor_retry_timer_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr period_on_set_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr period_post_set_;
 };
 
 }  // namespace openral_octomap_bridge

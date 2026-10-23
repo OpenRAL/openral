@@ -112,6 +112,12 @@ scene:
       finger_joint: 1.0  # open
     joint_drive_gains:
       "finger_joint": [5729.578, 0.011459]
+      # The Robotiq's mimic followers on the leader's gains, driven toward the mimic of the
+      # MEASURED leader (`gripper_followers_track`): the four-bar the URDF tree cuts open
+      # moves as one body. Spark gripper probe 2026-10-21 (R21 replay, contacts): follower
+      # error vs mimic p95 17.1 -> 0.75 deg, max 22.7 -> 4.8 deg (was up to 39 deg).
+      "(right_finger_joint|.*_phalanx_joint)": [5729.578, 0.011459]
+    gripper_followers_track: measured
     gripper_joint_curve:
       finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
     camera_mounts:

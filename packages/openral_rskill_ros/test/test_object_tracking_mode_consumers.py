@@ -11,7 +11,8 @@ mode owns:
   the mode. The HAL and the kernel are untouched.
 * ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` and the
   kernel's jaw-open release (K5).
-* ``on``: adds the kernel's tracked grasp exemption (K2), and nothing else.
+* ``on``: adds the kernel's tracked grasp exemption (K2), its contact-link list,
+  payload ownership and explained-workspace cells.
 """
 
 from __future__ import annotations
@@ -62,13 +63,25 @@ _SHADOW = {
     _FILTER: _MASK,
     _SEGMENTER: {"cameras", "camera_infos"},
     _REASONER: {"object_tracking"},
-    _RUNTIME: {"object_tracking"},
+    _RUNTIME: {"object_tracking", "grounding_wait_s"},
 }
 _BIND = {**_SHADOW, _HAL: {"vision_attachment_publish_attachment_state"}, _KERNEL: _K5}
-_ON = {**_BIND, _KERNEL: _K5 | {"tracked_grasp_exemption_enabled", "payload_own_cells_enabled"}}
+_ON = {
+    **_BIND,
+    _KERNEL: _K5
+    | {
+        "tracked_grasp_exemption_enabled",
+        "tracked_grasp_extra_contact_links",
+        "payload_own_cells_enabled",
+        "pinch_payload_own_cells_enabled",
+        "workspace_explained_cells_enabled",
+    },
+}
 
 
-def _graph(tmp: Path, mode: str) -> dict[tuple[str, str], dict[str, Any]]:
+def _graph(
+    tmp: Path, mode: str, *, catalog_json: str | None = None
+) -> dict[tuple[str, str], dict[str, Any]]:
     """``(package, executable) -> evaluated parameters`` of every composed node."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
@@ -93,6 +106,8 @@ def _graph(tmp: Path, mode: str) -> dict[tuple[str, str], dict[str, Any]]:
         enable_dashboard=False,
     )
     args = dict(tok.split(":=", 1) for tok in invocation.argv_template if ":=" in tok)
+    if catalog_json is not None:
+        args["declared_object_catalog_json"] = catalog_json
     args["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
     module = import_launch_module(_LAUNCH_FILE)
     ctx = LaunchContext()
@@ -140,5 +155,15 @@ def test_each_mode_switches_only_its_own_consumers(
     assert hal is (mode == "shadow"), "the HAL publishes attachment_state only in shadow"
     assert now[_KERNEL]["tracked_grasp_exemption_enabled"] is (mode == "on")
     assert now[_KERNEL]["payload_own_cells_enabled"] is (mode == "on")
+    assert now[_KERNEL]["pinch_payload_own_cells_enabled"] is (mode == "on")
     assert bool(now[_KERNEL].get("tracked_release_jaw_joints")) is (mode in ("bind", "on"))
     assert now[_FILTER]["robot_mask_enabled"] is True
+
+
+def test_launch_refuses_external_catalog_when_tracking_is_off(tmp_path: Path) -> None:
+    """Direct launch args must not silently lose the external declarations."""
+    pytest.importorskip("openral_foxglove_bringup")
+    from openral_core.exceptions import ROSConfigError
+
+    with pytest.raises(ROSConfigError, match="declared_object_catalog_json requires"):
+        _graph(tmp_path, "off", catalog_json="{}")

@@ -133,7 +133,10 @@ def main(args: Any = None) -> None:
                 host=gp("sidecar_host").get_parameter_value().string_value,
                 port=gp("sidecar_port").get_parameter_value().integer_value,
             )
-            self.get_logger().info(f"scene_vlm backend model={manifest.name}")
+            # Loaded at configure, not on the first query (Spark R225: the first query's
+            # spawn + load outlasted the completion check's hold).
+            vlm.warm_up()
+            self.get_logger().info(f"scene_vlm backend model={manifest.name} (loaded)")
             return vlm
 
         def _make_cache_cb(self, cid: str) -> Callable[[Any], None]:

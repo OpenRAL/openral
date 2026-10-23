@@ -139,6 +139,9 @@ class IsaacSceneBase:
         self._world: Any = None
         # Physics dt the world runs at; set by ``resolve_time_base`` in ``build``.
         self._physics_dt_s: float | None = None
+        # Actual interval delivered to the post-physics callback; separate from
+        # nominal configuration because ``current_time`` advances by this value.
+        self._observed_physics_step_dt_s: float | None = None
         # Cameras already reported as carrying no frame time (``_frame_time_ns``).
         self._untimed_cameras: set[str] = set()
         # Renders the last step spent (its rendered substep + catch-up), for the reply.
@@ -149,6 +152,7 @@ class IsaacSceneBase:
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         """Per-episode reset: randomize, reset physics, warm up, observe."""
+        self._observed_physics_step_dt_s = None
         self._on_reset(np.random.default_rng(seed))
         self._world.reset()
         self._after_world_reset()
@@ -184,9 +188,11 @@ class IsaacSceneBase:
         render = frames != "none"
         t0 = time.perf_counter()
         for _ in range(self._substeps() - 1):
+            self._before_substep()
             self._world.step(render=False)
         if render:
             self._before_render()
+        self._before_substep()
         self._world.step(render=render)
         self._last_renders = int(render)
         t1 = time.perf_counter()
@@ -238,6 +244,14 @@ class IsaacSceneBase:
             self.physics_substeps = int(pinned)
             how = "pinned by the scene class (override)"
         tick = self.physics_substeps * self._physics_dt_s
+        world = self._world
+        if world is not None:
+            add_physics_callback = getattr(world, "add_physics_callback", None)
+            if not callable(add_physics_callback):
+                raise RuntimeError(
+                    f"{type(self).__name__}: Isaac World cannot report actual physics callback dt."
+                )
+            add_physics_callback("openral_observe_physics_step_dt", self._observe_physics_step_size)
         print(
             f"[{type(self).__name__}] time base: physics {1.0 / self._physics_dt_s:.4g} Hz, "
             f"control {control_freq_hz:.4g} Hz, physics_substeps={self.physics_substeps} ({how}), "
@@ -245,6 +259,23 @@ class IsaacSceneBase:
             flush=True,
         )
         return self.physics_substeps
+
+    def _observe_physics_step_size(self, step_size_s: float) -> None:
+        """Record the interval used by Isaac's post-physics clock callback."""
+        try:
+            dt = float(step_size_s)
+        except (TypeError, ValueError, OverflowError):
+            self._observed_physics_step_dt_s = None
+            return
+        self._observed_physics_step_dt_s = dt if math.isfinite(dt) and dt > 0.0 else None
+
+    @property
+    def _observed_sim_dt_per_tick_s(self) -> float | None:
+        """Actual callback cadence over the configured substeps, or ``None`` unseen."""
+        if self._observed_physics_step_dt_s is None or self.physics_substeps is None:
+            return None
+        tick = self._substeps() * self._observed_physics_step_dt_s
+        return tick if math.isfinite(tick) and tick > 0.0 else None
 
     def _substeps(self) -> int:
         """Resolved physics substeps; refuses to step before ``resolve_time_base``."""
@@ -257,10 +288,10 @@ class IsaacSceneBase:
 
     @property
     def sim_dt_per_tick_s(self) -> float | None:
-        """Simulation seconds one ``step()`` advances, or ``None`` before ``build``.
+        """Configured nominal seconds per ``step()``, or ``None`` before ``build``.
 
-        Reported in the sidecar ``ping`` reply so ``SimAttachedHAL.connect``
-        can refuse a tick that is not one control period.
+        Reported in the sidecar ``ping`` reply for build configuration. Isaac
+        reset reports the callback-measured interval separately.
         """
         if self._physics_dt_s is None or self.physics_substeps is None:
             return None
@@ -379,6 +410,10 @@ class IsaacSceneBase:
 
     def _before_render(self) -> None:
         """Hook for camera poses that must be updated before a rendered frame."""
+
+    def _before_substep(self) -> None:
+        """Hook run before every physics substep of a ``step`` (drive targets that follow
+        the measured state, e.g. mimic followers). Default: nothing."""
 
     def _joint_positions(self) -> NDArray[np.float32] | None:
         """Robot joint angles in the host manifest's joint order, or None.

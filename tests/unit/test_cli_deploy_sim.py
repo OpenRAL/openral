@@ -356,6 +356,25 @@ def test_deploy_sim_no_reward_monitor_emits_no_empty_launch_args() -> None:
     assert "enable_reward_monitor:=false" in joined
     assert "reward_monitor_manifest:=" not in joined
     assert "reward_monitor_task:=" not in joined
+    assert "reward_monitor_score_window_s:=" not in joined
+    assert "enable_completion_check:=false" in joined
+    assert "completion_check_judge:=scene_vlm" in joined
+
+
+def test_deploy_sim_scene_sets_the_reward_score_window() -> None:
+    """The banana scene runs Robometer beside the VLA over 8 s windows (Spark R219)."""
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "isaac_arena_droid_banana_in_bowl.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    joined = " ".join(invocation.argv_template)
+    assert "enable_reward_monitor:=true" in joined
+    assert "reward_monitor_score_window_s:=8.0" in joined
+    # ...and the completion check that judges its success with the scene VLM.
+    assert "enable_completion_check:=true" in joined and "enable_scene_vlm:=true" in joined
 
 
 def test_deploy_sim_default_slam_visual_impl_is_isaac_ros() -> None:
@@ -3277,6 +3296,87 @@ def test_object_queries_follow_the_graded_task_only_with_tracking_on() -> None:
     off = _tracking("isaac_leisaac_pick_orange.yaml", "off")
     assert _object_queries_json(off, "Grab orange and place into plate") == ""
     assert _object_queries_json(orange, "dance") == ""
+
+
+def test_external_usd_catalog_and_surface_config_reach_shared_launch_args(
+    tmp_path: Path,
+) -> None:
+    """Both deploy modes use the resolver that loads and forwards the same plain records."""
+    import json
+
+    import yaml
+
+    pytest.importorskip("pxr.Usd", reason="install optional scene-usd group")
+    catalog_file = tmp_path / "catalog.usda"
+    shutil.copyfile(
+        _REPO_ROOT / "docs/tutorials/deploy/usd-object-catalog-example.usda", catalog_file
+    )
+    scene_data = yaml.safe_load(_SO101_CONFIG.read_text(encoding="utf-8"))
+    scene_data["object_catalog"] = {
+        "usd": "catalog.usda",
+        "prim_path": "/Cell/Catalog",
+        "expected_revision": "tutorial-v1",
+    }
+    scene_data["runtime"] = {
+        "object_tracking": "shadow",
+        "grounding_wait_s": 3.0,
+        "object_surface_model": {
+            "voxel_m": 0.01,
+            "max_points": 2048,
+            "max_voxels": 4096,
+            "max_iterations": 30,
+            "max_correspondence_m": 0.05,
+            "max_rmse_m": 0.02,
+            "min_overlap": 0.1,
+        },
+    }
+    scene_path = tmp_path / "scene.yaml"
+    scene_path.write_text(yaml.safe_dump(scene_data), encoding="utf-8")
+
+    invocation = resolve_launch_invocation(
+        config=scene_path,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="sim",
+    )
+    params = {
+        arg.split(":=", maxsplit=1)[0]: arg.split(":=", maxsplit=1)[1]
+        for arg in invocation.argv_template
+        if ":=" in arg
+    }
+    catalog = json.loads(params["declared_object_catalog_json"])
+    surface = json.loads(params["object_surface_model_json"])
+    assert catalog["source_revision"] == "tutorial-v1"
+    assert catalog["objects"][0]["name"] == "orange"
+    assert surface["max_points"] == 2048
+
+
+def test_deploy_refuses_external_catalog_when_object_tracking_is_off(
+    tmp_path: Path,
+) -> None:
+    """The shared sim/run resolver must not silently discard declared records."""
+    import yaml
+
+    scene_data = yaml.safe_load(_SO101_CONFIG.read_text(encoding="utf-8"))
+    scene_data["object_catalog"] = {
+        "usd": "not-opened.usda",
+        "expected_revision": "r1",
+    }
+    scene_data["runtime"] = {"object_tracking": "off"}
+    scene_path = tmp_path / "tracking-off.yaml"
+    scene_path.write_text(yaml.safe_dump(scene_data), encoding="utf-8")
+
+    with pytest.raises(ROSConfigError, match=r"object_catalog requires.*object_tracking"):
+        resolve_launch_invocation(
+            config=scene_path,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+            hal_mode="sim",
+        )
 
 
 def test_the_declared_target_seeds_the_query_its_placement_label_names() -> None:

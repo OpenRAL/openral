@@ -28,8 +28,8 @@ class StarvationFill(Generic[M]):
     Example:
         >>> f = StarvationFill[str](gap_s=0.4, silent_s=5.0)
         >>> f.touch(0.0)
-        ... f.joints(0.0)
-        ... f.published(0.0, tracked="set", attach="att")
+        >>> f.joints(0.0)
+        >>> f.published(0.0, tracked="set", attach="att")
         >>> f.due(0.2)
         (None, None)
         >>> f.due(0.5)

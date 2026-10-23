@@ -84,8 +84,15 @@ class HandModel:
         [0.0, 1.0, 0.0]
     """
 
-    def __init__(self, description: RobotDescription, gripper_joint: str) -> None:
-        """Resolve the attach link, touch links, palm point and finger primitives."""
+    def __init__(
+        self, description: RobotDescription, gripper_joint: str, wrist_links: int = 1
+    ) -> None:
+        """Resolve the attach link, touch links, palm point and finger primitives.
+
+        ``wrist_links`` is how many links behind the carrier are the hand's wrist
+        (``RobotDescription.wrist_links_of``), the kernel's own hand-link set
+        (``DeployRuntime.workspace_contact_wrist_links``).
+        """
         joint: JointSpec | None = next(
             (j for j in description.joints if j.name == gripper_joint and j.role == "gripper"),
             None,
@@ -124,7 +131,15 @@ class HandModel:
         # The hand never evidences an object: the fingers, the palm link and the wrist.
         mount = next((j for j in description.joints if j.child_link == self.attach_link), None)
         wrist = mount.parent_link if mount is not None else None
-        hand = {*self.touch_links, self.attach_link, *([wrist] if wrist else [])}
+        # The kernel's wrist links too (Isaac R87: panda_link6 at the bowl rim was no contact
+        # to the tracker, so the bowl went SPLIT; DROID's carrier is welded on, so `wrist`
+        # above is None and panda_link7 was missing as well).
+        hand = {
+            *self.touch_links,
+            self.attach_link,
+            *([wrist] if wrist else []),
+            *description.wrist_links_of(self.attach_link, wrist_links),
+        }
         # The palm plane: the jaw joint's origin, or the wrist's front face where the wrist
         # reaches past it at any angle of the joint carrying the hand (the SO-101's does, by
         # 17 mm: g20's fallback cube hit it).

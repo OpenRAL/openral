@@ -116,7 +116,9 @@ def test_the_outer_fingers_are_grasp_contact_and_hand_links(robot: RobotDescript
     contact = robot.grasp_contact_links()
     assert contact[-2:] == ("left_bar", "right_bar")
     assert {"left_bar", "right_bar"} <= set(robot.hand_links())
-    assert robot.hand_links()[-1] == "robotiq_arg2f_base_link"
+    # The Robotiq base is welded to panda_link7 through fixed attachments (link8): that
+    # flange link is the wrist (Spark R15, refused as `not_hand_link` 2.4 mm from the banana).
+    assert robot.hand_links()[-2:] == ("robotiq_arg2f_base_link", "panda_link7")
 
 
 @pytest.mark.parametrize(
@@ -141,7 +143,12 @@ def test_the_outer_fingers_are_grasp_contact_and_hand_links(robot: RobotDescript
                 "openarm_right_link6",
             ),
         ),
-        ("franka_panda", ("panda_finger_pair",), ("panda_finger_pair", "panda_hand")),
+        # panda_hand is welded to panda_link7 (fixed attachments): that is its wrist.
+        (
+            "franka_panda",
+            ("panda_finger_pair",),
+            ("panda_finger_pair", "panda_hand", "panda_link7"),
+        ),
         # The SO-101 jaw is a mimic link (no fixed child), its link `gripper` (URDF name).
         ("so101_follower", ("moving_jaw", "jaw"), ("moving_jaw", "jaw", "gripper", "wrist")),
     ],

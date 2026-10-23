@@ -62,7 +62,7 @@ class QwenSceneVlm(ZmqSidecarMixin):
         boot_timeout_s: float = 1200.0,
         request_timeout_s: float = 180.0,
         max_side: int = 1024,
-        max_new_tokens: int = 256,
+        max_new_tokens: int | None = None,
     ) -> None:
         """Store config; connection to the sidecar is deferred to first query()."""
         self._model_id = model_id
@@ -82,6 +82,14 @@ class QwenSceneVlm(ZmqSidecarMixin):
         self._ctx = None
         self._sock = None
         self._child: subprocess.Popen[bytes] | None = None
+
+    def warm_up(self) -> None:
+        """Connect to (or spawn) the sidecar now rather than on the first query.
+
+        Spark R225 (2026-10-22): the first query spawned and loaded the model, longer than
+        the completion check's hold could wait.
+        """
+        self._ensure_ready()
 
     # -- wire ---------------------------------------------------------------
 
@@ -168,15 +176,18 @@ class QwenSceneVlm(ZmqSidecarMixin):
         buf = io.BytesIO()
         Image.fromarray(rgb, "RGB").save(buf, format="PNG")
 
-        reply = self._rpc(
-            {
-                "op": "query",
-                "image": buf.getvalue(),
-                "question": question.strip(),
-                "max_side": self._max_side,
-                "max_new_tokens": self._max_new_tokens,
-            }
-        )
+        req: dict[str, object] = {
+            "op": "query",
+            "image": buf.getvalue(),
+            "question": question.strip(),
+            "max_side": self._max_side,
+        }
+        # None = the sidecar's own budget (1024: thinking is on, a trace measured ~801
+        # tokens). A 256 sent with every request overrode it and truncated every answer
+        # (Spark R230, 2026-10-22: "Qwen hit the 256-token ceiling").
+        if self._max_new_tokens is not None:
+            req["max_new_tokens"] = self._max_new_tokens
+        reply = self._rpc(req)
         if not reply.get("ok"):
             raise ROSConfigError(f"Qwen scene-VLM sidecar error: {reply.get('error')}")
         return str(reply["answer"]).strip()

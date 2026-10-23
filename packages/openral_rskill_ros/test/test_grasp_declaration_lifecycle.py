@@ -203,7 +203,10 @@ def test_an_estop_retracts_the_declaration_immediately() -> None:
     with _harness(_scene_json()) as (executor, runtime, seen):
         _spin_for(executor, 0.2)
         runtime.skill_runner_node._arm_grasp_declaration(
-            _NoGoalDeclaration(), rskill_id="openral/x", trace_id="t"
+            _NoGoalDeclaration(),
+            rskill_id="openral/x",
+            trace_id="t",
+            invocation_id="11111111111111111111111111111111",
         )
         _spin_for(executor, 0.2)
         assert seen and seen[-1].active
@@ -233,7 +236,10 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
         _spin_for(executor, 0.2)
         # Scene parameter carrying a region.
         runtime.skill_runner_node._arm_grasp_declaration(
-            _NoGoalDeclaration(), rskill_id="openral/z", trace_id="t3"
+            _NoGoalDeclaration(),
+            rskill_id="openral/z",
+            trace_id="t3",
+            invocation_id="33333333333333333333333333333333",
         )
         _spin_for(executor, 0.2)
         assert seen and seen[-1].active and not seen[-1].region_valid
@@ -250,7 +256,10 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
         ).fill_idl(request.grasp_declaration)
         assert request.grasp_declaration.region_valid
         runtime.skill_runner_node._arm_grasp_declaration(
-            request, rskill_id="openral/z", trace_id="t4"
+            request,
+            rskill_id="openral/z",
+            trace_id="t4",
+            invocation_id="44444444444444444444444444444444",
         )
         _spin_for(executor, 0.3)
 

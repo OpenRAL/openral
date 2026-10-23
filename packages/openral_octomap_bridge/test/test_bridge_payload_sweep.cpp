@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// A carried payload's own posed volume is cleared from the octree, attached poses only.
-//
-// Deploy trial g12 (SO-101, LeIsaac PickOrange, 15 mm octomap): the carried orange's own
-// returns stayed in the octree behind the payload; the grid clearing follows only the
-// payload's current pose, and every later ray through them ended on the robot. DROID t6:
-// one banana return mid-carry never cleared either. The bridge clears each attached pose's
-// primitive boxes; the hand's path BEFORE the attach is never cleared (PR #417 review: the
-// payload posed rigidly in the hand along the approach is where the object never was).
+// Geometry-only attachment evidence cannot authorize world occupancy removal.
+// Only an identity-validated tracked-object binding can clear cells.
 //
 // Runs the REAL node in-process against real TF (/tf history) and real DDS, with a real
 // `BoundingBoxQuery` server standing in for `octomap_server`'s `~/clear_bbox` (a process
@@ -28,6 +22,7 @@
 #include <octomap_msgs/conversions.h>
 #include <octomap_msgs/msg/octomap.hpp>
 #include <octomap_msgs/srv/bounding_box_query.hpp>
+#include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <openral_msgs/msg/attached_collision_object.hpp>
@@ -47,6 +42,10 @@ namespace {
 constexpr double kRes = 0.015;
 constexpr double kHalf[3] = {0.032, 0.033, 0.054};  // g12's accepted payload
 constexpr double kSupportTop = 0.030;               // the counter
+constexpr double kLineY = 0.0075;
+constexpr double kLineZ = 0.0975;
+constexpr double kHalfId = 0.02;
+tf2::Vector3 line_cell(int i, double z = kLineZ) { return {(i + 0.5) * kRes, kLineY, z}; }
 
 class BridgePayloadSweep : public ::testing::Test {
 protected:
@@ -80,6 +79,7 @@ protected:
         [this](openral_msgs::msg::OccupancyVoxels::ConstSharedPtr g) {
           const std::lock_guard<std::mutex> lock(mutex_);
           grid_revisions_.push_back(g->attachment_revision);
+          last_grid_ = g;
         });
     server_ = peer_->create_service<BBox>(
         "/test_clear_bbox",
@@ -191,9 +191,52 @@ protected:
     return m;
   }
 
+  bool last_grid_cell_occupied(const tf2::Vector3& point) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!last_grid_ || !(last_grid_->resolution > 0.0)) {
+      return false;
+    }
+    const tf2::Quaternion orientation(last_grid_->orientation.x, last_grid_->orientation.y,
+                                      last_grid_->orientation.z, last_grid_->orientation.w);
+    const tf2::Transform frame_from_grid(
+        orientation,
+        tf2::Vector3(last_grid_->origin.x, last_grid_->origin.y, last_grid_->origin.z));
+    const tf2::Vector3 local = frame_from_grid.inverse() * point;
+    const long ix = static_cast<long>(std::floor(local.x() / last_grid_->resolution));
+    const long iy = static_cast<long>(std::floor(local.y() / last_grid_->resolution));
+    const long iz = static_cast<long>(std::floor(local.z() / last_grid_->resolution));
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= static_cast<long>(last_grid_->size_x) ||
+        iy >= static_cast<long>(last_grid_->size_y) ||
+        iz >= static_cast<long>(last_grid_->size_z)) {
+      return false;
+    }
+    const auto index =
+        static_cast<std::size_t>(ix) +
+        static_cast<std::size_t>(last_grid_->size_x) *
+            (static_cast<std::size_t>(iy) +
+             static_cast<std::size_t>(last_grid_->size_y) * static_cast<std::size_t>(iz));
+    return index < last_grid_->occupancy.size() && last_grid_->occupancy[index] != 0;
+  }
+
+  void expect_unowned_geometry_stays_mapped(const std::string& evidence_kind) {
+    const auto cell = line_cell(6);
+    for (int i = 0; i < 8; ++i) {
+      place_hand(0.09, kLineZ);
+      send_octree({cell});
+      send_world_state(false, evidence_kind);
+      spin_for(50ms);
+    }
+    spin_for(300ms);
+    EXPECT_TRUE(last_grid_cell_occupied(cell)) << evidence_kind << " cleared an unowned cell";
+    EXPECT_TRUE(requests_.empty()) << evidence_kind << " issued a raw clear_bbox request";
+    EXPECT_EQ(last_grid_revision(), 7U)
+        << "processing the attachment revision should still certify";
+  }
+
   std::string static_points_file_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr grid_sub_;
   std::vector<std::uint64_t> grid_revisions_;
+  openral_msgs::msg::OccupancyVoxels::ConstSharedPtr last_grid_;
   std::shared_ptr<bridge::OctomapVoxelBridge> bridge_;
   std::shared_ptr<rclcpp::Node> peer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_;
@@ -205,103 +248,24 @@ protected:
   std::vector<BBox::Request> requests_;
 };
 
-TEST_F(BridgePayloadSweep, TheCarryIsClearedAboveTheSupportAndThePreAttachPathIsNot) {
-  // 0.4 s of carry with nothing attached yet (the returns the self-filter kept): x 0 -> 0.08.
-  const double z = kSupportTop + kHalf[2] + 0.02;
-  for (int i = 0; i <= 8; ++i) {
-    place_hand(0.01 * i, z);
-    send_octree();
-    spin_for(50ms);
-  }
-  // ATTACH: the attachment appears; the carry continues to x = 0.16.
-  for (int i = 9; i <= 16; ++i) {
-    place_hand(0.01 * i, z);
-    send_octree();
-    send_world_state();
-    spin_for(50ms);
-  }
-  spin_for(300ms);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  ASSERT_FALSE(requests_.empty()) << "no clear_bbox request";
-  double lo_x = 1e9;
-  double hi_x = -1e9;
-  double lo_z = 1e9;
-  for (const auto& r : requests_) {
-    lo_x = std::min(lo_x, r.min.x);
-    hi_x = std::max(hi_x, r.max.x);
-    lo_z = std::min(lo_z, r.min.z);
-    // One posed payload box per request, never the AABB of the period's motion.
-    EXPECT_LE(r.max.x - r.min.x, 2.0 * kHalf[0] + 1e-6) << "a motion AABB was cleared";
-  }
-  // Nothing before the first attached pose (x = 0.09): no pre-attach backfill.
-  EXPECT_GE(lo_x, 0.09 - kHalf[0] - 1e-6) << "the pre-attach approach was cleared";
-  EXPECT_GE(hi_x, 0.16 + kHalf[0] - 0.02) << "the carry was not cleared";
-  // Never into the counter: one cell above the attested support (+ its depth bound).
-  EXPECT_GE(lo_z, kSupportTop + 0.002 + kRes - 1e-6);
+TEST_F(BridgePayloadSweep, RegionEvidenceDoesNotAuthorizeGridOrOctreeClearing) {
+  expect_unowned_geometry_stays_mapped("grasp_target_region");
 }
 
-TEST_F(BridgePayloadSweep, WithoutASupportARegionPayloadIsFlooredAtItsAttachBottom) {
-  // No support attested (the vision pick's attestation lapsed): the floor is the region
-  // payload's lowest point at attach, never below it.
-  const double z = kSupportTop + kHalf[2];
-  for (int i = 0; i <= 8; ++i) {
-    place_hand(0.01 * i, z - 0.002 * i);  // the hand dips 16 mm while carrying
-    send_octree();
-    send_world_state(false, "grasp_target_region");
-    spin_for(50ms);
-  }
-  spin_for(300ms);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  ASSERT_FALSE(requests_.empty()) << "a region payload is still cleared";
-  for (const auto& r : requests_) {
-    EXPECT_GE(r.min.z, kSupportTop - 1e-6) << "cleared below the payload's attach bottom";
-  }
+TEST_F(BridgePayloadSweep, SegmentationEvidenceDoesNotAuthorizeGridOrOctreeClearing) {
+  expect_unowned_geometry_stays_mapped("vision_segmentation");
 }
 
-TEST_F(BridgePayloadSweep, ASegmentedPayloadWithoutASupportIsNotCleared) {
-  // Deploy trial g17's second grasp: a segmented payload whose bottom took in counter and
-  // depth-edge points floored three boxes at z 0.020-0.027 under a 0.030 counter top.
-  // Its bottom floors nothing: with no support known, nothing is cleared.
-  const double z = kSupportTop + kHalf[2];
-  for (int i = 0; i <= 8; ++i) {
-    place_hand(0.01 * i, z);
-    send_octree();
-    send_world_state(false, "vision_segmentation");
-    spin_for(50ms);
-  }
-  spin_for(300ms);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  EXPECT_TRUE(requests_.empty()) << "a segmented payload's bottom floored a clear";
+TEST_F(BridgePayloadSweep, UnknownEvidenceDoesNotAuthorizeGridOrOctreeClearing) {
+  expect_unowned_geometry_stays_mapped("unrecognized_evidence");
 }
 
-TEST_F(BridgePayloadSweep, ASegmentedPayloadOverAnAttestedSupportIsClearedAboveIt) {
-  const double z = kSupportTop + kHalf[2] + 0.02;
-  for (int i = 0; i <= 8; ++i) {
-    place_hand(0.01 * i, z);
-    send_octree();
-    send_world_state(true, "vision_segmentation");
-    spin_for(50ms);
-  }
-  spin_for(300ms);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  ASSERT_FALSE(requests_.empty()) << "a supported segmented payload is cleared";
-  for (const auto& r : requests_) {
-    EXPECT_GE(r.min.z, kSupportTop + 0.002 + kRes - 1e-6) << "cleared into the support";
-  }
+TEST_F(BridgePayloadSweep, PinchFallbackDoesNotAuthorizeGridOrOctreeClearing) {
+  expect_unowned_geometry_stays_mapped("pinch_fallback");
 }
 
-TEST_F(BridgePayloadSweep, AGripperClosurePayloadWithoutASupportIsNotCleared) {
-  // DROID t7's second grasp: the jaw box (GRIPPER_CLOSURE fallback), no support known.
-  const double z = kSupportTop + kHalf[2];
-  for (int i = 0; i <= 8; ++i) {
-    place_hand(0.01 * i, z);
-    send_octree();
-    send_world_state(false, "gripper_closure");
-    spin_for(50ms);
-  }
-  spin_for(300ms);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  EXPECT_TRUE(requests_.empty()) << "a box with no floor was cleared";
+TEST_F(BridgePayloadSweep, GripperClosureDoesNotAuthorizeGridOrOctreeClearing) {
+  expect_unowned_geometry_stays_mapped("gripper_closure");
 }
 
 TEST_F(BridgePayloadSweep, NothingIsClearedWithoutAnAttachment) {
@@ -315,12 +279,6 @@ TEST_F(BridgePayloadSweep, NothingIsClearedWithoutAnAttachment) {
 }
 
 // ── Clearing by identity (issue #418) ───────────────────────────────────────
-
-// Cell centres of the 15 mm lattice on the carry line (y and z are cell centres too).
-constexpr double kLineY = 0.0075;
-constexpr double kLineZ = 0.0975;
-constexpr double kHalfId = 0.02;
-tf2::Vector3 line_cell(int i, double z = kLineZ) { return {(i + 0.5) * kRes, kLineY, z}; }
 
 openral_msgs::msg::TrackedObject tracked(const std::string& id, const std::string& status, double x,
                                          double half, double floor_z) {

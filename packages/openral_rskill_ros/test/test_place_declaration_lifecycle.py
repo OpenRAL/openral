@@ -243,7 +243,10 @@ def test_approach_mode_goal_scope_declaration_dies_on_cancel_and_estop() -> None
         assert [m.active for m in seen] == [True, False], "cancel retracts"
         seen.clear()
         runtime.skill_runner_node._arm_place_declaration(
-            _GoalRequestStub(), rskill_id="openral/x", trace_id="t"
+            _GoalRequestStub(),
+            rskill_id="openral/x",
+            trace_id="t",
+            invocation_id="11111111111111111111111111111111",
         )
         _spin_for(executor, 0.2)
         assert [m.target_id for m in seen if m.active] == ["surface"]
@@ -305,7 +308,10 @@ def test_an_estop_retracts_the_declaration_immediately() -> None:
         seen.clear()
         # Re-arm, then stop.
         runtime.skill_runner_node._arm_place_declaration(
-            _GoalRequestStub(), rskill_id="openral/x", trace_id="t"
+            _GoalRequestStub(),
+            rskill_id="openral/x",
+            trace_id="t",
+            invocation_id="11111111111111111111111111111111",
         )
         _spin_for(executor, 0.2)
         assert any(msg.active for msg in seen)
@@ -342,7 +348,10 @@ def test_the_goals_own_declaration_wins_over_the_scenes() -> None:
             stamp_ns=0,
         ).fill_idl(request.place_declaration)
         runtime.skill_runner_node._arm_place_declaration(
-            request, rskill_id="openral/y", trace_id="t2"
+            request,
+            rskill_id="openral/y",
+            trace_id="t2",
+            invocation_id="22222222222222222222222222222222",
         )
         _spin_for(executor, 0.3)
 
@@ -386,7 +395,10 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
         ).fill_idl(request.place_declaration)
         assert request.place_declaration.region_valid, "the goal must really carry a region"
         runtime.skill_runner_node._arm_place_declaration(
-            request, rskill_id="openral/z", trace_id="t3"
+            request,
+            rskill_id="openral/z",
+            trace_id="t3",
+            invocation_id="33333333333333333333333333333333",
         )
         _spin_for(executor, 0.3)
 

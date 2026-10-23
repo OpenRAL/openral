@@ -49,6 +49,15 @@ def test_scene_port_is_in_band() -> None:
         assert _SIDECAR_PORT_MIN <= port < _SIDECAR_PORT_MAX
 
 
+def test_scene_ports_stay_below_the_ephemeral_range() -> None:
+    """Spark restock R332 (2026-10-23): the scene's port 37806 lay in Linux's ephemeral range
+    (32768-60999 by default), an outgoing connection held it, and the sidecar died at boot on
+    EADDRINUSE. No scene port may be one the kernel hands out to outgoing sockets."""
+    assert _SIDECAR_PORT_MAX <= 32_768
+    for scene in (_LIFT, _BOWL, _MANIFEST):
+        assert _scene_default_port(*scene) < 32_768
+
+
 def test_scene_port_is_deterministic_across_calls() -> None:
     # Stable across processes (hashlib, not the PYTHONHASHSEED-salted builtin
     # hash) — the spawn process and a later client process must agree.

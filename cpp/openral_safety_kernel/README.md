@@ -226,8 +226,8 @@ margin and pairs the gate deliberately exempted (see the exemption ladder
 below); quoting one of those against the cell that stopped the robot sends
 diagnosis after a penetration that never happened.
 
-The sweep-wide minimum is reported **separately, never in the evidence
-payload**: `sweep_min_distance_m=` in the
+The sweep-wide minimum is reported **separately from the reported pair distance**:
+optional `CollisionEvidence.sweep_min_distance_m`, `sweep_min_distance_m=` in the
 `safety.collision` log line, and the `safety.sweep_min_distance_m` span
 attribute. `sweep_min_distance_m <= min_distance_m` always. A large gap between
 the two means something deep is being tolerated on purpose — usually a grasped
@@ -1003,7 +1003,10 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   past it is checked as published, with no union held. A new epoch starts fresh
   (`…ANewEpochStartsAFreshBoundGeometry`). The table is fixed (32 bindings); an
   entry survives a message that omits it, so a dropped-and-re-added record keeps
-  its union. The union also counts against `attached_max_primitives`: past it the
+  its union. A slot another binding left (off this message) starts fresh when a new
+  binding takes it: kept, it handed that binding's union and K5 release window to the new
+  one (Spark orange R285, 2026-10-23: the orange just bound inherited the released one's
+  closed window and frozen box; `…ANewBindingNeverInheritsAReleasedOnesSlot`). The union also counts against `attached_max_primitives`: past it the
   attachment message fails closed, as any over-cap payload does. Legacy payloads
   are replaced per message exactly as before. Stricter only: a stale part of the
   union can cost a false stop, never a missed one.
@@ -1025,12 +1028,21 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   (`object_id`, `epoch`) release window: the hand (`release_hand_link`) and touch
   links stay exempt against it until `released_payload_clearance` (kernel FK of
   the measured state) exceeds the clearance — `safety.tracked_release_closed
-  reason=separation` — or the timeout elapses (`reason=timeout`). From then on it
+  reason=separation` — or the timeout elapses (`reason=timeout`). The tracker
+  releasing the same (`object_id`, `epoch`) — its tracked set reads `released` —
+  opens the same window with a fresh measured state, whether or not this jaw rule
+  fired: one release decision for both sides (2026-10-22; Spark R138 — the tracker's
+  jaw rule fired, this one did not, and the payload rode the hand after the banana
+  fell; `…TheTrackersReleaseFreezesThePayloadWhenTheJawRuleDoesNot`). From then on it
   is a **plain obstacle**: nothing is exempt against it, for as long as the wire
   still carries that binding (`…OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate`,
   `…AReleaseWindowThatNeverSeparatesClosesOnTimeout`). Throughout, the frozen
-  payload is checked against every other link and the world
-  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`), is never a
+  payload is checked against every other link
+  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`) but not against
+  the world: no longer carried, no robot motion moves it, so its overlap with the
+  map is a static box on static cells (2026-10-22; Spark R168-R176 — the banana's
+  frozen box on the bowl it was dropped into latched a stop ~60 ms after release;
+  `…AFrozenReleasedPayloadIsNotCheckedAgainstTheWorld`). It is never a
   grasp handover, arms no support witness, and a handover latched on it retires
   (`reason=tracked_release`, which K6 turns into a retired identity). Evaluated
   on each world-state message (the window can outlive its bound by one message
@@ -1292,7 +1304,7 @@ producer on a real lattice).
 set. The launch sets it only for `object_tracking: on` with the workspace rule on.** K7 adds one
 more conjunct to the rule above, so it can only add stops. A pair of (hand link or carried
 payload, cell) that the workspace tolerates stays tolerated only when the cell is **explained**
-(`workspace_cell_explained`). A cell is explained in three cases:
+(`workspace_cell_explained`). A cell is explained in four cases:
 
 1. **Its centre lies in the box of an explaining tracked object.** The object may have any role
    (target, neighbour or destination). Explaining means all of the following hold:
@@ -1301,7 +1313,17 @@ payload, cell) that the workspace tolerates stays tolerated only when the cell i
    * (`object_id`, `epoch`) is not K6-retired;
    * the object was confirmed within `grasp_region_max_age_s` on the source clock;
    * the box passes the kernel's own cover check on its grid. This is K2's `tracked_box_cover`,
-     run once per grid or set;
+     run once per grid or set. **Contact hold** (issue #418, 2026-10-21 decision, Safety-WG
+     review and hazard row pending): a TARGET or DESTINATION box whose cover falls short is still taken when
+     the kernel's own cover check passed for that (`object_id`, `epoch`) within
+     `grasp_region_max_age_s`, and a declared hand link (the workspace's links, posed by the
+     kernel's FK of the measured state) lies within one cell of the box
+     (`box_meets_hand_links`). The fingers hide or bisect the target (Isaac R41–R43: 39 of 79
+     expected cells under the hand; R63: the bowl the hand places into), so the shortfall is
+     not the object gone. The hold is never
+     re-stamped, so it ends at the age bound, logged once as `safety.tracked_cover_held`. A
+     context object, or a box whose cover never passed, is never held. The hold covers K2's
+     exemption and K7's explanation alike (both read `cover_ok`);
    * the set's frame is the grid's frame;
    * the world-state stream is fresh.
 
@@ -1330,6 +1352,24 @@ payload, cell) that the workspace tolerates stays tolerated only when the cell i
    placeholder) of that object's box, measured horizontally. This covers a fingertip that grazes
    the table beside the object it grasps (PickOrange g4). A body lying on the support sits above
    that layer, so it is not explained.
+4. **It is in that same support layer, connected to case 3 (amendment 2026-10-20, Safety-WG
+   review pending, hazard OT-11).** Spark R11: a finger skimming the tabletop 9 cm from the banana
+   stopped on `cell_unexplained`. PhysX reported 3.35 mm separation and zero impulse; the cell
+   was the banana's measured support, but past the 5 cm reach. `mark_support_cells` seeds from
+   the case-3 cells and grows through cells that are occupied, centred in the object's layer and
+   inside the live workspace, stepping sideways over at most one empty cell
+   (`kSupportBridgeCells` = 2) and one layer up or down. Spark R18: the tabletop sits 4.4 mm into
+   a 15 mm cell, so grazing rays free a checkerboard of its top-layer cells. Face adjacency cut
+   the cell under a finger off the table 0.37 s before a stop, with the gripper 6+ mm clear.
+   A gap of two or more empty cells, or the workspace boundary, ends the component, and a path
+   that leaves the workspace does not reconnect. The mask is
+   re-marked once per new grid, or when the explaining objects or the workspace change; it is
+   never re-marked per check. A body standing on the support (a hand, an object the tracker
+   never grounded) sticks out above the layer and still stops
+   (`ExplainedCells.ABodyOnTheConnectedSupportStillStops`). Residual risk for the WG: a body
+   thinner than one cell lying flat on the support is in the layer, so it is tolerated under the
+   same slow-hand, bounded-lead, hand-link-only conditions as the table. The nesting property
+   holds with the mask on half the randomised trials.
 
 Every other cell in the workspace trips exactly as it would outside the workspace. That includes
 a person's hand in the tote and a carton that grounding missed. The stop line says
@@ -1356,8 +1396,10 @@ trips(no workspace). It also checks that the pairs K7 still tolerates are exactl
 
 **Tests.**
 * `ExplainedCells.*` in `test_collision.cpp`.
-* In `test_lifecycle_kernel.cpp`: the `*UnderK7` tests, `AnEligibleTrackedObjectOfAnyRoleExplainsItsCells`
-  and `ExplainedCellsRefuseToConfigureOutsideTheirScope`.
+* In `test_lifecycle_kernel.cpp`: the `*UnderK7` tests, `AnEligibleTrackedObjectOfAnyRoleExplainsItsCells`,
+  `ExplainedCellsRefuseToConfigureOutsideTheirScope` and `AHandAtTheTargetHoldsItsCoverUntilTheAgeBound`
+  (the contact hold: held within the bound, stops past it, a destination held too, never a context object).
+* `ContactHold.*` in `test_collision.cpp` (`box_meets_hand_links`).
 * `NoAlloc.TheExplainedCellsCheckIsAllocationFree`.
 
 ### Payload own cells (issue #418, hazard OT-10 amendment, draft) — default off, sim-only
@@ -1422,6 +1464,31 @@ INFO `safety.payload_own_armed objects= of= others= static_cells=` on each chang
 `ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions` in `test_lifecycle_kernel.cpp`;
 `NoAlloc.ThePayloadOwnCellExemptionIsAllocationFree`.
 
+#### Untracked pinch holds (amendment 2026-10-22, draft) — default off, sim-only
+
+**Draft for Safety-WG review; a hazard-log row is owed. Off unless
+`pinch_payload_own_cells_enabled` is set, which configure refuses without
+`payload_own_cells_enabled`; the launch sets both together (`object_tracking: on`).** Spark
+R191 / R194 / R200 / R203 / R206: a grasp no track explained (a stale fit, a box 2-3 cm off the
+pinch centre) bound the pinch-volume fallback, and the object in the hand -- unexplained world
+inside that box -- stopped its own payload. For a `pinch_fallback` attachment whose `evidence_ref`
+is exactly `untracked_grasp` (no candidate at all; `ambiguous:` and `provisional:` are unchanged),
+rule 1 above also accepts the FALLBACK box primitives (`PayloadOwnCells.fallback_ok`), and rule
+2's floor is the pinch box's lowest point in the base frame the first time the hold is seen
+(`safety.pinch_own_floor object= floor_z=`), kept for that object id until it leaves the wire.
+The fingers closed above the support, so the support lies under that floor. Rules 3-5 (static
+cells, other settled tracks' boxes, a fresh tracked set and measured state) are unchanged.
+
+**What it can miss.** A body that is not the payload yet lies inside the pinch volume above the
+bind floor and is neither static nor a settled track: an untracked support higher than the pick
+(placing onto an unknown shelf), or a neighbour between the fingers. The finger and hand links
+are still checked against those cells; only the payload box is not.
+
+**Tests.** `PayloadOwnCells.AFallbackExplainsItsCellsOnlyForAnUntrackedPinchHold` in
+`test_collision.cpp`; `AnUntrackedPinchHoldsOwnCellCannotStopIt`,
+`AnUntrackedPinchHoldsCellBelowItsBindFloorStillStops` and
+`ThePinchOwnExemptionNeedsThePayloadOwnExemption` in `test_lifecycle_kernel.cpp`.
+
 
 ## The contact-force gate (ADR-0100, survey Path C)
 
@@ -1456,9 +1523,17 @@ geometry-only behaviour:
   at ingest against *this* message's declaration — the same scoping rule
   `SupportContactWitness::support_id` is under
   (`…AContactOnAnythingButTheDeclaredTargetAttestsNothing`).
-* **a calibrated magnitude.** Without `contact_force_calibrated` the value is a
-  producer quantity and **not newtons**, so it is not read at all rather than
-  read optimistically (`…AnUncalibratedMagnitudeIsNeverReadAsNewtons`). No
+* **a fresh, calibrated magnitude.** The declaration and witness must be
+  positive, non-future timestamps in the kernel's ROS clock domain (zero is
+  the wire default and counts as missing). The declaration
+  expires at its own `timeout_s`; the witness expires at the smaller of the
+  declaration's remaining lifetime and the existing attached-collision data
+  freshness deadline. The schema's 600 s declaration ceiling is checked again
+  at the kernel boundary. Missing, stale, future, malformed, or
+  uncalibrated feedback means no force gate, so geometry keeps its existing
+  decision. Without `contact_force_calibrated` and a non-blank calibration
+  name the value is a producer quantity and **not newtons**, so it is not read
+  optimistically (`…AnUncalibratedMagnitudeIsNeverReadAsNewtons`). No
   published work validates MuJoCo contact-force magnitudes against real
   force-torque measurements (survey §21.7), MuJoCo documents its contact model
   as an approximation resting on `solref`/`solimp`, and FORGE
@@ -1473,6 +1548,14 @@ region in the table — so a schema-valid declaration can never overflow the
 kernel, and a threshold past it arms nothing rather than being clamped to a
 bound nobody chose (`…AnOutOfRangeOrNonFiniteBoundArmsNothing`).
 
+The effective refusal threshold is the smaller of the live declaration's
+positive threshold and the robot's `SafetyEnvelope.contact_force_threshold_n`.
+A task can lower that ceiling but cannot raise it. Direct ROS overrides that
+are NaN or negative fail configuration; +infinity retains the unbounded robot
+sentinel. This is conditional enforcement for a declared carried-payload/target
+pair with a calibrated witness, not a general force monitor or permission for
+light contact.
+
 The comparison is **inclusive**: a declaration stating "up to 30 N" permits
 30 N. The **deepest** overrun is the one reported, so the evidence names the
 binding pair rather than the first object scanned
@@ -1481,6 +1564,24 @@ binding pair rather than the first object scanned
 object, the target, the measured magnitude and the threshold it was judged
 against, and `min_distance` is left at infinity rather than carrying an invented
 geometric distance no check measured.
+
+This consumer is shared by simulated and real deployment graphs, but the
+producer path is not complete: `probe_contact_force` is exercised by its unit
+test and has no runtime caller, and there is no real calibrated producer.
+Simply calling the MuJoCo helper from attachment publication is insufficient:
+attachment snapshots are intentionally transition-only, because heartbeat
+publication can re-arm a support exemption that the kernel already retired.
+Continuous feedback needs a bounded force channel or independently versioned
+force/support evidence. Isaac currently exports joint efforts without a
+pair-specific contact wrench. A sensor/observer adapter must additionally provide
+validated calibration, source timestamps, saturation status, and observed pair
+identity before force-dependent permissions can be considered.
+`/joint_states.effort` remains actuator effort, not an external-force residual;
+neither it nor a missing sample can arm this gate. Until a producer supplies a
+fresh witness with a named calibration and calibrated magnitude assertion, the
+existing gate stays dormant and geometry remains authoritative. This gate is
+not a general contact monitor: it only adds a refusal for a carried payload
+contacting its declared place target.
 
 **Absence of a witness is not evidence of absent contact.** The sim producer
 reads MuJoCo's solver contact list, which `contype`/`conaffinity` exclusions can
@@ -1859,3 +1960,19 @@ Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
 - `python/observability/src/openral_observability/dashboard/store.py`
   — Dashboard's TelemetryStore; consumes the `safety.check` spans
   this kernel emits.
+
+### Collision failure diagnostics
+
+The existing `/openral/failure/safety` `FailureTrigger.evidence_json` also carries
+optional configured `joint_names` paired with the adjudication vector, readable
+`workspace_denial_reason`, workspace/grasp activation flags and
+`depth_is_box_bound`. For an attached-payload pair, bounded
+`payload_evidence_kind`/`payload_evidence_ref` preserve the accepted producer's
+provenance (including ambiguous pinch fallback). Older payloads remain valid.
+These fields report the check; they neither authorize contact nor identify the
+physical object behind an anonymous world voxel.
+
+Envelope failures also use configured joint names when the complete manifest-order
+name mapping is available, retaining an index fallback otherwise. Controller
+failures without a joint omit the internal no-joint sentinel (`65535`). These
+diagnostic changes do not alter rejection or latch behavior.

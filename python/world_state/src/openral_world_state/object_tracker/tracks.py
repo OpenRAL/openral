@@ -10,9 +10,9 @@ Free objects move only when contacted, so association is continuity (``associate
   voxel of it;
 * two such tracks whose distances differ by at most one voxel are a **tie**, and the fit
   updates nothing (``nearest_primitive``'s rule, HZ-0115-2);
-* a fit near exactly one LOST / RELEASED track inside its gate (one diameter; for a release,
-  the fall column, growing with the release height) inherits that id with
-  ``identity_inferred``;
+* a fit near exactly one LOST track inside its gate (one diameter) inherits that id with
+  ``identity_inferred``. A RELEASED track takes no fit: once let go an object is not
+  followed (it may roll or fall); the next fit of it mints a new track;
 * with ≤ 32 tracks no assignment solver is needed; a swap between identical instances is
   geometry-benign (OT-4).
 
@@ -154,7 +154,9 @@ class TrackStore:
         self._next += 1
         self._rows[obj.object_id] = obj
         self._revision += 1
-        log.info("object_tracker.mint", object_id=obj.object_id, label=obj.label)
+        log.info("object_tracker.mint", object_id=obj.object_id, label=obj.label,
+                 centre=[round(c, 3) for c in obj.box.pose.xyz],
+                 half_extents=[round(h, 3) for h in obj.box.half_extents])  # fmt: skip
         return obj
 
     def drop(self, object_id: str) -> None:
@@ -184,7 +186,7 @@ def associate(
 
     Returns:
         ``(object_id, kind)`` with ``kind`` one of ``"continuity"``, ``"inferred"`` (a
-        LOST / RELEASED track inside its gate), ``"new"`` (``object_id`` is ``None``) or
+        LOST track inside its gate), ``"new"`` (``object_id`` is ``None``) or
         ``"tie"`` (``None``: update nothing). A SPLIT track takes no fit by continuity.
 
     Example:
@@ -238,16 +240,11 @@ def associate(
             log.info("object_tracker.tie", candidates=[t.object_id for t in near[:2]])
             return None, "tie"
         return near[0].object_id, "continuity"
-    gated = []
-    for t in tracks:
-        diameter = 2.0 * max(t.box.half_extents[:2])
-        if t.status is TrackStatus.LOST and _gap(t, c) <= diameter:
-            gated.append(t)
-        elif t.status is TrackStatus.RELEASED:
-            drop = max(t.box.pose.xyz[2] - t.support_z, 0.0)  # the fall column
-            horiz = float(np.linalg.norm(c[:2] - np.asarray(t.box.pose.xyz[:2])))
-            if horiz <= max(diameter, drop) and c[2] <= t.box.pose.xyz[2] + voxel_m:
-                gated.append(t)
+    gated = [
+        t
+        for t in tracks
+        if t.status is TrackStatus.LOST and _gap(t, c) <= 2.0 * max(t.box.half_extents[:2])
+    ]
     if len(gated) == 1:
         return gated[0].object_id, "inferred"
     if gated:
@@ -257,17 +254,29 @@ def associate(
 
 
 def age_tracks(
-    store: TrackStore, now_ns: int, *, max_age_s: float, lost_s: float, keep_lost_s: float
+    store: TrackStore,
+    now_ns: int,
+    *,
+    max_age_s: float,
+    lost_s: float,
+    keep_lost_s: float,
+    held: frozenset[str] = frozenset(),
 ) -> None:
     """Age every free track on the source clock ``now_ns``.
 
     CONFIRMED / OCCLUDED with no confirming grid for ``max_age_s`` become TENTATIVE
     (ineligible); TENTATIVE / SPLIT with neither a fit nor a confirmation for ``lost_s``
     become LOST; LOST rows are forgotten after ``keep_lost_s``. BOUND and RELEASED belong to
-    binding / release and are not aged here.
+    binding / release and are not aged here, nor is a ``held`` track: a candidate a live
+    untracked or provisional hold carries. Its box on the table empties as the hand lifts it,
+    so no grid re-confirms it, and aged out it took the payload's own cells with it (Spark
+    banana R335, 2026-10-23: TENTATIVE mid-carry, the kernel stopped the banana against its
+    own far end 250 ms later). Safety-WG review owed.
     """
     for t in store.all():
         seen = max(t.last_fit_stamp_ns, t.last_confirmed_stamp_ns)
+        if t.object_id in held:
+            continue
         if t.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
             if now_ns - t.last_confirmed_stamp_ns > max_age_s * _NS:
                 store.replace(t.model_copy(update={"status": TrackStatus.TENTATIVE}))

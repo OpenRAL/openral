@@ -15,22 +15,10 @@
 // This keeps the octomap dependency entirely out of the real-time safety kernel
 // ("perception proposes, the kernel disposes").
 //
-// It is also where a grasped payload leaves world occupancy: the attachment set
-// on /openral/world_state_fast — the same message the kernel ingests its
-// attached geometry from — names the volumes whose cells stop being the world
-// and become the robot's own payload, and `clear_attached_payload_cells`
-// removes them from every published grid. The same message carries the
-// support-contact attestation, and the clearing is partitioned against it: the
-// cells inside the attested support patch are the counter the payload rests on,
-// so they stay in the map for the kernel's witness (and for Nav2 / SLAM) while
-// everything else around the payload clears.
-//
-// The message also carries `attachment_revision`, and that is what opens the
-// attach-transition WINDOW: while a payload is still within one sweep padding
-// of where its revision first appeared, it sweeps with `attach_sweep_padding_m`
-// of extra reach, for the stale pre-attach silhouette that primitive-fit error
-// leaves just outside the steady-state reach. Once it has moved further than
-// that, the window latches shut and the reach is the steady one again.
+// It also clears tracked attachments by identity. The bridge removes occupancy
+// only for an unambiguous tracked-object binding with a usable tracker record;
+// attachment geometry, support witnesses, and link transforms alone do not
+// prove that nearby occupied cells belong to the payload.
 //
 // The timer re-rasterizes the LAST octree, so the grid follows the robot
 // through TF and the payload clearing follows its live pose between octrees.
@@ -49,7 +37,6 @@
 #include <cstddef>
 #include <map>
 #include <memory>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -83,9 +70,8 @@ public:
       : rclcpp::Node("openral_octomap_voxel_bridge", options) {
     base_frame_ = this->declare_parameter<std::string>("base_frame", "base_link");
     // The grid's resolution is the OCTREE's — the two lattices are one now, so
-    // there is nothing left to choose. This parameter survives only as the
-    // default for `attach_sweep_padding_m` below, which has to be declared
-    // before any octree has arrived; `on_timer` warns if the map disagrees.
+    // there is nothing left to choose. This parameter is retained for launch
+    // compatibility; `on_timer` warns if the map disagrees.
     resolution_ = this->declare_parameter<double>("resolution", 0.05);
     // The volume covered: a BALL, because the grid's axes are the map's and so
     // turn relative to `base_frame`. See GridSpec — a base-frame box would need
@@ -115,9 +101,8 @@ public:
     // sensor stamping on another clock domain.
     max_octree_age_s_ = this->declare_parameter<double>("max_octree_age_s", 1.0);
 
-    // Attached-payload clearing. On by default: `AttachedCollisionObject`
-    // requires the object to be absent from world occupancy while attached, and
-    // with no attachment producer on the graph this costs one empty check.
+    // Identity-based attached-object clearing. On by default; geometric attachment
+    // primitives without a validated tracked-object binding leave occupancy intact.
     // Declared static geometry (docs/reference/manipulation-workspace-contact.md
     // §3.1): base-frame surface points of the scene's fixtures, marked occupied in
     // every published grid whatever the camera has seen. Only adds occupancy.
@@ -135,35 +120,14 @@ public:
                   static_points_.size(), static_points_file_.c_str());
     }
     attached_clear_enabled_ = this->declare_parameter<bool>("attached_clear_enabled", true);
-    // Extra reach beyond the cell-cube circumradius. 0 clears exactly the cells
-    // the payload's own volume can explain; anything more removes cells it
-    // cannot, and is protection given up for pose uncertainty.
-    attached_clear_padding_m_ = this->declare_parameter<double>("attached_clear_padding_m", 0.0);
-    // Extra reach on the ONE grid that first sees an object revision — the
-    // attach transition. One voxel by default, because the residue it exists
-    // for is a quantization/primitive-fit artefact of exactly that scale (the
-    // 2026-08-14 round-5 cell sat 0.48 mm past the circumradius). Declared
-    // against `resolution` so the default is one voxel of whatever lattice this
-    // node is actually publishing, and it shows up as a real number in
-    // `ros2 param get`.
-    attach_sweep_padding_m_ =
-        this->declare_parameter<double>("attach_sweep_padding_m", resolution_);
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
-    // The carried payload's own posed volume, cleared from the OCTREE (`SweptBox`): the
-    // grid clearing above follows only the payload's current pose, and what the carried
-    // object left along its path stays in the octree. Empty service = off. User-approved
-    // 2026-10-16; Safety-WG review and a hazard-log row owed (the payload's volume is
-    // cleared from the world map). Only poses the payload is attached in are cleared:
-    // there is no pre-attach backfill, since the hand's path before the attach is where
-    // the object never was.
+    // Optional octree clearing is used only by the identity-validated tracker path below.
     const auto sweep_service =
         this->declare_parameter<std::string>("payload_sweep_clear_service", "");
     sweep_period_s_ = this->declare_parameter<double>("payload_sweep_clear_period_s", 0.2);
     if (!sweep_service.empty()) {
       sweep_client_ = this->create_client<octomap_msgs::srv::BoundingBoxQuery>(sweep_service);
-      RCLCPP_WARN(this->get_logger(),
-                  "payload sweep clearing ON: the carried payload's posed primitive boxes "
-                  "(every %.2f s, attached poses only) are cleared from the octree via %s",
+      RCLCPP_WARN(this->get_logger(), "tracked identity sweep clearing ON (every %.2f s) via %s",
                   sweep_period_s_, sweep_service.c_str());
     }
     // Release window (issue #418 F2): how long a just-RELEASED track's box may be cleared.
@@ -302,12 +266,11 @@ private:
       return;
     }
     if (std::fabs(octree_->getResolution() - resolution_) > 1e-9) {
-      // Not fatal — the grid takes the octree's lattice regardless — but the
-      // `resolution` parameter still sets the attach-sweep padding, so a
-      // disagreement means that padding is not one voxel of the live map.
+      // Not fatal — the grid takes the octree's lattice regardless. The
+      // resolution parameter is retained for launch compatibility only.
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                            "octree resolution %g != `resolution` parameter %g; the grid uses the "
-                           "octree's, but attach_sweep_padding_m was defaulted from the parameter",
+                           "octree's",
                            octree_->getResolution(), resolution_);
     }
 
@@ -331,16 +294,13 @@ private:
       return;
     }
     if (!static_points_.empty()) {
-      // Before the payload clearing, so a declared surface under a carried
-      // payload is partitioned against its support exactly like a seen one.
+      // Declared geometry can add occupancy, never authorize removal.
       const std::size_t added = mark_base_points(grid, static_points_);
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                            "declared static geometry added %zu cells the camera map lacked", added);
     }
     clearing_complete_ = true;
-    clear_attached_payload(grid, base_to_octomap);
     clear_by_identity(grid, base_to_octomap);
-    clear_swept_volume(base_to_octomap);
     const rclcpp::Time produced = this->now();
     grid.header.stamp = produced;
     grid.source_stamp = octree_stamp_;
@@ -355,12 +315,12 @@ private:
   }
 
   /// The attachment revision this grid certifies (`OccupancyVoxels.attachment_revision`):
-  /// the revision of the fresh attachment state the clearing above ran against, provided
-  /// every object it had to clear was cleared (a TF it lacked, geometry it could not place
-  /// or an unusable tracked set withhold it: 0). A consumer waiting for the held object's
-  /// cells to leave the map (the sim HAL's perception barrier) must see this number reach
-  /// the revision it armed for. Objects left in the map ON PURPOSE (a pinch fallback, an
-  /// ambiguous binding) do not withhold it: there is nothing to wait for.
+  /// the revision of the fresh attachment state the identity-clearing pass processed,
+  /// provided every bound identity it had to clear was handled (a missing TF or unusable
+  /// tracker set withholds it: 0). This is a processing acknowledgement, not proof that every
+  /// attached object's cells disappeared or that an asynchronous octree clear completed.
+  /// Attachments without an unambiguous tracked-object binding remain obstacles and do not
+  /// withhold it.
   std::uint64_t certified_attachment_revision() const {
     const auto state = world_state_;
     if (!attached_clear_enabled_ || state == nullptr || !clearing_complete_) {
@@ -368,294 +328,6 @@ private:
     }
     const double age_s = (this->now() - rclcpp::Time(state->header.stamp)).seconds();
     return age_s > attached_state_timeout_s_ ? 0 : state->attachment_revision;
-  }
-
-  /// Remove the grasped payload's own cells from the grid about to be
-  /// published, in the payload's live pose.
-  ///
-  /// Every way of not knowing where the payload is — no attachment message, a
-  /// stale one, a missing attach-link TF, a primitive the kernel itself would
-  /// refuse — clears **nothing** and leaves the map exactly as the octree
-  /// described it. That is the conservative failure: the map keeps occupancy it
-  /// should not have (which can only stop the robot early), never loses
-  /// occupancy it should have.
-  ///
-  /// Objects are split into two clearing passes by the ONE piece of state this
-  /// node keeps (`AttachSweepLedger`): a payload whose attach-transition window
-  /// is still open sweeps at the padded reach, one whose window has closed at
-  /// the unchanged steady-state reach. Both passes see the full patch list, so
-  /// a padded sweep withholds the attested support patch exactly as an ordinary
-  /// one does.
-  ///
-  /// `base_to_octomap` is `lookupTransform(octomap_frame, base_frame)`, already
-  /// looked up for the rasterization. The window measures the payload's
-  /// displacement in the OctoMap's frame, not the base frame, because the stale
-  /// silhouette it is chasing is world-fixed occupancy: a payload motionless in
-  /// `base_link` on a driving mobile base has left its silhouette behind, and
-  /// the window must close.
-  void clear_attached_payload(openral_msgs::msg::OccupancyVoxels& grid,
-                              const tf2::Transform& base_to_octomap) {
-    if (!attached_clear_enabled_) {
-      return;
-    }
-    const auto state = world_state_;
-    if (state == nullptr) {
-      return;
-    }
-    if (state->attached_objects.empty()) {
-      // Nothing attached: nothing to sweep and no window to keep, so the next
-      // grasp — of this object or any other — opens a fresh one.
-      attach_sweep_ledger_.sweep({}, attach_sweep_padding_m_);
-      support_patch_anchors_.anchor({});
-      swept_seen_.clear();
-      sweep_supports_ = SweepSupports{};
-      sweep_support_keys_.clear();
-      return;
-    }
-    const rclcpp::Time stamp(state->header.stamp);
-    const double age_s = (this->now() - stamp).seconds();
-    if (age_s > attached_state_timeout_s_) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                           "attachment state is %.3f s old (> %.3f s): clearing nothing", age_s,
-                           attached_state_timeout_s_);
-      clearing_complete_ = false;
-      return;
-    }
-
-    std::vector<SupportPatch> patches;
-    // Staged per object, because the window is decided per object.
-    std::vector<std::vector<PayloadPrimitive>> staged;
-    std::vector<AttachSweepObservation> present;
-    // Each attestation's key and its patch in the OctoMap frame, for the anchors.
-    std::vector<SupportPatchObservation> attested;
-    // Parallel to `staged`: the objects this (pre-#418) path clears.
-    std::vector<const openral_msgs::msg::AttachedCollisionObject*> legacy;
-    staged.reserve(state->attached_objects.size());
-    present.reserve(state->attached_objects.size());
-    for (const auto& object : state->attached_objects) {
-      // A tracker binding (#418) is cleared by identity (`clear_by_identity`) or not
-      // at all: a pinch fallback or an ambiguous binding stays an obstacle.
-      if (object.evidence_kind == kTrackedObjectEvidence ||
-          object.evidence_kind == kPinchFallbackEvidence) {
-        continue;
-      }
-      geometry_msgs::msg::TransformStamped tf_msg;
-      const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
-      try {
-        tf_msg = tf_buffer_->lookupTransform(base_frame_, link_frame, tf2::TimePointZero);
-      } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                             "TF %s <- %s unavailable (%s): payload %s stays in the map",
-                             base_frame_.c_str(), link_frame.c_str(), ex.what(),
-                             object.object_id.c_str());
-        if (attach_link_tf_frames_.count(object.attach_link) == 0 &&
-            unmapped_links_warned_.insert(object.attach_link).second) {
-          RCLCPP_WARN(this->get_logger(),
-                      "attach link %s is not a TF frame and attach_link_tf_frames does not map "
-                      "it: if the cell's TF tree names this body differently, set "
-                      "attach_link_tf_frames ['%s=<tf frame>'] (the scene's "
-                      "vision_attachment.tf_frames)",
-                      object.attach_link.c_str(), object.attach_link.c_str());
-        }
-        clearing_complete_ = false;
-        return;
-      }
-      tf2::Transform base_from_link;
-      tf2::fromMsg(tf_msg.transform, base_from_link);
-      std::vector<PayloadPrimitive> object_primitives;
-      if (!place_attached_object(object, base_from_link, object_primitives, patches)) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                             "payload %s carries geometry or a support attestation this bridge "
-                             "cannot place: clearing nothing",
-                             object.object_id.c_str());
-        clearing_complete_ = false;
-        return;
-      }
-      // The window's reference point is the first primitive's origin lifted
-      // into the OctoMap frame — a material point of the payload, which is all
-      // "has this payload moved away from its silhouette?" needs. A successful
-      // placement always yields at least one primitive.
-      if (object.support_contact_valid) {
-        // `place_attached_object` appended this object's patch last.
-        SupportPatch world = patches.back();
-        world.point = base_to_octomap * world.point;
-        world.normal = base_to_octomap.getBasis() * world.normal;
-        attested.push_back(SupportPatchObservation{
-            SupportWitnessKey{object.object_id, object.support_contact.support_id,
-                              object.support_contact.stamp_ns},
-            world});
-      }
-      present.push_back(AttachSweepObservation{
-          AttachedObjectRevision{object.object_id, state->attachment_revision},
-          base_to_octomap * object_primitives.front().pose.getOrigin()});
-      staged.push_back(std::move(object_primitives));
-      legacy.push_back(&object);
-    }
-
-    if (sweep_client_) {
-      accumulate_swept_volume(*state, legacy, staged, base_to_octomap, attested);
-    }
-
-    // Answering and recording in one call is what keeps the window's state and
-    // the reach it licenses from disagreeing. Every early return above skips it,
-    // so a frame that clears nothing leaves the padded sweep owed.
-    const std::vector<std::uint8_t> window_open =
-        attach_sweep_ledger_.sweep(present, attach_sweep_padding_m_);
-    // The band stays where the support was attested (`SupportPatchAnchors`):
-    // each patch withholds only what its first-grid plane also claims.
-    const std::vector<SupportPatch> anchors = support_patch_anchors_.anchor(attested);
-    const tf2::Transform octomap_to_base = base_to_octomap.inverse();
-    for (std::size_t i = 0; i < anchors.size(); ++i) {
-      SupportPatch& patch = patches[i];
-      patch.has_anchor = true;
-      patch.anchor_point = octomap_to_base * anchors[i].point;
-      patch.anchor_normal = octomap_to_base.getBasis() * anchors[i].normal;
-    }
-    std::vector<PayloadPrimitive> steady_primitives;
-    std::vector<PayloadPrimitive> attach_sweep_primitives;
-    std::size_t attach_sweep_objects = 0;
-    for (std::size_t i = 0; i < staged.size(); ++i) {
-      auto& group = window_open[i] != 0 ? attach_sweep_primitives : steady_primitives;
-      group.insert(group.end(), staged[i].begin(), staged[i].end());
-      attach_sweep_objects += window_open[i] != 0 ? 1U : 0U;
-    }
-
-    const double attach_padding =
-        attach_transition_padding(attached_clear_padding_m_, attach_sweep_padding_m_);
-    const std::size_t cleared =
-        clear_attached_payload_cells(grid, steady_primitives, patches, attached_clear_padding_m_) +
-        clear_attached_payload_cells(grid, attach_sweep_primitives, patches, attach_padding);
-    if (cleared > 0) {
-      // The attested-patch count is logged unconditionally beside the cleared
-      // count: the partition is the difference between the two numbers, and a
-      // support surface silently vanishing from the map is exactly what this
-      // line exists to make visible (CLAUDE.md §1.4). The open-window count is
-      // beside them for the same reason — a window that never closes is a
-      // widened reach that has quietly become the steady state, and a field
-      // trace has to be able to show when it shut.
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                           "attached payload: cleared %zu cell(s) of %zu object(s) from world "
-                           "occupancy, withholding %zu attested support patch(es); %zu object(s) "
-                           "inside the attach window (+%.4f m, revision %lu)",
-                           cleared, state->attached_objects.size(), patches.size(),
-                           attach_sweep_objects, attach_padding,
-                           static_cast<unsigned long>(state->attachment_revision));
-    }
-  }
-
-  /// Record this tick's posed primitive boxes, the supports attested during the carry,
-  /// and, at an object's first appearance (a new attachment revision), a REGION
-  /// payload's lowest point. No pre-attach TF backfill: posing the payload rigidly in
-  /// the hand along the approach clears where the object never was.
-  void accumulate_swept_volume(
-      const openral_msgs::msg::WorldStateStamped& state,
-      const std::vector<const openral_msgs::msg::AttachedCollisionObject*>& objects,
-      const std::vector<std::vector<PayloadPrimitive>>& staged,
-      const tf2::Transform& base_to_octomap, const std::vector<SupportPatchObservation>& attested) {
-    for (const auto& prims : staged) {
-      const auto boxes = payload_primitive_boxes(prims, base_to_octomap);
-      swept_boxes_.insert(swept_boxes_.end(), boxes.begin(), boxes.end());
-    }
-    // Latch every support attested during this carry, as first attested: a vision
-    // pick's support attestation lasts only "until the payload moves", and the carry's
-    // later boxes must still stop above that counter.
-    for (const auto& obs : attested) {
-      if (sweep_support_keys_
-              .insert(obs.key.object_id + "|" + obs.key.support_id + "|" +
-                      std::to_string(obs.key.stamp_ns))
-              .second) {
-        sweep_supports_.patches.push_back(obs.patch);
-      }
-    }
-    for (std::size_t i = 0; i < objects.size(); ++i) {
-      const auto& object = *objects[i];
-      if (!swept_seen_.insert({object.object_id, state.attachment_revision}).second) {
-        continue;
-      }
-      // A REGION payload's lowest point at attach floors a box no support is known under:
-      // it is the producer-measured grasp-target region, stood on its measured support.
-      // A segmented payload's bottom is not (deploy trial g17: its points reached into
-      // the counter and depth edges, floors at z 0.020-0.027 under a 0.030 counter top),
-      // and the gripper-closure jaw box is not the object: neither floors anything.
-      if (object.evidence_kind == "grasp_target_region" && i < staged.size()) {
-        SweptBox at_attach;
-        add_payload_to_swept_box(at_attach, staged[i], base_to_octomap);
-        if (at_attach.valid) {
-          sweep_supports_.measured_floor_z =
-              sweep_supports_.has_measured_floor
-                  ? std::min(sweep_supports_.measured_floor_z, at_attach.lo.z())
-                  : at_attach.lo.z();
-          sweep_supports_.has_measured_floor = true;
-        }
-      }
-    }
-  }
-
-  /// Every `payload_sweep_clear_period_s`: floor the period's posed payload boxes above
-  /// every known support (`floor_pose_boxes`) and ask `octomap_server` to clear each from
-  /// the octree; then start a new period.
-  void clear_swept_volume(const tf2::Transform& base_to_octomap) {
-    if (!sweep_client_ || swept_boxes_.empty()) {
-      return;
-    }
-    const rclcpp::Time now = this->now();
-    if (last_sweep_clear_.nanoseconds() != 0 &&
-        (now - last_sweep_clear_).seconds() < sweep_period_s_) {
-      return;
-    }
-    std::vector<SweptBox> boxes;
-    boxes.swap(swept_boxes_);
-    last_sweep_clear_ = now;
-    // Declared static geometry is in the base frame: carried into the octomap frame here,
-    // once per clear, not on every grid tick.
-    sweep_supports_.static_points.clear();
-    sweep_supports_.static_points.reserve(static_points_.size());
-    for (const auto& p : static_points_) {
-      sweep_supports_.static_points.push_back(base_to_octomap * p);
-    }
-    std::vector<SweptBox> clears;
-    const SweepFloor floor = floor_pose_boxes(boxes, sweep_supports_, resolution_, clears);
-    if (clears.empty()) {
-      RCLCPP_INFO(this->get_logger(),
-                  "payload sweep: NOT clearing %zu posed box(es): no support attested or "
-                  "declared under them and no region payload floor (a segmented or "
-                  "gripper-closure payload), or nothing left above the support",
-                  boxes.size());
-      return;
-    }
-    if (!sweep_client_->service_is_ready()) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                           "payload sweep: %s not available; the payload volume stays in the "
-                           "octree",
-                           sweep_client_->get_service_name());
-      return;
-    }
-    // A request the server never answers would stay pending in the client forever; drop
-    // any older than kSweepRequestTimeout and say so (the volume then stays in the octree).
-    const size_t pruned = sweep_client_->prune_requests_older_than(
-        std::chrono::system_clock::now() - kSweepRequestTimeout);
-    if (pruned > 0) {
-      RCLCPP_WARN(this->get_logger(),
-                  "payload sweep: %zu clear_bbox request(s) to %s unanswered after %llds; "
-                  "dropped, their volume stays in the octree",
-                  pruned, sweep_client_->get_service_name(),
-                  static_cast<long long>(kSweepRequestTimeout.count()));
-    }
-    for (const auto& box : clears) {
-      auto req = std::make_shared<octomap_msgs::srv::BoundingBoxQuery::Request>();
-      req->min.x = box.lo.x();
-      req->min.y = box.lo.y();
-      req->min.z = box.lo.z();
-      req->max.x = box.hi.x();
-      req->max.y = box.hi.y();
-      req->max.z = box.hi.z();
-      sweep_client_->async_send_request(req);
-      RCLCPP_INFO(this->get_logger(),
-                  "payload sweep: clear_bbox [%.3f %.3f %.3f]..[%.3f %.3f %.3f] in %s (floor: %s)",
-                  box.lo.x(), box.lo.y(), box.lo.z(), box.hi.x(), box.hi.y(), box.hi.z(),
-                  octomap_frame_.c_str(),
-                  floor == SweepFloor::kSupport ? "support" : "region payload at attach");
-    }
   }
 
   struct IdentityCarry {
@@ -728,8 +400,13 @@ private:
     std::map<std::string, std::vector<PayloadPrimitive>> live;  // bound, octomap frame
     std::size_t grid_cleared = 0;
     for (const auto& object : state->attached_objects) {
-      const auto* track = identity_clearing_track(object, *state, base_frame_);
+      const char* why = "";
+      const auto* track = identity_clearing_track(object, *state, base_frame_, &why);
       if (track == nullptr) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                             "identity clear: attachment %s evidence '%s' has no unique valid "
+                             "tracked-object binding (reason=%s); occupancy stays mapped",
+                             object.object_id.c_str(), object.evidence_kind.c_str(), why);
         continue;
       }
       const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
@@ -1027,23 +704,14 @@ private:
   std::string static_points_file_;
   std::vector<tf2::Vector3> static_points_;
   bool attached_clear_enabled_{true};
-  double attached_clear_padding_m_{0.0};
-  double attach_sweep_padding_m_{0.05};
   double attached_state_timeout_s_{0.5};
   double max_octree_age_s_{1.0};
   rclcpp::Time octree_received_;
   rclcpp::Time octree_stamp_;
   bool octree_stale_{false};
-  AttachSweepLedger attach_sweep_ledger_;
   rclcpp::Client<octomap_msgs::srv::BoundingBoxQuery>::SharedPtr sweep_client_;
   static constexpr std::chrono::seconds kSweepRequestTimeout{5};
   double sweep_period_s_{0.2};
-  std::vector<SweptBox> swept_boxes_;
-  SweepSupports sweep_supports_;
-  std::set<std::string> sweep_support_keys_;
-  std::set<std::pair<std::string, std::uint64_t>> swept_seen_;
-  rclcpp::Time last_sweep_clear_{0, 0, RCL_ROS_TIME};
-  SupportPatchAnchors support_patch_anchors_;
   std::map<std::pair<std::string, std::uint32_t>, IdentityCarry> identity_carries_;
   std::map<std::string, IdentityHome> identity_homes_;
   IdentityKeys identity_was_bound_;  ///< bindings cleared by identity on the last tick

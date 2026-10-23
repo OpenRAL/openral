@@ -822,6 +822,30 @@ TEST(SelfFilterJointState, RefusesAGapAndAnExtrapolationAndKeepsQ) {
   EXPECT_DOUBLE_EQ(qdot[0], 0.0);
 }
 
+TEST(SelfFilterJointState, SimulationPeriodAdmitsQuantizedTwoTickGapButNotLonger) {
+  // Isaac's configured dt is float32(1/60), stepped four times per published
+  // joint state. The actual cadence is therefore slightly longer than 1/15 s.
+  const float physics_dt = 1.0F / 60.0F;
+  const double actual_period_s = 4.0 * static_cast<double>(physics_dt);
+  const auto two_period_gap_ns = static_cast<std::int64_t>(
+      std::ceil(static_cast<long double>(2.0 * actual_period_s) * 1.0e9L));
+  std::vector<double> q;
+  std::vector<double> qdot;
+  const std::deque<bridge::JointSample> boundary{{0, {0.0}}, {two_period_gap_ns, {1.0}}};
+  EXPECT_EQ(bridge::joint_state_at(boundary, two_period_gap_ns / 2, actual_period_s, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+  const std::deque<bridge::JointSample> beyond{{0, {0.0}}, {two_period_gap_ns + 1, {1.0}}};
+  EXPECT_EQ(
+      bridge::joint_state_at(beyond, (two_period_gap_ns + 1) / 2, actual_period_s, 0.1, q, qdot),
+      bridge::JointStateVerdict::kGap)
+      << "the rule remains exactly two actual periods; only ns quantization rounds upward";
+
+  const auto nominal_gap_ns = static_cast<std::int64_t>(std::ceil(2.0e9 / 15.0));
+  const std::deque<bridge::JointSample> nominal_boundary{{0, {0.0}}, {nominal_gap_ns, {1.0}}};
+  EXPECT_EQ(bridge::joint_state_at(nominal_boundary, nominal_gap_ns / 2, 1.0 / 15.0, 0.1, q, qdot),
+            bridge::JointStateVerdict::kOk);
+}
+
 TEST(SelfFilterVelocityPadding, GrowsWithLinkSpeedUpToTheCap) {
   const auto params = chain_params();
   bridge::SelfModel model;
@@ -1134,6 +1158,38 @@ TEST(SelfFilterRealData, SimTimeStampedJointStatesRemoveTheArmTheRecordedStampsL
   EXPECT_EQ(kept(sim_time, robot_pts), 0U) << "of " << robot_pts.size() << " arm returns";
   EXPECT_EQ(kept(sim_time, world_pts), world_pts.size())
       << "a world return 4-8 cm from the robot was removed";
+}
+
+TEST(SelfFilterRealData, DelayedMatchingJointStateRemovesTheFingerReturnsExtrapolationLeft) {
+  // R9: the cloud arrived 5.1 ms before its matching joint state. Extrapolating
+  // from the two available states kept three finger returns in voxel 1606131.
+  const auto manifest = repo_root() / "robots" / "droid_franka_robotiq" / "robot.yaml";
+  const auto fixture = repo_root() / "packages" / "openral_octomap_bridge" / "test" / "data" /
+                       "r9_delayed_joint_state.yaml";
+  if (!std::filesystem::exists(manifest) || !std::filesystem::exists(fixture)) {
+    GTEST_SKIP() << "no " << manifest << " / " << fixture << " (not a source checkout)";
+  }
+  const YAML::Node robot = YAML::LoadFile(manifest.string());
+  const YAML::Node fx = YAML::LoadFile(fixture.string());
+  bridge::SelfModel model;
+  std::string error;
+  ASSERT_TRUE(bridge::build_self_model(manifest_model(robot), model, error)) << error;
+  const auto names = fx["joint_names"].as<std::vector<std::string>>();
+  for (std::size_t d = 0; d < names.size(); ++d) {
+    ASSERT_EQ(robot["joints"][d]["name"].as<std::string>(), names[d]) << "dof column " << d;
+  }
+  const auto raw = points_of(fx["raw_points"]);
+  const auto leaked = points_of(fx["leaked_points"]);
+  ASSERT_EQ(raw.size(), 16U);
+  ASSERT_EQ(leaked.size(), 3U);
+  bridge::SelfMask available;
+  ASSERT_TRUE(real_frame_mask(model, fx, fx["available_history"], available));
+  EXPECT_EQ(kept(available, raw), 3U);
+  EXPECT_EQ(kept(available, leaked), 3U);
+  bridge::SelfMask bracketed;
+  ASSERT_TRUE(real_frame_mask(model, fx, fx["bracketed_history"], bracketed));
+  EXPECT_EQ(kept(bracketed, raw), 0U);
+  EXPECT_EQ(kept(bracketed, leaked), 0U);
 }
 
 TEST(SelfFilterRobotMask, AReturnSeenThroughTheRobotEnvelopeIsNotRobot) {

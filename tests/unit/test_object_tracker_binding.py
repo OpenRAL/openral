@@ -7,6 +7,7 @@ manifest FK, a protocol-conforming in-memory track store (a real component, not 
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -79,6 +80,35 @@ def test_one_candidate_binds_the_tracked_id(robot: str) -> None:
     assert bound is not None and bound.status is TrackStatus.BOUND
     assert bound.bound_hand == ROBOTS[robot][0] and bound.pose_in_link == a.pose_in_link
     assert store.get("trk:2") == far
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_fresh_map_confirmation_does_not_make_an_old_fit_bindable(robot: str, cap: Any) -> None:
+    binder, q, centre = arm_at_hold(robot)
+    stale = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={"last_fit_stamp_ns": 1, "last_confirmed_stamp_ns": 10_000_000_000}
+    )
+    store = DictStore([stale])
+
+    result = binder.on_attach(store, q, stamp_ns=10_000_000_000)
+
+    assert result.outcome is BindOutcome.UNTRACKED
+    assert result.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    assert result.reground
+    assert store.get("trk:1") == stale
+    [event] = cap.named("object_tracker.stale_attach_candidate")
+    assert event["candidates"][0]["reason"] == "stale_fit"
+
+
+def test_a_future_fit_is_not_eligible_for_normal_tracked_binding() -> None:
+    binder, q, centre = arm_at_hold("so101_follower")
+    future = track("trk:1", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={"last_fit_stamp_ns": 11, "last_confirmed_stamp_ns": 10}
+    )
+
+    result = binder.on_attach(DictStore([future]), q, stamp_ns=10)
+
+    assert result.outcome is BindOutcome.UNTRACKED
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
@@ -225,7 +255,12 @@ def test_a_neighbour_whose_geometry_misses_the_pinch_centre_is_not_bound() -> No
 
     rec = json.loads((Path(__file__).parent / "_p2po_on2_attach.json").read_text())
     d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-    binder = GraspBinder(HandModel(d, "gripper"), frame_id=d.base_frame, cell_m=0.015)
+    binder = GraspBinder(
+        HandModel(d, "gripper"),
+        frame_id=d.base_frame,
+        cell_m=0.015,
+        max_track_fit_age_s=2.0,
+    )
     orange_1 = TrackedObject.model_validate(rec["track"])
     store = DictStore([orange_1])
     b = binder.on_attach(store, rec["positions"], stamp_ns=10)
@@ -259,8 +294,9 @@ def _outside(points: NDArray[np.float64], boxes: list[Box]) -> float:
 @pytest.mark.parametrize("robot", list(ROBOTS))
 def test_a_provisional_track_is_never_the_payload_alone(robot: str) -> None:
     """#418 r4: a grasp whose only candidate is provisional binds no identity, but its payload
-    is the union of the provisional box and the pinch fallback, cut at the palm: never smaller
-    than either. (The 2026-10-17 rule dropped the box and left a pad-width fallback that
+    is the union of the provisional box and the pinch fallback, cut at the palm and at the
+    candidate's support: never smaller than either in front of the palm and above the support.
+    (The 2026-10-17 rule dropped the box and left a pad-width fallback that
     under-covered every restock carton by 4-16 cm.)"""
     binder, q, centre = arm_at_hold(robot)
     held = track("trk:1", binder.frame_id, centre, (0.05, 0.05, 0.05))
@@ -281,7 +317,11 @@ def test_a_provisional_track_is_never_the_payload_alone(robot: str) -> None:
     assert _outside(in_front, boxes) < 1e-6  # the provisional box, in front of the palm
     fb = DictStore([])
     untracked = _payload_boxes(binder, q, binder.on_attach(fb, q, stamp_ns=11))
-    assert _outside(_corners(untracked[0]), boxes) < 1e-6  # ...and the untracked fallback
+    # ...and the untracked fallback above the candidate's support (nothing held lies under
+    # the surface it rested on: `_support_clipped`, Spark restock R284/R296).
+    fb_corners = _corners(untracked[0])
+    above = fb_corners[fb_corners[:, 2] >= held.support_z + 1e-6]
+    assert _outside(above, boxes) < 1e-6
     clear = DictStore([held])
     assert binder.on_attach(clear, q, stamp_ns=12).outcome is BindOutcome.TRACKED
 
@@ -615,6 +655,111 @@ def test_a_tracked_payload_never_absorbs_the_support_it_slides_over(robot: str) 
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
+def test_an_untracked_payload_never_absorbs_the_support_the_scene_stands_on(robot: str) -> None:
+    """Isaac R84: a pinch fallback (no tracked binding) has no floor of its own, so the
+    table the sweep cleared under the hand looked like it moved with it; the fallback grew
+    twice and stopped on a table cell 2 cm under the top. It takes the scene's tracked
+    supports' floor instead; with no track in the scene the same pan still grows (control)."""
+    binder, q, _ = arm_at_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    floor_z = pc[2] - 0.02
+    xy = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    slab = np.vstack(
+        [
+            np.column_stack([xy + pc[:2], np.full(len(xy), floor_z + (-0.5 - k) * CELL)])
+            for k in range(8)
+        ]
+    )
+    lo = np.floor((pc - 0.35) / CELL) * CELL
+    q_b = dict(q)
+    q_b[_PAN[robot]] += 0.15
+    under = (np.abs(slab[:, 0] - pc[0]) < 0.03) & (np.abs(slab[:, 1] - pc[1]) < 0.03)
+    far = track(  # a bowl on the same table, away from the hand: the scene's support floor
+        "trk:9",
+        frame,
+        pc + np.array([0.0, 0.2, 0.0]),
+        (0.02, 0.02, 0.02),
+        role=ObjectRole.DESTINATION,
+    ).model_copy(update={"floor_z": floor_z})
+    grew = {}
+    for name, tracks in (("scene floor", [far]), ("no track", [])):
+        b, _, _ = arm_at_hold(robot)
+        store = DictStore([])
+        assert b.on_attach(store, q, stamp_ns=10).outcome is BindOutcome.UNTRACKED
+        store = DictStore(tracks)
+        assert b.grow_untracked(store, _grid(frame, slab, lo, 70), q, 20) is None
+        out = [
+            b.grow_untracked(store, _grid(frame, slab[~under], lo, 70), q_b, 21 + n)
+            for n in range(3)
+        ]
+        grew[name] = [o for o in out if o is not None]
+    assert grew["no track"], "the control must absorb the table, or the test proves nothing"
+    assert not grew["scene floor"]
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_payload_never_absorbs_a_raised_support_the_map_held_before_the_hold(
+    robot: str,
+) -> None:
+    """#418 R368: the tracked orange was carried onto the plate. The plate stands above the
+    held track's floor (the table) and no track explained it, so as the payload swept over
+    it a rim cell took a key whose first place the sweep had emptied: the payload swelled onto
+    the plate and stopped on it. A cell whose place the map held at the hold's first growth
+    call, away from the payload's body, is the static world. Control: the same plate first
+    mapped after that call still grows (the guard's known ceiling)."""
+    binder, q, _ = _tracked_hold(robot)
+    frame = binder.frame_id
+    t_a = binder.hand.t_frame_from_attach(frame, q)
+    pc = t_a[:3, :3] @ binder.hand.pinch_in_link(q[binder.hand.joint.name]).centre + t_a[:3, 3]
+    steps = []
+    for k in (1, 2, 3):
+        qq = dict(q)
+        qq[_PAN[robot]] += 0.05 * k
+        steps.append(qq)
+
+    def pinch(qq: dict[str, float]) -> NDArray[np.float64]:
+        t = binder.hand.t_frame_from_attach(frame, qq)
+        return t[:3, :3] @ binder.hand.pinch_in_link(qq[binder.hand.joint.name]).centre + t[:3, 3]
+
+    d = pinch(steps[-1]) - pc
+    d[2] = 0.0
+    d /= np.linalg.norm(d)
+    # A plate 2 cm thick in the box's lower half, starting 3 cells past the box along the pan.
+    g = np.stack(np.meshgrid(*[np.arange(-0.25, 0.25, CELL)] * 2), -1).reshape(-1, 2)
+    rim = g[g @ d[:2] > 0.02 + 3 * CELL] + pc[:2]
+    floor_z = pc[2] - 0.02
+    plate = np.vstack(
+        [np.column_stack([rim, np.full(len(rim), floor_z + k * CELL)]) for k in (1.5, 2.5)]
+    )
+    lo = np.floor((pc - 0.35) / CELL) * CELL
+
+    def swept(qq: dict[str, float]) -> NDArray[np.bool_]:
+        """The plate cells the payload sweep clears: those within its box at ``qq``."""
+        inside: NDArray[np.bool_] = np.all(np.abs(plate - pinch(qq)) <= 0.02 + CELL / 2, axis=1)
+        return inside
+
+    grew = {}
+    for name, first in (("mapped", plate), ("unmapped", plate[:0])):
+        b, _, _ = _tracked_hold(robot)
+        store = DictStore([track("trk:1", frame, pc, (0.02, 0.02, 0.02))])
+        # One cell well clear of the payload, so the first call has something near to see.
+        lone = (pc + np.array([0.0, 0.0, 0.2]))[None]
+        assert (
+            b.grow_untracked(store, _grid(frame, np.vstack([first, lone]), lo, 70), q, 20) is None
+        )
+        out, prev = [], q
+        for n, qq in enumerate(steps):
+            cleared = swept(prev) | swept(qq)
+            out.append(b.grow_untracked(store, _grid(frame, plate[~cleared], lo, 70), qq, 21 + n))
+            prev = qq
+        grew[name] = [o for o in out if o is not None]
+    assert grew["unmapped"], "the control must absorb the plate, or the test proves nothing"
+    assert not grew["mapped"]
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
 @pytest.mark.parametrize("status", [TrackStatus.TENTATIVE, TrackStatus.SPLIT])
 def test_an_unconfirmed_cluster_track_never_makes_a_grounded_object_ambiguous(
     robot: str, status: TrackStatus
@@ -637,3 +782,136 @@ def test_an_unconfirmed_cluster_track_never_makes_a_grounded_object_ambiguous(
     # With no grounded object, the unconfirmed track is still the (only) candidate.
     alone = DictStore([cluster])
     assert binder.on_attach(alone, q, stamp_ns=11).candidates == ("trk:5",)
+
+
+def test_the_hand_boxes_carry_the_kernels_wrist_links() -> None:
+    """Isaac R87: ``panda_link6`` at the bowl rim was no contact to the tracker, so the bowl
+    went SPLIT while the kernel took the link as the hand's. The tracker's hand boxes now
+    carry the same wrist links as the kernel's (``wrist_links_of``): ``panda_link7`` by
+    default (DROID's carrier is welded on, so it was missing too), ``panda_link6`` with 2."""
+    d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+    q = {j.name: 0.0 for j in d.joints}
+
+    def at_link(hand: HandModel, link: str) -> bool:
+        t = link_transform(d, d.base_frame, link, q)
+        return any(_covers(c, h, t, d, link) for c, _, h in hand.hand_boxes(d.base_frame, q))
+
+    one, two = HandModel(d, "finger_joint"), HandModel(d, "finger_joint", wrist_links=2)
+    assert at_link(one, "panda_link7")
+    assert not at_link(one, "panda_link6")
+    assert at_link(two, "panda_link6")
+
+
+def _covers(
+    c: NDArray[np.float64],
+    h: NDArray[np.float64],
+    t: NDArray[np.float64],
+    d: RobotDescription,
+    link: str,
+) -> bool:
+    """Whether the box at ``c``, half-extents ``h``, is a primitive of ``link`` posed by ``t``."""
+    for g in d.collision_geometry:
+        if g.link_name != link:
+            continue
+        p = t @ transform_from_xyz_rpy(g.origin_xyz_rpy[:3], g.origin_xyz_rpy[3:])
+        if np.allclose(p[:3, 3], c, atol=1e-9) and np.allclose(
+            bounding_half_extents(g.shape), h, atol=1e-9
+        ):
+            return True
+    return False
+
+
+def test_a_fallback_payload_never_reaches_below_its_candidates_support() -> None:
+    """Spark restock R284/R296 (2026-10-23): the pinch fallback's full stroke, centred on a
+    carton in a tote, reached a cell under the tote floor and stopped the lift. Nothing the
+    hand holds lies below the surface it rested on at the grasp."""
+    from openral_core.kinematics import bounding_half_extents
+    from openral_world_state.object_tracker.binding import _t
+
+    binder, q, centre = arm_at_hold("droid_franka_robotiq")
+    cand = track("trk:1", binder.frame_id, centre, (0.02, 0.02, 0.02)).model_copy(
+        update={"provisional": True, "last_fit_stamp_ns": 10}
+    )
+    result = binder.on_attach(DictStore([cand]), q, stamp_ns=10)
+    assert result.outcome is BindOutcome.PROVISIONAL
+    t_fo = binder.hand.t_frame_from_attach(binder.frame_id, q) @ _t(result.attachment.pose_in_link)
+    for p in result.attachment.primitives:
+        t = t_fo @ _t(p.pose_in_object)
+        low = t[2, 3] - np.abs(t[2, :3]) @ np.asarray(bounding_half_extents(p.shape))
+        assert low >= cand.support_z - 1e-6, (low, cand.support_z)
+
+
+def test_an_untracked_payload_never_reaches_below_its_neighbours_support() -> None:
+    """Spark restock R305 (2026-10-23): an untracked pinch box reached under the tote while
+    lifting. Its tracked neighbours give the support the grasp happened over."""
+    from openral_core.kinematics import bounding_half_extents
+    from openral_world_state.object_tracker.binding import _t
+
+    binder, q, centre = arm_at_hold("droid_franka_robotiq")
+    # A confirmed neighbour 8 cm aside (it does not hold the pinch centre); its support is
+    # just under the pinch, so the full-stroke fallback reaches below it.
+    beside = track("trk:9", binder.frame_id, centre + np.array([0.08, 0.0, 0.0]), (0.02,) * 3)
+
+    def lowest(store: DictStore) -> float:
+        result = binder.on_attach(store, q, stamp_ns=10)
+        assert result.outcome is BindOutcome.UNTRACKED
+        t_fo = binder.hand.t_frame_from_attach(binder.frame_id, q) @ _t(
+            result.attachment.pose_in_link
+        )
+        lows = []
+        for p in result.attachment.primitives:
+            t = t_fo @ _t(p.pose_in_object)
+            lows.append(t[2, 3] - np.abs(t[2, :3]) @ np.asarray(bounding_half_extents(p.shape)))
+        return float(min(lows))
+
+    assert lowest(DictStore([])) < beside.support_z - 0.01, "no neighbour: the full fallback"
+    assert lowest(DictStore([beside])) >= beside.support_z - 1e-6
+
+
+def test_a_support_cut_only_ever_shrinks_the_payload() -> None:
+    """Spark restock R315 (2026-10-23): re-boxing the cut fallback in gravity's axes grew it
+    sideways into the robot's own forearm. On a tilted hold (SO-101, ~20 deg) and a level
+    one (DROID) every cut box lies inside the box it was cut from, and reaches no lower."""
+    from openral_core.kinematics import bounding_half_extents
+    from openral_world_state.object_tracker import binding as b
+
+    for robot in ("so101_follower", "droid_franka_robotiq"):
+        binder, q, centre = arm_at_hold(robot)
+        cand = track("trk:1", binder.frame_id, centre, (0.02, 0.02, 0.02)).model_copy(
+            update={"provisional": True, "last_fit_stamp_ns": 10}
+        )
+        fb = binder.hand.fallback_in_link(q[binder.hand.joint.name], None)
+        t_ao = b._frame(fb.centre, fb.axes)
+        t_fo = binder.hand.t_frame_from_attach(binder.frame_id, q) @ t_ao
+        prims = [b._prim(np.eye(4), fb.half, "pinch:x")]
+        [cut] = b._support_clipped(prims, t_fo, cand.support_z, "pinch:x")
+        t_cut = b._t(cut.pose_in_object)
+        corners = (b._UNIT * np.asarray(bounding_half_extents(cut.shape))) @ t_cut[:3, :3].T
+        corners += t_cut[:3, 3]
+        assert np.all(np.abs(corners) <= np.asarray(fb.half) + 1e-9), robot  # inside
+
+        def low(t: NDArray[np.float64], h: NDArray[np.float64]) -> float:
+            return float(t[2, 3] - np.abs(t[2, :3]) @ h)
+
+        assert (
+            low(t_fo @ t_cut, np.asarray(bounding_half_extents(cut.shape)))
+            >= low(t_fo, np.asarray(fb.half)) - 1e-9
+        ), robot
+
+
+def test_a_thin_object_below_the_pad_centre_still_binds_but_a_neighbour_beside_does_not() -> None:
+    """Spark banana R347 / R352 / R355 (2026-10-23): grasped from above, the 3.7 cm banana's
+    tight box topped out 1.8-4.6 cm under the Robotiq's pinch centre, so every such grasp bound an
+    untracked pinch payload. The pinch centre lowered to the pinch volume's bottom (the
+    fingertips' level) meets it; a box beside the hand meets neither point."""
+    robot = "droid_franka_robotiq"
+    binder, q, centre = arm_at_hold(robot)
+    frame = binder.frame_id
+    jh = binder.pinch_in_frame(q)
+    reach = float(np.abs(jh[1][2, :]) @ jh[2])
+    under = centre - np.array([0.0, 0.0, 0.5 * reach + 0.03])  # its top 3 cm under the centre
+    thin = track("trk:1", frame, under, (0.04, 0.04, 0.5 * reach - 0.03 + 0.03))
+    beside = track("trk:2", frame, centre + np.array([0.0, 0.2, 0.0]), (0.03, 0.03, 0.03))
+    binding = binder.on_attach(DictStore([thin, beside]), q, stamp_ns=10)
+    assert binding.outcome is BindOutcome.TRACKED, binding
+    assert binding.candidates == ("trk:1",)

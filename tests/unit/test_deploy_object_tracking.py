@@ -9,9 +9,11 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from openral_cli.deploy_sim import resolve_launch_invocation
+from openral_core import DeployScene
 from openral_core.exceptions import ROSConfigError
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -61,7 +63,7 @@ def test_a_direct_dispatch_deploy_names_the_queries_from_its_preload_prompt() ->
     ]
 
 
-def _queries(scene: object) -> list[dict[str, object]]:
+def _queries(scene: DeployScene) -> list[dict[str, Any]]:
     import json
 
     from openral_cli.deploy_sim import _object_queries_json
@@ -69,9 +71,7 @@ def _queries(scene: object) -> list[dict[str, object]]:
     return list(json.loads(_object_queries_json(scene, "Grab orange and place into plate")))
 
 
-def _tracking_pick_orange() -> object:
-    from openral_core import DeployScene
-
+def _tracking_pick_orange() -> DeployScene:
     scene = DeployScene.from_yaml(str(_PICK_ORANGE))
     assert scene.runtime is not None
     return scene.model_copy(
@@ -277,7 +277,8 @@ def test_bind_and_on_wire_the_kernels_jaw_open_release(
     assert len(p["tracked_release_jaw_joints"]) == jaws
     assert set(p["tracked_release_jaw_open_sign"]) <= {1.0, -1.0}
     cals = [j.closure_calibration for j in d.joints if j.name in p["tracked_release_jaw_joints"]]
-    assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals)
+    assert all(c is not None for c in cals)
+    assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals if c is not None)
     assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
     assert f(d, "on") == p
 
@@ -300,3 +301,55 @@ def test_a_fixed_jaw_body_link_is_a_k2_only_extra_contact_link() -> None:
     ok = JointSpec(name="j", joint_type="revolute", parent_link="a", child_link="b",
                    role="gripper", fixed_jaw_link="a")  # fmt: skip
     assert JointSpec.model_validate_json(ok.model_dump_json()) == ok
+
+
+def test_a_placements_context_labels_ride_as_context_queries() -> None:
+    """Spark R264/R265: the fingers met an untracked tote neighbour; nothing explained it."""
+    scene = _tracking_pick_orange()
+    raw = dict(cast("dict[str, Any]", scene.scene.backend_options["placement_success"]))
+    tasks = {
+        prompt: [{**p, "context": ["carton"]} for p in placements]
+        for prompt, placements in raw["tasks"].items()
+    }
+    placed = cast("list[Any]", scene.scene.backend_options.get("objects", []))
+    objects = [*placed, {"name": "carton_a"}, {"name": "carton_b"}]
+    options = {
+        **scene.scene.backend_options,
+        "placement_success": {**raw, "tasks": tasks},
+        "objects": objects,
+    }
+    scene = scene.model_copy(
+        update={"scene": scene.scene.model_copy(update={"backend_options": options})}
+    )
+    queries = [(q["label"], q["role"], q["count"]) for q in _queries(scene)]
+    assert queries[-1] == ("carton", "context", "all")
+    assert _queries(scene)[-1]["min_instances"] == 2, "as many as the scene places"
+    assert [q[:2] for q in queries[:-1]] == [("orange", "target"), ("plate", "destination")]
+
+
+def test_a_context_query_is_seeded_beside_the_targets_seed() -> None:
+    """Spark R282/R283: an unseeded "carton" query grounded shelf cartons, never the tote
+    neighbour the finger met; seeded around the target, its prompts land beside it."""
+    from openral_cli.deploy_sim import _CONTEXT_SEED_MARGIN_M
+
+    scene = _tracking_pick_orange()
+    raw = dict(cast("dict[str, Any]", scene.scene.backend_options["placement_success"]))
+    tasks = {
+        prompt: [{**p, "context": ["carton"]} for p in placements]
+        for prompt, placements in raw["tasks"].items()
+    }
+    options = {**scene.scene.backend_options, "placement_success": {**raw, "tasks": tasks}}
+    decl = scene.grasp_declaration
+    assert decl is not None and decl.search_box is not None
+    box = decl.search_box.model_copy(update={"evidence_ref": "reasoner_seed:detection 'orange'"})
+    scene = scene.model_copy(
+        update={
+            "scene": scene.scene.model_copy(update={"backend_options": options}),
+            "grasp_declaration": decl.model_copy(update={"search_box": box}),
+        }
+    )
+    context = _queries(scene)[-1]
+    assert context["role"] == "context" and context["seed"] is not None
+    grown = [h + _CONTEXT_SEED_MARGIN_M for h in box.half_extents]
+    assert context["seed"]["half_extents"] == pytest.approx(grown)
+    assert context["seed"]["pose"]["xyz"] == pytest.approx(list(box.pose.xyz))

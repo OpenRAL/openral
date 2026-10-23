@@ -437,7 +437,12 @@ class TestNeedsObservationNext:
             for _ in range(40):
                 announced.append(ex.needs_observation_next())
                 hits: list[int] = []
-                ex.select_action(lambda h=hits: h.append(1) or {})  # type: ignore[func-returns-value]  # reason: records the read, returns the payload
+
+                def payload(h: list[int] = hits) -> dict[str, Any]:
+                    h.append(1)  # records the read
+                    return {}
+
+                ex.select_action(payload)
                 read.append(bool(hits))
                 time.sleep(0.002)  # let a pre-fetch land between steps
         finally:

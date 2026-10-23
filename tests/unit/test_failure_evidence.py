@@ -21,6 +21,7 @@ from openral_core import (
     ForceEvidence,
     HumanEvidence,
     ObjectQueryEvidence,
+    ObjectQueryObservation,
     ObjectRole,
     PerceptionStaleEvidence,
     PlaceRegion,
@@ -81,6 +82,14 @@ _VARIANTS: list[FailureEvidence] = [
         role=ObjectRole.TARGET,
         waited_s=60.2,
         attempts=14,
+        reason="workspace_mismatch",
+        invocation_id="0123456789abcdef0123456789abcdef",
+        workspace=PlaceRegion(
+            frame_id="base",
+            pose=Pose6D(xyz=(0.0, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+            half_extents=(0.2, 0.2, 0.1),
+        ),
+        observations=[ObjectQueryObservation(camera="top", stamp_ns=17, reason="too_few_points")],
         last_seen=PlaceRegion(
             frame_id="base",
             pose=Pose6D(xyz=(0.07, -0.30, 0.05), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
@@ -110,6 +119,33 @@ def test_unknown_kind_is_rejected() -> None:
     """The Pydantic discriminator rejects an unknown ``kind`` value."""
     with pytest.raises(ValidationError):
         _ADAPTER.validate_json('{"kind": "definitely-not-a-real-kind"}')
+
+
+def test_object_query_observations_are_bounded_and_reason_is_in_typed_failure() -> None:
+    evidence = next(ev for ev in _VARIANTS if isinstance(ev, ObjectQueryEvidence))
+    assert evidence.reason in str(evidence.to_exception())
+    assert evidence.workspace is not None
+    assert evidence.invocation_id == "0123456789abcdef0123456789abcdef"
+    assert evidence.observations == [
+        ObjectQueryObservation(camera="top", stamp_ns=17, reason="too_few_points")
+    ]
+    with pytest.raises(ValidationError):
+        ObjectQueryEvidence.model_validate(
+            {
+                **evidence.model_dump(),
+                "invocation_id": "not-an-action-uuid",
+            }
+        )
+    with pytest.raises(ValidationError):
+        ObjectQueryEvidence.model_validate(
+            {
+                **evidence.model_dump(),
+                "observations": [
+                    ObjectQueryObservation(camera="top", stamp_ns=i, reason="refused")
+                    for i in range(9)
+                ],
+            }
+        )
 
 
 def test_suppressed_summary_requires_parallel_arrays() -> None:

@@ -7,7 +7,12 @@ from collections.abc import Callable
 
 import numpy as np
 import pytest
-from openral_core import ObjectQuery, ObjectQueryStatus, ObjectRole, TrackStatus
+from openral_core import (
+    ObjectQuery,
+    ObjectQueryStatus,
+    ObjectRole,
+    TrackStatus,
+)
 from openral_world_state.object_tracker import (
     CameraFrame,
     ObjectTracker,
@@ -63,6 +68,231 @@ def test_never_appears_escalates_then_exhausts() -> None:
     assert kinds == [(5, "unresolved", "banana"), (60, "exhausted", "banana")]
     assert _status(tr) is ObjectQueryStatus.EXHAUSTED
     assert not tr.queries.ready("g")
+
+
+def test_tracker_keeps_only_bounded_query_scoped_refusal_observations() -> None:
+    from openral_world_state.object_tracker.scheduler import TrackerRequest
+
+    tr = _tracker()
+    frame = CameraFrame(
+        _RIG.name,
+        11,
+        np.zeros((1, 1), dtype=np.float32),
+        _RIG.k,
+        _RIG.t,
+        np.zeros((1, 1), dtype=np.uint8),
+    )
+    req = TrackerRequest("segment_in_view", _RIG.name, 11, 1, -1, "banana", ("g", "q0"))
+    for i in range(10):
+        tr.record_query_refusal(req, f"reason-{i}", frame)
+    query = tr.queries.get("g", "q0")
+    assert query is not None
+    assert len(query.observations) == 8
+    assert [obs.reason for obs in query.observations] == [f"reason-{i}" for i in range(2, 10)]
+
+    unscoped = TrackerRequest("segment_in_view", _RIG.name, 12, 1, -1, "banana")
+    before = list(query.observations)
+    tr.record_query_refusal(unscoped, "not_query_scoped", frame)
+    assert query.observations == before
+
+
+def test_locate_service_failure_is_preserved_as_cause_not_a_no_match() -> None:
+    """A failed detector call records its cause; only a completed empty result is a miss."""
+    tr = _tracker()
+    depth, _ = render([], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    frame = CameraFrame(
+        _RIG.name,
+        1,
+        depth,
+        _RIG.k,
+        _RIG.t,
+        np.zeros(depth.shape, dtype=np.uint8),
+    )
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0)
+    (req,) = out.requests
+    assert req.service == "locate_in_view"
+
+    failure = "detector_exception:ModuleNotFoundError:No module named 'timm'"
+    tr.feed(
+        frame,
+        grid=grid,
+        grid_stamp_ns=1,
+        wall_s=0.1,
+        results=[TrackerResult(req.request_id, failure_reason=failure)],
+    )
+    query = tr.queries.get("g", "q0")
+    assert query is not None
+    assert query.observations[-1].reason == failure
+    assert not any(obs.reason == "locate_found_nothing" for obs in query.observations)
+
+
+def test_segment_service_failure_is_preserved_as_query_refusal() -> None:
+    from tests.unit._tracker_scenes import RES, sphere
+
+    x, y = _RIG.centre_xy
+    bowl = [
+        sphere(
+            (x + 0.06 * math.cos(a), y + 0.06 * math.sin(a), _RIG.support_z + 0.015),
+            0.015,
+        )
+        for a in np.linspace(0, 2 * math.pi, 14, endpoint=False)
+    ]
+    depth, labels = render(bowl, _RIG)
+    grid = grid_from_depth(depth, _RIG, shift_z=0.5 * RES)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    tr = ObjectTracker(_RIG.frame)
+    query = ObjectQuery(label="bowl", count="one", role=ObjectRole.DESTINATION)
+    tr.open_query("g", "q0", query, "obj:bowl@0", stamp_ns=0)
+    (locate,) = tr.feed(frame, grid=grid, grid_stamp_ns=1, wall_s=0.0).requests
+    rows, cols = np.nonzero(labels > 0)
+    box = (float(cols.min()), float(rows.min()), float(cols.max() + 1), float(rows.max() + 1))
+    (segment,) = tr.feed(
+        frame,
+        grid=grid,
+        grid_stamp_ns=1,
+        wall_s=1.0,
+        results=[TrackerResult(locate.request_id, boxes_xyxy=(box,))],
+    ).requests
+
+    failure = "segment_mask_stamp_mismatch"
+    tr.feed(
+        frame,
+        grid=grid,
+        grid_stamp_ns=1,
+        wall_s=1.1,
+        results=[TrackerResult(segment.request_id, failure_reason=failure)],
+    )
+
+    standing = tr.queries.get("g", "q0")
+    assert standing is not None
+    assert standing.observations[-1].reason == failure
+    assert not any(obs.reason == "no_mask" for obs in standing.observations)
+
+
+@pytest.mark.parametrize(
+    ("pose_present", "mask_present", "reason"),
+    [
+        (False, True, "no_camera_pose"),
+        (True, False, "no_robot_mask"),
+    ],
+)
+def test_unusable_frame_is_query_evidence_not_a_negative_locate(
+    pose_present: bool, mask_present: bool, reason: str
+) -> None:
+    from openral_world_state_ros.object_tracker_node import escalation_evidence
+
+    tr = _tracker()
+    depth, _ = render([], _RIG)
+    frame = CameraFrame(
+        _RIG.name,
+        5 * _S,
+        depth,
+        _RIG.k,
+        _RIG.t if pose_present else None,
+        np.zeros(depth.shape, dtype=np.uint8) if mask_present else None,
+    )
+
+    out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=5 * _S, wall_s=0.0)
+
+    assert out.requests == ()
+    query = tr.queries.get("g", "q0")
+    assert query is not None
+    assert query.observations[-1].model_dump() == {
+        "camera": _RIG.name,
+        "stamp_ns": 5 * _S,
+        "reason": reason,
+    }
+    escalation = QueryEscalation("unresolved", "g", "q0", "banana", None, 5 * _S)
+    evidence = escalation_evidence(escalation, query, attempts=0)
+    assert evidence.reason == reason
+    assert evidence.reason != "object_not_found"
+
+
+def test_zero_attempts_without_observations_reports_unavailable() -> None:
+    from openral_world_state_ros.object_tracker_node import escalation_evidence
+
+    tr = _tracker()
+    query = tr.queries.get("g", "q0")
+    assert query is not None
+    escalation = QueryEscalation("unresolved", "g", "q0", "banana", None, 5 * _S)
+
+    assert escalation_evidence(escalation, query, attempts=0).reason == "no_usable_observation"
+
+
+def test_completed_empty_locate_remains_object_not_found() -> None:
+    from openral_world_state_ros.object_tracker_node import escalation_evidence
+
+    tr = _tracker()
+    depth, _ = render([], _RIG)
+    grid = grid_from_depth(depth, _RIG)
+    frame = CameraFrame(
+        _RIG.name,
+        5 * _S,
+        depth,
+        _RIG.k,
+        _RIG.t,
+        np.zeros(depth.shape, dtype=np.uint8),
+    )
+    out = tr.feed(frame, grid=grid, grid_stamp_ns=5 * _S, wall_s=0.0)
+    (request,) = out.requests
+    assert request.service == "locate_in_view"
+
+    tr.feed(
+        frame,
+        grid=grid,
+        grid_stamp_ns=5 * _S,
+        wall_s=0.1,
+        results=[TrackerResult(request.request_id)],
+    )
+    query = tr.queries.get("g", "q0")
+    assert query is not None
+    assert query.observations[-1].reason == "locate_found_nothing"
+    escalation = QueryEscalation("unresolved", "g", "q0", "banana", None, 5 * _S)
+    assert escalation_evidence(escalation, query, attempts=1).reason == "object_not_found"
+
+
+def test_unusable_frame_does_not_append_to_resolved_query() -> None:
+    tr = _tracker()
+    _, wall = step(tr, _RIG, [_BANANA], stamp_ns=5 * _S, wall_s=0.0)
+    query = tr.queries.get("g", "q0")
+    assert query is not None and query.status is ObjectQueryStatus.RESOLVED
+    before = list(query.observations)
+    depth, _ = render([], _RIG)
+    frame = CameraFrame(_RIG.name, 6 * _S, depth, _RIG.k, None, np.zeros(depth.shape, np.uint8))
+
+    tr.feed(frame, grid=None, grid_stamp_ns=0, wall_s=wall + 1.0)
+
+    assert query.observations == before
+
+
+def test_action_invocation_id_separates_reused_target_and_paused_clock_goals() -> None:
+    from openral_core import GraspDeclaration, RobotDescription
+    from openral_world_state.object_tracker import TrackerSession
+
+    session = TrackerSession(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
+        cell_m=0.015,
+        grounding_wait_s=5.0,
+    )
+    session._now_ns = 7  # same source-clock stamp for both invocations (paused sim clock)
+    first_id = "0123456789abcdef0123456789abcdef"
+    second_id = "fedcba9876543210fedcba9876543210"
+    common = {
+        "target_id": "obj:banana",
+        "contact_links": ("gripper_finger",),
+        "timeout_s": 60.0,
+        "stamp_ns": 7,
+        "target_queries": (_QUERY,),
+    }
+    session.on_grasp_declaration(GraspDeclaration(**common, invocation_id=first_id))
+    first = session.tracker.queries.queries[0]
+    assert first.invocation_id == first_id
+    session.on_grasp_declaration(GraspDeclaration(**common, invocation_id=second_id))
+    [second] = session.tracker.queries.queries
+    assert first.goal_id != second.goal_id
+    assert second.goal_id.endswith(f"#{second_id}")
+    assert second.invocation_id == second_id
 
 
 def test_scheduler_serves_unresolved_queries_fairly() -> None:
@@ -387,3 +617,55 @@ def test_a_locate_asks_down_to_the_tracker_threshold_and_low_score_prompts_are_l
     (event,) = [e for e in logs if e["event"] == "object_tracker.low_score_prompt_confirmed"]
     assert event["log_level"] == "info" and event["score"] == 0.2 and event["grids"] == 3
     assert event["object_id"] == track.object_id
+
+
+def test_catalog_block_invalidates_resolved_query_and_escalates_immediately() -> None:
+    tr, wall = _tracker(), 0.0
+    for n in range(3):
+        out, wall = step(tr, _RIG, [_BANANA], stamp_ns=(n + 1) * _S // 2, wall_s=wall + 1)
+    assert tr.queries.ready("g")
+    [track] = out.tracked.objects
+    blocked = frozenset({track.object_id})
+    events = tr.queries.update(out.tracked.objects, now_ns=2 * _S, blocked_ids=blocked)
+    assert [event.kind for event in events] == ["unresolved"]
+    assert not tr.queries.ready("g")
+    assert tr.queries.update(out.tracked.objects, now_ns=2 * _S + 1, blocked_ids=blocked) == []
+    tr.queries.update(out.tracked.objects, now_ns=3 * _S)
+    assert tr.queries.ready("g")
+
+
+def test_a_context_query_never_found_never_escalates() -> None:
+    """A neighbour never found is no reason to search, nor to end the goal (an exhausted
+    escalation does): CONTEXT queries ground what they can and stay quiet."""
+    tr = ObjectTracker(_RIG.frame, TrackerParams(search_start_s=5.0, search_max_s=60.0))
+    tr.open_query("g", "c0", ObjectQuery(label="carton", count="all", role=ObjectRole.CONTEXT),
+                  "obj:banana@0", stamp_ns=0)  # fmt: skip
+    wall, kinds = 0.0, []
+    for n in range(0, 62):
+        out, wall = step(tr, _RIG, [], stamp_ns=n * _S, wall_s=wall + 1)
+        kinds += [e.kind for e in out.escalations]
+    assert kinds == []
+    query = tr.queries.get("g", "c0")
+    assert query is not None and query.status is ObjectQueryStatus.UNRESOLVED
+
+
+def test_a_seeded_context_query_is_located_in_its_seed_not_point_prompted() -> None:
+    """Spark R288/R289 (2026-10-23): point prompts on a tote's raised tops masked its walls
+    as "carton"; a CONTEXT query's seed crops the detector, whose box is the class evidence."""
+    from openral_core import PlaceRegion, Pose6D
+
+    tr = ObjectTracker(_RIG.frame, TrackerParams(search_start_s=5.0, search_max_s=60.0))
+    x, y = _RIG.centre_xy
+    seed = PlaceRegion(
+        frame_id=_RIG.frame,
+        half_extents=(0.15, 0.15, 0.10),
+        pose=Pose6D(xyz=(x, y, _RIG.support_z + 0.05), quat_xyzw=(0, 0, 0, 1), frame_id=_RIG.frame),
+    )
+    q = ObjectQuery(label="carton", count="all", role=ObjectRole.CONTEXT, seed=seed)
+    tr.open_query("g", "c0", q, "obj:banana@0", stamp_ns=0)
+    depth, _ = render([_BANANA], _RIG)
+    frame = CameraFrame(_RIG.name, 1, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    out = tr.feed(frame, grid=grid_from_depth(depth, _RIG), grid_stamp_ns=1, wall_s=1.0)
+    [req] = out.requests
+    assert req.service == "locate_in_view" and req.seed_cell is None
+    assert req.roi_norm_xyxy is not None, "cropped to the seed"

@@ -78,7 +78,24 @@ def _hull_base(fit: ContainingFit) -> NDArray[np.float64]:
     assert fit.tight is not None and fit.tight.tight_geometry is not None
     pose = fit.tight.pose_in_object
     t = homogeneous_from_quat_xyz(pose.xyz, pose.quat_xyzw)
-    return np.asarray(np.asarray(fit.tight.tight_geometry.hull_vertices_m) @ t[:3, :3].T + t[:3, 3])
+    hull = np.asarray(fit.tight.tight_geometry.hull_vertices_m).reshape(-1, 3)
+    return np.asarray(hull @ t[:3, :3].T + t[:3, 3])
+
+
+def _in_tight(points: NDArray[np.float64], fit: ContainingFit) -> NDArray[np.bool_]:
+    """In the box, its DOP and (when it has one) its hull: the set the kernel checks."""
+    from openral_core.schemas import DOP_AXES
+
+    assert fit.tight is not None and fit.tight.tight_geometry is not None
+    geo = fit.tight.tight_geometry
+    pose = fit.tight.pose_in_object
+    t = homogeneous_from_quat_xyz(pose.xyz, pose.quat_xyzw)
+    proj = ((points - t[:3, 3]) @ t[:3, :3]) @ np.asarray(DOP_AXES, dtype=np.float64).T
+    ok: NDArray[np.bool_] = _in_box(points, fit.box) & np.all(
+        (proj >= np.asarray(geo.dop_lo_m) - 1e-9) & (proj <= np.asarray(geo.dop_hi_m) + 1e-9),
+        axis=1,
+    )
+    return ok & inside_hull(points, _hull_base(fit)) if geo.hull_vertices_m else ok
 
 
 def _in_box(points: NDArray[np.float64], region: PlaceRegion | None) -> NDArray[np.bool_]:
@@ -108,9 +125,8 @@ def test_fitted_set_contains_the_solid(
     pts = surface_samples(solid)
     assert pts[:, 2].min() >= rig.support_z - 1e-9  # resting on the support (A2)
     assert _in_box(pts, fit.box).all()
-    hull = _hull_base(fit)
-    assert len(hull) <= TrackedObject.MAX_HULL_VERTICES
-    assert inside_hull(pts, hull).all()
+    assert len(_hull_base(fit)) <= TrackedObject.MAX_HULL_VERTICES
+    assert _in_tight(pts, fit).all()
 
 
 def test_six_pole_hull_misses_a_sphere_the_cone_contains() -> None:
@@ -126,7 +142,7 @@ def test_six_pole_hull_misses_a_sphere_the_cone_contains() -> None:
     assert r - r / math.sqrt(3) > 0.01
     fit = _fit(rig, [sphere(tuple(c), r)])
     pts = surface_samples(sphere(tuple(c), r))
-    assert inside_hull(np.vstack((pts, diag)), _hull_base(fit)).all()
+    assert _in_tight(np.vstack((pts, diag)), fit).all()
 
 
 def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
@@ -147,7 +163,7 @@ def test_robot_pixels_are_unknown_and_grow_the_fit() -> None:
     robot[band & np.isin(np.arange(depth.shape[0]), rows)[:, None]] = UNCERTAIN_PIXEL
     fit = _fit(rig, [solid], robot_mask=robot)
     assert fit.refusal == "" and fit.assumptions["a4_occluder_px"] > 0
-    assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+    assert _in_tight(surface_samples(solid), fit).all()
 
 
 def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
@@ -169,7 +185,7 @@ def test_an_arm_hovering_beside_the_mask_does_not_lift_the_front_cut() -> None:
     depth[edge] = float(depth[labels == 1].min()) - 0.10
     fit = _fit(rig, [solid], robot_mask=robot, depth=depth)
     assert fit.refusal == "" and fit.assumptions["a5_robot_band_px"] > 0
-    assert inside_hull(surface_samples(solid), _hull_base(fit)).all()
+    assert _in_tight(surface_samples(solid), fit).all()
     assert fit.box is not None
     top = fit.box.pose.xyz[2] + fit.box.half_extents[2]
     assert top < rig.support_z + 0.06 + 2 * RES  # not lifted toward the arm
@@ -209,7 +225,7 @@ def test_the_detector_box_restores_a_rim_the_mask_lost() -> None:
     assert without.refusal == "" and not _in_box(pts, without.box).all()  # the A1 failure
     fit = _fit(rig, [plate], mask=lost, detector_box=box)
     assert fit.refusal == "" and _in_box(pts, fit.box).all()
-    assert inside_hull(pts, _hull_base(fit)).all()
+    assert _in_tight(pts, fit).all()
 
 
 def test_refusals_name_the_broken_assumption() -> None:
@@ -228,3 +244,21 @@ def test_refusals_name_the_broken_assumption() -> None:
         frame_id=rig.frame, stamp_ns=1,
     )  # fmt: skip
     assert fit.refusal == "a1_border_truncated"
+
+
+@pytest.mark.parametrize("rig_name", sorted(_RIGS))
+def test_an_oblique_view_does_not_box_far_above_the_object(rig_name: str) -> None:
+    """Spark banana R325 (2026-10-23): the global front cut lifted the far-rim rays, so a
+    5.6 cm bowl boxed 15 cm tall and its margin kept the carried banana's cells as the bowl's.
+    No ray meets the solid nearer than its first hit, so the box tops out at the highest
+    first hit: the rim, one depth tolerance and half a cell above it."""
+    rig = _RIGS[rig_name]
+    x, y = rig.centre_xy
+    top = rig.support_z + 0.056
+    solid = cylinder((x, y), 0.08, rig.support_z, top)
+    fit = _fit(rig, [solid])
+    assert fit.refusal == "", fit.refusal
+    assert fit.box is not None
+    zhi = fit.box.pose.xyz[2] + fit.box.half_extents[2]
+    assert zhi <= top + 0.02, (rig_name, zhi - top)
+    assert _in_tight(surface_samples(solid), fit).all()

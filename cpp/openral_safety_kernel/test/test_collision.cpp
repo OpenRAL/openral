@@ -4959,8 +4959,14 @@ TEST(SelfCollisionHull, HullHullDistanceIsSandwichedBetweenItsOwnBounds) {
 namespace {
 
 /// One carried payload with a contact-force witness on the declared target.
+constexpr std::int64_t kForceGateNowNs = 100'000'000'000;
+constexpr std::int64_t kForceGateDeclarationStampNs = 90'000'000'000;
+constexpr double kForceGateTimeoutS = 60.0;
+constexpr double kForceGateWitnessMaxAgeS = 0.5;
+
 osk::AttachedModel force_gate_model(double threshold_n, double magnitude_n, bool calibrated,
-                                    bool target_matches = true, bool has_witness = true) {
+                                    bool target_matches = true, bool has_witness = true,
+                                    std::int64_t witness_stamp_ns = kForceGateNowNs) {
   osk::AttachedModel attached;
   attached.objects.assign(2, osk::AttachedObject{});
   attached.n_objects = 1;
@@ -4968,11 +4974,15 @@ osk::AttachedModel force_gate_model(double threshold_n, double magnitude_n, bool
   obj.has_contact_force_witness = has_witness;
   obj.contact_force_calibrated = has_witness && calibrated;
   obj.contact_force_target_matches = has_witness && target_matches;
+  obj.contact_force_stamp_ns = witness_stamp_ns;
   obj.contact_force_magnitude = has_witness ? magnitude_n : 0.0;
   if (threshold_n > 0.0) {
     attached.force_gate.valid = true;
     attached.force_gate.object_mask = 0b1;
     attached.force_gate.threshold_n = threshold_n;
+    attached.force_gate.declaration_stamp_ns = kForceGateDeclarationStampNs;
+    attached.force_gate.declaration_timeout_s = kForceGateTimeoutS;
+    attached.force_gate.witness_max_age_s = kForceGateWitnessMaxAgeS;
   }
   return attached;
 }
@@ -4983,18 +4993,44 @@ TEST(ContactForceGate, ASubThresholdTouchPassesAndAnOverThresholdPressRefuses) {
   // The two directions the gate exists to separate, at the same geometry. Both
   // configurations are ones every geometric check already accepted — the gate is
   // evaluated last — so this is the whole of what it adds.
-  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 12.5, true)).tripped)
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 12.5, true), kForceGateNowNs).tripped)
       << "a 12.5 N touch inside a 30 N declaration is the place the declaration authorised";
 
-  const auto pressed = osk::check_contact_force_gate(force_gate_model(30.0, 41.0, true));
+  const auto pressed =
+      osk::check_contact_force_gate(force_gate_model(30.0, 41.0, true), kForceGateNowNs);
   ASSERT_TRUE(pressed.tripped);
   EXPECT_EQ(pressed.object_index, 0);
   EXPECT_DOUBLE_EQ(pressed.magnitude_n, 41.0);
   EXPECT_DOUBLE_EQ(pressed.threshold_n, 30.0);
 
   // The bound is inclusive: a declaration saying "up to 30 N" permits 30 N.
-  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 30.0, true)).tripped);
-  EXPECT_TRUE(osk::check_contact_force_gate(force_gate_model(30.0, 30.0 + 1e-9, true)).tripped);
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 30.0, true), kForceGateNowNs).tripped);
+  EXPECT_TRUE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 30.0 + 1e-9, true), kForceGateNowNs)
+          .tripped);
+}
+
+TEST(ContactForceGate, ATaskCanLowerButNeverRaiseTheRobotCeiling) {
+  const auto model = force_gate_model(30.0, 12.5, true);
+  const auto limited = osk::check_contact_force_gate(model, kForceGateNowNs, 10.0);
+  ASSERT_TRUE(limited.tripped);
+  EXPECT_DOUBLE_EQ(limited.threshold_n, 10.0);
+  EXPECT_FALSE(osk::check_contact_force_gate(model, kForceGateNowNs, 12.5).tripped);
+  EXPECT_TRUE(osk::check_contact_force_gate(model, kForceGateNowNs, 0.0).tripped);
+
+  const auto stricter_task = force_gate_model(5.0, 6.0, true);
+  const auto task_limited = osk::check_contact_force_gate(stricter_task, kForceGateNowNs, 10.0);
+  ASSERT_TRUE(task_limited.tripped);
+  EXPECT_DOUBLE_EQ(task_limited.threshold_n, 5.0);
+  EXPECT_TRUE(osk::check_contact_force_gate(stricter_task, kForceGateNowNs).tripped);
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, false), kForceGateNowNs, 10.0)
+          .tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, true, false),
+                                             kForceGateNowNs, 10.0)
+                   .tripped);
 }
 
 TEST(ContactForceGate, WithNoLiveDeclarationTheGateIsInert) {
@@ -5003,13 +5039,13 @@ TEST(ContactForceGate, WithNoLiveDeclarationTheGateIsInert) {
   // nothing without a declaration to scope it. Geometry decides alone.
   auto undeclared = force_gate_model(0.0, 5000.0, true);
   ASSERT_FALSE(undeclared.force_gate.valid);
-  EXPECT_FALSE(osk::check_contact_force_gate(undeclared).tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(undeclared, kForceGateNowNs).tripped);
 
   // A live declaration that names a DIFFERENT payload is equally inert: the
   // gate follows the declared object, never a second one the robot carries.
   auto other_payload = force_gate_model(30.0, 5000.0, true);
   other_payload.force_gate.object_mask = 0b10;
-  EXPECT_FALSE(osk::check_contact_force_gate(other_payload).tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(other_payload, kForceGateNowNs).tripped);
 }
 
 TEST(ContactForceGate, AnUncalibratedMagnitudeIsNeverReadAsNewtons) {
@@ -5018,9 +5054,11 @@ TEST(ContactForceGate, AnUncalibratedMagnitudeIsNeverReadAsNewtons) {
   // is not a physical claim and must not be judged as one (CLAUDE.md §1.2).
   // This is the test that keeps a stock sim from arming an enforcement surface
   // nobody calibrated.
-  EXPECT_FALSE(osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, false)).tripped)
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, false), kForceGateNowNs).tripped)
       << "an uncalibrated 4000 is a producer quantity, not 4000 newtons";
-  EXPECT_TRUE(osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, true)).tripped)
+  EXPECT_TRUE(
+      osk::check_contact_force_gate(force_gate_model(30.0, 4000.0, true), kForceGateNowNs).tripped)
       << "the same number under a named calibration is judged";
 }
 
@@ -5028,14 +5066,15 @@ TEST(ContactForceGate, AContactOnAnythingButTheDeclaredTargetAttestsNothing) {
   // Scoping, the same rule the support witness's support_id is under: force
   // bounds the one surface the declaration named, and grants nothing anywhere
   // else. A payload pressing hard on a wall mid-place is a geometry problem.
-  EXPECT_FALSE(
-      osk::check_contact_force_gate(force_gate_model(30.0, 900.0, true, /*target_matches=*/false))
-          .tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(
+                   force_gate_model(30.0, 900.0, true, /*target_matches=*/false), kForceGateNowNs)
+                   .tripped);
   // And an absent witness is not evidence of absent contact — it only ever
   // means the gate does not arm.
-  EXPECT_FALSE(osk::check_contact_force_gate(
-                   force_gate_model(30.0, 900.0, true, true, /*has_witness=*/false))
-                   .tripped);
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(
+          force_gate_model(30.0, 900.0, true, true, /*has_witness=*/false), kForceGateNowNs)
+          .tripped);
 }
 
 TEST(ContactForceGate, AnOutOfRangeOrNonFiniteBoundArmsNothing) {
@@ -5043,20 +5082,88 @@ TEST(ContactForceGate, AnOutOfRangeOrNonFiniteBoundArmsNothing) {
   // nobody chose. The ceiling mirrors the schema's, so a declaration the wire
   // accepts can never overflow the kernel.
   auto over = force_gate_model(osk::kMaxContactForceThresholdN + 1.0, 5000.0, true);
-  EXPECT_FALSE(osk::check_contact_force_gate(over).tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(over, kForceGateNowNs).tripped);
 
   auto nan_threshold = force_gate_model(30.0, 5000.0, true);
   nan_threshold.force_gate.threshold_n = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_FALSE(osk::check_contact_force_gate(nan_threshold).tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(nan_threshold, kForceGateNowNs).tripped);
 
   auto nan_magnitude = force_gate_model(30.0, 0.0, true);
   nan_magnitude.objects[0].contact_force_magnitude = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_FALSE(osk::check_contact_force_gate(nan_magnitude).tripped);
+  EXPECT_FALSE(osk::check_contact_force_gate(nan_magnitude, kForceGateNowNs).tripped);
 
   // At the ceiling exactly, the gate is live — the bound is a ceiling on the
   // declaration, not an exclusion of it.
   auto at_ceiling = force_gate_model(osk::kMaxContactForceThresholdN, 5000.0, true);
-  EXPECT_TRUE(osk::check_contact_force_gate(at_ceiling).tripped);
+  EXPECT_TRUE(osk::check_contact_force_gate(at_ceiling, kForceGateNowNs).tripped);
+}
+
+TEST(ContactForceGate, DeclarationAndMeasurementMustBeFreshAtEvaluationTime) {
+  constexpr std::int64_t timeout_ns = 60'000'000'000;
+  constexpr std::int64_t witness_max_age_ns = 500'000'000;
+  auto declaration_boundary = force_gate_model(10.0, 11.0, true);
+  declaration_boundary.force_gate.declaration_stamp_ns = kForceGateNowNs - timeout_ns;
+  declaration_boundary.objects[0].contact_force_stamp_ns = kForceGateNowNs;
+  EXPECT_TRUE(osk::check_contact_force_gate(declaration_boundary, kForceGateNowNs).tripped)
+      << "the declaration timeout is inclusive when the witness is current";
+
+  auto witness_boundary =
+      force_gate_model(10.0, 11.0, true, true, true, kForceGateNowNs - witness_max_age_ns);
+  EXPECT_TRUE(osk::check_contact_force_gate(witness_boundary, kForceGateNowNs).tripped)
+      << "the existing attached-collision freshness budget is inclusive";
+
+  auto stale_witness =
+      force_gate_model(10.0, 11.0, true, true, true, kForceGateNowNs - witness_max_age_ns - 1);
+  EXPECT_FALSE(osk::check_contact_force_gate(stale_witness, kForceGateNowNs).tripped)
+      << "a witness cannot inherit the declaration's much longer timeout";
+
+  auto future_witness = force_gate_model(10.0, 11.0, true, true, true, kForceGateNowNs + 1);
+  EXPECT_FALSE(osk::check_contact_force_gate(future_witness, kForceGateNowNs).tripped);
+
+  auto missing_witness_stamp = force_gate_model(10.0, 11.0, true, true, true, 0);
+  EXPECT_FALSE(osk::check_contact_force_gate(missing_witness_stamp, kForceGateNowNs).tripped);
+
+  auto expired_declaration = force_gate_model(10.0, 11.0, true);
+  expired_declaration.force_gate.declaration_stamp_ns = kForceGateNowNs - timeout_ns - 1;
+  EXPECT_FALSE(osk::check_contact_force_gate(expired_declaration, kForceGateNowNs).tripped);
+
+  auto future_declaration = force_gate_model(10.0, 11.0, true);
+  future_declaration.force_gate.declaration_stamp_ns = kForceGateNowNs + 1;
+  EXPECT_FALSE(osk::check_contact_force_gate(future_declaration, kForceGateNowNs).tripped);
+
+  auto missing_declaration_stamp = force_gate_model(10.0, 11.0, true);
+  missing_declaration_stamp.force_gate.declaration_stamp_ns = 0;
+  EXPECT_FALSE(osk::check_contact_force_gate(missing_declaration_stamp, kForceGateNowNs).tripped);
+}
+
+TEST(ContactForceGate, InvalidTimeoutAndInt64AgeOverflowArmNothing) {
+  auto overlong = force_gate_model(10.0, 11.0, true);
+  overlong.force_gate.declaration_timeout_s = osk::kMaxPlaceForceGateTimeoutS + 1.0;
+  EXPECT_FALSE(osk::check_contact_force_gate(overlong, kForceGateNowNs).tripped);
+
+  auto infinite = force_gate_model(10.0, 11.0, true);
+  infinite.force_gate.declaration_timeout_s = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(osk::check_contact_force_gate(infinite, kForceGateNowNs).tripped);
+
+  auto no_witness_age = force_gate_model(10.0, 11.0, true);
+  no_witness_age.force_gate.witness_max_age_s = 0.0;
+  EXPECT_FALSE(osk::check_contact_force_gate(no_witness_age, kForceGateNowNs).tripped);
+
+  auto infinite_witness_age = force_gate_model(10.0, 11.0, true);
+  infinite_witness_age.force_gate.witness_max_age_s = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(osk::check_contact_force_gate(infinite_witness_age, kForceGateNowNs).tripped);
+
+  auto overflow =
+      force_gate_model(10.0, 11.0, true, true, true, std::numeric_limits<std::int64_t>::min());
+  overflow.force_gate.declaration_stamp_ns = std::numeric_limits<std::int64_t>::min();
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(overflow, std::numeric_limits<std::int64_t>::max()).tripped);
+
+  auto witness_overflow =
+      force_gate_model(10.0, 11.0, true, true, true, std::numeric_limits<std::int64_t>::min());
+  EXPECT_FALSE(
+      osk::check_contact_force_gate(witness_overflow, std::numeric_limits<std::int64_t>::max())
+          .tripped);
 }
 
 TEST(ContactForceGate, TheDeepestOverrunIsTheOneReported) {
@@ -5069,9 +5176,10 @@ TEST(ContactForceGate, TheDeepestOverrunIsTheOneReported) {
   second.has_contact_force_witness = true;
   second.contact_force_calibrated = true;
   second.contact_force_target_matches = true;
+  second.contact_force_stamp_ns = kForceGateNowNs;
   second.contact_force_magnitude = 88.0;
 
-  const auto tripped = osk::check_contact_force_gate(attached);
+  const auto tripped = osk::check_contact_force_gate(attached, kForceGateNowNs);
   ASSERT_TRUE(tripped.tripped);
   EXPECT_EQ(tripped.object_index, 1);
   EXPECT_DOUBLE_EQ(tripped.magnitude_n, 88.0);
@@ -6746,6 +6854,34 @@ TEST(WorkspaceContact, ASlowHandsPayloadMeetingTheOtherHandDoesNotTrip) {
   EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "fast";
 }
 
+TEST(WorkspaceContact, AReleaseWindowKeepsTheReleasingHandsSlowHandsRule) {
+  // #418 K5, Spark R243/R250: link7 (here 3), exempt against the carried payload, tripped
+  // on the same payload frozen in base the moment the jaw released it.
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.05, 0.0, identity());
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), translate(0.12, 0.0, 0.0)};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  att.objects[0].attach_link = -1;  // frozen in base (identity: where link 1 let it go)
+  att.objects[0].release_hand_link = 1;
+  osk::WorkspaceContactRegion ws;
+  ASSERT_EQ(osk::ingest_workspace_region(identity(), osk::Vec3{0.2, 0.2, 0.2}, grasp_mask({1, 3}),
+                                         kWsMaxSpeed, kWsMaxLead, ws),
+            osk::GraspRegionStatus::kOk);
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  ws.hand_lead_m = 0.0;
+  ASSERT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0).hit) << "no workspace";
+  const auto slow = osk::check_attached_self_collision(m, att, s, 0.0, &ws);
+  EXPECT_FALSE(slow.hit) << "in the window: the releasing hand's rule";
+  EXPECT_EQ(slow.workspace_pairs, 1) << "never silent";
+  ws.hand_speed_mps = 2.0 * kWsMaxSpeed;
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "fast";
+  ws.hand_speed_mps = 0.5 * kWsMaxSpeed;
+  att.objects[0].release_hand_link = -1;  // the window closed: a plain obstacle
+  EXPECT_TRUE(osk::check_attached_self_collision(m, att, s, 0.0, &ws).hit) << "closed";
+}
+
 // #349: against the robot's own links a box payload with a stage-2 refinement is
 // the refinement's box (the producer's measured object), not the padded one — only
 // under a live workspace (the sim-only rule); without one, today's padded check.
@@ -6847,6 +6983,42 @@ TEST(TrackedBinding, OnlyTheAttachmentsOwnLinksCountAsTheHand) {
   rig.att.touch_links[0] = 2;
   rig.att.objects[0].touch_count = 1;
   EXPECT_TRUE(rig.meets(-0.10, 0.02));
+}
+
+// ── Issue #418 contact hold: is a declared hand link at a tracked box? ─────
+//
+// The same rig, links picked by the workspace's hand-link mask instead of an attachment.
+TEST(ContactHold, AHandLinkAtTheBoxMeetsItAndAnUnmaskedLinkNever) {
+  const TrackedHandRig rig;
+  std::bitset<osk::kMaxGraspMaskLinks> finger;
+  finger.set(1);
+  const auto meets = [&](const std::bitset<osk::kMaxGraspMaskLinks>& mask, double x, double slack) {
+    return osk::box_meets_hand_links(rig.m, rig.s, mask, translate(x, 0.0, 0.0),
+                                     osk::Vec3{0.02, 0.02, 0.02}, slack);
+  };
+  EXPECT_TRUE(meets(finger, 0.10, 0.015));
+  EXPECT_FALSE(meets(finger, 0.16, 0.015)) << "30 mm off the finger: not in contact";
+  EXPECT_FALSE(meets(finger, -0.10, 0.015)) << "the wrist box is not a masked hand link";
+  std::bitset<osk::kMaxGraspMaskLinks> wrist;
+  wrist.set(2);
+  EXPECT_TRUE(meets(wrist, -0.10, 0.015));
+  EXPECT_FALSE(meets({}, 0.10, 0.015)) << "no hand links: never in contact";
+}
+
+TEST(ContactHold, ADegenerateBoxOrSlackNeverMeets) {
+  const TrackedHandRig rig;
+  std::bitset<osk::kMaxGraspMaskLinks> finger;
+  finger.set(1);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(osk::box_meets_hand_links(rig.m, rig.s, finger, translate(0.10, 0.0, 0.0),
+                                         osk::Vec3{0.0, 0.02, 0.02}, 0.015));
+  EXPECT_FALSE(osk::box_meets_hand_links(rig.m, rig.s, finger, translate(0.10, 0.0, 0.0),
+                                         osk::Vec3{0.02, 0.02, 0.02}, nan));
+  EXPECT_FALSE(osk::box_meets_hand_links(rig.m, rig.s, finger, translate(nan, 0.0, 0.0),
+                                         osk::Vec3{0.02, 0.02, 0.02}, 0.015));
+  osk::CollisionScratch short_scratch;  // no posed links: nothing can meet
+  EXPECT_FALSE(osk::box_meets_hand_links(rig.m, short_scratch, finger, translate(0.10, 0.0, 0.0),
+                                         osk::Vec3{0.02, 0.02, 0.02}, 0.015));
 }
 
 TEST(TrackedBinding, ADegenerateOrNonFiniteBoxNeverMeets) {
@@ -7639,6 +7811,174 @@ TEST(ExplainedCells, TheMeasuredSupportLayerNearAnObjectIsExplained) {
       << "no measured support (NaN): nothing explained by it";
 }
 
+// ── #418 K7 amendment: the connected support layer (OT-11, Safety-WG pending) ─
+//
+// Spark R11 (2026-10-20): a finger skimming the tabletop 9 cm from the banana
+// stopped on `cell_unexplained` — the tabletop is the banana's measured support,
+// but past the 5 cm reach. The support layer a tracked object stands on is
+// explained wherever it is CONNECTED (occupied, in the layer, inside the
+// workspace) to the support beside that object.
+namespace {
+
+// A tabletop: the cell layer centred at z = 0.03 over x, y in [-0.13, 0.13]
+// (14 x 14 cells), except the cells for which `hole` is true.
+template <typename Hole>
+std::vector<std::array<double, 3>> k7_table(Hole hole) {
+  std::vector<std::array<double, 3>> c;
+  for (int ix = 0; ix < 14; ++ix) {
+    for (int iy = 0; iy < 14; ++iy) {
+      const double x = -0.13 + 0.02 * ix;
+      const double y = -0.13 + 0.02 * iy;
+      if (!hole(x, y)) {
+        c.push_back({x, y, 0.03});
+      }
+    }
+  }
+  return c;
+}
+
+std::vector<std::array<double, 3>> k7_table() {
+  return k7_table([](double, double) { return false; });
+}
+
+// The banana of the TheMeasuredSupportLayerNearAnObjectIsExplained rig.
+const K7Object kK7Banana{0.05, 0.01, 0.07, 0.02, 0.02, 0.02, 0.02};
+
+struct K7SupportRig {
+  std::vector<std::uint8_t> occ;
+  osk::VoxelGrid grid;
+  osk::WorkspaceExplanation e;
+  std::vector<std::uint8_t> mask;
+  std::vector<std::uint32_t> queue;
+  std::size_t marked{0};
+};
+
+K7SupportRig k7_support_rig(const std::vector<std::array<double, 3>>& cells,
+                            const std::vector<K7Object>& objects,
+                            const osk::WorkspaceContactRegion& ws) {
+  K7SupportRig r;
+  r.occ = k2_occ(cells);
+  r.grid = k2_grid(r.occ);
+  r.grid.workspace_region = ws;
+  r.e = k7_explanation(objects);
+  r.mask.assign(r.occ.size(), 0);
+  r.queue.assign(r.occ.size(), 0);
+  r.marked = osk::mark_support_cells(r.grid, r.e, r.mask.data(), r.mask.size(), r.queue.data(),
+                                     r.queue.size());
+  r.e.support_cells = r.mask.data();
+  r.e.support_cells_n = r.mask.size();
+  r.grid.workspace_explained = &r.e;
+  return r;
+}
+
+}  // namespace
+
+TEST(ExplainedCells, TheConnectedSupportLayerIsExplainedPastTheReach) {
+  auto r = k7_support_rig(k7_table(), {kK7Banana}, k7_workspace());
+  r.grid.occupancy = r.occ.data();  // the rig was moved: re-point at its own buffers
+  r.e.support_cells = r.mask.data();
+  r.grid.workspace_explained = &r.e;
+  EXPECT_EQ(r.marked, 14U * 14U) << "the whole tabletop layer is one component";
+  EXPECT_TRUE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.11, 0.01, 0.03}))
+      << "the tabletop 14 cm beside the banana (R11: 9 cm)";
+  EXPECT_TRUE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.13, -0.13, 0.03}));
+  // Without the mask the same cell is past the reach, as before.
+  osk::WorkspaceExplanation reach_only = r.e;
+  reach_only.support_cells = nullptr;
+  osk::VoxelGrid g = r.grid;
+  g.workspace_explained = &reach_only;
+  EXPECT_FALSE(osk::workspace_cell_explained(g, osk::Vec3{-0.11, 0.01, 0.03}));
+}
+
+TEST(ExplainedCells, ABodyOnTheConnectedSupportStillStops) {
+  // A person's hand lying on the table: its cells above the layer are not the
+  // support; only the table under it is.
+  auto cells = k7_table();
+  for (const auto& c : k7_hand_blob()) {
+    cells.push_back({c[0] - 0.14, c[1] - 0.14, c[2] + 0.04});  // z 0.05 / 0.07, on the table
+  }
+  auto r = k7_support_rig(cells, {kK7Banana}, k7_workspace());
+  r.grid.occupancy = r.occ.data();
+  r.e.support_cells = r.mask.data();
+  r.grid.workspace_explained = &r.e;
+  EXPECT_FALSE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.11, -0.11, 0.05}));
+  EXPECT_FALSE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.11, -0.11, 0.07}));
+  // The finger on the hand stops, with the workspace and the support both live.
+  const osk::CollisionModel m = k2_model();
+  osk::CollisionScratch s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(-0.11, -0.11, 0.09);
+  const auto hit = osk::check_voxel_collision(m, s, r.grid, kK2Margin);
+  EXPECT_TRUE(hit.hit) << "an unexplained body standing on the support stops";
+  EXPECT_EQ(hit.workspace_denied, 5);
+  // The same finger on the bare table elsewhere is tolerated.
+  s = k2_scratch();
+  s.link_world[kK2LeftA] = translate(-0.11, 0.09, 0.05);
+  EXPECT_FALSE(osk::check_voxel_collision(m, s, r.grid, kK2Margin).hit);
+}
+
+TEST(ExplainedCells, TheSupportComponentEndsAtAGapAndAtTheWorkspace) {
+  // Two free rows at x = -0.05 / -0.07 split the table: the far side is another surface.
+  auto split = k7_support_rig(k7_table([](double x, double) { return x > -0.08 && x < -0.04; }),
+                              {kK7Banana}, k7_workspace());
+  split.grid.occupancy = split.occ.data();
+  split.e.support_cells = split.mask.data();
+  split.grid.workspace_explained = &split.e;
+  EXPECT_TRUE(osk::workspace_cell_explained(split.grid, osk::Vec3{-0.03, 0.01, 0.03}));
+  EXPECT_FALSE(osk::workspace_cell_explained(split.grid, osk::Vec3{-0.09, 0.01, 0.03}))
+      << "not connected to the banana's support";
+  // One free row (Spark R18's grazing-ray checkerboard) is bridged.
+  auto flicker =
+      k7_support_rig(k7_table([](double x, double) { return std::fabs(x + 0.05) < 0.005; }),
+                     {kK7Banana}, k7_workspace());
+  flicker.grid.occupancy = flicker.occ.data();
+  flicker.e.support_cells = flicker.mask.data();
+  flicker.grid.workspace_explained = &flicker.e;
+  EXPECT_TRUE(osk::workspace_cell_explained(flicker.grid, osk::Vec3{-0.09, 0.01, 0.03}))
+      << "one empty cell does not end the support";
+  // A workspace covering only x >= -0.04 ends the component there, though the
+  // table runs on outside it.
+  EXPECT_EQ(k7_support_rig(k7_table(), {kK7Banana}, k7_workspace(0.06, 0.0, 0.0, 0.1)).marked,
+            9U * 10U)
+      << "x in [-0.03, 0.13] by y in [-0.09, 0.09]";
+  // A path that leaves the workspace and re-enters it does not connect: the rows
+  // x = -0.01 / 0.01 are free except at y = 0.13, outside a workspace y in [-0.20, 0.10].
+  auto u_shape =
+      k7_support_rig(k7_table([](double x, double y) { return std::fabs(x) < 0.015 && y < 0.12; }),
+                     {kK7Banana}, k7_workspace(0.0, -0.05, 0.0, 0.15));
+  u_shape.grid.occupancy = u_shape.occ.data();
+  u_shape.e.support_cells = u_shape.mask.data();
+  u_shape.grid.workspace_explained = &u_shape.e;
+  EXPECT_FALSE(osk::workspace_cell_explained(u_shape.grid, osk::Vec3{-0.05, 0.01, 0.03}));
+  EXPECT_TRUE(osk::workspace_cell_explained(u_shape.grid, osk::Vec3{0.11, 0.01, 0.03}));
+}
+
+TEST(ExplainedCells, TheSupportMaskFailsClosed) {
+  auto r = k7_support_rig(k7_table(), {kK7Banana}, k7_workspace());
+  r.grid.occupancy = r.occ.data();
+  r.e.support_cells = r.mask.data();
+  r.grid.workspace_explained = &r.e;
+  ASSERT_GT(r.marked, 0U);
+  // No measured support, no live workspace, a short mask or queue: nothing marked.
+  EXPECT_EQ(
+      k7_support_rig(k7_table(), {{0.05, 0.01, 0.07, 0.02, 0.02, 0.02}}, k7_workspace()).marked,
+      0U);
+  EXPECT_EQ(k7_support_rig(k7_table(), {kK7Banana}, osk::WorkspaceContactRegion{}).marked, 0U);
+  EXPECT_EQ(osk::mark_support_cells(r.grid, r.e, r.mask.data(), r.mask.size() - 1, r.queue.data(),
+                                    r.queue.size()),
+            0U);
+  EXPECT_EQ(osk::mark_support_cells(r.grid, r.e, r.mask.data(), r.mask.size(), r.queue.data(),
+                                    r.queue.size() - 1),
+            0U);
+  EXPECT_FALSE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.11, 0.01, 0.03}))
+      << "a refused call leaves the mask cleared, never stale";
+  // A mask of another grid's length is ignored.
+  ASSERT_EQ(osk::mark_support_cells(r.grid, r.e, r.mask.data(), r.mask.size(), r.queue.data(),
+                                    r.queue.size()),
+            r.marked);
+  r.e.support_cells_n = r.mask.size() - 1;
+  EXPECT_FALSE(osk::workspace_cell_explained(r.grid, osk::Vec3{-0.11, 0.01, 0.03}));
+}
+
 TEST(ExplainedCells, DeclaredStaticCellsAreTheCellsTheBridgeMarks) {
   std::vector<std::uint8_t> occ(kK2N * kK2N * kK2N, 0);
   osk::VoxelGrid grid = k2_grid(occ);
@@ -7797,6 +8137,15 @@ TEST(ExplainedCells, TripsAreNestedBetweenTheWorkspaceAndNoExemptionOverRandomis
     osk::VoxelGrid ws_grid = none_grid;
     ws_grid.workspace_region =
         k7_workspace(0.05 * unit(rng), 0.05 * unit(rng), 0.05 * unit(rng), ws_half(rng));
+    // Half the time, the connected support layer too (the #418 K7 amendment).
+    std::vector<std::uint8_t> support(occ.size(), 0);
+    std::vector<std::uint32_t> queue(occ.size(), 0);
+    if (coin(rng)) {
+      osk::mark_support_cells(ws_grid, e, support.data(), support.size(), queue.data(),
+                              queue.size());
+      e.support_cells = support.data();
+      e.support_cells_n = support.size();
+    }
     osk::VoxelGrid k7_grid = ws_grid;
     k7_grid.workspace_explained = &e;
     const auto none = trip_set(m, s, occ, none_grid, kK2Margin);
@@ -7918,6 +8267,23 @@ TEST(PayloadOwnCells, ACellInsideTheFallbackPrimitiveOnlyStillStops) {
   PayloadRig bare({po_box(0, 0, 0, 0.08, 0.08, 0.08, kFb)});
   bare.cell(0.01, 0.01, 0.01);
   EXPECT_TRUE(bare.check().hit);
+}
+
+TEST(PayloadOwnCells, AFallbackExplainsItsCellsOnlyForAnUntrackedPinchHold) {
+  // `fallback_ok` (an `untracked_grasp` hold, `pinch_payload_own_cells_enabled`): the pinch
+  // volume is the object in the hand. The other guards still hold.
+  PayloadRig rig({po_box(0, 0, 0, 0.08, 0.08, 0.08, kFb)});
+  rig.cell(0.01, 0.01, 0.01);
+  ASSERT_TRUE(rig.check().hit) << "unarmed for it, a fallback explains nothing";
+  rig.own.fallback_ok = 1U;
+  EXPECT_FALSE(rig.check().hit);
+  rig.own.floor_z[0] = 0.02;
+  EXPECT_TRUE(rig.check().hit) << "below the bind floor is the support";
+  rig.own.floor_z[0] = -0.1;
+  rig.own.n_others = 1;
+  rig.own.other_box[0] = translate(0.01, 0.01, 0.01);
+  rig.own.other_half[0] = {0.02, 0.02, 0.02};
+  EXPECT_TRUE(rig.check().hit) << "another settled track's cell";
 }
 
 TEST(PayloadOwnCells, ACellOfAnotherSettledTracksBoxInsideTheMeasuredBoxStillStops) {

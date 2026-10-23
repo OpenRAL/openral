@@ -69,29 +69,49 @@ bool tracked_set_usable(const openral_msgs::msg::WorldStateStamped& state,
 const openral_msgs::msg::TrackedObject*
 identity_clearing_track(const openral_msgs::msg::AttachedCollisionObject& object,
                         const openral_msgs::msg::WorldStateStamped& state,
-                        const std::string& grid_frame) {
-  if (object.evidence_kind != kTrackedObjectEvidence || !tracked_set_usable(state, grid_frame)) {
+                        const std::string& grid_frame, const char** why) {
+  const auto refuse = [&](const char* reason) -> const openral_msgs::msg::TrackedObject* {
+    if (why != nullptr) {
+      *why = reason;
+    }
     return nullptr;
+  };
+  if (object.evidence_kind != kTrackedObjectEvidence) {
+    return refuse("evidence_kind");
+  }
+  if (!tracked_set_usable(state, grid_frame)) {
+    return refuse("tracked_set_unusable");
   }
   for (const auto& other : state.attached_objects) {
     if (&other != &object && other.attach_link == object.attach_link) {
-      return nullptr;  // two payloads on one hand: whose cells are whose is not known
+      return refuse("two_payloads_on_hand");  // whose cells are whose is not known
     }
   }
   const openral_msgs::msg::TrackedObject* match = nullptr;
   for (const auto& track : state.tracked_objects.objects) {
     if (track.object_id == object.object_id) {
       if (match != nullptr) {
-        return nullptr;  // a duplicated id is no identity
+        return refuse("duplicate_id");  // a duplicated id is no identity
       }
       match = &track;
     } else if (track.status == "bound" && track.attach_link == object.attach_link) {
-      return nullptr;  // a second object bound to this hand: ambiguous
+      return refuse("second_bound_on_hand");  // ambiguous
     }
   }
-  if (match == nullptr || match->status != "bound" || match->epoch != object.epoch ||
-      match->attach_link != object.attach_link || !std::isfinite(match->floor_z)) {
-    return nullptr;
+  if (match == nullptr) {
+    return refuse("no_track");
+  }
+  if (match->status != "bound") {
+    return refuse("status_not_bound");
+  }
+  if (match->epoch != object.epoch) {
+    return refuse("epoch_mismatch");
+  }
+  if (match->attach_link != object.attach_link) {
+    return refuse("attach_link_mismatch");
+  }
+  if (!std::isfinite(match->floor_z)) {
+    return refuse("no_floor_z");
   }
   return match;
 }

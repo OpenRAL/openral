@@ -57,6 +57,8 @@ class _FakeSidecar:
         obs_height: int = 64,
         obs_width: int = 48,
         sim_dt_per_tick_s: float | None = None,
+        reset_sim_dt_per_tick_s: float | None = 1 / 30,
+        omit_reset_time_base: bool = False,
         null_time_base: bool = False,
         obs_extra: dict[str, Any] | None = None,
         sim_time_ns: int | None = None,
@@ -68,6 +70,9 @@ class _FakeSidecar:
         # Sim seconds per step the ping reports (the real sidecar derives it from
         # the manifest control rate); None = a sidecar predating the field.
         self.sim_dt_per_tick_s = sim_dt_per_tick_s
+        # Actual callback-derived period reported by Isaac reset after warmup.
+        self.reset_sim_dt_per_tick_s = reset_sim_dt_per_tick_s
+        self.omit_reset_time_base = omit_reset_time_base
         # Send the field as an explicit null (a scene that never resolved its tick).
         self.null_time_base = null_time_base
         # Observation keys merged over the default obs (e.g. ``image_time_ns``), and
@@ -81,6 +86,7 @@ class _FakeSidecar:
         self.last_action: npt.NDArray[Any] | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._stop = threading.Event()
+        self._ready = threading.Event()
 
     def _obs(self) -> dict[str, Any]:
         return {
@@ -96,6 +102,7 @@ class _FakeSidecar:
         ctx = zmq.Context()
         sock = ctx.socket(zmq.REP)
         sock.bind(f"tcp://127.0.0.1:{self.port}")
+        self._ready.set()
         poller = zmq.Poller()
         poller.register(sock, zmq.POLLIN)
         while not self._stop.is_set():
@@ -111,6 +118,8 @@ class _FakeSidecar:
                     reply["sim_dt_per_tick_s"] = self.sim_dt_per_tick_s
             elif endpoint == "reset":
                 reply = {"observation": self._obs()}
+                if not self.omit_reset_time_base:
+                    reply["sim_dt_per_tick_s"] = self.reset_sim_dt_per_tick_s
                 if self.sim_time_ns is not None:
                     reply["sim_time_ns"] = self.sim_time_ns
             elif endpoint == "step":
@@ -144,6 +153,8 @@ class _FakeSidecar:
 
     def __enter__(self) -> _FakeSidecar:
         self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise RuntimeError("Wire-test sidecar did not bind its socket within 5 seconds")
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -241,6 +252,48 @@ class TestSidecarRollout:
             try:
                 assert rollout.sim_dt_per_tick_s == pytest.approx(1 / 30)
                 assert rollout.action_dim == 7  # same cached ping
+            finally:
+                rollout.close()
+
+    def test_reset_replaces_nominal_ping_period_with_observed_period(self) -> None:
+        scene, task = _scene_task()
+        actual_period = 4 * float(np.float32(1 / 60))
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 15,
+            reset_sim_dt_per_tick_s=actual_period,
+        ) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                rollout.reset(seed=0)
+                # HAL resets before probing action_dim; that later probe must
+                # not replace the observed cadence with the nominal ping value.
+                assert rollout.action_dim == 7
+                assert rollout.sim_dt_per_tick_s == pytest.approx(actual_period)
+                assert rollout.sim_dt_per_tick_s != 1 / 15
+            finally:
+                rollout.close()
+
+    @pytest.mark.parametrize(
+        ("reset_period", "omit_reset_time_base"),
+        [(None, False), (float("nan"), False), (0.0, False), (1 / 30, True)],
+    )
+    def test_reset_without_valid_observed_period_fails_closed(
+        self, reset_period: float | None, omit_reset_time_base: bool
+    ) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        scene, task = _scene_task()
+        with _FakeSidecar(
+            _free_port(),
+            sim_dt_per_tick_s=1 / 15,
+            reset_sim_dt_per_tick_s=reset_period,
+            omit_reset_time_base=omit_reset_time_base,
+        ) as s:
+            rollout = _make_rollout(s.port, scene, task)
+            try:
+                with pytest.raises(ROSConfigError, match="no valid observed time base"):
+                    rollout.reset(seed=0)
             finally:
                 rollout.close()
 
@@ -414,7 +467,9 @@ class TestHalTimeBaseGuard:
         from openral_core.exceptions import ROSConfigError
 
         # 1/60 s per step under a 30 Hz runner: the pre-#355 behaviour, 2x speed.
-        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 60) as s:
+        with _FakeSidecar(
+            _free_port(), sim_dt_per_tick_s=1 / 60, reset_sim_dt_per_tick_s=1 / 60
+        ) as s:
             hal = self._hal(s.port)
             try:
                 with pytest.raises(ROSConfigError, match=r"0\.016667 s.*30 Hz"):
@@ -423,12 +478,14 @@ class TestHalTimeBaseGuard:
                 hal.env.close()
 
     def test_a_nan_tick_is_refused(self) -> None:
-        from openral_core.exceptions import ROSConfigError
+        from openral_core.exceptions import ROSRuntimeError
 
-        with _FakeSidecar(_free_port(), sim_dt_per_tick_s=float("nan")) as s:
+        with _FakeSidecar(
+            _free_port(), sim_dt_per_tick_s=1 / 30, reset_sim_dt_per_tick_s=float("nan")
+        ) as s:
             hal = self._hal(s.port)
             try:
-                with pytest.raises(ROSConfigError, match="One step must be one control period"):
+                with pytest.raises(ROSRuntimeError, match="no valid observed time base"):
                     hal.connect()
             finally:
                 hal.env.close()
@@ -446,11 +503,13 @@ class TestHalTimeBaseGuard:
             finally:
                 hal.env.close()
 
-    def test_a_sidecar_without_the_field_is_not_checked(self, sidecar: _FakeSidecar) -> None:
+    def test_reset_period_is_checked_when_ping_predates_the_field(
+        self, sidecar: _FakeSidecar
+    ) -> None:
         hal = self._hal(sidecar.port)
         try:
-            hal.connect()  # back-compat: older protocol, nothing to hold it to
-            assert hal._sim_dt_per_tick_s is None
+            hal.connect()
+            assert hal._sim_dt_per_tick_s == pytest.approx(1 / 30)
         finally:
             hal.env.close()
 
@@ -599,6 +658,7 @@ class TestImageTime:
         from rclpy.parameter import Parameter
         from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import Image, PointCloud2
+        from tf2_msgs.msg import TFMessage
 
         with _FakeSidecar(_free_port(), obs_extra=self._FRAMES, sim_time_ns=_STATE_NS) as s:
             hal = self._hal(s.port)
@@ -615,13 +675,15 @@ class TestImageTime:
 
             def keep(key: str) -> Any:
                 def cb(msg: Any) -> None:
-                    got[key] = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+                    header = msg.transforms[0].header if isinstance(msg, TFMessage) else msg.header
+                    got[key] = header.stamp.sec * 10**9 + header.stamp.nanosec
 
                 return cb
 
             for key, kind, topic in (
                 ("image", Image, camera_topic("top")),
                 ("cloud", PointCloud2, camera_topic("head_zed", CameraTopicKind.POINTS)),
+                ("tf", TFMessage, "/tf"),
             ):
                 node.create_subscription(kind, topic, keep(key), qos_profile_sensor_data)
             try:
@@ -632,9 +694,77 @@ class TestImageTime:
                 bridge._publish_images()
                 bridge._publish_depth_clouds_from_obs()
                 deadline = time.monotonic() + 5.0
-                while len(got) < 2 and time.monotonic() < deadline:
+                while len(got) < 3 and time.monotonic() < deadline:
                     rclpy.spin_once(node, timeout_sec=0.1)
-                assert got == {"image": times["top"], "cloud": times["head_zed"]}, (got, times)
+                assert got == {
+                    "image": times["top"],
+                    "cloud": times["head_zed"],
+                    "tf": hal.sim_time_ns(),
+                }, (got, times)
+            finally:
+                bridge.teardown()
+                node.destroy_node()
+                rclpy.shutdown()
+                hal.env.close()
+
+    def test_the_cloud_rides_the_camera_optical_frame_so_octomap_casts_from_the_camera(
+        self,
+    ) -> None:
+        """Issue #418 (Spark R27/R32/R33): ``octomap_server`` casts every ray from the
+        origin of the cloud's ``frame_id``. The Isaac cloud went out in ``base_link``, so
+        every ray started at the robot base: cells the camera saw through stayed mapped (a
+        pushed banana's old cells split its track). It now rides the optical frame, whose
+        TF origin is the camera, and maps back onto the HAL's base-frame cloud exactly."""
+        rclpy = pytest.importorskip("rclpy")  # default reason matches the declared `ros` gap
+        from openral_core import CameraTopicKind, camera_topic
+        from openral_core.geometry import homogeneous_from_quat_xyz
+        from openral_hal.depth_cloud import depth_optical_frame_id
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs_py import point_cloud2
+        from tf2_msgs.msg import TFMessage
+
+        # The DROID exterior camera's pose in R27 (panda_link0 <- exterior_depth_optical).
+        pose = homogeneous_from_quat_xyz((0.05, 0.57, 0.66), (-0.3931, 0.8051, -0.3991, 0.195))
+        depth = {**self._FRAMES["depth_frames"]["head_zed"], "optical_in_base": pose}
+        extra = {**self._FRAMES, "depth_frames": {"head_zed": depth}}
+        with _FakeSidecar(_free_port(), obs_extra=extra, sim_time_ns=_STATE_NS) as s:
+            hal = self._hal(s.port)
+            rclpy.init()
+            node = rclpy.create_node("test_isaac_cloud_optical_frame")
+            bridge = SimSensorBridge(
+                node=node, hal=hal, description=hal.description, viewer_enabled=False
+            )
+            clouds: list[PointCloud2] = []
+            tfs: list[TFMessage] = []
+            node.create_subscription(
+                PointCloud2,
+                camera_topic("head_zed", CameraTopicKind.POINTS),
+                clouds.append,
+                qos_profile_sensor_data,
+            )
+            node.create_subscription(TFMessage, "/tf", tfs.append, qos_profile_sensor_data)
+            try:
+                hal.connect()
+                bridge._setup_cameras()
+                bridge._setup_depth()
+                bridge._publish_depth_clouds_from_obs()
+                deadline = time.monotonic() + 5.0
+                while not (clouds and tfs) and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert clouds and tfs
+                spec = next(x for x in hal.description.sensors if x.name == "head_zed")
+                optical = depth_optical_frame_id(spec)
+                assert clouds[0].header.frame_id == optical
+                tf = next(t for m in tfs for t in m.transforms if t.child_frame_id == optical)
+                tr, q = tf.transform.translation, tf.transform.rotation
+                # octomap's sensor origin is this TF's translation: the camera, not the base.
+                assert (tr.x, tr.y, tr.z) == pytest.approx((0.05, 0.57, 0.66), abs=1e-6)
+                t_base_optical = homogeneous_from_quat_xyz((tr.x, tr.y, tr.z), (q.x, q.y, q.z, q.w))
+                xyz = point_cloud2.read_points_numpy(clouds[0], field_names=("x", "y", "z"))
+                in_base = xyz.astype(np.float64) @ t_base_optical[:3, :3].T + t_base_optical[:3, 3]
+                np.testing.assert_allclose(in_base, hal.read_depth_clouds()["head_zed"], atol=1e-5)
             finally:
                 bridge.teardown()
                 node.destroy_node()
@@ -845,7 +975,7 @@ class TestSimRunnerFramesOnDemand:
         with _FakeSidecar(_free_port(), sim_dt_per_tick_s=1 / 30) as s:
             runner = SimRunner.__new__(SimRunner)  # only the frame-request seam is exercised
             runner._env = _make_rollout(s.port, scene, task)
-            runner._policy = policy  # type: ignore[assignment]  # reason: executor-only stand-in
+            runner._policy = policy  # an executor-only stand-in
             runner._recorder = None
             runner._env_cfg = SimpleNamespace(record_video=False)  # type: ignore[assignment]  # reason: only record_video is read
             try:

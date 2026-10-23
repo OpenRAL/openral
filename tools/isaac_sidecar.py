@@ -13,6 +13,8 @@ environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
         frames: "render" (default) | "fresh" | "none" (no frame keys in the observation)
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     contacts->PhysX robot-vs-world contacts, last physics step (scene.contact_ground_truth)
+    link_poses{links}->{"sim_time_ns","dofs","links"}: every DOF's position + drive target,
+        the named links' base-frame poses as PhysX holds them (scene.link_poses)
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
 
 IMPORTANT: construct ``SimulationApp`` before any ``omni.*``/``isaaclab`` import
@@ -360,8 +362,8 @@ def _serve(
                 reply: dict[str, Any] = {
                     "ok": True,
                     "action_dim": scene.action_dim,
-                    # Sim seconds per step (physics dt x substeps = one control
-                    # period); the HAL refuses a mismatch with the manifest rate.
+                    # Configured nominal seconds per step; reset later replaces
+                    # this with the observed callback cadence before HAL checks it.
                     "sim_dt_per_tick_s": scene.sim_dt_per_tick_s,
                     "task": task,
                     "layout": layout,
@@ -378,6 +380,9 @@ def _serve(
                 reply = {
                     "observation": scene.reset(seed=data.get("seed")),
                     "sim_time_ns": scene.sim_time_ns(),
+                    # Same clock as World.current_time stamps; ping remains the
+                    # configured nominal period used to build physics substeps.
+                    "sim_dt_per_tick_s": scene._observed_sim_dt_per_tick_s,
                 }
             elif endpoint == "step":
                 reply = scene.step(
@@ -394,6 +399,8 @@ def _serve(
                 reply = scene.static_collider_boxes()
             elif endpoint == "scene_ground_truth":
                 reply = scene.scene_ground_truth()
+            elif endpoint == "link_poses":
+                reply = scene.link_poses([str(n) for n in data.get("links", [])])
             elif endpoint == "set_task":
                 reply = scene.set_task(str(data.get("instruction", "")))
             elif endpoint == "set_object_position":

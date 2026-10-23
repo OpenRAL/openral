@@ -253,6 +253,23 @@ def _octomap_occupancy_threshold(hal_mode: str) -> float:
     return 0.8 if hal_mode == "sim" else 0.6
 
 
+def _self_filter_trailing_sweep_s(hal_mode: str) -> float:
+    """How far back the robot's recent sweep pads the self-filter: 0.2 s in sim, off on real.
+
+    Issue #418 (Spark R16): two returns of the gripper's own finger edge, 15-21 mm outside
+    its hull, landed 0.13 s after the gripper left that cell; the map held them and the
+    finger stopped on them 2.4 s later. A return inside the padded volume the robot left
+    within this window is dropped as the robot's own. The world there is blind for at most
+    this long after the robot leaves, inside the 0.10 m padding cap. Sim-only until the
+    Safety-WG reviews it (hazard row owed).
+
+    Example:
+        >>> _self_filter_trailing_sweep_s("sim"), _self_filter_trailing_sweep_s("real")
+        (0.2, 0.0)
+    """
+    return 0.2 if hal_mode == "sim" else 0.0
+
+
 def _octomap_clamping_max(hal_mode: str) -> float:
     """Let one exact simulated clearing ray remove a confirmed hit."""
     return 0.85 if hal_mode == "sim" else 0.97
@@ -467,6 +484,8 @@ def _self_filter_params(
     joint_states_topic: str,
     padding_m: float,
     robot_mask_cameras: tuple[str, ...] = (),
+    *,
+    runtime_period_from_hal: bool = False,
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
 
@@ -507,6 +526,11 @@ def _self_filter_params(
     rate_hz = getattr(description, "control_rate_hz", None)
     if isinstance(rate_hz, float) and rate_hz > 0.0:
         params["joint_state_period_s"] = 1.0 / rate_hz
+    if runtime_period_from_hal:
+        # Isaac's actual step can differ from the manifest cadence by a few
+        # nanoseconds. Start fail-closed until the connected HAL admits it.
+        params["joint_state_period_from_hal"] = True
+        params["joint_state_period_s"] = 0.0
     hand_links = getattr(description, "hand_links", None)
     params["robot_mask_hand_links"] = list(hand_links()) if callable(hand_links) else []
     if robot_mask_cameras:
@@ -1001,8 +1025,9 @@ def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list[LaunchDesc
 def _poll_autostart(node_name: str, transition_timeout_s: float) -> ExecuteProcess:
     """Drive ``/<node_name>`` to ACTIVE with the poll-based ``tools/lifecycle_autostart.py``.
 
-    For nodes that are never runtime-deactivated and whose silent INACTIVE breaks a
-    feature: the event-driven ``_autostart_lifecycle`` loses the whole chain when the
+    For nodes whose silent INACTIVE breaks a feature; exits after initial ACTIVE
+    so later runtime deactivation remains possible. The event-driven
+    ``_autostart_lifecycle`` loses the whole chain when the
     node's ``change_state`` reply is dropped (Jazzy ``failed to send response
     (timeout)``: the launch waits forever for the CONFIGURE reply and never sends
     ACTIVATE). Seen on Spark as a segmenter and an object tracker left INACTIVE for a
@@ -1361,13 +1386,23 @@ def _tracked_grasp_exemption(object_tracking: str, *, grasp_allowance_enabled: b
     return True
 
 
-def _workspace_explained_cells(object_tracking: str, *, workspace_contact_enabled: bool) -> bool:
+#: The deadman's goal-accepted -> first-chunk deadline (wall s), covering a cold policy load.
+_FIRST_CHUNK_DEADLINE_S = 120.0
+#: Wall seconds the runner's grounding wait leaves the policy for its first chunk.
+#: *Calibration point.*
+_FIRST_CHUNK_MARGIN_S = 30.0
+
+
+def _workspace_explained_cells(
+    object_tracking: str, *, workspace_contact_enabled: bool, requested: bool = True
+) -> bool:
     """The kernel's ``workspace_explained_cells_enabled`` (issue #418 K7): ``on`` + workspace.
 
     It narrows workspace contact to cells a tracked object, the declared static geometry or the
     measured support explains, so it only ever adds stops. It has nothing to narrow without the
     workspace rule, and the kernel refuses it there. ``on`` is already sim-only
-    (``_object_tracking``).
+    (``_object_tracking``). ``requested`` is ``DeployRuntime.workspace_explained_cells``: a
+    scene may keep the workspace rule alone (restock, 2026-10-23 decision).
 
     Example:
         >>> _workspace_explained_cells("on", workspace_contact_enabled=True)
@@ -1376,8 +1411,10 @@ def _workspace_explained_cells(object_tracking: str, *, workspace_contact_enable
         False
         >>> _workspace_explained_cells("bind", workspace_contact_enabled=True)
         False
+        >>> _workspace_explained_cells("on", workspace_contact_enabled=True, requested=False)
+        False
     """
-    return object_tracking == "on" and workspace_contact_enabled
+    return object_tracking == "on" and workspace_contact_enabled and requested
 
 
 def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, str]:
@@ -1385,8 +1422,9 @@ def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, st
 
     Off: ``{}`` — the bridge's own default (no service), so it never clears the octree.
     On: ``payload_sweep_clear_service`` = octomap_server's ``~/clear_bbox``, and the
-    bridge removes the carried payload's own posed boxes from the octree. That removes
-    world occupancy, so it is sim-only until Safety-WG review (hazard-log row owed).
+    bridge clears only uniquely bound, valid tracked payloads with support, neighbor
+    and static keep-outs. Per-cell ownership remains incomplete; this removes world
+    occupancy and stays sim-only until Safety-WG review.
 
     Raises:
         ROSConfigError: Enabled on a non-sim HAL.
@@ -1418,6 +1456,7 @@ def _workspace_contact_kernel_params(
     max_lead_m: float | None,
     grasp_allowance_enabled: bool,
     hal_mode: str,
+    wrist_links: int = 1,
 ) -> dict[str, object]:
     """The safety kernel's manipulation-workspace contact params (issue #349).
 
@@ -1426,6 +1465,7 @@ def _workspace_contact_kernel_params(
     never configured by name) and the control period from its
     ``action_spec.control_freq_hz`` (the chunk row spacing the kernel measures the hand
     speed over); the speed and lead (push) bounds are the scene's calibration points.
+    ``wrist_links`` is ``DeployRuntime.workspace_contact_wrist_links``.
 
     Raises:
         ROSConfigError: Enabled on a non-sim HAL (sim-only until Safety-WG review),
@@ -1459,7 +1499,7 @@ def _workspace_contact_kernel_params(
             f"{max_lead_m!r}: the hand lead (push) bound is a calibration point, never a "
             "default."
         )
-    links = list(description.hand_links())
+    links = list(description.hand_links(wrist_links=wrist_links))
     if not links:
         raise ROSConfigError(
             f"workspace_contact_enabled but robot {description.name!r} declares no "
@@ -2066,6 +2106,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     object_queries_json = LaunchConfiguration("object_queries_json").perform(context)
+    declared_object_catalog_json = LaunchConfiguration("declared_object_catalog_json").perform(
+        context
+    )
+    object_surface_model_json = LaunchConfiguration("object_surface_model_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
     dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
@@ -2196,6 +2240,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     workspace_contact_max_speed_mps = float(_ws_speed) if _ws_speed else None
     _ws_lead = LaunchConfiguration("workspace_contact_max_lead_m").perform(context)
     workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
+    _ws_wrist = LaunchConfiguration("workspace_contact_wrist_links").perform(context)
+    workspace_contact_wrist_links = int(_ws_wrist) if _ws_wrist else 1
     # The octomap bridge's payload octree clearing (DeployRuntime.payload_sweep_clear_enabled).
     # Resolved here, so a non-sim HAL refuses it even with the octomap leg off.
     payload_sweep_clear_params = _payload_sweep_clear_params(
@@ -2213,6 +2259,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     ).lower() in ("1", "true", "yes")
     reward_monitor_manifest = LaunchConfiguration("reward_monitor_manifest").perform(context)
     reward_monitor_task = LaunchConfiguration("reward_monitor_task").perform(context)
+    reward_monitor_score_window_s = float(
+        LaunchConfiguration("reward_monitor_score_window_s").perform(context)
+    )
     # Scene-VLM leg. Off by default; when on, a scene_vlm_node caches every
     # manifest RGB camera's latest frame and serves
     # /openral/perception/query_scene, and the reasoner is told
@@ -2234,6 +2283,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         "yes",
     )
     critic_stall_patience = LaunchConfiguration("critic_stall_patience").perform(context)
+    # Completion-check leg (2026-10-22). Off by default; when on, completion_check_node
+    # holds the policy's commands on a reward success >= 0.6 or a release, asks the scene
+    # VLM whether the task is done, then ends the goal as a success or resumes it.
+    enable_completion_check = LaunchConfiguration("enable_completion_check").perform(
+        context
+    ).lower() in ("1", "true", "yes")
+    completion_check_judge = LaunchConfiguration("completion_check_judge").perform(context)
     # Comma-separated on-demand locator manifest paths. Each becomes a
     # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
     # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment
@@ -2370,6 +2426,18 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         cameras=LaunchConfiguration("object_tracking_cameras").perform(context),
         depth_cameras=[s.name for s in publishing if s.modality == "depth"],
     )
+    if object_surface_model_json and object_tracking == "off":
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "object_surface_model_json requires DeployRuntime.object_tracking to be enabled"
+        )
+    if declared_object_catalog_json and object_tracking == "off":
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "declared_object_catalog_json requires DeployRuntime.object_tracking to be enabled"
+        )
     # One value for the kernel (K5), the voxel bridge (released-box clearing) and the
     # tracker (how long a released binding stays on attachment_state): they must agree.
     tracked_release_timeout_s = float(
@@ -2507,6 +2575,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     # observability), but the kernel voxel check stays off so the kernel configures cleanly on
     # its scalar envelope.
     has_collision_capsules = int(cast("int", collision_params.get("collision_n_links", 0))) > 0
+    self_filter_period_from_hal = (
+        hal_mode == "sim"
+        and scene_backend == "isaacsim"
+        and enable_octomap
+        and has_collision_capsules
+        and _cloud_shows_the_robot(
+            hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
+        )
+    )
     if vision_attachment_enabled and not has_collision_capsules:
         from openral_core.exceptions import ROSConfigError
 
@@ -2580,6 +2657,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         object_tracking,
         tracked_grasp_exemption_enabled=bool(kernel_params["tracked_grasp_exemption_enabled"]),
     )
+    # ...and an untracked pinch hold's own cells too (the same posture: `on`, K2, sim only;
+    # Spark R191-R206, 2026-10-22: the object in the hand stopped its own pinch-volume payload).
+    kernel_params["pinch_payload_own_cells_enabled"] = kernel_params["payload_own_cells_enabled"]
     # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
     # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
     if kernel_params["tracked_grasp_exemption_enabled"] and description.fixed_jaw_links():
@@ -2600,12 +2680,24 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             max_lead_m=workspace_contact_max_lead_m,
             grasp_allowance_enabled=grasp_allowance_enabled,
             hal_mode=hal_mode,
+            wrist_links=workspace_contact_wrist_links,
         )
     )
     # Issue #418 K7: in `on`, workspace contact is tolerated only on explained cells; the
     # declared static geometry explains its own cells (the bridge's cells, one centre each).
+    explained_requested = (
+        LaunchConfiguration("workspace_explained_cells").perform(context).lower() != "false"
+    )
+    if object_tracking == "on" and workspace_contact_enabled and not explained_requested:
+        print(
+            "[deploy_e2e] workspace_explained_cells:=false: issue #418 K7 off, workspace "
+            "contact is the workspace rule alone (slow hand links inside workspace_box)",
+            flush=True,
+        )
     if _workspace_explained_cells(
-        object_tracking, workspace_contact_enabled=workspace_contact_enabled
+        object_tracking,
+        workspace_contact_enabled=workspace_contact_enabled,
+        requested=explained_requested,
     ):
         kernel_params["workspace_explained_cells_enabled"] = True
         if static_geometry_file:
@@ -2716,7 +2808,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 # Bound on goal-accepted -> first chunk, covering a cold policy
                 # load. Unbounded, a runner that dies before its first chunk
                 # holds the window open and is never braked.
-                "first_chunk_deadline_s": 120.0,
+                "first_chunk_deadline_s": _FIRST_CHUNK_DEADLINE_S,
                 # For the HZ-0096-1 staleness check on /openral/safety_status.
                 # The deadlines themselves stay on wall time: a watchdog must
                 # measure real elapsed time, and sim time can pause.
@@ -2988,6 +3080,13 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 else []
             ),
             hal_params_file,
+            {
+                # Keep the handoff target launch-owned even if the params file
+                # contains a stale or overly broad target.
+                "self_filter_period_target": (
+                    "openral_robot_self_filter" if self_filter_period_from_hal else ""
+                )
+            },
             {"use_sim_time": use_sim_time},
             # After the params file: in bind/on the tracker owns /openral/attachment_state,
             # and two publishers on that latched topic would interleave revisions.
@@ -3122,6 +3221,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     if object_tracking != "off"
                     else 0.0
                 ),
+                # ... and stops waiting in wall time before the deadman's first-chunk
+                # deadline, leaving the policy its first chunk (Spark restock R298: a 60 s
+                # cap ended the wait at 8.4 s of a 7x-slow sim, before the target grounded).
+                "grounding_wait_wall_s": _FIRST_CHUNK_DEADLINE_S - _FIRST_CHUNK_MARGIN_S,
                 "grounding_required": LaunchConfiguration("grounding_required")
                 .perform(context)
                 .lower()
@@ -3847,7 +3950,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                                         ]
                                     )
                                 ),
+                                runtime_period_from_hal=self_filter_period_from_hal,
                             ),
+                            "trailing_sweep_s": _self_filter_trailing_sweep_s(hal_mode),
                             "use_sim_time": use_sim_time,
                         }
                     ],
@@ -4136,7 +4241,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 output="screen",
             )
             extra_nodes.append(locator_node)
-            autostart += _autostart_lifecycle(locator_node, spec["node"])
+            autostart.append(_poll_autostart(spec["node"], 120.0))
 
     if vision_attachment_enabled:
         # The segmenter the HAL's vision attachment bridge calls at grasp events
@@ -4184,6 +4289,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "request_deadline_s": float(
                         cast("float", hal_file_params.get("vision_attachment_deadline_s", 0.25))
                     ),
+                    # The tracker's cameras wait for a trailing RGB frame on the tracker's
+                    # budget, not the HAL's (Spark restock R282), and accept a frame two 0.1 s
+                    # ticks off: a 1080p BEST_EFFORT stream loses frames under load (R288).
+                    # A camera the HAL shares too (restock's head camera, R290) takes them as
+                    # well: the HAL still drops a reply past its own deadline and re-checks the
+                    # mask-depth skew itself. *Calibration points.*
+                    "camera_request_deadlines": [f"{c}=1.5" for c in tracked_cameras] or [""],
+                    "camera_max_frame_skews": [f"{c}=0.25" for c in tracked_cameras] or [""],
                     "use_sim_time": use_sim_time,
                 }
             ],
@@ -4216,7 +4329,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     in ("1", "true", "yes"),
                     "released_clear_timeout_s": tracked_release_timeout_s,
                     "release_dwell_s": _TRACKED_RELEASE_DWELL_S,
+                    # The kernel's hand-link set: one wrist definition for both.
+                    "wrist_links": workspace_contact_wrist_links,
                     "object_queries_json": object_queries_json,
+                    "declared_object_catalog_json": declared_object_catalog_json,
+                    "object_surface_model_json": object_surface_model_json,
                     # The declared static geometry (the kernel's cells file): a body wholly
                     # inside it is the declared wall, not a foreign object, in the SPLIT test.
                     "static_cells_file": (
@@ -4274,6 +4391,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     "manifest_path": reward_manifest,
                     "image_topic": reward_image_topic,
                     "task": reward_monitor_task,
+                    "score_window_s": reward_monitor_score_window_s,
                     # When the critic producer is also up, feed it real
                     # Robometer progress as a CriticScore stream (else stay query-only).
                     "enable_critic_score": enable_critic,
@@ -4327,6 +4445,36 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 name="openral_scene_vlm",
                 namespace="",
                 parameters=[scene_vlm_params],
+                additional_env=otel_env,
+                output="screen",
+            )
+        )
+
+    if enable_completion_check:
+        needs_vlm = completion_check_judge != "reasoner"
+        if not (enable_reward_monitor and enable_critic and (enable_scene_vlm or not needs_vlm)):
+            from openral_core.exceptions import ROSConfigError
+
+            # Its trigger is the reward monitor's success stream (published only with the
+            # critic leg); a scene_vlm judge needs the scene VLM: without them it never checks.
+            raise ROSConfigError(
+                "enable_completion_check requires enable_reward_monitor, enable_critic and, "
+                "for completion_check_judge=scene_vlm, enable_scene_vlm"
+            )
+        extra_nodes.append(
+            Node(
+                package="openral_reasoner_ros",
+                executable="completion_check_node.py",
+                name="openral_completion_check",
+                namespace="",
+                parameters=[
+                    {
+                        # Every camera the scene VLM answers about must say yes.
+                        "cameras": [s.name for s in publishing if s.modality == "rgb"],
+                        "judge": completion_check_judge,
+                        "use_sim_time": use_sim_time,
+                    }
+                ],
                 additional_env=otel_env,
                 output="screen",
             )
@@ -4601,6 +4749,22 @@ def generate_launch_description() -> LaunchDescription:
                 "JSON list of openral_core.ObjectQuery (issue #418) the skill_runner "
                 "attaches to each goal's grasp (TARGET/CONTEXT) and place (DESTINATION) "
                 "declaration when object tracking is on. Empty = none."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "declared_object_catalog_json",
+            default_value="",
+            description=(
+                "Validated authored USD object/workspace catalog JSON forwarded to the object "
+                "tracker; empty = no external declarations."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "object_surface_model_json",
+            default_value="",
+            description=(
+                "Validated ObjectSurfaceModelConfig JSON for observation-only surface "
+                "registration; empty = disabled."
             ),
         ),
         DeclareLaunchArgument(
@@ -5034,8 +5198,9 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Octomap bridge payload clearing in the octree (DeployRuntime."
                 "payload_sweep_clear_enabled; sim-only until Safety-WG review): the carried "
-                "payload's own posed boxes, above every known support, are cleared from "
-                "the octree via octomap_server's ~/clear_bbox. Default off."
+                "payload needs a unique valid tracked binding and support/neighbor/static "
+                "keep-outs. Per-cell ownership remains incomplete. Uses octomap_server's "
+                "~/clear_bbox. Default off."
             ),
         ),
         DeclareLaunchArgument(
@@ -5064,6 +5229,23 @@ def generate_launch_description() -> LaunchDescription:
                 "Hand lead (push) bound (m) of the workspace contact rule: commanded vs "
                 "measured hand displacement; required when it is enabled "
                 "(DeployRuntime.workspace_contact_max_lead_m)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_explained_cells",
+            default_value="true",
+            description=(
+                "Issue #418 K7 with object_tracking on: workspace contact only on explained "
+                "cells; false keeps the workspace rule alone "
+                "(DeployRuntime.workspace_explained_cells)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "workspace_contact_wrist_links",
+            default_value="1",
+            description=(
+                "Actuated links behind the gripper's carrier the workspace contact rule takes "
+                "as the wrist, 1 or 2 (DeployRuntime.workspace_contact_wrist_links)."
             ),
         ),
         DeclareLaunchArgument(
@@ -5171,6 +5353,28 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "enable_completion_check",
+            default_value="false",
+            description=(
+                "Bring up openral_reasoner_ros/completion_check_node: on a reward "
+                "success >= 0.6 or a released grasp it holds the policy's commands "
+                "(/openral/rskill/hold), asks the scene VLM whether the task is done on "
+                "every RGB camera, then ends the goal as a success "
+                "(/openral/rskill/complete) or resumes. Requires enable_reward_monitor, "
+                "enable_critic and enable_scene_vlm. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "completion_check_judge",
+            default_value="scene_vlm",
+            description=(
+                "Who answers the completion check: scene_vlm (the scene VLM, once per "
+                "camera) or reasoner (the reasoner's model from the OPENRAL_REASONER_* env, "
+                "once on the cameras tiled side by side). "
+                "DeployRuntime.completion_check_judge."
+            ),
+        ),
+        DeclareLaunchArgument(
             "enable_critic",
             default_value="false",
             description=(
@@ -5200,6 +5404,15 @@ def generate_launch_description() -> LaunchDescription:
                 "the in-tree rskills/robometer-4b/rskill.yaml. weights_uri may be "
                 "hf://org/repo or local:///abs/path (a pre-quantized NF4 checkpoint "
                 "loaded directly as 4-bit). Ignored unless enable_reward_monitor."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "reward_monitor_score_window_s",
+            default_value="2.0",
+            description=(
+                "Seconds of recent footage each reward heartbeat scores "
+                "(DeployRuntime.reward_monitor_score_window_s). Ignored unless "
+                "enable_reward_monitor."
             ),
         ),
         DeclareLaunchArgument(

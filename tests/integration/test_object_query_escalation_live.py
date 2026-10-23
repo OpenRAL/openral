@@ -13,12 +13,13 @@ Asserts, for both escalations:
   role, waited source seconds, detection attempts), whose typed failure is
   ``ROSObjectNotInMemory`` — and carries the declaration's ``rskill_id`` and its
   ``traceparent`` (the skill-execution trace it is recorded under);
-* ``unresolved`` (WARN) is in the LLM's tick input with the ``find-object`` rung;
-* ``exhausted`` (FAIL) takes the human-handoff rung: the question goes out on
-  ``/openral/prompt``.
+* both escalations carry typed tracker evidence;
+* object-query failures do not publish a human handoff prompt.
 
-The only double is the LLM (``FakeToolUseClient``): the test stops at the reasoner's typed
-input and its ladder decision. Gated on ``OPENRAL_TEST_ROS_LIVE=1``.
+The LLM (``FakeToolUseClient``) and a service peer at the detector process boundary are the
+doubles. The peer returns the real bounded ``LocateInView.failure_reason`` contract for the
+missing-``timm`` failure. The test stops at the reasoner's typed input and ladder decision.
+Gated on ``OPENRAL_TEST_ROS_LIVE=1``.
 """
 
 from __future__ import annotations
@@ -26,7 +27,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -71,23 +73,30 @@ def _wait(predicate: Any, tick: Any, timeout_s: float = 20.0) -> bool:
 def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any) -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
+    pytest.importorskip("pxr.Usd")
     from geometry_msgs.msg import TransformStamped
     from openral_core import (
         CameraTopicKind,
+        DeployScene,
         FailureEvidence,
         GraspDeclaration,
         ObjectQuery,
         ObjectQueryEvidence,
         ObjectRole,
+        PhysicsBackend,
         RobotDescription,
+        SceneSpec,
+        USDObjectCatalogRef,
         WaitTool,
         camera_topic,
+        load_usd_object_catalog,
     )
     from openral_core.exceptions import ROSObjectNotInMemory
     from openral_core.geometry import rotation_to_quat_wxyz
     from openral_msgs.msg import FailureTrigger, OccupancyVoxels, PromptStamped
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
     from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+    from openral_msgs.srv import LocateInView
     from openral_observability import propagation, rskill_span
     from openral_reasoner import ToolPalette
     from openral_reasoner_ros import ReasonerNode
@@ -130,6 +139,7 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
     helper = rclpy.create_node("object_query_live_helper")
     triggers: list[Any] = []
     prompts: list[Any] = []
+    locate_requests: list[str] = []
     helper.create_subscription(
         FailureTrigger,
         "/openral/failure/world_state",
@@ -161,6 +171,18 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
     )
     pub_grid = helper.create_publisher(OccupancyVoxels, "/openral/world_voxels", reliable)
     pub_decl = helper.create_publisher(GraspDeclarationMsg, "/openral/grasp_declaration", latched)
+
+    def locate_failure(req: Any, resp: Any) -> Any:
+        locate_requests.append(req.query)
+        resp.found = False
+        resp.camera = req.camera
+        resp.detector = req.detector
+        resp.source_stamp_ns = req.source_stamp_ns
+        resp.metadata_json = ""
+        resp.failure_reason = "detector_exception:ModuleNotFoundError:No module named 'timm'"
+        return resp
+
+    helper.create_service(LocateInView, "/openral/perception/locate_in_view", locate_failure)
 
     def frame() -> None:
         now = helper.get_clock().now().to_msg()
@@ -198,6 +220,20 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
         ]
     )
     tracker = make_object_tracker_node()
+    catalog_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs/tutorials/deploy/usd-object-catalog-example.usda"
+    )
+    catalog = load_usd_object_catalog(
+        DeployScene(
+            scene=SceneSpec(id="object-query-live-catalog", backend=PhysicsBackend.ISAACSIM),
+            object_catalog=USDObjectCatalogRef(
+                usd=str(catalog_path), prim_path="/Cell/Catalog", expected_revision="tutorial-v1"
+            ),
+        ),
+        scene_path=catalog_path,
+    )
+    assert catalog is not None
     tracker.set_parameters(
         [
             Parameter("robot_yaml", value=_ROBOT),
@@ -207,6 +243,8 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
             Parameter("cell_m", value=float(grid.resolution)),
             Parameter("search_start_s", value=0.3),
             Parameter("search_max_s", value=1.5),
+            Parameter("locate_service", value="/openral/perception/locate_in_view"),
+            Parameter("declared_object_catalog_json", value=catalog.model_dump_json()),
         ]
     )
     for node in (helper, reasoner, tracker):
@@ -218,6 +256,8 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
         reasoner.trigger_activate()
         tracker.trigger_configure()
         tracker.trigger_activate()
+        assert tracker.declared_object_catalog is not None
+        assert tracker.declared_object_catalog.source_revision == "tutorial-v1"
         decl = GraspDeclaration(
             target_id="obj:banana",
             contact_links=RobotDescription.from_yaml(_ROBOT).grasp_contact_links(),
@@ -240,13 +280,8 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
             return out
 
         assert _wait(lambda: "exhausted" in kinds(), frame), kinds()
-        assert _wait(lambda: bool(prompts), frame, 5.0), "no handoff question was asked"
-        # The reasoner's forced tick for `unresolved` ran the real core on the context.
-        assert _wait(
-            lambda: any("find-object playbook" in t.context_text for t in client.traces),
-            frame,
-            10.0,
-        ), [t.context_text[-400:] for t in client.traces]
+        time.sleep(0.5)
+        assert not prompts, [p.text for p in prompts]
     finally:
         executor.shutdown()
         tracker.destroy_node()
@@ -261,6 +296,7 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
         assert isinstance(decoded, ObjectQueryEvidence)
         by_kind[decoded.escalation] = t
     assert set(by_kind) == {"unresolved", "exhausted"}
+    assert locate_requests and all(query == "banana" for query in locate_requests)
     for kind, severity in (
         ("unresolved", FailureTrigger.SEVERITY_WARN),
         ("exhausted", FailureTrigger.SEVERITY_FAIL),
@@ -271,6 +307,7 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
         ev = adapter.validate_json(t.evidence_json)
         assert isinstance(ev, ObjectQueryEvidence)
         assert ev.label == "banana" and ev.role is ObjectRole.TARGET
+        assert ev.reason == "detector_exception:ModuleNotFoundError:No module named 'timm'"
         assert ev.goal_id == f"grasp:obj:banana@{decl.stamp_ns}"
         assert isinstance(ev.to_exception(), ROSObjectNotInMemory)
     assert by_kind["unresolved"].evidence_json != by_kind["exhausted"].evidence_json
@@ -279,41 +316,49 @@ def test_unresolved_then_exhausted_queries_reach_the_reasoner_ladder(spans: Any)
     assert exhausted.waited_s >= 1.5, "exhausted before the search budget"
     assert exhausted.attempts >= 1, "the tracker never searched for it"
 
-    # The reasoner's typed input and its ladder decision.
+    # The reasoner's failure buffer records tracker evidence without a prompt.
     failures = [f for f in reasoner._renderer.failures if f.source == "world_state"]
     assert len(failures) >= 2
-    rungs = [e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"]
-    assert any("find-object playbook" in (e.reflection or "") for e in rungs)
-    assert any("exhausted" in (e.reflection or "") for e in rungs)
-    assert [p.text for p in prompts] == ["I can't find the banana; where should I look?"]
+    assert not [e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"]
+    assert not prompts
 
 
-def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: Any) -> None:
+def test_unresolved_grounded_query_cancels_and_blocks_at_budget_without_handoff(spans: Any) -> None:
     """The reasoner dispatches a real goal to the real runner; its target is never found.
 
-    The runner arms the grasp declaration (scene JSON + ``object_queries_json`` naming a
-    ``banana``), the real tracker exhausts the query, and the runner ends the goal along
+    The reasoner grounds a ``banana`` target into the action goal, the runner restamps and
+    arms that declaration, the real tracker exhausts its query, and the runner ends the goal along
     its cancel path with ``FAILURE_OBJECT_NOT_FOUND`` / ``ROSObjectNotInMemory`` instead
-    of running to the 30 s deadline. The reasoner records that typed result and hands off.
+    of running to the 30 s deadline. The reasoner records the typed result without handoff.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
     import sys
     from pathlib import Path
 
-    from geometry_msgs.msg import TransformStamped
+    from geometry_msgs.msg import Point, TransformStamped
     from openral_core import (
         CameraTopicKind,
         ExecuteRskillTool,
         FailureEvidence,
         GraspDeclaration,
+        GraspTargetRef,
         ObjectQueryEvidence,
         WaitTool,
         camera_topic,
     )
     from openral_core.geometry import rotation_to_quat_wxyz
-    from openral_msgs.msg import ActionChunk, FailureTrigger, OccupancyVoxels
-    from openral_reasoner import ToolPalette
+    from openral_msgs.msg import (
+        ActionChunk,
+        FailureTrigger,
+        OccupancyVoxels,
+        PromptStamped,
+        WorldStateStamped,
+    )
+    from openral_msgs.msg import (
+        GraspDeclaration as GraspDeclarationMsg,
+    )
+    from openral_reasoner import MissionState, ToolPalette
     from openral_reasoner_ros import ReasonerNode
     from openral_rskill_ros.compose import compose_so100_runtime
     from openral_world_state_ros.object_tracker_node import make_object_tracker_node
@@ -353,6 +398,8 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
     executor = MultiThreadedExecutor(num_threads=6)
     helper = rclpy.create_node("object_query_goal_helper")
     triggers: list[Any] = []
+    prompts: list[Any] = []
+    armed_declarations: list[Any] = []
     helper.create_subscription(
         FailureTrigger,
         "/openral/failure/world_state",
@@ -361,6 +408,17 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=50,
+        ),
+    )
+    helper.create_subscription(PromptStamped, "/openral/prompt", prompts.append, 10)
+    helper.create_subscription(
+        GraspDeclarationMsg,
+        "/openral/grasp_declaration",
+        armed_declarations.append,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
         ),
     )
     chunk_qos = QoSProfile(
@@ -427,10 +485,6 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
             Parameter("grasp_declaration_json", value=scene_decl.model_dump_json()),
             Parameter("joint_state_staleness_limit_s", value=0.5),
             Parameter("object_tracking", value="shadow"),
-            Parameter(
-                "object_queries_json",
-                value='[{"label": "banana", "count": "one", "role": "target"}]',
-            ),
             Parameter("grounding_wait_s", value=0.2),
         ]
     )
@@ -438,10 +492,16 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
     reasoner = ReasonerNode(
         client=client, palette=ToolPalette(execute_rskill_ids=frozenset({skill})), tick_hz=0.2
     )
+    mission = MissionState.from_prompt("pick the banana")
+    active = mission.active()
+    assert active is not None
+    active.attempts = 2  # this dispatch spends the persisted three-attempt object-query budget
+    reasoner._renderer.set_mission(mission)
     reasoner.set_parameters(
         [
             Parameter("robot_yaml", value=_ROBOT),
             Parameter("grasp_target_voxel_m", value=float(grid.resolution)),
+            Parameter("object_tracking", value="shadow"),
         ]
     )
     tracker = make_object_tracker_node()
@@ -466,8 +526,26 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
             node.trigger_configure()
             node.trigger_activate()
         t0 = time.monotonic()
+        # A real typed world-state observation grounds the reasoner's target reference.
+        # The runner must preserve the action UUID when it restamps this goal-supplied
+        # declaration, so the query failure can be joined to the dispatch exactly.
+        world = WorldStateStamped()
+        world.detected_object_labels = ["banana"]
+        world.detected_object_confidences = [0.9]
+        world.detected_object_positions = [Point(x=0.35, y=0.0, z=0.1)]
+        world.detected_object_track_ids = [17]
+        world.detected_object_frame = "base"
+        world.detected_object_bbox_valid = [True]
+        world.detected_object_bbox_min = [Point(x=0.30, y=-0.05, z=0.05)]
+        world.detected_object_bbox_max = [Point(x=0.40, y=0.05, z=0.15)]
+        reasoner._world_state_msg = world
         reasoner._dispatch_execute_rskill(
-            ExecuteRskillTool(rskill_id=skill, prompt="pick the banana", patience_s=30.0),
+            ExecuteRskillTool(
+                rskill_id=skill,
+                prompt="pick the banana",
+                patience_s=30.0,
+                grasp_target=GraspTargetRef(label="banana"),
+            ),
             traceparent=None,
         )
 
@@ -485,22 +563,43 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
 
     [record] = [e for e in reasoner._renderer.executions if e.rskill_id == skill]
     assert record.outcome == "failed"
-    assert record.summary.startswith("ROSObjectNotInMemory: object query exhausted"), record
-    assert "FAILURE_OBJECT_NOT_FOUND" in (record.reflection or ""), record
+    assert "object query failed" in (record.reflection or ""), record
+    assert not prompts
+    active = reasoner._renderer.mission.active()
+    assert active is not None and active.attempts == 3
+    assert reasoner._object_query_blocked_task_id == active.task_id
     assert elapsed < 20.0, f"the goal ran {elapsed:.1f} s, toward its 30 s deadline"
-    exhausted = [
+    object_query_records = [
+        e for e in reasoner._renderer.executions if e.rskill_id == "(object-query)"
+    ]
+    assert object_query_records
+    assert "Recovery dispatch budget is 3/3" in (object_query_records[-1].reflection or "")
+    query_failures = [
         t
         for t in triggers
-        if isinstance(ev := adapter.validate_json(t.evidence_json), ObjectQueryEvidence)
-        and ev.escalation == "exhausted"
+        if isinstance(adapter.validate_json(t.evidence_json), ObjectQueryEvidence)
     ]
-    assert exhausted and exhausted[0].rskill_id == skill and exhausted[0].trace_id, (
-        "the escalation is not on the goal's skill trace"
+    assert query_failures and query_failures[0].rskill_id == skill and query_failures[0].trace_id, (
+        "the query failure is not on the goal's skill trace"
     )
-    # Recorded in the same trace: the goal's rskill.execute span and the tracker's
-    # world_state.object_query span share a trace id, each with the typed exception.
+    active_declarations = [m for m in armed_declarations if m.active]
+    assert active_declarations, "the runner did not arm the goal-supplied grasp declaration"
+    armed = active_declarations[0]
+    assert armed.search_box_valid and armed.target_queries, (
+        "the runner used the scene fallback instead of the reasoner's grounded goal declaration"
+    )
+    invocation_id = armed.invocation_id
+    assert len(invocation_id) == 32
+    assert all(
+        cast(ObjectQueryEvidence, adapter.validate_json(t.evidence_json)).invocation_id
+        == invocation_id
+        for t in query_failures
+    ), "object-query evidence lost the action goal UUID during declaration restamping"
+    # The tracker records the typed refusal on its span. The reasoner then cancels the
+    # action at the unresolved rung, so the runner span is attributed to the same trace
+    # but correctly records cancellation rather than inventing a thrown failure.
     finished = spans.get_finished_spans()
-    goal_trace = int(exhausted[0].trace_id.split("-")[1], 16)  # W3C traceparent
+    goal_trace = int(query_failures[0].trace_id.split("-")[1], 16)  # W3C traceparent
     in_goal = [s for s in finished if s.context.trace_id == goal_trace]
 
     def typed(span: Any) -> bool:
@@ -509,10 +608,12 @@ def test_an_exhausted_query_ends_the_in_flight_goal_with_a_typed_failure(spans: 
             for e in span.events
         )
 
-    assert any(s.name == "rskill.execute" and typed(s) for s in in_goal), "not on the goal span"
+    goal_spans = [s for s in in_goal if s.name == "rskill.execute"]
+    assert goal_spans, "the canceled runner goal is not attributed to the query trace"
+    assert not typed(goal_spans[-1]), "a reasoner-requested cancel was misreported as thrown"
     assert any(
         s.name == "world_state.object_query"
-        and s.attributes.get("world_state.escalation") == "exhausted"
+        and s.attributes.get("world_state.escalation") in {"unresolved", "exhausted"}
         and typed(s)
         for s in in_goal
     ), "the tracker's escalation span is not in the goal's trace"

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from openral_core import AttachedCollisionPrimitive, BoxShape, Pose6D, TrackStatus
+from openral_core import AttachedCollisionPrimitive, BoxShape, ObjectRole, Pose6D, TrackStatus
 from openral_core.geometry import rotation_to_quat_wxyz
 from openral_world_state.object_tracker.binding import BindOutcome
 
@@ -81,11 +81,24 @@ def test_an_ambiguous_grasp_names_no_evidence(robot: str) -> None:
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
-def test_a_released_track_re_centred_on_the_pinch_is_not_evidence(robot: str) -> None:
+def test_a_released_track_is_no_bind_candidate(robot: str) -> None:
     binder, q, centre = arm_at_hold(robot)
     rel = track("trk:1", binder.frame_id, centre, (0.02, 0.02, 0.02), status=TrackStatus.RELEASED)
     b = binder.on_attach(DictStore([rel]), q, stamp_ns=10)
-    assert b.outcome is BindOutcome.TRACKED and set(_sources(b)) == {"fallback"}
+    assert b.outcome is BindOutcome.UNTRACKED and set(_sources(b)) == {"fallback"}
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_a_destination_is_never_the_payload(robot: str) -> None:
+    """Spark R193 / R205: the jaw closed inside the bowl's box and bound the bowl."""
+    binder, q, centre = arm_at_hold(robot)
+    bowl = track("trk:1", binder.frame_id, centre, (0.11, 0.14, 0.08), role=ObjectRole.DESTINATION)
+    b = binder.on_attach(DictStore([bowl]), q, stamp_ns=1)
+    assert b.outcome is BindOutcome.UNTRACKED and set(_sources(b)) == {"fallback"}
+    # The same box as the target binds it.
+    target = bowl.model_copy(update={"role": ObjectRole.TARGET})
+    binder.on_release()
+    assert binder.on_attach(DictStore([target]), q, stamp_ns=1).outcome is BindOutcome.TRACKED
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))

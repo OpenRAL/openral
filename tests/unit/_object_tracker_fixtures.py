@@ -96,7 +96,9 @@ def track(
 def arm_at_hold(robot: str) -> tuple[GraspBinder, dict[str, float], NDArray[np.float64]]:
     d = RobotDescription.from_yaml(f"robots/{robot}/robot.yaml")
     joint, arm, jaw = ROBOTS[robot]
-    binder = GraspBinder(HandModel(d, joint), frame_id=d.base_frame, cell_m=CELL)
+    binder = GraspBinder(
+        HandModel(d, joint), frame_id=d.base_frame, cell_m=CELL, max_track_fit_age_s=2.0
+    )
     positions = {**arm, joint: jaw}
     pinch = binder.hand.pinch_in_link(jaw)
     t = binder.hand.t_frame_from_attach(d.base_frame, positions)

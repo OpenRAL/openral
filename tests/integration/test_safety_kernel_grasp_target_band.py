@@ -771,7 +771,7 @@ def _t_base_from_link_at_q0(link: str) -> Any:
     identity, so the chain is its origins (the kernel's own FK at ``_Q``).
     """
     import numpy as np
-    from openral_hal.vision_attachment_bridge import _xyz_rpy_matrix
+    from openral_core.kinematics import transform_from_xyz_rpy as _xyz_rpy_matrix
 
     description = _description()
     up = {j.child_link: (j.parent_link, j.origin_xyz, j.origin_rpy) for j in description.joints}

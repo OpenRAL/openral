@@ -1321,3 +1321,57 @@ def test_a_depth_camera_renders_at_its_manifest_raster_not_the_policy_width(
     assert zed.intrinsics is not None
     meta = {"modality": zed.modality, "intrinsics": zed.intrinsics.model_dump()}
     assert _manifest_scene_mod.camera_resolution(meta, 512, 384) == (1920, 1080)
+
+
+# ── #418: the Robotiq's mimic followers move with their leader ───────────────
+
+
+@pytest.fixture(scope="module")
+def droid_grippers() -> list[dict[str, Any]]:
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots/droid_franka_robotiq/robot.yaml"))
+    grippers = _build_robot_spec(desc, "droid_franka_robotiq")["grippers"]
+    assert grippers, "the DROID spec carries its Robotiq gripper"
+    return list(grippers)
+
+
+def test_droid_followers_get_the_leaders_velocity_cap(
+    _manifest_scene_mod: Any, droid_grippers: list[dict[str, Any]]
+) -> None:
+    """The URDF gives the 2F-85's followers 0.5 rad/s (28.65 deg/s) against the leader's
+    5.0: imported as caps, they crept ~2 deg per tick behind a closing jaw (Spark probe,
+    2026-10-21). Every follower is raised to |multiplier| x the leader's cap."""
+    (g,) = droid_grippers
+    caps: dict[str, float | None] = {g["leader"]: 286.4789}
+    caps.update({f["dof"]: 28.64789 for f in g["followers"]})
+    raised = _manifest_scene_mod.follower_velocity_caps(droid_grippers, caps)
+    assert set(raised) == {f["dof"] for f in g["followers"]}
+    for f in g["followers"]:
+        assert raised[f["dof"]] == pytest.approx(abs(float(f["multiplier"])) * 286.4789)
+    # Never lowers a cap, and a leader without one raises nothing.
+    assert (
+        _manifest_scene_mod.follower_velocity_caps(
+            droid_grippers, {**caps, **{f["dof"]: 1e4 for f in g["followers"]}}
+        )
+        == {}
+    )
+    assert _manifest_scene_mod.follower_velocity_caps(droid_grippers, {g["leader"]: None}) == {}
+
+
+def test_droid_followers_track_the_measured_leader(
+    _manifest_scene_mod: Any, droid_grippers: list[dict[str, Any]]
+) -> None:
+    """`gripper_followers_track: measured`: a contact-stalled leader (measured 0.1 rad,
+    commanded 0.7) holds every follower at the mimic of 0.1, as the real four-bar does."""
+    (g,) = droid_grippers
+    names = [g["leader"], *(f["dof"] for f in g["followers"]), "panda_joint1"]
+    dof_index = {n: i for i, n in enumerate(names)}
+    target = np.full(len(names), 0.7, np.float32)
+    q = np.full(len(names), 0.3, np.float32)
+    q[dof_index[g["leader"]]] = 0.1
+    out = _manifest_scene_mod.mimic_follower_targets(target, q, droid_grippers, dof_index)
+    for f in g["followers"]:
+        want = float(f["multiplier"]) * 0.1 + float(f["offset"])
+        assert out[dof_index[f["dof"]]] == pytest.approx(want, abs=1e-6)
+    assert out[dof_index[g["leader"]]] == pytest.approx(0.7)  # the leader keeps its command
+    assert out[dof_index["panda_joint1"]] == pytest.approx(0.7)
+    assert target[dof_index[g["followers"][0]["dof"]]] == pytest.approx(0.7)  # a copy

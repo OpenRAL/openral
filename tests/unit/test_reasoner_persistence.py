@@ -38,6 +38,7 @@ def test_round_trip_resumes_exactly(tmp_path: pathlib.Path) -> None:
         collective_nudges={"t2": 1},
         locate_task_id="t2.1",
         locate_count=2,
+        object_query_blocked_task_id="t2.1",
     )
     save_ladder_state(path, state)
     restored = load_ladder_state(path)
@@ -47,6 +48,7 @@ def test_round_trip_resumes_exactly(tmp_path: pathlib.Path) -> None:
     assert restored.collective_nudges == {"t2": 1}
     assert restored.locate_task_id == "t2.1"
     assert restored.locate_count == 2
+    assert restored.object_query_blocked_task_id == "t2.1"
     assert restored.mission is not None
     tasks = restored.mission.tasks
     assert [(t.task_id, t.status, t.attempts, t.depth) for t in tasks] == [
@@ -91,6 +93,28 @@ def test_missing_version_loads_as_none(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "ladder.json"
     path.write_text(json.dumps({"mission": None}), encoding="utf-8")
     assert load_ladder_state(path) is None
+
+
+def test_previous_snapshot_defaults_to_unblocked_object_query_state(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "ladder.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "mission": None,
+                "subdivide_offered": [],
+                "collective_nudges": {},
+                "locate_task_id": None,
+                "locate_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    restored = load_ladder_state(path)
+    assert restored is not None
+    assert restored.object_query_blocked_task_id is None
 
 
 def test_invalid_mission_loads_as_none(tmp_path: pathlib.Path) -> None:

@@ -108,6 +108,8 @@ scene:
           relative_to: plate
       grades:
         - {name: complete, score: 1.0, region: target}
+      # One or two of the three oranges on the plate: partial credit (episode grade).
+      some_placed: {name: partial, score: 0.5}
       settle_s: 0.5
       tasks:
         "Pick three oranges and put them into the plate": &three_oranges
@@ -153,10 +155,10 @@ runtime:
   enable_nav2: false
   enable_octomap: true
   enable_octomap_kernel_check: true
-  # The octomap bridge clears the carried payload's own posed boxes (attached poses only,
-  # floored above every known support) from the octree, so its returns left along the
-  # carry stop reaching the kernel. It REMOVES world occupancy: SIM-ONLY and PENDING
-  # Safety-WG review (hazard-log row owed). `deploy run` refuses it.
+  # Raw octree clearing requires a unique valid tracked-object binding and guarded
+  # support/neighbor/static keep-outs. Untracked and pinch fallback geometry never
+  # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
+  # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
   # Manipulation-workspace contact (docs/reference/manipulation-workspace-contact.md),
   # SIM-ONLY and PENDING Safety-WG review: the ADR (§7) and the hazard-log rows (§8) are

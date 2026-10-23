@@ -1,4 +1,4 @@
-"""Release of bound tracked objects and their return to tracking (issue #418, WP C2).
+"""Release of bound tracked objects (issue #418, WP C2): a released object is not followed.
 
 Real manifests, poses by the manifest FK, a protocol-conforming in-memory track store.
 """
@@ -6,23 +6,10 @@ Real manifests, poses by the manifest FK, a protocol-conforming in-memory track 
 from __future__ import annotations
 
 import numpy as np
-from openral_core import (
-    AttachmentEvidenceKind,
-    FitKind,
-    PlaceRegion,
-    Pose6D,
-    RobotDescription,
-    TrackedObject,
-    TrackStatus,
-)
+from openral_core import AttachmentEvidenceKind, Pose6D, RobotDescription, TrackStatus
 from openral_world_state.object_tracker.binding import BindOutcome
 from openral_world_state.object_tracker.pinch import HandModel
-from openral_world_state.object_tracker.release import (
-    JawReleaseMonitor,
-    fall_column,
-    reassociate_released,
-    release_track,
-)
+from openral_world_state.object_tracker.release import JawReleaseMonitor, release_track
 
 from tests.unit._object_tracker_fixtures import CELL, DictStore, arm_at_hold, track
 
@@ -46,60 +33,34 @@ def test_jaw_open_releases_on_a_t9_like_trace() -> None:
     assert all(i >= first_open for i in fired)
 
 
-def test_g20_drop_reassociates_in_the_fall_column_with_a_new_epoch() -> None:
-    """SO-101 g20: the orange drops mid-air; it lands 4 cm aside and is the same object."""
+def test_a_drop_marks_the_track_released_at_the_release_pose() -> None:
+    """SO-101 g20: the orange drops mid-air; its track is RELEASED where the hand let go."""
     binder, q, centre = arm_at_hold("so101_follower")
     store = DictStore([track("trk:3", binder.frame_id, centre, (0.024, 0.024, 0.024))])
     assert binder.on_attach(store, q, stamp_ns=10).outcome is BindOutcome.TRACKED
     pose = binder.object_pose(q)
-    table = pose.xyz[2] - 0.12  # released 12 cm above the table
     released = release_track(
-        store, "trk:3", object_pose=pose, support_z=table, cell_m=CELL, stamp_ns=20
+        store, "trk:3", object_pose=pose, support_z=pose.xyz[2] - 0.12, cell_m=CELL, stamp_ns=20
     )
     binder.on_release()
     assert released is not None and released.status is TrackStatus.RELEASED
     assert released.bound_hand is None and released.pose_in_link is None
     np.testing.assert_allclose(released.box.pose.xyz, pose.xyz, atol=1e-9)
-    column = fall_column(released, CELL)
-    assert column.half_extents[0] > released.box.half_extents[0] + 0.09  # gate grew with height
-
-    def landed(dx: float) -> PlaceRegion:
-        return PlaceRegion(
-            frame_id=binder.frame_id,
-            pose=Pose6D(
-                xyz=(pose.xyz[0] + dx, pose.xyz[1], table + 0.025),
-                quat_xyzw=(0, 0, 0, 1),
-                frame_id=binder.frame_id,
-            ),
-            half_extents=(0.026, 0.026, 0.025),
-        )
-
-    def reassociate(fit: PlaceRegion) -> TrackedObject | None:
-        return reassociate_released(
-            store,
-            fit,
-            fit_kind=FitKind.SILHOUETTE_CONE,
-            support_z=table,
-            support_ref="map",
-            visible_cells=6,
-            occupied_cells=5,
-            cell_m=CELL,
-            stamp_ns=30,
-        )
-
-    assert reassociate(landed(0.40)) is None  # outside every fall column: a new object
-    back = reassociate(landed(0.04))
-    assert back is not None and back.object_id == "trk:3"
-    assert back.status is TrackStatus.CONFIRMED and back.epoch == 1 and back.identity_inferred
-    assert back.support_z == table and back.floor_z == table + CELL
-    assert store.get("trk:3") == back
 
 
-def test_regrasp_of_a_released_track_binds_it_recentred_with_a_new_epoch() -> None:
-    """g20 timing: the policy re-grasps the dropped orange before it is re-grounded."""
+def test_regrasp_of_a_released_track_never_binds_it() -> None:
+    """g20 timing: the policy re-grasps the dropped orange before it is found again.
+
+    A released object is not followed (2026-10-22, Spark R177-R185): its track's box is
+    where it was let go, not where it fell, so it is no candidate; the grasp is untracked.
+    """
     binder, q, centre = arm_at_hold("so101_follower")
-    store = DictStore([track("trk:3", binder.frame_id, centre, (0.024, 0.024, 0.024))])
-    binder.on_attach(store, q, stamp_ns=10)
+    attach_ns = 10_000_000_000
+    released_track = track("trk:3", binder.frame_id, centre, (0.024, 0.024, 0.024)).model_copy(
+        update={"last_fit_stamp_ns": attach_ns, "last_confirmed_stamp_ns": attach_ns}
+    )
+    store = DictStore([released_track])
+    binder.on_attach(store, q, stamp_ns=attach_ns)
     pose = binder.object_pose(q)
     lifted = Pose6D(
         xyz=(pose.xyz[0], pose.xyz[1], pose.xyz[2] + 0.05),
@@ -107,16 +68,17 @@ def test_regrasp_of_a_released_track_binds_it_recentred_with_a_new_epoch() -> No
         frame_id=pose.frame_id,
     )
     release_track(
-        store, "trk:3", object_pose=lifted, support_z=pose.xyz[2] - 0.2, cell_m=CELL, stamp_ns=20
+        store,
+        "trk:3",
+        object_pose=lifted,
+        support_z=pose.xyz[2] - 0.2,
+        cell_m=CELL,
+        stamp_ns=attach_ns + 20,
     )
     binder.on_release()
-    # The hand comes back to where the orange was (inside its fall column).
-    b = binder.on_attach(store, q, stamp_ns=30)
-    assert b.outcome is BindOutcome.TRACKED and b.candidates == ("trk:3",)
-    assert b.attachment.evidence_kind is AttachmentEvidenceKind.TRACKED_OBJECT
-    assert b.attachment.epoch == 1  # the kernel retired (trk:3, 0) at the release
-    pinch = binder.hand.pinch_in_link(q["gripper"])
-    np.testing.assert_allclose(b.attachment.pose_in_link.xyz, pinch.centre, atol=1e-9)
-    assert len(b.attachment.primitives) == 1  # its known shape, re-centred; no stale pose
-    bound = store.get("trk:3")
-    assert bound is not None and bound.status is TrackStatus.BOUND and bound.epoch == 1
+    # The hand comes back to where the orange was.
+    b = binder.on_attach(store, q, stamp_ns=attach_ns + 3_000_000_000)
+    assert b.outcome is BindOutcome.UNTRACKED and b.candidates == ()
+    assert b.attachment.evidence_kind is AttachmentEvidenceKind.PINCH_FALLBACK
+    kept = store.get("trk:3")
+    assert kept is not None and kept.status is TrackStatus.RELEASED and kept.epoch == 0

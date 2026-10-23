@@ -86,3 +86,62 @@ def test_tracker_node_grounds_relays_binds_and_never_regresses() -> None:
         finally:
             if first is not None:
                 first.destroy_node()
+
+
+def test_tracker_fill_survives_frozen_sim_clock_without_refreshing_evidence() -> None:
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from rclpy.parameter import Parameter
+    from rosgraph_msgs.msg import Clock
+
+    with tracker_rig() as rig:
+        node = rig.tracker("bind")
+        try:
+            rig.declare()
+            assert rig.ground()
+            pub = rig.helper.create_publisher(Clock, "/clock", 10)
+            stamp = node.get_clock().now().to_msg()
+            node.set_parameters([Parameter("use_sim_time", value=True)])
+            assert wait(lambda: pub.get_subscription_count() > 0, 3.0)
+            msg = Clock(clock=stamp)
+            pub.publish(msg)
+            assert wait(lambda: node.get_clock().now().to_msg() == stamp, 3.0)
+            # Drain callbacks already ready when ROS time froze; no new camera/joint input.
+            time.sleep(0.6)
+            before = len(rig.tracked)
+            assert wait(lambda: len(rig.tracked) >= before + 2, 1.4)
+            snapshots = rig.tracked[before:]
+            assert snapshots[0].objects
+            assert all(s == snapshots[0] for s in snapshots)
+            # A hung producer still stops filling after the existing five-second bound.
+            time.sleep(5.2)
+            before = len(rig.tracked)
+            time.sleep(0.7)
+            assert len(rig.tracked) == before
+            assert wait(lambda: not rig.fast[-1].tracked_objects_valid, 3.0)
+        finally:
+            node.destroy_node()
+
+
+def test_service_answers_are_fed_on_the_process_timer_never_from_their_callback() -> None:
+    """Spark R49/R62 stack dumps: two segmenter answers, fed from their futures' done
+    callbacks (executor tasks outside every callback group), ran the tracker concurrently on
+    both executor threads, so neither the heartbeat nor the starvation fill could run and the
+    kernel lost the tracked set for 1.6 s of sim time. An answer is only queued; the next
+    `_process` tick, on the node's one default group, feeds it."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    import numpy as np
+    from openral_core import IntrinsicsPinhole
+    from openral_world_state.object_tracker import CameraFrame, TrackerResult
+
+    with tracker_rig() as rig:
+        node = rig.tracker("bind")
+        try:
+            k = IntrinsicsPinhole(fx=1.0, fy=1.0, cx=0.0, cy=0.0, width=2, height=2)
+            frame = CameraFrame("cam", 1, np.zeros((2, 2)), k, None, None)
+            node._answer(frame, "cam_optical", None, TrackerResult(10**9))  # an unknown request
+            assert len(node._answers) == 1  # queued, not fed on this (callback) thread
+            assert wait(lambda: not node._answers, 2.0)  # the process timer drained it
+        finally:
+            node.destroy_node()

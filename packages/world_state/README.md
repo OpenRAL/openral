@@ -181,6 +181,9 @@ contains it, confirms it on the voxel map, tracks its identity, binds it at the 
 trigger's ATTACH and releases it at DETACH or when the measured jaw opens. Every decision is
 in the ROS-free `TrackerSession` (`python/world_state/.../object_tracker/session.py`); the
 node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is not `off`.
+Every mode's heartbeat also publishes `std_msgs/Bool` `/openral/object_tracker/hands_clear`
+(RELIABLE / VOLATILE / KEEP_LAST=1): no hand holds anything and every hand is clear of every
+target track. The completion check asks its judge only while it is true.
 
 | Mode | What leaves the node |
 | --- | --- |
@@ -197,15 +200,49 @@ node owns the wire. `deploy_e2e.launch.py` starts it when `object_tracking` is n
 | `cell_m` | `0.015` | The octomap resolution (the pinch volume is grown by one cell). |
 | `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
 | `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
-| `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G active-search budget (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`): a structlog `object_tracker.query_escalation` (WARN / ERROR), a `world_state.object_query` span on the declaration's skill trace, and a `FailureTrigger` (`KIND_OBJECT_QUERY`) on `/openral/failure/world_state`, where the reasoner runs `find-object` (unresolved) or hands off to a human (exhausted). |
+| `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G query timing (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`) carrying the owning action UUID, last refusal reason, declared workspace when present, and at most eight typed refused observations. The reasoner cancels only the matching manipulation and recovers within the persisted task dispatch budget; a spent budget stays blocked until a new operator goal, with no human handoff. |
 | `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. |
-| `released_clear_timeout_s` | `3.0` | How long a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge) unless the track leaves RELEASED first. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
+| `released_clear_timeout_s` | `3.0` | The longest a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge); it leaves sooner once every hand collision box is 4 cm clear of it (the kernel's `tracked_release_clear_m` separation) or a new track of its label is confirmed touching it (the object at rest, tracked again). The RELEASED track is retired with it, and the object is found afresh under a new id. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
 | `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
-| `segment_service` / `locate_service` | `/openral/perception/segment_in_view` / `""` | `locate_service` empty: no open-vocabulary detector, seeds and refreshes only. |
+| `segment_service` / `locate_service` | `/openral/perception/segment_in_view` / `""` | `locate_service` empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
 | `mask_tf_wait_s` | `0.3` | Wall seconds a depth frame waits for its robot mask and tf before it is used for ageing only. |
 | `heartbeat_hz` | `2.0` | `tracked_objects` (and, while joint states are fresh, `attachment_state`) heartbeat. |
 | `process_hz` | `15.0` | Frame loop. |
 | `attachment_evidence_timeout_s` | `1.0` | No joint state for this long (node clock): the `attachment_state` heartbeat stops and the kernel's copy ages out. |
+
+For an issued `LocateInView` request, only an empty `failure_reason` means the detector
+completed its check. A nonempty cause is attached to the matching standing query as a
+refusal observation and is carried in later `ObjectQueryEvidence`; it is never converted
+to `locate_found_nothing` or treated as proof that the object is absent.
+
+The tracker sends the captured depth frame's nonzero `source_stamp_ns` with each locate
+request. The detector must return that exact source stamp; missing or mismatched stamps
+discard the boxes and become `locate_source_stamp_missing` or
+`locate_source_stamp_mismatch`. A zero stamp is reserved for callers such as the reasoner
+tool that explicitly accept the latest camera frame.
+
+The tracker also requires every `SegmentInView` mask to echo the requested camera and carry
+the exact depth-frame stamp and optical `frame_id`. It refuses a response with missing or
+mismatched identity before decoding or resizing any mask. Service, response, and mask-read
+failures remain bounded query refusal causes; they do not become an empty segmentation or
+object-absence claim.
+
+Frames missing camera pose or robot mask are recorded against pending queries as
+`no_camera_pose` or `no_robot_mask`, and never count as detector attempts. If no usable
+observation was available, escalation reason is `no_usable_observation`; a completed empty
+locate remains `object_not_found`. The reasoner says visibility is unknown for unavailable
+observations and does not infer object absence.
+
+When an unresolved query and a visible confirmed-track refresh both wait, the scheduler
+alternates their request turns; the query remains active and keeps its normal progress.
+This prevents an unresolved destination from indefinitely starving object refresh. Normal
+`TRACKED_OBJECT` ATTACH requires a nonfuture fit within `TrackerParams.max_age_s`; voxel-map
+confirmation does not refresh fit age. A late ATTACH uses the existing 1.5 s window against
+`last_fit_stamp_ns` and does not fall through to tracking a fit rejected by that window.
+Stale fits and pinch-geometry mismatches are logged as separate refusal causes, and the
+existing pinch-centre and carried-coverage checks still gate late binding. A RELEASED
+track is never a bind candidate: a released object is not followed, and a regrasp binds its
+fresh track or the pinch fallback.
 
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
@@ -227,6 +264,45 @@ Covered by `tests/unit/test_object_tracker_session.py` and the live
 `tests/integration/test_object_tracker_node_live.py` (real tracker + World State nodes:
 grounding, relay, staleness, `bind`-mode `TRACKED_OBJECT` binding, restart revision).
 
+## Observed object-local surfaces
+
+`runtime.object_surface_model` in a deploy scene explicitly enables a bounded,
+observation-only PCL registration pilot in both deployment paths. All convergence
+and resource limits must be supplied; they are evaluation settings, not calibrated
+safety bounds. Build this ROS package with PCL and `pybind11_vendor`, then source
+the installation so `_openral_pcl_registration` is importable. Opting in without
+the native module refuses tracker configuration.
+
+Each identity keeps observed surface voxels in a canonical local frame. New depth
+surfaces register against that model; accepted poses relocate the accumulated
+surface, while rejected registrations preserve the last accepted model and stamp.
+Partial views do not carve unseen cells free. Each identity owns its surface contribution;
+moving or retiring it cannot delete another identity or raw OctoMap occupancy. With
+explicit depth, pose and pixel error bounds, a fresh depth frame at the accepted
+model pose can retire local voxels only when every pixel covering the entire
+uncertainty-grown voxel has a valid, unmasked return behind it. Occlusion, missing
+depth, off-image projections and exhausted work budgets retain cells. Each source
+frame gets one bounded clearing pass, rotating its start across cells so late
+contributions are not starved; no free-space claim is inferred from ICP
+residuals or object disappearance. Model and registration sizes are
+bounded. Lifecycle generation changes reset the model; retired tracks release it.
+The first frame comes from a sensor fit, not an asset's semantic CAD frame.
+
+The optional `runtime.object_surface_model.free_space_calibration` requires
+`calibration_ref`, `sensor_ids`, `depth_error_m`, `pose_error_m`, `pixel_error`
+and `max_age_s`. The pose bound must cover relative object/camera pose error;
+ICP residual is not that bound. Only named sensors can supply clearing evidence,
+and existing fit minimum/maximum valid depth limits also apply. With this block
+absent the model accumulates surfaces without depth-ray retirement. All retirement
+remains diagnostic and cannot delete background map cells or shrink a payload.
+
+The node publishes model status, size, source timestamp, residual and overlap on
+`/diagnostics` under `openral_object_tracker: observed surface models`. These
+models never replace containing fits, change the world occupancy map, authorize
+contact, or shrink an attached envelope. Residual/overlap alone cannot certify
+identity, pose observability, hidden extent or rigid shape. Initial acceptance
+and integration with catalog geometry remain distinct validation work.
+
 ## See also
 
 - `python/world_state/README.md` and the package source under
@@ -238,3 +314,11 @@ grounding, relay, staleness, `bind`-mode `TRACKED_OBJECT` binding, restart revis
   capability review's F2 section for the full design rationale.
 - The perception → spatial-memory object-lift design decisions and follow-ups.
 - CLAUDE.md §3 (layer discipline) and §2 (QoS).
+
+The tracker backup fill uses a steady-clock timer in a separate callback group:
+long fitting callbacks can delay the default group's `/clock` subscription.
+It republishes cached tracked sets without changing stamps or revisions and
+stops after five seconds without main activity (attachment fill also requires
+joint receipts within five seconds). Attachment headers use the node ROS clock;
+a delayed clock can still cause conservative kernel expiry. This fill does not
+renew measurement evidence or change freshness/contact limits.

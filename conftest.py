@@ -61,7 +61,8 @@ for _pkg in (
 # records out of test stdout, where they would race doctest expected output.
 structlog.configure(
     wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
-    cache_logger_on_first_use=True,
+    # Capture fixtures replace processors; cached loggers would retain an earlier pipeline.
+    cache_logger_on_first_use=False,
 )
 
 

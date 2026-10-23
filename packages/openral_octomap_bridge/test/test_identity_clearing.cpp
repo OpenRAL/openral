@@ -111,6 +111,32 @@ TEST(IdentityGate, AnyMismatchGetsNone) {
   EXPECT_EQ(gate(floor), nullptr);
 }
 
+TEST(IdentityGate, ARefusalNamesTheConditionThatFailed) {
+  // Spark R245/R253: the refusal logged no reason, and the stop it led to had to be guessed.
+  const auto why = [](const WorldStateStamped& s) {
+    const char* reason = "";
+    EXPECT_EQ(bridge::identity_clearing_track(s.attached_objects.front(), s, "base_link", &reason),
+              nullptr);
+    return std::string(reason);
+  };
+  auto epoch = bound_state();
+  epoch.attached_objects.front().epoch = 3;
+  EXPECT_EQ(why(epoch), "epoch_mismatch");
+  auto free = bound_state();
+  free.tracked_objects.objects.front().status = "confirmed";
+  EXPECT_EQ(why(free), "status_not_bound");
+  auto floor = bound_state();
+  floor.tracked_objects.objects.front().floor_z = std::nan("");
+  EXPECT_EQ(why(floor), "no_floor_z");
+  auto frame = bound_state();
+  frame.tracked_objects.frame_id = "map";
+  EXPECT_EQ(why(frame), "tracked_set_unusable");
+  auto two_tracks = bound_state();
+  two_tracks.tracked_objects.objects.push_back(track("trk:2", "bound", 0.16, 0.08, 0.03));
+  EXPECT_EQ(why(two_tracks), "second_bound_on_hand");
+  EXPECT_EQ(why(bound_state(bridge::kPinchFallbackEvidence)), "evidence_kind");
+}
+
 TEST(IdentityGeometry, TheTightHullClearsLessThanItsBox) {
   // A tetrahedron in the box's -x-y-z corner, with its 26-DOP.
   const double h = 0.05;

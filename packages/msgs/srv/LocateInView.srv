@@ -20,14 +20,28 @@
 #              namespacing lets several locators co-exist. Informational on the
 #              server side (each node owns one model); echoed back so the
 #              prompt cascade records which locator answered.
+#   source_stamp_ns — optional source image timestamp. Zero means the latest
+#                     available frame (the reasoner tool's default); nonzero
+#                     requires that exact camera frame.
 #
 # Response:
 #   found          — true iff the detector grounded the object in the frame.
+#                    false with an empty `failure_reason` means inference ran
+#                    successfully and found no match; false with a reason means
+#                    visibility is unknown because the check did not complete.
 #   camera         — the camera id actually queried (echoes the resolved default).
 #   detector       — the locator id that answered (echoes the request, or the
 #                    node's own id when the request left it empty).
+#   source_stamp_ns — actual image source timestamp used; zero when no image was
+#                     selected. A nonzero request is never answered from another
+#                     frame.
 #   metadata_json  — ObjectsMetadata JSON (boxes/labels/confidence) when found;
-#                    empty string when not found or no frame was available.
+#                    empty when not found or the query could not complete; inspect
+#                    `failure_reason` to distinguish a valid no-match from failure.
+#   failure_reason — bounded cause when inference could not complete (for example
+#                    `detector_inactive`, `no_frame`, or `detector_exception:…`).
+#                    Empty only when inference completed successfully, including a
+#                    successful no-match result.
 #
 #   roi_norm_xyxy — optional region of interest (x0, y0, x1, y1) in [0, 1] of the
 #                   frame: the detector runs on that crop and answers in full-frame
@@ -39,10 +53,13 @@
 string query
 string camera
 string detector
+int64 source_stamp_ns
 float64[] roi_norm_xyxy
 float32 min_score
 ---
 bool found
 string camera
 string detector
+int64 source_stamp_ns
 string metadata_json
+string<=128 failure_reason

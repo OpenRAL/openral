@@ -1555,10 +1555,10 @@ class SafetyEnvelope(BaseModel):
     """Safety constraints handed to the C++ safety kernel.
 
     Not every field is enforced yet. Several are **declared, not yet enforced
-    by the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2``,
-    ``contact_force_threshold_n`` and ``deadman_required`` are passed to the
-    kernel as ROS parameters but no check consults them, and ``no_go_zones``,
-    ``e_stop_topic``, ``e_stop_qos``, ``cycle_time_violation_threshold_ms``
+    by the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2`` and
+    ``deadman_required`` are passed to the kernel as ROS parameters but no check
+    consults them, and ``no_go_zones``, ``e_stop_topic``, ``e_stop_qos``,
+    ``cycle_time_violation_threshold_ms``
     and ``human_in_loop_required`` are not read by any runtime component.
     Each attribute below says which case it is in.
 
@@ -1590,11 +1590,11 @@ class SafetyEnvelope(BaseModel):
             read**: the kernel latches on its hardcoded ``/openral/estop``
             topic.
         e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**
-        contact_force_threshold_n: Force threshold for contact detection.
-            **Declared, not yet enforced by the kernel**: passed as a ROS
-            parameter but never consulted. The kernel's place-contact force
-            gate takes its threshold from each placement declaration
-            instead.
+        contact_force_threshold_n: Robot ceiling on the additive place-force
+            refusal: the kernel uses the smaller of this and the live place
+            declaration's positive threshold. Requires a fresh calibrated
+            payload-to-target witness; not a general contact monitor or a
+            permission to make contact.
         cycle_time_violation_threshold_ms: Control cycle time violation
             threshold. **Declared, not read** by any runtime component.
         human_in_loop_required: rSkill names requiring human supervision.
@@ -2954,9 +2954,8 @@ class RobotDescription(BaseModel):
     #: itself: a schema default is a number nobody measured on that rig, and it
     #: would otherwise reach the kernel silently (issue #303 follow-up).
     #: Declared is not enforced: ``max_force_n`` (issue #373),
-    #: ``max_ee_accel_m_s2``, ``contact_force_threshold_n`` and
-    #: ``deadman_required`` are required here as declarations, but the kernel
-    #: loads them without any check consulting them (see `SafetyEnvelope`).
+    #: ``max_ee_accel_m_s2`` and ``deadman_required`` are required here as
+    #: declarations, but no kernel check consults them (see `SafetyEnvelope`).
     REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
         "max_ee_speed_m_s",
         "max_ee_accel_m_s2",
@@ -2974,7 +2973,6 @@ class RobotDescription(BaseModel):
     UNENFORCED_REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
         "max_ee_accel_m_s2",
         "max_force_n",
-        "contact_force_threshold_n",
         "deadman_required",
     )
 
@@ -3031,8 +3029,7 @@ class RobotDescription(BaseModel):
           ``safety`` (an explicit value equal to the default is fine; what is
           refused is silently inheriting it). ``max_force_n`` is required as a
           declaration but is not yet enforced by the kernel (issue #373); the
-          same holds for ``max_ee_accel_m_s2``, ``contact_force_threshold_n``
-          and ``deadman_required``.
+          same holds for ``max_ee_accel_m_s2`` and ``deadman_required``.
         * the starting-pose approach speed and tolerance for every joint type
           the robot has: ``safety.starting_pose_max_joint_speed_rad_s`` /
           ``safety.starting_pose_tolerance_rad`` when it has a non-prismatic
@@ -3210,7 +3207,7 @@ class RobotDescription(BaseModel):
                 out.append(link)
         return tuple(out)
 
-    def hand_links(self) -> tuple[str, ...]:
+    def hand_links(self, wrist_links: int = 1) -> tuple[str, ...]:
         """The robot's hand links: the jaws, the link carrying them, and the wrist behind it.
 
         Every ``role: gripper`` jaw, mimic follower and fixed child of a mimic finger
@@ -3218,7 +3215,9 @@ class RobotDescription(BaseModel):
         once per hand — the mount the hand's leader jaws hang off (a chained finger
         climbed to its arm, as in ``gripper_hands``): the link that carries the gripper;
         then the link that carrier hangs off, the wrist (never a root link: a gripper
-        mounted on the robot's base adds nothing). The launch passes this as the safety
+        mounted on the robot's base adds nothing). A carrier welded on through
+        ``fixed_attachments`` (DROID's Robotiq base on panda_link8 on panda_link7) hangs
+        off the first actuated link of that rigid chain. The launch passes this as the safety
         kernel's ``workspace_contact_links`` (issue #349): the only links the
         manipulation-workspace contact rule ever relaxes. The wrist is in because a hand
         working at a tote's rim brings it within one voxel of the rim (8/8 deploy-sim
@@ -3226,14 +3225,29 @@ class RobotDescription(BaseModel):
         everything behind it never are. Derived from the manifest, never configured by
         name.
 
+        Args:
+            wrist_links: How many actuated links behind the carrier are the wrist, climbing
+                the joint chain (never past a root link). ``1`` is the one link; the
+                workspace contact rule may take ``2``
+                (``DeployRuntime.workspace_contact_wrist_links``; DROID's
+                ``panda_link6``, Isaac R50-R82: the wrist housing commanded into the
+                table or the bowl rim with no physical contact; Safety-WG review owed).
+
+        Raises:
+            ValueError: ``wrist_links`` outside ``[1, 2]``.
+
         Example:
             >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
             >>> d.hand_links()[-2:]
             ('openarm_left_link6', 'openarm_right_link6')
+            >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+            >>> d.hand_links()[-1], d.hand_links(wrist_links=2)[-2:]
+            ('panda_link7', ('panda_link7', 'panda_link6'))
         """
+        if wrist_links not in (1, 2):
+            raise ValueError(f"wrist_links must be 1 or 2, got {wrist_links!r}")
         grippers = [j for j in self.joints if j.role == "gripper"]
         parent_of = {j.child_link: j.parent_link for j in grippers}
-        joint_parent = {j.child_link: j.parent_link for j in self.joints}
         links = list(self.grasp_contact_links())
         carriers: list[str] = []
         for j in grippers:
@@ -3242,11 +3256,42 @@ class RobotDescription(BaseModel):
                 links.append(carrier)
                 carriers.append(carrier)
         for carrier in carriers:
-            wrist = joint_parent.get(carrier)
-            # A root link (no joint of its own) is the robot's base, never a wrist.
-            if wrist is not None and wrist in joint_parent and wrist not in links:
-                links.append(wrist)
+            links.extend(w for w in self.wrist_links_of(carrier, wrist_links) if w not in links)
         return tuple(links)
+
+    def wrist_links_of(self, carrier: str, wrist_links: int = 1) -> tuple[str, ...]:
+        """The ``wrist_links`` actuated links a gripper carrier hangs off, nearest first.
+
+        The carrier's joint parent, or, for a carrier welded on through
+        ``fixed_attachments`` (DROID: Robotiq base -> panda_link8 -> panda_link7), the first
+        actuated link of that rigid chain (Spark R15: panda_link7 2.4 mm from the banana in
+        PhysX, refused as ``not_hand_link``); then up the joint chain. Never a root link
+        (the robot's base). ``hand_links`` and the object tracker's hand both read it.
+
+        Raises:
+            ValueError: ``wrist_links`` outside ``[1, 2]``.
+
+        Example:
+            >>> d = RobotDescription.from_yaml("robots/droid_franka_robotiq/robot.yaml")
+            >>> d.wrist_links_of("robotiq_arg2f_base_link", 2)
+            ('panda_link7', 'panda_link6')
+        """
+        if wrist_links not in (1, 2):
+            raise ValueError(f"wrist_links must be 1 or 2, got {wrist_links!r}")
+        joint_parent = {j.child_link: j.parent_link for j in self.joints}
+        rigid_parent = {a.child_link: a.parent_link for a in self.fixed_attachments}
+        if carrier in joint_parent:
+            wrist: str | None = joint_parent[carrier]
+        else:
+            wrist, seen = rigid_parent.get(carrier), {carrier}
+            while wrist is not None and wrist not in joint_parent and wrist not in seen:
+                seen.add(wrist)
+                wrist = rigid_parent.get(wrist)
+        out: list[str] = []
+        while wrist is not None and wrist in joint_parent and len(out) < wrist_links:
+            out.append(wrist)
+            wrist = joint_parent[wrist]
+        return tuple(out)
 
     @model_validator(mode="after")
     def _validate_base_joints_against_joints(self) -> RobotDescription:
@@ -4006,8 +4051,9 @@ class PlaceDeclaration(BaseModel):
             liveness key.
         active: ``False`` retracts the declaration.
         contact_force_threshold_n: Per-declaration contact-force bound
-            (ADR-0100); ``0.0`` = no force gate. Never read from the
-            robot-wide ``SafetyEnvelope.contact_force_threshold_n``.
+            (ADR-0100); ``0.0`` = no force gate. The kernel caps a positive
+            bound at ``SafetyEnvelope.contact_force_threshold_n``; a task
+            can lower the robot ceiling, never raise it.
         region: Producer-measured bounded region of the target (ADR-0097's
             2026-08-14 amendment); ``None`` = no approach allowance
             (pre-amendment margins). Dies with the declaration.
@@ -4063,6 +4109,7 @@ class PlaceDeclaration(BaseModel):
     object_id: str = ""
     rskill_id: str = ""
     trace_id: str = ""
+    invocation_id: str = Field(default="", pattern=r"^(?:[0-9a-f]{32})?$")
     timeout_s: float = Field(gt=0.0)
     stamp_ns: int = Field(ge=0)
     active: bool = True
@@ -4144,6 +4191,7 @@ class PlaceDeclaration(BaseModel):
             object_id=str(msg.object_id),  # type: ignore[attr-defined]
             rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
             trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+            invocation_id=str(getattr(msg, "invocation_id", "")),
             timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
             active=bool(msg.active),  # type: ignore[attr-defined]
@@ -4181,6 +4229,7 @@ class PlaceDeclaration(BaseModel):
         msg.object_id = self.object_id  # type: ignore[attr-defined]
         msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
         msg.trace_id = self.trace_id  # type: ignore[attr-defined]
+        msg.invocation_id = self.invocation_id  # type: ignore[attr-defined]
         msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
         msg.active = bool(self.active)  # type: ignore[attr-defined]
@@ -4310,6 +4359,7 @@ class GraspDeclaration(BaseModel):
     contact_links: tuple[str, ...] = ()
     rskill_id: str = ""
     trace_id: str = ""
+    invocation_id: str = Field(default="", pattern=r"^(?:[0-9a-f]{32})?$")
     timeout_s: float = Field(gt=0.0)
     stamp_ns: int = Field(ge=0)
     active: bool = True
@@ -4417,6 +4467,7 @@ class GraspDeclaration(BaseModel):
             contact_links=tuple(str(link) for link in msg.contact_links),  # type: ignore[attr-defined]
             rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
             trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+            invocation_id=str(getattr(msg, "invocation_id", "")),
             timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
             active=bool(msg.active),  # type: ignore[attr-defined]
@@ -4475,6 +4526,7 @@ class GraspDeclaration(BaseModel):
         msg.contact_links = list(self.contact_links)  # type: ignore[attr-defined]
         msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
         msg.trace_id = self.trace_id  # type: ignore[attr-defined]
+        msg.invocation_id = self.invocation_id  # type: ignore[attr-defined]
         msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
         msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
         msg.active = bool(self.active)  # type: ignore[attr-defined]
@@ -11328,6 +11380,282 @@ class StaticGeometry(BaseModel):
     )
 
 
+_USD_LOCAL_POSE_MAX_OFFSET_M = 100.0
+_USD_OBJECT_SHAPE_MAX_DIMENSION_M = 2.0
+_USD_WORKSPACE_MAX_HALF_EXTENT_M = 5.0
+
+
+class USDLocalPose(BaseModel):
+    """Authored transform in a USD object-local or stage frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    xyz_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    quat_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+
+    @model_validator(mode="after")
+    def _finite_and_bounded(self) -> Self:
+        if any(not math.isfinite(v) or abs(v) > _USD_LOCAL_POSE_MAX_OFFSET_M for v in self.xyz_m):
+            raise ValueError("USD local pose xyz_m must be finite and within 100 m")
+        if any(not math.isfinite(v) for v in self.quat_xyzw):
+            raise ValueError("USD local pose quaternion must be finite")
+        norm = math.sqrt(sum(v * v for v in self.quat_xyzw))
+        if not math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=1e-5):
+            raise ValueError("USD local pose quaternion must be normalized")
+        return self
+
+
+class USDObjectPrimitive(BaseModel):
+    """Authored analytic solid in an object's local frame; never read from live xforms."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shape: CollisionShape
+    dimension_semantics: Literal["nominal", "maximum"]
+    pose_in_object: USDLocalPose = Field(default_factory=USDLocalPose)
+
+    @model_validator(mode="after")
+    def _dimensions_are_bounded(self) -> Self:
+        shape = self.shape
+        dimensions = (
+            (shape.radius_m,)
+            if isinstance(shape, SphereShape)
+            else (shape.radius_m, shape.length_m)
+            if isinstance(shape, CapsuleShape)
+            else shape.half_extents_m
+        )
+        if any(not math.isfinite(v) or v > _USD_OBJECT_SHAPE_MAX_DIMENSION_M for v in dimensions):
+            raise ValueError("USD declared shape dimensions must be finite and <= 2 m")
+        return self
+
+
+class USDDeclaredObject(BaseModel):
+    """Catalog identity and optional object-local authored shape for one USD prim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    prim_path: str = Field(pattern=r"^/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*$")
+    label: str = Field(min_length=1, max_length=128)
+    shape: USDObjectPrimitive | None = None
+    workspace_ids: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @field_validator("workspace_ids")
+    @classmethod
+    def _workspace_ids_are_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) for value in values):
+            raise ValueError("USD object workspace_ids must be identifier names")
+        return values
+
+    @field_validator("label")
+    @classmethod
+    def _label_is_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("USD object label must not be blank")
+        return value
+
+
+class USDDeclaredWorkspace(BaseModel):
+    """Authored box workspace in the catalog's named USD stage frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    prim_path: str = Field(pattern=r"^/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*$")
+    role: Literal["search", "workspace"]
+    location: Literal["fixed", "movable"]
+    shape: BoxShape
+    pose_in_stage: USDLocalPose = Field(default_factory=USDLocalPose)
+
+    @model_validator(mode="after")
+    def _dimensions_are_bounded(self) -> Self:
+        if any(
+            not math.isfinite(v) or v > _USD_WORKSPACE_MAX_HALF_EXTENT_M
+            for v in self.shape.half_extents_m
+        ):
+            raise ValueError("USD workspace half-extents must be finite and <= 5 m")
+        return self
+
+
+class CatalogMeasurementCalibration(BaseModel):
+    """Externally established error bound for attributed object surface measurements.
+
+    The bound must cover depth, extrinsics and point attribution/outliers. Declaring
+    it is not calibration proof; the referenced calibration must exist independently.
+    No defaults establish a physical bound, sensor support or freshness policy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    point_error_bound_m: float = Field(ge=0.0, allow_inf_nan=False)
+    calibration_reference: str = Field(min_length=1, max_length=256)
+    sensor_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
+    max_age_s: float = Field(gt=0.0, allow_inf_nan=False)
+
+    @field_validator("calibration_reference")
+    @classmethod
+    def _nonblank_reference(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("calibration_reference must not be blank")
+        return value
+
+    @field_validator("sensor_ids")
+    @classmethod
+    def _unique_sensor_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            not value or value != value.strip() or len(value) > 128  # noqa: PLR2004 # reason: sensor ID wire bound
+            for value in values
+        ):
+            raise ValueError("sensor_ids must be nonblank bounded identifiers")
+        if len(set(values)) != len(values):
+            raise ValueError("sensor_ids must be unique")
+        return values
+
+
+class USDObjectCatalog(BaseModel):
+    """Validated OpenRAL records read from external USD customData."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    source_revision: str = Field(min_length=1, max_length=128)
+    units: Literal["m"]
+    stage_frame_id: str = Field(min_length=1, max_length=128)
+    measurement_calibration: CatalogMeasurementCalibration | None = None
+    objects: tuple[USDDeclaredObject, ...] = Field(default=(), max_length=512)
+    workspaces: tuple[USDDeclaredWorkspace, ...] = Field(default=(), max_length=64)
+
+    @field_validator("source_revision", "stage_frame_id")
+    @classmethod
+    def _nonblank_metadata(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(char.isspace() for char in value):
+            raise ValueError("USD source_revision and stage_frame_id must be nonblank tokens")
+        return value
+
+    @model_validator(mode="after")
+    def _references_are_unique_and_resolved(self) -> Self:
+        names = [obj.name for obj in self.objects] + [
+            workspace.name for workspace in self.workspaces
+        ]
+        prims = [obj.prim_path for obj in self.objects] + [
+            workspace.prim_path for workspace in self.workspaces
+        ]
+        if len(names) != len(set(names)) or len(prims) != len(set(prims)):
+            raise ValueError("USD catalog names and prim paths must be unique")
+        if not self.objects and not self.workspaces:
+            raise ValueError("USD catalog must declare at least one object or workspace")
+        workspace_names = {workspace.name for workspace in self.workspaces}
+        for obj in self.objects:
+            unknown = set(obj.workspace_ids) - workspace_names
+            if unknown:
+                raise ValueError(
+                    f"USD object {obj.name!r} references unknown workspaces {sorted(unknown)}"
+                )
+            if len(obj.workspace_ids) != len(set(obj.workspace_ids)):
+                raise ValueError(f"USD object {obj.name!r} repeats a workspace id")
+        return self
+
+
+class USDObjectCatalogRef(BaseModel):
+    """External USD source, reader configuration, and catalog metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    usd: str | None = Field(default=None, min_length=1, max_length=2_048)
+    prim_path: str = "/"
+    expected_revision: str = Field(min_length=1, max_length=128)
+    reader_python: str | None = Field(default=None, min_length=1, max_length=2_048)
+
+    @field_validator("usd")
+    @classmethod
+    def _source_is_nonblank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("USD source path must not be blank")
+        return value
+
+    @field_validator("expected_revision")
+    @classmethod
+    def _expected_revision_is_token(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(char.isspace() for char in value):
+            raise ValueError("USD expected_revision must be a nonblank token")
+        return value
+
+    @field_validator("prim_path")
+    @classmethod
+    def _prim_path_is_absolute(cls, value: str) -> str:
+        if value != "/" and not re.fullmatch(
+            r"/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*", value
+        ):
+            raise ValueError("USD catalog prim_path must be / or an absolute prim path")
+        return value
+
+    @field_validator("reader_python")
+    @classmethod
+    def _reader_python_is_absolute(cls, value: str | None) -> str | None:
+        if value is not None and not Path(value).is_absolute():
+            raise ValueError("USD catalog reader_python must be an absolute executable path")
+        return value
+
+
+class SurfaceFreeSpaceCalibration(BaseModel):
+    """External sensor/pose error bounds required to retire observed surface cells.
+
+    The reference identifies independently established calibration evidence; this
+    configuration does not establish that evidence or authorize world-map clearing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    calibration_ref: str = Field(min_length=1, max_length=256)
+    sensor_ids: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = Field(
+        min_length=1, max_length=16
+    )
+    depth_error_m: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    pose_error_m: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    pixel_error: int = Field(ge=0, le=64)
+    max_age_s: float = Field(gt=0.0, le=600.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _calibration_tokens(self) -> Self:
+        if not self.calibration_ref.strip():
+            raise ValueError("free-space calibration_ref must not be blank")
+        if any(not name.strip() or name != name.strip() for name in self.sensor_ids):
+            raise ValueError("free-space sensor_ids must be nonblank sensor identifiers")
+        if len(set(self.sensor_ids)) != len(self.sensor_ids):
+            raise ValueError("free-space sensor_ids must be unique")
+        return self
+
+
+class ObjectSurfaceModelConfig(BaseModel):
+    """Resource and convergence bounds for observation-only object surface registration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    voxel_m: float = Field(gt=0.0, le=0.10, allow_inf_nan=False)
+    max_points: int = Field(ge=4, le=8_192)
+    max_voxels: int = Field(ge=4, le=8_192)
+    max_iterations: int = Field(ge=1, le=100)
+    max_correspondence_m: float = Field(gt=0.0, le=1.0, allow_inf_nan=False)
+    max_rmse_m: float = Field(gt=0.0, le=1.0, allow_inf_nan=False)
+    min_overlap: float = Field(gt=0.0, le=1.0, allow_inf_nan=False)
+    free_space_calibration: SurfaceFreeSpaceCalibration | None = None
+
+    @model_validator(mode="after")
+    def _registration_bounds_are_consistent(self) -> Self:
+        if self.max_correspondence_m < self.voxel_m:
+            raise ValueError("max_correspondence_m must be >= voxel_m")
+        if self.max_rmse_m > self.max_correspondence_m:
+            raise ValueError("max_rmse_m must be <= max_correspondence_m")
+        return self
+
+
 class DeployRuntime(BaseModel):
     """Committed deploy-posture toggles for a workcell scene.
 
@@ -11471,7 +11799,19 @@ class DeployRuntime(BaseModel):
     enable_reward_monitor: bool | None = None
     reward_monitor_manifest: str | None = None
     reward_monitor_task: str | None = None
+    reward_monitor_score_window_s: float | None = Field(default=None, gt=0.0)
+    """Seconds of recent footage each reward heartbeat scores (the node's
+    ``score_window_s``). ``None`` = the node default, 2 s, sized for an 8 GB card;
+    the backend subsamples any window to its ``max_frames``."""
     enable_critic: bool | None = None
+    enable_completion_check: bool | None = None
+    """Hold the policy on a reward success (>= 0.6) or a release, ask the scene VLM whether
+    the task is done, then end the goal as a success or resume it
+    (``completion_check_node``). Needs the reward monitor, the critic leg and the scene VLM.
+    ``None`` = off."""
+    completion_check_judge: Literal["scene_vlm", "reasoner"] | None = None
+    """Who answers the completion check: ``scene_vlm`` (default; needs the scene VLM) or
+    ``reasoner`` (the reasoner's model, ``OPENRAL_REASONER_*`` env, on all cameras at once)."""
     enable_scene_vlm: bool | None = None
     """Bring up the scene-VLM query service so the reasoner is offered the
     read-only ``query_scene`` tool. ``None`` = off unless the CLI passes
@@ -11627,15 +11967,31 @@ class DeployRuntime(BaseModel):
     ``docs/reference/manipulation-workspace-contact.md`` §8 (the real-hardware value is a
     Safety-WG decision). Capped at 0.10 m (``le=0.10``), mirrored by the kernel's
     ``kMaxWorkspaceContactLeadM``. Backward-compatible addition."""
+    workspace_explained_cells: bool = True
+    """Issue #418 K7, with ``object_tracking: on``: workspace contact is tolerated only on
+    cells a tracked object, the declared static geometry or the measured support explains.
+    ``false`` keeps the workspace contact rule alone (slow hand links inside
+    ``workspace_box`` may touch lightly, as before #418): for a scene whose neighbours the
+    depth cameras cannot track (restock: the tote carton beside the target sits behind the
+    gripper in the one depth camera; Spark R264-R292; 2026-10-23 user decision).
+    Logged at launch when false. Safety-WG review owed. Backward-compatible addition."""
+    workspace_contact_wrist_links: int = Field(default=1, ge=1, le=2)
+    """How many actuated links behind the gripper's carrier the workspace contact rule
+    takes as the wrist (``RobotDescription.hand_links(wrist_links=...)``). ``1`` is the
+    manifest's one wrist link; ``2`` adds the next link up the chain (DROID's
+    ``panda_link6``, the wrist housing: Isaac R50-R82 stopped on it commanded into the
+    table or the bowl rim with no physical contact; 2026-10-21 decision, sim only,
+    Safety-WG review and a hazard-log row owed). Only the kernel's contact rule reads it;
+    the self-filter's mask keeps the one-link set. Backward-compatible addition."""
     payload_sweep_clear_enabled: bool = False
     """Turn on the octomap bridge's payload clearing in the OCTREE (its
     ``payload_sweep_clear_service`` = octomap_server's ``~/clear_bbox``): every
-    ``payload_sweep_clear_period_s`` the carried payload's own posed primitive boxes, at
-    the poses it was attached in, floored above every known support, are removed from the
-    octree itself, so its own returns left along the carry stop reaching the kernel. It
-    REMOVES world occupancy: a real obstacle inside a cleared box is gone until a camera
-    sees it again. Default off, and off is the graph exactly as without it.
-    **Sim-only until Safety-WG review** (hazard-log row owed): ``openral deploy run``
+    ``payload_sweep_clear_period_s`` only uniquely bound, valid tracked payloads can
+    clear guarded cells above known supports and outside neighbor/static keep-outs.
+    Untracked and pinch-fallback geometry never grants clearing. Per-cell ownership
+    remains incomplete: an unknown obstacle inside the fitted payload can still be
+    removed. Default off; no raw octree clearing service is configured when off.
+    **Sim-only until Safety-WG review**: ``openral deploy run``
     and ``deploy_e2e`` on a non-sim HAL refuse it on. Backward-compatible addition."""
     static_geometry_file: str | None = None
     """Declared static geometry of the cell (``StaticGeometry`` YAML; scene-relative, else
@@ -11660,6 +12016,9 @@ class DeployRuntime(BaseModel):
     grounding_required: bool = False
     """With it, a goal whose queries are not grounded within ``grounding_wait_s`` is
     refused; without it the goal proceeds with no exemption for that query."""
+    object_surface_model: ObjectSurfaceModelConfig | None = None
+    """Optional resource-bounded object-local registration settings. This config
+    controls observation/model work only; it grants no contact or safety allowance."""
 
     @model_validator(mode="after")
     def _check_object_tracking(self) -> Self:
@@ -11668,6 +12027,8 @@ class DeployRuntime(BaseModel):
                 f"DeployRuntime.object_tracking={self.object_tracking!r} needs an explicit "
                 "grounding_wait_s."
             )
+        if self.object_surface_model is not None and self.object_tracking == "off":
+            raise ValueError("DeployRuntime.object_surface_model requires object_tracking")
         return self
 
     @model_validator(mode="after")
@@ -11802,6 +12163,10 @@ class DeployScene(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scene: SceneSpec
+    object_catalog: USDObjectCatalogRef | None = None
+    """Optional customData catalog source in the external environment USD.
+    ``usd`` defaults to ``scene.assets_uri``; authored records are never
+    derived from simulator poses."""
     robot_id: str | None = None
     base_pose: Pose6D | None = None
     seed: int = 0
@@ -12709,6 +13074,9 @@ class ReasonerTimeoutEvidence(_FailureEvidenceBase):
     elapsed_s: float = Field(ge=0)
 
 
+_COLLISION_EVIDENCE_STRING_MAX = 256
+
+
 class CollisionEvidence(_FailureEvidenceBase):
     """Evidence for ``KIND_COLLISION`` — a proposed motion would collide.
 
@@ -12740,6 +13108,23 @@ class CollisionEvidence(_FailureEvidenceBase):
             kernel never checked. Empty only on a record emitted before the field
             existed: a kernel that reports a collision has a collision model by
             construction, and its FK buffer is always ``n_dof`` long.
+        joint_names: Optional joint names in the exact same order as
+            ``joint_positions_rad``. Missing on older records or when the
+            producer cannot establish a same-length name vector.
+        sweep_min_distance_m: Minimum distance over all checked pairs, including
+            exempted pairs. It does not identify the pair named by the link fields.
+        workspace_denial_reason: Readable reason the workspace rule did not
+            tolerate the reported pair, mapped from the kernel's existing code.
+        workspace_contact_active: Whether a live workspace contact region was
+            active during the check, when reported by the producer.
+        grasp_exemption_active: Whether a live grasp exemption was active during
+            the check, when reported by the producer.
+        depth_is_box_bound: Whether ``min_distance_m`` reports a bounding-box
+            lower bound instead of a tight-geometry distance.
+        payload_evidence_kind: Attached-payload source kind from the accepted
+            attachment wire, only when the reported pair is a carried payload.
+        payload_evidence_ref: Producer reference paired with
+            ``payload_evidence_kind``, when present and bounded.
         world_grid_origin_m: Base-frame position of voxel ``(0,0,0)``'s minimum
             corner in the occupancy grid **this check ran against**, when the
             other party is a world voxel; ``None`` otherwise and on any
@@ -12761,9 +13146,57 @@ class CollisionEvidence(_FailureEvidenceBase):
     link_a: str
     link_b_or_object: str
     horizon_step: int = Field(ge=REACTIVE_HORIZON_STEP)
-    min_distance_m: float
+    min_distance_m: float = Field(allow_inf_nan=False)
     joint_positions_rad: list[float] = Field(default_factory=list)
+    joint_names: list[str] | None = None
+    sweep_min_distance_m: float | None = Field(default=None, allow_inf_nan=False)
+    workspace_denial_reason: (
+        Literal[
+            "not_applicable_or_exempt",
+            "not_hand_link",
+            "hand_speed_over_limit_or_unknown",
+            "hand_lead_over_limit_or_unknown",
+            "cell_center_outside_workspace",
+            "cell_unexplained",
+        ]
+        | None
+    ) = None
+    workspace_contact_active: bool | None = None
+    grasp_exemption_active: bool | None = None
+    depth_is_box_bound: bool | None = None
+    payload_evidence_kind: str | None = Field(
+        default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
+    )
+    payload_evidence_ref: str | None = Field(
+        default=None, min_length=1, max_length=_COLLISION_EVIDENCE_STRING_MAX
+    )
     world_grid_origin_m: tuple[float, float, float] | None = None
+
+    @field_validator("joint_positions_rad")
+    @classmethod
+    def _joint_positions_are_finite(cls, values: list[float]) -> list[float]:
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("joint_positions_rad must contain only finite values")
+        return values
+
+    @model_validator(mode="after")
+    def _diagnostic_fields_match_the_reported_configuration(self) -> Self:
+        if self.joint_names is not None:
+            if len(self.joint_names) != len(self.joint_positions_rad):
+                raise ValueError("joint_names must pair one-to-one with joint_positions_rad")
+            if any(
+                not name.strip() or len(name) > _COLLISION_EVIDENCE_STRING_MAX
+                for name in self.joint_names
+            ):
+                raise ValueError(
+                    "joint_names must be nonblank strings of at most "
+                    f"{_COLLISION_EVIDENCE_STRING_MAX} characters"
+                )
+        if (self.payload_evidence_kind is None) != (self.payload_evidence_ref is None):
+            raise ValueError(
+                "payload_evidence_kind and payload_evidence_ref must be present together"
+            )
+        return self
 
     @property
     def is_reactive(self) -> bool:
@@ -12771,24 +13204,45 @@ class CollisionEvidence(_FailureEvidenceBase):
         return self.horizon_step == CollisionEvidence.REACTIVE_HORIZON_STEP
 
 
+class ObjectQueryObservation(BaseModel):
+    """One refused observation attempt behind an object-query failure.
+
+    Attributes:
+        camera: Camera that produced the observation.
+        stamp_ns: Source-clock stamp of the observation.
+        reason: Bounded tracker refusal code.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    camera: str = Field(min_length=1, max_length=128)
+    stamp_ns: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=128)
+
+
 class ObjectQueryEvidence(_FailureEvidenceBase):
     """Evidence for ``KIND_OBJECT_QUERY`` — a standing object query could not be resolved.
 
     Issue #418 Addendum G. The World State tracker publishes it on
     ``/openral/failure/world_state`` when a query stays ``UNRESOLVED`` for its search
-    start (``escalation="unresolved"``: the reasoner runs the bounded ``find-object``
-    playbook) or its search budget is spent (``"exhausted"``: the replanning ladder's
-    human handoff). The typed failure is ``ROSObjectNotInMemory`` (``to_exception``).
+    start or its search budget is spent. The reasoner uses the bounded dispatch-attempt
+    budget; exhaustion leaves the active task stopped without a human handoff. The typed
+    failure is ``ROSObjectNotInMemory`` (``to_exception``).
 
     Attributes:
         kind: Discriminator (always ``"object_query"``).
         escalation: ``"unresolved"`` or ``"exhausted"``.
-        goal_id: The tracker goal (``"<grasp|place>:<target_id>@<stamp_ns>"``).
+        goal_id: Tracker goal (``"<grasp|place>:<target_id>@<stamp_ns>"``), suffixed
+            with ``#<invocation_id>`` when received through the ExecuteRskill action.
         query_id: The query's key within the goal.
         label: The query's open-vocabulary label.
         role: What the object is to the task.
         waited_s: Source seconds the current search has run.
         attempts: Detection requests the tracker spent on the query in this goal.
+        reason: Last geometry, workspace, or search failure reason.
+        invocation_id: ExecuteRskill action goal UUID that owns the declaration.
+        workspace: Declared grasp workspace, when present.
+        observations: Last bounded observation attempts with their refusal reasons.
         last_seen: The last lost match's box, a search prior only (never kernel
             geometry); ``None`` if never seen.
 
@@ -12814,6 +13268,10 @@ class ObjectQueryEvidence(_FailureEvidenceBase):
     role: ObjectRole
     waited_s: float = Field(ge=0.0, allow_inf_nan=False)
     attempts: int = Field(ge=0)
+    reason: str = Field(default="object_not_found", min_length=1, max_length=128)
+    invocation_id: str = Field(default="", pattern=r"^(?:[0-9a-f]{32})?$")
+    workspace: PlaceRegion | None = None
+    observations: list[ObjectQueryObservation] = Field(default_factory=list, max_length=8)
     last_seen: PlaceRegion | None = None
 
     def to_exception(self) -> ROSObjectNotInMemory:
@@ -12821,7 +13279,7 @@ class ObjectQueryEvidence(_FailureEvidenceBase):
         return ROSObjectNotInMemory(
             f"object query {self.escalation}: {self.label!r} ({self.role.value}, query "
             f"{self.goal_id}/{self.query_id}) not resolved after {self.waited_s:.1f} s and "
-            f"{self.attempts} detection attempt(s)"
+            f"{self.attempts} detection attempt(s); reason={self.reason}"
         )
 
 

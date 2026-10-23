@@ -13,9 +13,16 @@ within ``close_band`` of closed and a jaw whose span over a short window is with
 This detector asks the same physical question with a robust read: the commanded jaw is further
 from closed than the *median* measured jaw by at least ``closed_rest_offset + stall_gap`` (the
 manifest's numbers, like the release gap), the median is not moving (the medians of the window's
-two halves agree within ``settle_tolerance``), and both hold for ``dwell_s``. Chatter resets nothing
-a median does not see; a closing jaw (a large half-to-half drift) or a jaw at its command (no gap)
-never fires. No command band: the gap alone says "something is between the pads".
+two halves agree within ``settle_tolerance``), the jaw got there by closing (some sample in the last
+``approach_s`` sits further from closed than the median by the drift allowance), and all of it holds
+for ``dwell_s``. Chatter resets nothing a median does not see; a closing jaw (a large half-to-half
+drift), a jaw at its command (no gap) or a jaw that has not started to close never fires. No
+command band: the gap alone says "something is between the pads".
+
+The command is the approved chunk's last row, up to a chunk ahead of the row the jaw executes:
+a fully open jaw under a chunk that closes at its end is short of that command and not moving
+(2026-10-23, Spark banana R322: a derived ATTACH at jaw 0.9996, 9 s before the real grasp, bound
+the banana where it lay). Only a jaw that closed and stopped is held.
 
 Pure: no ROS, no clock, no numpy. Source stamps only (``JointState`` stamps, command stamps).
 """
@@ -41,13 +48,21 @@ class JawStallDetector:
         window_s: Source seconds of samples the median reads. *Calibration point.*
         dwell_s: Source seconds the stall must hold before it fires. *Calibration point.*
         min_samples: Fewest distinct samples a window needs. *Calibration point.*
+        approach_s: Source seconds back the closing motion into the hold may lie. *Calibration
+            point.*
 
     Example:
         >>> d = JawStallDetector(0.0, 0.15, 0.02)
         >>> d.command(0.2, 0)
-        >>> fired = [d.update(0.45, int(i * 0.1 * 1e9)) for i in range(14)]
+        >>> d.update(0.9, 0)
+        False
+        >>> fired = [d.update(0.45, int(i * 0.1 * 1e9)) for i in range(1, 15)]
         >>> fired.index(True) < 10, sum(fired)
         (True, 1)
+        >>> still = JawStallDetector(0.0, 0.15, 0.02)  # open under a closing command: no hold
+        >>> still.command(0.2, 0)
+        >>> sum(still.update(0.9996, int(i * 0.1 * 1e9)) for i in range(30))
+        0
     """
 
     def __init__(
@@ -59,12 +74,15 @@ class JawStallDetector:
         window_s: float = 0.6,
         dwell_s: float = 0.3,
         min_samples: int = 5,
+        approach_s: float = 2.0,
     ) -> None:
         """Read nothing yet."""
         self.closed, self.gap = closed, gap
         self.settle = max(settle, gap / 2.0)
         self.window_ns, self.dwell_ns = int(window_s * _NS), int(dwell_s * _NS)
         self.min_samples = min_samples
+        self.approach_ns = int(approach_s * _NS)
+        self._recent: deque[tuple[int, float]] = deque()  # approach_s of samples
         self._cmd: float | None = None
         self._samples: deque[tuple[int, float]] = deque()
         self._since_ns: int | None = None
@@ -103,6 +121,7 @@ class JawStallDetector:
     def reset(self) -> None:
         """Forget the window (a release, a sim reset, a source clock that went back)."""
         self._samples.clear()
+        self._recent.clear()
         self._since_ns = None
         self._latched = False
 
@@ -135,6 +154,9 @@ class JawStallDetector:
         self._samples.append((stamp_ns, position))
         while self._samples[0][0] < stamp_ns - self.window_ns:
             self._samples.popleft()
+        self._recent.append((stamp_ns, position))
+        while self._recent[0][0] < stamp_ns - self.approach_ns:
+            self._recent.popleft()
         if self._cmd is None or self._latched:
             return False
         if len(self._samples) < self.min_samples:
@@ -144,7 +166,9 @@ class JawStallDetector:
         vals = [p for _, p in self._samples]
         short = abs(median(vals) - self.closed) - abs(self._cmd - self.closed)
         drift = self._drift()
-        if short < self.gap or drift > self.settle:
+        held = abs(median(vals) - self.closed)
+        closed_in = max(abs(p - self.closed) for _, p in self._recent) - held
+        if short < self.gap or drift > self.settle or closed_in < self.settle:
             self._since_ns = None
             return False
         if self._since_ns is None:

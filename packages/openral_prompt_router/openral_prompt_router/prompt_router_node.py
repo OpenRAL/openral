@@ -69,6 +69,10 @@ _QOS_PROMPT = QoSProfile(
 # Generous: the reasoner's on_configure loads the skill palette (seconds) and
 # only then creates the subscription; missing the prompt boots the run idle.
 _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S = 30.0
+# The node whose subscription the startup prompt waits for. Any other
+# subscriber (a `ros2 topic echo`, a bag recorder, the dashboard) matching
+# first would release the wait while the reasoner is still configuring.
+_REASONER_NODE_NAME = "openral_reasoner"
 
 # v1 adapter registry — only the CLI source is wired. Priorities chosen
 # so a human prompt overtakes an auto-prompt (the
@@ -210,11 +214,11 @@ class PromptRouterNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy un
         # DDS discovery runs on its own thread, so this poll does not deadlock
         # the (separate-process) reasoner that we are waiting on.
         deadline = time.monotonic() + _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S
-        while self._pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+        while not self._reasoner_subscribed() and time.monotonic() < deadline:
             time.sleep(0.05)
-        if self._pub.get_subscription_count() == 0:
+        if not self._reasoner_subscribed():
             self.get_logger().warning(
-                "startup_prompt: no subscriber on /openral/prompt after "
+                f"startup_prompt: no {_REASONER_NODE_NAME} subscriber on /openral/prompt after "
                 f"{_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S:.0f}s; publishing anyway "
                 "(reasoner may miss it under VOLATILE QoS)",
             )
@@ -230,6 +234,13 @@ class PromptRouterNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy un
         self._forwarded_count += 1
         self.get_logger().info(
             f"startup_prompt published source=cli priority={DEFAULT_SOURCES['cli']} text={text!r}",
+        )
+
+    def _reasoner_subscribed(self) -> bool:
+        """Whether the reasoner's own ``/openral/prompt`` subscription has been discovered."""
+        return any(
+            info.node_name == _REASONER_NODE_NAME
+            for info in self.get_subscriptions_info_by_topic("/openral/prompt")
         )
 
     # ── public helpers for tests ───────────────────────────────────────────

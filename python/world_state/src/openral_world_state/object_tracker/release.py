@@ -1,13 +1,12 @@
-"""Release of a bound tracked object and its return to tracking (issue #418, "Release").
+"""Release of a bound tracked object (issue #418, "Release").
 
 * ``JawReleaseMonitor``: the jaw-open trigger (the kernel's K5 rule, mirrored for the
   tracker): the measured jaw opened past ``hold + release_gap`` for ``release_dwell``.
   In t9 the record stayed attached with the jaw at 0.988, waiting for a DETACH.
-* ``release_track``: the track goes ``RELEASED`` at the release pose.
-* ``fall_column``: where a released object can have landed; its horizontal gate grows
-  with the release height (g20 / t5 mid-air drops).
-* ``reassociate_released``: a fit confirmed in exactly one fall column returns that
-  track ``CONFIRMED`` under the same id, ``epoch + 1``, on its new support.
+* ``release_track``: the track goes ``RELEASED`` at the release pose, for the release
+  window only (the kernel freezes the payload there); then the session retires it. A
+  released object is never followed: it may roll or fall, and the target query finds it
+  afresh under a new id (2026-10-22, Spark R177-R185).
 
 All stamps are source-clock nanoseconds (depth / grid stamps), never the node clock.
 """
@@ -21,14 +20,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core import FitKind, PlaceRegion, Pose6D, TrackedObject, TrackStatus
+from openral_core import PlaceRegion, Pose6D, TrackedObject, TrackStatus
 from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
 
 if TYPE_CHECKING:
     from openral_world_state.object_tracker.binding import TrackStoreLike
     from openral_world_state.object_tracker.pinch import HandModel
 
-__all__ = ["JawReleaseMonitor", "fall_column", "reassociate_released", "release_track"]
+__all__ = ["JawReleaseMonitor", "release_track"]
 
 log = structlog.get_logger(__name__)
 
@@ -145,111 +144,3 @@ def release_track(
     store.replace(released)
     log.info("object_tracker.released", object_id=object_id, status=released.status.value)
     return released if released.status is TrackStatus.RELEASED else None
-
-
-def fall_column(track: TrackedObject, cell_m: float) -> PlaceRegion:
-    """Where a ``RELEASED`` track can have landed: the release box down to its support.
-
-    The horizontal gate is one cell plus the release height (a 45 deg cone).
-
-    ponytail: no bounce/roll model; widen the gate if t5-like drops land outside it.
-
-    Example:
-        >>> box = PlaceRegion(
-        ...     frame_id="base",
-        ...     pose=Pose6D(xyz=(0.2, 0.0, 0.13), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
-        ...     half_extents=(0.03, 0.03, 0.03),
-        ... )
-        >>> t = TrackedObject(
-        ...     object_id="trk:1",
-        ...     epoch=0,
-        ...     label="orange",
-        ...     role="target",
-        ...     declaration_key="k",
-        ...     status="released",
-        ...     box=box,
-        ...     fit_kind="silhouette_cone",
-        ...     support_z=0.0,
-        ...     support_ref="map",
-        ...     floor_z=0.01,
-        ...     visible_cells=4,
-        ...     occupied_cells=4,
-        ...     last_fit_stamp_ns=1,
-        ...     last_confirmed_stamp_ns=1,
-        ... )
-        >>> [round(v, 3) for v in fall_column(t, 0.01).half_extents]
-        [0.14, 0.14, 0.09]
-    """
-    b = track.box
-    top, low = b.pose.xyz[2] + b.half_extents[2], b.pose.xyz[2] - b.half_extents[2]
-    bottom = min(low, track.support_z)
-    gate = cell_m + max(0.0, low - track.support_z)
-    cap = PlaceRegion.MAX_HALF_EXTENT_M
-    return b.model_copy(
-        update={
-            "pose": b.pose.model_copy(
-                update={"xyz": (b.pose.xyz[0], b.pose.xyz[1], (top + bottom) / 2.0)}
-            ),
-            "half_extents": (
-                min(b.half_extents[0] + gate, cap),
-                min(b.half_extents[1] + gate, cap),
-                min((top - bottom) / 2.0 + cell_m, cap),
-            ),
-            "evidence_ref": f"fall_column:{track.object_id}",
-        }
-    )
-
-
-def reassociate_released(
-    store: TrackStoreLike,
-    fit: PlaceRegion,
-    *,
-    fit_kind: FitKind,
-    support_z: float,
-    support_ref: str,
-    visible_cells: int,
-    occupied_cells: int,
-    cell_m: float,
-    stamp_ns: int,
-) -> TrackedObject | None:
-    """Return the one ``RELEASED`` track whose fall column holds a confirmed fit's centre.
-
-    The caller has already map-confirmed ``fit`` (size-aware cover, one body). Exactly one
-    column must hold it: two is ambiguous and binds nothing (logged), none is a new object.
-    The track returns ``CONFIRMED`` under its id, ``epoch + 1`` (the kernel retired the
-    old epoch at release), ``identity_inferred``, on the new support.
-    """
-    centre = np.asarray(fit.pose.xyz)
-    hits = []
-    for track in store.all():
-        if track.status is not TrackStatus.RELEASED:
-            continue
-        col = fall_column(track, cell_m)
-        t = homogeneous_from_quat_xyz(col.pose.xyz, col.pose.quat_xyzw)
-        if np.all(np.abs((centre - t[:3, 3]) @ t[:3, :3]) <= np.asarray(col.half_extents)):
-            hits.append(track)
-    if len(hits) != 1:
-        if hits:
-            log.info("object_tracker.reassociate_ambiguous", ids=[t.object_id for t in hits])
-        return None
-    track = hits[0]
-    confirmed = track.model_copy(
-        update={
-            "status": TrackStatus.CONFIRMED,
-            "epoch": track.epoch + 1,
-            "box": fit,
-            "fit_kind": fit_kind,
-            "support_z": support_z,
-            "support_ref": support_ref,
-            "floor_z": support_z + cell_m,
-            "visible_cells": visible_cells,
-            "occupied_cells": occupied_cells,
-            "last_fit_stamp_ns": stamp_ns,
-            "last_confirmed_stamp_ns": stamp_ns,
-            "identity_inferred": True,
-        }
-    )
-    confirmed = TrackedObject.model_validate(confirmed.model_dump())
-    store.replace(confirmed)
-    log.info("object_tracker.reconfirmed", object_id=track.object_id, epoch=confirmed.epoch)
-    return confirmed

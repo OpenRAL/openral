@@ -1651,9 +1651,9 @@ def _hf_tokenizer_is_cached(repo_id: str) -> bool:
     """Probe the local HF cache for ``<repo_id>/tokenizer_config.json``.
 
     ``tokenizer_config.json`` is the first file
-    ``AutoTokenizer.from_pretrained`` resolves; if it is on disk the rest
-    of the tokenizer family (vocab, special tokens, processor config)
-    was downloaded alongside it on the initial pull.
+    ``AutoTokenizer.from_pretrained`` resolves; the vocabulary
+    (``tokenizer.json`` or ``tokenizer.model``) must be cached too, since a
+    partial pull can leave the configs without it.
     ``try_to_load_from_cache`` returns the cached path (``str``),
     ``None`` for "unknown", or the ``_CACHED_NO_EXIST`` sentinel for
     "known not to exist upstream" — only the ``str`` return means we
@@ -1664,8 +1664,15 @@ def _hf_tokenizer_is_cached(repo_id: str) -> bool:
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
         return False
-    cached = try_to_load_from_cache(repo_id=repo_id, filename="tokenizer_config.json")
-    return isinstance(cached, str)
+    config = try_to_load_from_cache(repo_id=repo_id, filename="tokenizer_config.json")
+    if not isinstance(config, str):
+        return False
+    # The vocabulary itself: a cache holding only the configs (a partial pull) loads, offline,
+    # as a tokenizer that maps every word to <unk>.
+    return any(
+        isinstance(try_to_load_from_cache(repo_id=repo_id, filename=f), str)
+        for f in ("tokenizer.json", "tokenizer.model")
+    )
 
 
 def call_make_processors_cached_first(
@@ -1722,17 +1729,58 @@ def call_make_processors_cached_first(
         result: tuple[Any, Any] = make_pre_post_processors(
             policy_config, pretrained_path=pretrained_path, **kwargs
         )
-        return result
+    else:
+        import huggingface_hub.constants as _hc
 
-    import huggingface_hub.constants as _hc
+        saved = _hc.HF_HUB_OFFLINE
+        _hc.HF_HUB_OFFLINE = True
+        try:
+            result = make_pre_post_processors(
+                policy_config, pretrained_path=pretrained_path, **kwargs
+            )
+        finally:
+            _hc.HF_HUB_OFFLINE = saved
+    check_preprocessor_tokenizer(result[0])
+    return result
 
-    saved = _hc.HF_HUB_OFFLINE
-    _hc.HF_HUB_OFFLINE = True
-    try:
-        result = make_pre_post_processors(policy_config, pretrained_path=pretrained_path, **kwargs)
-        return result
-    finally:
-        _hc.HF_HUB_OFFLINE = saved
+
+# An English instruction every language-conditioned checkpoint's tokenizer covers.
+_TOKENIZER_PROBE = "pick up the banana and place it in the bowl"
+
+
+def check_preprocessor_tokenizer(preprocessor: Any) -> None:
+    """Refuse a preprocessor whose task tokenizer cannot read English.
+
+    A tokenizer loaded from a cache that holds its configs but not its
+    vocabulary (offline, ``HF_HUB_OFFLINE=1``) builds without error and
+    maps every word to ``<unk>``: the policy then runs blind to its task,
+    and to π0.5's state, which rides in the prompt. Each step's
+    ``input_tokenizer`` (lerobot ``TokenizerProcessorStep``) encodes a fixed
+    instruction; no word tokens, or half or more of them ``<unk>``, raises.
+    Preprocessors without a tokenizer step (ACT, Diffusion Policy) pass.
+
+    Args:
+        preprocessor: What ``make_pre_post_processors`` returned first.
+
+    Raises:
+        ROSConfigError: A tokenizer step has no usable vocabulary.
+
+    Example:
+        >>> check_preprocessor_tokenizer(object())  # no steps: nothing to check
+    """
+    for step in getattr(preprocessor, "steps", ()):
+        tok = getattr(step, "input_tokenizer", None)
+        if tok is None:
+            continue
+        special = set(getattr(tok, "all_special_ids", ())) - {tok.unk_token_id}
+        ids = [i for i in tok.encode(_TOKENIZER_PROBE) if i not in special]
+        n_unk = sum(i == tok.unk_token_id for i in ids)
+        if not ids or 2 * n_unk >= len(ids):
+            raise ROSConfigError(
+                f"tokenizer {getattr(step, 'tokenizer_name', None)!r} has no usable vocabulary: "
+                f"{_TOKENIZER_PROBE!r} -> {n_unk}/{len(ids)} <unk> tokens. Its HF cache entry "
+                "likely lacks tokenizer.json / tokenizer.model; re-download it with the Hub online."
+            )
 
 
 __all__ = [
@@ -1740,6 +1788,7 @@ __all__ = [
     "InferenceKind",
     "apply_chunk_replay",
     "call_make_processors_cached_first",
+    "check_preprocessor_tokenizer",
     "checkpoint_image_keys",
     "manifest_camera_slots",
     "materialize_processor_dir",

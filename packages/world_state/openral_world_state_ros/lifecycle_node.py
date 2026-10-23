@@ -296,6 +296,8 @@ if _ROS2_AVAILABLE:
                     staleness_limit_s=staleness,
                     policy_state_staleness_limit_s=policy_staleness,
                 )
+            # Either aggregator: the tracker heartbeats on ROS time, so age its set there.
+            self._aggregator.use_tracked_clock(lambda: self.get_clock().now().nanoseconds)
 
             sensor_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,

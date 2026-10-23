@@ -106,6 +106,7 @@ def map_confirms(
     pad_m: float = 0.0,
     own: Sequence[PlaceRegion] = (),
     static: Collection[tuple[int, int, int]] = (),
+    min_split_cells: int = 1,
 ) -> tuple[str, str]:
     """Whether the voxel map confirms a camera instance box: ``("", "")``, or ``(kind, why)``.
 
@@ -136,6 +137,10 @@ def map_confirms(
             body whose every cell is one of them is the declared wall or floor the camera
             saw, not a foreign object, and is not counted. The cover gate and the fit read
             every cell regardless; only a component wholly inside ``static`` is excused.
+        min_split_cells: The fewest cells a second body needs to split the box. ``1`` (any
+            body) is the fail-closed default; the object tracker passes more, since a curved
+            or hand-occluded object leaves 1-2 cell fragments of itself apart from its main
+            body (Isaac R28/R31: a banana's own tip went SPLIT mid-grasp).
 
     Raises:
         ROSConfigError: On a frame mismatch or a tilted region.
@@ -165,6 +170,8 @@ def map_confirms(
         'map_split'
         >>> map_confirms(g, wide, support_z=0.0, min_cover=0.5, pad_m=0.06)  # only in the pad
         ('', '')
+        >>> map_confirms(g, box(0.4, 0.3), support_z=0.0, min_cover=0.5, min_split_cells=5)
+        ('', '')
     """
     count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
     if not covered:
@@ -188,7 +195,8 @@ def map_confirms(
     deep = [
         c
         for c in comps[1:]
-        if _in_region(above[c], inner).any()
+        if len(c) >= min_split_cells
+        and _in_region(above[c], inner).any()
         and not np.any([_in_region(above[c], b) for b in own], axis=0).all()
     ]
     if deep:

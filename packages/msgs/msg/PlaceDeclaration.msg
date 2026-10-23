@@ -41,6 +41,8 @@ string object_id
 # declaration reconstructible from the trace alone after the fact.
 string rskill_id
 string trace_id
+# ExecuteRskill action goal UUID; stable across dispatcher restamping and trace reuse.
+string invocation_id
 
 # Backstop expiry window, seconds after stamp_ns. Consumers treat the
 # declaration as dead past it, independent of whether a retraction arrived.

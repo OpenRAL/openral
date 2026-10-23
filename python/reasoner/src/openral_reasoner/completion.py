@@ -7,15 +7,19 @@ These functions are imported by ``reasoner_node`` and tested standalone
 from __future__ import annotations
 
 import io
+import math
+from dataclasses import dataclass, field
 
 __all__ = [
     "COMPLETION_QUESTION",
+    "CompletionTrigger",
     "image_msg_to_jpeg",
     "is_frame_fresh",
     "is_reward_wake",
     "parse_yes_no",
     "resolve_band_edges",
     "resolve_patience_s",
+    "tiled_jpeg",
 ]
 
 
@@ -311,3 +315,118 @@ def image_msg_to_jpeg(
     buf = io.BytesIO()
     _PILImage.fromarray(rgb, mode="RGB").save(buf, "JPEG")
     return buf.getvalue()
+
+
+@dataclass
+class CompletionTrigger:
+    """When to ask a VLM whether the running task is complete (2026-10-22).
+
+    A reward model's success head alone is no completion signal: on Spark it peaked mid-carry
+    as often as at the placement (R221-R223). It is a cheap trigger instead, and so is a
+    released grasp; a VLM confirms. Fires on a success score at or above
+    ``success_threshold`` or on a release, at most once per ``cooldown_s`` (source seconds),
+    and never while a hand holds an object (``holding``): a judge asked then said "done" with
+    the banana still in the gripper over the bowl (R235, R237). A release seen while the hand
+    still holds (the released payload stays on the wire for the kernel's release window)
+    fires once the hand is empty. A release is asked again ``release_rechecks`` times, one
+    cooldown apart, while the hand stays empty: asked as the gripper opened, the judge said
+    "no" to a banana lying in the bowl and was never asked again (Spark R329, 2026-10-23).
+
+    Example:
+        >>> t = CompletionTrigger(success_threshold=0.6, cooldown_s=10.0)
+        >>> t.fire(0.0, success=0.4) is None
+        True
+        >>> t.fire(1.0, success=0.65)
+        'success'
+        >>> t.fire(5.0, released=True) is None  # cooling down
+        True
+        >>> t.fire(12.0, success=0.9, holding=True) is None  # in the hand: never
+        True
+        >>> t.fire(13.0, released=True, holding=True) is None  # released, still on the wire
+        True
+        >>> t.fire(14.0)  # the hand is empty: the pending release fires
+        'release'
+        >>> t.fire(24.0)  # still empty a cooldown later: asked again
+        'release_recheck'
+    """
+
+    success_threshold: float = 0.6
+    cooldown_s: float = 3.0
+    release_rechecks: int = 3
+    _last_s: float = field(default=-math.inf, repr=False)
+    _release_pending: bool = field(default=False, repr=False)
+    _rechecks_left: int = field(default=0, repr=False)
+
+    def mark_released(self) -> None:
+        """Remember a release seen while a check was already running (it fires next)."""
+        self._release_pending = True
+
+    def fire(
+        self,
+        now_s: float,
+        *,
+        success: float | None = None,
+        released: bool = False,
+        holding: bool = False,
+    ) -> str | None:
+        """The trigger's reason if a check is due, else ``None``.
+
+        ``"release"``, ``"success"`` or ``"release_recheck"`` (a release asked again while the
+        hand stays empty; a hold ends the rechecks).
+        """
+        self._release_pending = self._release_pending or released
+        if holding:
+            self._rechecks_left = 0
+            return None
+        if now_s - self._last_s < self.cooldown_s:
+            return None
+        if self._release_pending:
+            reason = "release"
+            self._rechecks_left = self.release_rechecks
+        elif success is not None and success >= self.success_threshold:
+            reason = "success"
+        elif self._rechecks_left > 0:
+            reason = "release_recheck"
+            self._rechecks_left -= 1
+        else:
+            return None
+        self._release_pending = False
+        self._last_s = now_s
+        return reason
+
+
+def tiled_jpeg(images: list[tuple[bytes, int, int, str]]) -> bytes:
+    """Raw camera images ``(data, height, width, encoding)`` side by side as one JPEG.
+
+    Each is scaled to the first one's height, left to right in order: one image a
+    single-image VLM call (``describe_image``) can judge every view from.
+
+    Example:
+        >>> import io
+        >>> from PIL import Image
+        >>> red = (bytes([255, 0, 0]) * 4, 2, 2, "rgb8")
+        >>> blue = (bytes([0, 0, 255]) * 16, 4, 4, "rgb8")
+        >>> Image.open(io.BytesIO(tiled_jpeg([red, blue]))).size
+        (4, 2)
+    """
+    from PIL import Image  # noqa: PLC0415 — lazy, as image_msg_to_jpeg: PIL stays optional
+
+    tiles = [
+        Image.open(
+            io.BytesIO(image_msg_to_jpeg(data=data, height=h, width=w, encoding=enc))
+        ).convert("RGB")
+        for data, h, w, enc in images
+    ]
+    height = tiles[0].height
+    tiles = [
+        t if t.height == height else t.resize((max(1, round(t.width * height / t.height)), height))
+        for t in tiles
+    ]
+    canvas = Image.new("RGB", (sum(t.width for t in tiles), height))
+    x = 0
+    for t in tiles:
+        canvas.paste(t, (x, 0))
+        x += t.width
+    out = io.BytesIO()
+    canvas.save(out, format="JPEG", quality=90)
+    return out.getvalue()

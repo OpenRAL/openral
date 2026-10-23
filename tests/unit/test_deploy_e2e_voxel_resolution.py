@@ -69,6 +69,16 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
     assert params["padding_m"] == 0.03
     assert params["joint_state_period_s"] == pytest.approx(1.0 / 30.0)
+    runtime_period = launch_module._self_filter_params(
+        collision,
+        description,
+        "/joint_states",
+        0.03,
+        runtime_period_from_hal=True,
+    )
+    assert runtime_period["joint_state_period_from_hal"] is True
+    assert runtime_period["joint_state_period_s"] == 0.0
+    assert "joint_state_period_from_hal" not in params
     assert params["robot_mask_hand_links"] == list(description.hand_links())
     assert "robot_mask_enabled" not in params, "the robot mask is off unless cameras are named"
     masked = launch_module._self_filter_params(
@@ -159,6 +169,18 @@ def test_an_unusable_resolution_falls_back_to_the_shipped_default(
         monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", bad)
         assert launch_module._octomap_resolution("sim") == 0.015, bad
         assert launch_module._octomap_resolution("real") == 0.02, bad
+
+
+def test_the_trailing_sweep_is_sim_only_and_within_the_filters_cap(
+    launch_module: ModuleType,
+) -> None:
+    """#418 (Spark R16): sim pads the self-filter by the robot's last 0.2 s; real stays off.
+
+    The node refuses a value past its own `kMaxTrailingSweepS` (0.5 s) and forwards nothing.
+    """
+    assert launch_module._self_filter_trailing_sweep_s("sim") == 0.2
+    assert launch_module._self_filter_trailing_sweep_s("real") == 0.0
+    assert 0.0 < launch_module._self_filter_trailing_sweep_s("sim") <= 0.5
 
 
 def test_the_shipped_defaults_are_15_mm_in_sim_and_20_mm_on_hardware(

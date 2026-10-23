@@ -224,6 +224,11 @@ void place_self_primitives(const SelfModel& model, const std::vector<tf2::Transf
 /// `tests/unit/test_perception_caps_mirror.py` pins it.
 inline constexpr double kMaxSelfFilterPaddingM = 0.10;
 
+/// Cap on the self-filter's `trailing_sweep_s` (issue #418; hazard row owed, Safety-WG review
+/// pending): how far back the robot's recent sweep pads the filter. The padding cap bounds the
+/// blind shell regardless; this bounds how long a cell the robot left stays blind to new returns.
+inline constexpr double kMaxTrailingSweepS = 0.5;
+
 /// Is `padding_m` a usable self-filter padding? In [0, kMaxSelfFilterPaddingM];
 /// NaN, infinity and negatives are not. The node forwards nothing otherwise.
 inline bool valid_self_filter_padding(double padding_m) noexcept {

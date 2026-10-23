@@ -18,8 +18,8 @@ they mutate tracks only through ``ObjectTracker.store``, a ``TrackStore`` with e
 
 The tracker's side of that contract: it never fits, ages or confirms a BOUND track (a fit
 that associates with one is handed back in ``TrackerOutput.bound_fits`` for the in-hand
-update); a track set to RELEASED is searched for in its fall column, needs a fresh camera
-fit there, and returns CONFIRMED with ``epoch + 1`` once the map confirms it.
+update); a track set to RELEASED is never fitted, prompted or bound again, and the session
+retires it when its release window ends (the object is found afresh under a new id).
 """
 
 from openral_world_state.object_tracker.cover import (

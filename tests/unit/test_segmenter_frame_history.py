@@ -208,3 +208,31 @@ def test_the_wait_leaves_the_measured_serve_time_inside_the_hals_deadline() -> N
     assert frame is None and reason.startswith("ROSPerceptionStale:")
     assert budget <= waited < DEFAULT_FRAME_WAIT_S
     assert frame_wait_budget_s(0.2, 0.25, serve_s=0.3) == 0.0
+
+
+def test_a_tracker_camera_gets_its_own_deadline_and_a_bad_entry_is_refused() -> None:
+    """Spark restock R282 (2026-10-23): the HAL's 0.25 s deadline left the tracker's
+    head-camera requests no time to wait for their trailing RGB frame."""
+    import pytest
+    from openral_core import ROSConfigError
+    from openral_perception_ros.segmenter_node import frame_wait_budget_s, parse_camera_deadlines
+
+    deadlines = parse_camera_deadlines(["", "head=1.5"], ["wrist", "head"])
+    assert deadlines == {"head": 1.5}
+    # The head camera's wait is its own deadline less the serve time; the wrist keeps 0.2 s.
+    assert frame_wait_budget_s(deadlines["head"], 1.5, serve_s=0.4) == pytest.approx(1.1)
+    assert frame_wait_budget_s(0.2, 0.25, serve_s=0.4) == 0.0
+    for bad in (["tail=1.0"], ["head=-1"], ["head=nan"], ["head=soon"]):
+        with pytest.raises(ROSConfigError):
+            parse_camera_deadlines(bad, ["wrist", "head"])
+
+
+def test_a_tracker_camera_accepts_a_frame_two_ticks_off() -> None:
+    """Spark restock R288: the RGB twin of a third of the depth stamps never arrived; its
+    neighbours were 0.2 s off. The tracker's camera skew accepts them; the HAL's refuses."""
+    from openral_perception_ros.segmenter_node import frame_nearest_stamp, parse_camera_deadlines
+
+    skews = parse_camera_deadlines(["head=0.25"], ["wrist", "head"])
+    frames = [(1_400_000_000, "a"), (1_800_000_000, "b")]  # the 1.6 s frame was lost
+    assert frame_nearest_stamp(frames, 1_600_000_000, max_skew_s=skews["head"])[0] == "a"
+    assert frame_nearest_stamp(frames, 1_600_000_000, max_skew_s=0.1)[0] is None

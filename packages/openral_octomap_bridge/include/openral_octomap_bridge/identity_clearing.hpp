@@ -89,11 +89,12 @@ bool tracked_set_usable(const openral_msgs::msg::WorldStateStamped& state,
 /// Null unless: `evidence_kind == "tracked_object"`; the set is usable; exactly one
 /// track carries `object.object_id`, with status `bound`, the same `epoch` and
 /// `attach_link`, and a finite `floor_z`; no other track is bound to that link and no
-/// other attachment rides it (either is an ambiguous binding).
+/// other attachment rides it (either is an ambiguous binding). On null, `why` (when
+/// given) names the first condition that failed, a static snake_case token.
 const openral_msgs::msg::TrackedObject*
 identity_clearing_track(const openral_msgs::msg::AttachedCollisionObject& object,
                         const openral_msgs::msg::WorldStateStamped& state,
-                        const std::string& grid_frame);
+                        const std::string& grid_frame, const char** why = nullptr);
 
 /// A track's box as a `SHAPE_BOX` primitive in the grid frame. `false` on a
 /// non-positive or non-finite extent or a degenerate pose.

@@ -2006,6 +2006,7 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
     o.contact_force_calibrated = in.has_contact_force_witness && in.contact_force_calibrated;
     o.contact_force_target_matches =
         in.has_contact_force_witness && in.contact_force_target_matches;
+    o.contact_force_stamp_ns = in.has_contact_force_witness ? in.contact_force_stamp_ns : 0;
     o.contact_force_magnitude = in.has_contact_force_witness ? in.contact_force_magnitude : 0.0;
     o.prim_first = static_cast<int>(prim_cursor);
     o.prim_count = static_cast<int>(n_prims);
@@ -2092,10 +2093,12 @@ bool payload_own_cell_exempts(const VoxelGrid& grid, const AttachedModel& attach
   for (int p = 0; p < obj.prim_count && !own; ++p) {
     const AttachedPrimitive& prim =
         attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
-    if (prim.source == PrimitiveSource::kFallback || prim.kind != AttachedShapeKind::kBox ||
-        !(prim.half_extents.x > 0.0) || !(prim.half_extents.y > 0.0) ||
-        !(prim.half_extents.z > 0.0) || !std::isfinite(prim.half_extents.x) ||
-        !std::isfinite(prim.half_extents.y) || !std::isfinite(prim.half_extents.z)) {
+    const bool fallback_ok = (t->fallback_ok & (1U << object_index)) != 0;
+    if ((prim.source == PrimitiveSource::kFallback && !fallback_ok) ||
+        prim.kind != AttachedShapeKind::kBox || !(prim.half_extents.x > 0.0) ||
+        !(prim.half_extents.y > 0.0) || !(prim.half_extents.z > 0.0) ||
+        !std::isfinite(prim.half_extents.x) || !std::isfinite(prim.half_extents.y) ||
+        !std::isfinite(prim.half_extents.z)) {
       continue;
     }
     const Transform prim_g = compose(grid_from_base, compose(object_xf, prim.pose_in_object));
@@ -2141,6 +2144,15 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
   int stage2_budget = kMaxStage2PerCheck;
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
+    if (obj.attach_link < 0) {
+      // #418 K5: a released payload, frozen in the base frame, is no longer carried: no
+      // robot motion moves it, so its overlap with the map is a static box on static cells
+      // (Spark R168-R176, 2026-10-22: the banana's frozen box on the bowl it was dropped
+      // into latched a stop ~60 ms after release). It stays an obstacle to every robot link
+      // (`check_attached_self_collision`); only the world check is skipped. Safety-WG review
+      // owed.
+      continue;
+    }
     const Transform obj_xf = attached_object_transform(obj, scratch);
     for (int p = 0; p < obj.prim_count; ++p) {
       const AttachedPrimitive& prim =
@@ -2343,10 +2355,11 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
   return finish_sweep(result, sweep_min);
 }
 
-ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) noexcept {
+ContactForceGateResult check_contact_force_gate(const AttachedModel& attached, std::int64_t now_ns,
+                                                double robot_threshold_n) noexcept {
   ContactForceGateResult out{};
   const PlaceForceGate& gate = attached.force_gate;
-  // Condition 1 of four. Every early return here leaves `out.tripped` false,
+  // Every early return here leaves `out.tripped` false,
   // which is the shipped geometry-only behaviour — the gate adds refusals and
   // failing to arm can therefore never be unsafe relative to today (ADR-0100
   // §1). Re-checking the range the ingest already validated is deliberate: a
@@ -2358,27 +2371,56 @@ ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) n
       gate.threshold_n > kMaxContactForceThresholdN) {
     return out;
   }
+  if (std::isnan(robot_threshold_n) || robot_threshold_n < 0.0) {
+    return out;
+  }
+  const double threshold_n = std::min(gate.threshold_n, robot_threshold_n);
+  // A malformed or expired declaration has no authority to arm the gate. Use
+  // long double subtraction so hostile int64 stamps cannot overflow first.
+  const long double declaration_age_ns =
+      static_cast<long double>(now_ns) - static_cast<long double>(gate.declaration_stamp_ns);
+  if (!(gate.declaration_timeout_s > 0.0) || !std::isfinite(gate.declaration_timeout_s) ||
+      gate.declaration_timeout_s > kMaxPlaceForceGateTimeoutS || gate.declaration_stamp_ns <= 0 ||
+      now_ns <= 0 || declaration_age_ns < 0.0L ||
+      declaration_age_ns > static_cast<long double>(gate.declaration_timeout_s) * 1.0e9L) {
+    return out;
+  }
+  if (!(gate.witness_max_age_s > 0.0) || !std::isfinite(gate.witness_max_age_s)) {
+    return out;
+  }
+  const long double declaration_remaining_ns =
+      static_cast<long double>(gate.declaration_timeout_s) * 1.0e9L - declaration_age_ns;
+  const long double witness_age_limit_ns =
+      std::min(declaration_remaining_ns, static_cast<long double>(gate.witness_max_age_s) * 1.0e9L);
   const std::size_t count =
       attached.n_objects < attached.objects.size() ? attached.n_objects : attached.objects.size();
   for (std::size_t i = 0; i < count && i < 8; ++i) {
-    // Condition 2: the gate follows the DECLARED payload. A second object the
+    // Condition 3: the gate follows the DECLARED payload. A second object the
     // robot happens to be carrying is outside the declaration and outside this.
     if ((gate.object_mask & (1U << i)) == 0) {
       continue;
     }
     const AttachedObject& obj = attached.objects[i];
-    // Condition 3: a witness exists and names the declared target.
+    // Condition 4: a witness exists and names the declared target.
     if (!obj.has_contact_force_witness || !obj.contact_force_target_matches) {
       continue;
     }
-    // Condition 4: the magnitude is calibrated. Without this the value is a
+    // The witness must still be a measurement in the same ROS clock domain.
+    // A stale/future sample is absent, so geometry retains its existing result.
+    const long double witness_age_ns =
+        static_cast<long double>(now_ns) - static_cast<long double>(obj.contact_force_stamp_ns);
+    if (obj.contact_force_stamp_ns <= 0 || obj.contact_force_stamp_ns > now_ns ||
+        witness_age_ns > witness_age_limit_ns) {
+      continue;
+    }
+    // Condition 5: the magnitude is calibrated. Without this the value is a
     // producer quantity and NOT newtons (survey §21.7), so it is not read at
     // all rather than read optimistically.
     if (!obj.contact_force_calibrated) {
       continue;
     }
     const double magnitude = obj.contact_force_magnitude;
-    if (!std::isfinite(magnitude) || magnitude <= gate.threshold_n) {
+    if (!std::isfinite(magnitude) || magnitude <= threshold_n) {
       continue;
     }
     // Report the deepest overrun, so the evidence names the worst pair rather
@@ -2388,7 +2430,7 @@ ContactForceGateResult check_contact_force_gate(const AttachedModel& attached) n
       out.tripped = true;
       out.object_index = static_cast<int>(i);
       out.magnitude_n = magnitude;
-      out.threshold_n = gate.threshold_n;
+      out.threshold_n = threshold_n;
     }
   }
   return out;
@@ -2827,6 +2869,12 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];
     const Transform obj_xf = attached_object_transform(obj, scratch);
+    // #418 K5: in a release window the payload is frozen (attach_link -1) but the
+    // hand that let it go keeps the slow-hands rule it had while carrying it (Spark
+    // R243/R250, 2026-10-22: link7, exempt against the carried banana, tripped on the
+    // same box frozen 0.2 s later). Closed windows clear release_hand_link: no rule.
+    // Safety-WG review owed.
+    const int hand = obj.attach_link >= 0 ? obj.attach_link : obj.release_hand_link;
     for (int p = 0; p < obj.prim_count; ++p) {
       const AttachedPrimitive& prim0 =
           attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
@@ -2861,7 +2909,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
             compose(scratch.link_world[static_cast<std::size_t>(lc)], model.capsules[c].origin);
         const double d = attached_primitive_capsule_distance(
             prim, prim_xf, cap_j, model.capsules[c].radius, model.capsules[c].half_length);
-        fold(d, static_cast<int>(i), obj.attach_link, lc);
+        fold(d, static_cast<int>(i), hand, lc);
       }
       for (std::size_t b = 0; b < n_boxes; ++b) {
         const int lb = model.box_link[b];
@@ -2877,16 +2925,20 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
           d = box_capsule_distance(box_j, model.boxes[b].half_extents, prim_xf, prim.radius,
                                    prim.half_length);
         }
-        fold(d, static_cast<int>(i), obj.attach_link, lb);
+        fold(d, static_cast<int>(i), hand, lb);
       }
     }
   }
   return finish_sweep(result, sweep_min);
 }
 
-bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
-                            const AttachedModel& attached, const AttachedObject& object,
-                            const Transform& box, const Vec3& half_extents, double slack) noexcept {
+namespace {
+
+// Does some capsule or OBB of a link `allows` accepts lie within `slack` of the box?
+template <typename Allows>
+bool box_meets_links(const CollisionModel& model, const CollisionScratch& scratch,
+                     const Transform& box, const Vec3& half_extents, double slack,
+                     const Allows& allows) noexcept {
   if (!std::isfinite(slack) || !(half_extents.x > 0.0) || !(half_extents.y > 0.0) ||
       !(half_extents.z > 0.0) || !std::isfinite(half_extents.x) || !std::isfinite(half_extents.y) ||
       !std::isfinite(half_extents.z) || !std::isfinite(box.t.x) || !std::isfinite(box.t.y) ||
@@ -2896,9 +2948,9 @@ bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch&
   const auto pose = [&](int link, const Transform& origin) {
     return compose(scratch.link_world[static_cast<std::size_t>(link)], origin);
   };
-  for (std::size_t c = 0; c < model.capsules.size(); ++c) {
+  for (std::size_t c = 0; c < model.capsules.size() && c < model.capsule_link.size(); ++c) {
     const int link = model.capsule_link[c];
-    if (!attached_allows_link(attached, object, link)) {
+    if (!allows(link)) {
       continue;
     }
     const Capsule& cap = model.capsules[c];
@@ -2907,9 +2959,9 @@ bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch&
       return true;
     }
   }
-  for (std::size_t b = 0; b < model.boxes.size(); ++b) {
+  for (std::size_t b = 0; b < model.boxes.size() && b < model.box_link.size(); ++b) {
     const int link = model.box_link[b];
-    if (!attached_allows_link(attached, object, link)) {
+    if (!allows(link)) {
       continue;
     }
     if (box_box_distance(box, half_extents, pose(link, model.boxes[b].origin),
@@ -2918,6 +2970,25 @@ bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch&
     }
   }
   return false;
+}
+
+}  // namespace
+
+bool tracked_box_meets_hand(const CollisionModel& model, const CollisionScratch& scratch,
+                            const AttachedModel& attached, const AttachedObject& object,
+                            const Transform& box, const Vec3& half_extents, double slack) noexcept {
+  return box_meets_links(model, scratch, box, half_extents, slack,
+                         [&](int link) { return attached_allows_link(attached, object, link); });
+}
+
+bool box_meets_hand_links(const CollisionModel& model, const CollisionScratch& scratch,
+                          const std::bitset<kMaxGraspMaskLinks>& hand_mask, const Transform& box,
+                          const Vec3& half_extents, double slack) noexcept {
+  return box_meets_links(model, scratch, box, half_extents, slack, [&](int link) {
+    return link >= 0 && static_cast<std::size_t>(link) < kMaxGraspMaskLinks &&
+           static_cast<std::size_t>(link) < scratch.link_world.size() &&
+           hand_mask[static_cast<std::size_t>(link)];
+  });
 }
 
 double released_payload_clearance(const CollisionModel& model, const CollisionScratch& scratch,
@@ -3242,14 +3313,111 @@ bool workspace_cell_explained(const VoxelGrid& grid, const Vec3& center) noexcep
       return true;
     }
   }
-  // A declared static collider's cell, on this grid's own lattice.
+  // A declared static collider's cell, or a cell of the connected support
+  // layer, on this grid's own lattice.
   const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
                      static_cast<std::size_t>(grid.sz);
-  if (e->static_cells != nullptr && e->static_cells_n == cells) {
-    const long idx = grid_cell_of(grid, inverse_rigid(grid.pose), center);
-    return idx >= 0 && e->static_cells[static_cast<std::size_t>(idx)] != 0;
+  const bool static_on = e->static_cells != nullptr && e->static_cells_n == cells;
+  const bool support_on = e->support_cells != nullptr && e->support_cells_n == cells;
+  if (!static_on && !support_on) {
+    return false;
   }
-  return false;
+  const long idx = grid_cell_of(grid, inverse_rigid(grid.pose), center);
+  if (idx < 0) {
+    return false;
+  }
+  const auto i = static_cast<std::size_t>(idx);
+  return (static_on && e->static_cells[i] != 0) || (support_on && (e->support_cells[i] & 1U) != 0);
+}
+
+std::size_t mark_support_cells(const VoxelGrid& grid, const WorkspaceExplanation& e,
+                               std::uint8_t* mask, std::size_t mask_n, std::uint32_t* queue,
+                               std::size_t queue_n) noexcept {
+  if (mask == nullptr || !grid_lattice_sound(grid)) {
+    return 0;
+  }
+  const auto cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                     static_cast<std::size_t>(grid.sz);
+  std::fill(mask, mask + std::min(mask_n, cells), std::uint8_t{0});
+  const WorkspaceContactRegion& ws = grid.workspace_region;
+  if (mask_n < cells || queue == nullptr || queue_n < cells || grid.occupancy == nullptr ||
+      !ws.valid || cells > std::numeric_limits<std::uint32_t>::max()) {
+    return 0;
+  }
+  constexpr std::uint8_t kMarked = 1U;
+  constexpr std::uint8_t kVisited = 2U;  // this object's pass only
+  constexpr double kTolM = 1e-9;         // the predicate's layer slack
+  const double half_cell = 0.5 * grid.resolution;
+  const auto sx = static_cast<std::size_t>(grid.sx);
+  const auto sxy = sx * static_cast<std::size_t>(grid.sy);
+  const std::size_t n = std::min(e.n_objects, kMaxTrackedObjects);
+  std::size_t marked = 0;
+  for (std::size_t o = 0; o < n; ++o) {
+    const double s = e.support_z[o];
+    if (!std::isfinite(s)) {
+      continue;
+    }
+    const auto in_layer = [&](const Vec3& c) {
+      return c.z >= s - half_cell - kTolM && c.z <= s + half_cell + kTolM &&
+             point_in_obb(ws.pose, ws.half_extents, c);
+    };
+    // Seeds: the occupied cells the reach rule already explains as this support.
+    std::size_t head = 0;
+    std::size_t tail = 0;
+    for (int iz = 0; iz < grid.sz; ++iz) {
+      for (int iy = 0; iy < grid.sy; ++iy) {
+        for (int ix = 0; ix < grid.sx; ++ix) {
+          const std::size_t idx = static_cast<std::size_t>(ix) + sx * static_cast<std::size_t>(iy) +
+                                  sxy * static_cast<std::size_t>(iz);
+          if (grid.occupancy[idx] == 0) {
+            continue;
+          }
+          const Vec3 c = voxel_center(grid, ix, iy, iz);
+          if (in_layer(c) &&
+              footprint_gap(e.box[o], e.half_extents[o], c) <= kExplainedSupportReachM) {
+            mask[idx] |= kVisited;
+            queue[tail++] = static_cast<std::uint32_t>(idx);
+          }
+        }
+      }
+    }
+    // Grow through occupied in-layer cells inside the workspace, stepping over at most
+    // one empty cell sideways (`kSupportBridgeCells`) and one layer up or down.
+    constexpr int kB = static_cast<int>(kSupportBridgeCells);
+    while (head < tail) {
+      const std::size_t idx = queue[head++];
+      const int ix = static_cast<int>(idx % sx);
+      const int iy = static_cast<int>((idx % sxy) / sx);
+      const int iz = static_cast<int>(idx / sxy);
+      for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -kB; dy <= kB; ++dy) {
+          for (int dx = -kB; dx <= kB; ++dx) {
+            const int jx = ix + dx;
+            const int jy = iy + dy;
+            const int jz = iz + dz;
+            if (jx < 0 || jy < 0 || jz < 0 || jx >= grid.sx || jy >= grid.sy || jz >= grid.sz) {
+              continue;
+            }
+            const std::size_t j = static_cast<std::size_t>(jx) + sx * static_cast<std::size_t>(jy) +
+                                  sxy * static_cast<std::size_t>(jz);
+            if (grid.occupancy[j] == 0 || (mask[j] & kVisited) != 0 ||
+                !in_layer(voxel_center(grid, jx, jy, jz))) {
+              continue;
+            }
+            mask[j] |= kVisited;
+            queue[tail++] = static_cast<std::uint32_t>(j);
+          }
+        }
+      }
+    }
+    // Every cell this pass reached is marked; its visited bit is cleared.
+    for (std::size_t q = 0; q < tail; ++q) {
+      std::uint8_t& m = mask[queue[q]];
+      marked += (m & kMarked) == 0 ? 1 : 0;
+      m = kMarked;
+    }
+  }
+  return marked;
 }
 
 std::size_t mark_static_cells(const VoxelGrid& grid, const std::vector<Vec3>& base_points,

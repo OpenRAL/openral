@@ -176,6 +176,14 @@ class RobometerInProcessReward:
         scorer_cls = _load_inprocess_scorer_class()
         self._scorer = scorer_cls(self._weights_source, device=self._device)
 
+    def warm_up(self) -> None:
+        """Load the VLM now rather than on the first score.
+
+        Spark R219 (2026-10-22): the lazy load took ~40 s of the goal, so the first
+        progress signal came after the moment it was needed.
+        """
+        self._ensure_ready()
+
     def score(self, frames: list[Frame], task: str) -> tuple[list[float], list[float]]:
         """Score a clip in-process."""
         frames = _validate_and_bound_frames(

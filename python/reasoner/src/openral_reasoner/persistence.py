@@ -54,6 +54,7 @@ class ReasonerLadderState(BaseModel):
     collective_nudges: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     locate_task_id: str | None = None
     locate_count: int = Field(default=0, ge=0)
+    object_query_blocked_task_id: str | None = None
 
     @field_validator("mission", mode="before")
     @classmethod

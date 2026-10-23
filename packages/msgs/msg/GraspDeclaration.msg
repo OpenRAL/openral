@@ -33,6 +33,8 @@ string[] contact_links
 # the trace alone.
 string rskill_id
 string trace_id
+# ExecuteRskill action goal UUID; stable across dispatcher restamping and trace reuse.
+string invocation_id
 
 # Backstop expiry window, seconds after stamp_ns.
 float64 timeout_s

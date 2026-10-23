@@ -150,18 +150,14 @@ private:
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
   // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
   // entities (robot links, or an occupied voxel cell for the voxel check).
-  // `min_distance` MUST be `CollisionHit::min_distance` — the distance of the
-  // very pair `link_a`/`link_b` names. The sweep-wide
-  // `CollisionHit::sweep_min_distance` belongs to no named pair and never
-  // enters the evidence payload (it is logged separately by the caller).
-  // `joint_positions` MUST be the configuration forward kinematics was run on
-  // for the step being reported (`q_fk_`), so the verdict is re-derivable
-  // offline: a predicted step's configuration exists nowhere else, and
-  // adjudicating a predictive stop against the measured joints reads geometry
-  // the kernel never checked.
+  // `hit` is the exact pair and sweep result adjudicated by the kernel. Its
+  // fields are copied as diagnostic evidence only; they do not alter the
+  // collision decision. `joint_positions` is the configuration forward
+  // kinematics was run on for the reported step (`q_fk_`).
   void publish_collision_failure(const openral_msgs::msg::ActionChunk& chunk,
                                  const char* collision_kind, const std::string& link_a,
-                                 const std::string& link_b, int horizon_step, double min_distance,
+                                 const std::string& link_b, int horizon_step,
+                                 const CollisionHit& hit,
                                  const std::vector<double>& joint_positions);
 
   // Voxel phase — ingest a dense occupancy grid into a pre-sized buffer.
@@ -417,6 +413,10 @@ private:
   // preallocated storage sized at configure; the hot path never allocates.
   AttachedModel attached_model_;
   std::vector<std::string> attached_labels_;  ///< per-object id label, capacity = max objects
+  // Wire provenance parallel to accepted attached objects. Exposed only as
+  // bounded diagnostic evidence when that payload is part of a reported pair.
+  std::vector<std::string> attached_evidence_kinds_;
+  std::vector<std::string> attached_evidence_refs_;
   bool attached_collision_enabled_{false};
   double attached_collision_margin_m_{0.0};
   double attached_collision_deadline_s_{0.5};
@@ -449,9 +449,11 @@ private:
     std::string object_id;
     std::uint32_t epoch{0};
     bool live{false};       ///< status confirmed / occluded / bound
+    bool released{false};   ///< status released: the tracker let go of it (K5 trigger)
     GraspTargetRegion box;  ///< the containing box, validated as a grasp region
     // Issue #418 K2 eligibility inputs, recorded at ingest.
     bool target{false};       ///< role == "target"
+    bool contact{false};      ///< role "target" or "destination": touched by design
     bool exemptible{false};   ///< status confirmed / occluded (never bound / split / …)
     bool provisional{false};  ///< K2 exemption geometry only, never a K3 binding
     std::string declaration_key;
@@ -477,6 +479,18 @@ private:
   bool tracked_grasp_enabled_{false};
   TrackedGraspTable tracked_grasp_{};
   bool tracked_cover_dirty_{true};  ///< a new grid or set: re-run the cover check once
+  /// Issue #418 contact hold: per tracked identity, the kernel time (ROS clock) its OWN
+  /// cover check last passed. A TARGET box whose cover falls short while a declared hand
+  /// link (the kernel's FK of the measured state) is within a cell of it keeps `cover_ok`
+  /// until that pass is older than `grasp_region_max_age_s`; then it fails closed.
+  struct CoverPass {
+    std::size_t id_hash{0};
+    std::uint32_t epoch{0};
+    std::int64_t pass_ns{0};
+    bool held{false};  ///< the last refresh held it (logs the transition once)
+  };
+  std::array<CoverPass, kMaxTrackedObjects> cover_pass_{};
+  std::size_t cover_pass_n_{0};
   /// The live grasp declaration's key, `<target_id>@<stamp_ns>` (what the tracker
   /// stamps on the tracks it grounds or re-keys for that declaration).
   bool tracked_decl_active_{false};
@@ -495,11 +509,31 @@ private:
   std::size_t static_cells_marked_{0};      ///< cells marked for `static_cells_for_`
   VoxelGrid static_cells_for_{};            ///< the lattice `static_cells_` was marked on
   bool static_cells_for_valid_{false};
+  /// #418 K7 amendment: the connected support layer (`mark_support_cells`), re-marked
+  /// only when a grid arrives or the explaining objects / workspace change (`support_key_`).
+  static constexpr std::size_t kSupportKeyN = 1 + kMaxTrackedObjects * 16 + 16;
+  std::vector<std::uint8_t> support_cells_;   ///< pre-sized to world_voxel_max_cells
+  std::vector<std::uint32_t> support_queue_;  ///< its flood-fill queue, the same size
+  std::size_t support_cells_marked_{0};
+  bool support_cells_dirty_{true};  ///< a new grid: re-mark on the next fill
+  std::array<double, kSupportKeyN> support_key_{};
   std::size_t workspace_explained_logged_n_{static_cast<std::size_t>(-1)};
   /// Issue #418 (hazard OT-10 amendment, `payload_own_cells_enabled`, sim-only, requires K2):
   /// a bound payload's measured / grown cells cannot stop that payload. `payload_own_` is
   /// refilled per candidate from the tracked set and the per-attachment bindings.
   bool payload_own_enabled_{false};
+  /// Issue #418 (OT-10 amendment, untracked holds, `pinch_payload_own_cells_enabled`, requires
+  /// the above): an `untracked_grasp` pinch hold's fallback cells cannot stop it above the
+  /// pinch box's lowest point at the bind. `pinch_floor_` keeps that floor per held object.
+  bool pinch_own_enabled_{false};
+  struct PinchFloor {
+    std::string object_id;
+    std::string attach_link;
+    double floor_z{0.0};
+    bool used{false};
+    bool seen{false};
+  };
+  std::array<PinchFloor, 8> pinch_floor_{};
   PayloadOwnCells payload_own_{};
   std::size_t payload_own_logged_n_{static_cast<std::size_t>(-1)};
   std::chrono::steady_clock::time_point payload_own_last_warn_{};
@@ -513,6 +547,7 @@ private:
     /// Issue #418 OT-10 amendment (`payload_own_cells_enabled`): this binding's own track, valid
     /// right now, with a floor. `own_track` indexes `tracked_`.
     bool own_armed{false};
+    bool own_fallback{false};  ///< an untracked pinch hold (`pinch_floor_`), no own track
     int own_track{-1};
     double own_floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
@@ -750,6 +785,7 @@ private:
     std::int64_t window_opened_ns{0};
     Transform frozen{};  ///< base-frame pose at release
     int hand_link{-1};   ///< the attach link that held it
+    bool in_map{false};  ///< closed and the map carries it: the frozen box is dropped
   };
   std::array<BoundPayload, kMaxTrackedObjects> bound_{};
   std::chrono::steady_clock::time_point bound_cap_last_warn_{};
@@ -774,10 +810,11 @@ private:
   std::vector<double> dq_meas_;
   std::vector<std::uint8_t> dq_meas_seen_;
   std::vector<std::int64_t> dq_meas_stamp_ns_;
-  std::vector<int> collision_fk_dofs_;    ///< dof indices FK actually consumes
-  std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
-  std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)
-  std::vector<double> q_fk_;              ///< per-config FK input (base zeroed; no alloc)
+  std::vector<std::int64_t> q_meas_src_ns_;  ///< per-dof header stamp of q_meas_ (0 = none)
+  std::vector<int> collision_fk_dofs_;       ///< dof indices FK actually consumes
+  std::vector<int> collision_base_dofs_;     ///< mobile-base dofs zeroed for base-relative FK
+  std::vector<double> q_check_;              ///< velocity-integration accumulator (no alloc)
+  std::vector<double> q_fk_;                 ///< per-config FK input (base zeroed; no alloc)
   // ADR-0102 slot rows (a JOINT_POSITION chunk whose joint_names leave an FK
   // dof uncommanded): those joints are checked at their measured pose, and
   // again at the target an accepted slot of the SAME tick committed for them.

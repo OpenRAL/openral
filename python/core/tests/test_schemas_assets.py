@@ -8,7 +8,13 @@ only checks the ref *string* format; file resolution lives in
 from __future__ import annotations
 
 import pytest
-from openral_core.schemas import AssetRefs, RobotDescription, SimDescription, UrdfAsset
+from openral_core.schemas import (
+    AssetRefs,
+    RobotDescription,
+    SimDescription,
+    UrdfAsset,
+    USDObjectCatalogRef,
+)
 from pydantic import ValidationError
 
 
@@ -77,3 +83,11 @@ def test_assets_default_is_empty() -> None:
     assert desc.assets.urdf is None
     assert desc.assets.mjcf is None
     assert desc.assets.srdf is None
+
+
+def test_usd_catalog_reader_python_is_optional_absolute_configuration() -> None:
+    ref = USDObjectCatalogRef(expected_revision="catalog-v1", reader_python="/usr/bin/python3")
+    assert ref.reader_python == "/usr/bin/python3"
+    assert USDObjectCatalogRef(expected_revision="catalog-v1").reader_python is None
+    with pytest.raises(ValidationError, match="must be an absolute executable path"):
+        USDObjectCatalogRef(expected_revision="catalog-v1", reader_python="python3")

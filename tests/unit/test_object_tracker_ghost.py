@@ -140,3 +140,21 @@ def test_a_low_score_prompt_needs_consecutive_confirming_grids() -> None:
         assert t is not None
         tr2._confirm(t, g, stamp, ())
     assert _status(tr2, oid2) is TrackStatus.TENTATIVE
+
+
+def test_a_target_lying_in_its_destinations_box_confirms() -> None:
+    """Spark R278 (2026-10-23): the banana dropped into the bowl never re-confirmed: its cells
+    lay inside the bowl's containing box, read as another object's. A destination's box holds
+    its cavity; the target in it is the goal state, not a ghost (the two-oranges ghost above
+    still never confirms)."""
+    tr, grid = _tracker(), _grid()
+    plate = _mint(tr, "box_trk2", grid, confirmed=True)
+    track = tr.store.get(plate)
+    assert track is not None
+    tr.store.replace(track.model_copy(update={"label": "plate", "role": ObjectRole.DESTINATION}))
+    inside = _mint(tr, "box_trk2", grid, confirmed=False)
+    for stamp in (10, 20):
+        t = tr.store.get(inside)
+        assert t is not None
+        tr._confirm(t, grid, stamp, ())
+    assert _status(tr, inside) is TrackStatus.CONFIRMED

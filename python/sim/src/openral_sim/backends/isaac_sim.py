@@ -155,15 +155,18 @@ _BINARY_SITE_DEPS = ("pyzmq", "msgpack")
 # Default ZMQ endpoint. Distinct port from the RLDX sidecar (5555-ish) so the
 # two can coexist on one host.
 _DEFAULT_HOST = "127.0.0.1"
-# Per-scene default ports live in 20000–39999 (clear of well-known ports and the
-# usual ephemeral range) — the SAME band the RLDX sidecar uses for the same
-# reason (``policies.rldx._derive_sidecar_port``). One sidecar serves one scene,
+# Per-scene default ports live in 20000–32767, clear of well-known ports and of Linux's
+# default ephemeral range (32768–60999; the RLDX sidecar's 20000–39999 band is not, see
+# ``policies.rldx._derive_sidecar_port``). One sidecar serves one scene,
 # so two DIFFERENT scenes must NOT share a port: a lingering sidecar from scene A
 # would otherwise be silently adopted by scene B (same host:port) and serve it
 # the wrong layout. ``_scene_default_port`` derives a stable per-scene port so
 # that never happens; an explicit ``backend_options.port`` still wins.
+# Below Linux's default ephemeral floor (32768): above it any outgoing connection may hold
+# the scene's port, and the sidecar dies at boot on EADDRINUSE (Spark restock R332,
+# 2026-10-23: tcp://127.0.0.1:37806 already in use).
 _SIDECAR_PORT_MIN = 20_000
-_SIDECAR_PORT_MAX = 40_000
+_SIDECAR_PORT_MAX = 32_768
 
 
 def _scene_default_port(task_id: str, robot_id: str, layout: str, world: str = "") -> int:
@@ -455,6 +458,25 @@ class _IsaacSimSidecar(SidecarSimRollout):
         frames, self._frames_next = self._frames_next, "render"
         return {} if frames == "render" else {"frames": frames}
 
+    def _after_reset_reply(self, reply: dict[str, Any]) -> None:
+        """Replace nominal ping cadence with the observed Isaac clock cadence."""
+        # SimAttachedHAL resets before probing action_dim. Cache the ping first
+        # so that later action_dim access cannot overwrite observed reset cadence.
+        if self._action_dim is None:
+            self._ping()
+        dt = reply.get("sim_dt_per_tick_s")
+        if (
+            isinstance(dt, bool)
+            or not isinstance(dt, (int, float))
+            or not math.isfinite(float(dt))
+            or float(dt) <= 0.0
+        ):
+            raise ROSConfigError(
+                "Isaac sidecar reset reports no valid observed time base "
+                "(sim_dt_per_tick_s); physics callback cadence is unavailable."
+            )
+        self._sim_dt_per_tick_s = float(dt)
+
     def pack_action(
         self,
         action: Action,
@@ -497,11 +519,10 @@ class _IsaacSimSidecar(SidecarSimRollout):
 
     @property
     def sim_dt_per_tick_s(self) -> float | None:
-        """Simulation seconds one ``step`` advances, from the sidecar ping; ``None`` if unreported.
+        """Seconds per ``step``; reset replaces nominal ping cadence with observed cadence.
 
-        The scene derives its physics substeps so this equals one control period
-        (``1 / action_spec.control_freq_hz``); ``SimAttachedHAL.connect`` refuses
-        the env when it does not. ``None`` for a sidecar predating the field.
+        ``SimAttachedHAL.connect`` resets before validating this value. A reset
+        without valid observed Isaac callback cadence fails closed.
         """
         if self._action_dim is None:
             self._ping()
@@ -1129,6 +1150,10 @@ class IsaacPlacement(BaseModel):
     #418); unset, it is derived from ``object`` (``orange_1`` → ``orange``), which only
     works for a name that is a class. Set it for a prim name that is not one
     (``stock_object``, ``carton_b``). Grading never reads it.
+    ``context`` are the detector labels of what stands beside the object and the hand may
+    brush on the way in (a tote's other cartons): queried as ``CONTEXT`` (count ``all``),
+    so the tracked neighbours explain their own cells to the kernel. Never targets; never
+    graded.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1137,6 +1162,7 @@ class IsaacPlacement(BaseModel):
     target: str
     adjacent: list[str] = Field(default_factory=list)
     label: str | None = Field(default=None, min_length=1)
+    context: list[str] = Field(default_factory=list)
 
 
 class IsaacPlacementGrade(BaseModel):
@@ -1169,6 +1195,25 @@ DEFAULT_PLACEMENT_GRADES: tuple[IsaacPlacementGrade, ...] = (
 )
 
 
+class IsaacSomePlaced(BaseModel):
+    """The episode grade when some, not all, placements rest at the success grade.
+
+    ``IsaacPlacementSuccess.some_placed``: a task placing several objects (three oranges on a
+    plate) earns ``name`` / ``score`` once at least one, but not every, placement reaches
+    the rubric's success grade, where the worst placement's grade would score lower. Never
+    a per-placement level.
+
+    Example:
+        >>> IsaacSomePlaced(name="partial", score=0.5).score
+        0.5
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    score: float = Field(gt=0.0, lt=1.0)
+
+
 class IsaacPlacementSuccess(BaseModel):
     """Graded task success for placement prompts (``IsaacSimOptions.placement_success``).
 
@@ -1181,7 +1226,8 @@ class IsaacPlacementSuccess(BaseModel):
     target, upright -- its declared up axis within ``upright_tol_deg`` of world up),
     ``partial`` 0.5 (in the target, fallen), ``semi`` 0.25 (in an adjacent region).
 
-    The episode's grade is its worst placement's. The first grade (score 1.0) is the
+    The episode's grade is its worst placement's, or ``some_placed`` (when set) once at
+    least one but not every placement rests at the success grade. The first grade (score 1.0) is the
     success grade: the scene terminates the episode with ``info[success_key]`` true and
     reward 1.0 once every placement reaches it; otherwise the last step's reward is the
     grade's score, so the episode's ``total_reward`` carries the partial credit. Every
@@ -1218,6 +1264,7 @@ class IsaacPlacementSuccess(BaseModel):
     # An object touching any robot body is not placed (its rest timer restarts): without
     # it, a gripper holding the object still inside the target for settle_s passes.
     require_released: bool = False
+    some_placed: IsaacSomePlaced | None = None
 
     @model_validator(mode="after")
     def _rubric_is_well_formed(self) -> IsaacPlacementSuccess:
@@ -1239,6 +1286,11 @@ class IsaacPlacementSuccess(BaseModel):
             raise ValueError(
                 f"placement_success.grades {full} score 1.0; only the success grade "
                 f"({self.grades[0].name!r}) may"
+            )
+        if self.some_placed is not None and self.some_placed.name in {*names, "fail"}:
+            raise ValueError(
+                f"placement_success.some_placed.name {self.some_placed.name!r} is a rubric "
+                "grade or 'fail'; it is an episode grade of its own"
             )
         return self
 
@@ -1389,6 +1441,14 @@ class IsaacSimOptions(BaseModel):
     # radians past its partner's mirrored position, so the pair stops together on the
     # object instead of one finger pinning it against the other. None = independent drives.
     gripper_finger_coupling_rad: float | None = Field(default=None, gt=0.0, le=1.0)
+    # What a gripper's mimic followers are driven toward: "target" = the URDF <mimic> of
+    # the COMMANDED leader (each follower on its own drive), "measured" = the <mimic> of
+    # the MEASURED leader, re-set before every physics substep, so a linkage the URDF tree
+    # cuts open (the Robotiq 2F-85's four-bar) moves as one body and stops with its leader
+    # under contact. Spark gripper probe (2026-10-21, R21 replay with contacts): follower
+    # error vs mimic(measured leader) p95 17.1 -> 0.75 deg, max 22.7 -> 4.8 deg with the
+    # followers on the leader's gains (`joint_drive_gains`).
+    gripper_followers_track: Literal["target", "measured"] = "target"
     # Graded task success for placement prompts (IsaacPlacementSuccess): the scene's
     # instruction must have an entry. None = a bring-up scene with no task reward.
     placement_success: IsaacPlacementSuccess | None = None
@@ -2431,6 +2491,11 @@ def _resolve_placement_rubric(
         "rest_speed_m_s": placement_success.rest_speed_m_s,
         "rest_turn_deg_s": placement_success.rest_turn_deg_s,
         "require_released": placement_success.require_released,
+        "some_placed": (
+            placement_success.some_placed.model_dump()
+            if placement_success.some_placed is not None
+            else None
+        ),
     }
 
 
@@ -2449,7 +2514,7 @@ def _with_sim_sensors(desc: RobotDescription, backend_options: dict[str, Any]) -
     return desc.model_copy(update={"sensors": sensors})
 
 
-def _write_robot_spec(
+def _write_robot_spec(  # noqa: PLR0915  # reason: one linear spec build, field by field
     env_cfg: SimEnvironment,
     camera_mounts: dict[str, IsaacCameraMount] | None = None,
     initial_joint_positions: dict[str, float] | None = None,
@@ -2465,6 +2530,7 @@ def _write_robot_spec(
     gripper_joint_curve: dict[str, list[tuple[float, float]]] | None = None,
     gripper_finger_coupling_rad: float | None = None,
     placement_success: dict[str, Any] | None = None,
+    gripper_followers_track: str = "target",
     environment_spec: dict[str, Any] | None = None,
     control_freq_hz: float | None = None,
 ) -> tuple[str, RobotDescription]:
@@ -2538,6 +2604,7 @@ def _write_robot_spec(
     spec["joint_drive_gains"] = {k: list(v) for k, v in (joint_drive_gains or {}).items()}
     _curve_gripper_specs(spec, gripper_joint_curve or {})
     spec["gripper_finger_coupling_rad"] = gripper_finger_coupling_rad
+    spec["gripper_followers_track"] = gripper_followers_track
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
     # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
     # manifest offset when it is none).
@@ -2775,6 +2842,7 @@ def _placement(
             "collision_approximation",
             "gripper_joint_curve",
             "gripper_finger_coupling_rad",
+            "gripper_followers_track",
             "placement_success",
             "stage_objects",
             "strip_xform_colliders",
@@ -2896,6 +2964,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         opts.gripper_joint_curve,
         opts.gripper_finger_coupling_rad,
         placement_success=_placement_success_robot_spec(opts.placement_success, env_cfg.task),
+        gripper_followers_track=opts.gripper_followers_track,
         environment_spec=_environment_spec(opts),
         control_freq_hz=opts.control_freq_hz,
     )

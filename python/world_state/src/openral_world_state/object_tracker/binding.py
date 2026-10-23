@@ -3,16 +3,20 @@
 At ATTACH the hand's pinch volume ``J_h`` (``pinch.HandModel``, at the measured jaw by
 joint-state FK, grown by one cell) is intersected with the tracks:
 
-* free tracks of **any** role whose measured geometry holds the pinch centre (``J_h``'s
-  centre) within one cell — the tight k-DOP when the track has one, else its box — and
-  ``RELEASED`` tracks whose fall column holds it (a regrasp before re-grounding). A padded
+* free tracks of any role but ``DESTINATION`` whose measured geometry was fit within
+  ``max_track_fit_age_s`` of the attach stamp and holds the pinch centre (``J_h``'s
+  centre) within one cell — the tight k-DOP when the track has one, else its box. A
+  ``RELEASED`` track is never a
+  candidate: let go, it is not followed, and a regrasp binds the object's fresh track (or
+  the fallback). A DESTINATION is where the payload goes, never the payload: a jaw
+  closing inside a bowl's box bound the bowl (2026-10-22, Spark R193 / R205: a 23 x 28 cm
+  payload on the hand, a self-collision stop). A padded
   box that merely *meets* the swept pinch volume is not enough: a tracked neighbour beside
   an ungrounded held object would be bound in its place (p2po_on2);
-* a grounded candidate (CONFIRMED / OCCLUDED / RELEASED) drops any TENTATIVE / SPLIT one: an
+* a grounded candidate (CONFIRMED / OCCLUDED) drops any TENTATIVE / SPLIT one: an
   unconfirmed fit over the same cells (a mask over two oranges) is no second object;
 * exactly one: ``TRACKED_OBJECT`` binding of that id (``pose_in_link = T_link^-1 T_obj``,
-  unioned with the same shape re-centred on the pinch axis; a ``RELEASED`` one is bound
-  re-centred on the pinch volume under ``epoch + 1``);
+  unioned with the same shape re-centred on the pinch axis);
 * two or more: the union of the candidates and the fallback box, ``PINCH_FALLBACK``, no
   identity (nothing is cleared by identity);
 * only PROVISIONAL tracks (fitted through the robot, maybe short): the union of those
@@ -47,6 +51,7 @@ from openral_core import (
     AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BoxShape,
+    ObjectRole,
     PlaceRegion,
     Pose6D,
     TrackedObject,
@@ -59,7 +64,6 @@ from openral_core.perception_geometry import VoxelLattice
 from openral_core.schemas import DOP_AXES
 
 from openral_world_state.object_tracker.pinch import HandModel, PinchVolume
-from openral_world_state.object_tracker.release import fall_column
 
 __all__ = ["BindOutcome", "Binding", "GraspBinder", "TrackStoreLike"]
 
@@ -78,9 +82,10 @@ FALLBACK_CONFIDENCE = 0.2
 _THETA_STEP = math.radians(2.0)
 _EPS_M = 1e-6
 _EPS_RAD = 1e-9
+_NS = 1_000_000_000
 _FREE = {TrackStatus.TENTATIVE, TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.SPLIT}
 #: Tracks a hand may bind with confidence: the map confirmed them.
-_GROUNDED = {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.RELEASED}
+_GROUNDED = {TrackStatus.CONFIRMED, TrackStatus.OCCLUDED}
 #: Tracks whose fit the map has not confirmed (or has refuted as two bodies).
 _UNCONFIRMED = {TrackStatus.TENTATIVE, TrackStatus.SPLIT}
 _UNIT = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
@@ -88,6 +93,9 @@ _N26 = [(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1) if
 #: How far from the pinch centre an untracked payload may grow (m). *Calibration point.*
 #: ponytail: one fixed bound on the search; a manifest field if a gripper carries longer.
 _GROW_RADIUS_M = 0.3
+#: Tracked objects whose box centre lies this close (m, horizontally) to the pinch centre give
+#: an untracked grasp the support it happened over. *Calibration point.*
+_SUPPORT_NEAR_M = 0.15
 #: A cell moves with the hand only once the hand moved this many cells between sightings. The
 #: threshold separates "its first place is free now" (it left) from "the same cell again" (a
 #: body longer than the step still fills its own first place), so an UNTRACKED / PROVISIONAL
@@ -166,6 +174,37 @@ def _holds(track: TrackedObject, point: NDArray[np.float64], tol: float) -> bool
         ):
             return True
     return False
+
+
+def _pinch_holds(
+    track: TrackedObject, pinch: Box, tol: float, *, centre_only: bool = False
+) -> bool:
+    """Whether ``track``'s geometry holds the pinch centre or the fingertips' level below it.
+
+    The fingertips' level is the centre lowered to the pinch volume's bottom (skipped with
+    ``centre_only``). A thin object grasped from above sits below the pad centre: the Robotiq's
+    pinch centre rode 1.8-4.6 cm above a 3.7 cm banana's tight box (Spark R347 / R352 / R355,
+    2026-10-23), and every such grasp bound an untracked pinch payload. The lowered point
+    stays under the pads, so a neighbour beside the hand still never meets it.
+    """
+    centre, rot, half = pinch
+    low = np.array(centre, dtype=np.float64)
+    low[2] -= float(np.abs(rot[2, :]) @ half)
+    return _holds(track, centre, tol) or (not centre_only and _holds(track, low, tol))
+
+
+def _excess(track: TrackedObject, point: NDArray[np.float64]) -> list[float]:
+    """How far ``point`` lies past ``track``'s first tight DOP (else box), per DOP axis (m)."""
+    tight = [p for p in track.tight if p.tight_geometry is not None]
+    if not tight:
+        c, r, h = _box(track.box)
+        return [round(float(v), 3) for v in np.maximum(np.abs((point - c) @ r) - h, 0.0)]
+    tg = tight[0].tight_geometry
+    assert tg is not None  # reason: filtered above
+    t = _t(tight[0].pose_in_object)
+    proj = np.asarray(DOP_AXES, dtype=np.float64) @ ((point - t[:3, 3]) @ t[:3, :3])
+    over = np.maximum(proj - np.asarray(tg.dop_hi_m), np.asarray(tg.dop_lo_m) - proj)
+    return [round(float(v), 3) for v in np.maximum(over, 0.0)]
 
 
 def _t(pose: Pose6D) -> NDArray[np.float64]:
@@ -250,6 +289,49 @@ def _palm_clipped(
     return out or list(prims)
 
 
+def _support_clipped(
+    prims: Sequence[AttachedCollisionPrimitive],
+    t_fo: NDArray[np.float64],
+    support_z: float,
+    object_id: str,
+) -> list[AttachedCollisionPrimitive]:
+    """``prims`` (object frame, object at ``t_fo`` in the grid frame) cut at ``support_z``.
+
+    Nothing the hand holds reaches below the surface it rested on at the grasp (the surface
+    is there), so a box reaching under it -- the pinch fallback's full stroke centred on a
+    carton in a tote reached a cell under the tote floor (Spark restock R284/R296/R309,
+    2026-10-23) -- is cut along its most vertical axis where its cut face's HIGHEST point
+    meets the surface: everything cut lies at or below the surface, whatever the hand's
+    tilt, and the box only ever shrinks (a re-boxing in gravity's axes grew one sideways into
+    the robot's own forearm, R315). A box wholly above is kept as it is; one wholly below is
+    dropped.
+    """
+    out: list[AttachedCollisionPrimitive] = []
+    for p in prims:
+        t = t_fo @ _t(p.pose_in_object)
+        half = np.asarray(bounding_half_extents(p.shape), dtype=np.float64)
+        reach = float(np.abs(t[2, :3]) @ half)
+        if float(t[2, 3]) - reach >= support_z:
+            out.append(p)
+            continue
+        if float(t[2, 3]) + reach <= support_z:
+            continue
+        k = int(np.argmax(np.abs(t[2, :3])))
+        dz = float(t[2, k])
+        rise = reach - abs(dz) * float(half[k])  # the other axes' reach up from the face
+        cut = (support_z - rise - float(t[2, 3])) / dz
+        lo, hi = (max(-half[k], cut), half[k]) if dz > 0 else (-half[k], min(half[k], cut))
+        if hi <= lo:
+            out.append(p)  # the cut face cannot clear the surface: kept whole
+            continue
+        shift = np.eye(4)
+        shift[k, 3] = 0.5 * (lo + hi)
+        half = half.copy()
+        half[k] = 0.5 * (hi - lo)
+        out.append(_prim(_t(p.pose_in_object) @ shift, half, object_id, p.geometry_source))
+    return out
+
+
 def _rotation_about(
     axis: NDArray[np.float64], point: NDArray[np.float64], theta: float
 ) -> NDArray[np.float64]:
@@ -276,24 +358,33 @@ class GraspBinder:
         frame_id: The grid frame every track box is in; FK runs from it, so it must be a
             link of the manifest (its ``base_frame``).
         cell_m: Grid resolution; ``J_h`` is grown by one cell.
+        max_track_fit_age_s: Maximum source-time age of free-track fitted geometry.
 
     Raises:
         ROSConfigError: ``frame_id`` is not the manifest's ``base_frame``.
     """
 
-    def __init__(self, hand: HandModel, *, frame_id: str, cell_m: float) -> None:
-        """Bind nothing yet."""
+    def __init__(
+        self, hand: HandModel, *, frame_id: str, cell_m: float, max_track_fit_age_s: float
+    ) -> None:
+        """Bind nothing yet; use the tracker's existing fit-age eligibility bound."""
         if frame_id != hand.description.base_frame:
             raise ROSConfigError(
                 f"tracks in {frame_id!r} but FK roots at {hand.description.base_frame!r}."
             )
+        if not math.isfinite(max_track_fit_age_s) or max_track_fit_age_s <= 0.0:
+            raise ROSConfigError("max_track_fit_age_s must be finite and positive.")
         self.hand, self.frame_id, self.cell_m = hand, frame_id, cell_m
+        self._max_track_fit_age_ns = int(max_track_fit_age_s * _NS)
         self.held: Binding | None = None
         self._shape: list[AttachedCollisionPrimitive] = []  # object frame, revision 0
         self._theta = 0.0
         self._opening: float | None = None  # the most open jaw since the last ATTACH
         # Untracked growth: attach-frame cell key -> its grid-frame centre when first seen.
         self._sighted: dict[tuple[int, int, int], NDArray[np.float64]] = {}
+        # The world at the hold's first growth call: occupied lattice cells that were neither
+        # the payload's connected body nor the hand. None until that call.
+        self._static: set[tuple[int, ...]] | None = None
 
     def observe_jaw(self, jaw: float) -> None:
         """Fold in a measured jaw; the most open one bounds the next fallback's width."""
@@ -328,20 +419,45 @@ class GraspBinder:
 
     # -- ATTACH ---------------------------------------------------------------------
     def on_attach(
-        self, store: TrackStoreLike, positions: Mapping[str, float], stamp_ns: int
+        self,
+        store: TrackStoreLike,
+        positions: Mapping[str, float],
+        stamp_ns: int,
+        *,
+        excluded_track_ids: frozenset[str] = frozenset(),
     ) -> Binding:
-        """Bind whatever meets ``J_h`` at the measured configuration."""
+        """Bind fresh free geometry meeting ``J_h``."""
         jh = self.pinch_in_frame(positions)
         centre = jh[0]
-        cands = [
-            t
-            for t in store.all()
-            if (t.status in _FREE and _holds(t, centre, self.cell_m))
-            or (
-                t.status is TrackStatus.RELEASED
-                and _box_holds(_box(fall_column(t, self.cell_m)), centre, self.cell_m)
+        cands = []
+        stale: list[tuple[str, int, str]] = []
+        for track in store.all():
+            if track.status in _FREE and _pinch_holds(track, jh, self.cell_m):
+                if track.role is ObjectRole.DESTINATION:
+                    log.info("object_tracker.destination_not_bound", object_id=track.object_id,
+                             hand=self.hand.joint.name)  # fmt: skip
+                    continue
+                fit_age_ns = stamp_ns - track.last_fit_stamp_ns
+                if track.object_id in excluded_track_ids:
+                    stale.append((track.object_id, fit_age_ns, "late_hold_stale_fit"))
+                    continue
+                if fit_age_ns < 0:
+                    stale.append((track.object_id, fit_age_ns, "future_fit"))
+                    continue
+                if fit_age_ns > self._max_track_fit_age_ns:
+                    stale.append((track.object_id, fit_age_ns, "stale_fit"))
+                    continue
+                cands.append(track)
+        if stale:
+            log.info(
+                "object_tracker.stale_attach_candidate",
+                hand=self.hand.joint.name,
+                max_track_fit_age_ns=self._max_track_fit_age_ns,
+                candidates=[
+                    {"object_id": object_id, "fit_age_ns": age_ns, "reason": reason}
+                    for object_id, age_ns, reason in stale
+                ],
             )
-        ]
         jaw = positions[self.hand.joint.name]
         if any(t.status in _GROUNDED for t in cands):
             # A grounded object beats an unconfirmed fit of the same cells (#418 r6po_dbg9: a
@@ -360,11 +476,27 @@ class GraspBinder:
             log.warning("object_tracker.provisional_grasp", hand=self.hand.joint.name,
                         candidates=ids, jaw=jaw)  # fmt: skip
         else:
-            binding = self._fallback(cands, positions, stamp_ns)
+            # With no candidate, the support the tracked objects around the pinch stand on
+            # (a tote's floor, a table): the grasp happened over it (Spark restock R305,
+            # 2026-10-23: an untracked pinch box reached under the tote while lifting).
+            near = [
+                t.support_z
+                for t in store.all()
+                if t.status in _GROUNDED
+                and float(np.linalg.norm(np.asarray(t.box.pose.xyz[:2]) - centre[:2]))
+                <= _SUPPORT_NEAR_M
+            ]
+            binding = self._fallback(
+                cands, positions, stamp_ns, support_z=min(near) if near and not cands else None
+            )
             event = "object_tracker.ambiguous_grasp" if cands else "object_tracker.untracked_grasp"
-            log.warning(event, hand=self.hand.joint.name, candidates=ids, jaw=jaw)
+            # Where the pinch missed each free track: its excess past the tight DOP (or box)
+            # per axis, in the primitive frame (diagnosis: a pinch above a thin object's box).
+            missed = {t.object_id: _excess(t, centre) for t in store.all() if t.status in _FREE}
+            log.warning(event, hand=self.hand.joint.name, candidates=ids, jaw=jaw,
+                        pinch=[round(float(v), 3) for v in centre], missed=missed)  # fmt: skip
         self._opening = None
-        self._sighted = {}
+        self._sighted, self._static = {}, None
         self.held = binding
         log.info(
             "object_tracker.bound",
@@ -387,10 +519,7 @@ class GraspBinder:
         t_fa = self.hand.t_frame_from_attach(self.frame_id, positions)
         t_fo = _t(track.box.pose)
         t_ao = np.linalg.inv(t_fa) @ t_fo
-        released = track.status is TrackStatus.RELEASED
-        # A released track's pose is stale (it is re-centred on the pinch volume below): no
-        # evidence of where the object is, so nothing the kernel may call the object's own.
-        src: GeometrySource = "fallback" if released else "measured"
+        src: GeometrySource = "measured"
         shape = (
             [
                 _moved(
@@ -409,17 +538,14 @@ class GraspBinder:
         )
         pinch = self.hand.pinch_in_link(positions[self.hand.joint.name])
         c = pinch.axes[:, 0]
-        if released:  # its pose is stale: bind it re-centred on the pinch volume
-            t_ao[:3, 3] = pinch.centre
-            prims = list(shape)
-        else:  # as fitted, unioned with the same shape slid onto the pinch axis
-            shift = -float((t_ao[:3, 3] - pinch.centre) @ c) * c
-            slide = _frame(t_ao[:3, :3].T @ shift, np.eye(3))
-            prims = shape + (
-                [_moved(p, slide) for p in shape] if np.linalg.norm(shift) > _EPS_M else []
-            )
+        # As fitted, unioned with the same shape slid onto the pinch axis.
+        shift = -float((t_ao[:3, 3] - pinch.centre) @ c) * c
+        slide = _frame(t_ao[:3, :3].T @ shift, np.eye(3))
+        prims = shape + (
+            [_moved(p, slide) for p in shape] if np.linalg.norm(shift) > _EPS_M else []
+        )
         prims = _palm_clipped(prims, t_ao, pinch, oid)
-        epoch = track.epoch + 1 if released else track.epoch
+        epoch = track.epoch
         pose_in_link = _pose(t_ao, self.hand.attach_link)
         store.replace(
             track.model_copy(
@@ -454,6 +580,7 @@ class GraspBinder:
         stamp_ns: int,
         *,
         provisional: bool = False,
+        support_z: float | None = None,
     ) -> Binding:
         oid = f"pinch:{self.hand.joint.name}@{stamp_ns}"
         fb = self.hand.fallback_in_link(positions[self.hand.joint.name], self._opening)
@@ -474,6 +601,11 @@ class GraspBinder:
             src: GeometrySource = "measured" if provisional and len(cands) == 1 else "fallback"
             prims += [_prim(t_of @ _frame(c, r), h, oid, src) for c, r, h in boxes]
         prims = prims[:1] + _palm_clipped(prims[1:], t_ao, fb, oid) if len(prims) > 1 else prims
+        floor = min(t.support_z for t in cands) if cands else support_z
+        if floor is not None:
+            # Cut at the lowest support the candidates (else the tracked neighbours) stand on.
+            t_fo = self.hand.t_frame_from_attach(self.frame_id, positions) @ t_ao
+            prims = _support_clipped(prims, t_fo, floor, oid) or prims
         self._shape, self._theta = prims[:1], 0.0
         attachment = AttachedCollisionObject(
             object_id=oid,
@@ -670,6 +802,14 @@ class GraspBinder:
         palm and not another track's, the hand's, or a place the world still holds. Cells at or
         under the held tracks' ``floor_z`` (the support top + one cell) are the support and are
         never taken: the payload sweep clears them, which would make a flat support look held.
+        A payload with no track of its own takes the highest ``floor_z`` in the scene.
+
+        A cell whose place was occupied at the hold's first growth call, by anything but the
+        payload's connected body or the hand, is the static world: it never grows the payload.
+        Lowering a payload onto a plate, a plate rim cell (or an object resting on it) can take
+        a key whose first place has since emptied (#418 R368: the orange swelled onto the plate
+        and the orange already on it, and stopped on the rim). ponytail: a static thing the map
+        did not hold at that call is still unguarded; the floor and other tracks cover the rest.
         """
         held_b = self.held
         if held_b is None or held_b.outcome not in (
@@ -697,10 +837,12 @@ class GraspBinder:
             for t in store.all()
             if t.object_id not in mine and t.status is not TrackStatus.BOUND
         ]
-        explained = np.zeros(len(near), dtype=bool)
-        for boxes in (others, self.hand.hand_boxes(self.frame_id, positions)):
-            if boxes:
-                explained |= _outside_m(near, boxes) <= cell / 2.0
+
+        def within(boxes: Sequence[Box]) -> NDArray[np.bool_]:
+            return _outside_m(near, boxes) <= cell / 2.0 if boxes else np.zeros(len(near), bool)
+
+        hand_cells = within(self.hand.hand_boxes(self.frame_id, positions))
+        explained = hand_cells | within(others)
         # The support is never the payload: a cell at or under the clearing floor of a track
         # this payload is (the support top + one cell) is the table or shelf it stood on. The
         # payload sweep clears those cells from the octree while the payload overlaps them, so
@@ -709,14 +851,16 @@ class GraspBinder:
         floor = max(
             (t.floor_z for t in (store.get(i) for i in mine) if t is not None), default=-math.inf
         )
+        if floor == -math.inf:
+            # A payload with no track of its own (a pinch fallback) takes the scene's tracked
+            # supports' floor (Isaac R84: it grew onto the table the sweep had cleared under the
+            # hand and stopped on a cell 2 cm under the top). ponytail: the highest floor in the
+            # scene; a lower shelf's payload then grows less, so it fails closed at the kernel.
+            floor = max((t.floor_z for t in store.all()), default=-math.inf)
         loose = near[~explained & (near[:, 2] > floor)]
         if not len(loose):
             return None
         linked = self._connected(grid, loose, _outside_m(loose, held) <= cell)
-        t_af = np.linalg.inv(t_fa)
-        local = linked @ t_af[:3, :3].T + t_af[:3, 3]
-        front = local @ pinch.axes[:, 1] >= pinch.palm_m  # nothing held lies behind the palm
-        linked, local = linked[front], local[front]
         lattice = grid.rotation()
         origin = np.asarray(grid.origin)
 
@@ -724,6 +868,13 @@ class GraspBinder:
             return np.asarray(np.floor((x - origin) @ lattice / cell), dtype=np.int64)
 
         occupied = {tuple(v) for v in ijk(occ).tolist()}
+        if self._static is None:
+            body = {tuple(v) for v in ijk(np.vstack([linked, near[hand_cells]])).tolist()}
+            self._static = occupied - body
+        t_af = np.linalg.inv(t_fa)
+        local = linked @ t_af[:3, :3].T + t_af[:3, 3]
+        front = local @ pinch.axes[:, 1] >= pinch.palm_m  # nothing held lies behind the palm
+        linked, local = linked[front], local[front]
         rigid = []
         for key, world in zip(
             np.floor(local / cell + 0.5).astype(int).tolist(), linked, strict=True
@@ -732,6 +883,7 @@ class GraspBinder:
             if (
                 np.linalg.norm(world - first) >= min_move * cell
                 and tuple(ijk(first[None])[0].tolist()) not in occupied
+                and tuple(ijk(world[None])[0].tolist()) not in self._static
             ):
                 rigid.append(world)
         new: NDArray[np.float64] = np.asarray(rigid, dtype=np.float64).reshape(-1, 3)
@@ -772,4 +924,4 @@ class GraspBinder:
     def on_release(self) -> None:
         """Forget the held payload (the track itself goes through ``release.release_track``)."""
         self.held, self._shape, self._theta = None, [], 0.0
-        self._sighted = {}
+        self._sighted, self._static = {}, None

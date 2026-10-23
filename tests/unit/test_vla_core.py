@@ -446,6 +446,74 @@ def test_read_tokenizer_repo_handles_missing_and_malformed(tmp_path: Any) -> Non
     # Restores after exit ensured by ``_write_preprocessor_json`` overwrite
 
 
+def _word_tokenizer(words: list[str]) -> Any:
+    """A real transformers tokenizer over a whitespace word vocabulary (plus <unk>/<bos>)."""
+    pytest.importorskip("transformers", reason="the sim/VLA install group carries transformers")
+    from tokenizers import (  # type: ignore[import-untyped]  # reason: tokenizers ships no stubs or py.typed
+        Tokenizer,
+        models,
+        pre_tokenizers,
+    )
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {"<unk>": 0, "<bos>": 1, **{w: i + 2 for i, w in enumerate(words)}}
+    core = Tokenizer(models.WordLevel(vocab=vocab, unk_token="<unk>"))
+    core.pre_tokenizer = pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(tokenizer_object=core, unk_token="<unk>", bos_token="<bos>")
+
+
+def _tokenizer_pipeline(tok: Any) -> Any:
+    from lerobot.processor import PolicyProcessorPipeline
+    from lerobot.processor.tokenizer_processor import TokenizerProcessorStep
+
+    return PolicyProcessorPipeline(steps=[TokenizerProcessorStep(tokenizer=tok)])
+
+
+def test_check_preprocessor_tokenizer_refuses_an_empty_vocabulary() -> None:
+    # The 2026-10-20 Spark cache: configs without tokenizer.model -> every word is <unk>.
+    from openral_rskill._vla_core import check_preprocessor_tokenizer
+
+    with pytest.raises(ROSConfigError, match="no usable vocabulary"):
+        check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer([])))
+    # Mostly <unk>: 2 of 10 probe words known.
+    with pytest.raises(ROSConfigError, match="8/10 <unk>"):
+        check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(["pick", "up"])))
+
+
+def test_check_preprocessor_tokenizer_passes_a_real_vocabulary() -> None:
+    from openral_rskill._vla_core import _TOKENIZER_PROBE, check_preprocessor_tokenizer
+
+    words = _TOKENIZER_PROBE.split()
+    check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(words)))
+    check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(words[:6])))  # 4/10 unk
+
+
+def test_call_make_processors_cached_first_refuses_a_blind_tokenizer(tmp_path: Any) -> None:
+    from openral_rskill import _vla_core
+
+    def fake_make(policy_config: Any, *, pretrained_path: str, **_kwargs: Any) -> Any:
+        return (_tokenizer_pipeline(_word_tokenizer([])), "POST")
+
+    with pytest.raises(ROSConfigError):
+        _vla_core.call_make_processors_cached_first(fake_make, "CFG", pretrained_path=None)
+
+
+def test_hf_tokenizer_is_cached_needs_the_vocabulary(tmp_path: Any, monkeypatch: Any) -> None:
+    import huggingface_hub.constants as hc
+    from openral_rskill._vla_core import _hf_tokenizer_is_cached
+
+    monkeypatch.setattr(hc, "HF_HUB_CACHE", str(tmp_path))
+    entry = tmp_path / "models--org--tok"
+    (entry / "refs").mkdir(parents=True)
+    (entry / "refs" / "main").write_text("abc")
+    snap = entry / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "tokenizer_config.json").write_text("{}")
+    assert not _hf_tokenizer_is_cached("org/tok")  # partial pull: configs only
+    (snap / "tokenizer.model").write_bytes(b"x")
+    assert _hf_tokenizer_is_cached("org/tok")
+
+
 # ── maybe_compile_chunk_forward safety gates ──────────────────────────────────
 
 

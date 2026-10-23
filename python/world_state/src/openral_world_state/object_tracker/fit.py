@@ -26,6 +26,9 @@ front cut is the plane ``z_opt = z_front`` for every ray and the support is a pl
 two planes (``z_front`` is lowered to the nearest support hit so the two cuts never cross
 inside the cone). ``Q`` is the silhouette's 16-direction outer polygon, ``P``'s footprint the
 same: 4 x 16 = 64 vertices, the kernel's per-hull cap, with no hull solver and no inward step.
+The set is cut at a *ceiling*, the highest point any silhouette ray's first hit allows (no ray
+meets the solid nearer than its first hit, and the rays look down): an oblique view's global
+front cut otherwise boxes a low object far above itself.
 
 Pure numpy, no ROS, no clock. Every default is a *calibration point* (CLAUDE.md §1.2).
 """
@@ -315,16 +318,65 @@ def containing_fit(  # noqa: PLR0915  # reason: one named refusal per assumption
     z_front = min(float(d[front].min()) - p.eps_m, float(z_support.min()))
     footprint = _outer_polygon(surface[:, :2])
     top = float(surface[:, 2].max())
-    verts = np.concatenate(
-        (
-            origin + z_front * rays,
-            origin + z_support[:, None] * rays,
-            np.column_stack((footprint, np.full(len(footprint), support_z))),
-            np.column_stack((footprint, np.full(len(footprint), top))),
-        )
-    )
+    # Every ray of the silhouette meets the solid no nearer than its first hit (an opaque
+    # solid nearer would be that hit) and no nearer than the front cut; the rays look down,
+    # so the solid stands no higher than the highest of those points. The global front cut
+    # alone lifts an oblique view's far-rim rays well above the object (Spark banana R325,
+    # 2026-10-23: a 5.6 cm bowl boxed 15 cm tall, its margin keeping the carried banana's
+    # cells as the bowl's). A pixel without usable depth is bounded by the front cut only.
+    sv, su = np.nonzero(sil)
+    pu = (su + 0.5 - intrinsics.cx) / intrinsics.fx
+    pv = (sv + 0.5 - intrinsics.cy) / intrinsics.fy
+    pix = np.stack((pu, pv, np.ones(len(su))), axis=1)
+    ray_z = pix @ t_base_from_cam[2, :3]
+    hit = np.where(usable[sv, su], np.maximum(d[sv, su] - p.eps_m, z_front), z_front)
+    ceiling = max(float((origin[2] + hit * ray_z).max()), top)
+    notes["ceiling_z"] = ceiling
+    verts = _clipped_vertices(origin, rays, z_front, z_support, footprint, support_z, top, ceiling)
     fit = _boxed(verts, surface, support_z, resolution, frame_id, stamp_ns, notes)
     return replace(fit, provisional=provisional) if provisional and fit.box is not None else fit
+
+
+def _clipped_vertices(
+    origin: NDArray[np.float64],
+    rays: NDArray[np.float64],
+    z_front: float,
+    z_support: NDArray[np.float64],
+    footprint: NDArray[np.float64],
+    support_z: float,
+    top: float,
+    ceiling: float,
+) -> NDArray[np.float64]:
+    """64 vertices whose hull holds the cone cut by ``z <= ceiling`` and the prism.
+
+    The layout ``multi_view`` reads: the corner rays at their nearest point, the same rays
+    at the support, the prism's floor, its lid. Cut, a ray's nearest point is the deeper of
+    the front cut and the ceiling; a face whose two rays start on different cuts holds the
+    point where the cuts cross, so the lid is raised to the ceiling and widened over those
+    points (a taller, wider prism only grows the set).
+    """
+    rz = rays[:, 2]
+    front = origin + z_front * rays
+    ground = origin + z_support[:, None] * rays
+    floor = np.column_stack((footprint, np.full(len(footprint), support_z)))
+    lid = np.column_stack((footprint, np.full(len(footprint), top)))
+    if float(front[:, 2].max()) <= ceiling:
+        return np.concatenate((front, ground, floor, lid))
+    t_cap = (ceiling - origin[2]) / rz  # optical depth where each ray meets the ceiling
+    want = (ceiling - origin[2]) / z_front  # the ray z slope that meets both cuts at once
+    cross = []
+    for i in range(len(rays)):
+        j = (i + 1) % len(rays)
+        if (t_cap[i] > z_front) == (t_cap[j] > z_front) or rz[i] == rz[j]:
+            continue
+        a = (want - rz[j]) / (rz[i] - rz[j])
+        if 0.0 < a < 1.0:
+            cross.append(origin[:2] + z_front * (a * rays[i, :2] + (1.0 - a) * rays[j, :2]))
+    if cross:
+        rim = _outer_polygon(np.concatenate((footprint, np.asarray(cross))))
+        lid = np.column_stack((rim, np.full(len(rim), ceiling)))
+    start = origin + np.maximum(z_front, t_cap)[:, None] * rays
+    return np.concatenate((start, ground, floor, lid))
 
 
 def _boxed(

@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "description": "External USD source, reader configuration, and catalog metadata.",
+  "properties": {
+    "usd": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Usd"
+    },
+    "prim_path": {
+      "default": "/",
+      "title": "Prim Path",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Expected Revision",
+      "type": "string"
+    },
+    "reader_python": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reader Python"
+    }
+  },
+  "required": [
+    "expected_revision"
+  ],
+  "title": "USDObjectCatalogRef",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

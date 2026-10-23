@@ -1,0 +1,23 @@
+A REAL `FailureTrigger.evidence_json` captured verbatim from the C++ safety
+kernel (`cpp/openral_safety_kernel/`), not hand-written.
+
+Producer:
+    cpp/openral_safety_kernel/test/test_lifecycle_kernel.cpp
+      TEST_F(LifecycleKernelTest,
+             PlaceDeclarationBackstopExpiresTheAllowancePerCandidate)
+
+Reproduce:
+    source /opt/ros/jazzy/setup.bash
+    just safety-kernel-build
+    source install/setup.bash
+    ./build/openral_safety_kernel/test_lifecycle_kernel \
+        --gtest_filter='*PlaceDeclarationBackstopExpiresTheAllowancePerCandidate' \
+        --gtest_output=xml:/tmp/gtest.xml
+    # the payload is the <property name="attached_collision_evidence_json"> value
+
+Scenario: the test attaches one box payload whose accepted wire metadata names
+`pinch_fallback` and `ambiguous:trk3,trk4`, then lets its place declaration
+expire while the attachment heartbeat remains fresh. The actual topic subscriber
+captures the resulting collision failure and verifies provenance is present
+only for the named attached pair. Publishing this metadata is diagnostic; the
+test still requires the same collision and unchanged 20 mm pair distance.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 from openral_sim._video import _annotate_panel
 
 
@@ -32,7 +33,7 @@ def test_cursor_lands_where_matplotlib_draws_it() -> None:
         line.remove()
         ours = r.render_at_step(step)
 
-        def changed_cols(img: np.ndarray) -> set[int]:
+        def changed_cols(img: NDArray[np.uint8]) -> set[int]:
             diff = np.abs(img.astype(int) - r._static_rgb.astype(int)).sum(axis=2)
             return set(np.nonzero(diff[r._rows].sum(axis=0))[0].tolist())
 
@@ -62,7 +63,7 @@ def test_a_60_hz_episode_is_written_at_30_fps_in_real_time(tmp_path: Path) -> No
     reader = iio.get_reader(str(out))
     try:
         meta = reader.get_meta_data()
-        count = reader.count_frames()
+        count = reader.count_frames()  # type: ignore[attr-defined]  # reason: the ffmpeg plugin's reader has it, imageio's Reader type does not
     finally:
         reader.close()
     assert meta["fps"] == 30

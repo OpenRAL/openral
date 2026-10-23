@@ -42,6 +42,7 @@ def _decl(
     *,
     label: str = "banana",
     active: bool = True,
+    invocation_id: str = "",
     robot: str = "droid_franka_robotiq",
 ) -> GraspDeclaration:
     d = RobotDescription.from_yaml(f"robots/{robot}/robot.yaml")
@@ -51,6 +52,7 @@ def _decl(
         timeout_s=60.0,
         stamp_ns=stamp_ns,
         active=active,
+        invocation_id=invocation_id,
         target_queries=(ObjectQuery(label=label, count="one", role=ObjectRole.TARGET),),
     )
 
@@ -92,6 +94,108 @@ def test_goal_grounds_logs_ready_and_rekeys_on_the_next_goal(cap: Any) -> None:
     assert s.tracker.queries.get("grasp:banana@100", "q0") is None
     s.on_grasp_declaration(_decl(200, active=False))  # retraction closes the goal
     assert s.grasp_declaration is None and not s.tracker.queries.queries
+
+
+def test_live_grasp_scope_rekeys_a_later_track_minted_by_deploy_query() -> None:
+    """A declaration opened before perception owns the matching track once it is minted."""
+    s = _session("droid_franka_robotiq")
+    deploy_query = ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET)
+    s.open_standing_queries([deploy_query])
+    depth, labels = render([_BANANA], _RIG)
+    stamp_ns = _S
+    frame = CameraFrame(_RIG.name, stamp_ns, depth, _RIG.k, _RIG.t, np.zeros(depth.shape, np.uint8))
+    s.on_grid(grid_from_depth(depth, _RIG), stamp_ns)
+    out = s.on_frame(frame, wall_s=1.0)
+    [deploy_request] = out.requests
+    assert deploy_request.query_key == ("deploy:deploy@0", "q0")
+
+    # The grasp goal opens after the deploy request is in flight, before a track exists.
+    invocation_a = "a" * 32
+    s.on_grasp_declaration(_decl(100, invocation_id=invocation_a))
+    wall_s = 2.0
+    for _ in range(8):
+        if s.snapshot().objects:
+            break
+        assert out.requests
+        request = out.requests[0]
+        out = s.on_frame(
+            frame,
+            wall_s=wall_s,
+            results=[answer(request, labels)],
+        )
+        wall_s += 1.0
+    [track] = s.snapshot().objects
+    assert track.label == "banana" and track.role is ObjectRole.TARGET
+    assert track.declaration_key == "banana@100"
+    goal_a = f"grasp:banana@100#{invocation_a}"
+    assert s.tracker.queries.ready(goal_a)
+
+    # A replacement adopts that identity; closing it cannot leave the old scope live.
+    invocation_b = "b" * 32
+    s.on_grasp_declaration(_decl(200, invocation_id=invocation_b))
+    [track] = s.snapshot().objects
+    assert track.declaration_key == "banana@200"
+    goal_b = f"grasp:banana@200#{invocation_b}"
+    assert s.tracker.queries.get(goal_a, "q0") is None
+    assert s.tracker.queries.get(goal_b, "q0") is not None
+    s.on_grasp_declaration(_decl(200, active=False, invocation_id=invocation_b))
+    [track] = s.snapshot().objects
+    assert track.declaration_key == "deploy@0"
+
+
+def test_same_goal_id_with_changed_queries_replaces_scope_and_clears_old_matches() -> None:
+    s = _session("droid_franka_robotiq")
+    centre = np.array([0.0, 0.0, 0.1])
+    banana_id = _mint(s, centre, "banana")
+    orange_id = _mint(s, centre + np.array([0.1, 0.0, 0.0]), "orange")
+    invocation_id = "c" * 32
+
+    s.on_grasp_declaration(_decl(100, invocation_id=invocation_id))
+    banana = s.tracker.store.get(banana_id)
+    orange = s.tracker.store.get(orange_id)
+    assert banana is not None and banana.declaration_key == "banana@100"
+    assert orange is not None and orange.declaration_key == ""
+
+    changed = _decl(100, invocation_id=invocation_id).model_copy(
+        update={
+            "target_queries": (ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET),)
+        }
+    )
+    s.on_grasp_declaration(changed)
+
+    banana = s.tracker.store.get(banana_id)
+    orange = s.tracker.store.get(orange_id)
+    assert banana is not None and banana.declaration_key == ""
+    assert orange is not None and orange.declaration_key == "banana@100"
+    goal = s._goals["grasp"]
+    assert goal is not None and goal.goal_id == f"grasp:banana@100#{invocation_id}"
+    assert goal.queries[0].label == "orange"
+
+
+def test_active_goal_without_matching_live_scope_clears_track_key() -> None:
+    s = _session("droid_franka_robotiq")
+    track_id = _mint(s, np.array([0.0, 0.0, 0.1]), "orange")
+
+    s.on_grasp_declaration(_decl(100))
+
+    track = s.tracker.store.get(track_id)
+    assert track is not None and track.declaration_key == ""
+
+
+def test_same_goal_id_with_empty_queries_retires_previous_scope() -> None:
+    s = _session("droid_franka_robotiq")
+    track_id = _mint(s, np.array([0.0, 0.0, 0.1]), "banana")
+    invocation_id = "d" * 32
+    declaration = _decl(100, invocation_id=invocation_id)
+    s.on_grasp_declaration(declaration)
+    track = s.tracker.store.get(track_id)
+    assert track is not None and track.declaration_key == "banana@100"
+
+    s.on_grasp_declaration(declaration.model_copy(update={"target_queries": ()}))
+
+    track = s.tracker.store.get(track_id)
+    assert track is not None and track.declaration_key == ""
+    assert s._goals["grasp"] is None
 
 
 def test_grounding_incomplete_is_logged_once_after_the_wait(cap: Any) -> None:
@@ -172,16 +276,102 @@ def test_a_released_binding_stays_on_the_wire_until_its_window_runs_out() -> Non
     assert s.attachments() == [] and s.attachment_changes == changes + 1
 
 
-def test_a_released_binding_leaves_with_the_reconfirmation() -> None:
+def test_a_released_track_retires_once_every_hand_is_clear_of_it() -> None:
+    """Spark R281 (2026-10-23): the source-clock window ran 14 s of wall time and the frozen
+    box blocked the regrasp. Once the hand is clear of the released box the window ends."""
+    from tests.unit.test_object_tracker_binding import _hand_step
+
+    s = _session("so101_follower")
+    _, oid, t0 = _released(s)
+    binder, q, _ = arm_at_hold("so101_follower")
+    s.on_joint_state(q, t0 + int(0.5 * _S))
+    assert s.tracker.store.get(oid) is not None, "the hand still at it: the window holds"
+    s.on_joint_state(_hand_step(binder, "so101_follower", q, 0.20), t0 + _S)
+    assert s.tracker.store.get(oid) is None and s.attachments() == []
+
+
+def test_a_released_track_retires_at_the_kernels_separation() -> None:
+    """Spark orange R370 (2026-10-23): the kernel closed the release window by FK separation
+    (every hand link 4 cm clear) and held the frozen box as a plain obstacle; the tracker
+    waited for its pinch volume to be 8 cm clear, so the release stayed on the wire and the
+    regrasp of the same, never-lifted orange met the frozen box. The release retires at the
+    first hand pose whose every collision box is ``tracked_release_clear_m`` (0.04) clear."""
+    from openral_core.kinematics import box_gap_lower_bound_m
+    from openral_world_state.object_tracker.session import _box
+
+    from tests.unit.test_object_tracker_binding import _hand_step
+
+    s = _session("so101_follower")
+    _, oid, t0 = _released(s)
+    binder, q, _ = arm_at_hold("so101_follower")
+    box = _box(s.tracker.store.get(oid).box)  # type: ignore[union-attr]
+    hand = s.binders[ROBOTS["so101_follower"][0]].hand
+    for n in range(1, 40):
+        qq = _hand_step(binder, "so101_follower", q, 0.005 * n)
+        gap = min(box_gap_lower_bound_m(box, hb) for hb in hand.hand_boxes(s.frame_id, qq))
+        s.on_joint_state(qq, t0 + n * _S // 100)
+        if gap < 0.04:
+            assert s.tracker.store.get(oid) is not None, (n, gap)
+            continue
+        assert s.tracker.store.get(oid) is None and s.attachments() == [], (n, gap)
+        # The old rule: the pinch centre's distance to the box less the pinch half diagonal.
+        centre, _, half = s.binders[ROBOTS["so101_follower"][0]].pinch_in_frame(qq)
+        local = np.abs((centre - box[0]) @ box[1])
+        old = np.linalg.norm(np.maximum(local - box[2], 0.0)) - np.linalg.norm(half)
+        assert old < 0.08, "the 8 cm pinch rule would retire here too: no discrimination"
+        return
+    pytest.fail("the hand never got 4 cm clear")
+
+
+@pytest.mark.parametrize("case", ["reacquired", "old neighbour", "other label"])
+def test_a_released_track_retires_once_it_is_tracked_again_at_rest(case: str) -> None:
+    """Spark R369 (2026-10-23): the orange dropped 3 cm onto the table and was re-tracked
+    there as a new CONFIRMED track 1 s later; the box frozen in the air at the release pose
+    stopped the arm carrying the next orange through it. A new track of the label touching
+    the released box retires it. A track that was there before the release, or another
+    label, is a neighbour, not the object: the window holds (the hand stays at it)."""
+    s = _session("so101_follower")
+    _, q, centre = arm_at_hold("so101_follower")
+    below = centre - np.array([0.0, 0.0, 0.03])
+    if case == "old neighbour":  # beside the held orange, its box touching, the pinch outside
+        _mint(s, centre + np.array([0.046, 0.0, 0.0]))
+    _, oid, t0 = _released(s)
+    if case != "old neighbour":
+        _mint(s, below, "orange" if case == "reacquired" else "plate")
+    s.on_joint_state(q, t0 + int(0.5 * _S))
+    gone = s.tracker.store.get(oid) is None
+    assert gone is (case == "reacquired"), case
+    assert (s.attachments() == []) is gone
+
+
+def test_a_released_track_is_retired_with_its_window() -> None:
+    """Never followed after release (Spark R177-R185): RELEASED for the window, then gone."""
     s = _session("so101_follower")
     _, oid, t0 = _released(s)
     track = s.tracker.store.get(oid)
     assert track is not None and track.status is TrackStatus.RELEASED
-    s.tracker.store.replace(
-        track.model_copy(update={"status": TrackStatus.CONFIRMED, "epoch": track.epoch + 1})
-    )
-    s.on_joint_state({}, t0 + 1)  # the very next update takes (id, 0) off the wire
-    assert s.attachments() == []
+    s.on_joint_state({}, t0 + int(2.9 * _S))
+    assert s.tracker.store.get(oid) is not None  # the kernel still freezes the payload
+    s.on_joint_state({}, t0 + 3 * _S)
+    assert s.tracker.store.get(oid) is None and oid not in {
+        o.object_id for o in s.snapshot().objects
+    }
+
+
+def test_a_retired_release_leaves_its_box_as_the_querys_prior() -> None:
+    """Spark R242-R261: retired, the released object is looked for where it was let go."""
+    s = _session("so101_follower")
+    s.open_standing_queries([ObjectQuery(label="orange", count="one", role=ObjectRole.TARGET)])
+    _, oid, t0 = _released(s)
+    box = s.tracker.store.get(oid).box  # type: ignore[union-attr]
+    [q] = s.tracker.queries.queries
+    assert q.prior is None
+    s.on_joint_state({}, t0 + 3 * _S)
+    assert s.tracker.store.get(oid) is None and q.prior is not None
+    for c, h, bc, bh in zip(
+        q.prior.pose.xyz, q.prior.half_extents, box.pose.xyz, box.half_extents, strict=True
+    ):
+        assert c - h <= bc - bh + 1e-9 and bc + bh <= c + h + 1e-9  # the column holds the box
 
 
 def test_deploy_queries_ground_without_any_declaration(cap: Any) -> None:
@@ -312,12 +502,16 @@ def test_a_count_all_declaration_makes_every_orange_eligible_and_nothing_else() 
 # ── The tracker's own grasp event (bind/on, sim only; #418 2026-10-17) ────────────────────────
 
 
-def _derived_session(robot: str, derive: bool = True) -> TrackerSession:
+def _derived_session(robot: str, derive: bool = True, *, max_age_s: float = 2.0) -> TrackerSession:
     d = RobotDescription.from_yaml(f"robots/{robot}/robot.yaml")
     return TrackerSession(
-        d, cell_m=RES, grounding_wait_s=3.0, params=TrackerParams(), require_hands=True,
+        d,
+        cell_m=RES,
+        grounding_wait_s=3.0,
+        params=TrackerParams(max_age_s=max_age_s),
+        require_hands=True,
         derive_attach=derive,
-    )  # fmt: skip
+    )
 
 
 def _hold_for(
@@ -343,6 +537,11 @@ def test_a_stalled_chattering_jaw_binds_exactly_as_an_attach_does() -> None:
     joint, _, jaw = ROBOTS["so101_follower"]
     s = _derived_session("so101_follower")
     oid = _mint(s, centre)
+    track = s.tracker.store.get(oid)
+    assert track is not None
+    s.tracker.store.replace(
+        track.model_copy(update={"last_fit_stamp_ns": 10 * _S, "last_confirmed_stamp_ns": 10 * _S})
+    )
     _hold_for(s, joint, q, jaw, command=0.10)
     binding = s.binders[joint].held
     assert binding is not None and binding.outcome is BindOutcome.TRACKED
@@ -356,6 +555,11 @@ def test_a_derived_bind_is_not_doubled_by_the_hals_attach_for_the_same_close() -
     joint, _, jaw = ROBOTS["so101_follower"]
     s = _derived_session("so101_follower")
     oid = _mint(s, centre)
+    track = s.tracker.store.get(oid)
+    assert track is not None
+    s.tracker.store.replace(
+        track.model_copy(update={"last_fit_stamp_ns": 10 * _S, "last_confirmed_stamp_ns": 10 * _S})
+    )
     _hold_for(s, joint, q, jaw, command=0.10)
     changes, held = s.attachment_changes, s.binders[joint].held
     again = s.on_grasp_event(GraspEventKind.ATTACH, joint, jaw=jaw, hold=jaw, stamp_ns=13 * _S)
@@ -392,3 +596,21 @@ def test_the_derived_rule_is_off_unless_asked() -> None:
     _mint(s, centre)
     _hold_for(s, joint, q, jaw, command=0.10)
     assert s.binders[joint].held is None and not s.attachments()
+
+
+def test_hands_are_clear_of_targets_only_away_from_every_target_and_holding_nothing() -> None:
+    """Spark banana R336 / R338 / R340 (2026-10-23): asked with the open fingers still on the
+    banana in the bowl, the completion judge said done; the rubric needs the robot clear of it.
+    The completion check asks only once ``hands_clear_of_targets`` (published on
+    ``/openral/object_tracker/hands_clear``) says so: no hold, every hand clear of every
+    target, and a target to be clear of."""
+    _, q, centre = arm_at_hold("droid_franka_robotiq")
+    joint, _, jaw = ROBOTS["droid_franka_robotiq"]
+    s = _derived_session("droid_franka_robotiq")
+    s.on_joint_state({**q, joint: jaw}, 1)
+    assert not s.hands_clear_of_targets(), "no target: nothing says the hand let go"
+    _mint(s, centre, "banana")
+    assert not s.hands_clear_of_targets(), "the pinch is at the target"
+    far = _mint(s, centre + np.array([0.0, 0.0, 0.15]), "banana")  # 15 cm: off the hand
+    s.tracker.store.drop(next(t.object_id for t in s.tracker.store.all() if t.object_id != far))
+    assert s.hands_clear_of_targets(), "the only target is 15 cm away: off the hand"

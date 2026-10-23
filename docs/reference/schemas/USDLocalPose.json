@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "description": "Authored transform in a USD object-local or stage frame.",
+  "properties": {
+    "xyz_m": {
+      "default": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Xyz M",
+      "type": "array"
+    },
+    "quat_xyzw": {
+      "default": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "maxItems": 4,
+      "minItems": 4,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Quat Xyzw",
+      "type": "array"
+    }
+  },
+  "title": "USDLocalPose",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

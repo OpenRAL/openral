@@ -123,6 +123,10 @@ def _run(
         reasoner.trigger_configure()
         reasoner.trigger_activate()
         assert reasoner._robot_description is not None
+        # No skill search paths were configured: robot names must still reach S2.
+        robot_context = reasoner._renderer.render(world_state=None)
+        assert "joint: left_joint7 (sim=openarm_left_joint7)" in robot_context
+        assert "links: openarm_left_link6 -> openarm_left_link7" in robot_context
 
         peer = rclpy.create_node("openral_test_grounded_targets_peer")
 

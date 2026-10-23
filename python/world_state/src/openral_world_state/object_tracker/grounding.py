@@ -4,7 +4,8 @@ Each ``ObjectQuery`` of a goal lives as long as the goal, keyed ``(goal_id, quer
 with its own ``ObjectQueryStatus``:
 
 * ``UNRESOLVED`` — no track matches yet;
-* ``RESOLVING`` — ≥ 1 TENTATIVE (or RELEASED) match, none counted yet;
+* ``RESOLVING`` — ≥ 1 TENTATIVE match, none counted yet (a RELEASED one counts for
+  nothing: it is retired, and the object is found afresh);
 * ``RESOLVED`` — ≥ ``min_instances`` CONFIRMED / OCCLUDED / BOUND matches. When every one
   is lost again the query goes back to ``UNRESOLVED`` and its search timer restarts;
 * ``EXHAUSTED`` — the search budget is spent; terminal for the goal.
@@ -27,19 +28,30 @@ start) is still picked up, at a modest rate.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
+import numpy as np
 import structlog
-from openral_core import ObjectQuery, ObjectQueryStatus, PlaceRegion, TrackedObject, TrackStatus
+from openral_core import (
+    ObjectQuery,
+    ObjectQueryObservation,
+    ObjectQueryStatus,
+    ObjectRole,
+    PlaceRegion,
+    TrackedObject,
+    TrackStatus,
+)
+from openral_core.geometry import homogeneous_from_quat_xyz
 
 __all__ = ["QueryBook", "QueryEscalation", "StandingQuery"]
 
 log = structlog.get_logger(__name__)
 
 _NS = 1_000_000_000
+_SIGNS = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], float)
 _COUNTED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED, TrackStatus.BOUND})
-_PENDING = frozenset({TrackStatus.TENTATIVE, TrackStatus.RELEASED})
+_PENDING = frozenset({TrackStatus.TENTATIVE})
 
 
 @dataclass
@@ -55,6 +67,8 @@ class StandingQuery:
         since_ns: Source time the current search started (goal start or last loss).
         last_served_ns: Source time a detection was last spent on it.
         escalated: The ``unresolved`` escalation was emitted for this search.
+        prior: Where a released match was let go (its last box), retired with it; the
+            search's seed in place of ``query.seed`` until every raised top in it was tried.
     """
 
     goal_id: str
@@ -65,6 +79,9 @@ class StandingQuery:
     since_ns: int
     last_served_ns: int = -1
     escalated: bool = False
+    invocation_id: str = ""
+    observations: list[ObjectQueryObservation] = field(default_factory=list)
+    prior: PlaceRegion | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -134,6 +151,16 @@ class QueryBook:
         """The query ``(goal_id, query_id)``, or ``None``."""
         return self._queries.get((goal_id, query_id))
 
+    def record_observation(
+        self, goal_id: str, query_id: str, observation: ObjectQueryObservation
+    ) -> None:
+        """Keep only the last eight refused observations for a standing query."""
+        query = self.get(goal_id, query_id)
+        if query is None:
+            return
+        query.observations.append(observation)
+        del query.observations[:-8]
+
     def open(
         self,
         goal_id: str,
@@ -142,10 +169,17 @@ class QueryBook:
         declaration_key: str,
         *,
         stamp_ns: int,
+        invocation_id: str = "",
     ) -> None:
         """Start a standing query at goal dispatch (source time ``stamp_ns``)."""
         self._queries[(goal_id, query_id)] = StandingQuery(
-            goal_id, query_id, query, declaration_key, ObjectQueryStatus.UNRESOLVED, stamp_ns
+            goal_id,
+            query_id,
+            query,
+            declaration_key,
+            ObjectQueryStatus.UNRESOLVED,
+            stamp_ns,
+            invocation_id=invocation_id,
         )
         log.info("object_tracker.query_open", goal_id=goal_id, query_id=query_id, label=query.label)
 
@@ -159,17 +193,25 @@ class QueryBook:
         mine = [q for q in self._queries.values() if q.goal_id == goal_id]
         return bool(mine) and all(q.status is ObjectQueryStatus.RESOLVED for q in mine)
 
-    def update(self, tracks: Sequence[TrackedObject], *, now_ns: int) -> list[QueryEscalation]:
+    def update(
+        self,
+        tracks: Sequence[TrackedObject],
+        *,
+        now_ns: int,
+        blocked_ids: frozenset[str] = frozenset(),
+    ) -> list[QueryEscalation]:
         """Re-derive every query's status from the tracks; return new escalations."""
         out: list[QueryEscalation] = []
         for q in self._queries.values():
             if q.status is ObjectQueryStatus.EXHAUSTED:
                 continue
             mine = [t for t in tracks if q.matches(t)]
-            counted = sum(t.status in _COUNTED for t in mine)
+            blocked = any(t.object_id in blocked_ids for t in mine)
+            eligible = [] if blocked else mine
+            counted = sum(t.status in _COUNTED for t in eligible)
             if counted >= q.query.min_instances:
                 status = ObjectQueryStatus.RESOLVED
-            elif any(t.status in _PENDING for t in mine):
+            elif any(t.status in _PENDING for t in eligible):
                 status = ObjectQueryStatus.RESOLVING
             else:
                 status = ObjectQueryStatus.UNRESOLVED
@@ -178,12 +220,15 @@ class QueryBook:
             if status is not q.status:
                 log.info("object_tracker.query", key=q.key, status=status.value)
                 q.status = status
-            if status is ObjectQueryStatus.RESOLVED:
-                continue
+            if status is ObjectQueryStatus.RESOLVED or q.query.role is ObjectRole.CONTEXT:
+                continue  # a neighbour never found is no reason to search or hand off
             lost = [t for t in mine if t.status is TrackStatus.LOST]
             last = max(lost, key=lambda t: t.last_fit_stamp_ns).box if lost else None
             waited = now_ns - q.since_ns
-            if waited >= self._max_ns:
+            if blocked and not q.escalated:
+                q.escalated = True
+                out.append(QueryEscalation("unresolved", *q.key, q.query.label, last, now_ns))
+            elif waited >= self._max_ns:
                 q.status = ObjectQueryStatus.EXHAUSTED
                 out.append(QueryEscalation("exhausted", *q.key, q.query.label, last, now_ns))
             elif waited >= self._start_ns and not q.escalated:
@@ -192,6 +237,37 @@ class QueryBook:
         for e in out:
             log.info("object_tracker.escalation", kind=e.kind, goal_id=e.goal_id, label=e.label)
         return out
+
+    def note_released(self, track: TrackedObject) -> None:
+        """Seed every query ``track`` matches with where it was let go: retired, found afresh.
+
+        The prior is the gravity-aligned column over the released box's footprint, from its
+        measured support up to its top: a raised top needs the support in the column (Spark
+        R268, 2026-10-23: the bare in-hand box held no support, and the prior was spent
+        without one prompt).
+        """
+        box = track.box
+        corners = (
+            homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw)
+            @ np.c_[_SIGNS * np.asarray(box.half_extents), np.ones(8)].T
+        )[:3]
+        lo, hi = corners.min(axis=1), corners.max(axis=1)
+        lo[2] = min(lo[2], track.support_z)
+        column = box.model_copy(
+            update={
+                "half_extents": tuple(float(h) for h in 0.5 * (hi - lo)),
+                "pose": box.pose.model_copy(
+                    update={
+                        "xyz": tuple(float(c) for c in 0.5 * (hi + lo)),
+                        "quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+                    }
+                ),
+            }
+        )
+        for q in self._queries.values():
+            if q.matches(track):
+                q.prior = column
+                log.info("object_tracker.query_prior", key=q.key, object_id=track.object_id)
 
     def due(self, *, now_ns: int) -> list[StandingQuery]:
         """Queries owed a detection at source time ``now_ns``, in fair order (module docstring)."""

@@ -631,6 +631,11 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+#: How far (m) a CONTEXT query's seed reaches past the target's seed box on every side: the
+#: neighbours the hand may brush on the way in. *Calibration point.*
+_CONTEXT_SEED_MARGIN_M = 0.15
+
+
 def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -> str:
     """The prompt's standing ``ObjectQuery`` s as JSON, or ``""`` (issue #418).
 
@@ -654,7 +659,7 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
     raw = deploy_scene.scene.backend_options.get("placement_success")
     if raw is None:
         return ""
-    from openral_core import ObjectRole
+    from openral_core import ObjectQuery, ObjectRole
     from openral_reasoner.grounding import placement_queries
     from openral_sim.backends.isaac_sim import (  # reason: defer optional dep
         IsaacPlacementSuccess,
@@ -702,6 +707,44 @@ def _object_queries_json(deploy_scene: DeployScene | None, prompt: str | None) -
             else q
             for q in queries
         )
+    # The task's CONTEXT labels: neighbours the hand may brush (Spark R264/R265, 2026-10-22:
+    # the fingers met an untracked tote neighbour, cells nothing explained).
+    # Each waits for as many instances as the scene places objects named after it (the
+    # runner waits for CONTEXT queries too, never requires them).
+    context = dict.fromkeys(c for p in success.tasks.get(prompt, []) for c in p.context)
+    objects = deploy_scene.scene.backend_options.get("objects", [])
+    names = [
+        str(o.get("name", ""))
+        for o in (objects if isinstance(objects, list) else [])
+        if isinstance(o, dict)
+    ]
+    # Seeded beside the target (its seed grown by `_CONTEXT_SEED_MARGIN_M`): the tracker's
+    # map-seeded prompts land on the raised tops next to it first, not on the same class
+    # elsewhere (Spark R282/R283, 2026-10-23: "carton" found shelf cartons, never the tote
+    # neighbour the finger met). A sim ground-truth seed was dropped above; none here then.
+    target_seed = next(
+        (q.seed for q in queries if q.role is ObjectRole.TARGET and q.seed is not None), None
+    )
+    context_seed = (
+        target_seed.model_copy(
+            update={
+                "half_extents": tuple(h + _CONTEXT_SEED_MARGIN_M for h in target_seed.half_extents)
+            }
+        )
+        if target_seed is not None
+        else None
+    )
+    queries += tuple(
+        ObjectQuery(
+            label=c,
+            count="all",
+            role=ObjectRole.CONTEXT,
+            min_instances=max(1, sum(n.startswith(c.replace(" ", "_")) for n in names)),
+            seed=context_seed,
+        )
+        for c in context
+        if all(q.label != c for q in queries)
+    )
     return json.dumps(
         [q.model_dump(mode="json", exclude_none=True) for q in queries], separators=(",", ":")
     )
@@ -1128,6 +1171,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     preload_rskill_id = ""
     preload_rskill_revision = ""
     preload_prompt = ""
+    reward_score_window_s: float | None = None
+    enable_completion_check = False
+    completion_check_judge = "scene_vlm"
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
         scene_dir = config.parent if config is not None else None
@@ -1163,6 +1209,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             enable_reward_monitor = rt.enable_reward_monitor
         reward_monitor_manifest = reward_monitor_manifest or _scene_path(rt.reward_monitor_manifest)
         reward_monitor_task = reward_monitor_task or rt.reward_monitor_task
+        reward_score_window_s = rt.reward_monitor_score_window_s
+        enable_completion_check = bool(rt.enable_completion_check)
+        completion_check_judge = rt.completion_check_judge or "scene_vlm"
         if enable_critic is None:
             enable_critic = rt.enable_critic
         if enable_scene_vlm is None:
@@ -1237,6 +1286,22 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     launched_scene = (
         DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
     )
+    scene_yaml_path = deploy_config or config
+    declared_object_catalog_json = ""
+    if launched_scene is not None and launched_scene.object_catalog is not None:
+        if rt is None or rt.object_tracking == "off":
+            raise ROSConfigError(
+                "DeployScene.object_catalog requires DeployRuntime.object_tracking to be "
+                "enabled so its declarations reach the tracker"
+            )
+        if scene_yaml_path is None:
+            raise ROSConfigError("object_catalog needs a DeployScene YAML path")
+        from openral_core import load_usd_object_catalog
+
+        catalog = load_usd_object_catalog(launched_scene, scene_path=scene_yaml_path)
+        if catalog is None:  # pragma: no cover - guarded by object_catalog above
+            raise ROSConfigError("object_catalog was declared but no catalog was loaded")
+        declared_object_catalog_json = catalog.model_dump_json()
     # A robot sensor lives in its manifest only; refuse a scene that names one here,
     # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
@@ -1723,6 +1788,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # Tier-C critic producer; emits FailureTrigger on
         # /openral/failure/critic when a reward model's score stalls.
         f"enable_critic:={'true' if enable_critic else 'false'}",
+        f"enable_completion_check:={'true' if enable_completion_check else 'false'}",
+        f"completion_check_judge:={completion_check_judge}",
         # scene VLM co-active with the VLA; the reasoner asks
         # /openral/perception/query_scene when scene_query_available.
         f"enable_scene_vlm:={'true' if enable_scene_vlm else 'false'}",
@@ -1776,6 +1843,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         effective_reward_task = _resolved_initial_prompt.strip()
     if effective_reward_task:
         argv_template.append(f"reward_monitor_task:={effective_reward_task}")
+    if enable_reward_monitor and reward_score_window_s is not None:
+        argv_template.append(f"reward_monitor_score_window_s:={reward_score_window_s}")
     # only forward the locator list when non-empty (ros2 launch rejects
     # an empty ``name:=`` value; the launch file defaults it to "").
     if resolved_object_detector_locators:
@@ -1821,6 +1890,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 "workspace_contact_enabled:=true",
                 f"workspace_contact_max_speed_mps:={rt.workspace_contact_max_speed_mps}",
                 f"workspace_contact_max_lead_m:={rt.workspace_contact_max_lead_m}",
+                f"workspace_contact_wrist_links:={rt.workspace_contact_wrist_links}",
+                f"workspace_explained_cells:={str(rt.workspace_explained_cells).lower()}",
             ]
         )
     # The payload's octree clearing: forwarded only when enabled (sim-only; refused above
@@ -1921,6 +1992,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     _require_groundable_targets(queries_json, resolved_object_detector_locators)
     if queries_json:
         argv_template.append(f"object_queries_json:={queries_json}")
+    if declared_object_catalog_json:
+        argv_template.append(f"declared_object_catalog_json:={declared_object_catalog_json}")
+    if rt is not None and rt.object_surface_model is not None:
+        argv_template.append(
+            f"object_surface_model_json:={rt.object_surface_model.model_dump_json()}"
+        )
 
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality

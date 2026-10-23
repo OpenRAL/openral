@@ -316,10 +316,11 @@ _Open-vocabulary detector backend for the LocateAnything-3B sidecar. Same interf
 
 _Scene-VLM backend backed by the Qwen3.5-4B sidecar — the scene-reasoning counterpart of `LocateAnythingDetector`. Returns **text**, not `ObjectsMetadata` (a reasoning aid for task-progress / success verification, not a localizer). Same ZMQ lifecycle (lazy connect, auto-spawn, teardown only the child), transport shared via `ZmqSidecarMixin`. No `zmq`/`numpy`/`PIL` at import (all lazy)._
 
-- `class QwenSceneVlm(ZmqSidecarMixin)` (L47) — `__init__(*, model_id, weights_source="Qwen/Qwen3.5-4B", host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=256)` — stores config; no connection (lazy).
-  - `query(frame_bgr, width, height, question) -> str` (L143) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
-  - `close() -> None` (L184) — Closes the socket + terminates the spawned sidecar; idempotent.
-- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L200) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
+- `class QwenSceneVlm(ZmqSidecarMixin)` (L47) — `__init__(*, model_id, weights_source="Qwen/Qwen3.5-4B", host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=None)` — stores config; no connection (lazy).
+  - `warm_up() -> None` (L86) — Connects to (or spawns) the sidecar now; `scene_vlm_node` calls it at configure (Spark R225: the first query's spawn + load outlasted the completion check's hold). `max_new_tokens=None` leaves the sidecar's own 1024 budget (thinking on; a fixed 256 truncated every answer, R230).
+  - `query(frame_bgr, width, height, question) -> str` (L151) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
+  - `close() -> None` (L195) — Closes the socket + terminates the spawned sidecar; idempotent.
+- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L211) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
 
 ### `python/runner/src/openral_runner/backends/reward/frame_source.py`
 _Transport-agnostic rolling frame buffer for the reward monitor. Pure Python + stdlib only (no numpy/torch), so it unit-tests without ROS, torch, or a GPU._
@@ -341,19 +342,21 @@ _Robometer reward-monitor backend — loads lerobot 0.6.0's native Robometer mod
 
 - `critic_score_from_assessment(assessment, *, threshold) -> tuple[float, float]` (L37) — Pure mapping from a reward assessment result to a generic `openral_msgs/CriticScore` `(score, threshold)`: uses `progress_now` (higher-is-better) as the score, clamped to `[0, 1]`, defaulting a missing/non-numeric/bool value to `0.0`. Lets `reward_monitor_node` feed the Tier-C critic producer. Pure, ROS-free, unit-tested.
 - `class RobometerInProcessReward` (L147) — `__init__(*, model_id, weights_source="OpenRAL/rskill-robometer_4b-any-general-nf4", num_bins=100, success_threshold=0.5, max_frames=8, device="cuda")` — default Robometer backend for `reward_monitor_node`: lazily imports `tools/_robometer_scorer.py::_Scorer`, meta-loads the prequantized NF4 checkpoint in the reward-monitor process, and scores BGR frames via the same native lerobot 0.6.0 `_compute_rbm_logits` + `decode_progress_outputs` path.
-  - `score(frames, task) -> (progress, success)` (L179) — Validates empty task/clip + frame sizes, evenly subsamples to `max_frames`, converts BGR→RGB, returns per-frame normalized arrays.
-  - `assess(frames, task) -> dict` (L191) — Scores `frames` and summarizes the window for the Reasoner; mirrors the reasoner contract.
-  - `close() -> None` (L200) — Releases the model + `cuda.empty_cache()` if loaded on GPU.
-- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` (L209) — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`. Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
+  - `warm_up() -> None` (L179) — Loads the VLM now; `reward_monitor_node` calls it at configure (Spark R219: the lazy load ate ~40 s of the goal). Typed load errors surface here.
+  - `score(frames, task) -> (progress, success)` (L187) — Validates empty task/clip + frame sizes, evenly subsamples to `max_frames`, converts BGR→RGB, returns per-frame normalized arrays.
+  - `assess(frames, task) -> dict` (L199) — Scores `frames` and summarizes the window for the Reasoner; mirrors the reasoner contract.
+  - `close() -> None` (L208) — Releases the model + `cuda.empty_cache()` if loaded on GPU.
+- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` (L217) — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`. Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
 
 ### `python/runner/src/openral_runner/backends/reward/topreward_reward.py`
 _In-process TOPReward (arXiv 2602.19313) reward monitor — a zero-shot reward reading `P("True" | video, instruction)` from an off-the-shelf Qwen3-VL VLM, no fine-tuned checkpoint and no ZMQ sidecar. Nothing here imports torch / transformers at module load._
 
 - `class TOPRewardMonitor` (L35) — `__init__(*, model_id, weights_source, success_threshold=0.8, max_frames=8, num_samples=6, fps=2.0, device="cuda")` — stores config; the VLM is loaded lazily on first `score`.
-  - `score(frames, task) -> (progress, success)` (L132) — Prefix-sweep: scores `frames[:L]` at `num_samples` anchor lengths, min-max normalizes raw log-probs within the queried window, then interpolates to one value per frame. `success` mirrors `progress` (TOPReward has a single head).
-  - `assess(frames, task) -> dict` (L182) — Scores `frames` and summarizes the window for the Reasoner; same keys as `RobometerInProcessReward.assess`.
-  - `close() -> None` (L195) — Releases the in-process model + frees CUDA memory.
-- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` (L210) — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest.
+  - `warm_up() -> None` (L74) — Loads the VLM now (`reward_monitor_node` calls it at configure).
+  - `score(frames, task) -> (progress, success)` (L136) — Prefix-sweep: scores `frames[:L]` at `num_samples` anchor lengths, min-max normalizes raw log-probs within the queried window, then interpolates to one value per frame. `success` mirrors `progress` (TOPReward has a single head).
+  - `assess(frames, task) -> dict` (L186) — Scores `frames` and summarizes the window for the Reasoner; same keys as `RobometerInProcessReward.assess`.
+  - `close() -> None` (L199) — Releases the in-process model + frees CUDA memory.
+- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` (L214) — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/detector_runner.py`
 _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline — loads the `DetectorContract`, delegates backend construction to `build_manifest_detector` (ONNX CPU/NVMM tiers or the `VLM_SIDECAR` open-vocab tier), attaches the appropriate branch to the bus tee via `TeeManager`, and fires the `on_detection` callback for each non-`None` `ObjectsMetadata`. Imports `gi` + `DetectorTier`/`build_manifest_detector` + `nvmm_convert_element` eagerly at load._

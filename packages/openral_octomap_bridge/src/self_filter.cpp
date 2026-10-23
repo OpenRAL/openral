@@ -23,6 +23,18 @@ using Wire = openral_msgs::msg::AttachedCollisionPrimitive;
 
 bool finite_non_negative(double v) { return std::isfinite(v) && v >= 0.0; }
 
+bool seconds_to_ceil_ns(double seconds, std::int64_t& out) {
+  if (!std::isfinite(seconds) || seconds < 0.0) {
+    return false;
+  }
+  const long double ns = std::ceil(static_cast<long double>(seconds) * 1.0e9L);
+  if (ns > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+    return false;
+  }
+  out = static_cast<std::int64_t>(ns);
+  return true;
+}
+
 bool all_finite(const std::vector<double>& v) {
   return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
 }
@@ -595,8 +607,13 @@ JointStateVerdict joint_state_at(const std::deque<JointSample>& history, std::in
   if (history.empty()) {
     return JointStateVerdict::kNoState;
   }
-  const auto period_ns = static_cast<std::int64_t>(period_s * 1e9);
-  const auto skew_ns = static_cast<std::int64_t>(max_skew_s * 1e9);
+  std::int64_t period_ns = 0;
+  std::int64_t gap_ns = 0;
+  std::int64_t skew_ns = 0;
+  if (!std::isfinite(period_s) || period_s <= 0.0 || !seconds_to_ceil_ns(period_s, period_ns) ||
+      !seconds_to_ceil_ns(2.0 * period_s, gap_ns) || !seconds_to_ceil_ns(max_skew_s, skew_ns)) {
+    return JointStateVerdict::kNoState;
+  }
   const auto hi =
       std::lower_bound(history.begin(), history.end(), stamp_ns,
                        [](const JointSample& s, std::int64_t t) { return s.stamp_ns < t; });
@@ -610,7 +627,7 @@ JointStateVerdict joint_state_at(const std::deque<JointSample>& history, std::in
                            : std::next(hi) != history.end() ? &*std::next(hi)
                                                             : nullptr;
     qdot.assign(q.size(), 0.0);
-    if (n != nullptr && std::llabs(n->stamp_ns - stamp_ns) <= 2 * period_ns) {
+    if (n != nullptr && std::llabs(n->stamp_ns - stamp_ns) <= gap_ns) {
       const double dt = 1e-9 * static_cast<double>(stamp_ns - n->stamp_ns);
       for (std::size_t d = 0; d < q.size() && d < n->q.size(); ++d) {
         qdot[d] = (q[d] - n->q[d]) / dt;
@@ -634,7 +651,7 @@ JointStateVerdict joint_state_at(const std::deque<JointSample>& history, std::in
       return JointStateVerdict::kExtrapolation;
     }
   }
-  if (b->stamp_ns - a->stamp_ns > 2 * period_ns || b->stamp_ns <= a->stamp_ns) {
+  if (b->stamp_ns - a->stamp_ns > gap_ns || b->stamp_ns <= a->stamp_ns) {
     return JointStateVerdict::kGap;
   }
   if (nearest_ns > skew_ns) {

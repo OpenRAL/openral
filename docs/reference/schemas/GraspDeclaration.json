@@ -423,6 +423,12 @@
       "title": "Trace Id",
       "type": "string"
     },
+    "invocation_id": {
+      "default": "",
+      "pattern": "^(?:[0-9a-f]{32})?$",
+      "title": "Invocation Id",
+      "type": "string"
+    },
     "timeout_s": {
       "exclusiveMinimum": 0.0,
       "title": "Timeout S",
