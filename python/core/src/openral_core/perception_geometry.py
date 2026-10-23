@@ -50,8 +50,8 @@ Flow, one call per step so every step is replayable from its inputs alone:
    leaves another body's cell inside the result.
 
 Lives in ``openral_core`` (moved from ``openral_hal._grasp_target``, issue #418) so the
-Layer-2 tracker and the HAL legs import it downward; ``openral_hal._grasp_target`` re-exports
-it. ``backproject_masked_depth`` and ``lattice_from_msg`` moved here with it.
+Layer-2 tracker and the HAL legs import it downward. ``backproject_masked_depth`` and
+``lattice_from_msg`` moved here with it.
 
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤

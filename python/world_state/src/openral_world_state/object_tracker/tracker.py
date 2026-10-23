@@ -17,6 +17,8 @@ import math
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from enum import Enum, auto
+from typing import NamedTuple
 
 import numpy as np
 import structlog
@@ -186,8 +188,21 @@ class CameraFrame:
     robot_mask: NDArray[np.uint8] | None
 
 
-#: ``_apply_mask``: try the next (smaller) candidate.
-_NEXT = object()
+class _Next(Enum):
+    """``_apply_mask``'s verdict: try the next (smaller) candidate mask."""
+
+    NEXT = auto()
+
+
+class _Candidate(NamedTuple):
+    """A candidate mask's fit, support height, surface centroid and map cells."""
+
+    fit: ContainingFit
+    support_z: float
+    centroid: tuple[float, ...]
+    cells: frozenset[Cell]
+
+
 #: Source seconds between INFO reports of one ``(key, reason)`` refusal.
 REFUSAL_LOG_PERIOD_S = 5.0
 #: Source seconds within which fits of one track from different cameras are combined
@@ -209,13 +224,14 @@ _SUPPORT_SEEN_TOL_M = 0.001
 #: Tracks whose boxes stand for a measured object: a body inside one is that object.
 _SETTLED = frozenset({TrackStatus.CONFIRMED, TrackStatus.OCCLUDED})
 # The roles a hand touches by design: the object it picks and the one it places into
-# (2026-10-21 decision; Isaac baseline successes touch the bowl for 79-131 steps, R52/R55/R63
-# stopped on it). A CONTEXT neighbour the hand meets still fails closed.
+# (2026-10-21 decision; successful baseline runs touch the bowl for 79-131 steps, and runs
+# that treated it as an obstacle stopped on it). A CONTEXT neighbour the hand meets still
+# fails closed.
 _CONTACT_ROLES = frozenset({ObjectRole.TARGET, ObjectRole.DESTINATION})
 # A contact re-anchor's ceiling, as a multiple of what the track filled in the map at its
 # last plain pass: more occupied cells in the box than this is something besides the object
-# (a neighbour, a hand leak). *Calibration point*: Isaac R83/R85 held 33-52 cells in the
-# box while the hand hid the banana (3-7 in view).
+# (a neighbour, a hand leak). *Calibration point*: 33-52 cells were held in the box while
+# the hand hid the banana (3-7 in view).
 _REANCHOR_MAX_RATIO = 2.0
 
 
@@ -423,7 +439,7 @@ class ObjectTracker:
                     bound = self._apply_mask(
                         req, mask, frame, grid, grid_stamp_ns, hand_spaces, last=n == len(masks)
                     )
-                    if bound is not _NEXT:
+                    if bound is not _Next.NEXT:
                         break
                 if isinstance(bound, tuple):
                     bound_fits.append(bound)
@@ -787,14 +803,14 @@ class ObjectTracker:
             # No fit this wide passes `containing_fit`'s half_extent_cap at any yaw: its box
             # holds these points (the same `sure` set), and a box's axis span is at most
             # 2*sqrt(2) times its widest half-extent. Refused before the support scan
-            # (Isaac R89/R94: masks of the whole table, 0.6-1.1 m, each cost ~2 s of the scan
-            # and stalled the tracker until the workspace region went stale).
+            # (masks of the whole table, 0.6-1.1 m, each cost ~2 s of the scan and stalled the
+            # tracker until the workspace region went stale).
             self._refuse(key, "half_extent_cap", req=req, frame=frame, points=len(raw),
                          spread_m=round(spread, 4))  # fmt: skip
             return None
         support_z = self._support(grid, surface)
         if support_z is None:
-            # What decided it (Spark R17: refits refused for 30+ s on a pushed banana).
+            # What decided it (refits refused for 30+ s on a pushed banana).
             self._refuse(
                 key,
                 "no_support",
@@ -839,7 +855,7 @@ class ObjectTracker:
             return None
         return fit, support_z
 
-    def _apply_mask(  # noqa: PLR0911, PLR0912, PLR0915  # reason: each gate names its own outcome
+    def _apply_mask(
         self,
         req: TrackerRequest,
         mask: NDArray[np.bool_],
@@ -849,15 +865,59 @@ class ObjectTracker:
         hands: Sequence[PlaceRegion],
         *,
         last: bool = True,
-    ) -> tuple[str, ContainingFit] | None | object:
-        """Fit ``mask`` into a track; ``_NEXT`` when a smaller candidate should be tried.
+    ) -> tuple[str, ContainingFit] | _Next | None:
+        """Fit ``mask`` into a track; ``_Next.NEXT`` when a smaller candidate should be tried.
 
         Not the ``last`` candidate: a refused fit, or one whose box holds two bodies on the
         map (``map_split``), hands over to the next one instead of minting a SPLIT track.
+        Returns ``(object_id, fit)`` for a measured BOUND track, else ``None``.
         """
+        gated = self._gate_candidate(req, mask, frame, grid, hands, last=last)
+        if not isinstance(gated, _Candidate):
+            return gated
+        fit, support_z, centroid, cells = gated
+        # Only a track of the mask's own label takes its fit: a banana let go into the bowl
+        # is inside the bowl's box, and by position alone its every fit refit the bowl
+        # (never re-found, the gripper stopped in its cells 25 s on).
+        same = [t for t in self.store.all() if t.label == req.label]
+        oid, kind = associate(same, centroid, voxel_m=grid.resolution)
+        if kind == "tie":
+            return None
+        if fit.provisional and fit.box is not None:
+            fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
+        floor = support_z + grid.resolution
+        if oid is None:
+            track = self._mint_track(req, fit, support_z, floor, cells, frame, grid)
+            if track is None:
+                return None
+        else:
+            old = self.store.get(oid)
+            assert old is not None
+            if old.status is TrackStatus.BOUND:
+                return self._measure_bound(old, fit, frame)
+            moved = self._moved(old, fit, grid)
+            if self._refit_refused(old, fit, cells, centroid, support_z, grid, hands, frame, moved):
+                return None
+            track, fit = self._refit_track(
+                old, kind, req.camera, fit, cells, support_z, floor, frame, grid, hands, moved
+            )
+        self._commit_fit(track, fit, cells, centroid, grid, grid_stamp_ns, hands, frame)
+        return None
+
+    def _gate_candidate(
+        self,
+        req: TrackerRequest,
+        mask: NDArray[np.bool_],
+        frame: CameraFrame,
+        grid: VoxelLattice,
+        hands: Sequence[PlaceRegion],
+        *,
+        last: bool,
+    ) -> _Candidate | _Next | None:
+        """The mask's fit and map cells, or why it is refused (``_Next.NEXT``: try the next)."""
         fitted = self._fit(req, mask, frame, grid)
         if fitted is None:
-            return None if last else _NEXT
+            return None if last else _Next.NEXT
         fit, support_z = fitted
         surface = fit.surface
         centroid = tuple(float(v) for v in surface.mean(axis=0))
@@ -875,181 +935,233 @@ class ObjectTracker:
                     frame=frame,
                     detail=split.why,
                 )
-                return _NEXT
-        # Only a track of the mask's own label takes its fit: a banana let go into the bowl
-        # is inside the bowl's box, and by position alone its every fit refit the bowl
-        # (Spark R269, 2026-10-23: never re-found, the gripper stopped in its cells 25 s on).
-        same = [t for t in self.store.all() if t.label == req.label]
-        oid, kind = associate(same, centroid, voxel_m=grid.resolution)
-        if kind == "tie":
+                return _Next.NEXT
+        return _Candidate(fit, support_z, centroid, cells)
+
+    def _mint_track(
+        self,
+        req: TrackerRequest,
+        fit: ContainingFit,
+        support_z: float,
+        floor: float,
+        cells: frozenset[Cell],
+        frame: CameraFrame,
+        grid: VoxelLattice,
+    ) -> TrackedObject | None:
+        """A new track for an unassociated fit of a standing query; ``None`` without one."""
+        q = self.queries.get(*req.query_key) if req.query_key else None
+        if q is None:
+            log.info("object_tracker.refit_unassociated", label=req.label)
             return None
-        if fit.provisional and fit.box is not None:
-            fit = self._grow_hidden(fit, oid, req.label, frame, grid, support_z)
-        floor = support_z + grid.resolution
-        if oid is None:
-            q = self.queries.get(*req.query_key) if req.query_key else None
-            if q is None:
-                log.info("object_tracker.refit_unassociated", label=req.label)
-                return None
-            track = self.store.mint(
-                label=q.query.label,
-                role=q.query.role,
-                declaration_key=q.declaration_key,
-                box=fit.box,
-                tight=(fit.tight,),
-                fit_kind=FitKind.SILHOUETTE_CONE,
-                support_z=support_z,
-                support_ref="map",
-                floor_z=floor,
-                visible_cells=len(cells),
-                occupied_cells=0,
-                last_fit_stamp_ns=frame.stamp_ns,
-                last_confirmed_stamp_ns=0,
+        track = self.store.mint(
+            label=q.query.label,
+            role=q.query.role,
+            declaration_key=q.declaration_key,
+            box=fit.box,
+            tight=(fit.tight,),
+            fit_kind=FitKind.SILHOUETTE_CONE,
+            support_z=support_z,
+            support_ref="map",
+            floor_z=floor,
+            visible_cells=len(cells),
+            occupied_cells=0,
+            last_fit_stamp_ns=frame.stamp_ns,
+            last_confirmed_stamp_ns=0,
+            provisional=fit.provisional,
+        )
+        self._combine_views(track.object_id, req.camera, fit, frame, grid.resolution)
+        self._note_low_score(track.object_id, req.prompt_score)
+        return track
+
+    def _measure_bound(
+        self, old: TrackedObject, fit: ContainingFit, frame: CameraFrame
+    ) -> tuple[str, ContainingFit]:
+        """A BOUND track's refit: observed, and its box follows the object in the hand."""
+        oid = old.object_id
+        self._observe_catalog(old, fit, frame)
+        self._observe_surface(old, fit, frame)
+        if fit.box is not None:
+            # The box follows the object as the camera sees it in the hand, never the
+            # hand's kinematics (2026-10-22 decision; the bind-time box stayed on the table
+            # while the banana was carried 23 cm, the kernel read the binding off the hand and
+            # its own cells stopped the payload). A drop
+            # moves the box with the object, off the hand. The payload's primitives and
+            # the provisional flag stay the bind's. Safety-WG review owed.
+            current = self.store.get(oid)
+            assert current is not None
+            self.store.replace(
+                current.model_copy(
+                    update={
+                        "box": fit.box,
+                        "tight": (fit.tight,) if fit.tight is not None else (),
+                        "last_fit_stamp_ns": max(current.last_fit_stamp_ns, frame.stamp_ns),
+                    }
+                )
+            )
+            log.info("object_tracker.bound_box_measured", object_id=oid,
+                     provisional=fit.provisional)  # fmt: skip
+        return oid, fit
+
+    def _moved(self, old: TrackedObject, fit: ContainingFit, grid: VoxelLattice) -> bool:
+        """Whether the measured surface left ``old``'s box: the object moved."""
+        # The measured surface leaves the stored box: the object moved (pushed by the
+        # hand), so the old box no longer contains it. The
+        # new fit replaces it even when occluded or through the robot, kept PROVISIONAL
+        # unless clear (2026-10-21 decision: never a payload, still K2 / K7 geometry).
+        # Through the robot, a point above the clear box is no move: a resting object
+        # pushed along its support does not rise above its own clear ceiling, and a mask
+        # through the hand takes in what it holds over the object (the bowl's every outside point
+        # lay above it, 115 of 115, and its clear box was replaced, provisional). A clear fit still
+        # counts every point.
+        surface = fit.surface
+        grown = _grown(old.box, grid.resolution)
+        top = grown.pose.xyz[2] + grown.half_extents[2]
+        away = ~_inside(surface, grown)
+        if fit.provisional:
+            away &= surface[:, 2] <= top
+        outside = int(np.count_nonzero(away)) if fit.box is not None else 0
+        moved = outside >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(surface))
+        if moved:
+            log.info(
+                "object_tracker.moved_refit",
+                object_id=old.object_id,
+                status=old.status.value,
+                outside=outside,
+                points=len(surface),
                 provisional=fit.provisional,
             )
-            self._combine_views(track.object_id, req.camera, fit, frame, grid.resolution)
-            self._note_low_score(track.object_id, req.prompt_score)
-        else:
-            old = self.store.get(oid)
-            assert old is not None
-            # The measured surface leaves the stored box: the object moved (pushed by the
-            # hand, Spark R17 banana / R19 bowl), so the old box no longer contains it. The
-            # new fit replaces it even when occluded or through the robot, kept PROVISIONAL
-            # unless clear (2026-10-21 decision: never a payload, still K2 / K7 geometry).
-            # Through the robot, a point above the clear box is no move: a resting object
-            # pushed along its support does not rise above its own clear ceiling, and a mask
-            # through the hand takes in what it holds over the object (Spark banana R343,
-            # 2026-10-23: the bowl's every outside point lay above it, 115 of 115, and its
-            # clear box was replaced, provisional). A clear fit still counts every point.
-            grown = _grown(old.box, grid.resolution)
-            top = grown.pose.xyz[2] + grown.half_extents[2]
-            away = ~_inside(surface, grown)
-            if fit.provisional:
-                away &= surface[:, 2] <= top
-            outside = (
-                int(np.count_nonzero(away))
-                if fit.box is not None and old.status is not TrackStatus.BOUND
-                else 0
+        return moved
+
+    def _refit_refused(
+        self,
+        old: TrackedObject,
+        fit: ContainingFit,
+        cells: frozenset[Cell],
+        centroid: tuple[float, ...],
+        support_z: float,
+        grid: VoxelLattice,
+        hands: Sequence[PlaceRegion],
+        frame: CameraFrame,
+        moved: bool,
+    ) -> bool:
+        """Whether an unbound track keeps its geometry against this refit (each gate logs)."""
+        oid = old.object_id
+        if old.status is TrackStatus.OCCLUDED and not moved:
+            self._refresh_evidence(oid, cells)
+            log.info("object_tracker.occluded_refit_ignored", object_id=oid)
+            return True
+        if fit.provisional and not old.provisional and not moved:
+            # A fit through the robot never replaces geometry measured clear of it,
+            # unless that geometry no longer contains the object. It does re-date it:
+            # the object was measured inside the box now, so the box is a fresh fit for
+            # the grasp binder (2026-10-22 decision; the hand hides the target on the approach,
+            # every refit was ignored, the clear fit was 2.6-4.7 s old at the grasp and 10 of 10
+            # binds fell back to the pinch payload, whose uncovered banana the kernel then stopped
+            # on). Safety-WG review owed.
+            self._refresh_evidence(oid, cells)
+            self.store.replace(
+                old.model_copy(
+                    update={"last_fit_stamp_ns": max(old.last_fit_stamp_ns, frame.stamp_ns)}
+                )
             )
-            moved = outside >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(surface))
-            if moved:
-                log.info(
-                    "object_tracker.moved_refit",
-                    object_id=oid,
-                    status=old.status.value,
-                    outside=outside,
-                    points=len(surface),
-                    provisional=fit.provisional,
-                )
-            if old.status is TrackStatus.OCCLUDED and not moved:
-                self._refresh_evidence(oid, cells)
-                log.info("object_tracker.occluded_refit_ignored", object_id=oid)
-                return None
-            if old.status is TrackStatus.BOUND:
-                self._observe_catalog(old, fit, frame)
-                self._observe_surface(old, fit, frame)
-                if fit.box is not None:
-                    # The box follows the object as the camera sees it in the hand, never the
-                    # hand's kinematics (2026-10-22 decision; Spark R127: the bind-time box
-                    # stayed on the table while the banana was carried 23 cm, the kernel read
-                    # the binding off the hand and its own cells stopped the payload). A drop
-                    # moves the box with the object, off the hand. The payload's primitives and
-                    # the provisional flag stay the bind's. Safety-WG review owed.
-                    current = self.store.get(oid)
-                    assert current is not None
-                    self.store.replace(
-                        current.model_copy(
-                            update={
-                                "box": fit.box,
-                                "tight": (fit.tight,) if fit.tight is not None else (),
-                                "last_fit_stamp_ns": max(current.last_fit_stamp_ns, frame.stamp_ns),
-                            }
-                        )
-                    )
-                    log.info("object_tracker.bound_box_measured", object_id=oid,
-                             provisional=fit.provisional)  # fmt: skip
-                return oid, fit
-            if fit.provisional and not old.provisional and not moved:
-                # A fit through the robot never replaces geometry measured clear of it,
-                # unless that geometry no longer contains the object. It does re-date it:
-                # the object was measured inside the box now, so the box is a fresh fit for
-                # the grasp binder (2026-10-22 decision; Spark R107-R116: the hand hides the
-                # target on the approach, every refit was ignored, the clear fit was 2.6-4.7 s
-                # old at the grasp and 10 of 10 binds fell back to the pinch payload, whose
-                # uncovered banana the kernel then stopped on). Safety-WG review owed.
-                self._refresh_evidence(oid, cells)
-                self.store.replace(
-                    old.model_copy(
-                        update={"last_fit_stamp_ns": max(old.last_fit_stamp_ns, frame.stamp_ns)}
-                    )
-                )
-                log.info("object_tracker.provisional_refit_ignored", object_id=oid, redated=True)
-                return None
-            prior = self._cells.get(oid)
-            if not moved and fit.box is not None and prior:
-                # An unmoved object's refit must still hold the surface the last fit measured
-                # where the map still shows it (2026-10-21 decision; Isaac R37/R39: a partial
-                # mask's clear refit halved the banana's box and the finger met the rest). A
-                # true tightening passes: the surface it drops is no longer occupied.
-                left = uncovered_cells(grid, prior, fit.box)
-                if left >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(prior)):
-                    log.info("object_tracker.partial_refit_ignored", object_id=oid,
-                             uncovered=left, cells=len(prior),
-                             half_extents=[round(h, 3) for h in old.box.half_extents],
-                             fit_half=[round(h, 3) for h in fit.box.half_extents])  # fmt: skip
-                    return None
-            if fit.box is not None and old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
-                others = self._other_boxes(centroid)
-                verdict = cover_verdict(
-                    grid,
-                    cells,
-                    fit.box,
-                    support_z=support_z,
-                    own=hands,
-                    others=others,
-                    static=self._static_keys(grid),
-                )
-                if verdict.kind == "map_split":
-                    # A mask that took in a neighbour too never replaces a confirmed box: the
-                    # track would go SPLIT and its next fit take a new id (a swap).
-                    log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
-                    return None
-            refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
-            fit, fit_kind = self._combine_views(oid, req.camera, fit, frame, grid.resolution)
-            box = fit.box
-            tight: tuple[AttachedCollisionPrimitive | None, ...] = (fit.tight,)
-            if (
-                fit.box is not None
-                and not moved  # a moved object left its old box: the new fit replaces it
-                and old.role in _CONTACT_ROLES
-                and old.status in _SETTLED
-                and hand_touches(old.box, hands, grid.resolution)
-            ):
-                # The hand at the object hides or pushes part of it, so a refit sees only
-                # what is left in view (Isaac R70: a clear refit 1.3 s before the stop shrank
-                # the banana's box from 26 to 19 cm, the finger met the part it dropped). While
-                # touched, a refit never shrinks the box (2026-10-21 decision), nor grows it:
-                # unmoved, its surface lies in the old box grown by a cell, so the old box and
-                # hulls stand and the refit only re-stamps it (Spark R266, 2026-10-23: a union
-                # per refit ratcheted the banana's box to 32 x 39 cm, every prompt on it masked
-                # the table and the bind went stale). Safety-WG review owed.
-                box, tight = old.box, old.tight
-                log.info("object_tracker.contact_refit_kept", object_id=oid)
-            track = old.model_copy(
-                update={
-                    "fit_kind": fit_kind,
-                    "box": box,
-                    "tight": tight,
-                    "support_z": support_z,
-                    "floor_z": max(old.floor_z, floor),
-                    "visible_cells": len(cells),
-                    "last_fit_stamp_ns": frame.stamp_ns,
-                    "status": TrackStatus.TENTATIVE if refit else old.status,
-                    "identity_inferred": old.identity_inferred or kind == "inferred",
-                    "provisional": fit.provisional,
-                }
+            log.info("object_tracker.provisional_refit_ignored", object_id=oid, redated=True)
+            return True
+        prior = self._cells.get(oid)
+        if not moved and fit.box is not None and prior:
+            # An unmoved object's refit must still hold the surface the last fit measured
+            # where the map still shows it (2026-10-21 decision; a partial mask's clear refit
+            # halved the banana's box and the finger met the rest). A
+            # true tightening passes: the surface it drops is no longer occupied.
+            left = uncovered_cells(grid, prior, fit.box)
+            if left >= max(_MOVED_MIN_POINTS, _MOVED_MIN_FRACTION * len(prior)):
+                log.info("object_tracker.partial_refit_ignored", object_id=oid,
+                         uncovered=left, cells=len(prior),
+                         half_extents=[round(h, 3) for h in old.box.half_extents],
+                         fit_half=[round(h, 3) for h in fit.box.half_extents])  # fmt: skip
+                return True
+        if fit.box is not None and old.status in (TrackStatus.CONFIRMED, TrackStatus.OCCLUDED):
+            verdict = cover_verdict(
+                grid,
+                cells,
+                fit.box,
+                support_z=support_z,
+                own=hands,
+                others=self._other_boxes(centroid),
+                static=self._static_keys(grid),
             )
-            self.store.replace(track)
+            if verdict.kind == "map_split":
+                # A mask that took in a neighbour too never replaces a confirmed box: the
+                # track would go SPLIT and its next fit take a new id (a swap).
+                log.info("object_tracker.split_refit_ignored", object_id=oid, why=verdict.why)
+                return True
+        return False
+
+    def _refit_track(
+        self,
+        old: TrackedObject,
+        kind: str,
+        camera: str,
+        fit: ContainingFit,
+        cells: frozenset[Cell],
+        support_z: float,
+        floor: float,
+        frame: CameraFrame,
+        grid: VoxelLattice,
+        hands: Sequence[PlaceRegion],
+        moved: bool,
+    ) -> tuple[TrackedObject, ContainingFit]:
+        """``old`` refitted (views combined, a touched box kept), stored; and the fit used."""
+        oid = old.object_id
+        refit = old.status in (TrackStatus.SPLIT, TrackStatus.LOST)  # back to TENTATIVE
+        fit, fit_kind = self._combine_views(oid, camera, fit, frame, grid.resolution)
+        box = fit.box
+        tight: tuple[AttachedCollisionPrimitive | None, ...] = (fit.tight,)
+        if (
+            fit.box is not None
+            and not moved  # a moved object left its old box: the new fit replaces it
+            and old.role in _CONTACT_ROLES
+            and old.status in _SETTLED
+            and hand_touches(old.box, hands, grid.resolution)
+        ):
+            # The hand at the object hides or pushes part of it, so a refit sees only
+            # what is left in view (a clear refit 1.3 s before the stop shrank the banana's box
+            # from 26 to 19 cm, the finger met the part it dropped). While
+            # touched, a refit never shrinks the box (2026-10-21 decision), nor grows it:
+            # unmoved, its surface lies in the old box grown by a cell, so the old box and
+            # hulls stand and the refit only re-stamps it (a union per refit ratcheted the banana's
+            # box to 32 x 39 cm, every prompt on it masked the table and the bind went stale).
+            # Safety-WG review owed.
+            box, tight = old.box, old.tight
+            log.info("object_tracker.contact_refit_kept", object_id=oid)
+        track = old.model_copy(
+            update={
+                "fit_kind": fit_kind,
+                "box": box,
+                "tight": tight,
+                "support_z": support_z,
+                "floor_z": max(old.floor_z, floor),
+                "visible_cells": len(cells),
+                "last_fit_stamp_ns": frame.stamp_ns,
+                "status": TrackStatus.TENTATIVE if refit else old.status,
+                "identity_inferred": old.identity_inferred or kind == "inferred",
+                "provisional": fit.provisional,
+            }
+        )
+        self.store.replace(track)
+        return track, fit
+
+    def _commit_fit(
+        self,
+        track: TrackedObject,
+        fit: ContainingFit,
+        cells: frozenset[Cell],
+        centroid: tuple[float, ...],
+        grid: VoxelLattice,
+        grid_stamp_ns: int,
+        hands: Sequence[PlaceRegion],
+        frame: CameraFrame,
+    ) -> None:
+        """Record an accepted fit's evidence for ``track`` and re-confirm it on the map."""
         if not fit.provisional and fit.box is not None:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
             self._clear_size[track.object_id] = max(
@@ -1061,7 +1173,6 @@ class ObjectTracker:
         self._confirm(track, grid, grid_stamp_ns, hands, frame)
         self._observe_catalog(track, fit, frame)
         self._observe_surface(track, fit, frame)
-        return None
 
     def _observe_catalog(
         self, track: TrackedObject, fit: ContainingFit, frame: CameraFrame
@@ -1153,8 +1264,8 @@ class ObjectTracker:
     ) -> None:
         if t.status is TrackStatus.RELEASED:
             # Let go, not followed: no fit, no confirmation, retired with its release window
-            # (the session's `_expire_released`; 2026-10-22, Spark R177-R185: a released box
-            # left where the object let go explained none of where it fell or rolled).
+            # (the session's `_expire_released`; a released box left where the object let go
+            # explained none of where it fell or rolled).
             self._cells.pop(t.object_id, None)
             self._map_cells.pop(t.object_id, None)
             return
@@ -1167,8 +1278,8 @@ class ObjectTracker:
         # Visibility-aware cover (2026-10-21 decision; Isaac baseline: a successful grasp keeps
         # the fingers on the banana for 255-466 steps): an expected cell the robot hides is no
         # evidence the object is gone. While the hand is at the target or destination, a second
-        # body inside its box is the object fragmenting under contact (Isaac R59: a thin
-        # banana's own 6-cell piece, 5 cm from the fingers; R63: the bowl pushed 99 mm), so it
+        # body inside its box is the object fragmenting under contact (a thin banana's own
+        # 6-cell piece, 5 cm from the fingers; the bowl pushed 99 mm), so it
         # does not block a confirmation the visible cover still has to earn. Safety-WG review
         # owed.
         hidden = (
@@ -1207,9 +1318,9 @@ class ObjectTracker:
             )
         ref = self._map_cells.get(t.object_id, v.visible if v.kind == "map_disagrees" else 0)
         if contact and v.kind in ("map_disagrees", "hidden") and ref:
-            # The hand pushes the object inside its box (Isaac R68: a banana pushed 66 mm
-            # held 12 of its 26 expected cells) or hides it (R83/R85/R92: 3-7 cells in view
-            # while the map held 33-52 in the box), and the hold ages it out mid-grasp. The
+            # The hand pushes the object inside its box (a banana pushed 66 mm held 12 of its
+            # 26 expected cells) or hides it (3-7 cells in view while the map held 33-52 in the
+            # box), and the hold ages it out mid-grasp. The
             # object is where the map holds it in the box: re-anchored on those cells when
             # they number half to `_REANCHOR_MAX_RATIO` times what it filled at its last plain
             # pass (2026-10-21 decisions; the kernel's own in-box cover test; a push out of
@@ -1248,8 +1359,8 @@ class ObjectTracker:
             }
             if status is TrackStatus.TENTATIVE:
                 # A destination's box is a containing box, cavity included: a target lying in
-                # it is the goal state, not a ghost over another object's cells (Spark R278,
-                # 2026-10-23: the dropped banana never re-confirmed against the bowl's box and
+                # it is the goal state, not a ghost over another object's cells (the
+                # dropped banana never re-confirmed against the bowl's box and
                 # the gripper stopped in its cells). Only ownership; the split verdict above
                 # still sees every box.
                 owners = [
@@ -1279,8 +1390,8 @@ class ObjectTracker:
         """An ignored refit still measured where the object's surface is now: confirm on it.
 
         The refit leaves the box alone (it stays the conservative geometry), but its surface,
-        inside that box, replaces the cells the cover test expects (2026-10-21 decision; Isaac
-        R54: a banana pushed 9 cm inside its 26 cm first box left the first fit's cells half
+        inside that box, replaces the cells the cover test expects (2026-10-21 decision;
+        a banana pushed 9 cm inside its 26 cm first box left the first fit's cells half
         empty, 40 of the 42 needed, and its refits through the hand were ignored, so it was
         never re-confirmed and dropped out mid-push).
         """
@@ -1294,7 +1405,7 @@ class ObjectTracker:
         """Hold a refuted TARGET / DESTINATION track while a hand is at it, never re-stamped.
 
         A hand at the target fragments its map (fingers bisect it, a push leaves its old
-        cells; Isaac R33/R38), which ``map_split`` / ``map_disagrees`` read as a foreign body
+        cells), which ``map_split`` / ``map_disagrees`` read as a foreign body
         or a vanished object. Held, not refuted (2026-10-21 decision): the kernel stops
         exempting the box once its confirmation is older than ``grasp_region_max_age_s``
         (2 s in deploy sim), exactly as a split inside the hand's own space
@@ -1480,8 +1591,8 @@ class ObjectTracker:
             )
             # A released match's box, grown down onto its support (the seed's raised tops
             # stand above the column's lowest): the object is first looked for where it was
-            # let go (Spark R242-R261, 2026-10-22: 16 stops on a released banana the
-            # locator, boxing the table, never re-found).
+            # let go (16 stops on a released banana the locator, boxing the table, never
+            # re-found).
             seed = _grown(q.prior, PRIOR_MARGIN_M) if q.prior is not None else q.query.seed
             base = TrackerRequest(
                 "locate_in_view", cam, stamp, prio, q_served, q.query.label, q.key,
@@ -1490,8 +1601,8 @@ class ObjectTracker:
                 prompt=", ".join((q.query.label, *q.query.synonyms)),
             )  # fmt: skip
             # A CONTEXT query's seed only crops the locator: a point prompt on a raised top
-            # in a cluttered tote masked its walls and slivers as "carton" (Spark R288/R289,
-            # 2026-10-23); the detector's box prompt is the class evidence.
+            # in a cluttered tote masked its walls and slivers as "carton";
+            # the detector's box prompt is the class evidence.
             if (
                 seed is not None
                 and grid is not None
@@ -1537,8 +1648,8 @@ class ObjectTracker:
             served = max(t.last_fit_stamp_ns, self._served.get(t.object_id, -1))
             # A BOUND track is prompted where its payload rides now (the session's
             # `bound_prompts`, the hand's kinematics), not at its last measured box: prompted at
-            # the grasp site the segmenter masked the table (Spark R150-R153, 2026-10-22: ~100
-            # in-hand refits refused half_extent_cap). The prompt only; the fit is the camera's.
+            # the grasp site the segmenter masked the table (~100 in-hand refits refused
+            # half_extent_cap). The prompt only; the fit is the camera's.
             where = self.bound_prompts.get(t.object_id, t.box)
             if t.status is TrackStatus.RELEASED:
                 continue  # never followed: the target query finds the object afresh
@@ -1549,9 +1660,9 @@ class ObjectTracker:
             elif t.status is TrackStatus.CONFIRMED:
                 prio, xyz = PRIORITY_REFRESH, self._centroid.get(t.object_id, t.box.pose.xyz)
                 # A hand at the target: its refresh goes first among refreshes, so the grasp
-                # binder has a fit under max_age_s (2026-10-22, Spark R118 / R122: sharing the
-                # refresh slots with the bowl, the banana's fit was 2.1-2.5 s old at the grasp).
-                # ponytail: ordering only, the query alternation stays.
+                # binder has a fit under max_age_s (sharing the refresh slots with the bowl, the
+                # banana's fit was 2.1-2.5 s old at the grasp). ponytail: ordering only, the query
+                # alternation stays.
                 at_hand = (
                     grid is not None
                     and t.role in _CONTACT_ROLES
@@ -1559,8 +1670,8 @@ class ObjectTracker:
                 )
                 served = -1 if at_hand else served
                 if t.role is ObjectRole.CONTEXT:
-                    # A neighbour's refresh yields to the target's and destination's (Spark
-                    # R275, 2026-10-23: three tote cartons shared the slot round-robin and the
+                    # A neighbour's refresh yields to the target's and destination's (three
+                    # tote cartons shared the slot round-robin and the
                     # target's fit was 1.5 s old at the grasp; the bind went untracked).
                     served += _CONTEXT_DEFER_NS
             else:

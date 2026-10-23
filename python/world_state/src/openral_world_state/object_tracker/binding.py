@@ -9,8 +9,8 @@ joint-state FK, grown by one cell) is intersected with the tracks:
   ``RELEASED`` track is never a
   candidate: let go, it is not followed, and a regrasp binds the object's fresh track (or
   the fallback). A DESTINATION is where the payload goes, never the payload: a jaw
-  closing inside a bowl's box bound the bowl (2026-10-22, Spark R193 / R205: a 23 x 28 cm
-  payload on the hand, a self-collision stop). A padded
+  closing inside a bowl's box bound the bowl (a 23 x 28 cm payload on the hand, a
+  self-collision stop). A padded
   box that merely *meets* the swept pinch volume is not enough: a tracked neighbour beside
   an ungrounded held object would be bound in its place (p2po_on2);
 * a grounded candidate (CONFIRMED / OCCLUDED) drops any TENTATIVE / SPLIT one: an
@@ -183,9 +183,9 @@ def _pinch_holds(
 
     The fingertips' level is the centre lowered to the pinch volume's bottom (skipped with
     ``centre_only``). A thin object grasped from above sits below the pad centre: the Robotiq's
-    pinch centre rode 1.8-4.6 cm above a 3.7 cm banana's tight box (Spark R347 / R352 / R355,
-    2026-10-23), and every such grasp bound an untracked pinch payload. The lowered point
-    stays under the pads, so a neighbour beside the hand still never meets it.
+    pinch centre rode 1.8-4.6 cm above a 3.7 cm banana's tight box, and every such grasp bound
+    an untracked pinch payload. The lowered point stays under the pads, so a neighbour beside
+    the hand still never meets it.
     """
     centre, rot, half = pinch
     low = np.array(centre, dtype=np.float64)
@@ -299,12 +299,11 @@ def _support_clipped(
 
     Nothing the hand holds reaches below the surface it rested on at the grasp (the surface
     is there), so a box reaching under it -- the pinch fallback's full stroke centred on a
-    carton in a tote reached a cell under the tote floor (Spark restock R284/R296/R309,
-    2026-10-23) -- is cut along its most vertical axis where its cut face's HIGHEST point
-    meets the surface: everything cut lies at or below the surface, whatever the hand's
-    tilt, and the box only ever shrinks (a re-boxing in gravity's axes grew one sideways into
-    the robot's own forearm, R315). A box wholly above is kept as it is; one wholly below is
-    dropped.
+    carton in a tote reached a cell under the tote floor -- is cut along its most vertical axis
+    where its cut face's HIGHEST point meets the surface: everything cut lies at or below the
+    surface, whatever the hand's tilt, and the box only ever shrinks (a re-boxing in gravity's axes
+    grew one sideways into the robot's own forearm). A box wholly above is kept as it is; one wholly
+    below is dropped.
     """
     out: list[AttachedCollisionPrimitive] = []
     for p in prims:
@@ -477,8 +476,8 @@ class GraspBinder:
                         candidates=ids, jaw=jaw)  # fmt: skip
         else:
             # With no candidate, the support the tracked objects around the pinch stand on
-            # (a tote's floor, a table): the grasp happened over it (Spark restock R305,
-            # 2026-10-23: an untracked pinch box reached under the tote while lifting).
+            # (a tote's floor, a table): the grasp happened over it (an
+            # untracked pinch box reached under the tote while lifting).
             near = [
                 t.support_z
                 for t in store.all()
@@ -807,8 +806,8 @@ class GraspBinder:
         A cell whose place was occupied at the hold's first growth call, by anything but the
         payload's connected body or the hand, is the static world: it never grows the payload.
         Lowering a payload onto a plate, a plate rim cell (or an object resting on it) can take
-        a key whose first place has since emptied (#418 R368: the orange swelled onto the plate
-        and the orange already on it, and stopped on the rim). ponytail: a static thing the map
+        a key whose first place has since emptied (the orange swelled onto the plate and
+        the orange already on it, and stopped on the rim). ponytail: a static thing the map
         did not hold at that call is still unguarded; the floor and other tracks cover the rest.
         """
         held_b = self.held
@@ -853,8 +852,8 @@ class GraspBinder:
         )
         if floor == -math.inf:
             # A payload with no track of its own (a pinch fallback) takes the scene's tracked
-            # supports' floor (Isaac R84: it grew onto the table the sweep had cleared under the
-            # hand and stopped on a cell 2 cm under the top). ponytail: the highest floor in the
+            # supports' floor (it grew onto the table the sweep had cleared under the hand and
+            # stopped on a cell 2 cm under the top). ponytail: the highest floor in the
             # scene; a lower shelf's payload then grows less, so it fails closed at the kernel.
             floor = max((t.floor_z for t in store.all()), default=-math.inf)
         loose = near[~explained & (near[:, 2] > floor)]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,21 @@ def test_a_scene_may_supply_a_search_box_which_only_seeds_perception() -> None:
     assert scene.grasp_declaration is not None
     assert scene.grasp_declaration.search_box is not None
     assert scene.grasp_declaration.region is None
+
+
+def test_a_scene_search_box_is_pending_deprecation() -> None:
+    """Issue #418: a ``search_box`` still loads (the ``object_tracking: off`` input) but warns."""
+    scene_path = _REPO_ROOT / "scenes" / "deploy" / "isaac_leisaac_pick_orange.yaml"
+    with pytest.warns(PendingDeprecationWarning, match=r"search_box is pending deprecation"):
+        scene = DeployScene.from_yaml(str(scene_path))
+    assert scene.grasp_declaration is not None
+    assert scene.grasp_declaration.search_box is not None
+
+
+def test_a_declaration_without_search_box_does_not_warn() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PendingDeprecationWarning)
+        assert _declaration().search_box is None
 
 
 def test_search_box_geometry_must_be_empty() -> None:

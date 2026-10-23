@@ -241,7 +241,7 @@ posture (not yet assigned an id); until then it inherits the parameter's default
 
 | piece | layer | status |
 |---|---|---|
-| `_object_primitives` (prompt, confirmation, tracker), leg wiring | 0 HAL (`openral_hal`, beside `_grasp_target`; the bridge owns the segmenter client) | prototype |
+| `openral_core.object_primitives` (prompt, confirmation, tracker), leg wiring | core helpers (moved from `openral_hal._object_primitives`, #418, beside `openral_core.perception_geometry`); leg wiring 0 HAL (the bridge owns the segmenter client) | prototype |
 | `vision_attachment.grasp_target_premeasure` | core schema + HAL param + deploy-sim mapping | prototype |
 | publishing the store (`/openral/object_primitives`, an `ObjectPrimitiveSet` IDL) | 2 World State | design |
 | label → instance id grounding, `GraspTargetRef.object_id = prim:<id>` | 4 Reasoner (`openral_reasoner.grounding`) | design |

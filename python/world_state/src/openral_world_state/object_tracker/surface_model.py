@@ -176,15 +176,6 @@ class ObjectSurfaceModels:
         local = np.asarray(list(state.cells.values()), dtype=np.float64).reshape(-1, 3)
         return np.asarray(local @ state.pose[:3, :3].T + state.pose[:3, 3])
 
-    def world_contributions(self) -> dict[str, NDArray[np.float64]]:
-        """Snapshot independently owned surfaces; overlap never transfers ownership.
-
-        Replacing or retiring one identity changes only its contribution. These
-        points are diagnostic occupied surfaces, never instructions to erase
-        cells from OctoMap, static geometry or another identity.
-        """
-        return {key: self.world_points(key).copy() for key in self._models}
-
     def clear_observed_free(
         self,
         object_id: str,

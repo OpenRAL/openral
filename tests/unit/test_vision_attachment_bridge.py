@@ -1336,6 +1336,66 @@ def test_grasp_events_carry_what_the_trigger_computed() -> None:
     assert (detach.jaw_measured, detach.jaw_commanded, detach.hold_position) == (0.4, 1.0, 0.2)
 
 
+@pytest.mark.parametrize("tracker_owned", [False, True])
+def test_with_the_tracker_owning_attachment_state_an_attach_is_only_an_event(
+    tracker_owned: bool,
+) -> None:
+    """Issue #418 ``bind`` / ``on`` (``publish_attachment_state=False``): the tracker binds from
+    ``/openral/grasp_events`` and segments on its own, so the bridge runs no grasp/place leg,
+    resolves no payload for the ATTACH (no ``SegmentInView`` client, nothing to segment) and
+    never holds the action ack for it. ``off`` / ``shadow`` (the control) still resolve one:
+    here the typed no-depth fallback, as no depth frame is fed."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_tracker_owned")
+        try:
+            bridge = VisionAttachmentBridge(
+                node,
+                _openarm(),
+                config=VisionAttachmentConfig(
+                    camera="head_zed",
+                    grasp_target_enabled=True,
+                    place_target_enabled=True,
+                    publish_attachment_state=not tracker_owned,
+                ),
+            )
+            bridge.setup()
+            leg = bridge._legs[0]
+            ack_always_ready = True
+            for tick in range(12):  # closed on a 0.2 rad object: the trigger ATTACHes
+                bridge.observe_command(
+                    Action(
+                        control_mode=ControlMode.JOINT_POSITION,
+                        horizon=1,
+                        joint_names=["left_gripper"],
+                        joint_targets=[[0.0]],
+                    )
+                )
+                bridge.observe_joint_state(
+                    JointState(
+                        name=["left_gripper", "right_gripper"],
+                        position=[0.2, 0.0],
+                        effort=[0.0, 0.0],
+                        stamp_ns=_at(tick),
+                    )
+                )
+                ack_always_ready = ack_always_ready and bridge.attachment_action_ack_ready()
+            assert leg.trigger.attached
+            legs = (bridge._grasp_target, bridge._place_target, bridge._client)
+            bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    assert (leg.attachment is None) is tracker_owned
+    assert all(x is None for x in legs) is tracker_owned
+    if tracker_owned:
+        assert ack_always_ready
+
+
 # ── Review findings on PR #346: release cap, jaw_at, released witness, REGRASP keep ──
 
 

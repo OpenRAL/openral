@@ -21,11 +21,10 @@ wire; everything it decides lives here so it runs without ROS:
   behind (re-fitted after the ATTACH, its box no longer meeting the pinch volume). An
   untracked grasp re-opens the live grasp goal's queries (the re-ground after lift).
 
-A RELEASED track is never followed (2026-10-22, Spark R177-R185: the released box stayed
-where the object was let go while it fell or rolled, and the next approach stopped on it):
-it lives out the release window, so the kernel can freeze the payload, and is then retired
-from the store. The object is plain world from then on, until the target query finds it
-afresh under a new id. Safety-WG review owed.
+A RELEASED track is never followed (the released box stayed where the object was let go
+while it fell or rolled, and the next approach stopped on it): it lives out the release window, so
+the kernel can freeze the payload, and is then retired from the store. The object is plain world
+from then on, until the target query finds it afresh under a new id. Safety-WG review owed.
 
 Clocks: every stamp is source time (depth, grid, joint-state, grasp-event stamps); the
 segmenter rate runs on the ``wall_s`` the node feeds.
@@ -83,20 +82,33 @@ from openral_world_state.object_tracker.tracker import (
     TrackerResult,
 )
 
-__all__ = ["GraspEventKind", "TrackerSession", "TrackingMode", "declaration_key"]
+__all__ = [
+    "RELEASED_CLEAR_TIMEOUT_S",
+    "RELEASE_DWELL_S",
+    "GraspEventKind",
+    "TrackerSession",
+    "TrackingMode",
+    "declaration_key",
+]
 
 log = structlog.get_logger(__name__)
 
 _NS = 1_000_000_000
+#: The jaw-open release dwell (source seconds) the kernel (K5) and the tracker share; the
+#: deploy launch passes it to both. *Calibration point.*
+RELEASE_DWELL_S = 0.3
+#: Default released-binding lifetime (source seconds); MUST equal the kernel's
+#: ``tracked_release_timeout_s`` and the voxel bridge's ``released_clear_timeout_s``.
+RELEASED_CLEAR_TIMEOUT_S = 3.0
 #: A late ATTACH (the object may already be moving) is bound at the hand pose of the hold when
 #: the hold began at least this long before the event (0: every ATTACH with a hold read takes
-#: this path, so a prompt one gets the grasp-pose lookback too; 2026-10-22, Spark R167: a
-#: 0.067 s ATTACH fell to the plain bind after the lift and bound the pinch fallback) ...
+#: this path, so a prompt one gets the grasp-pose lookback too; a 0.067 s
+#: ATTACH fell to the plain bind after the lift and bound the pinch fallback) ...
 _LATE_MIN_NS = 0
 #: ... and at most this long before it, ...
 _LATE_MAX_NS = 3 * _NS
-#: ... the hand has travelled no further than this since the hold (m; Spark R302, 2026-10-23:
-#: an ordinary 15 cm lift before a late ATTACH skipped the late bind at 0.12 and bound the
+#: ... the hand has travelled no further than this since the hold (m; an ordinary
+#: 15 cm lift before a late ATTACH skipped the late bind at 0.12 and bound the
 #: pinch fallback; a wrong late bind is released by `_check_drop`). *Calibration point.* ...
 _LATE_MAX_TRAVEL_M = 0.18
 #: ... (the grasp pose: the hold's, or the newest this long before it with the pinch in a box)
@@ -105,14 +117,14 @@ _LATE_LOOKBACK_NS = 1 * _NS
 _LATE_CONFIRM_NS = 1_500_000_000
 #: Every hand's pinch box this far (m, box to box) from every target box lets the completion
 #: check ask its judge: off the object. The release window's clearance (centre distance less the
-#: pinch box's half diagonal, 9.8 cm on the Robotiq) put the hand 18 cm away (Spark banana R348,
-#: 2026-10-23: the banana lay placed and released 6 s of sim time, the judge never asked).
+#: pinch box's half diagonal, 9.8 cm on the Robotiq) put the hand 18 cm away (the
+#: banana lay placed and released 6 s of sim time, the judge never asked).
 _JUDGE_CLEAR_M = 0.02
 #: Every hand collision box this far (m) from a released box ends its release window early:
 #: the kernel's own FK separation (``tracked_release_clear_m``, 0.04), past which it holds the
 #: frozen box as a plain obstacle. Retiring later left that box blocking the regrasp of an
-#: object never lifted (Spark orange R370, 2026-10-23: the window closed by separation at
-#: 7.9 s, the release stayed on the wire, the jaw met the frozen box at 9.0 s).
+#: object never lifted (the window closed by separation at 7.9 s, the release stayed on the
+#: wire, the jaw met the frozen box at 9.0 s).
 _RELEASE_CLEAR_M = 0.04
 #: Consecutive in-hand fits away from every hand box that read as a drop (`_check_drop`).
 _DROP_FITS = 2
@@ -217,8 +229,8 @@ class TrackerSession:
         cell_m: float,
         grounding_wait_s: float,
         grounding_required: bool = False,
-        release_dwell_s: float = 0.3,
-        released_clear_timeout_s: float = 3.0,
+        release_dwell_s: float = RELEASE_DWELL_S,
+        released_clear_timeout_s: float = RELEASED_CLEAR_TIMEOUT_S,
         params: TrackerParams | None = None,
         require_hands: bool = False,
         derive_attach: bool = False,
@@ -308,9 +320,9 @@ class TrackerSession:
 
         Clear: every hand's pinch box ``_JUDGE_CLEAR_M`` or more from each CONFIRMED,
         OCCLUDED or RELEASED TARGET box; ``False`` with no such track (nothing to be clear of
-        is no evidence the hand let go). The completion check asks its judge only then (Spark
-        banana R336 / R338 / R340, 2026-10-23: asked with the open fingers still on the banana
-        in the bowl, the judge said done; the rubric requires the robot clear of it).
+        is no evidence the hand let go). The completion check asks its judge only then (asked
+        with the open fingers still on the banana in the bowl, the judge said done; the rubric
+        requires the robot clear of it).
         """
         if any(b.held is not None for b in self.binders.values()):
             return False
@@ -332,12 +344,12 @@ class TrackerSession:
 
         Until then the kernel keeps the payload frozen at the release pose and the voxel
         bridge keeps the object's box clear; after it the object is plain world. The window
-        also ends once every hand is clear of the released box (Spark R281, 2026-10-23: the
-        source-clock window ran 14 s of wall time, and the frozen box blocked the regrasp of
+        also ends once every hand is clear of the released box (the source-clock window ran
+        14 s of wall time, and the frozen box blocked the regrasp of
         the orange it had let go), and once a CONFIRMED track of its label minted after the
-        release touches the released box: the object came to rest and the map holds it (Spark
-        R369, 2026-10-23: the orange dropped 3 cm onto the table, was re-tracked there 1 s
-        later, and the box frozen in the air stopped the arm carrying the next orange).
+        release touches the released box: the object came to rest and the map holds it (the
+        orange dropped 3 cm onto the table, was re-tracked there 1 s later, and the box frozen in
+        the air stopped the arm carrying the next orange).
         """
         for oid, (_, since) in list(self._released.items()):
             track = self.tracker.store.get(oid)
@@ -411,8 +423,8 @@ class TrackerSession:
             holder = self.binders.get(joint)
             if holder is not None and holder.held is not None:
                 # The same hold read again after a chattering command unlatched the detector,
-                # not a new grasp (2026-10-22, Spark R157: 14 binds and 13 releases ~2 s apart,
-                # each rebind re-centring the box). A real release clears `held` first.
+                # not a new grasp (14 binds and 13 releases ~2 s apart, each rebind
+                # re-centring the box). A real release clears `held` first.
                 log.info("object_tracker.attach_duplicate", hand=joint, derived=True)
                 continue
             held = detector.held_median
@@ -526,8 +538,8 @@ class TrackerSession:
 
         The hold's own pose (``sample``) first; else the newest within ``_LATE_LOOKBACK_NS``
         before the hold whose pinch a fresh track holds: the policy lifts while the jaw is still
-        settling (2026-10-22, Spark R117 / R121: by the stall the pinch was 4 cm above the
-        banana's box). ``None``: no pose in the window had its pinch in a fresh box.
+        settling (by the stall the pinch was 4 cm above the banana's box). ``None``: no pose in
+        the window had its pinch in a fresh box.
         """
         older = [
             s for ts, s in reversed(self._joint_history) if 0 <= hold_ns - ts <= _LATE_LOOKBACK_NS
@@ -578,14 +590,14 @@ class TrackerSession:
         if hold_ns is None:
             # No stalled-jaw read of this hold: the ATTACH's own time stands in, so the
             # lookback still finds the last second's pose whose pinch a fresh track holds,
-            # under the same travel guard (Spark banana R347, 2026-10-23: bound where the hand
-            # already was, 9.6 cm up, above the banana's 5 cm box, untracked).
+            # under the same travel guard (bound where the hand already was, 9.6 cm up,
+            # above the banana's 5 cm box, untracked).
             log.info("object_tracker.late_attach_no_hold_read", hand=joint,
                      detector=detector is not None)  # fmt: skip
             hold_ns = stamp_ns
         # A hold read after the ATTACH's stamp (the detector's samples run behind it) means the
-        # ATTACH is not late: its own stamp stands in (Spark banana R352, 2026-10-23: lag
-        # -67 ms, skipped, bound where the hand already was, 12.9 cm up).
+        # ATTACH is not late: its own stamp stands in (lag -67 ms, skipped, bound where the hand
+        # already was, 12.9 cm up).
         hold_ns = min(hold_ns, stamp_ns)
         if not _LATE_MIN_NS <= stamp_ns - hold_ns <= _LATE_MAX_NS:
             skip("lag_out_of_range", lag_s=(stamp_ns - hold_ns) / _NS)
@@ -616,7 +628,7 @@ class TrackerSession:
         if travel > _LATE_MAX_TRAVEL_M:
             skip("hand_travelled", travel_m=travel)
             return _LateAttachChoice()
-        # No map-occupancy check of the carried box (2026-10-22 decision; Spark R129-R156: the
+        # No map-occupancy check of the carried box (2026-10-22 decision; the
         # self-filter's padding hides a held object and the map clears its old cells late, so
         # a box carried with the hand showed 0 cells while the banana rode in it). A wrong
         # bind is a phantom payload, more checking not less, which `_check_drop` releases on
@@ -690,11 +702,11 @@ class TrackerSession:
     def _check_drop(self, oid: str, fit: ContainingFit, hands: Sequence[PlaceRegion]) -> None:
         """Release a TRACKED binding the camera twice in a row sees away from the hand.
 
-        A jaw that never opens cannot release a payload that slipped out of it (2026-10-22,
-        Spark R150: the banana fell beside the bowl, the jaw stayed shut, and the payload
-        rode the hand into the bowl). The measured box meeting no hand box (grown by a cell,
-        ``hand_touches``) on ``_DROP_FITS`` consecutive in-hand fits is a drop: released as a
-        jaw opening is. One stray fit never releases. Safety-WG review owed.
+        A jaw that never opens cannot release a payload that slipped out of it (the banana
+        fell beside the bowl, the jaw stayed shut, and the payload rode the hand into the bowl). The
+        measured box meeting no hand box (grown by a cell, ``hand_touches``) on ``_DROP_FITS``
+        consecutive in-hand fits is a drop: released as a jaw opening is. One stray fit never
+        releases. Safety-WG review owed.
         """
         if fit.box is None or self.grid is None:
             return
@@ -743,13 +755,13 @@ class TrackerSession:
         """The live place declaration's destination as the tracker holds it, or ``None``.
 
         The HAL's place producer measures a flat support under the payload, which a bowl
-        never is (2026-10-22, Spark R148-R156: ``partial_support`` / ``no_surface``, no region
-        armed in 9 of 9), and in ``bind`` / ``on`` the tracker publishes the declaration. So it
-        stands in as it does for ``workspace_region``: the one CONFIRMED / OCCLUDED
-        DESTINATION track labelled as the declaration's ``destination_query``, its containing
-        box stamped with its last map confirmation (the kernel ages it out on
-        ``place_region_max_age_s``). ``None`` without a held payload, a grid, a destination
-        query or exactly one such track: fail closed. Safety-WG review owed.
+        never is (``partial_support`` / ``no_surface``, no region armed in 9 of 9), and in
+        ``bind`` / ``on`` the tracker publishes the declaration. So it stands in as it does for
+        ``workspace_region``: the one CONFIRMED / OCCLUDED DESTINATION track labelled as the
+        declaration's ``destination_query``, its containing box stamped with its last map
+        confirmation (the kernel ages it out on ``place_region_max_age_s``). ``None`` without a held
+        payload, a grid, a destination query or exactly one such track: fail closed. Safety-WG
+        review owed.
         """
         decl, grid = self.place_declaration, self.grid
         if decl is None or decl.destination_query is None or grid is None:

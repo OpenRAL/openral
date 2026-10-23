@@ -923,10 +923,10 @@ class SimAttachedHAL:
             # No MuJoCo model to mask payload bodies in (Isaac and other sidecar
             # backends): the attachment is recorded and nothing is masked, so the
             # payload stays in the simulated depth exactly as it stays in a real
-            # camera's, and the octomap bridge clears its cells from every grid by its
-            # pose (``clear_attached_payload_cells``) — the real-hardware path. If that
-            # clearing failed, the payload's cells would stay occupied and the kernel
-            # would stop on them: never looser than masking.
+            # camera's — the real-hardware path. The octomap bridge clears its cells
+            # only for a tracker-bound attachment (``OctomapVoxelBridge::clear_by_identity``,
+            # ``object_tracking: on``); a geometry-only one stays occupied and the kernel
+            # may stop on it: never looser than masking.
             self._attached_objects = by_id
             self._attached_body_ids = frozenset()
             return

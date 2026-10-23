@@ -93,6 +93,7 @@ from openral_foxglove_bringup.topics import (
     BUCKET1_TOPIC_WHITELIST,
     READ_ONLY_CAPABILITIES,
 )
+from openral_world_state.object_tracker.session import RELEASE_DWELL_S, RELEASED_CLEAR_TIMEOUT_S
 
 
 def _resolve_repo_root() -> pathlib.Path:
@@ -256,12 +257,12 @@ def _octomap_occupancy_threshold(hal_mode: str) -> float:
 def _self_filter_trailing_sweep_s(hal_mode: str) -> float:
     """How far back the robot's recent sweep pads the self-filter: 0.2 s in sim, off on real.
 
-    Issue #418 (Spark R16): two returns of the gripper's own finger edge, 15-21 mm outside
-    its hull, landed 0.13 s after the gripper left that cell; the map held them and the
-    finger stopped on them 2.4 s later. A return inside the padded volume the robot left
-    within this window is dropped as the robot's own. The world there is blind for at most
-    this long after the robot leaves, inside the 0.10 m padding cap. Sim-only until the
-    Safety-WG reviews it (hazard row owed).
+    Issue #418: two returns of the gripper's own finger edge, 15-21 mm outside its hull, landed
+    0.13 s after the gripper left that cell; the map held them and the finger stopped on them
+    2.4 s later. A return inside the padded volume the robot left within this window is
+    dropped as the robot's own. The world there is blind for at most this long after the
+    robot leaves, inside the 0.10 m padding cap. Sim-only until the Safety-WG reviews it
+    (hazard row owed).
 
     Example:
         >>> _self_filter_trailing_sweep_s("sim"), _self_filter_trailing_sweep_s("real")
@@ -1290,10 +1291,6 @@ def _locator_cameras(
     return cameras, infos or [""]
 
 
-#: The jaw-open release dwell (source seconds) the kernel (K5) and the tracker share.
-_TRACKED_RELEASE_DWELL_S = 0.3
-
-
 def _tracked_release_params(description: object, object_tracking: str) -> dict[str, object]:
     """The kernel's K5 jaw-open release (issue #418) for ``bind`` / ``on``; ``{}`` otherwise.
 
@@ -1333,7 +1330,7 @@ def _tracked_release_params(description: object, object_tracking: str) -> dict[s
         "tracked_release_jaw_joints": jaws,
         "tracked_release_jaw_open_sign": signs,
         "tracked_release_gap": max(gaps),
-        "tracked_release_dwell_s": _TRACKED_RELEASE_DWELL_S,
+        "tracked_release_dwell_s": RELEASE_DWELL_S,
     }
 
 
@@ -2658,7 +2655,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         tracked_grasp_exemption_enabled=bool(kernel_params["tracked_grasp_exemption_enabled"]),
     )
     # ...and an untracked pinch hold's own cells too (the same posture: `on`, K2, sim only;
-    # Spark R191-R206, 2026-10-22: the object in the hand stopped its own pinch-volume payload).
+    # the object in the hand stopped its own pinch-volume payload).
     kernel_params["pinch_payload_own_cells_enabled"] = kernel_params["payload_own_cells_enabled"]
     # A fixed jaw that is a body link (the SO-101's `gripper`), K2 only: the legacy
     # allowlist above is unchanged. Omitted when empty (no ROS parameter type).
@@ -3088,8 +3085,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
             },
             {"use_sim_time": use_sim_time},
-            # After the params file: in bind/on the tracker owns /openral/attachment_state,
-            # and two publishers on that latched topic would interleave revisions.
+            # After the params file: in bind/on the tracker owns /openral/attachment_state
+            # (two publishers on that latched topic would interleave revisions), so the HAL's
+            # vision bridge runs only its grasp trigger (/openral/grasp_events): no legs, no
+            # segmentation, no ack barrier.
             *(
                 [{"vision_attachment_publish_attachment_state": False}]
                 if object_tracking in ("bind", "on")
@@ -3222,8 +3221,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     else 0.0
                 ),
                 # ... and stops waiting in wall time before the deadman's first-chunk
-                # deadline, leaving the policy its first chunk (Spark restock R298: a 60 s
-                # cap ended the wait at 8.4 s of a 7x-slow sim, before the target grounded).
+                # deadline, leaving the policy its first chunk (a 60 s cap ended the wait at
+                # 8.4 s of a 7x-slow sim, before the target grounded).
                 "grounding_wait_wall_s": _FIRST_CHUNK_DEADLINE_S - _FIRST_CHUNK_MARGIN_S,
                 "grounding_required": LaunchConfiguration("grounding_required")
                 .perform(context)
@@ -3239,11 +3238,15 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                 )
                 > 0.0,
                 # Place mirror (§2.3): a goal-scope place declaration per goal, only when
-                # the HAL's place-target leg runs — it attaches its measured region to
-                # that declaration and never declares on its own (no goal, no allowance).
-                "place_approach_enabled": vision_attachment_enabled
-                and hal_file_params.get("vision_attachment_enabled") is True
-                and hal_file_params.get("vision_attachment_place_target_enabled") is True,
+                # a producer measures its region — the HAL's place-target leg, or under
+                # `object_tracking: on` the #418 tracker (`TrackerSession.place_region`,
+                # the HAL leg then off). Neither declares on its own (no goal, no allowance).
+                "place_approach_enabled": object_tracking == "on"
+                or (
+                    vision_attachment_enabled
+                    and hal_file_params.get("vision_attachment_enabled") is True
+                    and hal_file_params.get("vision_attachment_place_target_enabled") is True
+                ),
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
@@ -4290,11 +4293,11 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         cast("float", hal_file_params.get("vision_attachment_deadline_s", 0.25))
                     ),
                     # The tracker's cameras wait for a trailing RGB frame on the tracker's
-                    # budget, not the HAL's (Spark restock R282), and accept a frame two 0.1 s
-                    # ticks off: a 1080p BEST_EFFORT stream loses frames under load (R288).
-                    # A camera the HAL shares too (restock's head camera, R290) takes them as
-                    # well: the HAL still drops a reply past its own deadline and re-checks the
-                    # mask-depth skew itself. *Calibration points.*
+                    # budget, not the HAL's, and accept a frame two 0.1 s ticks off: a 1080p
+                    # BEST_EFFORT stream loses frames under load. A camera the HAL shares too
+                    # (restock's head camera) takes them as well: the HAL still drops a reply past
+                    # its own deadline and re-checks the mask-depth skew itself. *Calibration
+                    # points.*
                     "camera_request_deadlines": [f"{c}=1.5" for c in tracked_cameras] or [""],
                     "camera_max_frame_skews": [f"{c}=0.25" for c in tracked_cameras] or [""],
                     "use_sim_time": use_sim_time,
@@ -4328,7 +4331,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     .lower()
                     in ("1", "true", "yes"),
                     "released_clear_timeout_s": tracked_release_timeout_s,
-                    "release_dwell_s": _TRACKED_RELEASE_DWELL_S,
+                    "release_dwell_s": RELEASE_DWELL_S,
                     # The kernel's hand-link set: one wrist definition for both.
                     "wrist_links": workspace_contact_wrist_links,
                     "object_queries_json": object_queries_json,
@@ -4735,7 +4738,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "tracked_release_timeout_s",
-            default_value="3.0",
+            default_value=str(RELEASED_CLEAR_TIMEOUT_S),
             description=(
                 "One value for the kernel's tracked_release_timeout_s, the voxel bridge's "
                 "released_clear_timeout_s and the object tracker's: how long a released "

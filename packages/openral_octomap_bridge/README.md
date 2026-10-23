@@ -311,6 +311,21 @@ required identity-clearing work; it does not certify that every attached object'
 cells were removed or that asynchronous octree clear requests completed. The kernel
 still checks remaining cells normally.
 
+**Consequence for a deploy without the object tracker (decided posture: fail closed).**
+Only the #418 object tracker (`DeployRuntime.object_tracking: on`, sim-only until
+Safety-WG review) publishes `tracked_object` attachments. With `object_tracking` `off`
+or `shadow` — every real arm today, the MuJoCo digital twin (`MujocoArmHAL`) and an Isaac
+sidecar scene — the attachment the HAL's vision leg or the sim bridge publishes is
+geometry-only, so nothing the arm holds is cleared
+from the world grid, nor filtered from the self-filter's cloud: the payload stays a
+mapped obstacle and the kernel may stop the arm on the object in its own hand, during
+the carry and at the place. That stop is the accepted cost. There is deliberately no
+pose-based fallback clear, because a pose does not say which cells are the payload's.
+A run that must carry an object with world collision on needs `object_tracking: on`
+(sim) until a real-cell tracker posture is reviewed. (A MuJoCo `SimAttachedHAL` scene is
+the exception that does not need the bridge: it masks the payload bodies out of its
+rendered depth, so they never enter the map.)
+
 Identity binding is not per-cell occupancy ownership. The bridge constrains
 clearing to a tight track shape and excludes the floor, declared static points,
 and other tracked objects, but an untracked obstacle touching or overlapping

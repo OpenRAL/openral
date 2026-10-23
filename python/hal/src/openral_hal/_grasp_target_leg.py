@@ -220,7 +220,7 @@ every ``SegmentInView`` request is an *instance pre-measurement* (``_premeasure`
 ``_PREMEASURE_MAX_HZ``, one in flight): before any hand is within ``approach_m``, the raised
 top surfaces of the voxel map around each free hand (``_PREMEASURE_REACH_APPROACHES``
 approach distances) or in a named search box are prompted one at a time
-(``_object_primitives.instance_prompt``: the map says where to look, the camera what is
+(``openral_core.object_primitives.instance_prompt``: the map says where to look, the camera what is
 there), each reply fitted exactly as above (self-filtered masks, nested-mask rules, support,
 caps) and **confirmed** by the map (``map_confirms``: the map holds the box, and the box holds
 one body — never completed or grown from the map, so two masks separate a packed pair the map
@@ -1469,7 +1469,7 @@ def _gate_refit(
 
     ``complete=False`` (instance pre-measurement) skips the completion: the camera
     separates bodies the map merges, so growing an instance to its map component would
-    undo exactly that (``_object_primitives.map_confirms`` gates it instead).
+    undo exactly that (``openral_core.object_primitives.map_confirms`` gates it instead).
 
     A re-fit the map does not cover is always a contradiction (the target is gone).
 

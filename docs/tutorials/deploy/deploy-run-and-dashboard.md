@@ -515,7 +515,12 @@ shelf](images/collision-view-carry.webp)
 
 1. **Orange box, payload** (detected): the held carton's collision box, taken from the measured
    grasp region (`evidence_kind: grasp_target_region`). From now on the kernel checks it
-   against the world and the robot as part of the hand.
+   against the world and the robot as part of the hand. Its cells are **not** removed from
+   the voxel map: the octomap bridge clears a held payload only for a `tracked_object`
+   attachment from the #418 object tracker (`runtime.object_tracking: on`, sim-only), so with
+   tracking `off` or `shadow` the carton stays a mapped obstacle and the kernel may stop the
+   arm on what it holds. That is the decided fail-closed posture
+   ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
 2. **Contact tolerated** (kernel log line `safety.workspace_contact`): a hand link or its
    payload touches an occupied cell inside the declared `workspace_box`, slower than
    `workspace_contact_max_speed_mps` and within `workspace_contact_max_lead_m`, so the kernel
@@ -573,6 +578,15 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   sim-only until Safety-WG review and are refused. In `deploy sim` a scene's runtime
   field can be overridden without editing it, e.g.
   `openral deploy sim --config <scene> --runtime object_tracking=bind --runtime grounding_wait_s=8`.
+  The schema default is `off`; the two Isaac deploy scenes
+  (`scenes/deploy/isaac_leisaac_pick_orange.yaml`,
+  `scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml`) commit `on` with
+  `grounding_required: true` and `grounding_wait_s` 8 s / 15 s, the values of their
+  successful Spark runs, so `--runtime object_tracking=off` is how to run them without
+  the tracker. In `bind` / `on` the HAL's vision attachment bridge runs only its grasp
+  trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation, no ack
+  barrier, no grasp- or place-target leg. In `on` the runner also arms its goal-scope
+  place declaration, whose region the tracker measures.
   `on` also makes the tracked objects the safety kernel's grasp-exemption source
   (`tracked_grasp_exemption_enabled`, issue #418 K2): a finger is exempt only against
   the cells of the one nearest eligible tracked target per hand, cover-checked on the

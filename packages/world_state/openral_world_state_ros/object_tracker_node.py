@@ -10,18 +10,18 @@ owns the wire:
   ``/openral/place_declaration``; ``/openral/grasp_events`` (the HAL trigger's ATTACH /
   REGRASP / DETACH); in bind / on, ``/openral/safe_action`` (the approved gripper command: the
   tracker derives its own stalled-jaw ATTACH from it, ``JawStallDetector``).
-* **Frames.** A depth frame waits (wall) at most ``mask_tf_wait_s`` for the mask with its
+* **Frames.** A depth frame waits (wall) at most ``_MASK_TF_WAIT_S`` for the mask with its
   exact stamp and for tf at that stamp; missing either after that, it is fed for
   **ageing only** (design step 0) — never fitted.
 * **Requests.** ``TrackerOutput.requests`` (at most one in flight; the core rate-caps) go
   to ``LocateInView`` (``locate_service``; the captured depth stamp is required, and
   camera/stamp mismatches discard boxes and become bounded query refusals) or
-  ``SegmentInView`` (``segment_service``: box prompt plus the prompt pixel back-projected
+  ``SegmentInView`` (``DEFAULT_SEGMENT_SERVICE``: box prompt plus the prompt pixel back-projected
   through the frame's own depth, in the depth optical frame); every returned mask must
   echo that camera and match its exact depth stamp and optical frame before it is decoded.
   The answer is fed back with the frame it was issued on.
 * **Outputs.** ``/openral/tracked_objects`` (``TrackedObjectSet``; RELIABLE, VOLATILE,
-  KEEP_LAST 1) on every change and as a ``heartbeat_hz`` heartbeat. In ``bind`` / ``on``
+  KEEP_LAST 1) on every change and as a ``_HEARTBEAT_HZ`` heartbeat. In ``bind`` / ``on``
   the node also owns ``/openral/attachment_state`` (RELIABLE, TRANSIENT_LOCAL, KEEP_LAST
   1): every hand's binding plus the live declarations relayed **without** a target
   region (dispatch never measures one; the HAL producer is gated off in these modes) but
@@ -88,10 +88,23 @@ __all__ = [
 
 #: ``SegmentInView`` server the HAL's vision bridge also calls.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
+#: Wall seconds a depth frame waits for its robot mask and tf before it is used for ageing only.
+_MASK_TF_WAIT_S = 0.3
+#: ``tracked_objects`` (and, while joint states are fresh, ``attachment_state``) heartbeat.
+_HEARTBEAT_HZ = 2.0
+#: Frame loop.
+_PROCESS_HZ = 15.0
+#: No joint state for this long (node clock): the ``attachment_state`` heartbeat stops.
+_ATTACHMENT_EVIDENCE_TIMEOUT_S = 1.0
 _NS = 1_000_000_000
 _FAILURE_REASON_MAX = 128
 #: Robot masks kept per camera while their depth frame waits.
 _MASKS_KEPT = 8
+#: A request issued without its frame's source stamp is refused with this reason.
+_STAMP_MISSING = {
+    "locate_in_view": "locate_source_stamp_missing",
+    "segment_in_view": "segment_request_stamp_missing",
+}
 
 
 def image_array(msg: Any) -> NDArray[Any]:  # reason: duck-typed sensor_msgs/Image
@@ -460,6 +473,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         TrackerResult,
     )
     from openral_world_state.object_tracker.session import (
+        RELEASE_DWELL_S,
+        RELEASED_CLEAR_TIMEOUT_S,
         GraspEventKind,
         TrackerSession,
         TrackingMode,
@@ -508,12 +523,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("cell_m", 0.015)
             self.declare_parameter("grounding_wait_s", 0.0)
             self.declare_parameter("grounding_required", False)
-            self.declare_parameter("release_dwell_s", 0.3)
+            self.declare_parameter("release_dwell_s", RELEASE_DWELL_S)
             # The kernel's hand-link set (DeployRuntime.workspace_contact_wrist_links).
             self.declare_parameter("wrist_links", 1)
             # MUST equal the kernel's tracked_release_timeout_s and the voxel bridge's
             # released_clear_timeout_s (the launch passes one value to all three).
-            self.declare_parameter("released_clear_timeout_s", 3.0)
+            self.declare_parameter("released_clear_timeout_s", RELEASED_CLEAR_TIMEOUT_S)
             # The declared static geometry as base-frame cell centres (the launch's static-cells
             # file, the safety kernel's): excused in the one-body test, never in the fit.
             self.declare_parameter("static_cells_file", "")
@@ -521,13 +536,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self.declare_parameter("object_queries_json", "")
             self.declare_parameter("declared_object_catalog_json", "")
             self.declare_parameter("object_surface_model_json", "")
-            self.declare_parameter("segment_service", DEFAULT_SEGMENT_SERVICE)
             self.declare_parameter("locate_service", "")
-            self.declare_parameter("mask_tf_wait_s", 0.3)
-            self.declare_parameter("heartbeat_hz", 2.0)
-            self.declare_parameter("process_hz", 15.0)
             self.declare_parameter("joint_states_topic", "/joint_states")
-            self.declare_parameter("attachment_evidence_timeout_s", 1.0)
             # Addendum G active-search budget (source seconds): an unresolved query
             # escalates after search_start_s, is EXHAUSTED after search_max_s.
             self.declare_parameter("search_start_s", TrackerParams().search_start_s)
@@ -566,69 +576,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
 
         # -- lifecycle -------------------------------------------------------------------
 
-        def on_configure(self, state: object) -> TransitionCallbackReturn:  # noqa: PLR0915  # reason: flat sub/pub/client setup
+        def on_configure(self, state: object) -> TransitionCallbackReturn:
             import tf2_ros
 
             try:
                 mode = TrackingMode(str(self._p("mode")))
-                wait_s = float(self._p("grounding_wait_s"))
-                if wait_s <= 0.0:
-                    raise ROSConfigError("object tracker: grounding_wait_s must be set (> 0).")
-                if mode is not TrackingMode.SHADOW and str(self._p("hal_mode")) != "sim":
-                    raise ROSConfigError(
-                        f"object tracker: mode={mode.value!r} is sim-only until Safety-WG "
-                        "review; only 'shadow' runs on a real HAL."
-                    )
-                description = RobotDescription.from_yaml(str(self._p("robot_yaml")))
-                self.session = TrackerSession(
-                    description,
-                    cell_m=float(self._p("cell_m")),
-                    grounding_wait_s=wait_s,
-                    grounding_required=bool(self._p("grounding_required")),
-                    release_dwell_s=float(self._p("release_dwell_s")),
-                    released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
-                    require_hands=mode is not TrackingMode.SHADOW,
-                    # The tracker reads a stalled jaw itself in bind/on (sim only, enforced
-                    # above): the HAL trigger is unchanged and a real ATTACH is never doubled.
-                    derive_attach=mode is not TrackingMode.SHADOW,
-                    wrist_links=int(self._p("wrist_links")),
-                    params=TrackerParams(
-                        search_start_s=float(self._p("search_start_s")),
-                        search_max_s=float(self._p("search_max_s")),
-                    ),
-                )
-                static_file = str(self._p("static_cells_file"))
-                surface_config = str(self._p("object_surface_model_json"))
-                if surface_config:
-                    from openral_world_state.object_tracker.surface_model import ObjectSurfaceModels
-
-                    self.session.tracker.surface_models = ObjectSurfaceModels(
-                        ObjectSurfaceModelConfig.model_validate_json(surface_config)
-                    )
-                catalog_json = str(self._p("declared_object_catalog_json"))
-                self.declared_object_catalog = (
-                    USDObjectCatalog.model_validate_json(catalog_json) if catalog_json else None
-                )
-                if self.declared_object_catalog is not None:
-                    self.session.tracker.catalog_declarations = CatalogDeclarations(
-                        self.declared_object_catalog
-                    )
-                    slog.info(
-                        "loaded authored USD object declarations",
-                        revision=self.declared_object_catalog.source_revision,
-                        object_count=len(self.declared_object_catalog.objects),
-                        workspace_count=len(self.declared_object_catalog.workspaces),
-                        behavior="calibrated_mismatch_refusal_only",
-                    )
-                if static_file:
-                    from openral_world_state.object_tracker import read_static_cells
-
-                    self.session.tracker.set_static_geometry(read_static_cells(static_file))
-                raw = str(self._p("object_queries_json"))
-                if raw:
-                    self.session.open_standing_queries(
-                        TypeAdapter(list[ObjectQuery]).validate_json(raw)
-                    )
+                description = self._configure_session(mode)
             except (ROSConfigError, ValueError) as exc:
                 self.get_logger().error(f"object tracker configure refused: {exc}")
                 return TransitionCallbackReturn.FAILURE
@@ -640,7 +593,79 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     self._aliases[j.sim_joint_name] = j.name
             self._tf_buffer = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+            self._subscribe()
+            self._create_outputs()
+            assert self.session is not None  # reason: set by _configure_session
+            self.get_logger().info(
+                f"object tracker configured: mode={self.mode.value} cameras={sorted(self._cams)} "
+                f"frame={self.session.frame_id} hands={sorted(self.session.binders)} "
+                f"locate={self._p('locate_service')!r}"
+            )
+            return TransitionCallbackReturn.SUCCESS
 
+        def _configure_session(self, mode: TrackingMode) -> RobotDescription:
+            """Build the session from the params; ``ROSConfigError`` / ``ValueError`` refuse."""
+            wait_s = float(self._p("grounding_wait_s"))
+            if wait_s <= 0.0:
+                raise ROSConfigError("object tracker: grounding_wait_s must be set (> 0).")
+            if mode is not TrackingMode.SHADOW and str(self._p("hal_mode")) != "sim":
+                raise ROSConfigError(
+                    f"object tracker: mode={mode.value!r} is sim-only until Safety-WG "
+                    "review; only 'shadow' runs on a real HAL."
+                )
+            description = RobotDescription.from_yaml(str(self._p("robot_yaml")))
+            self.session = TrackerSession(
+                description,
+                cell_m=float(self._p("cell_m")),
+                grounding_wait_s=wait_s,
+                grounding_required=bool(self._p("grounding_required")),
+                release_dwell_s=float(self._p("release_dwell_s")),
+                released_clear_timeout_s=float(self._p("released_clear_timeout_s")),
+                require_hands=mode is not TrackingMode.SHADOW,
+                # The tracker reads a stalled jaw itself in bind/on (sim only, enforced
+                # above): the HAL trigger is unchanged and a real ATTACH is never doubled.
+                derive_attach=mode is not TrackingMode.SHADOW,
+                wrist_links=int(self._p("wrist_links")),
+                params=TrackerParams(
+                    search_start_s=float(self._p("search_start_s")),
+                    search_max_s=float(self._p("search_max_s")),
+                ),
+            )
+            static_file = str(self._p("static_cells_file"))
+            surface_config = str(self._p("object_surface_model_json"))
+            if surface_config:
+                from openral_world_state.object_tracker.surface_model import ObjectSurfaceModels
+
+                self.session.tracker.surface_models = ObjectSurfaceModels(
+                    ObjectSurfaceModelConfig.model_validate_json(surface_config)
+                )
+            catalog_json = str(self._p("declared_object_catalog_json"))
+            self.declared_object_catalog = (
+                USDObjectCatalog.model_validate_json(catalog_json) if catalog_json else None
+            )
+            if self.declared_object_catalog is not None:
+                self.session.tracker.catalog_declarations = CatalogDeclarations(
+                    self.declared_object_catalog
+                )
+                slog.info(
+                    "loaded authored USD object declarations",
+                    revision=self.declared_object_catalog.source_revision,
+                    object_count=len(self.declared_object_catalog.objects),
+                    workspace_count=len(self.declared_object_catalog.workspaces),
+                    behavior="calibrated_mismatch_refusal_only",
+                )
+            if static_file:
+                from openral_world_state.object_tracker import read_static_cells
+
+                self.session.tracker.set_static_geometry(read_static_cells(static_file))
+            raw = str(self._p("object_queries_json"))
+            if raw:
+                self.session.open_standing_queries(
+                    TypeAdapter(list[ObjectQuery]).validate_json(raw)
+                )
+            return description
+
+        def _subscribe(self) -> None:
             for name in [c for c in self._p("cameras") if c]:
                 cam = self._cams[name] = _Camera(name)
                 self._subs += [
@@ -689,6 +714,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                     latched_1,
                 ),
             ]
+
+        def _create_outputs(self) -> None:
             self._pub_tracked = self.create_publisher(
                 TrackedObjectSetMsg, "/openral/tracked_objects", reliable_1
             )
@@ -710,15 +737,9 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             # Addendum G escalations reach the reasoner on the failure bus.
             self._failure_bus = FailureBusPublisher(self, FailureSource.WORLD_STATE)
             self._failure_bus.create_publisher()
-            self._segment = self.create_client(SegmentInView, str(self._p("segment_service")))
+            self._segment = self.create_client(SegmentInView, DEFAULT_SEGMENT_SERVICE)
             if self._p("locate_service"):
                 self._locate = self.create_client(LocateInView, str(self._p("locate_service")))
-            self.get_logger().info(
-                f"object tracker configured: mode={self.mode.value} cameras={sorted(self._cams)} "
-                f"frame={self.session.frame_id} hands={sorted(self.session.binders)} "
-                f"locate={self._p('locate_service')!r}"
-            )
-            return TransitionCallbackReturn.SUCCESS
 
         def on_activate(self, state: object) -> TransitionCallbackReturn:
             # Wall-time seed: a restarted or re-activated tracker never regresses a revision.
@@ -732,8 +753,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._attach_key = None
             self._active = True
             self._timers = [
-                self.create_timer(1.0 / float(self._p("process_hz")), self._process),
-                self.create_timer(1.0 / float(self._p("heartbeat_hz")), self._heartbeat),
+                self.create_timer(1.0 / _PROCESS_HZ, self._process),
+                self.create_timer(1.0 / _HEARTBEAT_HZ, self._heartbeat),
                 # /clock shares the fit callback group, so ROS time can stall during a fit.
                 self.create_timer(
                     0.25,
@@ -883,7 +904,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 mask = cam.masks.get(stamp)
                 t_cam = self._lookup(str(msg.header.frame_id), stamp)
                 waited = time.monotonic() - rx
-                if (mask is None or t_cam is None) and waited < float(self._p("mask_tf_wait_s")):
+                if (mask is None or t_cam is None) and waited < _MASK_TF_WAIT_S:
                     continue
                 cam.pending = None
                 depth = image_array(msg)
@@ -987,27 +1008,16 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         trace_id=trace_id or None,
                     )
 
-        def _issue(  # noqa: PLR0911, PLR0915  # reason: typed fail-closed service paths
+        def _issue(
             self,
             req: TrackerRequest,
             frame: CameraFrame,
             optical_frame: str,
             stamp_msg: Any,
         ) -> None:
-            if req.service == "locate_in_view" and frame.stamp_ns <= 0:
-                self._answer(
-                    frame,
-                    optical_frame,
-                    stamp_msg,
-                    TrackerResult(req.request_id, failure_reason="locate_source_stamp_missing"),
-                )
-                return
-            if req.service == "segment_in_view" and frame.stamp_ns <= 0:
-                self._answer(
-                    frame,
-                    optical_frame,
-                    stamp_msg,
-                    TrackerResult(req.request_id, failure_reason="segment_request_stamp_missing"),
+            if frame.stamp_ns <= 0 and req.service in _STAMP_MISSING:
+                self._refuse_request(
+                    req, frame, optical_frame, stamp_msg, _STAMP_MISSING[req.service]
                 )
                 return
             slog.info(
@@ -1022,91 +1032,111 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             if req.query_key is not None:
                 self._attempts[req.query_key] = self._attempts.get(req.query_key, 0) + 1
             if req.service == "locate_in_view":
-                if self._locate is None or not self._locate.service_is_ready():
-                    self._answer(
+                self._issue_locate(req, frame, optical_frame, stamp_msg)
+            else:
+                self._issue_segment(req, frame, optical_frame, stamp_msg)
+
+        def _refuse_request(
+            self,
+            req: TrackerRequest,
+            frame: CameraFrame,
+            optical_frame: str,
+            stamp_msg: Any,
+            reason: str,
+        ) -> None:
+            self._answer(
+                frame,
+                optical_frame,
+                stamp_msg,
+                TrackerResult(req.request_id, failure_reason=reason),
+            )
+
+        def _issue_locate(
+            self,
+            req: TrackerRequest,
+            frame: CameraFrame,
+            optical_frame: str,
+            stamp_msg: Any,
+        ) -> None:
+            if self._locate is None or not self._locate.service_is_ready():
+                self._refuse_request(
+                    req, frame, optical_frame, stamp_msg, "locate_service_unavailable"
+                )
+                return
+            lreq = LocateInView.Request(
+                query=req.prompt or req.label, camera=req.camera, detector=""
+            )
+            lreq.source_stamp_ns = frame.stamp_ns
+            lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
+            lreq.min_score = float(req.min_score)
+            future = self._locate.call_async(lreq)
+
+            def done_locate(f: Any) -> None:
+                try:
+                    res = f.result()
+                except Exception as exc:
+                    self._refuse_request(
+                        req,
                         frame,
                         optical_frame,
                         stamp_msg,
-                        TrackerResult(req.request_id, failure_reason="locate_service_unavailable"),
+                        _service_failure_reason("locate_service_exception", exc),
                     )
                     return
-                lreq = LocateInView.Request(
-                    query=req.prompt or req.label, camera=req.camera, detector=""
+                failure_reason = (
+                    str(getattr(res, "failure_reason", "") or "").strip()[:_FAILURE_REASON_MAX]
+                    if res is not None
+                    else "locate_service_empty_response"
                 )
-                lreq.source_stamp_ns = frame.stamp_ns
-                lreq.roi_norm_xyxy = list(req.roi_norm_xyxy or ())
-                lreq.min_score = float(req.min_score)
-                future = self._locate.call_async(lreq)
+                if res is not None and not failure_reason:
+                    failure_reason = _response_camera_failure_reason(
+                        "locate", req.camera, str(getattr(res, "camera", "") or "")
+                    )
+                if res is not None and not failure_reason:
+                    failure_reason = _locate_source_stamp_failure_reason(
+                        frame.stamp_ns, int(getattr(res, "source_stamp_ns", 0) or 0)
+                    )
+                boxes = (
+                    detector_boxes(str(res.metadata_json), frame.intrinsics)
+                    if res is not None and res.found and not failure_reason
+                    else ()
+                )
+                scores = (
+                    detector_scores(str(res.metadata_json))
+                    if res is not None and res.found and not failure_reason
+                    else ()
+                )
+                result = TrackerResult(
+                    req.request_id,
+                    None,
+                    boxes,
+                    box_scores=scores if len(scores) == len(boxes) else (),
+                    failure_reason=failure_reason,
+                )
+                self._answer(frame, optical_frame, stamp_msg, result)
 
-                def done_locate(f: Any) -> None:
-                    try:
-                        res = f.result()
-                    except Exception as exc:
-                        self._answer(
-                            frame,
-                            optical_frame,
-                            stamp_msg,
-                            TrackerResult(
-                                req.request_id,
-                                failure_reason=_service_failure_reason(
-                                    "locate_service_exception", exc
-                                ),
-                            ),
-                        )
-                        return
-                    failure_reason = (
-                        str(getattr(res, "failure_reason", "") or "").strip()[:_FAILURE_REASON_MAX]
-                        if res is not None
-                        else "locate_service_empty_response"
-                    )
-                    if res is not None and not failure_reason:
-                        failure_reason = _response_camera_failure_reason(
-                            "locate", req.camera, str(getattr(res, "camera", "") or "")
-                        )
-                    if res is not None and not failure_reason:
-                        failure_reason = _locate_source_stamp_failure_reason(
-                            frame.stamp_ns, int(getattr(res, "source_stamp_ns", 0) or 0)
-                        )
-                    boxes = (
-                        detector_boxes(str(res.metadata_json), frame.intrinsics)
-                        if res is not None and res.found and not failure_reason
-                        else ()
-                    )
-                    scores = (
-                        detector_scores(str(res.metadata_json))
-                        if res is not None and res.found and not failure_reason
-                        else ()
-                    )
-                    result = TrackerResult(
-                        req.request_id,
-                        None,
-                        boxes,
-                        box_scores=scores if len(scores) == len(boxes) else (),
-                        failure_reason=failure_reason,
-                    )
-                    self._answer(frame, optical_frame, stamp_msg, result)
+            future.add_done_callback(done_locate)
 
-                future.add_done_callback(done_locate)
-                return
+        def _issue_segment(
+            self,
+            req: TrackerRequest,
+            frame: CameraFrame,
+            optical_frame: str,
+            stamp_msg: Any,
+        ) -> None:
             uv = req.point_uv
             if uv is None and req.box_xyxy is not None:
                 x0, y0, x1, y1 = req.box_xyxy
                 uv = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
             point = None if uv is None else backproject_pixel(frame.depth_m, frame.intrinsics, uv)
             if point is None:
-                self._answer(
-                    frame,
-                    optical_frame,
-                    stamp_msg,
-                    TrackerResult(req.request_id, failure_reason="segment_prompt_unprojectable"),
+                self._refuse_request(
+                    req, frame, optical_frame, stamp_msg, "segment_prompt_unprojectable"
                 )
                 return
             if self._segment is None or not self._segment.service_is_ready():
-                self._answer(
-                    frame,
-                    optical_frame,
-                    stamp_msg,
-                    TrackerResult(req.request_id, failure_reason="segment_service_unavailable"),
+                self._refuse_request(
+                    req, frame, optical_frame, stamp_msg, "segment_service_unavailable"
                 )
                 return
             sreq = SegmentInView.Request()
@@ -1126,14 +1156,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             try:
                 future = self._segment.call_async(sreq)
             except Exception as exc:
-                self._answer(
+                self._refuse_request(
+                    req,
                     frame,
                     optical_frame,
                     stamp_msg,
-                    TrackerResult(
-                        req.request_id,
-                        failure_reason=_service_failure_reason("segment_service_exception", exc),
-                    ),
+                    _service_failure_reason("segment_service_exception", exc),
                 )
                 return
 
@@ -1141,16 +1169,12 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 try:
                     res = f.result()
                 except Exception as exc:
-                    self._answer(
+                    self._refuse_request(
+                        req,
                         frame,
                         optical_frame,
                         stamp_msg,
-                        TrackerResult(
-                            req.request_id,
-                            failure_reason=_service_failure_reason(
-                                "segment_service_exception", exc
-                            ),
-                        ),
+                        _service_failure_reason("segment_service_exception", exc),
                     )
                     return
                 if res is None:
@@ -1160,28 +1184,19 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                         req.camera, frame.stamp_ns, optical_frame, res
                     )
                 if failure_reason:
-                    self._answer(
-                        frame,
-                        optical_frame,
-                        stamp_msg,
-                        TrackerResult(req.request_id, failure_reason=failure_reason),
-                    )
+                    self._refuse_request(req, frame, optical_frame, stamp_msg, failure_reason)
                     return
                 try:
                     masks = [
                         _resize_nearest(image_array(m) > 0, frame.depth_m.shape) for m in res.masks
                     ]
                 except Exception as exc:
-                    self._answer(
+                    self._refuse_request(
+                        req,
                         frame,
                         optical_frame,
                         stamp_msg,
-                        TrackerResult(
-                            req.request_id,
-                            failure_reason=_service_failure_reason(
-                                "segment_mask_read_failure", exc
-                            ),
-                        ),
+                        _service_failure_reason("segment_mask_read_failure", exc),
                     )
                     return
                 ok = pick_masks(masks, req.box_xyxy, req.within_xyxy)
@@ -1310,7 +1325,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._pub_clear.publish(BoolMsg(data=self.session.hands_clear_of_targets()))
             self._publish_refusals()
             now = int(self.get_clock().now().nanoseconds)
-            timeout = float(self._p("attachment_evidence_timeout_s")) * _NS
+            timeout = _ATTACHMENT_EVIDENCE_TIMEOUT_S * _NS
             if self._joint_rx_ns and now - self._joint_rx_ns <= timeout:
                 self._publish_attachment(heartbeat=True)  # else the kernel's copy ages out
 

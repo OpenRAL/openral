@@ -391,6 +391,13 @@ adds a simulated depth camera at LeIsaac's front view through
 sensors for this scene only (`sim_scene_description`), mounted by `camera_mounts`.
 The HAL publishes its cloud, octomap maps it, and the kernel checks every chunk
 against the voxels; the robot manifest, and so a real deploy, is unchanged.
+Both Isaac deploy twins commit `runtime.object_tracking: on` with
+`grounding_required: true` and the grounding wait the successful Spark runs used
+(pick-orange 8 s, R372; banana-in-bowl 15 s, R365, 2026-10-22): the #418 object tracker
+owns the attachment set, so the held payload is cleared from the voxel map by tracked
+identity. SIM-ONLY, pending Safety-WG review; `--runtime object_tracking=off` runs the
+legacy geometry-only path, on which the payload stays mapped and the kernel may stop the
+arm on what it holds.
 
 [`sim/isaac_arena_droid_banana_in_bowl.yaml`](sim/isaac_arena_droid_banana_in_bowl.yaml)
 is the second Isaac task: Isaac Lab-Arena's DROID / RoboLab `banana_in_bowl`

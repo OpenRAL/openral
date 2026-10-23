@@ -1099,7 +1099,7 @@ class VisionAttachmentConfig:
             ``ROSConfigError`` from the leg. *Calibration point*, Safety-WG (HZ-0115-32).
         grasp_target_premeasure: Pre-measure object instances from head-camera
             segmentation before any hand arms, confirmed by the voxel map
-            (``_object_primitives``, ``GraspTargetLeg(premeasure=True)``), so the region
+            (``openral_core.object_primitives``, ``GraspTargetLeg(premeasure=True)``), so the region
             exists on the arming tick without the policy pausing
             (``docs/reference/object-primitives-design.md``). Prototype, default off;
             needs ``grasp_target_enabled``.
@@ -1165,7 +1165,10 @@ class VisionAttachmentConfig:
             the target's fit. Empty: no removal (the fit sees the hand).
         publish_attachment_state: Publish ``/openral/attachment_state``. ``False`` when
             the #418 object tracker owns that topic (``object_tracking: bind | on``): the
-            bridge still runs its legs, but nothing it computes leaves the node.
+            bridge is then only the grasp trigger feeding ``/openral/grasp_events`` (what
+            the tracker binds from). No ``SegmentInView`` call, no ack barrier, no grasp- or
+            place-target leg, no depth / voxel subscription and no heartbeat — everything
+            those produce would only feed the topic it no longer publishes.
     """
 
     camera: str = ""
@@ -1523,19 +1526,26 @@ class VisionAttachmentBridge:
                 approach_m=self._config.grasp_target_approach_m,
                 premeasure=self._config.grasp_target_premeasure,
             )
-            if self._config.grasp_target_enabled
+            if self._config.grasp_target_enabled and self._config.publish_attachment_state
             else None
         )
         self._place_target: PlaceTargetLeg | None = (
-            PlaceTargetLeg(node, self, self._config) if self._config.place_target_enabled else None
+            PlaceTargetLeg(node, self, self._config)
+            if self._config.place_target_enabled and self._config.publish_attachment_state
+            else None
         )
 
     # ── wiring ───────────────────────────────────────────────────────────────
 
     def setup(self) -> None:
-        """Create the depth subscription, TF listener, service client, publisher."""
+        """Create the depth subscription, TF listener, service client, publisher.
+
+        With ``publish_attachment_state`` off (#418 ``bind`` / ``on``) only the
+        ``/openral/grasp_events`` publisher.
+        """
         import tf2_ros
         from openral_msgs.msg import AttachmentState
+        from openral_msgs.msg import GraspEvent as GraspEventMsg
         from openral_msgs.srv import SegmentInView
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -1545,6 +1555,24 @@ class VisionAttachmentBridge:
         )
         from sensor_msgs.msg import CameraInfo, Image
 
+        # An event stream (issue #418): safety/e-stop class, nothing latched.
+        self._grasp_event_pub = self._node.create_publisher(
+            GraspEventMsg,
+            _GRASP_EVENTS_TOPIC,
+            QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=10,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+            ),
+        )
+        if not self._config.publish_attachment_state:
+            self._node.get_logger().info(
+                f"vision attachment bridge: grasp trigger only for {list(self.gripper_joint_names)}"
+                f" -> {_GRASP_EVENTS_TOPIC} (the #418 object tracker owns "
+                "/openral/attachment_state and segments on its own)"
+            )
+            return
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
 
@@ -1603,19 +1631,6 @@ class VisionAttachmentBridge:
             self._grasp_target.setup()
         if self._place_target is not None:
             self._place_target.setup()
-        from openral_msgs.msg import GraspEvent as GraspEventMsg
-
-        # An event stream (issue #418): safety/e-stop class, nothing latched.
-        self._grasp_event_pub = self._node.create_publisher(
-            GraspEventMsg,
-            _GRASP_EVENTS_TOPIC,
-            QoSProfile(
-                history=QoSHistoryPolicy.KEEP_LAST,
-                depth=10,
-                reliability=QoSReliabilityPolicy.RELIABLE,
-                durability=QoSDurabilityPolicy.VOLATILE,
-            ),
-        )
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -1735,6 +1750,8 @@ class VisionAttachmentBridge:
             if event is None:
                 continue
             self._publish_grasp_event(leg, event, int(state.stamp_ns), held_at)
+            if not self._config.publish_attachment_state:
+                continue  # #418 bind/on: the tracker binds from the event; nothing to hold
             if self._supersede(leg):
                 self._node.get_logger().warning(
                     f"grasp trigger {leg.joint_name}: {event.value.upper()} superseded the "
@@ -2542,10 +2559,10 @@ class VisionAttachmentBridge:
         The witness attests the support measured under the target before the grasp
         (``region_attachment``). The kernel kills it once no exempt occupied cell touches
         the payload (``update_support_contact_witnesses``), but that liveness reads the
-        map, and the octomap bridge keeps every cell the witness band claims
-        (``support_patch_withholds``, anchored at the attestation's first grid) — the
-        kernel's band rides with the payload, so the carried object's own lowest cells, seen
-        by the head camera, would keep it alive through the carry. The producer retires it
+        map, and the octomap bridge clears none of a region payload's cells (it clears by
+        tracker identity only, ``OctomapVoxelBridge::clear_by_identity``) — the kernel's
+        band rides with the payload, so the carried object's own lowest cells, seen by the
+        head camera, would keep it alive through the carry. The producer retires it
         on its own geometry instead: the payload frame, in the support plane's frame (z up),
         rose more than ``max(resolution, extrinsic_error_m,
         release_clear_m)`` above its ATTACH pose (``release_clear_m`` is the kernel's world

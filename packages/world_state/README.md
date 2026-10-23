@@ -188,7 +188,7 @@ target track. The completion check asks its judge only while it is true.
 | Mode | What leaves the node |
 | --- | --- |
 | `shadow` | `/openral/tracked_objects` and the logged predicted bindings (`object_tracker.bound`). The aggregator relays the set on `world_state_fast` and the kernel ingests it (K1, refusals logged), with no decision change: no `TRACKED_OBJECT` binding exists and K2 / K5 are off. Allowed on `deploy run`. |
-| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`). Sim-only until Safety-WG review. |
+| `bind` | Also `/openral/attachment_state`: every hand's binding (`TRACKED_OBJECT` / `PINCH_FALLBACK`) plus the live declarations relayed **without** a region. The HAL vision bridge stops publishing that topic (`vision_attachment_publish_attachment_state:=false`) and runs only its grasp trigger (`/openral/grasp_events`): no segmentation, no ack barrier, no grasp/place-target leg. Sim-only until Safety-WG review. |
 | `on` | As `bind`; the kernel additionally keys grasp exemptions on tracked ids (K2). Sim-only. |
 
 | Parameter | Default | Meaning |
@@ -201,14 +201,18 @@ target track. The completion check asks its judge only while it is true.
 | `grounding_wait_s` | — (required) | `DeployRuntime.grounding_wait_s`. |
 | `grounding_required` | `false` | `grounding_incomplete` is logged at error level; the skill runner (same param) refuses the goal with `ROSPerceptionStale` when a TARGET query is not grounded within `grounding_wait_s`. |
 | `search_start_s` / `search_max_s` | `5.0` / `60.0` | Addendum G query timing (source s). A query unresolved for `search_start_s` escalates `unresolved`; for `search_max_s`, `exhausted`. Each escalation is a `ROSObjectNotInMemory` (`ObjectQueryEvidence`) carrying the owning action UUID, last refusal reason, declared workspace when present, and at most eight typed refused observations. The reasoner cancels only the matching manipulation and recovers within the persisted task dispatch budget; a spent budget stays blocked until a new operator goal, with no human handoff. |
-| `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. |
-| `released_clear_timeout_s` | `3.0` | The longest a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge); it leaves sooner once every hand collision box is 4 cm clear of it (the kernel's `tracked_release_clear_m` separation) or a new track of its label is confirmed touching it (the object at rest, tracked again). The RELEASED track is retired with it, and the object is found afresh under a new id. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
+| `release_dwell_s` | `0.3` | Jaw-open release dwell (source seconds). Calibration point. Default and the launch's value are `object_tracker.session.RELEASE_DWELL_S` (the kernel's `tracked_release_dwell_s` too). |
+| `released_clear_timeout_s` | `3.0` (`RELEASED_CLEAR_TIMEOUT_S`) | The longest a released `TRACKED_OBJECT` binding stays on `attachment_state` (frozen by the kernel, its box cleared by the voxel bridge); it leaves sooner once every hand collision box is 4 cm clear of it (the kernel's `tracked_release_clear_m` separation) or a new track of its label is confirmed touching it (the object at rest, tracked again). The RELEASED track is retired with it, and the object is found afresh under a new id. MUST equal the kernel's `tracked_release_timeout_s` and the voxel bridge's `released_clear_timeout_s`; the launch passes one `tracked_release_timeout_s` to all three. |
 | `object_queries_json` | `""` | The deploy's prompt-time `ObjectQuery` list (`deploy_sim._object_queries_json`), grounded at start whatever declarations are in force; a declaration re-keys the tracks it matches. |
-| `segment_service` / `locate_service` | `/openral/perception/segment_in_view` / `""` | `locate_service` empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
-| `mask_tf_wait_s` | `0.3` | Wall seconds a depth frame waits for its robot mask and tf before it is used for ageing only. |
-| `heartbeat_hz` | `2.0` | `tracked_objects` (and, while joint states are fresh, `attachment_state`) heartbeat. |
-| `process_hz` | `15.0` | Frame loop. |
-| `attachment_evidence_timeout_s` | `1.0` | No joint state for this long (node clock): the `attachment_state` heartbeat stops and the kernel's copy ages out. |
+| `locate_service` | `""` | Empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
+
+Fixed in the node (module constants, no launch or test sets them): `SegmentInView` at
+`DEFAULT_SEGMENT_SERVICE` (`/openral/perception/segment_in_view`); a depth frame waits
+`_MASK_TF_WAIT_S` (0.3 wall s) for its robot mask and tf before it is used for ageing only;
+`_PROCESS_HZ` (15) frame loop; `_HEARTBEAT_HZ` (2) `tracked_objects` (and, while joint
+states are fresh, `attachment_state`) heartbeat; no joint state for
+`_ATTACHMENT_EVIDENCE_TIMEOUT_S` (1.0 s, node clock) stops the `attachment_state` heartbeat
+and the kernel's copy ages out.
 
 For an issued `LocateInView` request, only an empty `failure_reason` means the detector
 completed its check. A nonempty cause is attached to the matching standing query as a
@@ -253,7 +257,7 @@ fresh track or the pinch fallback.
 | Sub | `/openral/grasp_declaration`, `/openral/place_declaration` | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/GraspDeclaration`, `PlaceDeclaration` |
 | Pub | `/openral/tracked_objects` | RELIABLE / VOLATILE / KEEP_LAST=1 | `openral_msgs/TrackedObjectSet` |
 | Pub | `/openral/attachment_state` (`bind`/`on`) | RELIABLE / TRANSIENT_LOCAL / KEEP_LAST=1 | `openral_msgs/AttachmentState` |
-| Client | `segment_service`, `locate_service` | | `SegmentInView`, `LocateInView` |
+| Client | `DEFAULT_SEGMENT_SERVICE`, `locate_service` | | `SegmentInView`, `LocateInView` |
 
 Clocks: every lifetime runs on source stamps (depth, grid `source_stamp`, joint states,
 grasp events); the segmenter rate and budget on wall time. Revisions are seeded from wall

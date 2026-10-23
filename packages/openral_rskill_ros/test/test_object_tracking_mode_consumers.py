@@ -10,10 +10,11 @@ mode owns:
   tracked camera; the segmenter caches its frames and serves it on the tracker's frame
   wait and skew budget; the runtime and the reasoner are told the mode. The HAL and the
   kernel are untouched.
-* ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` and the
-  kernel's jaw-open release (K5).
+* ``bind``: adds the HAL's vision bridge giving up ``/openral/attachment_state`` (it runs
+  only its grasp trigger then) and the kernel's jaw-open release (K5).
 * ``on``: adds the kernel's tracked grasp exemption (K2), its contact-link list,
-  payload ownership and explained-workspace cells.
+  payload ownership and explained-workspace cells, and the runner's goal-scope place
+  declaration (the tracker measures its region).
 """
 
 from __future__ import annotations
@@ -64,11 +65,14 @@ _SHADOW = {
     _FILTER: _MASK,
     _SEGMENTER: {"cameras", "camera_infos", "camera_request_deadlines", "camera_max_frame_skews"},
     _REASONER: {"object_tracking"},
-    _RUNTIME: {"object_tracking", "grounding_wait_s"},
+    # `grounding_required` is forwarded only with tracking on (the scene commits `true`).
+    _RUNTIME: {"object_tracking", "grounding_wait_s", "grounding_required"},
 }
 _BIND = {**_SHADOW, _HAL: {"vision_attachment_publish_attachment_state"}, _KERNEL: _K5}
 _ON = {
     **_BIND,
+    # The goal-scope place declaration the tracker measures the region for (part 7).
+    _RUNTIME: _SHADOW[_RUNTIME] | {"place_approach_enabled"},
     _KERNEL: _K5
     | {
         "tracked_grasp_exemption_enabled",
@@ -154,6 +158,7 @@ def test_each_mode_switches_only_its_own_consumers(
     assert now[_RUNTIME]["object_tracking"] == mode
     hal = now[_HAL].get("vision_attachment_publish_attachment_state", True)
     assert hal is (mode == "shadow"), "the HAL publishes attachment_state only in shadow"
+    assert now[_RUNTIME]["place_approach_enabled"] is (mode == "on")
     assert now[_KERNEL]["tracked_grasp_exemption_enabled"] is (mode == "on")
     assert now[_KERNEL]["payload_own_cells_enabled"] is (mode == "on")
     assert now[_KERNEL]["pinch_payload_own_cells_enabled"] is (mode == "on")

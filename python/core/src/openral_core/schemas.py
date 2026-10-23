@@ -12,6 +12,7 @@ import binascii
 import math
 import os
 import re
+import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -4301,7 +4302,13 @@ class GraspDeclaration(BaseModel):
             it from a named ``GraspTargetRef`` (the generic path); unlike
             ``region`` a direct-dispatch scene may also supply it; dispatch passes
             it through unchanged. ``None`` = no search, so the producer never
-            measures a region.
+            measures a region. **Pending deprecation (issue #418):** setting it
+            emits a ``PendingDeprecationWarning``. ``target_queries`` grounded by
+            the Layer-2 tracker replace it, but it stays the only input of the
+            HAL grasp-target leg while ``DeployRuntime.object_tracking`` is
+            ``off`` (the default, and the only posture ``deploy run`` allows on
+            real hardware). It is removed only after #418 phase 5, with an
+            on-disk ``schema_version`` bump and a migrator.
         workspace_box: Optional manipulation workspace (issue #349,
             ``docs/reference/manipulation-workspace-contact.md``) in the voxel
             grid's base frame, or a fixed tf2 frame like ``search_box`` (the
@@ -4322,7 +4329,7 @@ class GraspDeclaration(BaseModel):
         target_queries: The classes the prompt names (issue #418), at most
             ``MAX_TARGET_QUERIES``, each with role ``TARGET`` or ``CONTEXT``. The
             Layer-2 tracker grounds every instance of each class; they arm nothing.
-            Side by side with ``search_box`` until that is deprecated.
+            Side by side with ``search_box``, which is pending deprecation.
 
     Example:
         >>> declaration = GraspDeclaration(
@@ -4391,6 +4398,15 @@ class GraspDeclaration(BaseModel):
             raise ValueError(
                 "GraspDeclaration.search_box.geometry must be empty; a search box is only "
                 "the oriented box the target producer looks for a seed in."
+            )
+        if self.search_box is not None:
+            warnings.warn(
+                "GraspDeclaration.search_box is pending deprecation (issue #418): the "
+                "Layer-2 object tracker grounds target_queries instead. It still seeds the "
+                "HAL grasp-target leg while DeployRuntime.object_tracking is off, and is "
+                "removed only after #418 phase 5 with a schema migrator.",
+                PendingDeprecationWarning,
+                stacklevel=2,
             )
         self._check_workspace_boxes()
         if self.region is not None:

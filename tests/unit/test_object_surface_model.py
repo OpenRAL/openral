@@ -251,11 +251,10 @@ def test_owned_cells_clear_only_from_independent_free_depth(rig_name: str) -> No
         )
         == 0
     )
-    snapshot = models.world_contributions()
-    snapshot["trk:2"][:] = 99
-    np.testing.assert_array_equal(models.world_points("trk:2"), neighbour)
     models.retain({"trk:2"})
-    assert set(models.world_contributions()) == {"trk:2"}
+    np.testing.assert_array_equal(models.world_points("trk:2"), neighbour)
+    with pytest.raises(KeyError):
+        models.world_points("trk:1")
 
 
 @pytest.mark.parametrize(

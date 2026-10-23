@@ -15,6 +15,7 @@ import pytest
 from openral_cli.deploy_sim import resolve_launch_invocation
 from openral_core import DeployScene
 from openral_core.exceptions import ROSConfigError
+from openral_world_state.object_tracker.session import RELEASE_DWELL_S
 
 _REPO = Path(__file__).resolve().parents[2]
 _PICK_ORANGE = _REPO / "scenes/deploy/isaac_leisaac_pick_orange.yaml"
@@ -34,10 +35,18 @@ def _argv(config: Path, mode: str, overrides: dict[str, object]) -> list[str]:
 
 
 def test_deploy_sim_forwards_the_runtime_override_and_leaves_off_unchanged() -> None:
-    argv = _argv(_PICK_ORANGE, "sim", {"object_tracking": "bind", "grounding_wait_s": 8})
-    assert "object_tracking:=bind" in argv and "grounding_wait_s:=8.0" in argv
+    # The scene commits the Spark R372 posture: `on`, 8 s, grounding required.
+    scene = _argv(_PICK_ORANGE, "sim", {})
+    assert "object_tracking:=on" in scene and "grounding_wait_s:=8.0" in scene
+    assert "grounding_required:=true" in scene
+    argv = _argv(
+        _PICK_ORANGE,
+        "sim",
+        {"object_tracking": "bind", "grounding_wait_s": 5, "grounding_required": False},
+    )
+    assert "object_tracking:=bind" in argv and "grounding_wait_s:=5.0" in argv
     assert "grounding_required:=false" in argv
-    off = _argv(_PICK_ORANGE, "sim", {})
+    off = _argv(_PICK_ORANGE, "sim", {"object_tracking": "off"})
     assert not [a for a in off if a.startswith(("object_tracking:=", "grounding_"))]
 
 
@@ -146,14 +155,17 @@ def test_tracking_without_a_locator_or_seed_refuses_to_configure() -> None:
         dashboard_port=4318,
         reset_to_pose_service=None,
         hal_mode="sim",
-        runtime_overrides={k: v for k, v in overrides.items() if k.startswith(("enable", "pre"))},
+        runtime_overrides={
+            **{k: v for k, v in overrides.items() if k.startswith(("enable", "pre"))},
+            "object_tracking": "off",
+        },
         object_detector_locators=[],
     )
 
 
 def test_an_override_must_validate_whole() -> None:
     with pytest.raises(ROSConfigError, match="grounding_wait_s"):
-        _argv(_PICK_ORANGE, "sim", {"object_tracking": "shadow"})
+        _argv(_PICK_ORANGE, "sim", {"grounding_wait_s": None})
 
 
 @pytest.mark.parametrize("mode", ["bind", "on"])
@@ -279,7 +291,7 @@ def test_bind_and_on_wire_the_kernels_jaw_open_release(
     cals = [j.closure_calibration for j in d.joints if j.name in p["tracked_release_jaw_joints"]]
     assert all(c is not None for c in cals)
     assert p["tracked_release_gap"] == max(c.stall_gap / 2 for c in cals if c is not None)
-    assert p["tracked_release_dwell_s"] == launch_module._TRACKED_RELEASE_DWELL_S  # type: ignore[attr-defined]
+    assert p["tracked_release_dwell_s"] == RELEASE_DWELL_S
     assert f(d, "on") == p
 
 

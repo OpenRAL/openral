@@ -48,7 +48,7 @@ What is not, and why:
   is carried). The bridge's own idle stepper then runs the tracker at its post-step hook.
 * **The occupancy grid.** Not octomap (depth synthesis + octree is heavy for a <10 min
   test): the grid is rasterised directly from the twin's live collision geometry on the
-  ``openral_hal._grasp_target.VoxelLattice`` convention (20 mm cells, the real resolution;
+  ``openral_core.perception_geometry.VoxelLattice`` convention (20 mm cells, the real resolution;
   a cell is occupied iff its cube overlaps a collision box) and published on
   ``/openral/world_voxels`` with the kernel's QoS at 10 Hz. Payload masking mirrors the
   bridge: bodies in ``SimAttachedHAL.read_attached_body_ids()`` are dropped from the raster,
@@ -621,7 +621,7 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
                     assert measured.region.frame_id == "base_link"
                     centre = measured.region.pose.position
                     # The block's box with its lower face lifted one voxel off the table,
-                    # the real producer's rule (``_grasp_target.target_region_from_mask``).
+                    # the real producer's rule (``perception_geometry.target_region_from_mask``).
                     lifted = (_BLOCK_C[0], _BLOCK_C[1], _BLOCK_C[2] + _RES / 2.0)
                     assert (centre.x, centre.y, centre.z) == pytest.approx(lifted, abs=1e-6)
                     bottom = centre.z - measured.region.half_extents.z
