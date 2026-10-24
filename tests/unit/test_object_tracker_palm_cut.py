@@ -33,7 +33,6 @@ pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull checks hull contai
 
 EPS = 1e-7
 _DOP = np.asarray(DOP_AXES, dtype=np.float64)
-_STATS = {"crossing": 0, "checked_points": 0}
 
 
 @cache
@@ -72,22 +71,14 @@ _quat = st.tuples(*[st.floats(-1, 1, allow_nan=False)] * 4).filter(
 )
 
 
-@pytest.mark.parametrize("robot", list(ROBOTS))
-@settings(max_examples=120, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(
-    centre=st.tuples(_vec, _vec, _vec),
-    half=st.tuples(_half, _half, _half),
-    quat=_quat,
-    shift=st.floats(-0.1, 0.1, allow_nan=False),
-    seed=st.integers(0, 2**31 - 1),
-)
-def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(
+def _check_cut(
     robot: str,
     centre: tuple[float, float, float],
     half: tuple[float, float, float],
     quat: tuple[float, float, float, float],
     shift: float,
     seed: int,
+    stats: dict[str, int],
 ) -> None:
     pinch0, _ = _hand(robot)
     pinch = dataclasses.replace(pinch0, palm_m=pinch0.palm_m + shift)
@@ -101,7 +92,7 @@ def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(
         assert out == [prim], "wholly in front or wholly behind: unchanged"
         return
     [new] = out
-    _STATS["crossing"] += 1
+    stats["crossing"] += 1
     assert new.geometry_source == "measured" and new.tight_geometry is not None
     tn = t_ao @ _t(new.pose_in_object)
     nhalf = np.asarray(bounding_half_extents(new.shape))
@@ -116,7 +107,7 @@ def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(
     pts = pts[pts @ pinch.axes[:, 1] >= pinch.palm_m]
     if not len(pts):
         return
-    _STATS["checked_points"] += len(pts)
+    stats["checked_points"] += len(pts)
     q_local = (pts - tn[:3, 3]) @ tn[:3, :3]
     assert np.all(np.abs(q_local) <= nhalf + EPS), "in the new box"
     proj = q_local @ _DOP.T
@@ -139,6 +130,34 @@ def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(
         v_orig = (vw - t[:3, 3]) @ t[:3, :3]
         assert np.all(np.abs(v_orig) <= np.asarray(half) + EPS)
         assert np.all(vw @ pinch.axes[:, 1] >= pinch.palm_m - EPS)
+
+
+@pytest.mark.parametrize("robot", list(ROBOTS))
+def test_the_exact_cut_keeps_the_hand_side_solid_and_is_never_looser(robot: str) -> None:
+    """The property over random primitives, and that it was not vacuous: the plane really
+    crossed the boxes and enough hand-side points were checked (in this test, not by order)."""
+    stats = {"crossing": 0, "checked_points": 0}
+
+    @settings(max_examples=500, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @given(
+        centre=st.tuples(_vec, _vec, _vec),
+        half=st.tuples(_half, _half, _half),
+        quat=_quat,
+        shift=st.floats(-0.1, 0.1, allow_nan=False),
+        seed=st.integers(0, 2**31 - 1),
+    )
+    def prop(
+        centre: tuple[float, float, float],
+        half: tuple[float, float, float],
+        quat: tuple[float, float, float, float],
+        shift: float,
+        seed: int,
+    ) -> None:
+        _check_cut(robot, centre, half, quat, shift, seed, stats)
+
+    prop()
+    assert stats["crossing"] > 100, stats
+    assert stats["checked_points"] > 5000, stats
 
 
 @pytest.mark.parametrize("robot", list(ROBOTS))
@@ -166,9 +185,3 @@ def test_a_hull_primitive_is_cut_from_its_hull_not_its_box(robot: str) -> None:
         return float(np.prod(bounding_half_extents(p.shape)))
 
     assert vol(new) <= vol(box_cut) + 1e-12, "no larger than the cut of the plain box"
-
-
-def test_the_property_was_not_vacuous() -> None:
-    """Runs after the hypothesis tests above (file order): the plane really crossed the boxes."""
-    assert _STATS["crossing"] > 100, _STATS
-    assert _STATS["checked_points"] > 5000, _STATS
