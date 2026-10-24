@@ -14,6 +14,8 @@ from openral_world_state.object_tracker import ObjectTracker
 
 from tests.unit._tracker_scenes import RES, so101_top, sphere, step
 
+pytest.importorskip("scipy", reason="the tests dilate masks with scipy.ndimage")
+
 _RIG = so101_top()
 _R = 0.024  # the PickOrange orange
 _EPS = 2e-4

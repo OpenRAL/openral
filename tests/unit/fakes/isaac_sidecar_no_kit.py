@@ -42,6 +42,8 @@ class _NoKitScene:
     def __init__(self, action_dim: int, sim_dt_per_tick_s: float | None) -> None:
         self.action_dim = action_dim
         self.sim_dt_per_tick_s = sim_dt_per_tick_s
+        # The sidecar's reset reply reads the observed cadence; the fake observes the same.
+        self._observed_sim_dt_per_tick_s = sim_dt_per_tick_s
 
     def _obs(self) -> dict[str, Any]:
         return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
