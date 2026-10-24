@@ -20,12 +20,17 @@ the seam that lets those packages plug into the open ``openral-rskill`` /
   debug log; an attached hook logs at info level. The ``openral_sim.policies``
   adapters carry no per-policy ``try: from openral_rskill.smolvla_trt import ...``
   / ``act_trt`` imports.
+- ``resolve_pro_module`` — logical name → privately installed helper module,
+  via the ``openral.pro_modules`` entry-point group (e.g. ``nvbufsurface``,
+  ``act_nvmm``). The open tree never names a private module path: the
+  ``tools/check_no_pro_imports.py`` lint refuses any ``openral_pro*`` import.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
 from importlib.metadata import entry_points
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -34,12 +39,13 @@ from openral_core.exceptions import ROSConfigError
 if TYPE_CHECKING:
     from openral_rskill.runtime import Runtime
 
-__all__ = ["maybe_attach_pro_hooks", "resolve_runtime_backend"]
+__all__ = ["maybe_attach_pro_hooks", "resolve_pro_module", "resolve_runtime_backend"]
 
 log = structlog.get_logger(__name__)
 
 _RUNTIME_BACKENDS_GROUP = "openral.runtime_backends"
 _POLICY_ATTACH_HOOKS_GROUP = "openral.policy_attach_hooks"
+_PRO_MODULES_GROUP = "openral.pro_modules"
 
 # Built-in backends, resolved lazily by module path: `openral_rskill.__init__`
 # imports this module eagerly, and `runtime_pytorch` imports torch at module
@@ -157,3 +163,46 @@ def maybe_attach_pro_hooks(policy_name: str, skill: Any, **kwargs: Any) -> bool:
 
     log.debug("pro_hooks.absent", policy=policy_name, reason="openral-pro-trt not installed")
     return False
+
+
+def resolve_pro_module(name: str) -> ModuleType | None:
+    """Resolve an OpenRAL Pro helper module by logical name, if installed.
+
+    Looks *name* up in the ``openral.pro_modules`` entry-point group, whose
+    entries point at whole modules (e.g. ``nvbufsurface =
+    openral_pro_trt.nvbufsurface``). Open code calls this instead of importing
+    a private module path, so the open tree names no ``openral_pro*`` module.
+
+    Args:
+        name: Logical module name, e.g. ``"nvbufsurface"``, ``"act_nvmm"``.
+
+    Returns:
+        The loaded module, or ``None`` when no such entry point is installed
+        (open-source-only install) — logged at debug level, never a silent
+        skip (CLAUDE.md §1.4). The caller decides whether absence is a
+        fallback or an error.
+
+    Raises:
+        ImportError: The entry point exists but its module failed to import
+            (e.g. ``tensorrt`` missing on this host). Propagated unchanged so
+            callers keep their existing ``except ImportError`` handling.
+        ROSConfigError: The entry point resolves to something other than a
+            module — a mis-registered plugin.
+
+    Example:
+        >>> resolve_pro_module("_module_with_no_entry_point") is None
+        True
+    """
+    for ep in entry_points(group=_PRO_MODULES_GROUP):
+        if ep.name == name:
+            loaded = ep.load()
+            if not isinstance(loaded, ModuleType):
+                raise ROSConfigError(
+                    f"resolve_pro_module: entry point {name!r} in {_PRO_MODULES_GROUP!r} "
+                    f"resolves to {type(loaded).__name__}, not a module ({ep.value!r})."
+                )
+            log.debug("pro_module.resolved", name=name, entry_point=ep.value)
+            return loaded
+
+    log.debug("pro_module.absent", name=name, reason="openral-pro-trt not installed")
+    return None

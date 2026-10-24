@@ -6,7 +6,9 @@ Coverage: ``resolve_runtime_backend`` — built-in names (``pytorch``,
 ``openral.runtime_backends`` entry-point group resolves via the real
 discovery path. ``maybe_attach_pro_hooks`` — no hook installed → ``False``
 (debug log, no raise); a registered ``openral.policy_attach_hooks`` entry
-point is invoked and its truthy/falsy return propagates.
+point is invoked and its truthy/falsy return propagates. ``resolve_pro_module``
+— absent → ``None``; a registered ``openral.pro_modules`` entry point returns
+the real module; one pointing at a non-module raises ``ROSConfigError``.
 
 Entry-point tests monkeypatch ``entry_points`` with real
 ``importlib.metadata.EntryPoint`` objects pointing at real, importable
@@ -16,11 +18,16 @@ mocks/stubs).
 
 from __future__ import annotations
 
+import json
 from importlib.metadata import EntryPoint, entry_points
 
 import pytest
 from openral_core.exceptions import ROSConfigError
-from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runtime_backend
+from openral_rskill.backend_registry import (
+    maybe_attach_pro_hooks,
+    resolve_pro_module,
+    resolve_runtime_backend,
+)
 from openral_rskill.runtime import NullRuntime
 from openral_rskill.runtime_onnx import ONNXRuntime
 from openral_rskill.runtime_pytorch import PyTorchRuntime
@@ -40,6 +47,10 @@ def _installed(group: str, name: str) -> bool:
 _PRO_TRT_BACKEND = pytest.mark.skipif(
     _installed("openral.runtime_backends", "tensorrt"),
     reason="openral-pro-trt is installed here; this test asserts the absent-backend branch",
+)
+_PRO_NVBUFSURFACE = pytest.mark.skipif(
+    _installed("openral.pro_modules", "nvbufsurface"),
+    reason="openral-pro-trt is installed here; this test asserts the absent-module branch",
 )
 _PRO_SMOLVLA_HOOK = pytest.mark.skipif(
     _installed("openral.policy_attach_hooks", "smolvla"),
@@ -154,3 +165,38 @@ class TestMaybeAttachProHooks:
             lambda group: (ep,) if group == "openral.policy_attach_hooks" else (),
         )
         assert maybe_attach_pro_hooks("smolvla", NullRuntime(), device="cuda:0") is False
+
+
+def _register_pro_module(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    ep = EntryPoint(name=name, value=value, group="openral.pro_modules")
+    monkeypatch.setattr(
+        "openral_rskill.backend_registry.entry_points",
+        lambda group: (ep,) if group == "openral.pro_modules" else (),
+    )
+
+
+class TestResolveProModule:
+    @_PRO_NVBUFSURFACE
+    def test_real_environment_has_no_nvbufsurface(self) -> None:
+        """Unpatched: an open-only install resolves no Pro module."""
+        assert resolve_pro_module("nvbufsurface") is None
+
+    def test_registered_module_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _register_pro_module(monkeypatch, "nvbufsurface", "json")
+        assert resolve_pro_module("nvbufsurface") is json
+
+    def test_name_mismatch_is_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _register_pro_module(monkeypatch, "act_nvmm", "json")
+        assert resolve_pro_module("nvbufsurface") is None
+
+    def test_non_module_target_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An entry point naming an attribute, not a module, is a mis-registration."""
+        _register_pro_module(monkeypatch, "nvbufsurface", "json:dumps")
+        with pytest.raises(ROSConfigError, match="not a module"):
+            resolve_pro_module("nvbufsurface")
+
+    def test_import_error_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A registered module whose import fails surfaces ImportError to the caller."""
+        _register_pro_module(monkeypatch, "nvbufsurface", "openral_no_such_module_xyz")
+        with pytest.raises(ImportError):
+            resolve_pro_module("nvbufsurface")
