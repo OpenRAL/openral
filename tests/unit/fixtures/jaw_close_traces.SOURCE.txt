@@ -1,0 +1,3 @@
+Source: Spark ~/livesim/418/phase1, 2026-10-17, made by mkstall.py.
+dr_t/dr_pos: r7dr_on1 finger_joint measured (fox_mcap /joint_states, 15 Hz, sim 18-33 s). dr_closes: the HAL trigger log lines of its three closes mapped to sim time through tracked.jsonl (start, target, end, short_of_command, settle spread).
+so_t/so_pos, so_cmd_t/so_cmd: r9po_camlong (SO-101) gripper measured (60 Hz) and the approved command (/openral/safe_action last row, full-dof index 5, bag receive time = sim clock).

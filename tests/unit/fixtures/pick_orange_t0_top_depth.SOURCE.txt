@@ -1,0 +1,16 @@
+pick_orange_t0_top_depth.npz — the PickOrange (LeIsaac, SO-101) top_depth camera at goal start,
+Isaac Sim 6.1 deploy-sim trial r6po_dbg2 (Spark, 2026-10-17, OpenRAL #418, wp/418-p1 @ 4733389b:
+after the see-through robot-mask fix). One recorded frame (sim t = 2.33 s) of
+/openral/cameras/top_depth/depth/image, its robot_mask and CameraInfo, the base <- optical pose
+from /tf, cropped to u 256..432, v 0..288 (intrinsics shifted to the crop), plus the 2 Hz
+/openral/world_voxels_cloud cell centres nearest in time, and the sidecar's ground truth.
+
+orange_3 lies under the open jaw: 249 crop pixels have depth on its GT surface
+(orange3_visible; 120 free, 129 uncertain in the robot mask). The open-vocabulary locator's
+only box on it covered the arm (locator_box_arm, crop pixels); locator_box_orange1 is its box on
+a neighbour the arm does not cover.
+
+Keys: depth_m (float32 m), robot_mask (uint8 0/128/255), k (fx, fy, cx, cy), t_base_from_cam
+(4x4), stamp_ns, orange3_visible (bool), orange3_center / orange3_half / orange3_rot (GT),
+orange1_center, orange2_center, locator_box_arm, locator_box_orange1 (x0, y0, x1, y1), voxels
+(N x 3, base frame, 15 mm cells), voxel_stamp.

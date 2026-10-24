@@ -1,0 +1,22 @@
+#usda 1.0
+
+def Xform "Cell"
+{
+    def Xform "Catalog" (
+        customData = {
+            dictionary openral = {
+                string object_catalog_json = '{"schema_version":1,"source_revision":"tutorial-v1","units":"m","stage_frame_id":"world","objects":[{"name":"orange","prim_path":"/Cell/Orange","label":"orange","shape":{"shape":{"shape":"sphere","radius_m":0.04},"dimension_semantics":"maximum"},"workspace_ids":["bench_top"]}],"workspaces":[{"name":"bench_top","prim_path":"/Cell/Bench","role":"workspace","location":"fixed","shape":{"shape":"box","half_extents_m":[0.45,0.35,0.04]},"pose_in_stage":{"xyz_m":[0.6,0.0,0.75],"quat_xyzw":[0.0,0.0,0.0,1.0]}}]}'
+            }
+        }
+    )
+    {
+    }
+
+    def Xform "Orange"
+    {
+    }
+
+    def Xform "Bench"
+    {
+    }
+}
