@@ -10,9 +10,11 @@ owns the wire:
   ``/openral/place_declaration``; ``/openral/grasp_events`` (the HAL trigger's ATTACH /
   REGRASP / DETACH); in bind / on, ``/openral/safe_action`` (the approved gripper command: the
   tracker derives its own stalled-jaw ATTACH from it, ``JawStallDetector``).
-* **Frames.** A depth frame waits (wall) at most ``_MASK_TF_WAIT_S`` for the mask with its
-  exact stamp and for tf at that stamp; missing either after that, it is fed for
-  **ageing only** (design step 0) — never fitted.
+* **Frames.** The last ``_DEPTH_KEPT`` depth frames wait (wall) at most ``_MASK_TF_WAIT_S``
+  for the mask with their exact stamp and for tf at that stamp; the newest frame that has
+  both is fed (older ones are dropped). One that still lacks either after the wait is fed for
+  **ageing only** (design step 0) — never fitted. Waiting on the newest frame alone starved
+  the loop whenever the mask lagged more than one depth period (restock's head camera).
 * **Requests.** ``TrackerOutput.requests`` (at most one in flight; the core rate-caps) go
   to ``LocateInView`` (``locate_service``; the captured depth stamp is required, and
   camera/stamp mismatches discard boxes and become bounded query refusals) or
@@ -52,7 +54,7 @@ import json
 import logging
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,13 +85,18 @@ __all__ = [
     "image_array",
     "intrinsics_from_info",
     "main",
+    "pick_depth_frame",
     "pick_masks",
 ]
 
 #: ``SegmentInView`` server the HAL's vision bridge also calls.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
 #: Wall seconds a depth frame waits for its robot mask and tf before it is used for ageing only.
-_MASK_TF_WAIT_S = 0.3
+#: *Calibration point*: the self-filter's mask trails its depth frame by more than 0.3 s wall
+#: on a slow sim (Spark restock, 2026-10-24: every head-camera frame aged at 0.3 s).
+_MASK_TF_WAIT_S = 1.0
+#: Depth frames per camera kept waiting for their mask (newest wins among the complete ones).
+_DEPTH_KEPT = 4
 #: ``tracked_objects`` (and, while joint states are fresh, ``attachment_state``) heartbeat.
 _HEARTBEAT_HZ = 2.0
 #: Frame loop.
@@ -290,8 +297,39 @@ class _Camera:
 
     name: str
     info: IntrinsicsPinhole | None = None
-    pending: tuple[Any, float] | None = None  # (depth msg, monotonic receive time)
+    # (depth msg, monotonic receive time), oldest first.
+    pending: deque[tuple[Any, float]] = field(default_factory=lambda: deque(maxlen=_DEPTH_KEPT))
     masks: dict[int, NDArray[np.uint8]] = field(default_factory=dict)
+
+
+def pick_depth_frame(
+    received_s: Sequence[float],
+    ready: Callable[[int], bool],
+    now_s: float,
+    wait_s: float,
+) -> int | None:
+    """Which waiting depth frame to feed now (issue #418), or ``None`` to keep waiting.
+
+    ``received_s`` are the frames' wall receive times, oldest first; ``ready(i)`` says frame
+    ``i`` has its robot mask and tf. The newest ready frame wins (the caller drops it and every
+    older one). With none ready, the oldest is fed for ageing only once it has waited
+    ``wait_s``. A mask that trails by more than one depth period then still pairs with its
+    frame, where waiting on the newest frame alone was reset by every new one.
+
+    Example:
+        >>> pick_depth_frame([0.0, 0.1, 0.2], lambda i: i == 1, 0.25, 1.0)
+        1
+        >>> pick_depth_frame([0.0, 0.1], lambda i: False, 0.5, 1.0) is None
+        True
+        >>> pick_depth_frame([0.0, 0.1], lambda i: False, 1.0, 1.0)
+        0
+    """
+    for i in range(len(received_s) - 1, -1, -1):
+        if ready(i):
+            return i
+    if received_s and now_s - received_s[0] >= wait_s:
+        return 0
+    return None
 
 
 def escalation_evidence(
@@ -806,7 +844,7 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
         # -- inputs ----------------------------------------------------------------------
 
         def _on_depth(self, cam: _Camera, msg: Any) -> None:
-            cam.pending = (msg, time.monotonic())  # newest wins: the tracker is not a queue
+            cam.pending.append((msg, time.monotonic()))  # bounded: the tracker is not a queue
 
         def _on_mask(self, cam: _Camera, msg: Any) -> None:
             cam.masks[_stamp_ns(msg.header.stamp)] = image_array(msg)
@@ -900,16 +938,31 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             while self._answers:
                 self._feed(*self._answers.popleft())
             for cam in self._cams.values():
-                if cam.pending is None or cam.info is None:
+                if not cam.pending or cam.info is None:
                     continue
-                msg, rx = cam.pending
+                looked: dict[int, tuple[Any, Any]] = {}
+
+                def ready(
+                    i: int, cam: _Camera = cam, looked: dict[int, tuple[Any, Any]] = looked
+                ) -> bool:
+                    msg = cam.pending[i][0]
+                    stamp = _stamp_ns(msg.header.stamp)
+                    looked[i] = (
+                        cam.masks.get(stamp),
+                        self._lookup(str(msg.header.frame_id), stamp),
+                    )
+                    return looked[i][0] is not None and looked[i][1] is not None
+
+                picked = pick_depth_frame(
+                    [rx for _, rx in cam.pending], ready, time.monotonic(), _MASK_TF_WAIT_S
+                )
+                if picked is None:
+                    continue
+                msg = cam.pending[picked][0]
+                for _ in range(picked + 1):
+                    cam.pending.popleft()
                 stamp = _stamp_ns(msg.header.stamp)
-                mask = cam.masks.get(stamp)
-                t_cam = self._lookup(str(msg.header.frame_id), stamp)
-                waited = time.monotonic() - rx
-                if (mask is None or t_cam is None) and waited < _MASK_TF_WAIT_S:
-                    continue
-                cam.pending = None
+                mask, t_cam = looked[picked]
                 depth = image_array(msg)
                 if mask is not None and mask.shape != depth.shape:
                     mask = None

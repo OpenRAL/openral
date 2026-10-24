@@ -43,3 +43,20 @@ def test_the_detector_box_picks_the_object_over_its_spill_and_its_subpart() -> N
     assert np.array_equal(picked[0], obj)
     # Without a detector box: largest first, the map decides whether to fall back.
     assert np.array_equal(node.pick_masks([sub, obj, spill], None)[0], spill)
+
+
+def test_a_mask_that_trails_a_depth_period_still_pairs_with_its_frame() -> None:
+    """Spark restock (2026-10-24): the head camera's mask trails its depth by more than one
+    depth period. Waiting on the newest frame alone was reset by every new one (no frame ever
+    fed); the newest frame whose mask has arrived must win over newer, mask-less ones."""
+    pick = node.pick_depth_frame
+    received = [0.0, 0.7, 1.4]  # one depth frame per 0.7 s wall
+    # Frame 0's mask just arrived; frames 1 and 2 still wait for theirs.
+    assert pick(received, lambda i: i == 0, 1.45, 1.0) == 0
+    # Two have masks: the newer one is fed (the caller drops the older with it).
+    assert pick(received, lambda i: i in (0, 1), 1.45, 1.0) == 1
+    # None yet, the oldest has not waited out: keep waiting rather than age a frame.
+    assert pick(received, lambda i: False, 0.9, 1.0) is None
+    # None after the wait: the oldest is fed for ageing only.
+    assert pick(received, lambda i: False, 1.0, 1.0) == 0
+    assert pick([], lambda i: True, 5.0, 1.0) is None

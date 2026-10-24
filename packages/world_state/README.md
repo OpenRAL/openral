@@ -207,8 +207,11 @@ target track. The completion check asks its judge only while it is true.
 | `locate_service` | `""` | Empty: no open-vocabulary detector, seeds and refreshes only. A completed empty locate is recorded as `locate_found_nothing`; service absence, transport errors, and nonempty `LocateInView.failure_reason` are retained as query refusal causes instead. See the [`LocateInView` contract](../msgs/README.md#services--srv). |
 
 Fixed in the node (module constants, no launch or test sets them): `SegmentInView` at
-`DEFAULT_SEGMENT_SERVICE` (`/openral/perception/segment_in_view`); a depth frame waits
-`_MASK_TF_WAIT_S` (0.3 wall s) for its robot mask and tf before it is used for ageing only;
+`DEFAULT_SEGMENT_SERVICE` (`/openral/perception/segment_in_view`); the last `_DEPTH_KEPT`
+(4) depth frames wait `_MASK_TF_WAIT_S` (1.0 wall s, calibration point) for their robot mask
+and tf, the newest complete one is fed (`pick_depth_frame`), and one still incomplete after
+the wait is used for ageing only (a mask trailing its depth by more than a depth period
+used to starve the loop);
 `_PROCESS_HZ` (15) frame loop; `_HEARTBEAT_HZ` (2) `tracked_objects` (and, while joint
 states are fresh, `attachment_state`) heartbeat; no joint state for
 `_ATTACHMENT_EVIDENCE_TIMEOUT_S` (1.0 s, node clock) stops the `attachment_state` heartbeat
