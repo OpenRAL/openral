@@ -1478,6 +1478,41 @@ def _payload_sweep_clear_params(*, enabled: bool, hal_mode: str) -> dict[str, st
     return {"payload_sweep_clear_service": "/openral_octomap_server/clear_bbox"}
 
 
+def _exemption_provider_kernel_params(
+    description: RobotDescription,
+    *,
+    provider: str,
+    hal_mode: str,
+    wrist_links: int = 1,
+) -> dict[str, object]:
+    """The safety kernel's exemption-provider params (ADR-0121).
+
+    Empty ``provider``: ``{}``, so the kernel runs exactly as with no provider. Otherwise the
+    pluginlib class name, plus the kernel's own relaxable-link mask: the manifest's hand
+    links (``RobotDescription.hand_links()``), never configured by name. The kernel refuses
+    a provider off sim and any link it does not know; this refuses earlier, at launch.
+
+    Raises:
+        ROSConfigError: A provider on a non-sim HAL, or for a robot with no hand links.
+    """
+    if not provider:
+        return {}
+    from openral_core.exceptions import ROSConfigError
+
+    if hal_mode != "sim":
+        raise ROSConfigError(
+            f"exemption_provider {provider!r} is sim-only (ADR-0121); refused on hal_mode="
+            f"{hal_mode!r}."
+        )
+    links = list(description.hand_links(wrist_links=wrist_links))
+    if not links:
+        raise ROSConfigError(
+            f"exemption_provider {provider!r} but robot {description.name!r} declares no "
+            "role: gripper joint, so it has no hand links to relax."
+        )
+    return {"exemption_provider": provider, "exemption_provider_links": links}
+
+
 def _workspace_contact_kernel_params(
     description: RobotDescription,
     *,
@@ -2272,6 +2307,8 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
     workspace_contact_max_lead_m = float(_ws_lead) if _ws_lead else None
     _ws_wrist = LaunchConfiguration("workspace_contact_wrist_links").perform(context)
     workspace_contact_wrist_links = int(_ws_wrist) if _ws_wrist else 1
+    # The kernel's exemption provider (ADR-0121); empty = none.
+    exemption_provider = LaunchConfiguration("exemption_provider").perform(context).strip()
     # The octomap bridge's payload octree clearing (DeployRuntime.payload_sweep_clear_enabled).
     # Resolved here, so a non-sim HAL refuses it even with the octomap leg off.
     payload_sweep_clear_params = _payload_sweep_clear_params(
@@ -2712,6 +2749,14 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
             max_speed_mps=workspace_contact_max_speed_mps,
             max_lead_m=workspace_contact_max_lead_m,
             grasp_allowance_enabled=grasp_allowance_enabled,
+            hal_mode=hal_mode,
+            wrist_links=workspace_contact_wrist_links,
+        )
+    )
+    kernel_params.update(
+        _exemption_provider_kernel_params(
+            description,
+            provider=exemption_provider,
             hal_mode=hal_mode,
             wrist_links=workspace_contact_wrist_links,
         )
@@ -5296,6 +5341,15 @@ def generate_launch_description() -> LaunchDescription:
                 "Issue #418 K7 with object_tracking on: workspace contact only on explained "
                 "cells; false keeps the workspace rule alone "
                 "(DeployRuntime.workspace_explained_cells)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "exemption_provider",
+            default_value="",
+            description=(
+                "Safety-kernel exemption provider, a pluginlib class deriving "
+                "openral_safety_kernel::ExemptionProvider (ADR-0121). Empty = none; sim only. "
+                "Its relaxable links are the manifest's hand links."
             ),
         ),
         DeclareLaunchArgument(

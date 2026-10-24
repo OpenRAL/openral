@@ -48,6 +48,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(openral_msgs REQUIRED)
+find_package(pluginlib REQUIRED)
 # nlohmann_json: distro package on Ubuntu 22.04+; the dependency is
 # header-only so we tolerate it being optional behind a feature flag
 # until PR-E ships FailureTrigger emission.
@@ -101,6 +102,7 @@ ament_target_dependencies(${PROJECT_NAME}
     std_srvs
     diagnostic_msgs
     openral_msgs
+    pluginlib
 )
 
 # ── Executable ──────────────────────────────────────────────────────────────
@@ -137,7 +139,7 @@ ament_export_libraries(${PROJECT_NAME})
 ament_export_targets(export_${PROJECT_NAME})
 ament_export_dependencies(
   rclcpp rclcpp_lifecycle lifecycle_msgs std_msgs std_srvs
-  diagnostic_msgs openral_msgs opentelemetry-cpp
+  diagnostic_msgs openral_msgs opentelemetry-cpp pluginlib
 )
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -173,10 +175,24 @@ if(BUILD_TESTING)
   ament_add_gtest(test_no_alloc test/test_no_alloc.cpp)
   target_link_libraries(test_no_alloc ${PROJECT_NAME})
 
+  # ADR-0121 loader: the test-only providers are a separate, never-installed library the test
+  # serves from a temporary ament prefix (pluginlib resolves `exemption_provider` through it).
+  add_library(test_exemption_providers SHARED test/exemption_providers_for_test.cpp)
+  target_link_libraries(test_exemption_providers ${PROJECT_NAME})
+  ament_target_dependencies(test_exemption_providers pluginlib)
+  ament_add_gtest(test_exemption_provider_kernel test/test_exemption_provider_kernel.cpp)
+  target_link_libraries(test_exemption_provider_kernel ${PROJECT_NAME})
+  add_dependencies(test_exemption_provider_kernel test_exemption_providers)
+  target_compile_definitions(test_exemption_provider_kernel PRIVATE
+    TEST_PROVIDERS_LIB="$<TARGET_FILE:test_exemption_providers>")
+
   # 177 node-level cases with real wall-clock windows: ~95 s on a dev host, over
   # ament's 60 s default (CI killed it mid-run with no result file).
   ament_add_gtest(test_lifecycle_kernel test/test_lifecycle_kernel.cpp TIMEOUT 300)
   target_link_libraries(test_lifecycle_kernel ${PROJECT_NAME})
+  add_dependencies(test_lifecycle_kernel test_exemption_providers)
+  target_compile_definitions(test_lifecycle_kernel PRIVATE
+    TEST_PROVIDERS_LIB="$<TARGET_FILE:test_exemption_providers>")
 endif()
 
 ament_package()

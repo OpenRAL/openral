@@ -1,0 +1,128 @@
+// Copyright 2026 OpenRAL Contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// The exemption-provider seam (ADR-0121). A provider is a pluginlib plugin the
+// kernel loads at configure time (parameter `exemption_provider`, empty = none).
+// It may only RELAX a verdict the open kernel is about to reach, and only inside
+// bounds the kernel itself enforces:
+//
+//  * the kernel asks only after every open check and every open exemption
+//    (ADR-0115, ADR-0092) has run, and only about a pair that would otherwise
+//    trip;
+//  * only on a link in the kernel's relaxable-link mask (the manifest's hand
+//    links, `exemption_provider_links`), ANDed with every answer;
+//  * never for self-collision, a joint/speed/torque limit, the
+//    workspace envelope, a lead bound or a watchdog;
+//  * sim only: the kernel refuses to load any provider off `hal_mode: sim`;
+//  * fail closed: no provider, a failed load, an API-version mismatch or a
+//    `false` from `initialize` all leave the kernel exactly as with no provider.
+//
+// Every hook on the per-chunk path is `noexcept`, must not allocate, and is
+// timed against the kernel's own per-chunk budget. Nothing a hook returns is
+// trusted beyond "tolerate this one pair": the kernel keeps the accounting and
+// the disclosure (`CollisionHit::provider_pairs`).
+
+#ifndef OPENRAL_SAFETY_KERNEL__EXEMPTION_PROVIDER_HPP_
+#define OPENRAL_SAFETY_KERNEL__EXEMPTION_PROVIDER_HPP_
+
+#include "openral_safety_kernel/collision.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+#include <rclcpp/logger.hpp>
+#include <rclcpp/node_interfaces/node_parameters_interface.hpp>
+
+namespace openral_safety_kernel {
+
+/// Bumped on any change to this header's layout or hook semantics. A provider
+/// built against another version is refused at load (fail closed).
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 1;
+
+/// A provider's answer for one pair. Anything but `kTolerate` keeps the open
+/// kernel's verdict.
+enum class ProviderVerdict : std::uint8_t {
+  kRefuse = 0,
+  kTolerate = 1,
+};
+
+/// Read-only snapshot of one tracked object as the kernel accepted it (after
+/// the open K1 ingest; never a K6-retired identity).
+struct TrackedObjectView {
+  std::size_t id_hash{0};  ///< std::hash of object_id (the K6 key)
+  std::uint32_t epoch{0};
+  bool live{false};                ///< confirmed / occluded / bound
+  bool released{false};            ///< the tracker let go of it
+  bool target{false};              ///< role == "target"
+  bool contact{false};             ///< role target or destination
+  bool exemptible{false};          ///< confirmed / occluded
+  bool provisional{false};         ///< exemption geometry only, never payload
+  bool cover_ok{false};            ///< the kernel's OWN cover check on this grid
+  std::uint32_t visible_cells{0};  ///< the tracker's expected visible cells
+  std::int64_t confirmed_ns{0};    ///< last confirmation, source clock
+  double support_z{0.0};           ///< NaN = none
+  double floor_z{0.0};             ///< NaN = none
+  GraspTargetRegion box{};         ///< the validated containing box
+};
+
+/// Everything a provider may read for one candidate chunk. All pointers are
+/// kernel-owned and valid only for the duration of the call that receives the
+/// view (or until the next `begin_candidate`).
+struct CandidateView {
+  const CollisionModel* model{nullptr};
+  const VoxelGrid* grid{nullptr};             ///< null = no fresh grid this chunk
+  const CollisionScratch* measured{nullptr};  ///< FK at the measured state; null = stale
+  const double* q_measured{nullptr};          ///< n_dof, null = stale
+  const double* dq_measured{nullptr};         ///< n_dof, null = no fresh velocity
+  std::size_t n_dof{0};
+  const TrackedObjectView* tracked{nullptr};  ///< tracked set after K1
+  std::size_t n_tracked{0};
+  const std::uint8_t* relaxable_links{nullptr};  ///< per link index; the kernel's mask
+  std::int64_t now_ns{0};                        ///< kernel clock (ROS time)
+  bool position_mode{false};                     ///< JOINT_POSITION chunk
+  double control_period_s{0.0};
+};
+
+/// One (robot link, occupied cell) pair the open kernel is about to trip on.
+struct VoxelPairQuery {
+  int link{-1};                             ///< robot link index (always in the mask)
+  std::size_t cell{0};                      ///< occupancy index
+  Vec3 cell_center_base{};                  ///< cell centre, robot base frame
+  double distance{0.0};                     ///< surface distance the open check computed
+  int row{0};                               ///< checked row of the chunk (0 = measured)
+  const CollisionScratch* row_fk{nullptr};  ///< FK at that row
+};
+
+/// The interface. Default implementations refuse everything, so a provider
+/// overrides only the hooks it relaxes.
+class ExemptionProvider {
+public:
+  virtual ~ExemptionProvider() = default;
+
+  /// Must return `kExemptionProviderApiVersion` as compiled into the provider.
+  virtual std::uint32_t api_version() const noexcept = 0;
+
+  /// Name and version, quoted in every disclosure.
+  virtual const char* name() const noexcept = 0;
+
+  /// Configure time, off the hot path; may allocate. `params` lets the provider
+  /// declare and read its own parameters (prefix them with its name). Return
+  /// false to decline: the kernel then runs with no provider.
+  virtual bool initialize(const CollisionModel& model,
+                          rclcpp::node_interfaces::NodeParametersInterface::SharedPtr params,
+                          const rclcpp::Logger& logger) = 0;
+
+  /// Per candidate chunk, before any pair query. Preallocated state only.
+  virtual void begin_candidate(const CandidateView& view) noexcept { (void)view; }
+
+  /// May this robot link touch this occupied cell?
+  virtual ProviderVerdict voxel_pair(const VoxelPairQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+};
+
+}  // namespace openral_safety_kernel
+
+#endif  // OPENRAL_SAFETY_KERNEL__EXEMPTION_PROVIDER_HPP_

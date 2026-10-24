@@ -8,6 +8,7 @@
 
 #include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/envelope.hpp"
+#include "openral_safety_kernel/exemption_provider.hpp"
 #include "openral_safety_kernel/force_observer.hpp"
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
@@ -22,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <pluginlib/class_loader.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -104,6 +106,10 @@ public:
   const EnvelopeIntersection& envelope() const noexcept { return envelope_; }
   bool self_collision_active() const noexcept { return self_collision_enabled_; }
   std::size_t collision_link_count() const noexcept { return collision_model_.n_links; }
+  /// ADR-0121: the exemption provider's load outcome ("none", "loaded: <name>",
+  /// "refused: <why>") and whether one is live.
+  const std::string& exemption_provider_status() const noexcept { return provider_status_; }
+  bool exemption_provider_loaded() const noexcept { return provider_ != nullptr; }
 
 private:
   // Topic callbacks.
@@ -402,6 +408,18 @@ private:
   bool self_collision_enabled_{false};
   double self_collision_margin_m_{0.0};
   std::size_t collision_required_dof_{0};
+
+  /// ADR-0121 exemption provider (`exemption_provider`, empty = none; sim only). The
+  /// loader is declared before the instance so the instance is destroyed first.
+  /// Loading never fails configure: any refusal leaves the kernel with no provider.
+  void load_exemption_provider();
+  std::unique_ptr<pluginlib::ClassLoader<ExemptionProvider>> provider_loader_;
+  std::shared_ptr<ExemptionProvider> provider_;
+  std::string provider_status_{"none"};
+  std::vector<std::uint8_t> provider_links_;  ///< per collision link: relaxable (hand) link
+  std::array<TrackedObjectView, kMaxTrackedObjects> provider_tracked_{};
+  std::uint64_t provider_pairs_total_{0};
+  std::chrono::steady_clock::time_point provider_last_warn_{};
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.

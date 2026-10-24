@@ -48,6 +48,8 @@
 #include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include "provider_test_prefix.hpp"
+
 // #349 review F: the workspace brake's decision must not allocate. Allocations are
 // counted on the calling thread only, and only while the kernel's
 // `workspace_brake_probe` has armed the count around that decision (DDS threads
@@ -8144,4 +8146,51 @@ TEST_F(LifecycleKernelTest, ThePayloadOwnExemptionRefusesToConfigureOffItsPrecon
   EXPECT_FALSE(real.configure()) << "not sim";
   GraspRig ok("kernel_own_cfg_ok", own_params());
   EXPECT_TRUE(ok.configure());
+}
+
+// ── Exemption provider on the live check (ADR-0121; Safety-WG pending) ────────
+//
+// The grasp-target rig with the ADR-0115 allowance OFF: the finger on its cell stops. With the most
+// permissive test provider loaded (sim, mask {link0}) the same chunk passes, and the tolerated
+// pair is disclosed on the log. Proves the per-candidate wiring, not only the collision function.
+
+TEST_F(LifecycleKernelTest, ALoadedExemptionProviderToleratesAHandCellAndDisclosesIt) {
+  osk_test::serve_test_providers();
+  {
+    GraspRig control("kernel_provider_control", grasp_params(false));
+    control.start();
+    control.warm(nullptr, 0.0, 300);
+    EXPECT_FALSE(control.offer(nullptr, 0.0)) << "no provider: today's stop";
+    EXPECT_TRUE(control.node->fault_latched());
+  }
+  LogCapture logs;
+  auto params = with_param(grasp_params(false), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("TolerateEveryPair")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_on", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  rig.warm(nullptr, 0.0, 300);
+  EXPECT_TRUE(rig.offer(nullptr, 0.0)) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_GE(logs.count("safety.exemption_provider_contact provider=tolerate-every-pair/1 "
+                       "link=link0"),
+            1U)
+      << "never silent";
+}
+
+TEST_F(LifecycleKernelTest, AnExemptionProviderOffSimLeavesTodaysStop) {
+  osk_test::serve_test_providers();
+  auto params = with_param(grasp_params(false), "exemption_provider",
+                           rclcpp::ParameterValue(osk_test::test_provider("TolerateEveryPair")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_real", params);  // hal_mode defaults to real
+  rig.start();
+  EXPECT_FALSE(rig.node->exemption_provider_loaded());
+  rig.warm(nullptr, 0.0, 300);
+  EXPECT_FALSE(rig.offer(nullptr, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
 }

@@ -8,6 +8,8 @@
 
 #include "openral_safety_kernel/collision.hpp"
 
+#include "openral_safety_kernel/exemption_provider.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -1371,6 +1373,36 @@ bool workspace_link_slow(const WorkspaceContactRegion& ws, int link) noexcept {
          ws.max_lead_m > 0.0 && std::isfinite(ws.hand_lead_m) && ws.hand_lead_m <= ws.max_lead_m;
 }
 
+// ADR-0121: may the loaded provider be asked about this link at all? The kernel's own mask, never
+// the provider's word.
+bool provider_relaxable(const VoxelGrid& grid, int link) noexcept {
+  return grid.provider != nullptr && grid.provider_links != nullptr && link >= 0 &&
+         static_cast<std::size_t>(link) < grid.provider_links_n &&
+         grid.provider_links[static_cast<std::size_t>(link)] != 0;
+}
+
+// ADR-0121: ask the provider about one pair that would trip; disclose a tolerated one.
+bool provider_tolerates(CollisionHit& hit, const VoxelGrid& grid, const CollisionScratch& scratch,
+                        int link, std::size_t cell, const Vec3& cell_local, double d) noexcept {
+  VoxelPairQuery q;
+  q.link = link;
+  q.cell = cell;
+  q.cell_center_base = apply(grid.pose, cell_local);
+  q.distance = d;
+  q.row = grid.provider_row;
+  q.row_fk = &scratch;
+  if (grid.provider->voxel_pair(q) != ProviderVerdict::kTolerate) {
+    return false;
+  }
+  ++hit.provider_pairs;
+  if (d < hit.provider_min_distance) {
+    hit.provider_min_distance = d;
+    hit.provider_link = link;
+    hit.provider_cell = static_cast<int>(cell);
+  }
+  return true;
+}
+
 // Disclose one tolerated workspace pair (within the margin, exempted).
 void note_workspace_pair(CollisionHit& hit, double d, int link, int cell) noexcept {
   ++hit.workspace_pairs;
@@ -1574,7 +1606,11 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (ws_exempt && d <= margin) {
             note_workspace_pair(result, d, li, static_cast<int>(idx));
           }
-          const bool tripped = !exempt && !ws_exempt && d <= margin;
+          // ADR-0121: last, and only for a pair still about to trip on a relaxable link.
+          const bool provider_exempt =
+              !exempt && !ws_exempt && d <= margin && provider_relaxable(grid, li) &&
+              provider_tolerates(result, grid, scratch, li, idx, voxel.t, d);
+          const bool tripped = !exempt && !ws_exempt && !provider_exempt && d <= margin;
           fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx), false, false, false,
                     false, tripped ? workspace_denial(grid, li, base_center) : 0);
         }
@@ -1678,9 +1714,13 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           if (ws_exempt && d <= margin) {
             note_workspace_pair(result, d, lb, static_cast<int>(idx));
           }
-          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx), false,
-                    false, false, false,
-                    !exempt && d <= margin ? workspace_denial(grid, lb, base_center) : 0);
+          // ADR-0121: after the narrow phase, so the provider sees the distance that would trip.
+          const bool provider_exempt =
+              !exempt && d <= margin && provider_relaxable(grid, lb) &&
+              provider_tolerates(result, grid, scratch, lb, idx, center, d);
+          const bool tripped = !exempt && !provider_exempt && d <= margin;
+          fold_pair(result, sweep_min, d, tripped, lb, static_cast<int>(idx), false, false, false,
+                    false, tripped ? workspace_denial(grid, lb, base_center) : 0);
         }
       }
     }

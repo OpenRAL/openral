@@ -36,6 +36,7 @@
   <depend>std_srvs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>openral_msgs</depend>
+  <depend>pluginlib</depend>
   <depend>nlohmann-json-dev</depend>
   <!-- opentelemetry-cpp for safety.check span emission.
        Provided by the in-tree vendor package (cpp/opentelemetry_cpp_vendor)

@@ -1639,6 +1639,64 @@ leave empty under a payload demonstrably in contact. That blind spot is
 survivable precisely because this check can only add refusals: failing to arm
 lands on today's behaviour, never on something more permissive than it.
 
+## Exemption provider (ADR-0121) — default none, sim-only
+
+**Accepted 2026-10-24. Safety-WG sign-off pending (hazard log Entry 065, `HZ-0121-1` … `-6`).**
+The kernel stays open. So does every check that can only refuse motion. A rule that *relaxes* a
+verdict may live outside this tree, in a private provider (OpenRAL Pro). It plugs in through the
+installed header
+[`exemption_provider.hpp`](include/openral_safety_kernel/exemption_provider.hpp) and a
+`pluginlib` class deriving `openral_safety_kernel::ExemptionProvider`.
+
+**Loading** happens once, at configure, after the collision model. It **never fails configure.**
+- **Parameters:**
+  - `exemption_provider` is the pluginlib class name. Empty, the default, means no provider and
+    today's verdicts.
+  - `exemption_provider_links` is the kernel's own relaxable-link mask. The launch passes
+    `RobotDescription.hand_links()`.
+- **What refuses a provider**, with ERROR `safety.exemption_provider refused` and
+  `/diagnostics exemption_provider=refused: <why>`, leaving the kernel exactly as with none:
+  - `hal_mode` other than `sim`;
+  - an empty mask;
+  - a mask link the model does not know;
+  - a pluginlib load failure;
+  - an `api_version()` other than `kExemptionProviderApiVersion`;
+  - `initialize` returning false or throwing.
+
+**On the live check** the provider is consulted only in `check_voxel_collision`, and only under
+all of these conditions:
+- *after* every open check and open exemption (ADR-0115 grasp region, #349 workspace, K2/K7);
+- for a robot link in the mask;
+- for a pair that would otherwise trip (capsules: before the narrow phase; boxes: after it, so
+  the query carries the tripping distance).
+
+A `kTolerate` answer has these effects:
+- the pair does not trip;
+- it reaches `sweep_min_distance` at its own depth;
+- it is counted in `CollisionHit::provider_pairs`;
+- it is logged as WARN `safety.exemption_provider_contact` (≤ 1 Hz) and set as span attribute
+  `safety.exemption_provider_pairs`.
+
+Self-collision, the limits, the envelope, the lead bound and the watchdog are never offered.
+Before any query, each candidate gets a preallocated read-only `CandidateView` through
+`begin_candidate`. It carries the tracked set after K1 without K6-retired identities, and the
+measured state when it is fresh. Hooks are `noexcept` and must not allocate; `test_no_alloc`
+covers the kernel side with the most permissive provider loaded.
+
+**Step 1 of 3.** #349, K2, K5, K7 and the OT-10 payload-own cells are still in-tree. The provider
+seam is additive: nothing loads by default, so no verdict changes. The next steps are:
+1. the Pro provider implementing those rules against this header;
+2. their removal from this tree, after sim parity with the provider loaded.
+
+**Tests:**
+- `ExemptionProvider.*` in `test_collision`: no provider or the default provider is bit-for-bit
+  today; the most permissive provider cannot reach an unmasked link, a clear pair or an
+  open-exempt pair.
+- `test_exemption_provider_kernel`: every refusal path, and a real plugin load from a
+  never-installed test library.
+- The live-check pass/disclosure and off-sim stop in `test_lifecycle_kernel`.
+- `NoAlloc.TheExemptionProviderQueryIsAllocationFree`.
+
 ## Slot rows: uncommanded joints at their measured pose (ADR-0102)
 
 A multi-slot rSkill (the real OpenArm: left arm, left gripper, right arm,

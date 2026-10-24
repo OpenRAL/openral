@@ -582,6 +582,13 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // Safety-WG review, and the kernel enforces that itself rather than trusting every
   // launch to (#349 review). Defaults to real: an unset mode never arms a sim-only rule.
   this->declare_parameter<std::string>("hal_mode", "real");
+  // ADR-0121: the exemption provider (a pluginlib class deriving
+  // `openral_safety_kernel::ExemptionProvider`). Empty = none, today's verdicts. Sim only.
+  // `exemption_provider_links` is the kernel's own relaxable-link mask (the manifest's hand
+  // links, derived by the launch); the provider is never asked about any other link.
+  this->declare_parameter<std::string>("exemption_provider", "");
+  this->declare_parameter<std::vector<std::string>>("exemption_provider_links",
+                                                    std::vector<std::string>{});
   this->declare_parameter<std::vector<std::string>>("workspace_contact_links",
                                                     std::vector<std::string>{});
   this->declare_parameter<double>("workspace_contact_max_speed_mps", 0.0);
@@ -691,6 +698,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     envelope_loaded_ = false;
     return CallbackReturn::FAILURE;
   }
+  load_exemption_provider();
   // Grasp-target exemption allowlist (ADR-0115 draft). Resolved against the
   // loaded collision link names; a name the model does not know is a
   // misconfiguration of a safety surface and refuses configure rather than
@@ -1362,6 +1370,10 @@ SafetyKernelLifecycleNode::on_deactivate(const rclcpp_lifecycle::State& state) {
 SafetyKernelLifecycleNode::CallbackReturn
 SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
   diagnostics_timer_.reset();
+  voxel_grid_.provider = nullptr;
+  provider_.reset();
+  provider_links_.clear();
+  provider_status_ = "none";
   estop_reset_srv_.reset();
   candidate_sub_.reset();
   estop_sub_.reset();
@@ -1961,6 +1973,51 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         voxel_grid_.payload_own = &payload_own_;
         span->SetAttribute("safety.payload_own_armed", static_cast<int64_t>(fill_payload_own()));
       }
+      // ADR-0121: hand the provider this candidate's read-only view. Every pointer is kernel-owned
+      // and preallocated; the provider is asked about pairs only through the voxel check below.
+      voxel_grid_.provider = provider_.get();
+      voxel_grid_.provider_links = provider_links_.empty() ? nullptr : provider_links_.data();
+      voxel_grid_.provider_links_n = provider_links_.size();
+      if (provider_ != nullptr) {
+        std::size_t n_view = 0;
+        for (std::size_t i = 0; i < tracked_n_ && n_view < provider_tracked_.size(); ++i) {
+          const TrackedEntry& e = tracked_[i];
+          if (tracked_retired_.contains(e.id_hash, e.epoch)) {
+            continue;
+          }
+          TrackedObjectView& v = provider_tracked_[n_view++];
+          v.id_hash = e.id_hash;
+          v.epoch = e.epoch;
+          v.live = e.live;
+          v.released = e.released;
+          v.target = e.target;
+          v.contact = e.contact;
+          v.exemptible = e.exemptible;
+          v.provisional = e.provisional;
+          v.cover_ok = e.cover_ok;
+          v.visible_cells = e.visible_cells;
+          v.confirmed_ns = e.confirmed_ns;
+          v.support_z = e.support_z;
+          v.floor_z = e.floor_z;
+          v.box = e.box;
+        }
+        const bool fresh = measured_state_fresh();
+        CandidateView view;
+        view.model = &collision_model_;
+        view.grid = world_voxel_enabled_ ? &voxel_grid_ : nullptr;
+        view.q_measured = fresh && !q_meas_.empty() ? q_meas_.data() : nullptr;
+        view.dq_measured = fresh && dq_meas_.size() == q_meas_.size() && !dq_meas_.empty()
+                               ? dq_meas_.data()
+                               : nullptr;
+        view.n_dof = q_meas_.size();
+        view.tracked = provider_tracked_.data();
+        view.n_tracked = n_view;
+        view.relaxable_links = voxel_grid_.provider_links;
+        view.now_ns = this->now().nanoseconds();
+        view.position_mode = is_position;
+        view.control_period_s = collision_seed_dt_s_;
+        provider_->begin_candidate(view);
+      }
       const bool workspace_speed_known = workspace_on && is_position && measured_state_fresh();
       workspace_speed_measured_ = false;  // set below for a position chunk with dq_meas_
       ws_hand_contact_ = false;
@@ -2125,11 +2182,28 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           // minimum jumps from "nothing in range" straight to a tripping cell —
           // which made this whole mechanism dead code until a real scene run
           // showed the scale going 1.0 → E-stop with nothing in between.
+          voxel_grid_.provider_row = step;
           const auto hit = check_voxel_collision(collision_model_, collision_scratch_, voxel_grid_,
                                                  world_voxel_margin_m_ + extra_margin,
                                                  collision_scale_proximity_m_);
           note_slack(hit, world_voxel_margin_m_ + extra_margin);
           disclose_workspace(hit, step, "");
+          if (hit.provider_pairs > 0) {
+            // ADR-0121: never silent. Counted always, logged at most once a second.
+            provider_pairs_total_ += static_cast<std::uint64_t>(hit.provider_pairs);
+            span->SetAttribute("safety.exemption_provider_pairs",
+                               static_cast<int64_t>(hit.provider_pairs));
+            const auto wall = std::chrono::steady_clock::now();
+            if (wall - provider_last_warn_ >= std::chrono::seconds(1)) {
+              provider_last_warn_ = wall;
+              RCLCPP_WARN(this->get_logger(),
+                          "safety.exemption_provider_contact provider=%s link=%s cell=%d "
+                          "depth_mm=%.1f pairs=%d step=%d",
+                          provider_->name(), link_name(hit.provider_link).c_str(),
+                          hit.provider_cell, -hit.provider_min_distance * 1e3, hit.provider_pairs,
+                          step);
+            }
+          }
           if (hit.hit) {
             report("world", WsName{'l', hit.link_a}, WsName{'v', hit.link_b}, step, hit);
             return true;
@@ -3265,6 +3339,8 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   add_kv("last_drop_reason", last_drop_reason_.empty() ? "-" : last_drop_reason_);
   add_kv("envelope_loaded", envelope_loaded_ ? "true" : "false");
   add_kv("n_dof", std::to_string(envelope_.n_dof));
+  add_kv("exemption_provider", provider_status_);
+  add_kv("exemption_provider_pairs", std::to_string(provider_pairs_total_));
   // Standing place-declaration state. The refusal logs are transition-gated, so
   // this heartbeat is what makes a persistent refusal (or a live allowance)
   // observable without re-warning at the attachment rate.
@@ -3445,6 +3521,78 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   }
   trigger.evidence_json = oss.str();
   failure_pub_->publish(trigger);
+}
+
+void SafetyKernelLifecycleNode::load_exemption_provider() {
+  voxel_grid_.provider = nullptr;
+  provider_.reset();
+  provider_links_.clear();
+  provider_pairs_total_ = 0;
+  const std::string name = this->get_parameter("exemption_provider").as_string();
+  if (name.empty()) {
+    provider_status_ = "none";
+    return;
+  }
+  // Every refusal leaves the kernel exactly as with no provider (ADR-0121 §4.1), and is
+  // announced: logged here, standing on /diagnostics.
+  const auto refuse = [&](const std::string& why) {
+    provider_.reset();
+    provider_links_.clear();
+    provider_status_ = "refused: " + why;
+    RCLCPP_ERROR(this->get_logger(), "safety.exemption_provider refused name=%s: %s", name.c_str(),
+                 why.c_str());
+  };
+  const std::string hal_mode = this->get_parameter("hal_mode").as_string();
+  if (hal_mode != "sim") {
+    refuse("sim only (ADR-0121), hal_mode=" + hal_mode);
+    return;
+  }
+  const auto links = this->get_parameter("exemption_provider_links").as_string_array();
+  if (links.empty()) {
+    refuse("exemption_provider_links is empty");
+    return;
+  }
+  std::vector<std::uint8_t> mask(collision_link_names_.size(), 0);
+  for (const auto& link : links) {
+    const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), link);
+    if (it == collision_link_names_.end()) {
+      refuse("exemption_provider_links names an unknown link: " + link);
+      return;
+    }
+    mask[static_cast<std::size_t>(it - collision_link_names_.begin())] = 1;
+  }
+  try {
+    if (provider_loader_ == nullptr) {
+      provider_loader_ = std::make_unique<pluginlib::ClassLoader<ExemptionProvider>>(
+          "openral_safety_kernel", "openral_safety_kernel::ExemptionProvider");
+    }
+    provider_ = provider_loader_->createSharedInstance(name);
+  } catch (const std::exception& e) {
+    refuse(std::string("load failed: ") + e.what());
+    return;
+  }
+  if (provider_->api_version() != kExemptionProviderApiVersion) {
+    refuse("api_version " + std::to_string(provider_->api_version()) +
+           " != " + std::to_string(kExemptionProviderApiVersion));
+    return;
+  }
+  bool ok = false;
+  try {
+    ok = provider_->initialize(collision_model_, this->get_node_parameters_interface(),
+                               this->get_logger().get_child("exemption_provider"));
+  } catch (const std::exception& e) {
+    refuse(std::string("initialize threw: ") + e.what());
+    return;
+  }
+  if (!ok) {
+    refuse("initialize declined");
+    return;
+  }
+  provider_links_ = std::move(mask);
+  provider_status_ = std::string("loaded: ") + provider_->name();
+  RCLCPP_WARN(this->get_logger(),
+              "safety.exemption_provider loaded name=%s provider=%s links=%zu (ADR-0121, sim only)",
+              name.c_str(), provider_->name(), links.size());
 }
 
 bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
