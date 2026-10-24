@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import MutableMapping
 from typing import Any
 
@@ -126,6 +127,14 @@ def apply_structlog_level_floor() -> None:
     )
 
 
+def _bridge_child(*args: Any) -> logging.Logger:
+    """Logger factory for structlog: ``<bridge>.<name>``, propagating to the bridge logger."""
+    name = str(args[0]) if args and args[0] else "structlog"
+    child = logging.getLogger(f"{_BRIDGE_LOGGER_NAME}.{name}")
+    child.propagate = True  # a foreign logger class (ROS ``launch``) may have unset it
+    return child
+
+
 def install_structlog_bridge(logger_provider: LoggerProvider) -> None:
     """Attach an OTel ``LoggingHandler`` to a stdlib logger.
 
@@ -154,7 +163,11 @@ def install_structlog_bridge(logger_provider: LoggerProvider) -> None:
             structlog.processors.format_exc_info,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
+        # Every structlog logger is a child of the bridge logger, whatever its name: a
+        # module logger such as ``openral_world_state.object_tracker.tracker`` is not
+        # under ``openral`` and fell through to the root logger (WARNING, lastResort
+        # only), so its INFO / DEBUG events were neither printed nor exported (#418 r4).
+        logger_factory=_bridge_child,
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
@@ -166,6 +179,14 @@ def install_structlog_bridge(logger_provider: LoggerProvider) -> None:
     )
     for h in bridge_logger.handlers:
         h.setFormatter(formatter)
+    # The process's console (the deploy log) keeps showing what clears the floor, as
+    # the no-endpoint path (``apply_structlog_level_floor``) does.
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(level)
+    console.setFormatter(
+        structlog.stdlib.ProcessorFormatter(processor=structlog.dev.ConsoleRenderer(colors=False))
+    )
+    bridge_logger.addHandler(console)
 
     # Make `structlog.get_logger(name)` resolve to the bridge logger by
     # routing the root stdlib logger's `openral*` namespace there too.

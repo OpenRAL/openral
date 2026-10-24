@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-// A held payload is cleared on a cell whose TF tree renames the hand link.
+// Geometric attachment evidence does not authorize clearing occupied cells.
 //
 // `AttachedCollisionObject.attach_link` carries the MANIFEST link name (the
 // kernel's collision model uses manifest names). The real OpenArm cell's TF
 // tree publishes the same hand body as `openarm_left_ee_base_link`, not
 // `openarm_left_link7`, so the bridge's `lookupTransform(base, attach_link)`
-// failed and the payload stayed an obstacle to its own gripper.
+// failed and the payload stayed an obstacle to its own gripper. A valid frame mapping alone
+// still cannot prove that nearby world occupancy belongs to the attached object.
 // `attach_link_tf_frames` maps the one to the other.
 //
 // These run the REAL node in-process against a real `octomap::OcTree`, real
 // static TF that knows ONLY the vendor frame, and real DDS topics. The
-// obstacle cell beside the payload must survive in every case: the mapping
-// may only clear what the payload's own volume explains.
+// Both occupied cells must survive in every case until a tracker validates the object's identity.
 
 #include <atomic>
 #include <chrono>
@@ -184,15 +184,15 @@ protected:
 };
 
 TEST_F(BridgeAttachLinkTf, WithoutTheMappingTheHeldPayloadStaysAnObstacle) {
-  // The pre-fix behaviour on the real cell, kept as the unmapped default: the
-  // manifest link is not a TF frame, the lookup fails, nothing is cleared.
+  // The manifest link is not a TF frame, but clearing remains disabled for this
+  // geometry-only attachment whether or not its pose can be placed.
   start({});
   EXPECT_EQ(run_and_count_occupied(), 2U);
 }
 
-TEST_F(BridgeAttachLinkTf, TheMappingClearsThePayloadAndOnlyThePayload) {
+TEST_F(BridgeAttachLinkTf, TheMappingDoesNotAuthorizeGeometryOnlyClearing) {
   start({std::string(kManifestHand) + "=" + kVendorHand});
-  EXPECT_EQ(run_and_count_occupied(), 1U) << "the payload's cell must clear; the obstacle stays";
+  EXPECT_EQ(run_and_count_occupied(), 2U) << "a geometric fit cannot claim an occupied cell";
 }
 
 TEST_F(BridgeAttachLinkTf, AMalformedMappingClearsNothing) {

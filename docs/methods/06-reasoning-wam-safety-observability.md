@@ -306,13 +306,17 @@ _C++ (Layer 5). Node-side caps on the world-voxel freshness parameters (hazard l
 - `kMaxWorldVoxelDeadlineMs = 2000.0`, `kMaxWorldVoxelDataAgeBudgetMs = 3000.0`, `kDefaultWorldVoxelDataAgeBudgetMs = 1500.0` — With `world_voxel_enabled`, `on_configure` returns FAILURE for a `world_voxel_deadline_ms` outside (0, 2000] or a `world_voxel_data_age_budget_ms` outside (0, 3000]; the budget defaults to 1500 and 0 does not disable it. Deliberate mirror of `DeployRuntime`'s caps, pinned by `tests/unit/test_perception_caps_mirror.py`.
 - **Workspace contact params (#349)** — `workspace_contact_enabled` (default false; requires `grasp_allowance_enabled`), `workspace_contact_links` (each a collision link, non-empty), `workspace_contact_max_speed_mps` and `workspace_contact_control_period_s` (finite > 0), `workspace_contact_max_lead_m` (finite, > 0, ≤ `kMaxWorkspaceContactLeadM`), `workspace_contact_jaw_joints` (each a `collision_joint_names` entry; default empty), `workspace_contact_brake_enabled` (default false; requires the rule: a JOINT_POSITION chunk whose only reasons to stop are the measured hand speed and/or lead becomes a hold at the measured pose, jaws keep their command, no latch, WARN `safety.workspace_brake`), `workspace_contact_hold_max_consecutive` (default 0; needs the brake: a command the relaxed check still refuses while the measured pose passes is held, up to that many chunks in a row, then the latched stop) — no default the node would use: `on_configure` returns FAILURE otherwise and WARNs the rule (both bounds, the freshness window) when on. The node ingests `GraspDeclaration.workspace_region` next to the grasp region (`ingest_workspace_contact`, same frame/measurement-age/backstop/stream-freshness rules — a retirement ends the grasp region, not the workspace, `safety.workspace_region_armed` / `_dropped` / `_rejected`, `safety.workspace_contact_summary` on drop), sets the hand speed of a JOINT_POSITION candidate from the MEASURED velocity (`measured_velocity_fresh(now_ns)`: every FK dof has a finite `/joint_states` velocity at most `collision_state_deadline_ms` old — `on_joint_state` stores it per dof in `dq_meas_`, a message naming a joint without one forgets it; then `workspace_hand_speed` of FK(q_meas + dq_meas · period) vs FK(q_meas), once per candidate, every row), else the commanded-speed fallback per row (`workspace_hand_speed`: max over hand links of `link_displacement_bound(prev row, row)` / period; row 0's previous row is, per commanded joint, its previously accepted command while `workspace_command_fresh` — held, due ≤ `kWorkspaceCommandFreshPeriods` periods ago — else the measured state; the tick-partner check the same, partner joints at their committed targets) and the hand lead (`workspace_hand_lead`: max over hand links of `link_displacement_bound(measured, row)` with the jaw joints held at measured, not divided by the period); unknown → `+inf` for every other mode or a stale measured state. Held commands are recorded on accept and forgotten (`clear_workspace_commands`) on any refused chunk, an external E-stop, a reset, configure/activate/cleanup, and a workspace armed/dropped. WARNs `safety.workspace_contact` (speed + `speed_source=measured|commanded`, and lead) ≤ 1 Hz per link, and adds `workspace_contact_active=` / `hand_speed_mps=` / `hand_lead_m=` / `hand_speed_source=` to `safety.collision`, `safety.workspace_contact_active` / `_pairs` / `_max_depth_m` / `safety.workspace_hand_speed_mps` / `safety.workspace_hand_speed_source` / `safety.workspace_hand_lead_m` span attributes and max speed (+ `max_speed_source`) + max lead to `safety.workspace_contact_summary`.
 - `kMaxRegionMeasurementAgeS = 4.0` (2 × `kMaxWorldVoxelDeadlineMs`) — Cap on `grasp_region_max_age_s` / `place_region_max_age_s`, how old a producer-measured region's `stamp_ns` may be and still exempt anything. `0` (default) resolves to 2 × `world_voxel_deadline_ms`; `on_configure` returns FAILURE for a resolved value outside (0, 4] while the matching allowance (`grasp_allowance_enabled` / `attached_collision_enabled`) is on. A stale or future-stamped region is dropped (`reason=region_stale`) at ingest and per candidate; not applied to a grasp box latched at handover.
+- **Tracked grasp exemption param (#418 K2)** — `tracked_grasp_exemption_enabled` (default false): the grasp exemption's SOURCE — the tracked-object table (`TrackedGraspTable`, filled per candidate by `fill_tracked_grasp` with the eligible objects: role `target`, `declaration_key` == the live declaration's `<target_id>@<stamp_ns>`, confirmed/occluded, (id, epoch) not retired, confirmed within `grasp_region_max_age_s`, cover ≥ max(2, ⌈0.5·visible_cells⌉) on the kernel's grid) instead of the producer region. `on_configure` returns FAILURE without `grasp_allowance_enabled`, off `hal_mode: sim`, or when `grasp_contact_links` (plus `tracked_grasp_extra_contact_links`, default empty: K2-only fixed jaws on a body link, OT-6 amendment 2026-10-17; refused when a name is no collision link or K2 is off) do not group into 1..`kMaxGraspHands` hands each holding a finger. Disclosure: INFO `safety.tracked_grasp_eligible` on change, span attribute `safety.tracked_grasp_eligible`.
+- **Tracked binding check (#418 K3)** — a `tracked_object` attachment is off the hand (`safety.attachment_binding_off_hand reason=no_accepted_set|no_live_track|provisional_track|no_measured_state|box_off_hand`): still a checked payload, never a handover, no support witness, no K5 release. A `TrackedObject.provisional` track fails closed here (never payload binding geometry) while staying K2-eligible.
+- **Tracked release params (#418 K5)** — `tracked_release_jaw_joints` / `tracked_release_jaw_open_sign` / `tracked_release_gap` / `tracked_release_dwell_s` / `tracked_release_clear_m` / `tracked_release_timeout_s`: off with no jaw joint. With one, `on_configure` returns FAILURE off `hal_mode: sim` (mirrors K2; not monotone, hazard OT-7) and on any out-of-bounds value.
+- **Explained-cells params (#418 K7)** — `workspace_explained_cells_enabled` (default false; requires `workspace_contact_enabled`, so sim-only): narrows the #349 workspace exemption to explained cells (`WorkspaceExplanation`, filled per candidate by `fill_workspace_explained` with the tracked objects that explain: any role, confirmed/occluded, (id, epoch) not retired, confirmed within `grasp_region_max_age_s`, cover-checked on the kernel's grid (`refresh_tracked_cover`, shared with K2), the stream fresh; plus the grid's declared static cells). `static_points_file` (default ""): the declared static geometry as base-frame points (the launch passes one centre per cell the bridge marks, `_static_cells_file`), loaded at configure (`load_static_points`; an unreadable/malformed/empty file returns FAILURE) and re-marked once per grid lattice (`refresh_static_cells`), only on the base frame's own lattice (identity rotation, origin on a multiple of the resolution; otherwise no static cell, WARN `reason=lattice`). Disclosure: WARN `safety.workspace_explained_cells enabled`, INFO `safety.workspace_explained` on change, span attribute `safety.workspace_explained_objects`, stop line `workspace_denied=5`.
 
 ### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
 _Allocation-free attached-payload contact handling, plus the staged 26-DOP → exact-convex-hull narrow phase for the arm-link-vs-world-voxel check ([`collision-hull-narrow-phase.md`](../reference/collision-hull-narrow-phase.md), [`collision-tight-geometry.md`](../reference/collision-tight-geometry.md))._
 
 - `struct CollisionHit` — One collision check's outcome and, on a hit, its E-stop evidence. Since #349 also `workspace_pairs` / `workspace_link` / `workspace_cell` / `workspace_min_distance`: disclosure of the (hand link, cell) pairs within the margin the live workspace tolerated, never a decision. `link_a`/`link_b`/`min_distance` name the single deepest tripped pair; `sweep_min_distance` is the separate sweep-wide minimum and never supplies the evidence distance. `advisory` is the one field that is itself a decision — refuses the action without latching, for an attached payload only, never for a robot link.
 - `hull_hull_distance(a, b, margin, fallback, depth_is_box_bound = nullptr) -> double` — Stage 2 for a self-collision pair: GJK on the two links' exact hulls, replacing the OBB SAT when both ship stage-2 geometry. The optional out-parameter reports whether the returned depth is the (looser but sound) box's bound rather than a true hull measurement — GJK proves an overlap but does not size it. Disclosure only; never gates the trip decision.
-- `check_contact_force_gate(attached) -> ContactForceGateResult` — Declaration-scoped contact-force gate for a place, where geometric clearance is zero by design. Only ever adds a refusal, evaluated after every geometric check has passed. Arms only with a valid live declaration, a matching object/witness, and calibration. `kMaxContactForceThresholdN = 140.0` mirrors the schema's cap (ISO/TS 15066 Table A.2). Allocation-free.
+- `check_contact_force_gate(attached, now_ns, robot_threshold_n = +inf) -> ContactForceGateResult` — Declaration-scoped contact-force gate for a place, where geometric clearance is zero by design. Only ever adds a refusal, evaluated after every geometric check has passed. Requires positive, non-future declaration and witness stamps and a witness within the smaller of the declaration's remaining lifetime and the existing attached-collision freshness budget, a matching object/target, and a named calibration. Zero stamps count as missing. Missing or stale feedback leaves geometry unchanged. Uses the smaller of the declaration threshold and robot ceiling; it grants no contact permission. `kMaxContactForceThresholdN = 140.0` and the 600 s timeout ceiling mirror the schema's caps. Allocation-free.
 - `place_approach_allowance_cap(resolution) -> double` — The place approach allowance's cap at a live voxel `resolution`: `min(1.5 × voxel, 4 cm)`, `0.0` for an unusable resolution. `constexpr`, header-inline; the single definition the geometry and the log line both quote.
 - `place_approach_allowance(grid, object_index, center) -> double` — Margin reduction the live place declaration grants this payload against this occupied cell, or `0.0`. Returns the reduction only when the region is valid, the object is in `object_mask`, the box is finite/non-degenerate, and the cell centre is inside it (exact point-in-OBB). Reduces the margin only — deepening past it still stops, and arm-vs-world is untouched.
 - `enum class PlaceRegionStatus` — Outcome of a place-region ingest: `kOk`, `kNoObject` (ordinary pre-grasp state), `kBadPose` (non-finite pose; the node also returns it for a wire quaternion not unit to 1e-6), `kBadExtents`, `kDegenerate`, `kOversize`, `kOversizeVolume`, `kBadGeometry`, `kGeometryOverflow`. Every non-`kOk` value means no allowance.
@@ -325,7 +329,7 @@ _Allocation-free attached-payload contact handling, plus the staged 26-DOP → e
 - `update_attached_voxel_contacts(attached, scratch, grid, contact_mask, contact_distance, mask_capacity, distance_capacity, snapshot) -> bool` — Snapshots the occupied voxel contacts present at attachment and refreshes them against the measured payload pose; only that embedded subset (the payload's own uncleared occupancy residue) still exempts anything, no bits added after the snapshot.
 - `place_advisory_depth(resolution) -> double` — `min(0.2 × resolution, 5 mm)`, the depth past the place approach allowance within which an attached payload's world contact is refusable rather than latching. `0.0` for an unusable resolution, collapsing to today's latched stop.
 - `check_self_collision(model, scratch, margin, workspace = nullptr) -> CollisionHit` — #349: with a live `WorkspaceContactRegion`, a pair of two hand links (both in its mask, both link origins inside its box) does not trip while the hands are slow (`workspace_link_slow` on both); counted in `workspace_pairs`, at its own depth in `sweep_min_distance`. `nullptr` = the unchanged check. `check_attached_self_collision(model, attached, scratch, margin, workspace = nullptr)` applies the same rule to a carried payload on its attach link against another hand link.
-- `check_voxel_collision(model, scratch, grid, margin) -> CollisionHit` — Checks every FK'd robot primitive against the occupied cells of a dense voxel `grid`. Two narrowly scoped exemptions, both default off: the ADR-0115 grasp region (declared contact links, cells centred in the region) and, after it, the #349 manipulation workspace (hand links, cells centred in the confirmed workspace, while the hand is slow — `workspace_contact_exempts`); tolerated workspace pairs are counted in the hit. Never sets `advisory` — a robot link against the world is always a latching stop. A boxed link with tight geometry runs a staged narrow phase (26-DOP, then exact hull GJK) that only tightens, never loosens, the reported distance versus the plain OBB. One narrowly scoped exemption: while `grid.grasp_region` is valid, a mask link vs a cell centred in its box does not trip and reaches `sweep_min_distance` only, at its own depth (the lifecycle's velocity band clamps an untripped check's slack to 0, so it reads as the slowest rate, never a negative slack that would hide the other pairs' graded slowdown) and never spends the stage-2 budget; every other link's trips are unchanged or, with the budget freed, fewer. Allocation-free.
+- `check_voxel_collision(model, scratch, grid, margin) -> CollisionHit` — Checks every FK'd robot primitive against the occupied cells of a dense voxel `grid`. Two narrowly scoped exemptions, both default off: the ADR-0115 grasp region (declared contact links, cells centred in the region) and, after it, the #349 manipulation workspace (hand links, cells centred in the confirmed workspace, while the hand is slow — `workspace_contact_exempts`); tolerated workspace pairs are counted in the hit. Never sets `advisory` — a robot link against the world is always a latching stop. With a valid `grid.tracked_grasp` (issue #418 K2) the grasp exemption's box for a finger link is its hand's `select_tracked_grasp` box at this configuration instead of the region, under the same accounting. A boxed link with tight geometry runs a staged narrow phase (26-DOP, then exact hull GJK) that only tightens, never loosens, the reported distance versus the plain OBB. One narrowly scoped exemption: while `grid.grasp_region` is valid, a mask link vs a cell centred in its box does not trip and reaches `sweep_min_distance` only, at its own depth (the lifecycle's velocity band clamps an untripped check's slack to 0, so it reads as the slowest rate, never a negative slack that would hide the other pairs' graded slowdown) and never spends the stage-2 budget; every other link's trips are unchanged or, with the budget freed, fewer. Allocation-free.
 - `struct GraspTargetRegion` / `VoxelGrid::grasp_region` — Producer-measured region of a live grasp declaration (ADR-0115 draft): `valid`, `link_mask` (`std::bitset<kMaxGraspMaskLinks>`, 256), base-frame `pose`, `half_extents`, plus lifecycle bookkeeping `handover`/`object_index` the geometry never reads. Invalid by default — no exemption anywhere; armed only by the lifecycle node with `grasp_allowance_enabled`.
 - `kMaxGraspRegionHalfExtentM = 0.20`, `kMaxGraspRegionVolumeM3 = 0.03`, `kMaxGraspDeclarationTimeoutS = 120.0` — Safety-WG placeholder caps on a grasp region and its declaration's backstop; past any of them it grants nothing.
 - `kGraspRetiredCapacity = 16` / `class RetiredGraspSet` — The kernel's retired grasp-declaration identities (HZ-0115-3, multi-pick per goal): a fixed ring of (`std::hash` of `target_id`, `stamp_ns`); `contains(hash, stamp)`, `insert(hash, stamp) -> bool` (true when full and the oldest was evicted; a held identity is a no-op), `clear()`, `size()`. No allocation (the lifecycle retires on the candidate path); a hash collision only refuses a fresh identity. Capacity is a Safety-WG placeholder.
@@ -334,6 +338,23 @@ _Allocation-free attached-payload contact handling, plus the staged 26-DOP → e
 - `grasp_target_exempts(grid, link_index, center) -> bool` — Whether the live grasp region exempts this link from the occupied cell centred at `center` (base frame): valid region, link in the mask, finite non-degenerate box, centre inside it (the exact point-in-OBB test `place_approach_allowance` uses). Allocation-free.
 - `grasp_region_contains(region, p) -> bool` — Whether base-frame point `p` is inside a valid grasp region's box (the containment half of `grasp_target_exempts`); the lifecycle asks it of the declared payload's origin during the handover. Allocation-free.
 - `grasp_region_status_reason(status) -> const char*` — Stable snake_case token for a `GraspRegionStatus`, for the `reason=` key of grasp-region log lines. Never null.
+- `kMaxTrackedObjects = 32`, `kMaxTrackedHullVertices = 64` — Issue #418 K1 caps on the tracker's `TrackedObjectSet` as the kernel ingests it (mirror `TrackedObjectSet.objects` `max_length=32` and the 64-vertex hull bound; the ≤ 4 hulls bound is the IDL sequence's). A set past a cap is refused whole.
+- `tracked_box_meets_hand(model, scratch, attached, object, box, half_extents, slack) -> bool` — Issue #418 K3 binding check: does a tracked object's box lie within `slack` (one voxel at the call site) of a capsule or OBB of the carrying attachment's own links (attach link + touch links), at the configuration FK'd into `scratch` (the lifecycle passes the measured one)? The kernel's lowering of the tracker's pinch volume; ceiling "within a cell of the hand", not "between the pads". False for a degenerate/non-finite box or slack. Decides only whether a TRACKED_OBJECT binding may carry exemptions, never removes a payload from a check. Allocation-free.
+- `box_meets_hand_links(model, scratch, hand_mask, box, half_extents, slack) -> bool` — Issue #418 contact hold: `tracked_box_meets_hand`'s geometry (capsules and OBBs within `slack` of the box; both share one internal loop) with links chosen by the workspace's hand-link mask. The lifecycle node calls it on its own measured-state FK to hold a TARGET or DESTINATION box's `cover_ok` through a cover shortfall for up to `grasp_region_max_age_s` after its last own pass (`safety.tracked_cover_held`). An empty mask, a degenerate box or slack, or an unposed link never meets. Allocation-free.
+- `released_payload_clearance(model, scratch, attached, object) -> double` — Issue #418 K5 release-window separation: lower bound on the gap between `object`'s primitives (plain box/capsule, no stage-2 refinement, so it reads low) and every link exempt against it (attach link, touch links, `AttachedObject.release_hand_link`) at the configuration FK'd into `scratch`; `+inf` when no exempt link has geometry. An `AttachedObject` with `attach_link == -1` is frozen in the base frame (`pose_in_link` is its base pose). Allocation-free.
+- `kMaxGraspHands = 4`, `struct TrackedGraspTable` / `VoxelGrid::tracked_grasp` — Issue #418 K2 (hazard OT-6, Safety-WG review pending): the tracked grasp exemption's inputs — `valid`, the hands (`n_hands`, `hand_links[h]` finger bitsets, `link_point[l]` each finger's TCP sample) and the boxes the lifecycle found eligible for this candidate (`n_objects`, `box[i]`, `half_extents[i]`, base frame, ≤ `kMaxTrackedObjects`). A null pointer or `valid == false` is the legacy `grasp_region` rule bit for bit; `valid` REPLACES `grasp_region` as the exemption source of `check_voxel_collision` (a source selector, never a disable: with no boxes nothing is exempt).
+- `build_grasp_hands(model, allowlist, table, extra = {}) -> bool` — Configure-time: groups the allowlisted finger links into hands by mount (the `grasp_links_one_hand` grouping) and records each finger's TCP sample (mean of its primitives' origins, link frame). `extra` (K2's `tracked_grasp_extra_contact_links`, OT-6 amendment 2026-10-17): fixed jaws on a body link, grouped with the fingers (`TrackedGraspTable::extra_links`) but never a TCP sample. False and no hands on an empty allowlist, a bit past the model, a cyclic chain, more than `kMaxGraspHands` mounts, or a hand of extra links alone.
+- `grasp_hand_tcp(table, scratch, hand) -> Vec3` — A hand's TCP at the FK'd configuration: the mean of its fingers' sample points. NaN for an out-of-range hand or a short scratch. Allocation-free.
+- `select_tracked_grasp(table, scratch, tie_m, out)` — K2's per-hand selection, once per checked row inside `check_voxel_collision`: `out[h]` = the eligible box with the smallest point-to-box gap to hand h's TCP, or -1 when there is none, the runner-up is within `tie_m` (one voxel, HZ-0115-2), another hand's TCP is at least as near it (HZ-0115-12), or anything is non-finite. ≤ 1 box per hand. Allocation-free.
+- `tracked_box_cover(grid, box, half_extents) -> size_t` — K2's cover re-check on the kernel's own grid: occupied cells whose base-frame centre is inside the box (window clamped to the grid; 0 for a degenerate grid/box). Once per grid, not on the hot path. Allocation-free.
+- `tracked_cover_sufficient(occupied, visible) -> bool` — `occupied >= max(2, ceil(0.5 * visible))`, `visible` the tracker's `TrackedObject.visible_cells`.
+- `enum class PrimitiveSource { kFallback, kMeasured, kGrown }`, `AttachedPrimitive::source` / `AttachedPrimitiveInput::source` — Issue #418 (hazard OT-10 amendment, Safety-WG review pending): the evidence behind a payload primitive (wire `AttachedCollisionPrimitive.geometry_source`); anything unknown or unset is `kFallback`.
+- `struct PayloadOwnCells` / `VoxelGrid::payload_own`, `payload_own_cell_exempts(grid, attached, object_index, object_xf, cell_idx, center, local) -> bool` — OT-10 amendment: "a bound payload's measured cells cannot stop that payload". True only when the table is valid and the object armed, the cell's volume meets a `kMeasured`/`kGrown` BOX primitive of this payload (exact oriented-box vs cube test), its centre is strictly above the track's `floor_z`, it is no declared static cell and it meets no other settled track's box; payload-vs-voxel only. `CollisionHit::payload_own_pairs` / `payload_own_min_distance` disclose what it tolerated.
+- **Payload-own-cells param (#418 OT-10 amendment)** — `payload_own_cells_enabled` (default false; `on_configure` refuses it without `tracked_grasp_exemption_enabled`, without `attached_collision_enabled`, off `hal_mode: sim`, or with an unreadable `static_points_file`); the launch sets it iff `object_tracking: on` (`_payload_own_cells`), and passes the declared static cells as `static_points_file` with it whether or not K7 is on — a declared static collider's cell is never the payload. Per candidate `fill_payload_own` builds `PayloadOwnCells` from the tracked set (every live, unretired track is an "other" except the payload's own) and `check_attachment_bindings` (own track: the K3-valid `tracked_object` entry, or the single provisional candidate a `pinch_fallback` attachment names). `pinch_payload_own_cells_enabled` (default false; refused without `payload_own_cells_enabled`; the launch sets it with it) also arms an `untracked_grasp` pinch hold with no own track: `PayloadOwnCells.fallback_ok` lets its fallback boxes explain cells above `floor_z` = the pinch box's lowest point at the bind (`pinch_floor_`, kept per held object id).
+- `kExplainedSupportReachM = 0.05`, `struct WorkspaceExplanation` / `VoxelGrid::workspace_explained` — Issue #418 K7 (hazard OT-11, Safety-WG review pending): the explaining tracked boxes (`n_objects`, `box[i]`, `half_extents[i]`, `support_z[i]` NaN = none), the current grid's declared static cells (`static_cells`, `static_cells_n`; a length other than the grid's = none), and its connected support layer (`support_cells`, `support_cells_n`, bit 0; same length rule). Non-null = the workspace exemption also requires an explained cell; null = the #349 rule bit for bit. A new conjunct only: trips(#349) ⊆ trips(K7) ⊆ trips(no workspace).
+- `workspace_cell_explained(grid, center) -> bool` — K7: the cell centred at `center` (base frame) lies in an explaining box, or is a declared static cell of this grid, or sits within ½ cell of an object's `support_z` and within `kExplainedSupportReachM` of its box horizontally, or is marked in `support_cells`. False with no table, a non-finite centre or a degenerate grid. Allocation-free.
+- `mark_support_cells(grid, e, mask, mask_n, queue, queue_n) -> size_t` — K7 amendment 2026-10-20 (OT-11, Safety-WG pending): clears `mask` and marks the connected support layer: seeds are the occupied cells the reach rule explains as object i's support, grown through occupied cells centred in object i's layer and inside `grid.workspace_region`, within `kSupportBridgeCells` (= 2: over one empty cell) sideways and one layer up or down. Returns the cells marked; 0 (marking nothing) with no live workspace, a degenerate grid, or a mask / queue shorter than the grid. Allocation-free; the lifecycle re-marks once per grid or change of objects / workspace (`fill_workspace_explained`, `support_key`).
+- `mark_static_cells(grid, base_points, mask, mask_n, pad_cells = 0) -> size_t` — K7 (`pad_cells`: the kernel passes `kExplainedStaticPadCells` = 1, OT-11 amendment 2026-10-17: the declared cells plus every cell within one cell, never wrapping; the count returned is the declared cells): clears `mask` and marks every cell of `grid` holding a point — the octomap bridge's `mark_base_points` indexing (see `docs/methods/14-duplication-watch.md`). 0 for a degenerate grid or a mask shorter than the grid. Once per grid-lattice change.
 - `struct WorkspaceContactRegion` / `VoxelGrid::workspace_region` — Producer-confirmed manipulation workspace of a live grasp declaration (issue #349, draft, Safety-WG review pending): `valid`, hand-link `link_mask` (`std::bitset<kMaxGraspMaskLinks>`), base-frame `pose`, `half_extents`, plus `hand_speed_mps` (the checked row's commanded hand speed bound, set by the lifecycle per row; `+inf` = unknown) and `max_speed_mps`, `hand_lead_m` (the checked row's lead over the measured pose; `+inf` = unknown) and `max_lead_m`. Invalid by default — no exemption; armed only by the lifecycle node with `workspace_contact_enabled`.
 - `kMaxWorkspaceRegionHalfExtentM = 0.50`, `kMaxWorkspaceRegionVolumeM3 = 0.25` — Safety-WG placeholder caps on a workspace (one tote interior or shelf slot); mirror `GraspDeclaration.MAX_WORKSPACE_HALF_EXTENT_M` / `MAX_WORKSPACE_VOLUME_M3`.
 - `kMaxWorkspaceContactLeadM = 0.10` — Safety-WG placeholder ceiling on `workspace_contact_max_lead_m`; mirrors the `le=0.10` bound on `DeployRuntime.workspace_contact_max_lead_m`.
@@ -596,14 +617,15 @@ _Idempotent OTel SDK setup + flush helper._
 ### `python/observability/src/openral_observability/tracing.py`
 _Span-context-manager helpers; safe to call before `configure_observability`._
 
-- `rskill_span(name, *, rskill_id=None, role=None, **attrs)` — Span for a Skill lifecycle phase; emits `rskill.id` / `rskill.role` from `semconv`. (L61)
-- `inference_span(name="skill.chunk_inference", *, chunk_index=None, kind: InferenceKind="foreground", **attrs)` — Span for one VLA inference plus the `openral.inference.duration` histogram (emitted together so they cannot diverge). `InferenceKind = Literal["foreground", "prefetch", "single"]` is the closed timing-axis label set. (L91)
-- `safety_span(name="safety.check", *, check_name=None, severity="info", **attrs)` — Span for a safety check; the C++ kernel parents its own `safety.check` to the Python tick via the propagator. (L145)
-- `reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs)` — Span for one `ReasonerCore.tick`. Sets `reasoner.{tick.idx, model, force}` and accepts any extra `reasoner.*` attribute via `**attrs`. (L179)
-- `start_reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs) -> Span` — Non-attaching variant for the phased tick: returns a started span without attaching it, so `prepare_tick` → off-thread `run_prepared_llm` → `finish_tick` can carry it between phases (each re-attaching via `use_span`) without an intermediate executor callback seeing it as current. Caller owns `span.end()`. (L250)
-- module constant `P` (L52) — `ParamSpec("P")`, generic parameter type var for `traced`'s decorator signature.
-- module constant `R` (L53) — `TypeVar("R")`, generic return type var for `traced`'s decorator signature.
-- `traced(name=None)` — Decorator that wraps a sync function in a span named after it. (L278)
+- `rskill_span(name, *, rskill_id=None, role=None, **attrs)` — Span for a Skill lifecycle phase; emits `rskill.id` / `rskill.role` from `semconv`. (L62)
+- `inference_span(name="skill.chunk_inference", *, chunk_index=None, kind: InferenceKind="foreground", **attrs)` — Span for one VLA inference plus the `openral.inference.duration` histogram (emitted together so they cannot diverge). `InferenceKind = Literal["foreground", "prefetch", "single"]` is the closed timing-axis label set. (L92)
+- `safety_span(name="safety.check", *, check_name=None, severity="info", **attrs)` — Span for a safety check; the C++ kernel parents its own `safety.check` to the Python tick via the propagator. (L146)
+- `world_state_span(name, *, traceparent="", **attrs)` (L180) — Span for one World State event, attributes prefixed `world_state.`; a non-empty W3C `traceparent` (e.g. a declaration's `trace_id`, the runner's `rskill.execute`) parents it, so the event replays from the skill's trace. Used for `world_state.object_query`.
+- `reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs)` — Span for one `ReasonerCore.tick`. Sets `reasoner.{tick.idx, model, force}` and accepts any extra `reasoner.*` attribute via `**attrs`. (L214)
+- `start_reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs) -> Span` — Non-attaching variant for the phased tick: returns a started span without attaching it, so `prepare_tick` → off-thread `run_prepared_llm` → `finish_tick` can carry it between phases (each re-attaching via `use_span`) without an intermediate executor callback seeing it as current. Caller owns `span.end()`. (L285)
+- module constant `P` (L53) — `ParamSpec("P")`, generic parameter type var for `traced`'s decorator signature.
+- module constant `R` (L54) — `TypeVar("R")`, generic return type var for `traced`'s decorator signature.
+- `traced(name=None)` — Decorator that wraps a sync function in a span named after it. (L313)
 
 ### `python/observability/src/openral_observability/cli.py`
 _Root-span helper for the ``openral`` CLI._
@@ -747,94 +769,95 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names. `Final
 - `const SPAN_HAL_SEND_ACTION: str = "hal.send_action"` (L177)
 - `const SPAN_SENSORS_READ_LATEST: str = "sensors.read_latest"` (L178)
 - `const SPAN_WORLD_STATE_SNAPSHOT: str = "world_state.snapshot"` (L179)
-- `const SPAN_WORLD_SCENE_OBJECTS: str = "world.scene_objects"` (L180)
-- `const SPAN_SAFETY_CHECK: str = "safety.check"` (L181)
-- `const SPAN_REWARD_SCORE: str = "reward.score"` (L182)
-- `const SPAN_REASONER_TICK: str = "reasoner.tick"` (L184)
-- `const SPAN_DEPLOY_BRINGUP: str = "deploy.bringup"` (L186)
-- `const BRINGUP_NODE: str = "openral.bringup.node"` (L198)
-- `const BRINGUP_TRANSITION: str = "openral.bringup.transition"` (L199)
-- `const BRINGUP_RESULT: str = "openral.bringup.result"` (L200)
-- `const REASONER_MODEL: str = "reasoner.model"` (L203)
-- `const REASONER_TICK_IDX: str = "reasoner.tick.idx"` (L204)
-- `const REASONER_TOOL: str = "reasoner.tool"` (L205)
-- `const REASONER_RSKILL_ID: str = "reasoner.rskill_id"` (L206)
-- `const REASONER_SUPPRESSED_REASON: str = "reasoner.suppressed_reason"` (L207)
-- `const REASONER_ERROR_KIND: str = "reasoner.error_kind"` (L208)
-- `const REASONER_FORCE: str = "reasoner.force"` (L209)
-- `const REASONER_LLM_S: str = "reasoner.llm_s"` (L214)
-- `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L216)
-- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L222)
-- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L227)
-- `const REASONER_TIER: str = "reasoner.tier"` (L232)
-- `const SPAN_SIM_RUN: str = "sim.run"` (L234)
-- `const SPAN_SIM_STEP: str = "sim.step"` (L235)
-- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L236)
+- `const SPAN_WORLD_STATE_OBJECT_QUERY: str = "world_state.object_query"` (L181) — Issue #418: one object-query escalation, parented on the goal's skill-execution trace.
+- `const SPAN_WORLD_SCENE_OBJECTS: str = "world.scene_objects"` (L182)
+- `const SPAN_SAFETY_CHECK: str = "safety.check"` (L183)
+- `const SPAN_REWARD_SCORE: str = "reward.score"` (L184)
+- `const SPAN_REASONER_TICK: str = "reasoner.tick"` (L186)
+- `const SPAN_DEPLOY_BRINGUP: str = "deploy.bringup"` (L188)
+- `const BRINGUP_NODE: str = "openral.bringup.node"` (L200)
+- `const BRINGUP_TRANSITION: str = "openral.bringup.transition"` (L201)
+- `const BRINGUP_RESULT: str = "openral.bringup.result"` (L202)
+- `const REASONER_MODEL: str = "reasoner.model"` (L205)
+- `const REASONER_TICK_IDX: str = "reasoner.tick.idx"` (L206)
+- `const REASONER_TOOL: str = "reasoner.tool"` (L207)
+- `const REASONER_RSKILL_ID: str = "reasoner.rskill_id"` (L208)
+- `const REASONER_SUPPRESSED_REASON: str = "reasoner.suppressed_reason"` (L209)
+- `const REASONER_ERROR_KIND: str = "reasoner.error_kind"` (L210)
+- `const REASONER_FORCE: str = "reasoner.force"` (L211)
+- `const REASONER_LLM_S: str = "reasoner.llm_s"` (L216)
+- `const REASONER_PROMPT_TOKENS: str = "reasoner.prompt_tokens"` (L218)
+- `const REASONER_MISSION_JSON: str = "reasoner.mission_json"` (L224)
+- `const SKILL_FAILURE_STATE: str = "openral.event.skill_failure.state"` (L229)
+- `const REASONER_TIER: str = "reasoner.tier"` (L234)
+- `const SPAN_SIM_RUN: str = "sim.run"` (L236)
+- `const SPAN_SIM_STEP: str = "sim.step"` (L237)
+- `const SPAN_PHYSICS_STEP: str = "physics.step"` (L238)
 
 **Span-event names**
-- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L254)
-- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L255)
-- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L256)
-- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L257)
-- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L258)
-- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L261)
-- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L262)
-- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L269)
-- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L273)
-- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L274)
-- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L279)
+- `const EVENT_ESTOP_REQUESTED: str = "openral.event.estop_requested"` (L256)
+- `const EVENT_SENSOR_STALE: str = "openral.event.sensor_stale"` (L257)
+- `const EVENT_STALENESS_LATCHED: str = "openral.event.staleness_latched"` (L258)
+- `const EVENT_ERROR_LATCHED: str = "openral.event.error_latched"` (L259)
+- `const EVENT_SAFETY_VIOLATION: str = "openral.event.safety_violation"` (L260)
+- `const EVENT_ACTION_DROPPED: str = "openral.event.action_dropped"` (L263)
+- `const EVENT_DEADLINE_MISSED: str = "openral.event.deadline_missed"` (L264)
+- `const EVENT_SKILL_FAILURE: str = "openral.event.skill_failure"` (L271)
+- `const EVENT_CHUNK_PREFETCH_HIT: str = "openral.event.chunk_prefetch_hit"` (L275)
+- `const EVENT_CHUNK_PREFETCH_MISS: str = "openral.event.chunk_prefetch_miss"` (L276)
+- `const EVENT_EPISODE_CLOSED: str = "openral.event.episode_closed"` (L281)
 
 **Metric instrument names**
-- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L283)
-- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L284)
-- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L285)
-- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L286)
-- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L287)
-- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L288)
-- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L289)
-- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L290)
-- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L291)
-- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L292)
-- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L293)
-- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L294)
-- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L295)
-- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L296)
-- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L300)
-- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L301)
-- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L302)
-- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L303)
-- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L304)
-- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L305)
-- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L306)
+- `const METRIC_TICK_DURATION: str = "openral.tick.duration"` (L285)
+- `const METRIC_INFERENCE_DURATION: str = "openral.inference.duration"` (L286)
+- `const METRIC_TICK_BUDGET_VIOLATIONS: str = "openral.tick.budget_violations"` (L287)
+- `const METRIC_TICK_DEADLINE_MISSES: str = "openral.tick.deadline_misses"` (L288)
+- `const METRIC_SAFETY_VIOLATIONS: str = "openral.safety.violations"` (L289)
+- `const METRIC_HAL_READ_STATE_DURATION: str = "openral.hal.read_state.duration"` (L290)
+- `const METRIC_HAL_SEND_ACTION_DURATION: str = "openral.hal.send_action.duration"` (L291)
+- `const METRIC_HAL_ESTOP_COUNT: str = "openral.hal.estop.count"` (L292)
+- `const METRIC_SENSORS_AGE_MS: str = "openral.sensors.age_ms"` (L293)
+- `const METRIC_SENSORS_STALE_READS: str = "openral.sensors.stale_reads"` (L294)
+- `const METRIC_WORLD_STATE_STALENESS_MS: str = "openral.world_state.staleness_ms"` (L295)
+- `const METRIC_WORLD_STATE_COMPONENTS_STALE: str = "openral.world_state.components_stale"` (L296)
+- `const METRIC_OBSERVABILITY_EXPORT_FAILURES: str = "openral.observability.export_failures"` (L297)
+- `const METRIC_SIM_EPISODE_COUNT: str = "openral.sim.episode.count"` (L298)
+- `const METRIC_SYSTEM_GPU_MEMORY_USED_MB: str = "openral.system.gpu.memory_used_mb"` (L302)
+- `const METRIC_SYSTEM_GPU_MEMORY_TOTAL_MB: str = "openral.system.gpu.memory_total_mb"` (L303)
+- `const METRIC_SYSTEM_GPU_UTIL_PCT: str = "openral.system.gpu.utilization_pct"` (L304)
+- `const METRIC_SYSTEM_CPU_UTIL_PCT: str = "openral.system.cpu.utilization_pct"` (L305)
+- `const METRIC_SYSTEM_RAM_USED_MB: str = "openral.system.ram.used_mb"` (L306)
+- `const METRIC_SYSTEM_RAM_TOTAL_MB: str = "openral.system.ram.total_mb"` (L307)
+- `const METRIC_SIM_EPISODE_SUCCESS: str = "openral.sim.episode.success"` (L308)
 
 **Closed-set label vocabularies (for metric labels)**
-- `const LABEL_RSKILL_ID: str = "rskill.id"` (L313)
-- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L314)
-- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L315)
-- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L316)
-- `const LABEL_CONTROL_MODE: str = "control_mode"` (L317)
-- `const LABEL_ENGINE: str = "engine"` (L318)
-- `const LABEL_DEVICE: str = "device"` (L319)
-- `const LABEL_KIND: str = "kind"` (L320)
-- `const LABEL_MODALITY: str = "modality"` (L321)
-- `const LABEL_CHECK_NAME: str = "check_name"` (L322)
-- `const LABEL_SEVERITY: str = "severity"` (L323)
-- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L324)
-- `const LABEL_COMPONENT: str = "component"` (L325)
-- `const LABEL_REASON: str = "reason"` (L326)
-- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L332)
-- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L338)
-- `const THRESHOLD_DIR_UPPER: str = "upper"` (L339)
-- `const THRESHOLD_DIR_LOWER: str = "lower"` (L340)
+- `const LABEL_RSKILL_ID: str = "rskill.id"` (L315)
+- `const LABEL_RSKILL_REVISION: str = "rskill.revision"` (L316)
+- `const LABEL_HAL_ADAPTER: str = "hal.adapter"` (L317)
+- `const LABEL_ROBOT_MODEL: str = "robot.model"` (L318)
+- `const LABEL_CONTROL_MODE: str = "control_mode"` (L319)
+- `const LABEL_ENGINE: str = "engine"` (L320)
+- `const LABEL_DEVICE: str = "device"` (L321)
+- `const LABEL_KIND: str = "kind"` (L322)
+- `const LABEL_MODALITY: str = "modality"` (L323)
+- `const LABEL_CHECK_NAME: str = "check_name"` (L324)
+- `const LABEL_SEVERITY: str = "severity"` (L325)
+- `const LABEL_SIGNAL_KIND: str = "signal_kind"` (L326)
+- `const LABEL_COMPONENT: str = "component"` (L327)
+- `const LABEL_REASON: str = "reason"` (L328)
+- `const METRIC_THRESHOLD_MS: str = "openral.metric.threshold_ms"` (L334)
+- `const METRIC_THRESHOLD_DIR: str = "openral.metric.threshold_dir"` (L340)
+- `const THRESHOLD_DIR_UPPER: str = "upper"` (L341)
+- `const THRESHOLD_DIR_LOWER: str = "lower"` (L342)
 
 **Run-mode enum (closed set for openral.run.mode)**
-- `const RUN_MODE_SIM: str = "sim"` (L344)
-- `const RUN_MODE_HARDWARE: str = "hardware"` (L345)
-- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L346)
+- `const RUN_MODE_SIM: str = "sim"` (L346)
+- `const RUN_MODE_HARDWARE: str = "hardware"` (L347)
+- `const RUN_MODE_BENCHMARK: str = "benchmark"` (L348)
 
 **Safety kernel enum (closed set for safety.kernel — see SAFETY_KERNEL)**
-- `const SAFETY_KERNEL_NULL: str = "null"` (L350)
-- `const SAFETY_KERNEL_CPP: str = "cpp"` (L351)
+- `const SAFETY_KERNEL_NULL: str = "null"` (L352)
+- `const SAFETY_KERNEL_CPP: str = "cpp"` (L353)
 
 
 ### `python/observability/src/openral_observability/metrics.py`
@@ -904,43 +927,44 @@ _W3C TraceContext inject / extract for cross-process trace correlation._
 ### `python/observability/src/openral_observability/failure_bus.py`
 _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{...}` bus._
 
-- `class FailureSource(str, Enum)` (L113) — `HAL | SENSOR | SKILL | SAFETY | WAM | CRITIC`; the string value is the topic suffix.
-- `topic_for(source: FailureSource) -> str` (L128) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
+- `class FailureSource(str, Enum)` (L116) — `HAL | SENSOR | SKILL | SAFETY | WAM | CRITIC | WORLD_STATE`; the string value is the topic suffix (`WORLD_STATE`: issue #418, the object tracker's query escalations on `/openral/failure/world_state`).
+- `topic_for(source: FailureSource) -> str` (L132) — Pure helper: `FailureSource → /openral/failure/<suffix>`.
 - `KIND_*` / `SEVERITY_*` `int` module constants (L105–L121) — Mirror `openral_msgs/msg/FailureTrigger` (incl. `KIND_COLLISION = 10`, stamped by the safety kernel on every collision stop); bump both when the IDL changes. A test pins the two sides name-for-name and value-for-value against the generated constants.
-- `KIND_TIMEOUT: int = 0` (L92)
-- `KIND_FORCE: int = 1` (L93)
-- `KIND_WORKSPACE: int = 2` (L94)
-- `KIND_PERCEPTION: int = 3` (L95)
-- `KIND_CRITIC: int = 4` (L96)
-- `KIND_CONTROLLER: int = 5` (L97)
-- `KIND_SELFVERIFY: int = 6` (L98)
-- `KIND_HUMAN: int = 7` (L99)
-- `KIND_WAM: int = 8` (L100)
-- `KIND_REASONER_TIMEOUT: int = 9` (L101)
-- `KIND_COLLISION: int = 10` (L102)
-- `KIND_SUPPRESSED_SUMMARY: int = 254` (L103)
-- `SEVERITY_INFO: int = 0` (L105)
-- `SEVERITY_WARN: int = 1` (L106)
-- `SEVERITY_FAIL: int = 2` (L107)
-- `SEVERITY_ABORT: int = 3` (L108)
-- `TOPIC_PREFIX: str = "/openral/failure"` (L110)
-- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L146) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited).
-- `DEFAULT_SUMMARY_PERIOD_S: float = 1.0` (L153)
-- `class _TokenBucket` (L156) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
-- `class FailureBusPublisher` (L205) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Configure the publisher; does not open the ROS publisher.
-  - `topic(self) -> str` (L268) — The full topic this publisher writes to.
-  - `source(self) -> FailureSource` (L273) — The source layer this publisher represents.
-  - `create_publisher(self) -> None` (L277) — Open the ROS 2 publisher with the bus QoS profile.
-  - `start(self) -> None` (L299) — Start the 1 Hz `KIND_SUPPRESSED_SUMMARY` roll-up timer.
-  - `stop(self) -> None` (L312) — Cancel the suppressed-summary timer (`on_deactivate`).
-  - `destroy(self) -> None` (L318) — Tear down the publisher + timer (`on_cleanup`).
-  - `publish(self, *, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (L329) — Emit one `FailureTrigger`, subject to rate-limiting (`False` when rate-limited).
+- `KIND_TIMEOUT: int = 0` (L94)
+- `KIND_FORCE: int = 1` (L95)
+- `KIND_WORKSPACE: int = 2` (L96)
+- `KIND_PERCEPTION: int = 3` (L97)
+- `KIND_CRITIC: int = 4` (L98)
+- `KIND_CONTROLLER: int = 5` (L99)
+- `KIND_SELFVERIFY: int = 6` (L100)
+- `KIND_HUMAN: int = 7` (L101)
+- `KIND_WAM: int = 8` (L102)
+- `KIND_REASONER_TIMEOUT: int = 9` (L103)
+- `KIND_COLLISION: int = 10` (L104)
+- `KIND_OBJECT_QUERY: int = 11` (L105) — Issue #418: `ObjectQueryEvidence`; bus-only (not in `SafetyStatus`).
+- `KIND_SUPPRESSED_SUMMARY: int = 254` (L106)
+- `SEVERITY_INFO: int = 0` (L108)
+- `SEVERITY_WARN: int = 1` (L109)
+- `SEVERITY_FAIL: int = 2` (L110)
+- `SEVERITY_ABORT: int = 3` (L111)
+- `TOPIC_PREFIX: str = "/openral/failure"` (L113)
+- `DEFAULT_RATE_LIMIT_HZ: dict[int, float | None]` (L150) — Per-severity defaults (INFO/WARN → 10/s, FAIL/ABORT → unlimited).
+- `DEFAULT_SUMMARY_PERIOD_S: float = 1.0` (L157)
+- `class _TokenBucket` (L160) — Private, lock-protected. `__init__(rate_hz, *, capacity=1.0, clock=time.monotonic)`; `try_consume() -> bool`.
+- `class FailureBusPublisher` (L209) — `__init__(node, source, *, rate_limit_hz=None, summary_period_s=1.0, clock=None)`. Configure the publisher; does not open the ROS publisher.
+  - `topic(self) -> str` (L272) — The full topic this publisher writes to.
+  - `source(self) -> FailureSource` (L277) — The source layer this publisher represents.
+  - `create_publisher(self) -> None` (L281) — Open the ROS 2 publisher with the bus QoS profile.
+  - `start(self) -> None` (L303) — Start the 1 Hz `KIND_SUPPRESSED_SUMMARY` roll-up timer.
+  - `stop(self) -> None` (L316) — Cancel the suppressed-summary timer (`on_deactivate`).
+  - `destroy(self) -> None` (L322) — Tear down the publisher + timer (`on_cleanup`).
+  - `publish(self, *, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (L333) — Emit one `FailureTrigger`, subject to rate-limiting (`False` when rate-limited).
 
 ### `python/observability/src/openral_observability/logging.py`
-- `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L59)
-- `resolve_log_level() -> int` (L75) — Resolve the OpenRAL log floor from `OPENRAL_LOG_LEVEL` (name or int); defaults to `INFO`, not `DEBUG`; an unparseable value falls back to the default rather than raising. Below the floor the stdlib check short-circuits before rendering/shipping, which matters since several DEBUG call sites fire per control tick. Governs log records only — dashboard span rows are banded separately by `dashboard.store._is_headline_span`.
-- `apply_structlog_level_floor()` — Configure structlog's stock renderer to drop events below `resolve_log_level()`; called by `configure_observability` on its no-endpoint path, where the stock config otherwise printed every DEBUG event (a deploy runtime emits one per 750 Hz joint state and per camera frame — ~10 % of the process's GIL on an AGX Orin). (L103)
-- `install_structlog_bridge(logger_provider)` — Wire the structlog processor chain to forward records to the OTel `LoggerProvider`, with both the bridge logger and the `openral` root logger set to `resolve_log_level()`. (L129)
+- `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L60)
+- `resolve_log_level() -> int` (L76) — Resolve the OpenRAL log floor from `OPENRAL_LOG_LEVEL` (name or int); defaults to `INFO`, not `DEBUG`; an unparseable value falls back to the default rather than raising. Below the floor the stdlib check short-circuits before rendering/shipping, which matters since several DEBUG call sites fire per control tick. Governs log records only — dashboard span rows are banded separately by `dashboard.store._is_headline_span`.
+- `apply_structlog_level_floor()` — Configure structlog's stock renderer to drop events below `resolve_log_level()`; called by `configure_observability` on its no-endpoint path, where the stock config otherwise printed every DEBUG event (a deploy runtime emits one per 750 Hz joint state and per camera frame — ~10 % of the process's GIL on an AGX Orin). (L104)
+- `install_structlog_bridge(logger_provider)` — Wire the structlog processor chain to forward records to the OTel `LoggerProvider`, with both the bridge logger and the `openral` root logger set to `resolve_log_level()`. (L138) Every structlog logger is a child of the bridge logger (`_bridge_child`), so a package module logger outside the `openral` namespace (e.g. `openral_world_state.object_tracker.tracker`) honours `OPENRAL_LOG_LEVEL` and is exported and printed (a stdout `ConsoleRenderer` handler on the bridge logger); before #418 r4 such loggers fell to the root logger and lost every INFO/DEBUG event whenever an OTLP endpoint was set.
 
 ### `python/observability/src/openral_observability/dashboard/store.py`
 _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `/api/state` JSON endpoint. Thread-safe, bounded (200 events, 600 metric samples per series). Registered headline span families each populate one card slot in `self._topics`._

@@ -349,6 +349,151 @@ def test_a_grasp_declaration_rides_attachment_state_to_world_state_stamped() -> 
         rclpy.shutdown()
 
 
+def test_a_grasp_declaration_with_target_queries_relays_them() -> None:
+    # Issue #418: dispatch names classes, not boxes. Every relay must encode them; one
+    # without a query factory raises rather than drop what the prompt named.
+    from openral_core import ObjectQuery, ObjectRole
+    from openral_msgs.msg import ObjectQuery as ObjectQueryMsg
+
+    declaration = GraspDeclaration(
+        target_id="orange",
+        contact_links=("gripper",),
+        timeout_s=60.0,
+        stamp_ns=5,
+        target_queries=(ObjectQuery(label="orange", count="all", role=ObjectRole.TARGET),),
+    )
+    state_msg = AttachmentState()
+    state_msg.header.stamp.nanosec = 5
+    state_msg.revision = 1
+    state_msg.grasp_declaration_valid = True
+    declaration.fill_idl(state_msg.grasp_declaration, query_factory=ObjectQueryMsg)
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    )
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        node._on_attachment_state(state_msg)
+        msg = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert world_state_from_idl(msg).grasp_declaration == declaration
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_tracked_objects_relay_into_world_state_fast_and_go_invalid_when_stale() -> None:
+    # Issue #418: /openral/tracked_objects -> node callback -> aggregator -> the fast
+    # stream's tracked_objects (valid), and invalid once the tracker stops heartbeating.
+    import numpy as np
+    from openral_core import TrackedObjectSet
+    from openral_msgs.msg import AttachedCollisionPrimitive as RosPrimitive
+    from openral_msgs.msg import TrackedObject as RosTrackedObject
+    from openral_msgs.msg import TrackedObjectSet as RosTrackedObjectSet
+
+    from tests.unit._object_tracker_fixtures import track
+
+    now = [10_000_000_000]
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"), clock_fn=lambda: now[0]
+    )
+    tracked = TrackedObjectSet(
+        frame_id="base",
+        stamp_ns=7,
+        revision=1_760_000_000_000_000_042,
+        objects=[track("trk:1", "base", np.array([0.2, 0.0, 0.03]), (0.03, 0.03, 0.03))],
+    )
+    wire = RosTrackedObjectSet()
+    tracked.fill_idl(wire, object_factory=RosTrackedObject, primitive_factory=RosPrimitive)
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        assert (
+            build_world_state_stamped_msg(node, aggregator.snapshot()).tracked_objects_valid
+            is False
+        )
+        node._on_tracked_objects(wire)
+        msg = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert msg.tracked_objects_valid is True
+        assert msg.tracked_objects.revision == tracked.revision
+        assert world_state_from_idl(msg).tracked_objects == tracked
+        now[0] += 1_400_000_000  # inside the 1.5 s window
+        assert build_world_state_stamped_msg(node, aggregator.snapshot()).tracked_objects_valid
+        now[0] += 200_000_000  # past it: the kernel sees "no tracker"
+        stale = build_world_state_stamped_msg(node, aggregator.snapshot())
+        assert stale.tracked_objects_valid is False and not stale.tracked_objects.objects
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_a_configured_node_ages_the_tracked_set_on_sim_time_not_wall_time() -> None:
+    # Isaac R23/R26: the tracker heartbeats on ROS time, but the aggregator aged its set on
+    # wall time, so on a sim below real time the set went stale between live beats and every
+    # tracked object lost its kernel explanation mid-contact. The configured node (the
+    # injected aggregator, as compose_so100_runtime and deploy build it) must age it on its
+    # own ROS clock: wall time passing with /clock still keeps the set; /clock passing drops it.
+    import time
+
+    import numpy as np
+    from builtin_interfaces.msg import Time
+    from openral_core import TrackedObjectSet
+    from openral_msgs.msg import AttachedCollisionPrimitive as RosPrimitive
+    from openral_msgs.msg import TrackedObject as RosTrackedObject
+    from openral_msgs.msg import TrackedObjectSet as RosTrackedObjectSet
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rosgraph_msgs.msg import Clock
+
+    from tests.unit._object_tracker_fixtures import track
+
+    tracked = TrackedObjectSet(
+        frame_id="base",
+        stamp_ns=7,
+        revision=1,
+        objects=[track("trk:1", "base", np.array([0.2, 0.0, 0.03]), (0.03, 0.03, 0.03))],
+    )
+    wire = RosTrackedObjectSet()
+    tracked.fill_idl(wire, object_factory=RosTrackedObject, primitive_factory=RosPrimitive)
+    aggregator = WorldStateAggregator(
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    )
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    node.set_parameters([rclpy.parameter.Parameter("use_sim_time", value=True)])
+    helper = rclpy.create_node("test_tracked_sim_clock_helper")
+    clock_pub = helper.create_publisher(Clock, "/clock", 10)
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(helper)
+
+    def publish_clock(sim_ns: int) -> None:
+        clock_pub.publish(Clock(clock=Time(sec=sim_ns // 10**9, nanosec=sim_ns % 10**9)))
+        deadline = time.monotonic() + 2.0
+        while node.get_clock().now().nanoseconds != sim_ns and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert node.get_clock().now().nanoseconds == sim_ns
+
+    def valid() -> bool:
+        return bool(
+            build_world_state_stamped_msg(node, aggregator.snapshot()).tracked_objects_valid
+        )
+
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        publish_clock(40_000_000_000)
+        node._on_tracked_objects(wire)
+        assert valid()
+        time.sleep(1.6)  # wall time past the 1.5 s window, sim time standing still
+        assert valid()
+        publish_clock(41_600_000_000)  # sim time past it: the tracker really stopped
+        assert not valid()
+    finally:
+        executor.remove_node(helper)
+        helper.destroy_node()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
 def test_support_contact_witness_round_trips_over_the_idl() -> None:
     # Wire half of ADR-0092 D6: an attachment attesting support contact must arrive at the
     # safety kernel with the attestation intact; one that doesn't must arrive with

@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Entry point for ros2 run openral_world_state object_tracker_node (issue #418)."""
+
+from openral_world_state_ros.object_tracker_node import main
+
+main()

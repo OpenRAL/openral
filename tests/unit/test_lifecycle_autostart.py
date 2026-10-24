@@ -67,6 +67,9 @@ class _FakeFuture:
     def result(self) -> Any:
         return self._result
 
+    def done(self) -> bool:
+        return self._result is not None
+
 
 class _FakeChangeStateClient:
     """Returns a fixed ``ChangeState`` response (``None`` = spin timed out)."""
@@ -124,21 +127,65 @@ def _patch_runtime(mod: Any) -> _FakeRclpy:
 
 
 def test_drive_transition_uses_caller_timeout() -> None:
-    """The change_state spin is bounded by the passed ``transition_timeout_s``."""
+    """The change_state wait is bounded by the passed ``transition_timeout_s``.
+
+    It is spun in short slices (a get_state read between them), never past the budget.
+    """
+    mod = _load_tool()
+    fake_rclpy = _patch_runtime(mod)
+    with pytest.raises(RuntimeError, match=r"within 123\.0s"):
+        mod._drive_transition(
+            node=object(),
+            target_node="/openral_hal_panda_mobile",
+            change_state_client=_FakeChangeStateClient(None),
+            get_state_client=_FakeGetStateClient(["configuring"]),
+            transition_id=1,
+            transition_label="configure",
+            transition_timeout_s=123.0,
+        )
+    # The change_state slices (the 5 s spins are get_state reads between them).
+    slices = [t for t in fake_rclpy.spin_timeouts if t != 5.0]
+    assert slices and all(t is not None and t <= mod._POLL_SLICE_S for t in slices)
+    # _FakeTime ticks 1 s per read: about one slice per second of budget, never more.
+    assert len(slices) <= 123
+
+
+def test_dropped_reply_is_noticed_by_the_state_poll_not_after_the_budget() -> None:
+    """The #418 Spark failure: the node configured but its reply never arrived.
+
+    The launch's event chain then never sent ACTIVATE and the segmenter / tracker sat
+    INACTIVE for the whole trial. The poll must see ``inactive`` between slices and
+    return long before the 300 s budget.
+    """
     mod = _load_tool()
     fake_rclpy = _patch_runtime(mod)
     mod._drive_transition(
         node=object(),
-        target_node="/openral_hal_panda_mobile",
-        change_state_client=_FakeChangeStateClient(_FakeChangeStateResult(success=True)),
-        get_state_client=_FakeGetStateClient(["inactive"]),
+        target_node="/openral_object_tracker",
+        change_state_client=_FakeChangeStateClient(None),
+        get_state_client=_FakeGetStateClient(["configuring", "configuring", "inactive"]),
         transition_id=1,
         transition_label="configure",
-        transition_timeout_s=123.0,
+        transition_timeout_s=300.0,
     )
-    # First spin is the change_state wait — it must use the full budget,
-    # not the legacy hardcoded 30 s.
-    assert fake_rclpy.spin_timeouts[0] == 123.0
+    # Three change_state slices, a get_state read after each.
+    assert [t for t in fake_rclpy.spin_timeouts if t != 5.0] == [mod._POLL_SLICE_S] * 3
+
+
+def test_activate_is_not_satisfied_by_inactive() -> None:
+    """ACTIVATE starts from ``inactive``: reading it back is not success."""
+    mod = _load_tool()
+    _patch_runtime(mod)
+    with pytest.raises(RuntimeError, match="did not advance"):
+        mod._drive_transition(
+            node=object(),
+            target_node="/openral_segmenter",
+            change_state_client=_FakeChangeStateClient(None),
+            get_state_client=_FakeGetStateClient(["inactive"]),
+            transition_id=3,
+            transition_label="activate",
+            transition_timeout_s=20.0,
+        )
 
 
 def test_drive_transition_succeeds_when_state_advances_despite_no_response() -> None:

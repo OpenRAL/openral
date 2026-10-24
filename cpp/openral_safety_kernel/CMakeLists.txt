@@ -165,7 +165,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_no_alloc test/test_no_alloc.cpp)
   target_link_libraries(test_no_alloc ${PROJECT_NAME})
 
-  ament_add_gtest(test_lifecycle_kernel test/test_lifecycle_kernel.cpp)
+  # 177 node-level cases with real wall-clock windows: ~95 s on a dev host, over
+  # ament's 60 s default (CI killed it mid-run with no result file).
+  ament_add_gtest(test_lifecycle_kernel test/test_lifecycle_kernel.cpp TIMEOUT 300)
   target_link_libraries(test_lifecycle_kernel ${PROJECT_NAME})
 endif()
 

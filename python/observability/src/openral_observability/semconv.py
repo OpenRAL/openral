@@ -177,6 +177,8 @@ SPAN_HAL_READ_STATE: Final[str] = "hal.read_state"
 SPAN_HAL_SEND_ACTION: Final[str] = "hal.send_action"
 SPAN_SENSORS_READ_LATEST: Final[str] = "sensors.read_latest"
 SPAN_WORLD_STATE_SNAPSHOT: Final[str] = "world_state.snapshot"
+#: Issue #418 Addendum G: one object-query escalation, parented on the goal's trace.
+SPAN_WORLD_STATE_OBJECT_QUERY: Final[str] = "world_state.object_query"
 SPAN_WORLD_SCENE_OBJECTS: Final[str] = "world.scene_objects"
 SPAN_SAFETY_CHECK: Final[str] = "safety.check"
 SPAN_REWARD_SCORE: Final[str] = "reward.score"
@@ -506,6 +508,7 @@ __all__ = [
     "SPAN_SIM_RUN",
     "SPAN_SIM_STEP",
     "SPAN_WORLD_SCENE_OBJECTS",
+    "SPAN_WORLD_STATE_OBJECT_QUERY",
     "SPAN_WORLD_STATE_SNAPSHOT",
     "SYSTEM_GPU_INDEX",
     "SYSTEM_GPU_NAME",

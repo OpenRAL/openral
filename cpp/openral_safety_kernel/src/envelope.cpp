@@ -97,6 +97,7 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::Lifecycle
       {"max_base_angular_speed_rad_s", out.max_base_angular_speed_rad_s},
       {"max_cartesian_step_m", out.max_cartesian_step_m},
       {"max_cartesian_step_rad", out.max_cartesian_step_rad},
+      {"contact_force_threshold_n", out.contact_force_threshold_n},
   };
   for (const auto& [name, value] : per_mode_bounds) {
     if (std::isnan(value) || value < 0.0) {

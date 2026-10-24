@@ -311,3 +311,60 @@ def test_the_vision_leg_heartbeats_only_on_live_jaw_positions_with_a_monotonic_r
         peer.destroy_node()
         node.destroy_node()
         rclpy.shutdown()
+
+
+def test_a_bridge_gated_off_never_publishes_attachment_state() -> None:
+    """``publish_attachment_state=False`` (#418 ``bind``/``on``): the tracker owns the topic."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_core import JointState, RobotDescription
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+    )
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+
+    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
+    config = VisionAttachmentConfig(
+        camera=_CAMERA,
+        depth_topic=camera_topic(_CAMERA, CameraTopicKind.DEPTH_IMAGE),
+        service_name=_SERVICE,
+        evidence_timeout_s=_EVIDENCE_TIMEOUT_S,
+        publish_attachment_state=False,
+    )
+    rclpy.init()
+    node = Node("test_vision_attachment_gated_hal")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    bridge = VisionAttachmentBridge(node, description, config=config)
+
+    def on_feed() -> None:  # live jaw-position evidence: the heartbeat would be open
+        bridge.observe_joint_state(
+            JointState(
+                name=["left_gripper", "right_gripper"],
+                position=[0.5, 0.5],
+                effort=[0.0, 0.0],
+                stamp_ns=time.time_ns(),
+            )
+        )
+
+    node.create_timer(_PERIOD_S / 4, on_feed)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    try:
+        bridge.setup()
+        time.sleep(4 * _PERIOD_S)
+        assert node.count_publishers("/openral/attachment_state") == 0
+        assert not [
+            info
+            for info in node.get_publishers_info_by_topic("/openral/attachment_state")
+            if info.node_name == node.get_name()
+        ]
+    finally:
+        with suppress(Exception):
+            bridge.teardown()
+        executor.shutdown()
+        spin.join(timeout=5.0)
+        node.destroy_node()
+        rclpy.shutdown()
