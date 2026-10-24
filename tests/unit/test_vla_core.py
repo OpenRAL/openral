@@ -459,7 +459,9 @@ def _word_tokenizer(words: list[str]) -> Any:
     vocab = {"<unk>": 0, "<bos>": 1, **{w: i + 2 for i, w in enumerate(words)}}
     core = Tokenizer(models.WordLevel(vocab=vocab, unk_token="<unk>"))
     core.pre_tokenizer = pre_tokenizers.Whitespace()
-    return PreTrainedTokenizerFast(tokenizer_object=core, unk_token="<unk>", bos_token="<bos>")
+    return PreTrainedTokenizerFast(  # type: ignore[no-untyped-call,unused-ignore]  # reason: transformers untyped when installed, Any when absent
+        tokenizer_object=core, unk_token="<unk>", bos_token="<bos>"
+    )
 
 
 def _tokenizer_pipeline(tok: Any) -> Any:
