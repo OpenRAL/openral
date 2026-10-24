@@ -1215,6 +1215,7 @@ def _object_tracking(
     hal_mode: str,
     vision_attachment_enabled: bool,
     enable_octomap: bool,
+    self_filter_runs: bool,
     grounding_wait_s: str,
     cameras: str,
     depth_cameras: list[str],
@@ -1222,10 +1223,11 @@ def _object_tracking(
     """``DeployRuntime.object_tracking`` (issue #418) checked, with the cameras it tracks.
 
     ``off`` composes nothing. Otherwise the tracker needs the octomap leg (its map
-    confirmation), the vision attachment leg (its trigger publishes
-    ``/openral/grasp_events``; it brings up the segmenter) and an explicit
-    ``grounding_wait_s``; ``bind`` / ``on`` are sim-only until Safety-WG review.
-    ``cameras`` (comma-separated) empty = every publishing depth camera.
+    confirmation), the robot self-filter (``self_filter_runs``: its robot masks; without
+    one every depth frame is fed for ageing only and nothing is ever fitted), the vision
+    attachment leg (its trigger publishes ``/openral/grasp_events``; it brings up the
+    segmenter) and an explicit ``grounding_wait_s``; ``bind`` / ``on`` are sim-only until
+    Safety-WG review. ``cameras`` (comma-separated) empty = every publishing depth camera.
 
     Example:
         >>> _object_tracking(
@@ -1233,6 +1235,7 @@ def _object_tracking(
         ...     hal_mode="real",
         ...     vision_attachment_enabled=True,
         ...     enable_octomap=True,
+        ...     self_filter_runs=True,
         ...     grounding_wait_s="8",
         ...     cameras="",
         ...     depth_cameras=["top_depth"],
@@ -1257,37 +1260,67 @@ def _object_tracking(
             f"object_tracking={mode!r} needs the octomap leg (map confirmation) and the "
             "vision attachment leg (/openral/grasp_events and the segmenter)."
         )
+    if not self_filter_runs:
+        raise ROSConfigError(
+            f"object_tracking={mode!r} needs the robot self-filter's robot masks, and this "
+            "deploy's cloud does not show the robot, so no self-filter runs (a MuJoCo "
+            "ray-cast; _cloud_shows_the_robot). Use an Isaac scene, a real camera or "
+            "estimated_depth_camera, or object_tracking=off."
+        )
     tracked = tuple(c.strip() for c in cameras.split(",") if c.strip()) or tuple(depth_cameras)
     if not tracked:
         raise ROSConfigError(f"object_tracking={mode!r}: no depth camera to track with.")
     return mode, tracked
 
 
+def _tracked_camera_infos(
+    tracked_cameras: tuple[str, ...], publishing: list[SensorSpec], hal_mode: str
+) -> dict[str, str]:
+    """Each tracked camera's ``CameraInfo`` topic: its live calibration where one exists.
+
+    ``_live_camera_info_topic`` of the camera's publishing spec (on real, the driver's own
+    ``CameraInfo``, never the one rebuilt from the manifest's possibly nominal intrinsics),
+    else the bridge's ``camera_topic(name, CAMERA_INFO)``.
+
+    Example:
+        >>> _tracked_camera_infos(("top_depth",), [], "sim")
+        {'top_depth': '/openral/cameras/top_depth/camera_info'}
+    """
+    specs = {s.name: s for s in publishing}
+    return {
+        c: (_live_camera_info_topic(specs[c], hal_mode) if c in specs else "")
+        or camera_topic(c, CameraTopicKind.CAMERA_INFO)
+        for c in tracked_cameras
+    }
+
+
 def _locator_cameras(
     det_camera: str,
     det_image_topic: str,
     det_camera_infos: list[str],
-    tracked_cameras: tuple[str, ...],
+    tracked_infos: dict[str, str],
 ) -> tuple[list[str], list[str]]:
     """An on-demand locator's ``cameras`` / ``camera_infos`` (``id=topic`` entries).
 
     The detector camera first (the primary a request with no ``camera`` gets), then
-    every object-tracker camera (issue #418) under its own name with its registered RGB
-    stream: the tracker asks ``locate_in_view`` on the depth camera it fits with, and a
-    locator that cached only the detector camera answers "no frame for camera".
+    every object-tracker camera (issue #418; ``tracked_infos``: camera -> its
+    ``_tracked_camera_infos`` topic) under its own name with its registered RGB stream:
+    the tracker asks ``locate_in_view`` on the depth camera it fits with, and a locator
+    that cached only the detector camera answers "no frame for camera".
 
     Example:
-        >>> cams, infos = _locator_cameras("top", "/cam/top", [""], ("top_depth",))
+        >>> infos = {"top_depth": "/openral/cameras/top_depth/camera_info"}
+        >>> cams, infos = _locator_cameras("top", "/cam/top", [""], infos)
         >>> cams
         ['top=/cam/top', 'top_depth=/openral/cameras/top_depth/image']
         >>> infos
         ['top_depth=/openral/cameras/top_depth/camera_info']
     """
-    extra = [c for c in tracked_cameras if c != det_camera]
+    extra = [c for c in tracked_infos if c != det_camera]
     cameras = [f"{det_camera}={det_image_topic}"]
     cameras += [f"{c}={camera_topic(c, CameraTopicKind.IMAGE)}" for c in extra]
     infos = [i for i in det_camera_infos if i]
-    infos += [f"{c}={camera_topic(c, CameraTopicKind.CAMERA_INFO)}" for c in extra]
+    infos += [f"{c}={tracked_infos[c]}" for c in extra]
     return cameras, infos or [""]
 
 
@@ -2419,6 +2452,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         hal_mode=hal_mode,
         vision_attachment_enabled=vision_attachment_enabled,
         enable_octomap=enable_octomap,
+        self_filter_runs=_cloud_shows_the_robot(
+            hal_mode, scene_backend, estimated_depth=bool(estimated_depth_camera)
+        ),
         grounding_wait_s=LaunchConfiguration("grounding_wait_s").perform(context),
         cameras=LaunchConfiguration("object_tracking_cameras").perform(context),
         depth_cameras=[s.name for s in publishing if s.modality == "depth"],
@@ -4221,7 +4257,10 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         # invocation mode)
         # makes them serve-only (no continuous publish leg). Throttle by engine.
         locator_cameras, locator_infos = _locator_cameras(
-            det_camera, det_image_topic, det_camera_infos, tracked_cameras
+            det_camera,
+            det_image_topic,
+            det_camera_infos,
+            _tracked_camera_infos(tracked_cameras, publishing, hal_mode),
         )
         for spec in locator_specs:
             locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(spec["engine"], 5.0)
@@ -4261,7 +4300,7 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
         va_camera = LaunchConfiguration("vision_attachment_camera").perform(context)
         # Each tracked depth camera's registered RGB stream (the #418 tracker's cameras).
         seg_cameras = {c: camera_topic(c, CameraTopicKind.IMAGE) for c in tracked_cameras}
-        seg_infos = {c: camera_topic(c, CameraTopicKind.CAMERA_INFO) for c in tracked_cameras}
+        seg_infos = _tracked_camera_infos(tracked_cameras, publishing, hal_mode)
         # In bind / on the HAL bridge runs only its grasp trigger and never calls the
         # segmenter, so caching its camera there would decode frames nothing reads.
         if object_tracking not in ("bind", "on"):
@@ -4480,6 +4519,9 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                         # Every camera the scene VLM answers about must say yes.
                         "cameras": [s.name for s in publishing if s.modality == "rgb"],
                         "judge": completion_check_judge,
+                        # Same rule as the reasoner's completion_camera_flip_180.
+                        "flip_180": os.environ.get("OPENRAL_DASHBOARD_FLIP_180", "")
+                        not in ("", "0", "false", "False"),
                         "use_sim_time": use_sim_time,
                     }
                 ],

@@ -1297,6 +1297,11 @@ if _ROS2_AVAILABLE:
                     # goal (ROSPerceptionStale) under grounding_required. Before the skill
                     # loads: no motion on a refusal, and the detector is not yet evicted.
                     self._await_grounding(goal_handle)
+                    if self._end_stopped_before_skill(goal_handle, result, span):
+                        # A stop during the wait ends the goal here: loading the skill
+                        # first (minutes for a VLA) delayed it, and a cancel could then
+                        # mask the object-not-found cause (#421 review).
+                        return result
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
                     skill = self._acquire_skill(
@@ -1441,24 +1446,7 @@ if _ROS2_AVAILABLE:
                     # Honour cancel — drain then idle-hold (F1 design).
                     if self._cancel_requested or goal_handle.is_cancel_requested:
                         self._drain_and_idle_hold(skill)
-                        not_found = self._object_not_found
-                        if not_found is not None:
-                            # Issue #418: the reasoner abandoned this goal's object; a typed
-                            # failure, recorded on this goal's rskill.execute span.
-                            span.record_exception(not_found)
-                            result.success = False
-                            result.failure_reason = f"{type(not_found).__name__}: {not_found!s}"
-                            # Only this cancel cause; a ROSObjectNotInMemory raised elsewhere
-                            # stays FAILURE_PERCEPTION_STALE (_failure_kind_for_exception).
-                            result.failure_kind = ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND
-                            self._finalize_goal(goal_handle, "abort")
-                            self._reset_active_goal()
-                            return result
-                        result.success = False
-                        result.failure_reason = "cancelled"
-                        result.failure_kind = ExecuteRskill.Result.FAILURE_CANCELLED
-                        self._finalize_goal(goal_handle, "canceled")
-                        self._reset_active_goal()
+                        self._end_cancelled(goal_handle, result, span)
                         return result
 
                     # A lapsed budget is a FAILURE, not a quiet success. Every
@@ -1861,11 +1849,7 @@ if _ROS2_AVAILABLE:
 
             if failure_kind == int(ExecuteRskill.Result.FAILURE_CANCELLED):
                 self._drain_and_idle_hold(skill)
-                result.success = False
-                result.failure_reason = "cancelled"
-                result.failure_kind = failure_kind
-                self._finalize_goal(goal_handle, "canceled")
-                self._reset_active_goal()
+                self._end_cancelled(goal_handle, result, span)
                 return True
             self.get_logger().error(f"rskill_runner.starting_pose_failed: {reason}")
             result.success = False
@@ -1874,6 +1858,53 @@ if _ROS2_AVAILABLE:
             self._finalize_goal(goal_handle, "abort")
             self._reset_active_goal()
             return True
+
+        def _end_cancelled(self, goal_handle: Any, result: Any, span: Any) -> None:
+            """End a cancelled goal (``FAILURE_CANCELLED``, or its typed cause).
+
+            ``FAILURE_OBJECT_NOT_FOUND`` when the tracker exhausted the goal's object
+            (issue #418), the cause of that cancel.
+            """
+            from openral_msgs.action import ExecuteRskill
+
+            result.success = False
+            not_found = self._object_not_found
+            if not_found is not None:
+                # The reasoner abandoned this goal's object; a typed failure, recorded on
+                # this goal's rskill.execute span. Only this cancel cause: a
+                # ROSObjectNotInMemory raised elsewhere stays FAILURE_PERCEPTION_STALE
+                # (_failure_kind_for_exception).
+                span.record_exception(not_found)
+                result.failure_reason = f"{type(not_found).__name__}: {not_found!s}"
+                result.failure_kind = ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND
+                self._finalize_goal(goal_handle, "abort")
+            else:
+                result.failure_reason = "cancelled"
+                result.failure_kind = ExecuteRskill.Result.FAILURE_CANCELLED
+                self._finalize_goal(goal_handle, "canceled")
+            self._reset_active_goal()
+
+        def _end_stopped_before_skill(self, goal_handle: Any, result: Any, span: Any) -> bool:
+            """End a goal stopped before its skill loaded; ``True`` when it was ended.
+
+            An e-stop is the in-rollout ``safety_estop`` result, a cancel ``_end_cancelled``'s.
+            Nothing has been commanded yet, so there is nothing to drain.
+            """
+            from openral_core.exceptions import ROSEStopRequested
+
+            if self._estop_latched:
+                exc = ROSEStopRequested("e-stop latched before the skill loaded")
+                span.record_exception(exc)
+                result.success = False
+                result.failure_reason = f"safety_estop:{exc!s}"
+                result.failure_kind = _failure_kind_for_exception(exc)
+                self._finalize_goal(goal_handle, "abort")
+                self._reset_active_goal()
+                return True
+            if self._cancel_requested or goal_handle.is_cancel_requested:
+                self._end_cancelled(goal_handle, result, span)
+                return True
+            return False
 
         def _finalize_goal(self, goal_handle: ServerGoalHandle, transition: str) -> None:
             """Apply a terminal goal transition, tolerating a racing goal state.

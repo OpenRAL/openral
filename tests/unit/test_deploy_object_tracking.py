@@ -243,6 +243,7 @@ _OK = {
     "hal_mode": "sim",
     "vision_attachment_enabled": True,
     "enable_octomap": True,
+    "self_filter_runs": True,
     "grounding_wait_s": "8",
     "cameras": "",
     "depth_cameras": ["top_depth"],
@@ -264,6 +265,8 @@ def test_the_launch_tracks_every_depth_camera_unless_named(object_tracking: obje
         ("shadow", {"grounding_wait_s": ""}, "grounding_wait_s"),
         ("shadow", {"enable_octomap": False}, "octomap"),
         ("shadow", {"vision_attachment_enabled": False}, "vision attachment"),
+        # #421 review: no self-filter, no robot masks: every frame ages, nothing is fitted.
+        ("shadow", {"self_filter_runs": False}, "self-filter"),
         ("shadow", {"depth_cameras": []}, "no depth camera"),
     ],
 )
@@ -277,10 +280,35 @@ def test_the_launch_refuses_an_incomplete_posture(
 def test_a_locator_caches_every_tracked_camera_under_its_own_name(launch_module: object) -> None:
     """The tracker asks locate_in_view on its depth camera; the locator must hold its frame."""
     f = launch_module._locator_cameras  # type: ignore[attr-defined]
-    cams, infos = f("top", "/openral/cameras/top/image", ["top=/info"], ("top_depth", "top"))
+    tracked = {"top_depth": "/openral/cameras/top_depth/camera_info", "top": "/x"}
+    cams, infos = f("top", "/openral/cameras/top/image", ["top=/info"], tracked)
     assert cams == ["top=/openral/cameras/top/image", "top_depth=/openral/cameras/top_depth/image"]
     assert infos == ["top=/info", "top_depth=/openral/cameras/top_depth/camera_info"]
-    assert f("top", "/t", [""], ()) == (["top=/t"], [""])  # nothing tracked: unchanged
+    assert f("top", "/t", [""], {}) == (["top=/t"], [""])  # nothing tracked: unchanged
+
+
+def test_a_tracked_camera_on_real_projects_through_the_drivers_camera_info(
+    launch_module: object,
+) -> None:
+    """#421 review: on real, /openral/cameras/<cam>/camera_info is rebuilt from the
+    manifest's (possibly nominal) intrinsics; the tracked cameras' locator and segmenter
+    must read the driver's CameraInfo, as every other real consumer does."""
+    from openral_core import RobotDescription, apply_sensor_overlays, resolve_sensor_overlays
+
+    f = launch_module._tracked_camera_infos  # type: ignore[attr-defined]
+    robot = "robots/openarm/robot.yaml"
+    arm = RobotDescription.from_yaml(robot)
+    sensors = apply_sensor_overlays(
+        arm.sensors, resolve_sensor_overlays(robot, "thor", required=True)
+    )
+    depth = next(s for s in sensors if s.modality == "depth" and s.deploy_binding is not None)
+    live = launch_module._live_camera_info_topic(depth, "real")  # type: ignore[attr-defined]
+    assert live and not live.startswith("/openral/cameras/")
+    assert f((depth.name,), sensors, "real") == {depth.name: live}
+    assert f((depth.name,), sensors, "sim") == {
+        depth.name: f"/openral/cameras/{depth.name}/camera_info"
+    }
+    assert f(("unbound",), sensors, "real") == {"unbound": "/openral/cameras/unbound/camera_info"}
 
 
 def test_only_on_makes_the_tracked_objects_the_kernels_grasp_exemption_source(

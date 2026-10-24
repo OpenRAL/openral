@@ -76,7 +76,11 @@ def _constant_skill_resolver() -> Any:
 
 @contextmanager
 def _harness(
-    place_declaration_json: str, *, approach: bool = False, params: dict[str, Any] | None = None
+    place_declaration_json: str,
+    *,
+    approach: bool = False,
+    params: dict[str, Any] | None = None,
+    skill_resolver: Any = None,
 ) -> Iterator[tuple[Any, Any, list[Any]]]:
     """Compose the real runtime with a scene-committed declaration installed."""
     import rclpy
@@ -88,7 +92,7 @@ def _harness(
     from std_msgs.msg import UInt64
 
     rclpy.init()
-    runtime = compose_so100_runtime(skill_resolver=_constant_skill_resolver())
+    runtime = compose_so100_runtime(skill_resolver=skill_resolver or _constant_skill_resolver())
     # The runner has no staleness window of its own (issue #303); deploy_e2e.launch.py
     # declares it in production, so this harness plays the launch's role.
     runtime.skill_runner_node.set_parameters(
@@ -576,3 +580,107 @@ def test_tracking_never_arms_a_place_declaration_on_its_own() -> None:
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
     assert seen == []
+
+
+def _ungroundable_banana_params() -> dict[str, Any]:
+    """A grasp declaration whose TARGET query never grounds (no tracker runs)."""
+    from openral_core import GraspDeclaration, ObjectQuery, ObjectRole
+
+    decl = GraspDeclaration(
+        target_id="obj:banana", contact_links=("gripper",), timeout_s=60.0, stamp_ns=0
+    )
+    query = ObjectQuery(label="banana", count="one", role=ObjectRole.TARGET)
+    return {
+        "grasp_declaration_json": decl.model_dump_json(),
+        "object_tracking": "shadow",
+        "object_queries_json": f"[{query.model_dump_json()}]",
+        "grounding_wait_s": 30.0,
+        "grounding_wait_wall_s": 30.0,
+    }
+
+
+def _counting_resolver() -> tuple[Any, list[int]]:
+    calls: list[int] = []
+    inner = _constant_skill_resolver()
+
+    def _resolver(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return inner(*args, **kwargs)
+
+    return _resolver, calls
+
+
+def test_a_cancel_during_the_grounding_wait_ends_the_goal_before_the_skill_loads() -> None:
+    """#421 review: the wait broke on the cancel, then the skill loaded (minutes for a
+    VLA) before the cancel was honoured."""
+    from openral_msgs.action import ExecuteRskill
+
+    resolver, calls = _counting_resolver()
+    with _harness("", params=_ungroundable_banana_params(), skill_resolver=resolver) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        t0 = time.monotonic()
+        res = _run_goal(executor, runtime.skill_runner_node, deadline_s=20.0, cancel=True)
+        elapsed = time.monotonic() - t0
+    assert res.result.failure_kind == ExecuteRskill.Result.FAILURE_CANCELLED
+    assert calls == [], "the skill was loaded for a goal cancelled while grounding"
+    assert elapsed < 5.0
+
+
+def test_an_exhausted_object_query_during_the_grounding_wait_is_object_not_found() -> None:
+    """The tracker's exhausted query ends the goal as FAILURE_OBJECT_NOT_FOUND straight
+    from the grounding wait, with no skill loaded (#421 review)."""
+    from openral_core import ObjectQueryEvidence, ObjectRole
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger
+    from openral_observability.failure_bus import KIND_OBJECT_QUERY
+    from rclpy.action import ActionClient
+
+    resolver, calls = _counting_resolver()
+    with _harness("", params=_ungroundable_banana_params(), skill_resolver=resolver) as (
+        executor,
+        runtime,
+        _seen,
+    ):
+        node = runtime.skill_runner_node
+        client = ActionClient(node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.2)
+        assert client.wait_for_server(timeout_sec=2.0)
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/test-place-declaration-skill"
+        goal.prompt = "pick the banana"
+        goal.deadline_s = 20.0
+        send = client.send_goal_async(goal)
+        end = time.monotonic() + 3.0
+        while not send.done() and time.monotonic() < end:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send.result()
+        assert handle is not None and handle.accepted
+        end = time.monotonic() + 3.0
+        while node._active_grasp_declaration is None and time.monotonic() < end:
+            executor.spin_once(timeout_sec=0.02)
+        decl = node._active_grasp_declaration
+        assert decl is not None, "the grasp declaration never armed"
+        trigger = FailureTrigger()
+        trigger.kind = KIND_OBJECT_QUERY
+        trigger.evidence_json = ObjectQueryEvidence(
+            escalation="exhausted",
+            goal_id=f"grasp:{decl.target_id}@{decl.stamp_ns}",
+            query_id="0",
+            label="banana",
+            role=ObjectRole.TARGET,
+            waited_s=1.5,
+            attempts=3,
+        ).model_dump_json()
+        node._on_world_state_failure(trigger)
+        result = handle.get_result_async()
+        end = time.monotonic() + 5.0
+        while not result.done() and time.monotonic() < end:
+            executor.spin_once(timeout_sec=0.02)
+        assert result.done(), "goal result timed out"
+        res = result.result()
+    assert res.result.failure_kind == ExecuteRskill.Result.FAILURE_OBJECT_NOT_FOUND
+    assert "ROSObjectNotInMemory" in res.result.failure_reason
+    assert calls == [], "the skill was loaded for a goal whose object was not found"
