@@ -278,3 +278,13 @@ def test_the_so101_urdf_joint_map_is_frozen_and_parallel() -> None:
         m.names = ()  # type: ignore[misc]  # reason: asserting the model refuses mutation
     with pytest.raises(ValueError, match="parallel"):
         UrdfJointMap(names=m.names, scales=m.scales[:-1], offsets=m.offsets)
+
+
+@pytest.mark.parametrize("axis", [(0.0, 0.0, 0.0), (math.nan, 0.0, 1.0), (math.inf, 0.0, 0.0)])
+def test_a_zero_or_non_finite_axis_is_refused_not_posed_as_nan(
+    axis: tuple[float, float, float],
+) -> None:
+    d = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    jaw = next(j for j in d.joints if j.name == "gripper").model_copy(update={"axis_xyz": axis})
+    with pytest.raises(ROSConfigError, match="axis_xyz"):
+        _joint_motion(jaw, 0.3)
