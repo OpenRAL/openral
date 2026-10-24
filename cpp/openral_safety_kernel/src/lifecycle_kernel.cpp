@@ -969,6 +969,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   static_cells_marked_ = 0;
   static_cells_for_ = VoxelGrid{};
   static_cells_for_valid_ = false;
+  static_cells_lattice_ok_ = false;
   workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
   if (workspace_explained_enabled_) {
     const auto refuse = [this](const std::string& why) {
@@ -1009,6 +1010,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   payload_own_ = PayloadOwnCells{};
   voxel_grid_.payload_own = nullptr;
   payload_own_logged_n_ = static_cast<std::size_t>(-1);
+  payload_own_disarm_logged_ = nullptr;
   if (payload_own_enabled_) {
     const auto refuse = [this](const std::string& why) {
       RCLCPP_ERROR(this->get_logger(), "payload_own_cells_enabled refused: %s, hal_mode=%s",
@@ -1372,6 +1374,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   static_cells_marked_ = 0;
   static_cells_for_ = VoxelGrid{};
   static_cells_for_valid_ = false;
+  static_cells_lattice_ok_ = false;
   workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
@@ -1774,7 +1777,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // happened, and the distance quoted is the pair's true one. It says the
         // margin that pair was gated against had been reduced by a live place
         // declaration, so an incident review can tell that case apart from an
-        // ordinary stop without re-deriving it (CLAUDE.md §1.4).
+        // ordinary stop without re-deriving it (CLAUDE.md §1.4). Under K2 the tracked table,
+        // not the (cleared) legacy region, is the grasp exemption (as in the FailureTrigger).
+        const bool grasp_active =
+            tracked_grasp_enabled_ ? tracked_grasp_.n_objects > 0 : voxel_grid_.grasp_region.valid;
         RCLCPP_ERROR(this->get_logger(),
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
@@ -1785,9 +1791,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
-                     static_cast<int>(hit.depth_is_box_bound),
-                     static_cast<int>(voxel_grid_.grasp_region.valid),
-                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "",
+                     static_cast<int>(hit.depth_is_box_bound), static_cast<int>(grasp_active),
+                     grasp_active ? grasp_declaration_target_.c_str() : "",
                      static_cast<int>(voxel_grid_.workspace_region.valid),
                      voxel_grid_.workspace_region.hand_speed_mps,
                      voxel_grid_.workspace_region.hand_lead_m,
@@ -3290,6 +3295,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   static_cells_marked_ = 0;
   static_cells_for_ = VoxelGrid{};
   static_cells_for_valid_ = false;
+  static_cells_lattice_ok_ = false;
   workspace_explained_logged_n_ = static_cast<std::size_t>(-1);
   bound_.fill(BoundPayload{});
   grasp_latched_tracked_ = false;
@@ -4516,6 +4522,25 @@ std::size_t SafetyKernelLifecycleNode::fill_payload_own() {
     ++armed;
   }
   const bool static_ok = static_cells_marked_ > 0 && !voxel_overflow_;
+  if (!static_points_.empty() && !static_ok && armed > 0) {
+    // Fail closed (OT-10): declared static colliders this grid's table cannot name (off the base
+    // lattice, or no point marks a cell) would leave rule 3 unchecked, so exempt nothing.
+    t.armed = 0;
+    t.fallback_ok = 0;
+    armed = 0;
+    const char* why = !static_cells_for_valid_    ? "pending"
+                      : !static_cells_lattice_ok_ ? "lattice"
+                                                  : "no_cell";
+    if (why != payload_own_disarm_logged_) {  // once per change of reason, per node
+      payload_own_disarm_logged_ = why;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.payload_own_disarmed reason=%s: %zu declared static points mark no "
+                  "cell of this grid, so no payload cell is exempt",
+                  why, static_points_.size());
+    }
+  } else if (armed > 0) {
+    payload_own_disarm_logged_ = nullptr;
+  }
   if (static_ok) {
     t.static_cells = static_cells_.data();
     t.static_cells_n = static_cast<std::size_t>(voxel_grid_.sx) *
@@ -5455,6 +5480,7 @@ void SafetyKernelLifecycleNode::refresh_static_cells() {
   for (int i = 0; aligned && i < 9; ++i) {
     aligned = std::fabs(g.pose.r[i] - ((i % 4 == 0) ? 1.0 : 0.0)) <= 1e-9;
   }
+  static_cells_lattice_ok_ = aligned;
   if (!aligned) {
     static_cells_marked_ = 0;
     RCLCPP_WARN(this->get_logger(),

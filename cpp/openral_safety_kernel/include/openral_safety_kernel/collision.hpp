@@ -1637,7 +1637,8 @@ inline constexpr std::size_t kExplainedStaticPadCells = 1;
 /// * its centre lies in an explaining tracked object's box — any role; the
 ///   lifecycle fills only objects confirmed / occluded, (id, epoch) not retired,
 ///   confirmed within `grasp_region_max_age_s`, its box cover-checked on the
-///   kernel's own grid (never split / bound / tentative / released / lost);
+///   kernel's own grid (never split / tentative / released / lost; a bound one
+///   explains its own box's cells only, never a support layer);
 /// * or it is a cell of the declared static geometry (`static_cells`, the
 ///   same surface points the octomap bridge marks into every grid);
 /// * or it is in the measured support's top layer, or the layer under it, of
