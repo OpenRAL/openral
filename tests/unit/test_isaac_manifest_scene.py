@@ -865,6 +865,18 @@ def test_camera_image_post_needs_exposure_ev() -> None:
         IsaacSimOptions(exposure_ev=-1.0, camera_image_post={"w": {"white_balance_rgb": (0, 1, 1)}})
 
 
+def test_measured_followers_and_finger_coupling_are_rejected_together() -> None:
+    """``measured`` re-sends the uncoupled target before every substep, so the coupling
+    would be silently inactive (#421 review)."""
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+    from pydantic import ValidationError
+
+    IsaacSimOptions(gripper_followers_track="measured")
+    IsaacSimOptions(gripper_finger_coupling_rad=0.05)
+    with pytest.raises(ValidationError, match="set only one"):
+        IsaacSimOptions(gripper_followers_track="measured", gripper_finger_coupling_rad=0.05)
+
+
 def test_robot_material_recolour_targets_only_matching_robot_materials(
     _manifest_scene_mod: object,
 ) -> None:

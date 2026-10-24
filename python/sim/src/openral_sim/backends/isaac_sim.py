@@ -1576,6 +1576,16 @@ class IsaacSimOptions(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _followers_track_excludes_coupling(self) -> IsaacSimOptions:
+        """``measured`` re-targets the fingers from the uncoupled command every substep."""
+        if self.gripper_followers_track == "measured" and self.gripper_finger_coupling_rad:
+            raise ValueError(
+                "gripper_followers_track 'measured' re-targets the fingers every substep and "
+                "overrides gripper_finger_coupling_rad; set only one"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _render_heights_are_sane(self) -> IsaacSimOptions:
         lo, hi = _RENDER_HEIGHT_RANGE_PX
         bad = {k: v for k, v in self.camera_render_height.items() if not lo <= v <= hi}
