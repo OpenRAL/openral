@@ -317,10 +317,10 @@ _Open-vocabulary detector backend for the LocateAnything-3B sidecar. Same interf
 _Scene-VLM backend backed by the Qwen3.5-4B sidecar — the scene-reasoning counterpart of `LocateAnythingDetector`. Returns **text**, not `ObjectsMetadata` (a reasoning aid for task-progress / success verification, not a localizer). Same ZMQ lifecycle (lazy connect, auto-spawn, teardown only the child), transport shared via `ZmqSidecarMixin`. No `zmq`/`numpy`/`PIL` at import (all lazy)._
 
 - `class QwenSceneVlm(ZmqSidecarMixin)` (L47) — `__init__(*, model_id, weights_source="Qwen/Qwen3.5-4B", host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=None)` — stores config; no connection (lazy).
-  - `warm_up() -> None` (L86) — Connects to (or spawns) the sidecar now; `scene_vlm_node` calls it at configure (Spark R225: the first query's spawn + load outlasted the completion check's hold). `max_new_tokens=None` leaves the sidecar's own 1024 budget (thinking on; a fixed 256 truncated every answer, R230).
-  - `query(frame_bgr, width, height, question) -> str` (L151) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
-  - `close() -> None` (L195) — Closes the socket + terminates the spawned sidecar; idempotent.
-- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L211) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
+  - `warm_up() -> None` (L86) — Connects to (or spawns) the sidecar now (a spawned sidecar that never answers within `boot_timeout_s` is closed before the `ROSConfigError`); `scene_vlm_node` calls it at configure (Spark R225: the first query's spawn + load outlasted the completion check's hold). `max_new_tokens=None` leaves the sidecar's own 1024 budget (thinking on; a fixed 256 truncated every answer, R230).
+  - `query(frame_bgr, width, height, question) -> str` (L152) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
+  - `close() -> None` (L196) — Closes the socket + terminates the spawned sidecar; idempotent.
+- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L212) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
 
 ### `python/runner/src/openral_runner/backends/reward/frame_source.py`
 _Transport-agnostic rolling frame buffer for the reward monitor. Pure Python + stdlib only (no numpy/torch), so it unit-tests without ROS, torch, or a GPU._

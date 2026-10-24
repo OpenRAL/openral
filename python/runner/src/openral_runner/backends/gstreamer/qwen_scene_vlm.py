@@ -144,6 +144,7 @@ class QwenSceneVlm(ZmqSidecarMixin):
                 print("[qwen-vlm] sidecar ready", flush=True)
                 return
             time.sleep(2.0)
+        self.close()  # the child we spawned must not outlive the failed boot
         raise ROSConfigError(f"Qwen scene-VLM sidecar not ready within {boot_timeout_s}s")
 
     # -- public api ---------------------------------------------------------

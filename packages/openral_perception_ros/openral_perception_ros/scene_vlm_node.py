@@ -37,6 +37,7 @@ Parameters:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -138,6 +139,12 @@ def main(args: Any = None) -> None:
             vlm.warm_up()
             self.get_logger().info(f"scene_vlm backend model={manifest.name} (loaded)")
             return vlm
+
+        def destroy_node(self) -> None:
+            """Close the VLM (and the sidecar it spawned at warm-up) before tearing down."""
+            with contextlib.suppress(Exception):  # best-effort teardown
+                self._vlm.close()
+            super().destroy_node()
 
         def _make_cache_cb(self, cid: str) -> Callable[[Any], None]:
             def _cb(msg: Any) -> None:
