@@ -585,8 +585,12 @@ openral deploy run --config scenes/deploy/so100_pick_cube.yaml
   successful Spark runs, so `--runtime object_tracking=off` is how to run them without
   the tracker. In `bind` / `on` the HAL's vision attachment bridge runs only its grasp
   trigger (`/openral/grasp_events`, what the tracker binds from): no segmentation and no
-  grasp- or place-target leg, and so no goal-scope place declaration either (a
-  tracker-measured place allowance awaits Safety-WG review). An ATTACH still holds the
+  grasp- or place-target leg. `bind` therefore arms no goal-scope place declaration;
+  `on` arms one and the tracker measures its region (`TrackerSession.place_region`,
+  the destination track's containing box), over which the kernel applies its place
+  allowance -- a non-monotone, sim-only relaxation pending Safety-WG review and a
+  hazard-log row (Spark A/B R388 vs R389: only with it does the DROID banana reach the
+  bowl). An ATTACH still holds the
   action ack until the tracker's next `/openral/attachment_state` revision, at most the
   leg's `deadline_s`.
   `on` also makes the tracked objects the safety kernel's grasp-exemption source

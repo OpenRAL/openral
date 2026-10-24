@@ -87,6 +87,8 @@ _BIND = {
 }
 _ON = {
     **_BIND,
+    # The tracker measures the place region: the goal-scope place declaration is armed.
+    _RUNTIME: _BIND[_RUNTIME] | {"place_approach_enabled"},
     _KERNEL: _K5
     | {
         "tracked_grasp_exemption_enabled",
@@ -188,7 +190,7 @@ def test_each_mode_switches_only_its_own_consumers(
     assert now[_RUNTIME]["object_tracking"] == mode
     hal = now[_HAL].get("vision_attachment_publish_attachment_state", True)
     assert hal is (mode == "shadow"), "the HAL publishes attachment_state only in shadow"
-    assert now[_RUNTIME]["place_approach_enabled"] is False
+    assert now[_RUNTIME]["place_approach_enabled"] is (mode == "on")
     assert now[_RUNTIME]["grounding_required"] is (mode in ("bind", "on"))
     va = {e.split("=", 1)[0] for e in now[_SEGMENTER]["cameras"]}
     assert ("top" in va) is (mode == "shadow"), "bind/on cache only the tracked cameras"
@@ -200,15 +202,19 @@ def test_each_mode_switches_only_its_own_consumers(
 
 
 @pytest.mark.parametrize("mode", ["off", "shadow", "bind", "on"])
-def test_bind_and_on_never_arm_the_place_declaration(tmp_path: Path, mode: str) -> None:
+def test_bind_never_arms_the_place_declaration_and_on_arms_the_trackers(
+    tmp_path: Path, mode: str
+) -> None:
     """The banana scene runs the HAL place-target leg; bind / on do not build it.
 
-    So only off / shadow arm the goal-scope place declaration whose region that leg
-    measures; in bind / on no producer measures it (a tracker-measured place allowance
-    awaits Safety-WG review).
+    Off / shadow arm the goal-scope place declaration whose region that leg measures; in
+    bind no producer measures it, so none. Under on the tracker measures it
+    (`TrackerSession.place_region`): armed, a sim-only non-monotone relaxation that
+    awaits Safety-WG review (Spark A/B R388 vs R389: only then does the banana reach
+    the bowl).
     """
     nodes = _graph(tmp_path, mode, scene_path=_BANANA, real_hal_params=True)
-    assert nodes[_RUNTIME]["place_approach_enabled"] is (mode in ("off", "shadow"))
+    assert nodes[_RUNTIME]["place_approach_enabled"] is (mode != "bind")
 
 
 def test_payload_own_cells_get_the_declared_static_cells_with_k7_off(tmp_path: Path) -> None:

@@ -188,8 +188,12 @@ runtime:
   # 2026-10-23). It is what clears the held payload from the voxel map:
   # with tracking off a geometry-only attachment stays mapped and the arm may stop on what
   # it holds. A goal waits up to `grounding_wait_s` (source time) for its target query and
-  # is refused if it does not ground. SIM-ONLY, pending Safety-WG review (ADR + hazard rows
-  # owed). `deploy run` refuses `on`.
+  # is refused if it does not ground. Under `on` the runner also arms its goal-scope place
+  # declaration and the tracker measures its region (`TrackerSession.place_region`, the
+  # bowl track's containing box), over which the kernel applies the ADR-0097/0098 place
+  # allowance: a non-monotone relaxation. Spark A/B R388 (off: the banana dropped on the
+  # table, a stop after the release) vs R389 (on: the banana in the bowl). SIM-ONLY,
+  # pending Safety-WG review (ADR + hazard rows owed). `deploy run` refuses `on`.
   object_tracking: "on"
   grounding_wait_s: 15.0
   grounding_required: true
@@ -228,6 +232,7 @@ runtime:
     grasp_target_enabled: true
     grasp_target_premeasure: true
     # The banana goes into the bowl: without the place producer a payload meeting its
-    # destination is a world collision (Spark R142, 2026-10-22).
+    # destination is a world collision (Spark R142, 2026-10-22). Built only in off /
+    # shadow; under `on` the tracker measures the place region instead.
     place_target_enabled: true
     tf_frames: {robotiq_finger_pair: robotiq_arg2f_tcp}

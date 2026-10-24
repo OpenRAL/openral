@@ -3281,16 +3281,24 @@ def compose_runtime_graph(  # noqa: PLR0915  # reason: launch compose is natural
                     or 0.0
                 )
                 > 0.0,
-                # Place mirror (§2.3): a goal-scope place declaration per goal, only when
-                # the HAL's place-target leg runs — it attaches its measured region to
-                # that declaration and never declares on its own (no goal, no allowance).
-                # Under `object_tracking: bind | on` that leg is not built, so nothing
-                # measures the region: no declaration. A tracker-measured place allowance
-                # (`TrackerSession.place_region`) awaits Safety-WG review (#418).
-                "place_approach_enabled": object_tracking not in ("bind", "on")
-                and vision_attachment_enabled
-                and hal_file_params.get("vision_attachment_enabled") is True
-                and hal_file_params.get("vision_attachment_place_target_enabled") is True,
+                # Place mirror (§2.3): a goal-scope place declaration per goal, when a
+                # producer measures its region. Off / shadow: the HAL's place-target leg,
+                # which attaches its measured region to that declaration and never
+                # declares on its own (no goal, no allowance). `bind`: that leg is not
+                # built and nothing measures the region, so no declaration. `on`: the
+                # tracker measures it (`TrackerSession.place_region`) and the kernel
+                # applies its ADR-0097/0098 place allowance over that region -- a
+                # NON-MONOTONE relaxation (the region is the destination track's
+                # containing box), SIM-ONLY (`deploy run` refuses `on`); Safety-WG
+                # review and a hazard-log row are owed (#418). Spark A/B R388 (off: the
+                # banana dropped on the table) vs R389 (on: the banana in the bowl).
+                "place_approach_enabled": object_tracking == "on"
+                or (
+                    object_tracking not in ("bind", "on")
+                    and vision_attachment_enabled
+                    and hal_file_params.get("vision_attachment_enabled") is True
+                    and hal_file_params.get("vision_attachment_place_target_enabled") is True
+                ),
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
