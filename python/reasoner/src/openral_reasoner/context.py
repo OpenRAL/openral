@@ -8,7 +8,7 @@ digest of
   EE pose, staleness, control mode);
 * the recent ``FailureTrigger`` events received per source bus
   (FIFO buffers, one per ``/openral/failure/<source>``), plus the open grasp
-  misses (``KIND_GRASP_OUTCOME``, one per hand, until that hand's next ATTACH);
+  misses (``KIND_GRASP_OUTCOME``, one per hand, until an ``attach`` ends that hand's run);
 * the recent ``/openral/perception/<kind>`` events;
 * any pending operator prompts.
 
@@ -284,9 +284,9 @@ def reflect_on_grasp_miss(
             undeclared.
         short_of_command: How far the jaw stopped short of its command, in the gripper
             joint's units, or ``None`` when unknown.
-        consecutive_misses: Misses on this hand since its last ATTACH, across targets (a
-            new declaration does not reset the HAL's count), so the hint calls the run a
-            per-hand one and keys abandonment on the same target only.
+        consecutive_misses: The HAL's run of misses on this hand for this target (a miss
+            on another target starts a new run; an ATTACH of the target by any hand
+            ends it).
 
     Example:
         >>> hint = reflect_on_grasp_miss("openarm_left_finger_pair", "cell:pick_box", 0.031)
@@ -298,8 +298,8 @@ def reflect_on_grasp_miss(
     target = f"declared target {target_id!r}" if target_id else "an undeclared target"
     short = "unknown" if short_of_command is None else f"{short_of_command:.3f}"
     repeat = (
-        f"; that is {consecutive_misses} misses in a row on this hand (across targets), "
-        "so the recent approaches are not working"
+        f"; that is {consecutive_misses} misses in a row on this hand for this target, so "
+        "the recent approaches are not working"
         if consecutive_misses > 1
         else ""
     )
@@ -309,7 +309,7 @@ def reflect_on_grasp_miss(
         "NOT re-issue the identical execute_rskill: re-ground the target (recall_object / "
         "locate_in_view, then pass grasp_target.object_id), try the other hand "
         "(grasp_target.contact_links), or substitute a different skill. If several "
-        "different approaches keep missing on the same target, abandon that target."
+        "different approaches keep missing this target, abandon it."
     )
 
 
@@ -540,8 +540,9 @@ class ContextRenderer:
         self._inflight: tuple[str, int, str] | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         # Issue #353: the open grasp misses, latest ``KIND_GRASP_OUTCOME`` miss per hand
-        # (jaw link), insertion-ordered. Opened by a miss, closed by that hand's next
-        # ATTACH (``outcome="attach"``), an e-stop clear, or a mission (task) change.
+        # (jaw link), insertion-ordered. Opened by a miss, closed by an ``attach`` for that
+        # hand (its own ATTACH, or another hand attaching the same target), an e-stop
+        # clear, or a mission (task) change.
         # Rendered in ## EXECUTION with ``reflect_on_grasp_miss``. Bounded by the
         # robot's hand count, and capped at ``buffer_size`` regardless.
         self._grasp_misses: dict[str, GraspOutcomeEvidence] = {}
@@ -618,10 +619,13 @@ class ContextRenderer:
         to wake an otherwise-idle heartbeat (unlike the static
         ``set_robot_model`` / ``set_memory_block``). The active task's
         text is the goal the reasoner pursues until it is verified and the queue
-        advances. Drops the open grasp misses: they were about the previous goal.
+        advances. A different mission object drops the open grasp misses (they were
+        about the previous goal); re-setting the same one (``decompose_mission``'s
+        subdivide path, which only bumps ``seq``) keeps them.
         """
+        if mission is not self._mission:
+            self._grasp_misses.clear()
         self._mission = mission
-        self._grasp_misses.clear()
         self._seq += 1
 
     def set_in_view(self, objects: ObjectsMetadata | None) -> None:
@@ -1301,12 +1305,11 @@ def _summarise_evidence_json(payload: str) -> str:
     """
     if not payload:
         return ""
-    try:
-        evidence = _FAILURE_ADAPTER.validate_json(payload)
-    except Exception:  # reason: defensive — malformed publisher
+    evidence = _decode_evidence(payload)
+    if evidence is None:  # a malformed publisher: show the payload raw
         try:
             return f"evidence={json.dumps(json.loads(payload), sort_keys=True)[:120]}"
-        except Exception:
+        except ValueError:
             return f"evidence={payload[:120]!r}"
     dumped = {k: v for k, v in evidence.model_dump().items() if k != "kind"}
     omitted = {

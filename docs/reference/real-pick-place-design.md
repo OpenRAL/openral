@@ -773,8 +773,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `short_of_command` / settle spread) on `/openral/failure/hal` per close that ended without an
   ATTACH — `SEVERITY_FAIL` when the declaration named that hand, `SEVERITY_WARN` for an undeclared
   close (a policy may close an empty hand on purpose; that wakes no reasoner) — and one
-  `SEVERITY_INFO` `attach` at the next ATTACH after one or more misses; a first-try ATTACH publishes
-  nothing. The kernel's grasp allowance is unchanged and nothing below S2 retries. The reasoner
+  `SEVERITY_INFO` `attach` per hand whose run of misses an ATTACH ends (its own, or another hand
+  attaching the same declared target); an ATTACH that ends no run publishes nothing. A run is per
+  hand and per target, and the publisher is not rate-limited (at most one event per close). The kernel's grasp allowance is unchanged and nothing below S2 retries. The reasoner
   turns it into a per-hand reflection (`openral_reasoner.context.reflect_on_grasp_miss`). Live:
   `tests/integration/test_grasp_outcome_live.py`.
 

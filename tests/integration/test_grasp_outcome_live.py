@@ -7,17 +7,19 @@ fed real ``Action`` commands and ``JointState`` reads at 20 Hz. A peer node
 subscribes ``/openral/failure/hal`` and decodes every ``FailureTrigger`` through the
 ``FailureEvidence`` union.
 
-Asserts, on the left hand (the right hand stays open throughout and must publish
-nothing):
+Asserts, in order:
 
-* a close that ends on nothing with no grasp declaration is one ``miss`` at
+* a left-hand close that ends on nothing with no grasp declaration is one ``miss`` at
   ``SEVERITY_WARN`` with no target (an undeclared close wakes nobody);
 * the same close under a live ``GraspDeclaration`` naming the left jaw link is one
-  ``miss`` at ``SEVERITY_FAIL``, carrying the target, the declaration's skill and trace,
-  and the running count;
+  ``miss`` at ``SEVERITY_FAIL`` carrying the target, the declaration's skill and trace,
+  and a run restarted at 1 (a different target than the undeclared miss);
 * the next close that stalls on an object (ATTACH) is one ``attach`` at
-  ``SEVERITY_INFO`` with the misses it recovered from;
-* a later first-try ATTACH publishes nothing.
+  ``SEVERITY_INFO`` with the run it ended, and a later first-try ATTACH publishes nothing;
+* under a declaration naming both hands, two left misses and then a first-try right-hand
+  ATTACH publish one ``attach`` **for the left hand** (its run on that target ended);
+* both hands missing in the same joint-state tick, then both attaching in the same tick,
+  publish every one of those events — none is dropped by a rate limit.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. Locally::
 
@@ -48,6 +50,7 @@ pytestmark = pytest.mark.skipif(
 _REPO = Path(__file__).resolve().parents[2]
 _ROBOT_YAML = _REPO / "robots" / "openarm" / "robot.yaml"
 _LEFT_JAW = "openarm_left_finger_pair"
+_RIGHT_JAW = "openarm_right_finger_pair"
 _TRACE = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 # OpenArm's closure calibration: closed 0.0, rest 0.0086, stall gap 0.08. A jaw that
 # reaches its rest offset closed on nothing; one held 0.2 rad short stalled on an object.
@@ -58,7 +61,7 @@ _OPEN_CMD = 0.7
 _SETTLE_S = 1.0
 
 
-def test_a_missed_close_publishes_one_grasp_outcome_and_the_recovery_one_more() -> None:
+def test_missed_closes_publish_grasp_outcomes_and_an_attach_ends_each_run() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
@@ -128,22 +131,23 @@ def test_a_missed_close_publishes_one_grasp_outcome_and_the_recovery_one_more() 
         ),
     )
     bridge.setup()
-    # The left jaw's command and measured position; the right hand stays open.
-    state = {"command": _OPEN_CMD, "q": _OPEN_Q}
+    # Each jaw's command and measured position, driven independently.
+    jaws = {"left": [_OPEN_CMD, _OPEN_Q], "right": [_OPEN_CMD, _OPEN_Q]}
 
     def feed() -> None:
+        left, right = jaws["left"], jaws["right"]
         bridge.observe_command(
             Action(
                 control_mode=ControlMode.JOINT_POSITION,
                 horizon=1,
                 joint_names=["left_gripper", "right_gripper"],
-                joint_targets=[[state["command"], _OPEN_CMD]],
+                joint_targets=[[left[0], right[0]]],
             )
         )
         bridge.observe_joint_state(
             JointState(
                 name=["left_gripper", "right_gripper"],
-                position=[state["q"], _OPEN_Q],
+                position=[left[1], right[1]],
                 effort=[0.0, 0.0],
                 stamp_ns=time.monotonic_ns(),
             )
@@ -160,34 +164,19 @@ def test_a_missed_close_publishes_one_grasp_outcome_and_the_recovery_one_more() 
         with lock:
             return len(outcomes)
 
-    def close_and_open(q: float) -> None:
-        """Command a close, hold the jaw at ``q`` until it settles, then open it."""
-        state.update(command=0.0, q=q)
+    def close_and_open(q: float, *hands: str) -> None:
+        """Close ``hands`` together, hold their jaws at ``q`` until settled, open them."""
+        for hand in hands:
+            jaws[hand][:] = [0.0, q]
         time.sleep(_SETTLE_S)
-        state.update(command=_OPEN_CMD, q=_OPEN_Q)
+        for hand in hands:
+            jaws[hand][:] = [_OPEN_CMD, _OPEN_Q]
         time.sleep(_SETTLE_S)
 
-    try:
-        time.sleep(0.5)  # the trigger sees an open jaw first
-
-        # 1. An undeclared close on nothing: one WARN miss, no target.
-        close_and_open(_EMPTY_Q)
-        assert _wait_until(lambda: count() == 1, timeout_s=5.0), outcomes
-        msg, ev = outcomes[0]
-        assert (int(msg.severity), ev.outcome) == (FailureTrigger.SEVERITY_WARN, "miss")
-        assert (ev.gripper_joint, ev.jaw_link, ev.hand_link) == (
-            "left_gripper",
-            _LEFT_JAW,
-            "openarm_left_link7",
-        )
-        assert (ev.consecutive_misses, ev.target_id, ev.region_armed) == (1, "", False)
-        assert ev.short_of_command is not None and ev.short_of_command < 0.08
-        assert msg.header.frame_id == "hal" and msg.rskill_id == ""
-
-        # 2. The same close under a declaration naming the left hand: a FAIL miss.
+    def declare(target_id: str, *links: str) -> None:
         declaration = GraspDeclaration(
-            target_id="cell:pick_box",
-            contact_links=(_LEFT_JAW,),
+            target_id=target_id,
+            contact_links=links,
             rskill_id="openral/itest-grasp-outcome",
             trace_id=_TRACE,
             timeout_s=60.0,
@@ -199,33 +188,81 @@ def test_a_missed_close_publishes_one_grasp_outcome_and_the_recovery_one_more() 
         assert _wait_until(
             lambda: (
                 bridge._grasp_target is not None
-                and bridge._grasp_target.tracker.declaration is not None
+                and (live := bridge._grasp_target.tracker.declaration) is not None
+                and live.target_id == target_id
             ),
             timeout_s=5.0,
-        ), "the bridge never received the declaration"
-        close_and_open(_EMPTY_Q)
-        assert _wait_until(lambda: count() == 2, timeout_s=5.0), outcomes
-        msg, ev = outcomes[1]
-        assert (int(msg.severity), ev.outcome) == (FailureTrigger.SEVERITY_FAIL, "miss")
-        assert (ev.consecutive_misses, ev.target_id, ev.region_armed) == (
-            2,
-            "cell:pick_box",
+        ), f"the bridge never received the {target_id!r} declaration"
+
+    def outcome(i: int) -> tuple[int, str, str, int, str]:
+        msg, ev = outcomes[i]
+        return (int(msg.severity), ev.outcome, ev.jaw_link, ev.consecutive_misses, ev.target_id)
+
+    warn, fail, info = (
+        FailureTrigger.SEVERITY_WARN,
+        FailureTrigger.SEVERITY_FAIL,
+        FailureTrigger.SEVERITY_INFO,
+    )
+    try:
+        time.sleep(0.5)  # the trigger sees open jaws first
+
+        # 1. An undeclared left close on nothing: one WARN miss, no target.
+        close_and_open(_EMPTY_Q, "left")
+        assert _wait_until(lambda: count() == 1, timeout_s=5.0), outcomes
+        msg, ev = outcomes[0]
+        assert outcome(0) == (warn, "miss", _LEFT_JAW, 1, "")
+        assert (ev.gripper_joint, ev.hand_link, ev.region_armed) == (
+            "left_gripper",
+            "openarm_left_link7",
             False,
         )
+        assert ev.short_of_command is not None and ev.short_of_command < 0.08
+        assert msg.header.frame_id == "hal" and msg.rskill_id == ""
+
+        # 2. The same close under a declaration naming the left hand: a FAIL miss, its
+        #    run restarted at 1 (another target than the undeclared miss).
+        declare("cell:pick_box", _LEFT_JAW)
+        close_and_open(_EMPTY_Q, "left")
+        assert _wait_until(lambda: count() == 2, timeout_s=5.0), outcomes
+        msg, _ = outcomes[1]
+        assert outcome(1) == (fail, "miss", _LEFT_JAW, 1, "cell:pick_box")
         assert (msg.rskill_id, msg.trace_id) == ("openral/itest-grasp-outcome", _TRACE)
 
-        # 3. A close that stalls on an object ends the run: one INFO attach.
-        close_and_open(_HELD_Q)
+        # 3. A close that stalls on an object ends the run: one INFO attach. A later
+        #    first-try ATTACH publishes nothing.
+        close_and_open(_HELD_Q, "left")
         assert _wait_until(lambda: count() == 3, timeout_s=5.0), outcomes
-        msg, ev = outcomes[2]
-        assert (int(msg.severity), ev.outcome) == (FailureTrigger.SEVERITY_INFO, "attach")
-        assert (ev.consecutive_misses, ev.target_id) == (2, "cell:pick_box")
-
-        # 4. A first-try ATTACH (no miss before it) publishes nothing.
-        close_and_open(_HELD_Q)
+        assert outcome(2) == (info, "attach", _LEFT_JAW, 1, "cell:pick_box")
+        close_and_open(_HELD_Q, "left")
         time.sleep(1.0)
         assert count() == 3, outcomes[3:]
-        assert all(ev.jaw_link == _LEFT_JAW for _, ev in outcomes), "the open hand spoke"
+
+        # 4. Both hands declared: two left misses, then the right hand attaches the
+        #    target first try. The left hand's run ended, so it gets the attach.
+        declare("cell:pick_box_2", _LEFT_JAW, _RIGHT_JAW)
+        close_and_open(_EMPTY_Q, "left")
+        close_and_open(_EMPTY_Q, "left")
+        assert _wait_until(lambda: count() == 5, timeout_s=5.0), outcomes
+        assert outcome(4) == (fail, "miss", _LEFT_JAW, 2, "cell:pick_box_2")
+        close_and_open(_HELD_Q, "right")
+        assert _wait_until(lambda: count() == 6, timeout_s=5.0), outcomes
+        assert outcome(5) == (info, "attach", _LEFT_JAW, 2, "cell:pick_box_2")
+        time.sleep(1.0)
+        assert count() == 6, outcomes[6:]
+
+        # 5. Both hands miss in the same tick, then both attach in the same tick: all
+        #    four events arrive (two FAIL misses, two INFO attaches within ms).
+        close_and_open(_EMPTY_Q, "left", "right")
+        close_and_open(_HELD_Q, "left", "right")
+        assert _wait_until(lambda: count() == 10, timeout_s=5.0), outcomes
+        assert sorted(outcome(i) for i in range(6, 10)) == sorted(
+            [
+                (fail, "miss", _LEFT_JAW, 1, "cell:pick_box_2"),
+                (fail, "miss", _RIGHT_JAW, 1, "cell:pick_box_2"),
+                (info, "attach", _LEFT_JAW, 1, "cell:pick_box_2"),
+                (info, "attach", _RIGHT_JAW, 1, "cell:pick_box_2"),
+            ]
+        )
     finally:
         # Stop the executor first: a timer callback waiting on the bridge lock must not
         # run on entities the teardown destroyed.

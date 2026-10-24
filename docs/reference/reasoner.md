@@ -198,8 +198,10 @@ missed grasp (issue #353): the HAL publishes `KIND_GRASP_OUTCOME` on
 `ContextRenderer` renders one `[grasp_miss] hand=<jaw link> target=<id>` line per hand
 in `## EXECUTION` with a `reflect_on_grasp_miss` hint naming the levers `execute_rskill`
 already has (a re-grounded `grasp_target.object_id`, the other hand via
-`grasp_target.contact_links`, a different skill). That hand's next ATTACH clears it.
-The core still sequences nothing on it: per-target miss counting and the
+`grasp_target.contact_links`, a different skill). An `attach` for that hand clears it:
+its own ATTACH, or another hand attaching the same target. The HAL counts the run per hand
+and per target. The core still sequences nothing on it: per-target miss counting in
+`ReasonerCore` and the
 substitute / goal-replan escalation are deferred until trials show whether the LLM's
 own re-dispatch recovers.
 

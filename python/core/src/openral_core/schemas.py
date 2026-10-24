@@ -13507,22 +13507,24 @@ class GraspOutcomeEvidence(_FailureEvidenceBase):
 
     Issue #353. The HAL vision attachment bridge publishes it on
     ``/openral/failure/hal`` once per close whose command left the close band before the
-    gripper trigger confirmed an ATTACH (``outcome="miss"``), and once at the next ATTACH
-    on that hand after one or more misses (``outcome="attach"``, the recovery). A clean
-    first-try ATTACH publishes nothing. It is task evidence for the reasoner, never a
+    gripper trigger confirmed an ATTACH (``outcome="miss"``), and once per hand whose run
+    of misses an ATTACH ends (``outcome="attach"``, the recovery): that hand's own ATTACH,
+    or another hand attaching the same declared target. A first-try ATTACH that ends no
+    run publishes nothing. It is task evidence for the reasoner, never a
     safety signal: the robot is safe, the task is not progressing. Nothing in the HAL acts
     on it; the reasoner reflects on it (``openral_reasoner.context.reflect_on_grasp_miss``).
 
     Attributes:
         kind: Discriminator (always ``"grasp_outcome"``).
-        outcome: ``"miss"`` (the close ended with nothing attached) or ``"attach"`` (an
-            ATTACH on a hand whose previous close or closes missed).
+        outcome: ``"miss"`` (the close ended with nothing attached) or ``"attach"`` (this
+            hand's run of misses ended: it, or another hand, attached the target).
         gripper_joint: The gripper joint whose trigger ran the close (manifest name).
         jaw_link: That joint's child link, the name a ``GraspTargetRef.contact_links``
             entry uses for this hand.
         hand_link: The link the trigger measures the pinch on (the attach link).
-        consecutive_misses: Misses on this hand since its last ATTACH, this one included
-            for ``"miss"``; the misses the ATTACH recovered from for ``"attach"``.
+        consecutive_misses: This hand's run of misses on one target, this one included for
+            ``"miss"``; the run the ATTACH ended for ``"attach"``. A miss on a different
+            target (or an undeclared one after a declared one) starts a new run.
         target_id: The live grasp declaration's ``target_id`` when it named this hand's
             jaw link; ``""`` when no declaration named it (an undeclared close).
         region_armed: Whether that declaration carried a producer-measured region when
