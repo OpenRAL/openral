@@ -12,6 +12,8 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _TOOL = Path(__file__).resolve().parents[2] / "tools" / "_validation_matrix_dispatch.py"
 
 
@@ -35,3 +37,13 @@ def test_without_a_graph_clock_the_wall_decides_and_a_wall_cap_always_holds() ->
     assert not overran(sim_elapsed_s=None, wall_elapsed_s=200.0, deadline_s=60.0)
     assert overran(sim_elapsed_s=None, wall_elapsed_s=241.0, deadline_s=60.0)
     assert overran(sim_elapsed_s=10.0, wall_elapsed_s=3601.0, deadline_s=60.0)
+
+
+def test_the_graph_clock_baseline_latches_on_the_first_sample_seen_while_waiting() -> None:
+    """No /clock yet when the wait began used to pin the baseline to None for the whole
+    wait, so a slow sim fell back to the wall limit (#421 review)."""
+    sim_elapsed = _tool()._sim_elapsed
+    sim0: list[float] = []
+    assert sim_elapsed([], sim0) is None
+    assert sim_elapsed([500.0], sim0) == 0.0
+    assert sim_elapsed([540.7], sim0) == pytest.approx(40.7)

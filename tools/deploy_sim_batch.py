@@ -34,6 +34,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -178,21 +179,34 @@ def _end_sidecar(port: int) -> None:
             os.kill(pid, signal.SIGKILL)
 
 
+def batch_env(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
+    """The episodes' environment and ROS domain, the domain written into it.
+
+    ``graph_leaks`` matches ``ROS_DOMAIN_ID=<domain>`` in each process's environ, so the
+    children must carry the variable even when the caller's shell left it unset.
+
+    Example:
+        >>> batch_env({"PATH": "/bin"})
+        ({'PATH': '/bin', 'ROS_DOMAIN_ID': '0'}, '0')
+    """
+    env = dict(environ)
+    domain = env.setdefault("ROS_DOMAIN_ID", "0")
+    return env, domain
+
+
 def run_batch(args: argparse.Namespace) -> int:  # reason: one linear episode loop
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=False)
     template = yaml.safe_load(Path(args.scene).read_text())
     seeds = [int(s) for s in args.seeds.split(",")]
-    env = dict(os.environ)
-    domain = env.get("ROS_DOMAIN_ID", "0")
+    env, domain = batch_env(os.environ)
     episodes: list[dict[str, Any]] = []
     restarts: list[str] = []
+    # Before the try: its finally ends the port's sidecar, which must be one this batch owns.
+    if sidecar_pids(args.sidecar_port):
+        print(f"refusing: a sidecar is already serving port {args.sidecar_port}", file=sys.stderr)
+        return 2
     try:
-        if sidecar_pids(args.sidecar_port):
-            print(
-                f"refusing: a sidecar is already serving port {args.sidecar_port}", file=sys.stderr
-            )
-            return 2
         for i, seed in enumerate(seeds):
             last = i == len(seeds) - 1
             ep = out / f"ep{i}_seed{seed}"
@@ -346,9 +360,11 @@ def compare(a: Path, b: Path) -> int:
             d / f"ep{e['episode']}_seed{e['seed']}" / "ground_truth.json"
             for d, e in ((a, ea), (b, eb))
         )
-        print(
-            f"  ep{ea['episode']}: {_max_abs_diff(json.loads(pa.read_text()), json.loads(pb.read_text())):.4f}"
-        )
+        if not (pa.exists() and pb.exists()):  # an episode that did not boot has none
+            print(f"  ep{ea['episode']}: n/a (no ground truth)")
+            continue
+        diff = _max_abs_diff(json.loads(pa.read_text()), json.loads(pb.read_text()))
+        print(f"  ep{ea['episode']}: {diff:.4f}")
     saved = [
         ea["total_s"] - eb["total_s"]
         for ea, eb in zip(ra["episodes"], rb["episodes"], strict=False)
@@ -362,6 +378,11 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["compare"]:
         return compare(Path(argv[1]), Path(argv[2]))
+    return run_batch(parser().parse_args(argv))
+
+
+def parser() -> argparse.ArgumentParser:
+    """The ``run`` command line."""
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -376,14 +397,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rest-s", type=float, default=20.0)
     p.add_argument("--boot-timeout-s", type=float, default=420.0)
     p.add_argument("--grace-s", type=float, default=60.0)
-    p.add_argument("--expect-preload", action="store_true", default=True)
+    p.add_argument("--expect-preload", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
         "--deploy-arg",
         action="append",
         default=[],
         help="extra `openral deploy sim` argument, repeatable",
     )
-    return run_batch(p.parse_args(argv))
+    return p
 
 
 if __name__ == "__main__":

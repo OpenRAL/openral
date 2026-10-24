@@ -48,6 +48,24 @@ def _overran(*, sim_elapsed_s: float | None, wall_elapsed_s: float, deadline_s: 
     return sim_elapsed_s > deadline_s + GRAPH_MARGIN_S
 
 
+def _sim_elapsed(sim_now: list[float], sim0: list[float]) -> float | None:
+    """Graph-clock seconds since the first ``/clock`` sample seen while waiting.
+
+    The first sample is latched into ``sim0`` when it arrives, which can be after the
+    wait began (``None`` until then, so the wall decides only while no clock is seen).
+
+    Example:
+        >>> sim0: list[float] = []
+        >>> _sim_elapsed([], sim0), _sim_elapsed([100.0], sim0), _sim_elapsed([130.0], sim0)
+        (None, 0.0, 30.0)
+    """
+    if not sim_now:
+        return None
+    if not sim0:
+        sim0.append(sim_now[0])
+    return sim_now[0] - sim0[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Send one ``ExecuteRskill`` goal and print its terminal status as JSON.
 
@@ -112,9 +130,9 @@ def main(argv: list[str] | None = None) -> int:
     # The action's own deadline (graph clock) plus a teardown margin: a policy that
     # overruns its deadline still has to unwind the graph before a result appears.
     wall0 = time.monotonic()
-    sim0 = sim_now[0] if sim_now else None
+    sim0: list[float] = []
     while not result_future.done() and not _overran(
-        sim_elapsed_s=None if sim0 is None or not sim_now else sim_now[0] - sim0,
+        sim_elapsed_s=_sim_elapsed(sim_now, sim0),
         wall_elapsed_s=time.monotonic() - wall0,
         deadline_s=args.deadline_s,
     ):
