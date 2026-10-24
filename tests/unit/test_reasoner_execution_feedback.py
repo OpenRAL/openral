@@ -6,6 +6,9 @@ Covers:
 - ``ContextRenderer`` ``## EXECUTION`` section:
   success + failure feedback, the Reflexion hint on failures, ``seq`` bump, and
   section ordering.
+- Issue #353: ``reflect_on_grasp_miss`` and the per-hand ``[grasp_miss]`` line a
+  ``KIND_GRASP_OUTCOME`` miss opens and that hand's next ATTACH closes, on the real
+  bimanual OpenArm manifest's hands.
 
 Run with:
     uv run pytest tests/unit/test_reasoner_execution_feedback.py -v
@@ -13,14 +16,25 @@ Run with:
 
 from __future__ import annotations
 
-from openral_core import RSkillAction
+from typing import Literal
+
+from openral_core import GraspOutcomeEvidence, RobotDescription, RSkillAction
+from openral_observability.failure_bus import (
+    KIND_GRASP_OUTCOME,
+    SEVERITY_FAIL,
+    SEVERITY_INFO,
+    SEVERITY_WARN,
+)
 from openral_reasoner.context import (
     ContextRenderer,
     ExecutionEventRecord,
+    FailureEventRecord,
     reflect_on_failure,
+    reflect_on_grasp_miss,
     reflect_on_retry_cap,
     reflect_on_reward_plateau,
 )
+from openral_reasoner.mission import MissionState
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 
 
@@ -67,6 +81,144 @@ def test_reflect_on_retry_cap_names_tool_and_cap() -> None:
     assert "execute_rskill__grasp" in hint
     assert "3+" in hint
     assert "exhausted" in hint
+
+
+def _openarm_hands() -> list[tuple[str, str, str]]:
+    """``(gripper joint, jaw link, attach link)`` per hand of the real bimanual OpenArm."""
+    description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    hands = [
+        (joint.name, joint.child_link, joint.parent_link)
+        for joint in description.joints
+        if joint.role == "gripper"
+    ]
+    assert len(hands) == 2, hands
+    return hands
+
+
+def _grasp_outcome(
+    hand: tuple[str, str, str],
+    outcome: Literal["miss", "attach"],
+    *,
+    misses: int,
+    target_id: str = "cell:pick_box",
+    severity: int = SEVERITY_FAIL,
+    stamp_ns: int = 1,
+) -> FailureEventRecord:
+    """The ``FailureTrigger`` the HAL bridge publishes, as ``_on_failure`` records it."""
+    joint, jaw, attach = hand
+    evidence = GraspOutcomeEvidence(
+        outcome=outcome,
+        gripper_joint=joint,
+        jaw_link=jaw,
+        hand_link=attach,
+        consecutive_misses=misses,
+        target_id=target_id,
+        short_of_command=0.031,
+        settle_spread=0.0004,
+    )
+    return FailureEventRecord(
+        source="hal",
+        kind=KIND_GRASP_OUTCOME,
+        severity=severity,
+        evidence_json=evidence.model_dump_json(),
+        rskill_id="restock_pick",
+        trace_id="",
+        stamp_ns=stamp_ns,
+    )
+
+
+def test_reflect_on_grasp_miss_names_hand_target_and_the_levers() -> None:
+    """The hint carries the evidence and points at what execute_rskill can change."""
+    hint = reflect_on_grasp_miss("openarm_left_finger_pair", "cell:pick_box", 0.031)
+    for part in ("openarm_left_finger_pair", "'cell:pick_box'", "0.031", "nothing was attached"):
+        assert part in hint
+    for lever in ("grasp_target.object_id", "grasp_target.contact_links", "different skill"):
+        assert lever in hint
+    assert "identical execute_rskill" in hint  # not a blind repeat
+    assert "in a row" not in hint  # a first miss is not called a pattern
+    repeated = reflect_on_grasp_miss("openarm_left_finger_pair", "", None, consecutive_misses=3)
+    assert "3 misses in a row" in repeated
+    assert "an undeclared target" in repeated and "unknown" in repeated
+
+
+def test_a_grasp_miss_opens_a_reflection_line_for_that_hand() -> None:
+    """Issue #353: one ``[grasp_miss]`` line per hand, naming its jaw link and target."""
+    left, _right = _openarm_hands()
+    r = ContextRenderer()
+    seq0 = r.seq
+    r.append_failure(_grasp_outcome(left, "miss", misses=1))
+    assert r.seq == seq0 + 1
+    out = r.render(world_state=None)
+    execution = out[out.index("## EXECUTION") : out.index("## FAILURES")]
+    assert (
+        f"[grasp_miss] hand={left[1]} target=cell:pick_box misses=1 — reflect: "
+        f"{reflect_on_grasp_miss(left[1], 'cell:pick_box', 0.031)}"
+    ) in execution
+    # The event itself is still on the failure buffer, like every other kind.
+    assert f"[hal] kind={KIND_GRASP_OUTCOME} severity={SEVERITY_FAIL}" in out
+
+
+def test_the_next_miss_on_a_hand_replaces_its_line() -> None:
+    """A hand has one open miss: the latest, with its running count."""
+    left, _right = _openarm_hands()
+    r = ContextRenderer()
+    r.append_failure(_grasp_outcome(left, "miss", misses=1, stamp_ns=1))
+    r.append_failure(_grasp_outcome(left, "miss", misses=2, stamp_ns=2))
+    out = r.render(world_state=None)
+    assert out.count("[grasp_miss]") == 1
+    assert "misses=2" in out and "2 misses in a row" in out
+
+
+def test_an_attach_closes_only_that_hands_miss() -> None:
+    """The recovery ATTACH (``outcome="attach"``) drops its own hand's line, not the other's."""
+    left, right = _openarm_hands()
+    r = ContextRenderer()
+    r.append_failure(_grasp_outcome(left, "miss", misses=1))
+    r.append_failure(_grasp_outcome(right, "miss", misses=1, target_id="", severity=SEVERITY_WARN))
+    out = r.render(world_state=None)
+    assert f"hand={left[1]}" in out and f"hand={right[1]} target=-" in out
+    r.append_failure(_grasp_outcome(left, "attach", misses=1, severity=SEVERITY_INFO))
+    out = r.render(world_state=None)
+    assert f"[grasp_miss] hand={left[1]}" not in out
+    assert f"[grasp_miss] hand={right[1]}" in out
+
+
+def test_open_grasp_misses_drop_on_an_estop_clear_and_a_task_change() -> None:
+    """A miss is about the active task: an e-stop clear or a new task makes it stale."""
+    left, right = _openarm_hands()
+    r = ContextRenderer()
+    r.append_failure(_grasp_outcome(left, "miss", misses=1))
+    r.clear_failures()
+    assert "[grasp_miss]" not in r.render(world_state=None)
+
+    r.set_mission(MissionState(["pick the carton", "place it in the tote"]))
+    r.append_failure(_grasp_outcome(right, "miss", misses=1))
+    assert "[grasp_miss]" in r.render(world_state=None)
+    r.advance_mission(done=False, verdict="abandoned after misses")
+    assert "[grasp_miss]" not in r.render(world_state=None)
+
+    r.append_failure(_grasp_outcome(right, "miss", misses=1))
+    r.set_mission(MissionState(["restock the shelf"]))
+    assert "[grasp_miss]" not in r.render(world_state=None)
+
+
+def test_a_malformed_grasp_outcome_only_buffers() -> None:
+    """A payload the union rejects opens nothing; it still shows raw on the failure line."""
+    r = ContextRenderer()
+    r.append_failure(
+        FailureEventRecord(
+            source="hal",
+            kind=KIND_GRASP_OUTCOME,
+            severity=SEVERITY_FAIL,
+            evidence_json='{"kind": "grasp_outcome", "outcome": "miss"}',
+            rskill_id="",
+            trace_id="",
+            stamp_ns=1,
+        )
+    )
+    out = r.render(world_state=None)
+    assert "[grasp_miss]" not in out
+    assert "evidence=" in out
 
 
 def test_execution_section_renders_success_and_failure() -> None:

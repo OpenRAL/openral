@@ -19,6 +19,7 @@ from openral_core import (
     CriticEvidence,
     FailureEvidence,
     ForceEvidence,
+    GraspOutcomeEvidence,
     HumanEvidence,
     ObjectQueryEvidence,
     ObjectQueryObservation,
@@ -96,6 +97,17 @@ _VARIANTS: list[FailureEvidence] = [
             half_extents=(0.03, 0.03, 0.03),
         ),
     ),
+    GraspOutcomeEvidence(
+        outcome="miss",
+        gripper_joint="left_gripper",
+        jaw_link="openarm_left_finger_pair",
+        hand_link="openarm_left_link7",
+        consecutive_misses=2,
+        target_id="cell:pick_box",
+        region_armed=True,
+        short_of_command=0.031,
+        settle_spread=0.0004,
+    ),
     SuppressedSummaryEvidence(
         window_s=1.0,
         kinds=[KIND_TIMEOUT, KIND_FORCE],
@@ -146,6 +158,29 @@ def test_object_query_observations_are_bounded_and_reason_is_in_typed_failure() 
                 ],
             }
         )
+
+
+def test_grasp_outcome_evidence_refuses_what_no_close_could_report() -> None:
+    """Issue #353: a run of zero misses, a non-finite reading, or an unknown outcome."""
+    evidence = next(ev for ev in _VARIANTS if isinstance(ev, GraspOutcomeEvidence))
+    for bad in (
+        {"consecutive_misses": 0},
+        {"short_of_command": float("nan")},
+        {"settle_spread": -0.001},
+        {"outcome": "regrasp"},
+    ):
+        with pytest.raises(ValidationError):
+            GraspOutcomeEvidence.model_validate({**evidence.model_dump(), **bad})
+    # An undeclared close: no target, no region, readings not yet classified.
+    undeclared = GraspOutcomeEvidence(
+        outcome="miss",
+        gripper_joint="left_gripper",
+        jaw_link="openarm_left_finger_pair",
+        hand_link="openarm_left_link7",
+        consecutive_misses=1,
+    )
+    assert (undeclared.target_id, undeclared.region_armed) == ("", False)
+    assert undeclared.short_of_command is None and undeclared.settle_spread is None
 
 
 def test_suppressed_summary_requires_parallel_arrays() -> None:

@@ -7,7 +7,8 @@ digest of
 * the latest ``WorldState`` snapshot (joint state,
   EE pose, staleness, control mode);
 * the recent ``FailureTrigger`` events received per source bus
-  (FIFO buffers, one per ``/openral/failure/<source>``);
+  (FIFO buffers, one per ``/openral/failure/<source>``), plus the open grasp
+  misses (``KIND_GRASP_OUTCOME``, one per hand, until that hand's next ATTACH);
 * the recent ``/openral/perception/<kind>`` events;
 * any pending operator prompts.
 
@@ -25,6 +26,7 @@ from collections import deque
 
 from openral_core import (
     FailureEvidence,
+    GraspOutcomeEvidence,
     ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
@@ -33,7 +35,7 @@ from openral_core import (
     SpatialNodeKind,
     WorldState,
 )
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from openral_reasoner.mission import MissionState, TaskState
 
@@ -47,6 +49,7 @@ __all__ = [
     "PromptRecord",
     "RewardStateRecord",
     "reflect_on_failure",
+    "reflect_on_grasp_miss",
     "reflect_on_invalid_plan",
     "reflect_on_retry_cap",
     "render_playbooks_block",
@@ -255,6 +258,56 @@ def reflect_on_reward_plateau(progress_now: float) -> str:
         "re-dispatch with a DIFFERENT approach (a different grasp / angle / "
         "strategy). If several different approaches keep failing, this object is "
         "abandoned and the mission moves on to the next one."
+    )
+
+
+def reflect_on_grasp_miss(
+    hand: str,
+    target_id: str,
+    short_of_command: float | None,
+    *,
+    consecutive_misses: int = 1,
+) -> str:
+    """One-line strategy hint for a grasp that closed on nothing (issue #353).
+
+    Keyed on the HAL's ``KIND_GRASP_OUTCOME`` miss: the gripper trigger saw a close end
+    without an ATTACH. Unlike ``reflect_on_reward_plateau`` (slow, and it fires for
+    occlusion or slow progress too), this is a crisp mechanical event naming the hand and
+    the declared target, so the hint can point at the levers ``execute_rskill`` already
+    has: a re-grounded ``grasp_target`` (a different ``object_id``), the other hand
+    (``grasp_target.contact_links``), or a different skill. Deterministic — no LLM call.
+    It decides nothing itself: the replanning ladder's caps still bound what follows.
+
+    Args:
+        hand: The jaw link of the hand that missed (a ``contact_links`` name).
+        target_id: The grasp declaration's target id, or ``""`` when the close was
+            undeclared.
+        short_of_command: How far the jaw stopped short of its command, in the gripper
+            joint's units, or ``None`` when unknown.
+        consecutive_misses: Misses on this hand since its last ATTACH.
+
+    Example:
+        >>> hint = reflect_on_grasp_miss("openarm_left_finger_pair", "cell:pick_box", 0.031)
+        >>> "openarm_left_finger_pair" in hint and "cell:pick_box" in hint
+        True
+        >>> "the other hand" in hint
+        True
+    """
+    target = f"declared target {target_id!r}" if target_id else "an undeclared target"
+    short = "unknown" if short_of_command is None else f"{short_of_command:.3f}"
+    repeat = (
+        f"; that is {consecutive_misses} misses in a row on this hand, so this approach "
+        "is not working"
+        if consecutive_misses > 1
+        else ""
+    )
+    return (
+        f"hand {hand} closed for {target} but nothing was attached — the grasp missed "
+        f"(jaw short of command by {short}){repeat}. When the current attempt returns, do "
+        "NOT re-issue the identical execute_rskill: re-ground the target (recall_object / "
+        "locate_in_view, then pass grasp_target.object_id), try the other hand "
+        "(grasp_target.contact_links), or substitute a different skill. If several "
+        "different approaches keep missing, abandon this object."
     )
 
 
@@ -484,6 +537,12 @@ class ContextRenderer:
         # heartbeat stays live so the reasoner can poll the reward monitor.
         self._inflight: tuple[str, int, str] | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
+        # Issue #353: the open grasp misses, latest ``KIND_GRASP_OUTCOME`` miss per hand
+        # (jaw link), insertion-ordered. Opened by a miss, closed by that hand's next
+        # ATTACH (``outcome="attach"``), an e-stop clear, or a mission (task) change.
+        # Rendered in ## EXECUTION with ``reflect_on_grasp_miss``. Bounded by the
+        # robot's hand count, and capped at ``buffer_size`` regardless.
+        self._grasp_misses: dict[str, GraspOutcomeEvidence] = {}
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
         # Prompt buffer is a list (not a deque) because we order it by
@@ -557,9 +616,10 @@ class ContextRenderer:
         to wake an otherwise-idle heartbeat (unlike the static
         ``set_robot_model`` / ``set_memory_block``). The active task's
         text is the goal the reasoner pursues until it is verified and the queue
-        advances.
+        advances. Drops the open grasp misses: they were about the previous goal.
         """
         self._mission = mission
+        self._grasp_misses.clear()
         self._seq += 1
 
     def set_in_view(self, objects: ObjectsMetadata | None) -> None:
@@ -719,6 +779,7 @@ class ContextRenderer:
         reasoner to dispatch it — so this bumps ``seq`` whenever a mission is
         present. Returns the newly-active ``TaskState``, or ``None`` when the
         mission is finished. A no-op (no mission / no active task) does not bump.
+        Drops the open grasp misses: they were about the task that just ended.
         """
         if self._mission is None:
             return None
@@ -727,14 +788,29 @@ class ContextRenderer:
             if done
             else self._mission.abandon_active(verdict)
         )
+        self._grasp_misses.clear()
         self._seq += 1
         return nxt
 
     # ── rolling buffer mutators ─────────────────────────────────────────────
 
     def append_failure(self, record: FailureEventRecord) -> None:
-        """Push a failure event onto the rolling buffer."""
+        """Push a failure event onto the rolling buffer.
+
+        A ``GraspOutcomeEvidence`` payload (issue #353, ``KIND_GRASP_OUTCOME``) also
+        opens (``miss``) or closes (``attach``) that hand's grasp-miss reflection; the
+        event itself is buffered like any other. An undecodable payload only buffers.
+        """
         self._failures.append(record)
+        evidence = _decode_evidence(record.evidence_json)
+        if isinstance(evidence, GraspOutcomeEvidence):
+            if evidence.outcome == "miss":
+                self._grasp_misses.pop(evidence.jaw_link, None)
+                self._grasp_misses[evidence.jaw_link] = evidence
+                while len(self._grasp_misses) > self._buffer_size:
+                    del self._grasp_misses[next(iter(self._grasp_misses))]
+            else:
+                self._grasp_misses.pop(evidence.jaw_link, None)
         self._seq += 1
 
     def append_execution(self, record: ExecutionEventRecord) -> None:
@@ -754,15 +830,17 @@ class ContextRenderer:
     def clear_failures(self) -> None:
         """Drop accumulated failure + skill-execution records.
 
-        Called when the operator clears a safety e-stop: the e-stop aborts
+        Also drops the open grasp misses. Called when the operator clears a safety
+        e-stop: the e-stop aborts
         the in-flight skill (recorded as a ``safety_estop`` failure + failed
         execution), and once safety state is reset those records are stale
         — left in context they make the LLM keep refusing to retry. Bumps
         ``seq`` so an otherwise-idle heartbeat re-evaluates.
         """
-        if self._failures or self._executions:
+        if self._failures or self._executions or self._grasp_misses:
             self._failures.clear()
             self._executions.clear()
+            self._grasp_misses.clear()
             self._seq += 1
 
     def append_prompt(self, record: PromptRecord) -> None:
@@ -1004,6 +1082,8 @@ class ContextRenderer:
         the LLM never double-dispatches into a busy runner blind. Then
         ``[ok] skill=<id>: <summary>`` for successes; failures append the
         Reflexion strategy hint: ``[failed] skill=<id>: <summary> — reflect: <hint>``.
+        Last, one ``[grasp_miss] hand=<jaw link>`` line per open grasp miss (issue #353)
+        with its ``reflect_on_grasp_miss`` hint.
         """
         lines: list[str] = []
         if self._inflight is not None:
@@ -1026,6 +1106,17 @@ class ContextRenderer:
             if rec.reflection:
                 line += f" — reflect: {rec.reflection}"
             lines.append(line)
+        for hand, miss in self._grasp_misses.items():
+            hint = reflect_on_grasp_miss(
+                hand,
+                miss.target_id,
+                miss.short_of_command,
+                consecutive_misses=miss.consecutive_misses,
+            )
+            lines.append(
+                f"[grasp_miss] hand={hand} target={miss.target_id or '-'} "
+                f"misses={miss.consecutive_misses} — reflect: {hint}"
+            )
         return "\n".join(lines) if lines else "(none)"
 
     def _render_perception(self) -> str:
@@ -1183,6 +1274,20 @@ def _render_instances(
             f"{name}@({xyz[0]:+.2f},{xyz[1]:+.2f},{xyz[2]:+.2f}){size}{suffix}"
         )
     return [f"{key}[{frame}]: {', '.join(entries)}" for frame, entries in by_frame.items()]
+
+
+def _decode_evidence(payload: str) -> FailureEvidence | None:
+    """Decode a ``FailureTrigger.evidence_json`` payload, or ``None`` when it does not.
+
+    ``None`` for an empty payload and for one the discriminated union rejects; the
+    rendered failure line still shows such a payload raw (``_summarise_evidence_json``).
+    """
+    if not payload:
+        return None
+    try:
+        return _FAILURE_ADAPTER.validate_json(payload)
+    except ValidationError:
+        return None
 
 
 def _summarise_evidence_json(payload: str) -> str:
