@@ -46,9 +46,9 @@ the object's size.
 The current tracker combines recent clear camera fits in a short window and uses
 heuristics for hidden extent; it is not a persistent object-local surface mapper.
 Binding constructs carried geometry, and subsequent protrusion observations can
-grow it. See [tracker.py](../../python/world_state/src/openral_world_state/object_tracker/tracker.py)
+grow it. See [tracker.py](https://github.com/OpenRAL/openral/blob/master/python/world_state/src/openral_world_state/object_tracker/tracker.py)
 (`VIEW_WINDOW_S`, multi-view fusion, measured hidden size) and
-[binding.py](../../python/world_state/src/openral_world_state/object_tracker/binding.py)
+[binding.py](https://github.com/OpenRAL/openral/blob/master/python/world_state/src/openral_world_state/object_tracker/binding.py)
 (binding construction and `grow_by_protrusion`).
 
 The world-map bridge already handles tracked-object current, swept, vacated and
@@ -56,23 +56,23 @@ released cells, with identity checks and support/static-geometry exclusions.
 Its documentation records residual hazards, including observations changing
 between the bridge snapshot and an octree clear. This is valuable existing work;
 it is not yet an object-owned voxel contribution ledger. See
-[identity clearing and OT-8](../../packages/openral_octomap_bridge/README.md#and-a-tracked-object-is-cleared-by-identity-issue-418).
+[identity clearing and OT-8](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy).
 
 The safety kernel's **K4 union rule prevents shrinkage within a binding epoch**.
 Refining the perception model does not authorize reducing the held collision
 envelope. The agreed direction is to tighten before binding; shrinking during a
 carry requires a later, explicitly reviewed revalidation rule. Changing the epoch
 to evade the union is not that rule. See
-[K4 contract](../../cpp/openral_safety_kernel/README.md) and
-[engineering safety requirements](../../CLAUDE.md#3-architecture-discipline).
+[K4 contract](https://github.com/OpenRAL/openral/blob/master/cpp/openral_safety_kernel/README.md) and
+[engineering safety requirements](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md#3-architecture-discipline).
 
 The repository's ROS CI uses Jazzy. `sim run` steps a policy and simulator directly;
 `deploy sim` composes the ROS perception and safety path. Keep `sim run` as the
 policy benchmark and use `deploy sim` to evaluate this production-facing design.
 Equal task success does not establish equal safety behavior. Sources:
-[ROS CI](../../.github/workflows/test-ros2.yml),
-[sim runner](../../python/sim/src/openral_sim/sim_runner.py),
-[deploy composition](../../packages/openral_rskill_ros/launch/deploy_e2e.launch.py).
+[ROS CI](https://github.com/OpenRAL/openral/blob/master/.github/workflows/test-ros2.yml),
+[sim runner](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/sim_runner.py),
+[deploy composition](https://github.com/OpenRAL/openral/blob/master/packages/openral_rskill_ros/launch/deploy_e2e.launch.py).
 
 ## Practical shortlist
 
@@ -431,10 +431,10 @@ force, or substitute for an effort monitor. At the inspected checkout, commanded
 force fields are documented as unenforced, and placement contact-force handling
 does not establish a general measured joint-effort cutoff. Audit that path as a
 separate safety capability before relying on it. Sources:
-[command validator](../../cpp/openral_safety_kernel/src/validator.cpp),
-[lifecycle kernel](../../cpp/openral_safety_kernel/src/lifecycle_kernel.cpp),
-[force schema contract](../../python/core/src/openral_core/schemas.py),
-[collision checks](../../cpp/openral_safety_kernel/src/collision.cpp).
+[command validator](https://github.com/OpenRAL/openral/blob/master/cpp/openral_safety_kernel/src/validator.cpp),
+[lifecycle kernel](https://github.com/OpenRAL/openral/blob/master/cpp/openral_safety_kernel/src/lifecycle_kernel.cpp),
+[force schema contract](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py),
+[collision checks](https://github.com/OpenRAL/openral/blob/master/cpp/openral_safety_kernel/src/collision.cpp).
 
 **Contact proposal.** Keep calibrated robot/unit hard ceilings in robot safety
 configuration. An external USD task may request a lower, pair-specific operating
