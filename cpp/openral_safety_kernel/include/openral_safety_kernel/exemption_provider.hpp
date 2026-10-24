@@ -40,7 +40,7 @@ namespace openral_safety_kernel {
 
 /// Bumped on any change to this header's layout or hook semantics. A provider
 /// built against another version is refused at load (fail closed).
-inline constexpr std::uint32_t kExemptionProviderApiVersion = 2;
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 3;
 
 /// A provider's answer for one pair. Anything but `kTolerate` keeps the open
 /// kernel's verdict.
@@ -172,13 +172,17 @@ struct SelfPairQuery {
 
 /// A carried payload about to trip against an occupied cell (`payload_voxel_pair`) or against a
 /// robot link (`payload_self_pair`). Its attach link (and, for a self pair, `other_link`) are in
-/// the mask; a frozen payload (no attach link) is never offered.
+/// the mask. A frozen payload is offered only to `payload_self_pair`, only in its release window,
+/// on the hand that let it go (`release_hand_link`, masked).
 struct PayloadPairQuery {
   std::size_t object{0};                         ///< index into the kernel's AttachedModel
   const AttachedModel* attached_model{nullptr};  ///< its primitives and hulls
   const AttachedObject* attached{nullptr};
   Transform object_xf{};  ///< the payload's pose, robot base frame
   int attach_link{-1};
+  /// payload_self_pair only: a FROZEN payload (attach_link -1) in its K5 release window, offered
+  /// on the hand that let it go; -1 otherwise.
+  int release_hand_link{-1};
   int other_link{-1};       ///< payload_self_pair only
   std::size_t cell{0};      ///< payload_voxel_pair only
   Vec3 cell_center_base{};  ///< payload_voxel_pair only
@@ -191,6 +195,48 @@ struct PayloadPairQuery {
   double hand_speed_mps{std::numeric_limits<double>::infinity()};
   double hand_lead_m{std::numeric_limits<double>::infinity()};
   bool hand_contact{false};  ///< the measured hand (or its payload) already touches
+};
+
+/// One tracked object whose kernel cover check fell short this grid, while the kernel's OWN check
+/// passed for it within `max_age_ns` (API v3). Holding it keeps `cover_ok` until that pass ages
+/// out; the kernel never re-stamps a held pass.
+struct CoverHoldQuery {
+  TrackedObjectView object{};
+  std::int64_t last_pass_ns{0};  ///< the kernel's own last passing check, kernel clock
+  std::int64_t now_ns{0};
+  std::int64_t max_age_ns{0};
+  const CollisionScratch* measured{nullptr};  ///< FK at the fresh measured state
+};
+
+/// A bound (carried) tracked payload at a fresh measured state (API v3). Releasing it
+/// freezes it in the base frame where it is; the kernel then keeps its own release window (the
+/// hand and touch links exempt against it until `tracked_release_clear_m` clear by FK or
+/// `tracked_release_timeout_s`) and closes it, exactly as the in-tree K5 does.
+struct ReleaseQuery {
+  std::size_t object{0};
+  const AttachedModel* attached_model{nullptr};
+  const AttachedObject* attached{nullptr};
+  std::size_t object_id_hash{0};  ///< std::hash of the binding's object_id
+  std::uint32_t epoch{0};
+  int attach_link{-1};
+  bool on_hand{false};                ///< the kernel's K3 binding check holds it on the hand
+  const double* q_measured{nullptr};  ///< n_dof, fresh
+  std::size_t n_dof{0};
+  std::int64_t now_ns{0};
+  const TrackedObjectView* tracked{nullptr};  ///< the tracked set (its `released` flags)
+  std::size_t n_tracked{0};
+};
+
+/// The #349 workspace brake, requested by a provider (API v3). The brake MECHANISM stays the
+/// kernel's: on a refused JOINT_POSITION chunk it re-checks the rows with the hand read as
+/// still (speed and lead 0, quoted to the provider's pair queries as such); if that passes it
+/// holds the measured pose or creeps toward it, every replacement re-checked by every open check.
+/// The provider only enables it and supplies the bounds the creep is scaled by.
+struct BrakeConfig {
+  bool enabled{false};
+  double max_speed_mps{0.0};              ///< finite, > 0
+  double max_lead_m{0.0};                 ///< finite, (0, kMaxWorkspaceContactLeadM]
+  std::uint64_t hold_max_consecutive{0};  ///< refused commands held in a row before the stop
 };
 
 /// The interface. Default implementations refuse everything, so a provider
@@ -217,6 +263,10 @@ public:
   /// narrows the open kernel); read once at load and logged.
   virtual bool replaces_grasp_region() const noexcept { return false; }
 
+  /// The workspace brake this provider wants (API v3); disabled by default. Read once at load and
+  /// validated by the kernel; needs the hand measurement (`workspace_contact_control_period_s`).
+  virtual BrakeConfig brake_config() const noexcept { return {}; }
+
   /// Per candidate chunk, before any pair query. Preallocated state only.
   virtual void begin_candidate(const CandidateView& view) noexcept { (void)view; }
 
@@ -241,6 +291,18 @@ public:
 
   /// May this carried payload touch this occupied cell? (API v2)
   virtual ProviderVerdict payload_voxel_pair(const PayloadPairQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+
+  /// Is this bound payload released now? (API v3; world-state ingest path, not per chunk)
+  virtual ProviderVerdict release_payload(const ReleaseQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+
+  /// May this object keep a cover the kernel no longer measures? (API v3)
+  virtual ProviderVerdict hold_cover(const CoverHoldQuery& q) noexcept {
     (void)q;
     return ProviderVerdict::kRefuse;
   }

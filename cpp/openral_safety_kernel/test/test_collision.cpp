@@ -8773,4 +8773,20 @@ TEST(ExemptionProvider, APayloadSelfPairNeedsTheAttachAndTheOtherLinkMasked) {
   EXPECT_GE(with.provider_pairs, 1);
   EXPECT_EQ(provider.last_payload.other_link, 3);
   EXPECT_EQ(provider.last_payload.attach_link, 1);
+  EXPECT_EQ(provider.last_payload.release_hand_link, -1);
+  // A frozen payload in its K5 release window: offered on the hand that let it go.
+  att.objects[0].attach_link = -1;
+  att.objects[0].release_hand_link = 1;
+  const int asked_before = provider.asked_payload_self;
+  const auto window = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  EXPECT_FALSE(window.hit);
+  EXPECT_GT(provider.asked_payload_self, asked_before);
+  EXPECT_EQ(provider.last_payload.attach_link, -1);
+  EXPECT_EQ(provider.last_payload.release_hand_link, 1);
+  // The window closed (no releasing hand): never offered, the open verdict alone.
+  att.objects[0].release_hand_link = -1;
+  const int asked_closed = provider.asked_payload_self;
+  const auto closed_open = osk::check_attached_self_collision(m, att, s, 0.0);
+  expect_same_hit(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate), closed_open);
+  EXPECT_EQ(provider.asked_payload_self, asked_closed);
 }

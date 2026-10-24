@@ -1722,6 +1722,21 @@ kernel. `compose`, `inverse_rigid`, `apply`, `voxel_center`, `point_in_obb`, `fo
 `grid_cell_of` are exported from `collision.hpp`, so a provider's rules use the kernel's own
 arithmetic.
 
+**API v3** adds three hooks.
+- **Cover hold.** `hold_cover` is asked in the kernel's own cover refresh, for a box whose cover
+  fell short while the kernel's own check passed within `grasp_region_max_age_s`. A held pass is
+  never re-stamped, so the hold ends at that bound.
+- **K5 release.** `release_payload` is asked on the world-state ingest path for each bound
+  payload at a fresh measured state, while the in-tree K5 is off. The kernel freezes a released
+  payload itself, keeps its own window (`tracked_release_clear_m` / `tracked_release_timeout_s`,
+  validated at load) and closes it. During the window the frozen payload is offered to
+  `payload_self_pair` on the releasing hand.
+- **Brake.** `brake_config` enables the kernel's own #349 brake on the provider's bounds. The
+  brake mechanism stays open: the dry run, the relaxed re-check with the hand read as still, and
+  the hold or creep, all re-checked by every open check. It needs the hand measurement.
+
+The kernel library is SHARED, so a provider .so and `safety_kernel_node` share one copy.
+
 `end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
 horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
 activate, cleanup, refusal, latch, external E-stop, reset, declaration change. Hooks are `noexcept` and must not allocate; `test_no_alloc`

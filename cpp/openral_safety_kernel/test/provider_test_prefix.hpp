@@ -48,7 +48,7 @@ inline void serve_test_providers() {
   std::ofstream xml(root / "share" / kTestPkg / "plugins.xml");
   xml << "<library path=\"test_exemption_providers\">\n";
   for (const char* cls : {"TolerateEveryPair", "WrongApiVersion", "Declines", "Throws", "Recorder",
-                          "RecorderReplacing"}) {
+                          "RecorderReplacing", "Holder", "Releaser", "Braker"}) {
     xml << "  <class name=\"" << kTestPkg << "/" << cls
         << "\" type=\"openral_safety_kernel_test::" << cls
         << "\" base_class_type=\"openral_safety_kernel::ExemptionProvider\"/>\n";

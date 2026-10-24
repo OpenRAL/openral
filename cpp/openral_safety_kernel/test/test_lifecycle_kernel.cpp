@@ -7220,7 +7220,9 @@ openral_msgs::msg::ActionChunk release_chunk(double j0, double jaw, double j2) {
 
 struct ReleaseRig {
   GraspRig rig;
-  explicit ReleaseRig(const std::string& name) : rig(name, release_params()) {
+  explicit ReleaseRig(const std::string& name,
+                      std::vector<rclcpp::Parameter> params = release_params())
+      : rig(name, std::move(params)) {
     rig.voxels = grasp_target_voxels();
     rig.voxels.origin.x = 1.0;  // one cell, far from everything
     rig.js_names = {"j0", "jaw", "j2"};
@@ -8283,4 +8285,136 @@ TEST_F(LifecycleKernelTest, AProviderThatReplacesTheGraspRegionOnlyNarrowsTheOpe
   rig.warm(&b, 0.0, 300);
   EXPECT_FALSE(rig.offer(&b, 0.0)) << "the region no longer exempts; the provider refused";
   EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AProviderCoverHoldKeepsTheKernelsBoundsAndNeverReStamps) {
+  // API v3: the target's kernel cover passes (2 of 2), then the hand hides it (2 of the 3 needed).
+  // A provider that holds every cover keeps `cover_ok` inside the kernel's age bound (0.6 s) and
+  // loses it past that bound, because the kernel never re-stamps a held pass. A provider that does
+  // not hold (the Recorder) loses it at once. In-tree #349 / K7 / the in-tree hold are all off.
+  osk_test::serve_test_providers();
+  const auto run = [&](const char* provider, const std::string& name) {
+    *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+    auto params =
+        with_param(workspace_params(false), "grasp_region_max_age_s", rclcpp::ParameterValue(0.6));
+    params = with_param(params, "exemption_provider",
+                        rclcpp::ParameterValue(osk_test::test_provider(provider)));
+    params = with_param(params, "exemption_provider_links",
+                        rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+    auto rig = std::make_unique<GraspRig>(name, params);
+    rig->voxels = k2_voxels();
+    rig->start();
+    EXPECT_TRUE(rig->node->exemption_provider_loaded()) << rig->node->exemption_provider_status();
+    return rig;
+  };
+  const auto& log = *osk_test_recorder();
+  {
+    auto rig = run("Holder", "kernel_provider_hold");
+    GraspBeat b = workspace_beat(rig->now_ns());
+    k7_neighbour(b);
+    b.tracked_role = "target";
+    b.tracked_visible = 2;
+    rig->warm(&b, kGraspClearQ, 300);
+    ASSERT_TRUE(rig->offer(&b, kGraspClearQ));
+    ASSERT_EQ(log.n_tracked, 1);
+    EXPECT_TRUE(log.cover_ok0) << "the kernel's own check passes";
+    b.tracked_visible = 5;
+    rig->warm(&b, kGraspClearQ, 150);
+    ASSERT_TRUE(rig->offer(&b, kGraspClearQ));
+    EXPECT_GE(log.hold_asked, 1);
+    EXPECT_TRUE(log.cover_ok0) << "held within the age bound";
+    rig->warm(&b, kGraspClearQ, 700);
+    ASSERT_TRUE(rig->offer(&b, kGraspClearQ));
+    EXPECT_FALSE(log.cover_ok0) << "past grasp_region_max_age_s the hold ends, whatever it says";
+  }
+  {
+    auto rig = run("Recorder", "kernel_provider_nohold");
+    GraspBeat b = workspace_beat(rig->now_ns());
+    k7_neighbour(b);
+    b.tracked_role = "target";
+    b.tracked_visible = 2;
+    rig->warm(&b, kGraspClearQ, 300);
+    ASSERT_TRUE(rig->offer(&b, kGraspClearQ));
+    EXPECT_TRUE(log.cover_ok0);
+    b.tracked_visible = 5;
+    rig->warm(&b, kGraspClearQ, 150);
+    ASSERT_TRUE(rig->offer(&b, kGraspClearQ));
+    EXPECT_FALSE(log.cover_ok0) << "a provider that refuses: no hold";
+  }
+}
+
+TEST_F(LifecycleKernelTest, AProviderReleaseIsFrozenAndClosedByTheKernelsOwnWindow) {
+  // API v3: in-tree K5 off. A provider that releases on the tracker's let-go decides WHEN; the
+  // kernel freezes the payload where it is, exempts the touching finger in its window, closes the
+  // window on FK separation, and the frozen payload is then a plain obstacle.
+  osk_test::serve_test_providers();
+  auto params = with_param(release_params(), "tracked_release_jaw_joints",
+                           rclcpp::ParameterValue(std::vector<std::string>{}));
+  params = with_param(params, "tracked_release_jaw_open_sign",
+                      rclcpp::ParameterValue(std::vector<double>{}));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Releaser")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"hand", "finger"}));
+  LogCapture logs;
+  ReleaseRig r("kernel_provider_release", params);
+  ASSERT_TRUE(r.rig.node->exemption_provider_loaded()) << r.rig.node->exemption_provider_status();
+  r.jaw(0.30, 300);
+  r.open_t9();  // the jaw opens: the in-tree jaw rule is off, so nothing releases
+  ASSERT_EQ(logs.count("safety.tracked_release object="), 0U) << logs.joined();
+  r.rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = release_state(stream_ns);
+    msg.tracked_objects.objects[0].status = "released";
+    return msg;
+  };
+  r.jaw(0.988, 200);
+  EXPECT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0 by=provider:releaser/1"), 1U)
+      << logs.joined();
+  EXPECT_TRUE(r.passes(0.0)) << "the touching finger is exempt in the window: " << logs.joined();
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "the frozen payload is a plain obstacle now";
+  EXPECT_TRUE(r.rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AProviderBrakeIsTheKernelsBrakeOnTheProvidersBounds) {
+  // API v3: the in-tree #349 rule off; a provider with a #349-style rule asks for the brake on its
+  // bounds (0.02 m/s, 0.05 m). The lag rig's measured hand moves at 0.03 m/s, so the rows trip;
+  // read as still, they pass: the kernel holds / creeps instead of stopping, exactly as the
+  // in-tree brake does (AWorkspaceBrakeCreepsWhenSpeedIsTheOnlyReason).
+  osk_test::serve_test_providers();
+  auto params =
+      with_param(lag_params(), "workspace_contact_enabled", rclcpp::ParameterValue(false));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Braker")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  LogCapture logs;
+  GraspRig rig("kernel_provider_brake", params);
+  rig.js_velocity = {-0.5};
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.1))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_DOUBLE_EQ(rig.last_flat[0], 0.1) << "within one period at the bound: unscaled";
+  EXPECT_GE(logs.count("safety.workspace_brake hand_speed_mps=0.030"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AProviderBrakeWithoutTheHandMeasurementIsRefused) {
+  osk_test::serve_test_providers();
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Braker")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_brake_nomeasure", params);  // no control period: no measurement
+  rig.start();
+  EXPECT_FALSE(rig.node->exemption_provider_loaded());
+  EXPECT_NE(rig.node->exemption_provider_status().find("brake_config needs the hand measurement"),
+            std::string::npos)
+      << rig.node->exemption_provider_status();
 }

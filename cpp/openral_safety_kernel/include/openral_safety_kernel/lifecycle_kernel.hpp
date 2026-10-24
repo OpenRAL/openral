@@ -517,6 +517,8 @@ private:
     double floor_z{std::numeric_limits<double>::quiet_NaN()};
   };
   std::array<TrackedEntry, kMaxTrackedObjects> tracked_{};
+  /// The provider's read-only view of one tracked entry (ADR-0121).
+  TrackedObjectView tracked_view(const TrackedEntry& e) const noexcept;
   std::size_t tracked_n_{0};
   bool tracked_have_revision_{false};
   std::uint64_t tracked_revision_{0};

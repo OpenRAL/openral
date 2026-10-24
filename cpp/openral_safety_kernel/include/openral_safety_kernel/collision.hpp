@@ -1964,7 +1964,7 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 ///
 /// ADR-0121: a pair still about to trip whose attach link and other link are both in `gate`'s mask
 /// is offered to its provider (`payload_self_pair`) last; `nullptr` = no provider. A frozen payload
-/// (no attach link) is never offered.
+/// is offered only in its release window, on the hand that let it go (`release_hand_link`).
 CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
                                            const CollisionScratch& scratch, double margin,

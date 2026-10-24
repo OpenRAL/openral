@@ -58,6 +58,50 @@ public:
   osk::ProviderVerdict voxel_pair(const osk::VoxelPairQuery& q) noexcept override;
 };
 
+/// The Recorder, holding every cover the kernel offers (API v3).
+class Holder : public Recorder {
+public:
+  const char* name() const noexcept override { return "holder/1"; }
+  osk::ProviderVerdict hold_cover(const osk::CoverHoldQuery& /*q*/) noexcept override {
+    ++osk_test_recorder()->hold_asked;
+    return osk::ProviderVerdict::kTolerate;
+  }
+};
+
+/// Releases a bound payload once the tracker has let go of any object (API v3), the in-tree K5's
+/// by-tracker rule. The freeze and its window are the kernel's.
+class Releaser : public Recorder {
+public:
+  const char* name() const noexcept override { return "releaser/1"; }
+  osk::ProviderVerdict release_payload(const osk::ReleaseQuery& q) noexcept override {
+    for (std::size_t k = 0; k < q.n_tracked; ++k) {
+      if (q.tracked[k].released && q.tracked[k].epoch == q.epoch) {
+        return osk::ProviderVerdict::kTolerate;
+      }
+    }
+    return osk::ProviderVerdict::kRefuse;
+  }
+};
+
+/// A minimal #349-style rule (API v3 test): a masked hand vs a cell is tolerated while the
+/// kernel's measured hand speed and raw lead are within bounds; asks for the kernel's brake on the
+/// same bounds (the lag rig's 0.02 m/s and 0.05 m).
+class Braker : public Recorder {
+public:
+  const char* name() const noexcept override { return "braker/1"; }
+  osk::BrakeConfig brake_config() const noexcept override {
+    osk::BrakeConfig b;
+    b.enabled = true;
+    b.max_speed_mps = 0.02;
+    b.max_lead_m = 0.05;
+    return b;
+  }
+  osk::ProviderVerdict voxel_pair(const osk::VoxelPairQuery& q) noexcept override {
+    return q.hand_speed_mps <= 0.02 && q.hand_lead_m <= 0.05 ? osk::ProviderVerdict::kTolerate
+                                                             : osk::ProviderVerdict::kRefuse;
+  }
+};
+
 /// The Recorder, replacing the open ADR-0115 region as the grasp exemption source.
 class RecorderReplacing : public Recorder {
 public:
@@ -114,6 +158,8 @@ void Recorder::begin_candidate(const osk::CandidateView& view) noexcept {
   log.grid_seq = view.grid_seq;
   log.workspace_period_s = view.workspace_period_s;
   log.stream_fresh = view.tracked_stream_fresh;
+  log.n_tracked = static_cast<int>(view.n_tracked);
+  log.cover_ok0 = view.n_tracked > 0 && view.tracked[0].cover_ok;
 }
 
 osk::ProviderVerdict Recorder::voxel_pair(const osk::VoxelPairQuery& q) noexcept {
@@ -143,6 +189,10 @@ void Recorder::on_reset(osk::ResetReason why) noexcept {
 
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Recorder,
                        openral_safety_kernel::ExemptionProvider)
+PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Holder, openral_safety_kernel::ExemptionProvider)
+PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Releaser,
+                       openral_safety_kernel::ExemptionProvider)
+PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::Braker, openral_safety_kernel::ExemptionProvider)
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::RecorderReplacing,
                        openral_safety_kernel::ExemptionProvider)
 PLUGINLIB_EXPORT_CLASS(openral_safety_kernel_test::TolerateEveryPair,

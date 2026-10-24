@@ -68,7 +68,9 @@ find_package(opentelemetry-cpp CONFIG REQUIRED)
 
 # ── Library ──────────────────────────────────────────────────────────────────
 
-add_library(${PROJECT_NAME}
+# SHARED: an ADR-0121 exemption provider (a pluginlib .so) links this library for the exported
+# helpers and the ExemptionProvider vtable; one shared copy serves it and safety_kernel_node.
+add_library(${PROJECT_NAME} SHARED
   src/envelope.cpp
   src/validator.cpp
   src/collision.cpp

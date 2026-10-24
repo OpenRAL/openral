@@ -2962,18 +2962,21 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
     if (exempt) {
       note_workspace_pair(result, d, attach_link, link);
     }
-    // ADR-0121: last; a carried payload only (a frozen one has no attach link), with its attach
-    // link and the other link both in the kernel's mask.
+    // ADR-0121: last. A carried payload on its attach link, or a frozen one in its release
+    // window on the hand that let it go (`release_hand_link`, the K5 window); that hand and the
+    // other link both in the kernel's mask. A frozen payload outside a window is never offered.
     bool provider_exempt = false;
     const AttachedObject& obj = attached.objects[static_cast<std::size_t>(object)];
-    if (!exempt && d <= margin && gate != nullptr && obj.attach_link >= 0 &&
-        provider_relaxable(*gate, obj.attach_link) && provider_relaxable(*gate, link)) {
+    const int hand_link = obj.attach_link >= 0 ? obj.attach_link : obj.release_hand_link;
+    if (!exempt && d <= margin && gate != nullptr && hand_link >= 0 &&
+        provider_relaxable(*gate, hand_link) && provider_relaxable(*gate, link)) {
       PayloadPairQuery q;
       q.object = static_cast<std::size_t>(object);
       q.attached_model = &attached;
       q.attached = &obj;
       q.object_xf = attached_object_transform(obj, scratch);
       q.attach_link = obj.attach_link;
+      q.release_hand_link = obj.attach_link >= 0 ? -1 : obj.release_hand_link;
       q.other_link = link;
       q.distance = d;
       q.row = gate->row;
@@ -2983,7 +2986,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
       q.hand_contact = gate->hand_contact;
       provider_exempt = gate->provider->payload_self_pair(q) == ProviderVerdict::kTolerate;
       if (provider_exempt) {
-        note_provider_pair(result, d, obj.attach_link, link);
+        note_provider_pair(result, d, hand_link, link);
       }
     }
     fold_pair(result, sweep_min, d, d <= margin && !exempt && !provider_exempt, object, link);

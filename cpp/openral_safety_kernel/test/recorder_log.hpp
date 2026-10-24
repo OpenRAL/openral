@@ -33,6 +33,9 @@ struct RecorderLog {
   double hand_speed_mps{0.0};
   double hand_lead_m{0.0};
   int row{0};
+  bool cover_ok0{false};  ///< the first tracked view's cover_ok at the last begin_candidate
+  int n_tracked{0};
+  int hold_asked{0};
 };
 
 }  // namespace openral_safety_kernel_test

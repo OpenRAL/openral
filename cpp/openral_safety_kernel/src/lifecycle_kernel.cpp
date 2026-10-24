@@ -1951,28 +1951,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       const ProviderGate* const provider_gate =
           provider_ != nullptr ? &voxel_grid_.provider_gate : nullptr;
       if (provider_ != nullptr) {
+        // The cover check first (once per grid; the provider's cover hold is decided in it), so
+        // every view carries this grid's `cover_ok`.
+        const bool tracked_frame_ok = tracked_n_ > 0 && refresh_tracked_cover();
         std::size_t n_view = 0;
         for (std::size_t i = 0; i < tracked_n_ && n_view < provider_tracked_.size(); ++i) {
           const TrackedEntry& e = tracked_[i];
           if (tracked_retired_.contains(e.id_hash, e.epoch)) {
             continue;
           }
-          TrackedObjectView& v = provider_tracked_[n_view++];
-          v.id_hash = e.id_hash;
-          v.epoch = e.epoch;
-          v.live = e.live;
-          v.released = e.released;
-          v.target = e.target;
-          v.contact = e.contact;
-          v.exemptible = e.exemptible;
-          v.provisional = e.provisional;
-          v.cover_ok = e.cover_ok;
-          v.visible_cells = e.visible_cells;
-          v.confirmed_ns = e.confirmed_ns;
-          v.support_z = e.support_z;
-          v.floor_z = e.floor_z;
-          v.declaration_key_hash = std::hash<std::string>{}(e.declaration_key);
-          v.box = e.box;
+          provider_tracked_[n_view++] = tracked_view(e);
         }
         const bool fresh = measured_state_fresh();
         // The kernel's own FK at the measured state, base dofs zeroed as its checks do.
@@ -2002,7 +1990,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         pview.control_period_s = collision_seed_dt_s_;
         pview.measured = fk_meas ? &provider_meas_scratch_ : nullptr;
         pview.region_max_age_ns = static_cast<std::int64_t>(grasp_region_max_age_s_ * 1e9);
-        pview.tracked_frame_ok = tracked_n_ > 0 && refresh_tracked_cover();
+        pview.tracked_frame_ok = tracked_frame_ok;
         pview.tracked_stream_fresh = attached_received_ && tracked_stream_fresh();
         pview.grid_seq = voxel_grid_seq_;
         pview.workspace_period_s = workspace_control_period_s_;
@@ -2464,7 +2452,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // latch, and the next chunk is judged afresh. Jaw joints keep their command
         // (a hold must not drop the payload). Any other reason stops as before.
         bool rows_checked = false;
-        if (workspace_brake_enabled_ && voxel_grid_.workspace_region.valid &&
+        if (workspace_brake_enabled_ &&
+            (voxel_grid_.workspace_region.valid || ws_provider_measure_) &&
             workspace_speed_measured_) {
           // Holds are counted per commanded joint (#349 review): with slot dispatch the
           // other arm's chunk passing must not reset this arm's run of holds.
@@ -3569,6 +3558,26 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   failure_pub_->publish(trigger);
 }
 
+TrackedObjectView SafetyKernelLifecycleNode::tracked_view(const TrackedEntry& e) const noexcept {
+  TrackedObjectView v;
+  v.id_hash = e.id_hash;
+  v.epoch = e.epoch;
+  v.live = e.live;
+  v.released = e.released;
+  v.target = e.target;
+  v.contact = e.contact;
+  v.exemptible = e.exemptible;
+  v.provisional = e.provisional;
+  v.cover_ok = e.cover_ok;
+  v.visible_cells = e.visible_cells;
+  v.confirmed_ns = e.confirmed_ns;
+  v.support_z = e.support_z;
+  v.floor_z = e.floor_z;
+  v.declaration_key_hash = std::hash<std::string>{}(e.declaration_key);
+  v.box = e.box;
+  return v;
+}
+
 std::string
 SafetyKernelLifecycleNode::configure_workspace_measurement(const std::vector<std::string>& names,
                                                            std::string& listed) {
@@ -3641,6 +3650,7 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
   const auto refuse = [&](const std::string& why) {
     provider_.reset();
     provider_links_.clear();
+    provider_replaces_region_ = false;
     provider_status_ = "refused: " + why;
     RCLCPP_ERROR(this->get_logger(), "safety.exemption_provider refused name=%s: %s", name.c_str(),
                  why.c_str());
@@ -3685,6 +3695,13 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
       }
       clear_workspace_commands(ResetReason::kConfigure);
     }
+  }
+  if (release_jaw_cols_.empty() && (!std::isfinite(release_clear_m_) || release_clear_m_ <= 0.0 ||
+                                    release_clear_m_ > 0.1 || !std::isfinite(release_timeout_s_) ||
+                                    release_timeout_s_ <= 0.0 || release_timeout_s_ > 10.0)) {
+    // A provider-decided release is frozen and closed by the kernel's own window bounds.
+    refuse("tracked_release_clear_m must be in (0, 0.1] and tracked_release_timeout_s in (0, 10]");
+    return;
   }
   if (static_points_.empty()) {
     // The declared static colliders, for the provider's view (K7's static cells), when the
@@ -3741,6 +3758,26 @@ void SafetyKernelLifecycleNode::load_exemption_provider() {
   provider_meas_scratch_.link_world.assign(collision_model_.n_links, Transform{});
   provider_q_fk_.assign(q_fk_.size(), 0.0);
   provider_replaces_region_ = provider_->replaces_grasp_region();
+  if (!workspace_contact_enabled_) {
+    const BrakeConfig brake = provider_->brake_config();
+    if (brake.enabled) {
+      // The kernel's own brake, on the provider's bounds (validated here, refused otherwise).
+      const bool measured = !workspace_link_index_.empty() && workspace_control_period_s_ > 0.0;
+      if (!measured || !std::isfinite(brake.max_speed_mps) || brake.max_speed_mps <= 0.0 ||
+          !std::isfinite(brake.max_lead_m) || brake.max_lead_m <= 0.0 ||
+          brake.max_lead_m > kMaxWorkspaceContactLeadM) {
+        refuse("brake_config needs the hand measurement, a finite max_speed_mps > 0 and "
+               "max_lead_m in (0, " +
+               std::to_string(kMaxWorkspaceContactLeadM) + "]");
+        return;
+      }
+      workspace_brake_enabled_ = true;
+      workspace_max_speed_mps_ = brake.max_speed_mps;
+      workspace_max_lead_m_ = brake.max_lead_m;
+      workspace_hold_max_consecutive_ = brake.hold_max_consecutive;
+      workspace_brakes_ = 0;
+    }
+  }
   provider_status_ = std::string("loaded: ") + provider_->name();
   RCLCPP_WARN(this->get_logger(),
               "safety.exemption_provider loaded name=%s provider=%s links=%zu "
@@ -5299,7 +5336,10 @@ void SafetyKernelLifecycleNode::union_bound_geometry(
 }
 
 void SafetyKernelLifecycleNode::apply_tracked_release() {
-  if (release_jaw_cols_.empty()) {
+  // ADR-0121 (API v3): with the in-tree K5 off, a provider decides WHEN a bound payload is
+  // released; the freeze, the window and its close stay the kernel's own, below.
+  const bool provider_release = provider_ != nullptr && release_jaw_cols_.empty();
+  if (release_jaw_cols_.empty() && !provider_release) {
     return;
   }
   const std::int64_t now = this->now().nanoseconds();
@@ -5321,7 +5361,48 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
     }
     BoundPayload& e = bound_[static_cast<std::size_t>(bound_slot_[i])];
     AttachedObject& obj = attached_model_.objects[i];
-    if (e.release == BoundPayload::Release::kHeld) {
+    if (provider_release && e.release == BoundPayload::Release::kHeld) {
+      // A carried payload at a fresh measured state is frozen where its attach link holds it,
+      // as the in-tree by-tracker release does (K3's verdict is quoted, not a precondition).
+      if (!fresh || obj.attach_link < 0) {
+        continue;
+      }
+      ReleaseQuery q;
+      q.object = i;
+      q.attached_model = &attached_model_;
+      q.attached = &obj;
+      q.object_id_hash = std::hash<std::string>{}(e.object_id);
+      q.epoch = e.epoch;
+      q.attach_link = obj.attach_link;
+      q.on_hand = attached_binding_[i].off_hand == nullptr;
+      q.q_measured = q_meas_.data();
+      q.n_dof = q_meas_.size();
+      q.now_ns = now;
+      q.tracked = provider_tracked_.data();
+      q.n_tracked = 0;
+      for (std::size_t k = 0; k < tracked_n_ && q.n_tracked < provider_tracked_.size(); ++k) {
+        provider_tracked_[q.n_tracked++] = tracked_view(tracked_[k]);
+      }
+      if (provider_->release_payload(q) != ProviderVerdict::kTolerate) {
+        continue;  // held: today's rules
+      }
+      fk();
+      e.frozen = rigid_compose(
+          binding_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
+      e.hand_link = obj.attach_link;
+      e.release = BoundPayload::Release::kWindow;
+      e.window_opened_ns = now;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.tracked_release object=%s epoch=%u by=provider:%s: frozen in base, hand "
+                  "and touch links exempt until %g m clear or %g s (ADR-0121)",
+                  e.object_id.c_str(), static_cast<unsigned>(e.epoch), provider_->name(),
+                  release_clear_m_, release_timeout_s_);
+      if (grasp_latched_ && grasp_latched_tracked_ && grasp_latched_object_ == e.object_id &&
+          grasp_latched_epoch_ == e.epoch) {
+        retire_grasp_declaration("tracked_release");
+      }
+    }
+    if (!provider_release && e.release == BoundPayload::Release::kHeld) {
       // The tracker letting go of this (id, epoch) releases it here too: one release
       // decision for both sides (2026-10-22 decision; Spark R138: the tracker's jaw rule
       // fired, this one did not, and the payload rode the hand after the banana fell).
@@ -5350,7 +5431,7 @@ void SafetyKernelLifecycleNode::apply_tracked_release() {
         }
       }
     }
-    if (e.release == BoundPayload::Release::kHeld) {
+    if (!provider_release && e.release == BoundPayload::Release::kHeld) {
       // The jaw driving the attach link or a touch link (a mimic follower reads
       // its leader's column).
       for (std::size_t k = 0; e.jaw < 0 && k < release_jaw_cols_.size(); ++k) {
@@ -5894,6 +5975,39 @@ bool SafetyKernelLifecycleNode::refresh_tracked_cover() {
                         "safety.tracked_cover_held object=%s epoch=%u last_pass_age_s=%.3f "
                         "max_age_s=%.3f (issue #418 contact hold, Safety-WG review pending)",
                         e.object_id.c_str(), e.epoch,
+                        static_cast<double>(now - prev->pass_ns) * 1e-9, grasp_region_max_age_s_);
+          }
+        }
+      }
+      // ADR-0121 (API v3): the provider may hold a cover the kernel no longer measures, inside the
+      // kernel's own bounds — a usable grid, a pass of the kernel's OWN check within
+      // `grasp_region_max_age_s`, never re-stamped, a fresh measured state.
+      if (!e.cover_ok && !rec.held && usable && provider_ != nullptr && prev != nullptr &&
+          prev->pass_ns > 0 && now - prev->pass_ns >= 0 && now - prev->pass_ns <= max_age_ns &&
+          measured_state_fresh()) {
+        if (!fk_done) {
+          std::copy(q_meas_.begin(), q_meas_.end(), q_fk_.begin());
+          for (const int d : collision_base_dofs_) {
+            q_fk_[static_cast<std::size_t>(d)] = 0.0;
+          }
+          forward_kinematics(collision_model_, q_fk_.data(), q_fk_.size(), binding_scratch_);
+          fk_done = true;
+        }
+        CoverHoldQuery q;
+        q.object = tracked_view(e);
+        q.last_pass_ns = prev->pass_ns;
+        q.now_ns = now;
+        q.max_age_ns = max_age_ns;
+        q.measured = &binding_scratch_;
+        if (provider_->hold_cover(q) == ProviderVerdict::kTolerate) {
+          e.cover_ok = true;
+          rec.pass_ns = prev->pass_ns;  // never re-stamped: the hold ends at the age bound
+          rec.held = true;
+          if (!prev->held) {
+            RCLCPP_WARN(this->get_logger(),
+                        "safety.exemption_provider_cover_held provider=%s object=%s epoch=%u "
+                        "last_pass_age_s=%.3f max_age_s=%.3f (ADR-0121)",
+                        provider_->name(), e.object_id.c_str(), e.epoch,
                         static_cast<double>(now - prev->pass_ns) * 1e-9, grasp_region_max_age_s_);
           }
         }
