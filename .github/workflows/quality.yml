@@ -36,6 +36,8 @@ jobs:
         run: uv run python tools/schema_export.py --check
       - name: Check ROS topic graph drift
         run: uv run python tools/gen_ros_topic_graph.py --check
+      - name: Refuse openral_pro* imports (Apache-2.0 / Pro boundary)
+        run: uv run python tools/check_no_pro_imports.py
       - name: Check rSkill SKILL.md drift
         run: uv run python tools/generate_rskill_skillmd.py --check
       - name: Validate robot/skill/scene manifests

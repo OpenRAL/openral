@@ -284,11 +284,19 @@ class DetectorRunner:
         """
         import ctypes  # noqa: PLC0415  # reason: only the NVMM path needs ctypes
 
-        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found, import-untyped, unused-ignore]  # noqa: PLC0415
-            wrap_buffer,
-        )
+        from openral_rskill.backend_registry import resolve_pro_module  # noqa: PLC0415
 
         ok_flow = int(Gst.FlowReturn.OK)
+        nvbufsurface = resolve_pro_module("nvbufsurface")
+        if nvbufsurface is None:  # only reachable if the NVMM tier resolved without it
+            log.error(
+                "detector_runner.nvmm_module_absent",
+                sensor_id=self._sensor_id,
+                reason="openral-pro-trt 'nvbufsurface' module not installed",
+            )
+            return ok_flow
+        wrap_buffer = nvbufsurface.wrap_buffer
+
         sample = appsink.emit("pull-sample")
         if sample is None:  # pragma: no cover — EOS edge
             return ok_flow

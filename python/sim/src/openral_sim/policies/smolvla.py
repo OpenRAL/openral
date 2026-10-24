@@ -41,7 +41,7 @@ from openral_rskill._vla_core import (
     run_inference,
     to_numpy_action,
 )
-from openral_rskill.backend_registry import maybe_attach_pro_hooks
+from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_pro_module
 
 from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.policies._policy_loading import (
@@ -344,10 +344,19 @@ class _SmolVLAAdapter:
                 f"camera slot {list(self._camera_keys)} — the vision engine "
                 "needs all cameras (partial NVMM tiers are unsupported)."
             )
+        nvbufsurface = resolve_pro_module("nvbufsurface")
+        if nvbufsurface is None:
+            raise ROSRuntimeError(
+                "smolvla: observation carries NVMM image_handles but the "
+                "openral-pro-trt 'nvbufsurface' module is not installed."
+            )
         if self._nvmm_encoder is None:
-            from importlib import import_module
-
-            nvmm_vision = import_module("openral_pro_trt.nvmm_vision_encoder")
+            nvmm_vision = resolve_pro_module("nvmm_vision_encoder")
+            if nvmm_vision is None:
+                raise ROSRuntimeError(
+                    "smolvla: observation carries NVMM image_handles but the "
+                    "openral-pro-trt 'nvmm_vision_encoder' module is not installed."
+                )
 
             self._nvmm_encoder = nvmm_vision.NvmmVisionEncoder(
                 sampler.vision_onnx,
@@ -360,10 +369,6 @@ class _SmolVLAAdapter:
                 n_cameras=self._nvmm_encoder.n_cameras,
                 model_id=sampler.vision_rskill_id,
             )
-        from importlib import import_module
-
-        nvbufsurface = import_module("openral_pro_trt.nvbufsurface")
-
         embs = self._nvmm_encoder.encode_nvmm(
             [nvbufsurface.NvBufSurfaceHandle.model_validate(d) for d in ordered]
         )

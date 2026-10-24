@@ -40,7 +40,7 @@ from openral_rskill._vla_core import (
     run_inference,
     to_numpy_action,
 )
-from openral_rskill.backend_registry import maybe_attach_pro_hooks
+from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_pro_module
 
 from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.registry import POLICIES
@@ -270,10 +270,9 @@ def _maybe_build_act_nvmm(
     ``policy_extras.act_device_onnx_uri``) + a CUDA device with ``tensorrt``. The
     device engine — image/state normalize + action unnormalize baked in
     (``tools/export_act_onnx.py --preprocess device``) — is built/cached from the
-    ONNX and handed to ``openral_pro_trt.act_nvmm.ActNvmmExecutor``. That class
-    lives in the private OpenRAL Pro TRT package, NOT in this repo — the path
-    named here used to point at `openral_runner.backends.gstreamer.act_nvmm`,
-    which does not exist in the open tree.
+    ONNX and handed to the ``act_nvmm`` Pro module's ``ActNvmmExecutor``. That
+    class lives in the private OpenRAL Pro TRT package, NOT in this repo; it is
+    resolved by logical name through ``resolve_pro_module``.
     Missing deps / no device ONNX → ``None`` so the host path runs; a genuine
     build failure propagates (§1.4, no silent fallback).
     """
@@ -288,16 +287,17 @@ def _maybe_build_act_nvmm(
     if not device_onnx or not device.startswith("cuda"):
         return None
     try:
-        from importlib import import_module
-
         import tensorrt  # noqa: F401  # reason: probe for the device path
 
-        act_nvmm = import_module("openral_pro_trt.act_nvmm")
-        act_trt = import_module("openral_pro_trt.act_trt")
-        trt_runtime = import_module("openral_pro_trt.runtime_tensorrt")
-        smolvla_trt = import_module("openral_pro_trt.smolvla_trt")
+        act_nvmm = resolve_pro_module("act_nvmm")
+        act_trt = resolve_pro_module("act_trt")
+        trt_runtime = resolve_pro_module("runtime_tensorrt")
+        smolvla_trt = resolve_pro_module("smolvla_trt")
     except ImportError:
         _log.info("act_nvmm.unavailable", reason="tensorrt/deps absent — host path")
+        return None
+    if act_nvmm is None or act_trt is None or trt_runtime is None or smolvla_trt is None:
+        _log.info("act_nvmm.unavailable", reason="openral-pro-trt not installed — host path")
         return None
 
     onnx_path = act_trt.ensure_act_onnx(repo_id, onnx_uri=device_onnx)
@@ -313,7 +313,7 @@ def _maybe_build_act_nvmm(
         state_input_name="state",
         height=h,
         width=w,
-        device_index=smolvla_trt._device_index(device),
+        device_index=smolvla_trt.device_index(device),
     )
     _log.info(
         "act_nvmm.attached",
