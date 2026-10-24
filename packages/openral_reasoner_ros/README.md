@@ -36,8 +36,8 @@ A HAL grasp miss (`KIND_GRASP_OUTCOME`, issue #353) rides this ladder like any o
 the hand (preempts) and `SEVERITY_WARN` for an undeclared close (buffered). The
 `ContextRenderer` turns each miss into a per-hand `[grasp_miss]` line in `## EXECUTION`
 with a `reflect_on_grasp_miss` hint (re-ground the target, try the other hand, or a
-different skill), dropped by that hand's next ATTACH (`SEVERITY_INFO`), an e-stop
-clear or a task change. It is a reflection only — no new rung: the node decides
+different skill), dropped by an `attach` for that hand (`SEVERITY_INFO`: its own ATTACH,
+or another hand attaching the same target), an e-stop clear or a task change. It is a reflection only — no new rung: the node decides
 nothing on it beyond the usual preemption.
 
 All preemptions are subject to the 100 ms min-interval.

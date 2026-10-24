@@ -7,7 +7,7 @@ Covers:
   success + failure feedback, the Reflexion hint on failures, ``seq`` bump, and
   section ordering.
 - Issue #353: ``reflect_on_grasp_miss`` and the per-hand ``[grasp_miss]`` line a
-  ``KIND_GRASP_OUTCOME`` miss opens and that hand's next ATTACH closes, on the real
+  ``KIND_GRASP_OUTCOME`` miss opens and an ``attach`` for that hand closes, on the real
   bimanual OpenArm manifest's hands.
 
 Run with:
@@ -137,9 +137,8 @@ def test_reflect_on_grasp_miss_names_hand_target_and_the_levers() -> None:
     assert "identical execute_rskill" in hint  # not a blind repeat
     assert "in a row" not in hint  # a first miss is not called a pattern
     repeated = reflect_on_grasp_miss("openarm_left_finger_pair", "", None, consecutive_misses=3)
-    assert "3 misses in a row on this hand (across targets)" in repeated
-    # The count spans targets, so abandonment is keyed on the same target only.
-    assert "keep missing on the same target, abandon that target" in hint
+    assert "3 misses in a row on this hand for this target" in repeated
+    assert "keep missing this target, abandon it" in hint
     assert "an undeclared target" in repeated and "unknown" in repeated
 
 
@@ -202,6 +201,19 @@ def test_open_grasp_misses_drop_on_an_estop_clear_and_a_task_change() -> None:
     r.append_failure(_grasp_outcome(right, "miss", misses=1))
     r.set_mission(MissionState(["restock the shelf"]))
     assert "[grasp_miss]" not in r.render(world_state=None)
+
+
+def test_re_setting_the_same_mission_keeps_open_grasp_misses() -> None:
+    """``decompose_mission``'s subdivide path re-sets the same mission to bump ``seq``."""
+    left, _right = _openarm_hands()
+    r = ContextRenderer()
+    mission = MissionState(["pick the carton"])
+    r.set_mission(mission)
+    r.append_failure(_grasp_outcome(left, "miss", misses=1))
+    seq = r.seq
+    r.set_mission(mission)
+    assert r.seq == seq + 1
+    assert f"[grasp_miss] hand={left[1]}" in r.render(world_state=None)
 
 
 def test_a_malformed_grasp_outcome_only_buffers() -> None:
