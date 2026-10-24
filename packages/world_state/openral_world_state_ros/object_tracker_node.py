@@ -590,6 +590,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._timers: list[Any] = []
             self._pub_tracked: Any = None
             self._pub_attach: Any = None
+            self._pub_clear: Any = None
+            self._pub_diag: Any = None
             self._segment: Any = None
             self._locate: Any = None
             # The one service call in flight: (client, future), see `_drop_abandoned`.
@@ -820,9 +822,10 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             for s in self._subs:
                 self.destroy_subscription(s)
             self._subs = []
-            for pub in (self._pub_tracked, self._pub_attach):
+            for pub in (self._pub_tracked, self._pub_attach, self._pub_clear, self._pub_diag):
                 if pub is not None:
                     self.destroy_publisher(pub)
+            self._pub_clear = self._pub_diag = None
             self._drop_abandoned()
             for cli in (self._segment, self._locate):
                 if cli is not None:
@@ -833,6 +836,8 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
                 self._failure_bus = None
             self._attempts.clear()
             self._cams.clear()
+            if self._tf_listener is not None:
+                self._tf_listener.unregister()  # its /tf and /tf_static subscriptions
             self._tf_listener = self._tf_buffer = None
             self.session = None
             return TransitionCallbackReturn.SUCCESS
@@ -909,15 +914,27 @@ def make_object_tracker_node() -> Any:  # reason: rclpy node, untyped
             self._publish_attachment()
 
         def _on_grasp_declaration(self, msg: Any) -> None:
-            if self.session is not None:
-                self.session.on_grasp_declaration(GraspDeclaration.from_idl(msg))
-                self._publish_tracked()
-                self._publish_attachment()
+            if self.session is None:
+                return
+            try:
+                decl = GraspDeclaration.from_idl(msg)
+            except (ValueError, TypeError) as exc:  # an invalid message must not stop spin
+                self.get_logger().error(f"grasp declaration rejected: {exc}")
+                return
+            self.session.on_grasp_declaration(decl)
+            self._publish_tracked()
+            self._publish_attachment()
 
         def _on_place_declaration(self, msg: Any) -> None:
-            if self.session is not None:
-                self.session.on_place_declaration(PlaceDeclaration.from_idl(msg))
-                self._publish_attachment()
+            if self.session is None:
+                return
+            try:
+                decl = PlaceDeclaration.from_idl(msg)
+            except (ValueError, TypeError) as exc:
+                self.get_logger().error(f"place declaration rejected: {exc}")
+                return
+            self.session.on_place_declaration(decl)
+            self._publish_attachment()
 
         def _lookup(self, frame: str, stamp_ns: int) -> NDArray[np.float64] | None:
             assert self.session is not None
