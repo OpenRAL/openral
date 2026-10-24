@@ -81,6 +81,7 @@ def _run(
     contact_links: tuple[str, ...] = _LEFT,
     voxel_m: float | None = 0.02,
     place: bool = True,
+    tracking: str = "off",
 ) -> tuple[list[Any], Any]:
     """Publish ``objects`` as the lifted world state, dispatch one named-target call."""
     rclpy = pytest.importorskip("rclpy")
@@ -117,10 +118,15 @@ def _run(
         params = [Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml"))]
         if voxel_m is not None:  # what deploy_e2e passes: its octree resolution
             params.append(Parameter("grasp_target_voxel_m", value=voxel_m))
+        params.append(Parameter("object_tracking", value=tracking))
         reasoner.set_parameters(params)
         reasoner.trigger_configure()
         reasoner.trigger_activate()
         assert reasoner._robot_description is not None
+        # No skill search paths were configured: robot names must still reach S2.
+        robot_context = reasoner._renderer.render(world_state=None)
+        assert "joint: left_joint7 (sim=openarm_left_joint7)" in robot_context
+        assert "links: openarm_left_link6 -> openarm_left_link7" in robot_context
 
         peer = rclpy.create_node("openral_test_grounded_targets_peer")
 
@@ -383,6 +389,45 @@ def test_an_ambiguous_named_target_sends_no_goal() -> None:
     assert received == [], "an ambiguous target must not be dispatched"
     assert last is not None and last.outcome == "failed"
     assert "ambiguous" in last.summary
+
+
+def test_with_object_tracking_an_ambiguous_target_dispatches_a_count_all_query() -> None:
+    """Issue #418: two boxes, tracking on — the goal carries one ``count="all"`` query
+    (hinted with the named hand's joint) and no search box; the shelf its destination."""
+    from openral_core import ObjectQuery
+
+    received, _ = _run([_box(-0.15), _box(0.15), _shelf()], tracking="on")
+    assert len(received) == 1
+    grasp, place = received[0].grasp_declaration, received[0].place_declaration
+    assert not grasp.search_box_valid
+    assert [ObjectQuery.from_idl(q) for q in grasp.target_queries] == [
+        ObjectQuery(label="box", count="all", role="target", hand="left_gripper")
+    ]
+    assert place.destination_query_valid
+    assert ObjectQuery.from_idl(place.destination_query) == ObjectQuery(
+        label="shelf", count="one", role="destination"
+    )
+    assert place.search_box_valid  # one shelf: the search-box path is unchanged
+
+
+def test_with_object_tracking_an_unseen_target_dispatches_standing_queries() -> None:
+    """Issue #418 Addendum G: nothing in view, tracking on — the goal still dispatches,
+    both declarations carry their ``count="one"`` query with no search box, and the
+    tracker keeps looking. Tracking off refuses it (``test_a_named_surface_...``)."""
+    from openral_core import ObjectQuery
+
+    received, _ = _run([], tracking="on")
+    assert len(received) == 1
+    grasp, place = received[0].grasp_declaration, received[0].place_declaration
+    assert received[0].grasp_declaration_valid and received[0].place_declaration_valid
+    assert not grasp.search_box_valid and not place.search_box_valid
+    assert [ObjectQuery.from_idl(q) for q in grasp.target_queries] == [
+        ObjectQuery(label="box", count="one", role="target", hand="left_gripper")
+    ]
+    assert place.destination_query_valid
+    assert ObjectQuery.from_idl(place.destination_query) == ObjectQuery(
+        label="shelf", count="one", role="destination"
+    )
 
 
 def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:

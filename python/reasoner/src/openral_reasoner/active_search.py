@@ -18,8 +18,18 @@ Two responsibilities, both pure-Python (``openral_core`` only):
 
 from __future__ import annotations
 
-from openral_core import Pose6D, SceneGraph, SpatialNodeKind, SpatialRelationKind
+from typing import Literal
+
+from openral_core import (
+    ObjectQueryEvidence,
+    Pose6D,
+    SceneGraph,
+    SpatialNodeKind,
+    SpatialRelationKind,
+)
 from pydantic import BaseModel, ConfigDict, Field
+
+from openral_reasoner.mission import DEFAULT_MAX_ATTEMPTS
 
 
 class SearchBudget(BaseModel):
@@ -157,3 +167,120 @@ def format_search_frontier(candidates: list[SearchCandidate], target_text: str) 
     ]
     lines.extend(f"- {c.reason} [place {c.place_node_id}]" for c in candidates)
     return "\n".join(lines)
+
+
+class ObjectQueryStep(BaseModel):
+    """The bounded recovery decision for a failed object query.
+
+    Attributes:
+        rung: ``"recover"`` while dispatch attempts remain, else ``"blocked"``.
+        label: The object the goal names.
+        reason: The tracker's last refusal reason.
+        reflection: Bounded recovery instructions for the reasoner's context.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rung: Literal["recover", "blocked"]
+    label: str
+    reason: str
+    reflection: str
+
+
+def object_query_step(
+    evidence: ObjectQueryEvidence,
+    *,
+    attempts: int | None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> ObjectQueryStep:
+    """Map tracker refusal evidence onto bounded task recovery or a stopped state.
+
+    The task's persisted manipulation dispatch count is the recovery budget. An absent
+    mission or spent budget blocks automatic dispatch until a new operator goal. While
+    recovery remains, re-observe and re-ground the named object and workspace before
+    another manipulation attempt; query resolution by itself does not authorize contact.
+
+    Example:
+        >>> from openral_core import ObjectRole
+        >>> ev = ObjectQueryEvidence(
+        ...     escalation="exhausted",
+        ...     goal_id="grasp:obj:orange@1",
+        ...     query_id="0",
+        ...     label="orange",
+        ...     role=ObjectRole.TARGET,
+        ...     waited_s=60.0,
+        ...     attempts=9,
+        ... )
+        >>> object_query_step(ev, attempts=1).rung
+        'recover'
+    """
+    observed = (
+        "; ".join(
+            f"{item.camera}@{item.stamp_ns}:{item.reason}" for item in evidence.observations[-8:]
+        )
+        or "none recorded"
+    )
+    workspace = ""
+    if evidence.workspace is not None:
+        workspace = (
+            f" Workspace {evidence.workspace.frame_id} bounds "
+            f"{evidence.workspace.pose.xyz} ± {evidence.workspace.half_extents}."
+        )
+    budget = f"{attempts}/{max_attempts}" if attempts is not None else f"unknown/{max_attempts}"
+    recover = attempts is not None and attempts < max_attempts
+    visibility_unknown = evidence.reason in {
+        "no_camera_pose",
+        "no_robot_mask",
+        "no_usable_observation",
+    }
+    observation_context = (
+        " No usable observation was available; visibility is unknown and absence is unverified."
+        if visibility_unknown
+        else ""
+    )
+    if recover:
+        rung: Literal["recover", "blocked"] = "recover"
+        ending = (
+            f"Recovery dispatch budget is {budget}. Re-observe and re-ground the object and "
+            "workspace, then replan; do not manipulate until geometry and contact are validated."
+        )
+    else:
+        rung = "blocked"
+        ending = (
+            f"Recovery dispatch budget is {budget}. Stop this task; automatic dispatch remains "
+            "blocked until a new operator goal."
+        )
+    return ObjectQueryStep(
+        rung=rung,
+        label=evidence.label,
+        reason=evidence.reason,
+        reflection=(
+            f"Object query for {evidence.label!r} failed ({evidence.reason})."
+            f"{observation_context} "
+            f"tracker escalation={evidence.escalation}, waited={evidence.waited_s:.1f}s, "
+            f"tracker observations: {observed}.{workspace} {ending}"
+        ),
+    )
+
+
+def object_query_matches_invocation(
+    evidence: ObjectQueryEvidence,
+    *,
+    active_invocation_id: str | None,
+) -> bool:
+    """Accept only a failure carrying the exact action goal UUID in the live dispatch."""
+    return bool(active_invocation_id and evidence.invocation_id == active_invocation_id)
+
+
+def object_query_task_is_current(
+    *,
+    dispatch_task_id: str | None,
+    dispatch_mission_generation: int | None,
+    current_task_id: str | None,
+    current_mission_generation: int,
+) -> bool:
+    """Task ids can repeat across prompts, so compare the mission generation too."""
+    return (
+        dispatch_task_id == current_task_id
+        and dispatch_mission_generation == current_mission_generation
+    )

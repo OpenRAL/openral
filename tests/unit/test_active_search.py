@@ -10,11 +10,21 @@ from __future__ import annotations
 from itertools import pairwise
 from pathlib import Path
 
-from openral_core import SceneGraph
+from openral_core import (
+    ObjectQueryEvidence,
+    ObjectQueryObservation,
+    ObjectRole,
+    PlaceRegion,
+    Pose6D,
+    SceneGraph,
+)
 from openral_reasoner import (
     SearchBudget,
     SearchProgress,
     format_search_frontier,
+    object_query_matches_invocation,
+    object_query_step,
+    object_query_task_is_current,
     plan_active_search,
 )
 
@@ -66,3 +76,98 @@ def test_format_frontier_text() -> None:
     assert "Candidate places to search" in text
     assert "a wine glass" in text
     assert "hand off to a human" in format_search_frontier([], "a wine glass")
+
+
+def test_object_query_recovery_carries_reason_workspace_and_bounded_observations() -> None:
+    workspace = PlaceRegion(
+        frame_id="base",
+        pose=Pose6D(xyz=(0.2, 0.1, 0.3), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        half_extents=(0.1, 0.1, 0.1),
+    )
+    evidence = ObjectQueryEvidence(
+        escalation="exhausted",
+        goal_id="grasp:obj:orange@17",
+        query_id="q0",
+        label="orange",
+        role=ObjectRole.TARGET,
+        waited_s=12.0,
+        attempts=4,
+        reason="workspace_mismatch",
+        workspace=workspace,
+        observations=[
+            ObjectQueryObservation(camera=f"cam{i}", stamp_ns=i, reason="too_few_points")
+            for i in range(8)
+        ],
+    )
+
+    assert len(evidence.observations) == 8
+    assert evidence.observations[0].camera == "cam0"
+    step = object_query_step(evidence, attempts=1, max_attempts=3)
+    assert step.rung == "recover"
+    assert step.reason == "workspace_mismatch"
+    assert "base bounds" in step.reflection
+    assert "cam7@7:too_few_points" in step.reflection
+    assert "re-ground" in step.reflection
+    assert "handoff_prompt" not in step.model_dump()
+    blocked = object_query_step(evidence, attempts=3, max_attempts=3)
+    assert blocked.rung == "blocked"
+    assert "new operator goal" in blocked.reflection
+
+
+def test_unavailable_observation_recovery_states_visibility_is_unknown() -> None:
+    evidence = ObjectQueryEvidence(
+        escalation="exhausted",
+        goal_id="grasp:obj:orange@17",
+        query_id="q0",
+        label="orange",
+        role=ObjectRole.TARGET,
+        waited_s=12.0,
+        attempts=0,
+        reason="no_camera_pose",
+        observations=[
+            ObjectQueryObservation(camera="top_depth", stamp_ns=12, reason="no_camera_pose")
+        ],
+    )
+
+    step = object_query_step(evidence, attempts=0, max_attempts=3)
+
+    assert step.reason == "no_camera_pose"
+    assert "visibility is unknown" in step.reflection
+    assert "absence is unverified" in step.reflection
+    assert "top_depth@12:no_camera_pose" in step.reflection
+    assert "object_not_found" not in step.reflection
+
+
+def test_delayed_object_query_failure_must_match_live_invocation() -> None:
+    evidence = ObjectQueryEvidence(
+        escalation="unresolved",
+        goal_id="grasp:obj:orange@17",
+        query_id="q0",
+        label="orange",
+        role=ObjectRole.TARGET,
+        waited_s=5.0,
+        attempts=1,
+        invocation_id="0123456789abcdef0123456789abcdef",
+    )
+    current = {
+        "active_invocation_id": "0123456789abcdef0123456789abcdef",
+    }
+    assert object_query_matches_invocation(evidence, **current)
+    assert not object_query_matches_invocation(
+        evidence, **{**current, "active_invocation_id": "fedcba9876543210fedcba9876543210"}
+    )
+    assert not object_query_matches_invocation(evidence, active_invocation_id=None)
+    # MissionState starts task ids at t1 for each operator goal. The generation
+    # check distinguishes two different goals that happen to reuse the same id.
+    assert not object_query_task_is_current(
+        dispatch_task_id="t1",
+        dispatch_mission_generation=4,
+        current_task_id="t1",
+        current_mission_generation=5,
+    )
+    assert object_query_task_is_current(
+        dispatch_task_id="t1",
+        dispatch_mission_generation=5,
+        current_task_id="t1",
+        current_mission_generation=5,
+    )

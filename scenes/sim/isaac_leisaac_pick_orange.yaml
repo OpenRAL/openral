@@ -110,6 +110,8 @@ scene:
       grades:
         # Oranges roll: no upright requirement, one level (in the plate or not).
         - {name: complete, score: 1.0, region: target}
+      # One or two of the three oranges on the plate: partial credit (episode grade).
+      some_placed: {name: partial, score: 0.5}
       settle_s: 0.5
       tasks:
         "Pick three oranges and put them into the plate": &three_oranges

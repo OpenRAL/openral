@@ -661,7 +661,7 @@ def test_resampled_real_sam_mask_back_projects_to_the_same_centroid() -> None:
     ``test_vision_attachment_evidence``.
     """
     from openral_core import RobotDescription, scale_intrinsics_to
-    from openral_hal._vision_attachment_evidence import backproject_masked_depth
+    from openral_core.perception_geometry import backproject_masked_depth
     from openral_hal.depth_cloud import resample_mask_nearest
     from PIL import Image
 

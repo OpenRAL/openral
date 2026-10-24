@@ -16,10 +16,14 @@ from __future__ import annotations
 from importlib.metadata import version as _pkg_version
 
 from openral_reasoner.active_search import (
+    ObjectQueryStep,
     SearchBudget,
     SearchCandidate,
     SearchProgress,
     format_search_frontier,
+    object_query_matches_invocation,
+    object_query_step,
+    object_query_task_is_current,
     plan_active_search,
 )
 from openral_reasoner.context import (
@@ -41,6 +45,8 @@ from openral_reasoner.grounding import (
     gripper_hands,
     ground_grasp_target,
     ground_place_target,
+    hand_joint,
+    placement_queries,
 )
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
@@ -100,6 +106,7 @@ __all__ = [
     "MemoryEntry",
     "MemoryStore",
     "MissionState",
+    "ObjectQueryStep",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
     "PreparedTick",
@@ -126,7 +133,12 @@ __all__ = [
     "gripper_hands",
     "ground_grasp_target",
     "ground_place_target",
+    "hand_joint",
     "load_ladder_state",
+    "object_query_matches_invocation",
+    "object_query_step",
+    "object_query_task_is_current",
+    "placement_queries",
     "plan_active_search",
     "recall_object_tool_to_query",
     "render_robot_context_prompt",

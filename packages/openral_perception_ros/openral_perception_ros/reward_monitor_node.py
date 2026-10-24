@@ -38,8 +38,9 @@ Parameters:
         an 8 GB card; the full 40 s buffer would OOM. Raise on a bigger GPU.
     enable_critic_score (bool): additionally publish a generic
         ``openral_msgs/CriticScore`` per heartbeat to feed the Tier-C
-        critic producer. Default False. Gates ONLY the publish — the scoring +
-        dashboard bar run regardless.
+        critic producer -- the progress head under the manifest name, and the success head
+        as ``<name>#success`` (the completion check's trigger). Default False. Gates ONLY the
+        publish — the scoring + dashboard bar run regardless.
     critic_score_topic (str): topic for the CriticScore stream. Default
         ``/openral/critic/score``.
     critic_score_threshold (float): pass bar stamped on each CriticScore (the
@@ -274,7 +275,10 @@ def main(args: Any = None) -> None:
                     f"manifest {manifest.name!r} is kind:reward but has no reward block"
                 )
             monitor = build_reward_monitor(manifest)
-            self.get_logger().info(f"reward backend model={manifest.name}")
+            # Loaded at configure, not on the first score (Spark R219: ~40 s of the goal
+            # went unscored while the VLM loaded).
+            monitor.warm_up()
+            self.get_logger().info(f"reward backend model={manifest.name} (loaded)")
             self._critic_id = manifest.name
             return monitor, manifest.reward.frame_window_s, manifest.reward.target_fps
 
@@ -420,6 +424,16 @@ def main(args: Any = None) -> None:
                 msg.threshold = threshold
                 msg.trace_id = current_traceparent() or ""
                 self._critic_pub.publish(msg)
+                # The success head as its own critic stream (`<id>#success`): the
+                # progress stream above is not a completion signal (Spark R222, 2026-10-22:
+                # progress 0.82 mid-carry). The completion checker triggers on it.
+                done = self._critic_msg_cls()
+                done.header = msg.header
+                done.critic_id = done.header.frame_id = f"{self._critic_id}#success"
+                done.score = min(max(float(a["success_now"]), 0.0), 1.0)
+                done.threshold = threshold
+                done.trace_id = msg.trace_id
+                self._critic_pub.publish(done)
             # INFO: advisory operator signal at the heartbeat cadence, not a hot loop.
             self.get_logger().info(
                 f"reward score: progress={float(a['progress_now']):.3f} "

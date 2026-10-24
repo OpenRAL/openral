@@ -34,6 +34,10 @@ TARGETS=(
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_reasoner_palette_preserves_detector_coverage.py
     tests/integration/test_critic_producer_node.py
+    # The scene-VLM node ends the sidecar its warm-up spawned (fake sidecar, no GPU).
+    tests/integration/test_scene_vlm_node_teardown_live.py
+    # A completion check that raises does not end the check worker thread.
+    tests/integration/test_completion_check_worker_live.py
     # Declaration-scoped place-approach allowance against the real
     # safety_kernel_node; needs the colcon kernel binary + openral_msgs
     # overlay, which only this image has.
@@ -272,8 +276,10 @@ ISOLATED_TARGETS=(
     tests/integration/test_nav2_scan_filter_live.py
     tests/integration/test_object_lift_real_camera_live.py
     tests/integration/test_object_lift_world_state.py
-    # Issue #418 object tracker: node lifecycle.
+    # Issue #418 object tracker: node lifecycle, query escalation, kernel K2/K5 wiring.
+    tests/integration/test_object_query_escalation_live.py
     tests/integration/test_object_tracker_node_live.py
+    tests/integration/test_object_tracking_kernel_live.py
     tests/integration/test_panda_mobile_hal_lifecycle.py
     tests/integration/test_real_hal_estop_ros2_control_live.py
     tests/integration/test_record_profile_full_live.py

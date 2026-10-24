@@ -64,16 +64,22 @@ def _declaration(**update: Any) -> GraspDeclaration:
 
 def test_the_workspace_fields_round_trip_through_json_and_the_real_idl() -> None:
     msg_mod = pytest.importorskip("openral_msgs.msg", reason="needs the built openral_msgs IDL")
-    declaration = _declaration(workspace_region=_tote(stamp_ns=11 * _S))
+    invocation_id = "0123456789abcdef0123456789abcdef"
+    declaration = _declaration(
+        workspace_region=_tote(stamp_ns=11 * _S), invocation_id=invocation_id
+    )
     assert GraspDeclaration.model_validate_json(declaration.model_dump_json()) == declaration
     msg = msg_mod.GraspDeclaration()
     declaration.fill_idl(msg)
     assert msg.workspace_box_valid and msg.workspace_region_valid and not msg.region_valid
+    assert msg.invocation_id == invocation_id
     assert GraspDeclaration.from_idl(msg) == declaration
     bare = msg_mod.GraspDeclaration()
     _declaration(workspace_box=None).fill_idl(bare)
     assert not bare.workspace_box_valid and not bare.workspace_region_valid
     assert GraspDeclaration.from_idl(bare).workspace_box is None
+    with pytest.raises(ValidationError, match="invocation_id"):
+        _declaration(invocation_id="not-a-uuid")
 
 
 @pytest.mark.parametrize("field", ["workspace_box", "workspace_region"])
@@ -167,6 +173,37 @@ def test_the_openarm_hand_links_are_both_jaws_the_carrier_and_the_wrist() -> Non
     assert set(robot.hand_links()) <= set(names)
 
 
+def test_a_second_wrist_link_is_the_next_actuated_link_up_and_capped_at_two() -> None:
+    """2026-10-21 decision (Isaac R50-R82: DROID's wrist housing ``panda_link6`` commanded
+    into the table or bowl rim with no physical contact): ``wrist_links=2`` adds exactly the
+    next link up the chain, a collision link the kernel resolves; the DROID scene asks for
+    it; nothing past two."""
+    droid = RobotDescription.from_yaml(str(_REPO / "robots/droid_franka_robotiq/robot.yaml"))
+    assert set(droid.hand_links(wrist_links=2)) - set(droid.hand_links()) == {"panda_link6"}
+    openarm = RobotDescription.from_yaml(str(_ROBOT))
+    assert set(openarm.hand_links(wrist_links=2)) - set(openarm.hand_links()) == {
+        "openarm_left_link5",
+        "openarm_right_link5",
+    }
+    with pytest.raises(ValueError, match="wrist_links must be 1 or 2"):
+        droid.hand_links(wrist_links=3)
+    scene = DeployScene.from_yaml(
+        str(_REPO / "scenes/deploy/isaac_arena_droid_banana_in_bowl.yaml")
+    )
+    assert scene.runtime is not None
+    assert scene.runtime.workspace_contact_wrist_links == 2
+    with pytest.raises(ValidationError):
+        DeployRuntime.model_validate(
+            {**scene.runtime.model_dump(), "workspace_contact_wrist_links": 3}
+        )
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    names = collision_params_from_description(droid)["collision_link_names"]
+    assert isinstance(names, list)
+    assert set(droid.hand_links(wrist_links=2)) <= set(names)
+
+
 # ── launch ────────────────────────────────────────────────────────────────────
 
 
@@ -213,6 +250,16 @@ def test_the_launch_derives_the_kernel_params_from_the_manifest(launch_module: A
         "workspace_contact_hold_max_consecutive": round(2.0 * robot.control_rate_hz),
         "workspace_contact_control_period_s": pytest.approx(1.0 / robot.control_rate_hz),
     }
+    two = derive(
+        robot,
+        enabled=True,
+        max_speed_mps=0.05,
+        max_lead_m=0.04,
+        grasp_allowance_enabled=True,
+        hal_mode="sim",
+        wrist_links=2,
+    )
+    assert two["workspace_contact_links"] == list(robot.hand_links(wrist_links=2))
 
 
 @pytest.mark.parametrize(
@@ -287,8 +334,29 @@ def test_deploy_sim_forwards_workspace_contact_and_deploy_run_refuses_it(
     assert "workspace_contact_enabled:=true" in argv
     assert "workspace_contact_max_speed_mps:=0.05" in argv
     assert "workspace_contact_max_lead_m:=0.04" in argv
+    assert "workspace_contact_wrist_links:=1" in argv  # the default: the one wrist link
     with pytest.raises(ROSConfigError, match="sim-only until Safety-WG review"):
         _invoke(scene, "real")
+
+
+def test_a_scene_may_keep_the_workspace_rule_alone_without_k7(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restock (2026-10-23 decision): the tote neighbour the finger brushes is hidden from
+    the one depth camera, so K7 cannot explain it; the scene keeps the workspace rule alone."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    rule: dict[str, object] = {
+        "grasp_allowance_enabled": True,
+        "workspace_contact_enabled": True,
+        "workspace_contact_max_speed_mps": 0.05,
+        "workspace_contact_max_lead_m": 0.04,
+    }
+    on = _invoke(_cell_scene(tmp_path, rule), "sim").argv_template
+    assert "workspace_explained_cells:=true" in on, "the default: K7 as before"
+    off = _invoke(
+        _cell_scene(tmp_path, {**rule, "workspace_explained_cells": False}), "sim"
+    ).argv_template
+    assert "workspace_explained_cells:=false" in off
 
 
 # ── producer (HAL grasp-target leg) ───────────────────────────────────────────

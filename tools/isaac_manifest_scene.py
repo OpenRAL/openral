@@ -56,6 +56,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -372,6 +373,35 @@ def placement_grade(
         if inside[str(grade["region"])] and (upright or not grade.get("requires_upright")):
             return str(grade["name"])
     return "fail"
+
+
+def episode_grade(
+    grades: Sequence[str], scores: Mapping[str, float], some_placed: Mapping[str, Any] | None
+) -> str:
+    """The episode's grade: the worst placement's, or ``some_placed``'s name once at least one
+    but not every placement rests at the success grade (``IsaacPlacementSuccess.some_placed``)
+    and the worst would score lower.
+
+    Example:
+        >>> scores = {"complete": 1.0, "fail": 0.0, "partial": 0.5}
+        >>> some = {"name": "partial", "score": 0.5}
+        >>> episode_grade(["complete", "fail", "fail"], scores, some)
+        'partial'
+        >>> episode_grade(["complete", "complete"], scores, some)
+        'complete'
+        >>> (
+        ...     episode_grade(["fail", "fail"], scores, some),
+        ...     episode_grade(["complete", "fail"], scores, None),
+        ... )
+        ('fail', 'fail')
+    """
+    worst = worst_grade(grades, scores)
+    success = max(scores, key=scores.__getitem__) if scores else "fail"
+    if some_placed is None or worst == success or success not in grades:
+        return worst
+    if scores[worst] < float(some_placed["score"]):
+        return str(some_placed["name"])
+    return worst
 
 
 def worst_grade(grades: Iterable[str], scores: Mapping[str, float]) -> str:
@@ -910,6 +940,74 @@ def apply_finger_friction(
     )
 
 
+def mimic_follower_targets(
+    target: NDArray[np.float32],
+    q: NDArray[np.float32],
+    grippers: list[dict[str, Any]],
+    dof_index: dict[str, int],
+) -> NDArray[np.float32]:
+    """``target`` with every mimic follower re-aimed at the URDF mimic of its MEASURED leader.
+
+    ``q`` is the measured DOF vector; a follower ``f`` gets ``multiplier * q[leader] +
+    offset`` (``gripper_followers_track: "measured"``, the scene's ``_before_substep``).
+    Every other DOF keeps its ``target``. Returns a copy.
+
+    Example:
+        >>> g = [{"leader": "a", "followers": [{"dof": "b", "multiplier": -1.0, "offset": 0.1}]}]
+        >>> t = mimic_follower_targets(
+        ...     np.array([0.5, 0.0, 9.0], np.float32),
+        ...     np.array([0.2, 0.3, 1.0], np.float32),
+        ...     g,
+        ...     {"a": 0, "b": 1, "c": 2},
+        ... )
+        >>> [round(float(v), 3) for v in t]
+        [0.5, -0.1, 9.0]
+    """
+    out = np.array(target, dtype=np.float32, copy=True)
+    for g in grippers:
+        lead = float(q[dof_index[g["leader"]]])
+        for f in g["followers"]:
+            out[dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(f["offset"])
+    return out
+
+
+def follower_velocity_caps(
+    grippers: list[dict[str, Any]], caps: dict[str, float | None]
+) -> dict[str, float]:
+    """The raised velocity cap per mimic follower: ``|multiplier| x`` its leader's cap.
+
+    ``caps`` holds each joint's imported cap (``None`` = none authored). Only followers whose
+    cap is missing or below that are returned; a leader without a cap raises nothing
+    (the scene's ``_match_follower_velocity_limits``).
+
+    Example:
+        >>> g = [
+        ...     {
+        ...         "leader": "f",
+        ...         "followers": [
+        ...             {"dof": "r", "multiplier": 1.0, "offset": 0.0},
+        ...             {"dof": "d", "multiplier": -1.0, "offset": 0.0},
+        ...             {"dof": "x", "multiplier": 0.5, "offset": 0.0},
+        ...         ],
+        ...     }
+        ... ]
+        >>> follower_velocity_caps(g, {"f": 286.5, "r": 28.6, "d": None, "x": 500.0})
+        {'r': 286.5, 'd': 286.5}
+    """
+    out: dict[str, float] = {}
+    for g in grippers:
+        lead = caps.get(str(g["leader"]))
+        if lead is None:
+            continue
+        for f in g["followers"]:
+            name = str(f["dof"])
+            want = abs(float(f["multiplier"])) * float(lead)
+            have = caps.get(name)
+            if have is None or have < want:
+                out[name] = want
+    return out
+
+
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
     """A URDF without ``<mimic>`` tags, its relative mesh paths made absolute.
 
@@ -987,9 +1085,11 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
     """A planned camera's render ``(width, height)``: its manifest intrinsics' raster.
 
     A policy camera renders at the raster its checkpoint was trained on, so its aspect
-    survives the policy's resize. A depth camera keeps its aspect at no more than the
-    scene's width: its cloud and registered frames cross the wire every step. A camera
-    with no intrinsics takes the scene's ``observation_width``/``height``.
+    survives the policy's resize. A depth camera renders at its sensor spec's raster too:
+    its consumers (octomap, the object tracker's detector and segmenter) see what the real
+    sensor sees, never a raster set by the policy's ``observation_width`` (#418: the OpenArm
+    head_zed was capped to 512x288 and a carton shrank to ~31 px). A camera with no
+    intrinsics takes the scene's ``observation_width``/``height``.
 
     Example:
         >>> camera_resolution(
@@ -999,7 +1099,7 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
         >>> camera_resolution(
         ...     {"modality": "depth", "intrinsics": {"width": 1920, "height": 1080}}, 512, 384
         ... )
-        (512, 288)
+        (1920, 1080)
         >>> camera_resolution({"modality": "rgb"}, 512, 384)
         (512, 384)
     """
@@ -1007,8 +1107,6 @@ def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> 
     w, h = int(k.get("width") or 0), int(k.get("height") or 0)
     if w <= 0 or h <= 0:
         return obs_width, obs_height
-    if meta.get("modality") == "depth" and w > obs_width:
-        return obs_width, max(1, round(h * obs_width / w))
     return w, h
 
 
@@ -1314,27 +1412,6 @@ def _configure_rendering(spec: dict[str, Any]) -> None:
         )
 
 
-def points_in_frame(
-    points: NDArray[np.float32], world_from_frame: NDArray[np.float64]
-) -> NDArray[np.float32]:
-    """World points ``(N, 3)`` in a frame given by its 4x4 world pose; non-finite rows dropped.
-
-    A depth pixel that hits nothing deprojects to inf/NaN; those rows are not points.
-
-    Example:
-        >>> pose = np.eye(4)
-        >>> pose[:3, 3] = (1.0, 0.0, 0.5)
-        >>> points_in_frame(
-        ...     np.array([[1.0, 0.0, 0.0], [np.inf, 0, 0]], dtype=np.float32), pose
-        ... ).tolist()
-        [[0.0, 0.0, -0.5]]
-    """
-    raw = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    pts = raw[np.isfinite(raw).all(axis=1)]
-    rot, trans = world_from_frame[:3, :3], world_from_frame[:3, 3]
-    return ((pts - trans) @ rot).astype(np.float32)
-
-
 def resolve_beam_range(
     raycast_closest: Any,
     *,
@@ -1593,7 +1670,10 @@ class IsaacManifestScene(IsaacSceneBase):
         self._rest_s: dict[str, float] = {}
         self._last_pos: dict[str, NDArray[np.float64]] = {}
         self._last_quat: dict[str, NDArray[np.float64]] = {}
-        self._activate_placement_success(robot_spec.get("placement_success"))
+        # The rubric the scene boots with: every reset returns to it (a deploy sim goal's
+        # `set_task` rubric must not outlive the episode on a kept-alive sidecar).
+        self._boot_placement_success: dict[str, Any] | None = robot_spec.get("placement_success")
+        self._activate_placement_success(self._boot_placement_success)
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -1925,10 +2005,10 @@ class IsaacManifestScene(IsaacSceneBase):
             self._scan_query = get_physx_scene_query_interface()
 
     def _fix_time_base(self) -> None:
-        """Resolve the substeps from the dts the built World actually runs at.
+        """Resolve substeps from the built World's nominal configured dt.
 
         Read after the stage is complete, so an environment USD that carries its own
-        physics scene cannot change the dt behind the resolved time base. Refuses a
+        physics scene cannot change the configured dt behind the resolved time base. Refuses a
         rendering dt that differs from the physics dt (the rendered substep would then
         advance a different interval). The kinematic base integrates the resolved tick.
         """
@@ -2361,6 +2441,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 flush=True,
             )
         self._cap_joint_efforts(stage, prim_path)
+        self._match_follower_velocity_limits(stage, prim_path)
         self._set_collision_approximation(stage, prim_path)
         return prim_path
 
@@ -2446,6 +2527,53 @@ class IsaacManifestScene(IsaacSceneBase):
             UsdPhysics.DriveAPI.Apply(prim, kind).CreateMaxForceAttr(cap)
             print(
                 f"[isaac_manifest_scene] joint {prim.GetName()} drive maxForce capped at {cap}",
+                flush=True,
+            )
+
+    def _match_follower_velocity_limits(self, stage: Any, prim_path: str) -> None:
+        """Let each mimic follower move as fast as its leader drives it: |multiplier| x lead.
+
+        A follower of a linkage the URDF tree cuts open (the Robotiq's knuckles and
+        phalanges) is moved by its leader; its own URDF ``velocity`` (0.5 rad/s on the
+        ros-industrial 2F-85, against the leader's 5.0) is no limit of the real jaw. Imported
+        as the joint's velocity cap, it held the followers to ~2 deg per 15 Hz tick while the
+        leader closed in two ticks (Spark R21 / gripper probe, 2026-10-21: 39 deg off).
+        Only ever raises a follower's cap; a leader without a URDF velocity changes nothing.
+        Only with ``gripper_followers_track: "measured"``: the two belong together.
+        """
+        from pxr import Sdf, Usd, UsdPhysics
+
+        # Part of the measured-leader linkage (`gripper_followers_track: "measured"`): a scene
+        # without it keeps the imported caps, the linkage the policy was evaluated on.
+        if not self._grippers or self._spec.get("gripper_followers_track", "target") != "measured":
+            return
+        joints = {
+            p.GetName(): p
+            for p in Usd.PrimRange(stage.GetPrimAtPath(prim_path))
+            if p.IsA(UsdPhysics.Joint)
+        }
+        attrs = ("physxJoint:maxJointVelocity", "newton:velocityLimit")
+
+        def cap(prim: Any) -> float | None:
+            for name in attrs:
+                a = prim.GetAttribute(name)
+                if a and a.HasAuthoredValue() and a.Get() is not None:
+                    return float(a.Get())
+            return None
+
+        names = {
+            str(n)
+            for g in self._grippers
+            for n in (g["leader"], *(f["dof"] for f in g["followers"]))
+        }
+        caps = {n: cap(joints[n]) if n in joints else None for n in names}
+        for name, want in follower_velocity_caps(self._grippers, caps).items():
+            if name not in joints:
+                continue
+            for attr in attrs:
+                joints[name].CreateAttribute(attr, Sdf.ValueTypeNames.Float).Set(want)
+            print(
+                f"[isaac_manifest_scene] mimic follower {name} velocity cap {caps[name]} -> {want}",
                 flush=True,
             )
 
@@ -2547,6 +2675,27 @@ class IsaacManifestScene(IsaacSceneBase):
                 vx, vy, wz = (float(action[base_i + i]) for i in range(3))
                 self._integrate_base(*(0.0 if np.isnan(v) else v for v in (vx, vy, wz)))
 
+    def _before_substep(self) -> None:
+        """With ``gripper_followers_track: "measured"``, re-target every mimic follower.
+
+        The Robotiq's followers are a closed four-bar linkage the URDF tree omits: on the
+        real jaw they turn with the leader as one body. Driven toward the URDF ``<mimic>``
+        of the COMMANDED leader (the default, ``"target"``), they lag a moving leader by
+        10-25 deg and keep closing when contact stalls it (up to 36 deg off; Spark R21,
+        ``link_poses``), while the self-filter and the kernel pose them from the measured
+        leader. ``"measured"`` drives them toward the mimic of the MEASURED leader before
+        each physics substep, so the linkage moves as one body under contact too.
+        """
+        if self._spec.get("gripper_followers_track", "target") != "measured" or not self._grippers:
+            return
+        if self._target is None:
+            return
+        q = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        target = mimic_follower_targets(self._target, q, self._grippers, self._dof_index)
+        self._robot.get_articulation_controller().apply_action(
+            self._ArticulationAction(joint_positions=target)
+        )
+
     def _integrate_base(self, vx: float, vy: float, wyaw: float) -> None:
         """Advance the kinematic base by a base-frame twist and teleport the root.
 
@@ -2584,10 +2733,7 @@ class IsaacManifestScene(IsaacSceneBase):
     def _on_reset(self, rng: np.random.Generator) -> None:
         # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
-        self._placement_grade = "fail"
-        self._rest_s.clear()
-        self._last_pos.clear()
-        self._last_quat.clear()
+        self._activate_placement_success(self._boot_placement_success)
         # A reset teleports the robot: no finite-difference link speed across it.
         self._body_positions = {}
         self._prev_body_positions = {}
@@ -2691,16 +2837,18 @@ class IsaacManifestScene(IsaacSceneBase):
             flush=True,
         )
 
-    def _observe(self) -> dict[str, Any]:
-        obs = super()._observe()
+    def _observe(self, *, with_frames: bool = True) -> dict[str, Any]:
+        obs = super()._observe(with_frames=with_frames)
         if self._has_base:
             obs["base_pose"] = np.asarray(self._base_pose, dtype=np.float32)  # [x, y, yaw]
-        clouds = self._depth_clouds()
-        if clouds:
-            obs["depth_points"] = clouds
-        frames = self._depth_frames()
-        if frames:
-            obs["depth_frames"] = frames
+        if with_frames:
+            # The HAL derives each depth camera's cloud from these frames
+            # (SimAttachedHAL.read_depth_clouds): no point cloud crosses the wire.
+            t_depth = time.perf_counter()
+            frames = self._depth_frames()
+            self.depth_frames_ms = (time.perf_counter() - t_depth) * 1e3
+            if frames:
+                obs["depth_frames"] = frames
         scan = self._scan_ranges()
         if scan is not None:
             obs["scan"] = scan
@@ -2743,8 +2891,8 @@ class IsaacManifestScene(IsaacSceneBase):
     def _image_times(self) -> dict[str, int]:
         """Sim time each camera's frame shows, by obs key (a depth camera's key is its name).
 
-        Covers the RGB images, ``depth_frames`` and ``depth_points``: all three are
-        read from the same delivered frame of their camera.
+        Covers the RGB images and ``depth_frames``: both are read from the same
+        delivered frame of their camera.
         """
         out: dict[str, int] = {}
         for meta in self._cam_meta:
@@ -2812,36 +2960,6 @@ class IsaacManifestScene(IsaacSceneBase):
             }
         return out
 
-    def _depth_clouds(self) -> dict[str, NDArray[np.float32]]:
-        """``{sensor_name: (N, 3) base_frame points}`` from each depth camera.
-
-        Uses Isaac's ``Camera.get_pointcloud(world_frame=True)`` — Isaac owns the
-        camera intrinsics + frame convention, so we never guess the
-        Isaac-camera↔REP-103-optical rotation — then transforms world→base_frame by
-        the robot root's pose and the base_frame link's offset from the root
-        (``points_in_frame``; misses are dropped). The openral-side
-        ``SimSensorBridge`` publishes these as ``PointCloud2`` in the manifest's
-        ``base_frame`` (already on /tf), so
-        octomap gets a geometrically-correct cloud. Range-filtered (planar distance
-        from the base) per the depth ``SensorSpec``. Empty when the manifest
-        declares no depth sensor — never a fabricated cloud.
-        """
-        world_from_base = self._world_from_base()
-        out: dict[str, NDArray[np.float32]] = {}
-        for meta in self._cam_meta:
-            if meta["modality"] != "depth":
-                continue
-            pts = self._cameras[meta["name"]].get_pointcloud(world_frame=True)
-            if pts is None:
-                continue
-            pb = points_in_frame(np.asarray(pts, dtype=np.float32), world_from_base)
-            rmax = float(meta.get("range_max_m") or 0.0)
-            if rmax > 0.0:
-                pb = pb[(pb[:, 0] ** 2 + pb[:, 1] ** 2) <= rmax * rmax]
-            if pb.size:
-                out[meta["name"]] = pb
-        return out
-
     def _state(self) -> NDArray[np.float32]:
         # No task object in a bare deploy scene — proprioception is the manifest
         # joint vector (what a JOINT_POSITION policy's state head expects).
@@ -2856,7 +2974,10 @@ class IsaacManifestScene(IsaacSceneBase):
         self._last_pos.clear()
         self._last_quat.clear()
         self._grades: list[dict[str, Any]] = list((spec or {}).get("grades", []))
+        self._some_placed: dict[str, Any] | None = (spec or {}).get("some_placed")
         self._grade_scores = grade_scores(self._grades)
+        if self._some_placed is not None:
+            self._grade_scores[str(self._some_placed["name"])] = float(self._some_placed["score"])
         declared = {str(o["name"]): o for o in self._objects}
         # A stage object (no declared pose) keeps its authored orientation: up is +z.
         self._up_axis = {
@@ -2926,7 +3047,7 @@ class IsaacManifestScene(IsaacSceneBase):
                     self._grades,
                 )
             )
-        return worst_grade(grades, self._grade_scores)
+        return episode_grade(grades, self._grade_scores, self._some_placed)
 
     def set_object_position(self, name: str, xyz: list[float]) -> dict[str, Any]:
         """Teleport scene object ``name`` to world ``xyz``, orientation kept, at rest.
@@ -3228,6 +3349,63 @@ class IsaacManifestScene(IsaacSceneBase):
                     }
                 )
         return points
+
+    def link_poses(self, links: list[str]) -> dict[str, Any]:
+        """Sim ground truth for the robot model: every DOF and the named links' base-frame poses.
+
+        The sidecar ``link_poses`` endpoint (issue #418): what the self-filter and the
+        kernel pose from ``/joint_states`` through the manifest (mimic followers from
+        their leader) is checked against what PhysX actually holds. ``dofs``: each
+        articulation DOF's measured position and its last drive target. ``links``: per
+        named link, ``{"xyz", "quat_xyzw", "source"}`` in ``base_frame``, from the
+        articulation's PhysX link transforms when the view exposes them, else the link
+        prim's world pose. A link the stage does not have is left out.
+        """
+        from isaacsim.core.prims import SingleXFormPrim
+
+        names = [str(n) for n in (self._robot.dof_names or [])]
+        q = np.asarray(self._robot.get_joint_positions(), dtype=np.float64)
+        target = self._target if self._target is not None else q
+        dofs = {
+            n: {"position": float(q[i]), "target": float(target[i])} for i, n in enumerate(names)
+        }
+        base_from_world = np.asarray(np.linalg.inv(self._world_from_base()), dtype=np.float64)
+        physx: dict[str, NDArray[np.float64]] = {}
+        view = getattr(getattr(self._robot, "_articulation_view", None), "_physics_view", None)
+        body_names = getattr(getattr(self._robot, "_articulation_view", None), "body_names", None)
+        if view is not None and body_names:
+            tf = np.asarray(view.get_link_transforms(), dtype=np.float64).reshape(
+                len(body_names), 7
+            )
+            physx = {str(b): tf[i] for i, b in enumerate(body_names)}
+        out: dict[str, Any] = {}
+        for link in links:
+            if link in physx:
+                p = physx[link]  # x y z qx qy qz qw (PhysX tensor order)
+                world = pose_matrix(p[:3], (p[6], p[3], p[4], p[5]))
+                source = "physx"
+            else:
+                try:
+                    path = self._link_prim_path(link)
+                except ValueError:
+                    continue
+                pos, quat_wxyz = SingleXFormPrim(prim_path=path).get_world_pose()
+                world = pose_matrix(pos, quat_wxyz)
+                source = "prim"
+            m = base_from_world @ world
+            w = float(np.sqrt(max(0.0, 1.0 + m[0, 0] + m[1, 1] + m[2, 2]))) / 2.0
+            quat = (
+                [
+                    (m[2, 1] - m[1, 2]) / (4 * w),
+                    (m[0, 2] - m[2, 0]) / (4 * w),
+                    (m[1, 0] - m[0, 1]) / (4 * w),
+                    w,
+                ]
+                if w > 1e-6
+                else [float("nan")] * 4
+            )
+            out[link] = {"xyz": m[:3, 3].tolist(), "quat_xyzw": quat, "source": source}
+        return {"sim_time_ns": self.sim_time_ns(), "dofs": dofs, "links": out}
 
     def contact_ground_truth(self) -> dict[str, Any]:
         """PhysX robot-vs-world contacts of the last physics step (the sidecar ``contacts``).

@@ -23,7 +23,9 @@ from openral_sim._sidecar_common import sidecar_port_for_key, torch_backend, ven
 def test_isaac_sim_port_matches_original_implementation() -> None:
     from openral_sim.backends.isaac_sim import _scene_default_port
 
-    assert _scene_default_port("test_task", "franka_panda", "default") == 26675
+    # 20000-32767 since 2026-10-23 (below Linux's ephemeral range; Spark restock R332): the
+    # band moved, the derivation (sha256 of the scene key) did not.
+    assert _scene_default_port("test_task", "franka_panda", "default") == 22739
 
 
 def test_robotwin_port_matches_original_implementation() -> None:

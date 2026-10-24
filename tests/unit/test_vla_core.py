@@ -14,6 +14,7 @@ exposes ``select_action(batch) -> Tensor``. That's fixture, not mock.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -445,6 +446,74 @@ def test_read_tokenizer_repo_handles_missing_and_malformed(tmp_path: Any) -> Non
     # Restores after exit ensured by ``_write_preprocessor_json`` overwrite
 
 
+def _word_tokenizer(words: list[str]) -> Any:
+    """A real transformers tokenizer over a whitespace word vocabulary (plus <unk>/<bos>)."""
+    pytest.importorskip("transformers", reason="the sim/VLA install group carries transformers")
+    from tokenizers import (  # type: ignore[import-untyped]  # reason: tokenizers ships no stubs or py.typed
+        Tokenizer,
+        models,
+        pre_tokenizers,
+    )
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {"<unk>": 0, "<bos>": 1, **{w: i + 2 for i, w in enumerate(words)}}
+    core = Tokenizer(models.WordLevel(vocab=vocab, unk_token="<unk>"))
+    core.pre_tokenizer = pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(tokenizer_object=core, unk_token="<unk>", bos_token="<bos>")
+
+
+def _tokenizer_pipeline(tok: Any) -> Any:
+    from lerobot.processor import PolicyProcessorPipeline
+    from lerobot.processor.tokenizer_processor import TokenizerProcessorStep
+
+    return PolicyProcessorPipeline(steps=[TokenizerProcessorStep(tokenizer=tok)])
+
+
+def test_check_preprocessor_tokenizer_refuses_an_empty_vocabulary() -> None:
+    # The 2026-10-20 Spark cache: configs without tokenizer.model -> every word is <unk>.
+    from openral_rskill._vla_core import check_preprocessor_tokenizer
+
+    with pytest.raises(ROSConfigError, match="no usable vocabulary"):
+        check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer([])))
+    # Mostly <unk>: 2 of 10 probe words known.
+    with pytest.raises(ROSConfigError, match="8/10 <unk>"):
+        check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(["pick", "up"])))
+
+
+def test_check_preprocessor_tokenizer_passes_a_real_vocabulary() -> None:
+    from openral_rskill._vla_core import _TOKENIZER_PROBE, check_preprocessor_tokenizer
+
+    words = _TOKENIZER_PROBE.split()
+    check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(words)))
+    check_preprocessor_tokenizer(_tokenizer_pipeline(_word_tokenizer(words[:6])))  # 4/10 unk
+
+
+def test_call_make_processors_cached_first_refuses_a_blind_tokenizer(tmp_path: Any) -> None:
+    from openral_rskill import _vla_core
+
+    def fake_make(policy_config: Any, *, pretrained_path: str, **_kwargs: Any) -> Any:
+        return (_tokenizer_pipeline(_word_tokenizer([])), "POST")
+
+    with pytest.raises(ROSConfigError):
+        _vla_core.call_make_processors_cached_first(fake_make, "CFG", pretrained_path=None)
+
+
+def test_hf_tokenizer_is_cached_needs_the_vocabulary(tmp_path: Any, monkeypatch: Any) -> None:
+    import huggingface_hub.constants as hc
+    from openral_rskill._vla_core import _hf_tokenizer_is_cached
+
+    monkeypatch.setattr(hc, "HF_HUB_CACHE", str(tmp_path))
+    entry = tmp_path / "models--org--tok"
+    (entry / "refs").mkdir(parents=True)
+    (entry / "refs" / "main").write_text("abc")
+    snap = entry / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "tokenizer_config.json").write_text("{}")
+    assert not _hf_tokenizer_is_cached("org/tok")  # partial pull: configs only
+    (snap / "tokenizer.model").write_bytes(b"x")
+    assert _hf_tokenizer_is_cached("org/tok")
+
+
 # ── maybe_compile_chunk_forward safety gates ──────────────────────────────────
 
 
@@ -556,6 +625,43 @@ class TestCloneChunkOutput:
         assert _clone_chunk_output(None, torch) is None
         assert _clone_chunk_output(3.5, torch) == 3.5
         assert _clone_chunk_output({"n": 7}, torch) == {"n": 7}
+
+
+class TestStageSafetensorsOnHost:
+    """lerobot reads a checkpoint through host memory, with the identical weights."""
+
+    @pytest.fixture(autouse=True)
+    def _require_lerobot(self) -> None:
+        pytest.importorskip(
+            "lerobot", reason="install the VLA stack to exercise the lerobot loader"
+        )
+
+    def test_load_is_patched_inside_and_restored_after(self) -> None:
+        from lerobot.policies import pretrained
+        from openral_rskill._vla_core import stage_safetensors_on_host
+
+        before = pretrained.load_model_as_safetensor
+        with stage_safetensors_on_host():
+            assert pretrained.load_model_as_safetensor is not before
+        assert pretrained.load_model_as_safetensor is before
+
+    def test_a_device_request_loads_the_same_weights(self, tmp_path: Path) -> None:
+        """A real safetensors file loaded with `device="meta"` (which would fail to fill a CPU
+        model) fills it when staged, and matches a plain CPU load tensor for tensor."""
+        import torch
+        from lerobot.policies import pretrained
+        from openral_rskill._vla_core import stage_safetensors_on_host
+        from safetensors.torch import save_model
+
+        src = torch.nn.Linear(4, 3)
+        save_model(src, str(tmp_path / "model.safetensors"))
+        staged = torch.nn.Linear(4, 3)
+        with stage_safetensors_on_host():
+            pretrained.load_model_as_safetensor(
+                staged, str(tmp_path / "model.safetensors"), strict=True, device="meta"
+            )
+        assert torch.equal(staged.weight, src.weight)
+        assert torch.equal(staged.bias, src.bias)
 
 
 # ── suppress_hf_weight_init / assert_all_parameters_finite ────────────────────

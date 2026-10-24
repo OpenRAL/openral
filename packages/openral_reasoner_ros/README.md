@@ -9,7 +9,7 @@ A thin rclpy lifecycle node around
 Subscribes to:
 
 - `/openral/world_state_slow` (`openral_msgs/WorldStateStamped`, 5 Hz)
-- `/openral/failure/{hal,sensor,rskill,safety,wam,critic}` (`openral_msgs/FailureTrigger`)
+- `/openral/failure/{hal,sensor,rskill,safety,wam,critic,world_state}` (`openral_msgs/FailureTrigger`)
 - `/openral/perception/{motion,objects,ocr,scene_change}` (`openral_msgs/PromptStamped`)
 - `/openral/prompt` (`openral_msgs/PromptStamped`)
 
@@ -20,6 +20,15 @@ heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
 - `/openral/failure/safety` (Tier A) preempts on `severity ≥ SEVERITY_WARN`.
 - `/openral/failure/{hal,sensor,rskill,wam,critic}` (Tier B/C) preempts
   on `severity ≥ SEVERITY_FAIL`.
+- `/openral/failure/world_state` (issue #418 Addendum G): a matching
+  `KIND_OBJECT_QUERY` (`ObjectQueryEvidence`, typed `ROSObjectNotInMemory`) records
+  the action goal UUID, refusal reason, optional workspace, and bounded observation history. The
+  reasoner cancels the matching manipulation before recovery, re-observes and
+  revalidates within the persisted per-task dispatch budget, then leaves the task
+  blocked until a new operator goal when the cap is spent. These failures do not
+  produce a human handoff or alter e-stop behavior. When camera pose, robot mask or
+  usable observation is unavailable, the recovery message says visibility is unknown
+  and absence is unverified; a completed empty locate remains `object_not_found`.
 - `/openral/prompt` (Tier D) always preempts.
 
 All preemptions are subject to the 100 ms min-interval.
@@ -54,6 +63,12 @@ The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 `scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
 the mission and never reset the search budgets or retry-cap streak.
 
+For direct `locate_in_view` tool calls, a missing service, failed request, or nonempty
+`LocateInView.failure_reason` produces a bounded detector failure prompt that says
+visibility is unknown and preserves the cause. Only a completed response with
+`found=false` and an empty reason is rendered as “not visible.” These failures consume
+the existing bounded locate-search budget; see the [`LocateInView` wire contract](../msgs/README.md#services--srv).
+
 **Grasp / place targets — the reasoner names, perception grounds, the producer
 measures** (real pick-and-place design §2.2-2.3). `ExecuteRskillTool` carries two
 optional fields:
@@ -70,6 +85,14 @@ telling the LLM to disambiguate (recall the object and pass its `node_id`, or
 look for it). Naming a target arms
 nothing: the runner strips any region, the HAL producers measure, and the
 kernel trusts only the measured region — its trust boundary is unchanged.
+
+With object tracking on (param `object_tracking`, the deploy's
+`DeployRuntime.object_tracking`, issue #418) the declarations also carry the
+named classes as `ObjectQuery`s for the Layer-2 object tracker
+(`GraspDeclaration.target_queries`, `PlaceDeclaration.destination_query`),
+beside the unchanged search box. A label several live detections carry is then
+not refused: it grounds as one `count="all"` query with no search box, and the
+tracker grounds every instance (the policy's choice is resolved at binding).
 Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
 2D answer is not lifted), and the lift must run in the robot base frame
 (`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,
@@ -104,6 +127,24 @@ only the first.
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary
 ("Holds no authority over actuation").
+
+## Completion check (`completion_check_node`)
+
+A VLA emits no success signal, and Robometer's success head is no completion signal on its
+own: on Spark it peaked mid-carry as often as at the placement (R221-R223, 2026-10-22). With
+`runtime.enable_completion_check` (plus the reward monitor, the critic leg and the scene VLM)
+the head is a cheap trigger and a VLM the judge. On a success score of 0.6 or more, a
+`DETACH` grasp event or a newly released track (one check per 10 s), the node:
+
+1. holds the runner's commands (`/openral/rskill/hold`: the policy keeps stepping, nothing
+   is sent, the robot keeps its last command);
+2. asks `/openral/perception/query_scene` the reasoner's `COMPLETION_QUESTION` once per
+   RGB camera;
+3. ends the goal as a success (`/openral/rskill/complete`) when every camera answers yes,
+   and otherwise releases the hold.
+
+It only withholds or ends motion; every command still crosses the safety kernel. Each check
+logs `completion_check <reason>: done=<bool>` with each camera's answer.
 
 ## Reasoner model registry
 
@@ -366,3 +407,13 @@ round-trip can be observed end-to-end inside the deploy image.
 
 - [`openral_reasoner.core`](../../python/reasoner/src/openral_reasoner/core.py) — transport-agnostic orchestrator.
 - [`packages/openral_prompt_router`](../openral_prompt_router/) — F10 prompt fan-in.
+
+### Collision diagnostics
+
+Typed collision evidence on `/openral/failure/safety` preserves the kernel's
+link/object IDs and adjudication configuration. Prompt summaries retain both
+actors, signed distance and whether the check was measured or predicted; joint
+vectors remain available in the original ROS message for replay. The robot
+context lists configured joint names, simulator aliases and parent/child links
+without inventing anatomical labels. A predicted collision is not a measurement
+of physical contact, and voxel IDs do not establish an obstacle's identity.

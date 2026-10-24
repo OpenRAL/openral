@@ -108,6 +108,8 @@ scene:
           relative_to: plate
       grades:
         - {name: complete, score: 1.0, region: target}
+      # One or two of the three oranges on the plate: partial credit (episode grade).
+      some_placed: {name: partial, score: 0.5}
       settle_s: 0.5
       tasks:
         "Pick three oranges and put them into the plate": &three_oranges
@@ -125,7 +127,8 @@ scene:
 # orange_1 (no static collider supports it: `strip_xform_colliders`) and the plate's
 # `on_plate` region, padded 2 cm, plus 10 cm headroom. A scene may declare these two
 # boxes. The producer measures the region and confirms the workspace on the voxel map
-# (`workspace_region` is producer-only). The tool's derived static geometry is not
+# (`workspace_region` is producer-only). The search box is
+# labelled `sim:` (ground truth): it serves the HAL only and never seeds the #418 tracker. The tool's derived static geometry is not
 # used. SIM-ONLY, pending Safety-WG review (ADR + hazard rows owed).
 grasp_declaration:
   target_id: "obj:orange_1"
@@ -136,7 +139,7 @@ grasp_declaration:
     frame_id: base
     pose: {xyz: [0.073808, -0.303396, 0.050843], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: base}
     half_extents: [0.073359, 0.073979, 0.070916]
-    evidence_ref: "reasoner_seed:detection 'orange_1'"
+    evidence_ref: "sim:orange_1"
     stamp_ns: 0
   workspace_box:
     frame_id: base
@@ -152,11 +155,25 @@ runtime:
   enable_nav2: false
   enable_octomap: true
   enable_octomap_kernel_check: true
-  # The octomap bridge clears the carried payload's own posed boxes (attached poses only,
-  # floored above every known support) from the octree, so its returns left along the
-  # carry stop reaching the kernel. It REMOVES world occupancy: SIM-ONLY and PENDING
-  # Safety-WG review (hazard-log row owed). `deploy run` refuses it.
+  # Raw octree clearing requires a unique valid tracked-object binding and guarded
+  # support/neighbor/static keep-outs. Untracked and pinch fallback geometry never
+  # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
+  # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
+  # The #418 object tracker owns the attachment set and keys the kernel's grasp exemption
+  # and payload ownership on tracked ids (the values of the successful Spark run R372,
+  # 2026-10-23). It is what clears the held payload from the voxel map:
+  # with tracking off a geometry-only attachment stays mapped and the arm may stop on what
+  # it holds. A goal waits up to `grounding_wait_s` (source time) for its target query and
+  # is refused if it does not ground. SIM-ONLY, pending Safety-WG review (ADR + hazard rows
+  # owed). `deploy run` refuses `on`.
+  object_tracking: "on"
+  grounding_wait_s: 8.0
+  grounding_required: true
+  # The target query has no seed (the grasp declaration's search_box is sim ground truth),
+  # so the tracker grounds it through this on-demand locator; without one `deploy sim`
+  # refuses to configure. Needs the omdet dependency group (`just sync --group omdet`).
+  object_detector_locators: [omdet-turbo-locator]
   # Manipulation-workspace contact (docs/reference/manipulation-workspace-contact.md),
   # SIM-ONLY and PENDING Safety-WG review: the ADR (§7) and the hazard-log rows (§8) are
   # owed. While the grasp declaration below is live and the grasp-target producer has

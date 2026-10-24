@@ -44,6 +44,11 @@ scene:
   cameras: ["exterior", "wrist"]
   backend_options:
     boot_timeout_s: 1200
+    # Render small (398x224): pi05 resizes each 1280x720 frame to 224x126 with padding,
+    # and rendering is most of a step's cost (the restock scenes render at 224 too).
+    camera_render_height:
+      exterior: 224
+      wrist: 224
     dome_light:
       intensity: 1500.0
       color: [0.75, 0.75, 0.75]
@@ -69,6 +74,12 @@ scene:
       finger_joint: 1.0  # open
     joint_drive_gains:
       "finger_joint": [5729.578, 0.011459]
+      # The Robotiq's mimic followers on the leader's gains, driven toward the mimic of the
+      # MEASURED leader (`gripper_followers_track`): the four-bar the URDF tree cuts open
+      # moves as one body. Spark gripper probe 2026-10-21 (R21 replay, contacts): follower
+      # error vs mimic p95 17.1 -> 0.75 deg, max 22.7 -> 4.8 deg (was up to 39 deg).
+      "(right_finger_joint|.*_phalanx_joint)": [5729.578, 0.011459]
+    gripper_followers_track: measured
     gripper_joint_curve:
       finger_joint: [[0.0, 0.7853982], [1.0, 0.0]]
     # Simulated-only depth for the world map: Arena's `external_camera` as metric
@@ -124,7 +135,8 @@ scene:
 # maple table, `/World/environment/table/table_01`; its legs left out) and the bowl's
 # `in_bowl` region, padded 2 cm, plus headroom, cut to the 0.5 m half-extent cap around
 # the banana. The producer confirms it on the voxel map (`workspace_region` is
-# producer-only).
+# producer-only). The search box is labelled `sim:` (ground truth): it serves the HAL
+# only and never seeds the #418 tracker.
 # HAZARD-LOG LINE OWED: the table is a MOVABLE support (an enabled, non-kinematic rigid
 # body here and in Arena). The sidecar exports it flagged `dynamic`, so it is never
 # declared static geometry, and the workspace relaxes nothing until the map confirms it.
@@ -138,7 +150,7 @@ grasp_declaration:
     frame_id: panda_link0
     pose: {xyz: [0.509671, -0.115792, 0.021202], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: panda_link0}
     half_extents: [0.099504, 0.134225, 0.063602]
-    evidence_ref: "reasoner_seed:detection 'banana'"
+    evidence_ref: "sim:banana"
     stamp_ns: 0
   workspace_box:
     frame_id: panda_link0
@@ -150,15 +162,45 @@ grasp_declaration:
 # Committed posture: world collision on (octomap over exterior_depth + the kernel's
 # voxel check), no SLAM / Nav2 (a fixed-base arm at a table).
 runtime:
+  # The VLA emits no success signal: Robometer-4B (the deploy default reward model) scores
+  # the exterior camera beside it, and the critic producer turns its success into a Tier-C
+  # event (2026-10-22). 8 s of footage per heartbeat (subsampled to its 8 frames); the
+  # 2 s default left one frame per score at the sim's camera rate (Spark R219).
+  enable_reward_monitor: true
+  enable_critic: true
+  reward_monitor_score_window_s: 8.0
+  # Robometer's success alone is no completion signal (it peaked mid-carry as often as at
+  # the placement, R221-R223): on success >= 0.6 or a release the policy is held and the
+  # scene VLM (qwen35-4b-nf4) asked on both cameras; all yes ends the goal as a success.
+  enable_scene_vlm: true
+  enable_completion_check: true
   enable_slam: false
   enable_nav2: false
   enable_octomap: true
   enable_octomap_kernel_check: true
-  # The octomap bridge clears the carried payload's own posed boxes (attached poses only,
-  # floored above every known support) from the octree, so its returns left along the
-  # carry stop reaching the kernel. It REMOVES world occupancy: SIM-ONLY and PENDING
-  # Safety-WG review (hazard-log row owed). `deploy run` refuses it.
+  # Raw octree clearing requires a unique valid tracked-object binding and guarded
+  # support/neighbor/static keep-outs. Untracked and pinch fallback geometry never
+  # grants clearing. Per-cell ownership remains incomplete; this stays SIM-ONLY,
+  # pending Safety-WG review. `deploy run` refuses it.
   payload_sweep_clear_enabled: true
+  # The #418 object tracker owns the attachment set and keys the kernel's grasp exemption
+  # and payload ownership on tracked ids (the values of the successful Spark run R365,
+  # 2026-10-23). It is what clears the held payload from the voxel map:
+  # with tracking off a geometry-only attachment stays mapped and the arm may stop on what
+  # it holds. A goal waits up to `grounding_wait_s` (source time) for its target query and
+  # is refused if it does not ground. Under `on` the runner also arms its goal-scope place
+  # declaration and the tracker measures its region (`TrackerSession.place_region`, the
+  # bowl track's containing box), over which the kernel applies the ADR-0097/0098 place
+  # allowance: a non-monotone relaxation. Spark A/B R388 (off: the banana dropped on the
+  # table, a stop after the release) vs R389 (on: the banana in the bowl). SIM-ONLY,
+  # pending Safety-WG review (ADR + hazard rows owed). `deploy run` refuses `on`.
+  object_tracking: "on"
+  grounding_wait_s: 15.0
+  grounding_required: true
+  # The target query has no seed (the grasp declaration's search_box is sim ground truth),
+  # so the tracker grounds it through this on-demand locator; without one `deploy sim`
+  # refuses to configure. Needs the omdet dependency group (`just sync --group omdet`).
+  object_detector_locators: [omdet-turbo-locator]
   # Grasp allowance + manipulation-workspace contact
   # (docs/reference/manipulation-workspace-contact.md), SIM-ONLY and PENDING Safety-WG
   # review: the ADR (§7) and the hazard-log rows (§8) are owed. The exempt links are
@@ -170,6 +212,10 @@ runtime:
   workspace_contact_enabled: true
   workspace_contact_max_speed_mps: 0.5
   workspace_contact_max_lead_m: 0.10
+  # The wrist housing panda_link6 joins panda_link7 as a wrist link for the contact rule
+  # only (2026-10-21 decision; R50-R82 stopped on it commanded into the table or bowl rim,
+  # no physical contact). SIM-ONLY, pending Safety-WG review and a hazard-log row.
+  workspace_contact_wrist_links: 2
   # The grasp-target producer, which measures the target region: the scene's simulated
   # depth camera (`exterior_depth`, the `exterior` mount), its RGB from the same render.
   # `camera` names the manifest sensor on that mount. /tf has no frame for the logical
@@ -185,4 +231,8 @@ runtime:
     depth_camera_info_topic: /openral/cameras/exterior_depth/depth/camera_info
     grasp_target_enabled: true
     grasp_target_premeasure: true
+    # The banana goes into the bowl: without the place producer a payload meeting its
+    # destination is a world collision (Spark R142, 2026-10-22). Built only in off /
+    # shadow; under `on` the tracker measures the place region instead.
+    place_target_enabled: true
     tf_frames: {robotiq_finger_pair: robotiq_arg2f_tcp}

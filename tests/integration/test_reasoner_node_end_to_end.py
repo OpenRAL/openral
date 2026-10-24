@@ -102,6 +102,96 @@ def test_prompt_router_forwards_cli_prompt_to_openral_prompt() -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_startup_prompt_waits_for_the_reasoner_not_any_subscriber() -> None:
+    """A bystander on /openral/prompt must not release the one-shot startup prompt.
+
+    2026-10-20 Spark R13: a ``ros2 topic echo`` matched first, the router published,
+    and the reasoner (subscribed ~18 s later) booted idle under VOLATILE QoS.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_msgs.msg import PromptStamped
+    from openral_prompt_router import PromptRouterNode
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    qos = QoSProfile(
+        depth=10,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+    )
+    rclpy.init()
+    reasoner_got: list[str] = []
+    try:
+        bystander = rclpy.create_node("openral_test_bystander")
+        bystander.create_subscription(PromptStamped, "/openral/prompt", lambda _m: None, qos)
+        router = PromptRouterNode()
+        router.set_parameters([Parameter("startup_prompt", value="pick up the banana")])
+        router.trigger_configure()
+        activate = threading.Thread(target=router.trigger_activate)
+        activate.start()
+        time.sleep(1.5)  # the bystander is discovered well before the reasoner exists
+        reasoner = rclpy.create_node("openral_reasoner")
+        reasoner.create_subscription(
+            PromptStamped, "/openral/prompt", lambda m: reasoner_got.append(m.text), qos
+        )
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not reasoner_got:
+            executor.spin_once(timeout_sec=0.1)
+        activate.join(timeout=35.0)
+        executor.remove_node(reasoner)
+        for node in (reasoner, bystander, router):
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert reasoner_got == ["pick up the banana"]
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_discovered_but_unmatched_reasoner_does_not_release_the_startup_prompt() -> None:
+    """Graph discovery is not the publisher's match (#421 review): a sample published
+    in between is dropped under VOLATILE. A reasoner subscription that can never match
+    (it asks TRANSIENT_LOCAL of a VOLATILE publisher) is in the graph but not matched."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_msgs.msg import PromptStamped
+    from openral_prompt_router import PromptRouterNode
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    rclpy.init()
+    try:
+        router = PromptRouterNode()
+        router.trigger_configure()
+        reasoner = rclpy.create_node("openral_reasoner")
+        unmatchable = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        reasoner.create_subscription(PromptStamped, "/openral/prompt", lambda _m: None, unmatchable)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not router.get_subscriptions_info_by_topic(
+            "/openral/prompt"
+        ):
+            time.sleep(0.05)
+        time.sleep(0.5)
+        discovered = [
+            i.node_name for i in router.get_subscriptions_info_by_topic("/openral/prompt")
+        ]
+        released = router._reasoner_subscribed()
+        for node in (reasoner, router):
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert discovered == ["openral_reasoner"]
+    assert not released
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_reasoner_node_emits_prompt_on_canned_response() -> None:
     """Reasoner with FakeToolUseClient → EmitPromptTool → /openral/prompt."""
     rclpy = pytest.importorskip("rclpy")
@@ -697,11 +787,11 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_recall_miss_escalates_to_locate_in_view() -> None:
+def test_recall_miss_surfaces_locate_in_view_detector_failure() -> None:
     """recall_object miss (policy, not LLM choice) escalates to locate_in_view.
 
-    Same query is sent to locate_in_view before handoff, so the live open-vocab
-    detector can ground objects the map never ingested.
+    Same query is sent to locate_in_view. A detector failure must be re-prompted
+    as unknown visibility with its typed cause, never as a successful no-match.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -724,7 +814,9 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
 
     service_name = "/openral/perception/omdet_turbo_locator/locate_in_view"
     received: list[str] = []
+    failure_prompts: list[Any] = []
     got_request = threading.Event()
+    got_failure_prompt = threading.Event()
 
     rclpy.init()
     try:
@@ -748,14 +840,27 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
 
         def _serve(req: Any, resp: Any) -> Any:
             received.append(req.query)
-            resp.found = True
+            resp.found = False
             resp.camera = "default"
             resp.detector = req.detector or "omdet-turbo-locator"
             resp.metadata_json = "{}"
+            resp.failure_reason = "detector_exception:ModuleNotFoundError:No module named 'timm'"
             got_request.set()
             return resp
 
         srv_node.create_service(LocateInView, service_name, _serve)
+
+        def _on_prompt(prompt: Any) -> None:
+            if prompt.header.frame_id == "detector":
+                failure_prompts.append(prompt)
+                got_failure_prompt.set()
+
+        srv_node.create_subscription(
+            PromptStamped,
+            "/openral/prompt",
+            _on_prompt,
+            10,
+        )
 
         pub_node = rclpy.create_node("openral_test_locate_publisher")
         from rclpy.qos import (
@@ -785,7 +890,7 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
         pub.publish(msg)
 
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not got_request.is_set():
+        while time.monotonic() < deadline and not got_failure_prompt.is_set():
             executor.spin_once(timeout_sec=0.05)
 
         executor.remove_node(reasoner)
@@ -798,6 +903,13 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
 
     assert got_request.is_set(), "recall miss did not escalate to locate_in_view within 10 s"
     assert "teapot" in received, f"locate_in_view called with wrong query: {received}"
+    assert got_failure_prompt.is_set(), "locate detector failure was not sent back to the reasoner"
+    assert len(failure_prompts) == 1
+    assert "visibility is unknown" in failure_prompts[0].text
+    assert (
+        "detector_exception:ModuleNotFoundError:No module named 'timm'" in failure_prompts[0].text
+    )
+    assert "NOT visible" not in failure_prompts[0].text
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)

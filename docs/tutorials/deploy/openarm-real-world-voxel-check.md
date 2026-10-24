@@ -44,7 +44,13 @@ The evaluation exists to measure these gaps; expect each to show up, not a clean
    `deploy_e2e.launch.py`), and then nothing on the real graph publishes
    `/openral/attachment_state`. So the bridge never clears the object's cells, and the
    gripper stops against its own payload. The sim contract, where the payload leaves world
-   occupancy and is checked as attached geometry, does **not** hold here.
+   occupancy and is checked as attached geometry, does **not** hold here. It holds only for
+   a `tracked_object` attachment from the #418 object tracker (`runtime.object_tracking: bind`
+   or `on`, sim-only): the octomap bridge clears payload cells by tracked identity only
+   (`OctomapVoxelBridge::clear_by_identity`), so even with the vision leg below enabled, its
+   geometry-only payload stays mapped and the gripper may still stop on what it holds. That is
+   the decided fail-closed posture
+   ([octomap bridge README](https://github.com/OpenRAL/openral/blob/master/packages/openral_octomap_bridge/README.md#attached-objects-and-world-occupancy)).
 
    **Vision attachment leg (off by default).** `runtime.vision_attachment` in this scene
    wires the leg — the SAM 2.1 segmenter lifecycle node (`openral_segmenter`) plus the HAL's
@@ -57,17 +63,17 @@ The evaluation exists to measure these gaps; expect each to show up, not a clean
    once by commanding an empty close on the rig and reading where the jaw rests.
    Turning it on for real is pending Safety-WG review and a hazard-log entry. Enabled,
    `deploy run` always turns the kernel's attached-payload check on with it
-   (`attached_collision_enabled`, 1000 ms deadline), never the leg alone: the bridge's payload
-   clearing and the self-filter act on any published attachment whatever the kernel flag, so a
-   leg without the kernel check would hide the payload from every check. Do not enable it in
-   this runbook.
+   (`attached_collision_enabled`, 1000 ms deadline), never the leg alone, so a published
+   payload is always checked as attached geometry. (The octomap bridge and the self-filter
+   remove only tracker-bound payloads now, so the leg's payload is never hidden from the world
+   check either.) Do not enable it in this runbook.
 
    **Release (frozen window, the leg's default behaviour).** The trigger's DETACH fires when the
    jaws *open* past their hold, with the fingers still around the object. The leg does not drop the payload then:
    it keeps publishing it as an attached record frozen in `openarm_base` at its DETACH pose
    (`touch_links` = the hand and its finger pair, exactly what the held record exempted;
-   every other link and the world are still checked against it), so the octomap bridge keeps
-   clearing its cells while the fingers back out. The record goes once the hand and fingers
+   every other link and the world are still checked against it), while the fingers back out.
+   Its cells stay in the world grid throughout (geometry-only evidence clears nothing). The record goes once the hand and fingers
    are `release_clear_m` (0.04 m = the 20 mm world margin + one 20 mm voxel) clear of it, a
    new ATTACH on that gripper, or `release_timeout_s` (3.0 s) — after which a hand still
    inside the margin of the re-marked object is stopped, fail-closed. Look for

@@ -71,6 +71,10 @@ class TOPRewardMonitor:
         self._model: Any = None
         self._encoder: Any = None
 
+    def warm_up(self) -> None:
+        """Load the VLM now rather than on the first score."""
+        self._ensure_ready()
+
     def _ensure_ready(self) -> None:
         """Load lerobot's stock TOPRewardModel (4-bit) + encoder once."""
         if self._model is not None:

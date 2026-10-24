@@ -33,7 +33,7 @@ Per-source allowlist comes from the constructor's `sources` dict (default
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `startup_prompt` | `""` | Published once at `on_activate` as a `cli`-priority prompt (after waiting up to 30 s for the reasoner's subscriber); `openral deploy sim` passes the scene's goals here. Empty = idle until an operator prompt. |
+| `startup_prompt` | `""` | Published once at `on_activate` as a `cli`-priority prompt (after waiting up to 30 s for the `openral_reasoner` node's own subscription — other subscribers such as `ros2 topic echo` or a bag recorder do not count); `openral deploy sim` passes the scene's goals here. Empty = idle until an operator prompt. |
 
 ## QoS
 

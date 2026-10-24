@@ -92,6 +92,15 @@ Parameters:
         request's measured serve time (``frame_wait_budget_s``). The HAL round trip and
         time queued behind another call are not measured here, so they are not budgeted;
         a reply that still lands late is dropped by the HAL, which then falls back.
+    camera_request_deadlines (list[str]): ``"camera=seconds"``: for those cameras both the
+        frame wait and the deadline (the object tracker's cameras, whose requester allows
+        seconds, not the HAL's 0.25 s: Spark restock R282, 2026-10-23, a third of the
+        tracker's head-camera requests were refused before their trailing RGB frame
+        landed). Unlisted cameras keep ``frame_wait_s`` / ``request_deadline_s``.
+    camera_max_frame_skews (list[str]): ``"camera=seconds"``: ``max_frame_skew_s`` for those
+        cameras (parsed as ``camera_request_deadlines``). The tracker's cameras: a 1080p
+        BEST_EFFORT stream loses frames under load (Spark restock R288: the RGB twin of a
+        third of the depth stamps never arrived; its neighbours were 0.2 s off).
 
 **Which frame a request is served from.** The HAL stamps a request with the depth
 frame it will back-project the masks through, and refuses masks cut from a frame
@@ -113,10 +122,11 @@ changes nothing.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
@@ -128,6 +138,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only, keeps numpy off the impor
 
 __all__ = [
     "FRAME_HISTORY",
+    "box_prompt",
     "frame_nearest_stamp",
     "frame_wait_budget_s",
     "main",
@@ -180,6 +191,34 @@ def frame_wait_budget_s(frame_wait_s: float, request_deadline_s: float, *, serve
         0.0
     """
     return max(0.0, min(frame_wait_s, request_deadline_s - serve_s))
+
+
+def parse_camera_deadlines(entries: Sequence[str], cameras: Collection[str]) -> dict[str, float]:
+    """``"camera=seconds"`` entries (``camera_request_deadlines``, ``camera_max_frame_skews``).
+
+    Raises:
+        ROSConfigError: An entry names a camera not in ``cameras``, or its seconds are not
+            a positive finite number.
+
+    Example:
+        >>> parse_camera_deadlines(["", "head=1.5"], ["wrist", "head"])
+        {'head': 1.5}
+    """
+    from openral_core import ROSConfigError
+
+    out: dict[str, float] = {}
+    for cid, raw in parse_camera_entries(entries).items():
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if cid not in cameras or not math.isfinite(value) or value <= 0.0:
+            raise ROSConfigError(
+                f"per-camera seconds entry {cid}={raw!r}: needs a configured camera and a "
+                "positive finite number of seconds"
+            )
+        out[cid] = value
+    return out
 
 
 _Frame = TypeVar("_Frame")
@@ -292,7 +331,7 @@ def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec 
 
 
 def projection_geometry(
-    spec: SensorSpec,
+    spec: SensorSpec | None,
     *,
     width: int,
     height: int,
@@ -307,7 +346,10 @@ def projection_geometry(
     the returned notes so the caller can log it (CLAUDE.md §1.4).
 
     Args:
-        spec: The camera's manifest ``SensorSpec``.
+        spec: The camera's manifest ``SensorSpec``; ``None`` for a camera the manifest
+            does not declare (a scene's simulated depth camera the object tracker fits
+            with, issue #418), which then needs both the live ``CameraInfo`` and an image
+            header frame: there is no manifest value to fall back to.
         width: Width of the cached frame (pixels).
         height: Height of the cached frame (pixels).
         header_frame_id: ``header.frame_id`` of the cached image; blank when
@@ -322,7 +364,8 @@ def projection_geometry(
 
     Raises:
         ROSConfigError: The live ``CameraInfo`` is uncalibrated, or there is no
-            live K and the manifest declares no intrinsics either.
+            live K and the manifest declares no intrinsics either, or a camera with no
+            ``SensorSpec`` lacks the live K or the image header frame.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -339,6 +382,20 @@ def projection_geometry(
     from openral_hal.depth_cloud import intrinsics_from_camera_info
 
     fallbacks: list[str] = []
+    if spec is None:
+        frame = header_frame_id.strip()
+        if camera_info is None or not frame:
+            raise ROSConfigError(
+                "a camera with no SensorSpec in the robot manifest projects only through its "
+                "live CameraInfo and its image header frame; "
+                f"camera_info={'set' if camera_info is not None else 'missing'}, "
+                f"header frame_id={frame!r}"
+            )
+        return (
+            scale_intrinsics_to(intrinsics_from_camera_info(camera_info), width, height),
+            frame,
+            (),
+        )
     if camera_info is not None:
         base = intrinsics_from_camera_info(camera_info)
     elif spec.intrinsics is not None:
@@ -359,6 +416,22 @@ def projection_geometry(
             f"SensorSpec.frame_id {spec.frame_id!r}, which must then be an optical frame"
         )
     return scale_intrinsics_to(base, width, height), frame, tuple(fallbacks)
+
+
+def box_prompt(request: Any) -> tuple[float, float, float, float] | None:
+    """A ``SegmentInView`` request's detector box prompt in pixels, or ``None`` (issue #418).
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> box_prompt(SimpleNamespace(box_valid=True, box_xyxy=[10, 20, 110.5, 220]))
+        (10.0, 20.0, 110.5, 220.0)
+        >>> box_prompt(SimpleNamespace(box_valid=False, box_xyxy=[0, 0, 0, 0])) is None
+        True
+    """
+    if not bool(getattr(request, "box_valid", False)):
+        return None
+    x0, y0, x1, y1 = (float(c) for c in request.box_xyxy)
+    return (x0, y0, x1, y1)
 
 
 def mono8_bytes_from_mask(mask: NDArray[np.bool_]) -> bytes:
@@ -433,6 +506,8 @@ def _node_class() -> type:
             self.declare_parameter("max_frame_skew_s", DEFAULT_MAX_FRAME_SKEW_S)
             self.declare_parameter("frame_wait_s", DEFAULT_FRAME_WAIT_S)
             self.declare_parameter("request_deadline_s", DEFAULT_REQUEST_DEADLINE_S)
+            self.declare_parameter("camera_request_deadlines", [""])
+            self.declare_parameter("camera_max_frame_skews", [""])
             # The last served request's frame-found -> reply-built time (``frame_wait_budget_s``).
             self._serve_s = DEFAULT_SERVE_S
             # When the request being served entered the node (``_serve_segment_in_view``).
@@ -492,17 +567,27 @@ def _node_class() -> type:
                 raise ROSConfigError(
                     f"camera_infos names cameras {unknown} that `cameras` does not configure"
                 )
+            self._deadlines = parse_camera_deadlines(
+                list(gp("camera_request_deadlines").get_parameter_value().string_array_value),
+                self._cameras,
+            )
+            self._skews = parse_camera_deadlines(
+                list(gp("camera_max_frame_skews").get_parameter_value().string_array_value),
+                self._cameras,
+            )
 
             import tf2_ros
 
             self._tf_buffer = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-            # Sensor data class per CLAUDE.md §2: BEST_EFFORT / VOLATILE, depth 1
-            # — only the newest frame can answer "what is in the jaws *now*".
+            # Sensor data class per CLAUDE.md §2: BEST_EFFORT / VOLATILE, KEEP_LAST 5. Depth
+            # 1 dropped every frame landing while a callback ran (Spark restock R282: the
+            # tracker's depth-stamped requests found no RGB twin); the cache keeps the
+            # history a stamped request is served from.
             img_qos = QoSProfile(
                 history=QoSHistoryPolicy.KEEP_LAST,
-                depth=1,
+                depth=5,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
                 durability=QoSDurabilityPolicy.VOLATILE,
             )
@@ -700,16 +785,21 @@ def _node_class() -> type:
             gp = self.get_parameter
             started = time.perf_counter()
             # The deadline left after what this request has already spent in the node.
-            remaining_s = gp("request_deadline_s").get_parameter_value().double_value - (
-                started - self._request_started
+            deadline_s = self._deadlines.get(
+                camera, gp("request_deadline_s").get_parameter_value().double_value
             )
+            remaining_s = deadline_s - (started - self._request_started)
             frame, stale = wait_for_frame(
                 lambda: self._frames.get(camera, ()),
                 self._frame_arrived,
                 int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
-                max_skew_s=gp("max_frame_skew_s").get_parameter_value().double_value,
+                max_skew_s=self._skews.get(
+                    camera, gp("max_frame_skew_s").get_parameter_value().double_value
+                ),
                 wait_s=frame_wait_budget_s(
-                    gp("frame_wait_s").get_parameter_value().double_value,
+                    self._deadlines.get(
+                        camera, gp("frame_wait_s").get_parameter_value().double_value
+                    ),
                     remaining_s,
                     serve_s=self._serve_s,
                 ),
@@ -736,7 +826,12 @@ def _node_class() -> type:
             return response
 
         def _on_segment_in_view(self, request: Any, response: Any) -> Any:  # noqa: PLR0911 — reason: one named early return per fail-closed precondition; collapsing them would hide which one fired
-            """Service: mask the object under a 3-D prompt point in one frame.
+            """Service: mask the object under a 3-D prompt point (and/or pixel box) in one frame.
+
+            With ``box_valid`` (issue #418) ``box_xyxy`` is passed to the segmenter as a
+            box prompt alongside the points, and the points become optional: a TCP point
+            that does not project, or a prompt frame tf2 cannot place, is dropped
+            instead of refusing the call. Without it the behaviour is unchanged.
 
             Every failure path is *typed and named* in ``failure_reason`` and
             leaves ``masks`` empty. It never raises: the caller is holding an
@@ -759,13 +854,9 @@ def _node_class() -> type:
                 response.failure_reason = stale
                 self.get_logger().warning(response.failure_reason)
                 return response
+            # A camera the manifest does not declare (a scene's simulated depth camera)
+            # projects through its live CameraInfo and image header only.
             spec = sensor_spec_by_name(self._description, camera)
-            if spec is None:
-                response.failure_reason = (
-                    f"ROSConfigError: camera {camera!r} has no SensorSpec in the robot manifest"
-                )
-                self.get_logger().warning(response.failure_reason)
-                return response
             camera_info = self._infos.get(camera)
             if camera in self._info_topics and camera_info is None:
                 # Configured for the live K but none has arrived: refuse rather
@@ -792,8 +883,11 @@ def _node_class() -> type:
                 return response
             for note in fallbacks:
                 self._warn_once(note)
+            # Issue #418: a detector box in this camera's pixels, alongside the points.
+            # With it the points are optional, so a point that cannot be placed is dropped.
+            box = box_prompt(request)
             transform = self._prompt_transform(request, optical_frame)
-            if transform is None:
+            if transform is None and box is None:
                 response.failure_reason = (
                     f"ROSPerceptionStale: no tf2 {optical_frame} <- "
                     f"{request.frame_id or optical_frame} at the requested stamp"
@@ -801,34 +895,22 @@ def _node_class() -> type:
                 self.get_logger().warning(response.failure_reason)
                 return response
 
-            from openral_runner.backends.gstreamer.sam2_segmenter import project_point_to_pixel
-
-            positive = project_point_to_pixel(
-                _apply_transform(transform, request.tcp_point), intrinsics
-            )
-            if positive is None:
+            positive, negatives = self._prompt_pixels(request, transform, intrinsics)
+            if positive is None and box is None:
                 response.failure_reason = (
                     f"ROSConfigError: the TCP point does not project into camera {camera!r} "
                     "(behind the optical plane or outside the image)"
                 )
                 self.get_logger().warning(response.failure_reason)
                 return response
-            # Negative prompts are hints (jaw tips). One that misses the image is
-            # dropped rather than failing the whole call — the positive point is
-            # what makes the prompt meaningful.
-            negatives = [
-                pixel
-                for point in request.negative_points
-                if (pixel := project_point_to_pixel(_apply_transform(transform, point), intrinsics))
-                is not None
-            ]
             try:
                 candidates = self._segmenter.segment(
                     bgr,
                     width,
                     height,
-                    positive_points=[positive],
+                    positive_points=[positive] if positive is not None else [],
                     negative_points=negatives,
+                    box_xyxy=box,
                 )
             except Exception as exc:  # never crash the service; the caller is waiting
                 response.failure_reason = f"{type(exc).__name__}: {exc}"
@@ -853,7 +935,7 @@ def _node_class() -> type:
             response.ok = True
             self.get_logger().info(
                 f"segment_in_view: camera={camera!r} candidates={len(candidates)} "
-                f"areas={[c.area_px for c in candidates]}"
+                f"areas={[c.area_px for c in candidates]} box={box} point={positive is not None}"
             )
             # LAST, and only after the reply is complete: the caller is holding
             # an action-acknowledgement barrier open on this call.
@@ -888,6 +970,31 @@ def _node_class() -> type:
                 self._masks_pub.publish(msg)
             except Exception as exc:  # reason: a diagnostic topic must never degrade a grasp
                 self.get_logger().warning(f"debug mask publish failed: {exc}")
+
+        def _prompt_pixels(
+            self, request: Any, transform: Any, intrinsics: Any
+        ) -> tuple[tuple[float, float] | None, list[tuple[float, float]]]:
+            """``(positive pixel | None, negative pixels)`` of the request's 3-D points.
+
+            Negative prompts are hints (jaw tips): one that misses the image is dropped
+            rather than failing the whole call — the positive point (or a box) is what
+            makes the prompt meaningful. No transform (tf2 cannot place the prompt frame)
+            places nothing.
+            """
+            from openral_runner.backends.gstreamer.sam2_segmenter import project_point_to_pixel
+
+            if transform is None:
+                return None, []
+            positive = project_point_to_pixel(
+                _apply_transform(transform, request.tcp_point), intrinsics
+            )
+            negatives = [
+                pixel
+                for point in request.negative_points
+                if (pixel := project_point_to_pixel(_apply_transform(transform, point), intrinsics))
+                is not None
+            ]
+            return positive, negatives
 
         def _prompt_transform(self, request: Any, camera_frame: str) -> Any:
             """``camera_optical <- request.frame_id`` as a 4x4, or ``None``.
