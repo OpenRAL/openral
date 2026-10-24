@@ -44,6 +44,7 @@ from openral_core.schemas import (
     ExecuteRskillTool,
     FrameEncoding,
     GraspDeclaration,
+    GraspOutcomeEvidence,
     GraspTargetRef,
     GripperClosureCalibration,
     GripperConvention,
@@ -549,6 +550,19 @@ _object_query_evidence_st = st.builds(
     last_seen=st.none(),
 )
 
+_grasp_outcome_evidence_st = st.builds(
+    GraspOutcomeEvidence,
+    outcome=st.sampled_from(["miss", "attach"]),
+    gripper_joint=_name,
+    jaw_link=_name,
+    hand_link=_name,
+    consecutive_misses=st.integers(min_value=1, max_value=1_000),
+    target_id=st.one_of(st.just(""), _name),
+    region_armed=st.booleans(),
+    short_of_command=st.one_of(st.none(), _safe_float),
+    settle_spread=st.one_of(st.none(), _pos_float),
+)
+
 # ─── Round-trip helper ────────────────────────────────────────────────────────
 
 _FUZZ_SETTINGS = settings(
@@ -837,6 +851,13 @@ def test_fuzz_object_query(instance: ObjectQuery) -> None:
 def test_fuzz_object_query_evidence(instance: ObjectQueryEvidence) -> None:
     """ObjectQueryEvidence (issue #418) round-trips and validates against its schema."""
     _round_trip_and_validate(ObjectQueryEvidence, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_outcome_evidence_st)
+def test_fuzz_grasp_outcome_evidence(instance: GraspOutcomeEvidence) -> None:
+    """GraspOutcomeEvidence (issue #353) round-trips and validates against its schema."""
+    _round_trip_and_validate(GraspOutcomeEvidence, instance)
 
 
 @_FUZZ_SETTINGS

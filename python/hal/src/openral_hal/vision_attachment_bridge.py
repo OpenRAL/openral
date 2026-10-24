@@ -257,6 +257,9 @@ class _GripperLeg:
             close (command within ``stall_gap`` of closed, jaws empty) began, or ``None``
             outside one (``_log_close``).
         close_reported: Whether the current close's outcome was logged.
+        misses: Closes on this leg that ended without an ATTACH since its last ATTACH
+            (issue #353); each one, and the ATTACH that ends the run, is published as a
+            ``KIND_GRASP_OUTCOME`` on ``/openral/failure/hal`` (``_report_outcome``).
         support_anchor: ``(frame, payload origin, rise tolerance, slide tolerance)`` at the
             ATTACH whose region payload carries the measured-support witness, ``frame`` the
             support plane's (z up), until that witness is retired
@@ -288,6 +291,7 @@ class _GripperLeg:
     announced_uncommanded: bool = False
     close_baseline: tuple[int, int] | None = None
     close_reported: bool = False
+    misses: int = 0
     support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
     regrasp_hold: AttachedCollisionObject | None = None
     close_region: tuple[tuple[Any, ...], Any] | None = None
@@ -1432,7 +1436,7 @@ class VisionAttachmentBridge:
         ('left_gripper', 'right_gripper')
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915  # reason: flat attribute-init list
         self,
         node: Any,
         description: RobotDescription,
@@ -1495,6 +1499,8 @@ class VisionAttachmentBridge:
         self._kept_clouds: deque[tuple[int, str, Any]] = deque(maxlen=8)
         self._kept_cloud_sub: Any = None
         self._grasp_event_pub: Any = None
+        # Issue #353: ``KIND_GRASP_OUTCOME`` on /openral/failure/hal (a FailureBusPublisher).
+        self._failure_bus: Any = None
         # #418 bind / on: the tracker's /openral/attachment_state, read only for the ack
         # barrier (the newest revision seen, None before the first).
         self._tracker_state_sub: Any = None
@@ -1551,12 +1557,14 @@ class VisionAttachmentBridge:
         """Create the depth subscription, TF listener, service client, publisher.
 
         With ``publish_attachment_state`` off (#418 ``bind`` / ``on``) only the
-        ``/openral/grasp_events`` publisher.
+        ``/openral/grasp_events`` publisher and the ``/openral/failure/hal`` grasp-outcome
+        publisher (issue #353), which are always created.
         """
         import tf2_ros
         from openral_msgs.msg import AttachmentState
         from openral_msgs.msg import GraspEvent as GraspEventMsg
         from openral_msgs.srv import SegmentInView
+        from openral_observability.failure_bus import FailureBusPublisher, FailureSource
         from rclpy.qos import (
             QoSDurabilityPolicy,
             QoSHistoryPolicy,
@@ -1576,6 +1584,9 @@ class VisionAttachmentBridge:
                 durability=QoSDurabilityPolicy.VOLATILE,
             ),
         )
+        self._failure_bus = FailureBusPublisher(self._node, FailureSource.HAL)
+        self._failure_bus.create_publisher()
+        self._failure_bus.start()
         if not self._config.publish_attachment_state:
             # The ack barrier still holds an ATTACH until the tracker's next revision (its
             # binding of this hold) is on the latched topic the kernel reads.
@@ -1692,6 +1703,9 @@ class VisionAttachmentBridge:
         if self._grasp_event_pub is not None:
             self._node.destroy_publisher(self._grasp_event_pub)
             self._grasp_event_pub = None
+        if self._failure_bus is not None:
+            self._failure_bus.destroy()
+            self._failure_bus = None
         self._kept_clouds.clear()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
@@ -2018,8 +2032,77 @@ class VisionAttachmentBridge:
                 f"{'n/a' if short is None else f'{short:.4f}'}, settle spread="
                 f"{'n/a' if spread is None else f'{spread:.4f}'}"
             )
+            self._report_outcome(leg, attached=event is GraspEvent.ATTACH)
         if not trigger.closing:
             leg.close_baseline = None
+
+    def _report_outcome(self, leg: _GripperLeg, *, attached: bool) -> None:
+        """Publish one ``KIND_GRASP_OUTCOME`` for a close that just ended (issue #353).
+
+        A close that ended without an ATTACH is a ``miss``: ``SEVERITY_FAIL`` when the live
+        grasp declaration names this hand's jaw link (dispatch said a grasp is under way,
+        so the reasoner should replan now), ``SEVERITY_WARN`` otherwise (an undeclared
+        close — a policy may close an empty hand for its own reasons — is buffered for the
+        reasoner without waking it). The next ATTACH on the hand after one or more misses
+        is published once as an ``attach`` at ``SEVERITY_INFO`` so the reasoner can drop
+        its reflection; a first-try ATTACH publishes nothing. Called from ``_log_close``
+        under the bridge lock. Evidence only: nothing here retries, re-opens or plans.
+
+        Args:
+            leg: The leg whose close ended.
+            attached: Whether it ended in an ATTACH.
+        """
+        from openral_core import GraspOutcomeEvidence
+        from openral_observability.failure_bus import (
+            KIND_GRASP_OUTCOME,
+            SEVERITY_FAIL,
+            SEVERITY_INFO,
+            SEVERITY_WARN,
+        )
+
+        if attached:
+            misses, leg.misses = leg.misses, 0
+            if misses == 0:
+                return
+        else:
+            leg.misses += 1
+            misses = leg.misses
+        declaration = None
+        if self._grasp_target is not None:
+            live = self._grasp_target.tracker.envelope(
+                now_ns=int(self._node.get_clock().now().nanoseconds)
+            )
+            if live is not None and leg.jaw_link in live.contact_links:
+                declaration = live
+        if attached:
+            severity = SEVERITY_INFO
+        else:
+            severity = SEVERITY_FAIL if declaration is not None else SEVERITY_WARN
+        trigger = leg.trigger
+        evidence = GraspOutcomeEvidence(
+            outcome="attach" if attached else "miss",
+            gripper_joint=leg.joint_name,
+            jaw_link=leg.jaw_link,
+            hand_link=leg.producer.attach_link,
+            consecutive_misses=misses,
+            target_id=declaration.target_id if declaration is not None else "",
+            region_armed=declaration is not None and declaration.region is not None,
+            short_of_command=trigger.last_short_of_command,
+            settle_spread=trigger.last_settle_spread,
+        )
+        published = self._failure_bus is not None and self._failure_bus.publish(
+            kind=KIND_GRASP_OUTCOME,
+            severity=severity,
+            evidence=evidence,
+            rskill_id=declaration.rskill_id if declaration is not None else "",
+            trace_id=(declaration.trace_id or None) if declaration is not None else None,
+        )
+        self._node.get_logger().info(
+            f"grasp trigger {leg.joint_name}: grasp outcome {evidence.outcome} "
+            f"(consecutive misses {misses}, target {evidence.target_id or 'undeclared'!r}, "
+            f"severity {severity}) {'published' if published else 'NOT published'} on "
+            "/openral/failure/hal"
+        )
 
     @_locked
     def observe_command(self, action: Action) -> None:

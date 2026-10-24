@@ -88,6 +88,10 @@ TARGETS=(
     # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
     # on a lost view, refuses two candidates, dies with the declaration.
     tests/integration/test_grasp_target_leg_live.py
+    # Issue #353: a close that ends without an ATTACH publishes one KIND_GRASP_OUTCOME
+    # miss on /openral/failure/hal (FAIL when declared, WARN when not), the recovery
+    # ATTACH one INFO attach, a first-try ATTACH nothing.
+    tests/integration/test_grasp_outcome_live.py
     # Megabyte best-effort clouds cross the real robot_self_filter (both lossy hops)
     # under the deploy's Fast DDS large-data profile: >= 95 % delivered, publish()
     # non-blocking. Forces rmw_fastrtps_cpp (the image defaults to Cyclone).

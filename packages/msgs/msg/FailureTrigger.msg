@@ -31,6 +31,11 @@ uint8 KIND_COLLISION           = 10
 # resolve (``unresolved``: start the bounded find-object search) or whose search
 # budget is spent (``exhausted``: human handoff). Evidence: ObjectQueryEvidence.
 uint8 KIND_OBJECT_QUERY        = 11
+# Issue #353: a gripper close that ended without an ATTACH (``miss``), or the next
+# ATTACH on that hand after one (``attach``), from the HAL vision attachment bridge
+# on /openral/failure/hal. Task evidence for the reasoner, never a kernel drop
+# cause. Evidence: GraspOutcomeEvidence.
+uint8 KIND_GRASP_OUTCOME       = 12
 uint8 KIND_SUPPRESSED_SUMMARY  = 254
 uint8 kind
 

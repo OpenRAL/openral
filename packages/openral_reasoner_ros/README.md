@@ -22,6 +22,15 @@ heartbeat: the periodic timer ticks at `tick_hz` (default 0.2 Hz = one every
   on `severity ≥ SEVERITY_FAIL`.
 - `/openral/prompt` (Tier D) always preempts.
 
+A HAL grasp miss (`KIND_GRASP_OUTCOME`, issue #353) rides this ladder like any other
+`hal` event: the bridge publishes it at `SEVERITY_FAIL` when a grasp declaration named
+the hand (preempts) and `SEVERITY_WARN` for an undeclared close (buffered). The
+`ContextRenderer` turns each miss into a per-hand `[grasp_miss]` line in `## EXECUTION`
+with a `reflect_on_grasp_miss` hint (re-ground the target, try the other hand, or a
+different skill), dropped by that hand's next ATTACH (`SEVERITY_INFO`), an e-stop
+clear or a task change. It is a reflection only — no new rung: the node decides
+nothing on it beyond the usual preemption.
+
 All preemptions are subject to the 100 ms min-interval.
 Heartbeat ticks that see no new event since the last successful tick
 are short-circuited inside `ReasonerCore` with

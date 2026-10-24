@@ -13321,6 +13321,66 @@ class ObjectQueryEvidence(_FailureEvidenceBase):
         )
 
 
+class GraspOutcomeEvidence(_FailureEvidenceBase):
+    """Evidence for ``KIND_GRASP_OUTCOME`` — one hand's close ended without an ATTACH.
+
+    Issue #353. The HAL vision attachment bridge publishes it on
+    ``/openral/failure/hal`` once per close whose command left the close band before the
+    gripper trigger confirmed an ATTACH (``outcome="miss"``), and once at the next ATTACH
+    on that hand after one or more misses (``outcome="attach"``, the recovery). A clean
+    first-try ATTACH publishes nothing. It is task evidence for the reasoner, never a
+    safety signal: the robot is safe, the task is not progressing. Nothing in the HAL acts
+    on it; the reasoner reflects on it (``openral_reasoner.context.reflect_on_grasp_miss``).
+
+    Attributes:
+        kind: Discriminator (always ``"grasp_outcome"``).
+        outcome: ``"miss"`` (the close ended with nothing attached) or ``"attach"`` (an
+            ATTACH on a hand whose previous close or closes missed).
+        gripper_joint: The gripper joint whose trigger ran the close (manifest name).
+        jaw_link: That joint's child link, the name a ``GraspTargetRef.contact_links``
+            entry uses for this hand.
+        hand_link: The link the trigger measures the pinch on (the attach link).
+        consecutive_misses: Misses on this hand since its last ATTACH, this one included
+            for ``"miss"``; the misses the ATTACH recovered from for ``"attach"``.
+        target_id: The live grasp declaration's ``target_id`` when it named this hand's
+            jaw link; ``""`` when no declaration named it (an undeclared close).
+        region_armed: Whether that declaration carried a producer-measured region when
+            the close ended.
+        short_of_command: The trigger's last ``|q - closed| - |command - closed|``, in
+            the gripper joint's own units (how far the jaw stopped short of the command;
+            negative = past it); ``None`` before any classified sample.
+        settle_spread: The trigger's last settle-window position spread, in the joint's
+            units; ``None`` before any classified sample.
+
+    Example:
+        >>> ev = GraspOutcomeEvidence(
+        ...     outcome="miss",
+        ...     gripper_joint="left_gripper",
+        ...     jaw_link="openarm_left_finger_pair",
+        ...     hand_link="openarm_left_link7",
+        ...     consecutive_misses=1,
+        ...     target_id="cell:pick_box",
+        ...     short_of_command=0.031,
+        ... )
+        >>> ev.kind, ev.region_armed
+        ('grasp_outcome', False)
+    """
+
+    kind: Literal["grasp_outcome"] = "grasp_outcome"
+    outcome: Literal["miss", "attach"]
+    # Unconstrained like the JointSpec names and GraspDeclaration.target_id they copy: the
+    # HAL builds this on its joint-state path, where a refusal must not be possible. The
+    # bounds below hold by construction there (the trigger only classifies finite samples).
+    gripper_joint: str
+    jaw_link: str
+    hand_link: str
+    consecutive_misses: int = Field(ge=1)
+    target_id: str = ""
+    region_armed: bool = False
+    short_of_command: float | None = Field(default=None, allow_inf_nan=False)
+    settle_spread: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+
+
 class SuppressedSummaryEvidence(_FailureEvidenceBase):
     """Evidence for ``KIND_SUPPRESSED_SUMMARY`` — rolling rate-limit roll-up.
 
@@ -13368,6 +13428,7 @@ FailureEvidence: TypeAlias = (
     | ReasonerTimeoutEvidence
     | CollisionEvidence
     | ObjectQueryEvidence
+    | GraspOutcomeEvidence
     | SuppressedSummaryEvidence
 )
 """Discriminated union for ``FailureTrigger.evidence_json`` payloads.
