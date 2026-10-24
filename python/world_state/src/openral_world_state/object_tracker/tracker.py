@@ -1532,7 +1532,10 @@ class ObjectTracker:
         if object_id is not None and object_id in self._clear_extent:
             return self._clear_extent[object_id], "own_clear_fit"
         extents = [
-            2.0 * max(o.box.half_extents[0], o.box.half_extents[1])
+            # A same-label track's largest clear fit, not its current (possibly smaller) box.
+            self._clear_extent.get(
+                o.object_id, 2.0 * max(o.box.half_extents[0], o.box.half_extents[1])
+            )
             for o in self.store.all()
             if o.label == label
             and o.object_id != object_id

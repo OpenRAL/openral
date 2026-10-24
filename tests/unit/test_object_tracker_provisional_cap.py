@@ -8,17 +8,22 @@ blocks a clear fit.
 
 from __future__ import annotations
 
-from typing import cast
-
 import numpy as np
 import pytest
-from openral_core import FitKind, ObjectQuery, ObjectRole, PlaceRegion, Pose6D, TrackStatus
-from openral_core.perception_geometry import VoxelLattice
+from openral_core import FitKind, ObjectQuery, ObjectRole, PlaceRegion, TrackStatus
 from openral_world_state.object_tracker import ObjectTracker, TrackerParams
 from openral_world_state.object_tracker.fit import ContainingFit
 from openral_world_state.object_tracker.tracker import CameraFrame, provisional_oversize
 
-from tests.unit.test_object_tracker_hidden_side import _FRAME, _RES, _SUPPORT_Z, _box
+from tests.unit.test_object_tracker_hidden_side import (
+    _FIX,
+    _FRAME,
+    _RES,
+    _SUPPORT_Z,
+    _box,
+    _grid,
+    _k,
+)
 from tests.unit.test_object_tracker_session import _BANANA, _S, _decl, _frame, _session
 
 _FACTOR = TrackerParams().provisional_oversize_factor
@@ -46,6 +51,9 @@ def test_the_prior_is_clear_same_label_extent_else_own_history_else_none() -> No
     expected = max(2.0 * max(_box(n).half_extents[:2]) for n in ("box_trk2", "box_trk4"))
     assert tr._extent_prior(None, "orange") == (expected, "same_label_tracks")
     assert tr._extent_prior(None, "banana") is None, "a different label shares nothing"
+    [first, _] = tr.store.all()
+    tr._clear_extent[first.object_id] = 0.2  # its clear fits once showed more than its box now
+    assert tr._extent_prior(None, "orange") == (0.2, "same_label_tracks")
     tr._clear_extent["trk:9"] = 0.07
     assert tr._extent_prior("trk:9", "orange") == (0.07, "own_clear_fit")
 
@@ -94,12 +102,16 @@ def test_an_unmoved_oversize_provisional_refit_is_refused_and_a_moved_one_is_not
         last_confirmed_stamp_ns=1, provisional=True,
     )  # fmt: skip
     tr._clear_extent[t.object_id] = 2.0 * 0.058
-    pose = Pose6D(xyz=(0.0, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id=_FRAME)
+    pose = _box("box_trk2").pose  # the refit sits on the real orange, 33 cm across
     box = PlaceRegion(frame_id=_FRAME, pose=pose, half_extents=(0.096, 0.167, 0.05))
     fit = ContainingFit(box=box, tight=None, surface=np.zeros((0, 3)), support_z=_SUPPORT_Z,
                         provisional=True)  # fmt: skip
+    frame = CameraFrame(
+        "top_depth", int(_FIX["stamp_ns"]), np.asarray(_FIX["depth_m"], dtype=np.float64), _k(),
+        np.asarray(_FIX["t_base_from_cam"], dtype=np.float64),
+        np.asarray(_FIX["robot_mask"], dtype=np.uint8),
+    )  # fmt: skip
     refused = tr._refuse_refit(
-        t, fit, frozenset(), (0.0, 0.0, 0.1), _SUPPORT_Z,
-        cast(VoxelLattice, None), (), cast(CameraFrame, None), moved,
+        t, fit, frozenset(), pose.xyz, _SUPPORT_Z, _grid(), (), frame, moved
     )  # fmt: skip
     assert refused is not moved
