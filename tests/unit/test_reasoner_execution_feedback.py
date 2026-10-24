@@ -137,7 +137,9 @@ def test_reflect_on_grasp_miss_names_hand_target_and_the_levers() -> None:
     assert "identical execute_rskill" in hint  # not a blind repeat
     assert "in a row" not in hint  # a first miss is not called a pattern
     repeated = reflect_on_grasp_miss("openarm_left_finger_pair", "", None, consecutive_misses=3)
-    assert "3 misses in a row" in repeated
+    assert "3 misses in a row on this hand (across targets)" in repeated
+    # The count spans targets, so abandonment is keyed on the same target only.
+    assert "keep missing on the same target, abandon that target" in hint
     assert "an undeclared target" in repeated and "unknown" in repeated
 
 
