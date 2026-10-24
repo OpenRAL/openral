@@ -108,6 +108,16 @@ def _grown(box: PlaceRegion, margin_m: float) -> PlaceRegion:
 _NS = 1_000_000_000
 
 
+def provisional_oversize(extent_m: float, prior_m: float, factor: float) -> bool:
+    """Is a provisional refit's longer horizontal ``extent_m`` more than ``factor`` x the prior?
+
+    Example:
+        >>> provisional_oversize(0.334, 0.09, 2.0), provisional_oversize(0.12, 0.09, 2.0)
+        (True, False)
+    """
+    return extent_m > factor * prior_m
+
+
 class TrackerParams(BaseModel):
     """Tracker calibration. Every value is a *calibration point* (CLAUDE.md §1.2).
 
@@ -121,6 +131,11 @@ class TrackerParams(BaseModel):
         theta_vis_provisional: The same floor for a fit through the robot (PROVISIONAL:
             exemption-shrinking and payload-union geometry only), so a target the arm half
             hides at goal start still grounds (#418 PickOrange orange_3: 0.40 visible).
+        provisional_oversize_factor: A PROVISIONAL refit of a known track whose longer horizontal
+            extent exceeds this many times the largest extent a CLEAR same-label track (or the
+            track's own clear history) has shown is refused and the previous box kept (#418
+            r16po_on1: a 5.8 cm orange refit to 33 cm through the arm's occluder band).
+            *Calibration point.*
         static_pad_cells: Cells a declared static collider is padded by for the one-body test
             (the camera sees a wall about a cell off its declared box; K7 pads the same).
             *Calibration point.*
@@ -153,6 +168,7 @@ class TrackerParams(BaseModel):
     locate_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
     low_score_confirm_grids: int = Field(default=3, ge=1)
     static_pad_cells: int = Field(default=1, ge=0)
+    provisional_oversize_factor: float = Field(default=2.0, ge=1.0)
     max_age_s: float = Field(default=2.0, gt=0.0)
     lost_s: float = Field(default=6.0, gt=0.0)
     keep_lost_s: float = Field(default=30.0, gt=0.0)
@@ -322,6 +338,8 @@ class ObjectTracker:
         self._low_score_run: dict[str, tuple[int, int]] = {}
         # Per track: the largest smaller-horizontal extent of its clear (non-provisional) fits.
         self._clear_size: dict[str, float] = {}
+        # Per track: the largest longer-horizontal extent of its clear fits (the oversize guard).
+        self._clear_extent: dict[str, float] = {}
         # Declared static geometry (cell centres, grid frame) and its keys on the newest lattice.
         self._static_centres: NDArray[np.float64] = np.zeros((0, 3))
         self._static_cache: tuple[tuple[object, ...], frozenset[Cell]] | None = None
@@ -490,7 +508,7 @@ class ObjectTracker:
         # (aged out, displaced by a mint, retired by the session's release).
         for per_track in (
             self._views, self._cells, self._centroid, self._disagree, self._disagree_ns,
-            self._map_cells, self._served, self._clear_size, self._low_score,
+            self._map_cells, self._served, self._clear_size, self._clear_extent, self._low_score,
             self._low_score_run,
         ):  # fmt: skip
             for oid in [k for k in per_track if k not in live]:
@@ -1093,6 +1111,11 @@ class ObjectTracker:
             )
             log.info("object_tracker.provisional_refit_ignored", object_id=oid, redated=True)
             return True
+        if not moved and self._provisional_oversize(oid, old.label, fit):
+            # A moved fit replaces the box it left (2026-10-21 decision); an unmoved one several
+            # times the object's clear size swallowed something else.
+            self._refresh_evidence(oid, cells)
+            return True
         prior = self._cells.get(oid)
         if not moved and fit.box is not None and prior:
             # An unmoved object's refit must still hold the surface the last fit measured
@@ -1194,6 +1217,10 @@ class ObjectTracker:
             size = 2.0 * min(fit.box.half_extents[0], fit.box.half_extents[1])
             self._clear_size[track.object_id] = max(
                 self._clear_size.get(track.object_id, 0.0), size
+            )
+            self._clear_extent[track.object_id] = max(
+                self._clear_extent.get(track.object_id, 0.0),
+                2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1]),
             )
         self._cells[track.object_id] = cells
         self._centroid[track.object_id] = (centroid[0], centroid[1], centroid[2])
@@ -1477,6 +1504,42 @@ class ObjectTracker:
             )
             self._static_cache = (key, keys)
         return self._static_cache[1]
+
+    def _provisional_oversize(self, object_id: str, label: str, fit: ContainingFit) -> bool:
+        """Refuse (``True``) a PROVISIONAL refit several times the object's known clear size.
+
+        A refit through the robot that is far past what a clear fit of this object or label ever
+        showed swallowed something else: the previous box stays (an exemption only shrinks).
+        """
+        if not fit.provisional or fit.box is None:
+            return False
+        prior = self._extent_prior(object_id, label)
+        extent = 2.0 * max(fit.box.half_extents[0], fit.box.half_extents[1])
+        factor = self.params.provisional_oversize_factor
+        if prior is None or not provisional_oversize(extent, prior[0], factor):
+            return False
+        log.info("object_tracker.provisional_oversize", object_id=object_id,
+                 extent_m=round(extent, 3), prior_m=round(prior[0], 3),
+                 limit_m=round(factor * prior[0], 3), source=prior[1])  # fmt: skip
+        return True
+
+    def _extent_prior(self, object_id: str | None, label: str) -> tuple[float, str] | None:
+        """The longest horizontal extent a CLEAR fit of this object or label has shown, or ``None``.
+
+        Only clear (non-provisional) evidence: the track's own clear history, else the clear
+        CONFIRMED same-label tracks. Never a per-label constant; ``None`` blocks nothing.
+        """
+        if object_id is not None and object_id in self._clear_extent:
+            return self._clear_extent[object_id], "own_clear_fit"
+        extents = [
+            2.0 * max(o.box.half_extents[0], o.box.half_extents[1])
+            for o in self.store.all()
+            if o.label == label
+            and o.object_id != object_id
+            and o.status is TrackStatus.CONFIRMED
+            and not o.provisional
+        ]
+        return (max(extents), "same_label_tracks") if extents else None
 
     def _measured_size(self, object_id: str | None, label: str) -> tuple[float, str] | None:
         """How big a provisional track's object is, and where that came from, or ``None``.
