@@ -184,7 +184,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_exemption_providers ${PROJECT_NAME})
   ament_target_dependencies(test_exemption_providers pluginlib)
   ament_add_gtest(test_exemption_provider_kernel test/test_exemption_provider_kernel.cpp)
-  target_link_libraries(test_exemption_provider_kernel ${PROJECT_NAME})
+  target_link_libraries(test_exemption_provider_kernel ${PROJECT_NAME} test_exemption_providers)
   add_dependencies(test_exemption_provider_kernel test_exemption_providers)
   target_compile_definitions(test_exemption_provider_kernel PRIVATE
     TEST_PROVIDERS_LIB="$<TARGET_FILE:test_exemption_providers>")
@@ -192,7 +192,7 @@ if(BUILD_TESTING)
   # 177 node-level cases with real wall-clock windows: ~95 s on a dev host, over
   # ament's 60 s default (CI killed it mid-run with no result file).
   ament_add_gtest(test_lifecycle_kernel test/test_lifecycle_kernel.cpp TIMEOUT 300)
-  target_link_libraries(test_lifecycle_kernel ${PROJECT_NAME})
+  target_link_libraries(test_lifecycle_kernel ${PROJECT_NAME} test_exemption_providers)
   add_dependencies(test_lifecycle_kernel test_exemption_providers)
   target_compile_definitions(test_lifecycle_kernel PRIVATE
     TEST_PROVIDERS_LIB="$<TARGET_FILE:test_exemption_providers>")

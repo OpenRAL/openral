@@ -573,6 +573,17 @@ struct PayloadOwnCells;       // issue #418 OT-10 amendment, defined below
 
 class ExemptionProvider;  // exemption_provider.hpp (ADR-0121)
 
+/// ADR-0121: the loaded exemption provider and the kernel's own relaxable-link mask (per collision
+/// link index, `links_n` entries). A null provider = no provider, today's verdicts. The checks ask
+/// the provider only about a pair that would trip after every open check and exemption, and only
+/// when every robot link of the pair is in the mask.
+struct ProviderGate {
+  ExemptionProvider* provider{nullptr};
+  const std::uint8_t* links{nullptr};
+  std::size_t links_n{0};
+  int row{0};  ///< the checked row, quoted to the provider
+};
+
 /// A dense, fixed-capacity 3-D occupancy voxel grid in the robot base frame —
 /// the kernel-facing form of a 3-D world map (e.g. an OctoMap lowered by a
 /// perception bridge into a bounded local volume). `occupancy` is row-major
@@ -615,13 +626,8 @@ struct VoxelGrid {
   /// payload's MEASURED / GROWN cells cannot stop that payload (`PayloadOwnCells`,
   /// `payload_own_cell_exempts`). Null = no such exemption (today's payload check).
   const PayloadOwnCells* payload_own{nullptr};
-  /// ADR-0121: the loaded exemption provider, or null (no provider: today's verdicts). Asked only
-  /// about a robot link in `provider_links` (per link index, `provider_links_n` entries) for a pair
-  /// that would trip after every open check and exemption.
-  ExemptionProvider* provider{nullptr};
-  const std::uint8_t* provider_links{nullptr};
-  std::size_t provider_links_n{0};
-  int provider_row{0};  ///< the checked row, quoted to the provider
+  /// ADR-0121: the exemption provider for the world-voxel and payload-voxel checks.
+  ProviderGate provider_gate{};
 };
 
 /// One collision check's outcome — and, on a hit, the E-stop evidence.
@@ -707,8 +713,9 @@ struct CollisionHit {
   /// or grown cells, and the deepest one. 0 / +inf when none.
   int payload_own_pairs{0};
   double payload_own_min_distance{std::numeric_limits<double>::infinity()};
-  /// Exemption-provider disclosure (ADR-0121), never a decision: how many (robot link, cell) pairs
-  /// within the margin the loaded provider tolerated, and the deepest one. 0 / -1 / +inf when none.
+  /// Exemption-provider disclosure (ADR-0121), never a decision: how many pairs within the margin
+  /// the loaded provider tolerated, and the deepest one (its robot link, and its cell index or, for
+  /// a self pair, the other link). 0 / -1 / +inf when none.
   int provider_pairs{0};
   int provider_link{-1};
   int provider_cell{-1};
@@ -1178,9 +1185,12 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 /// low-speed contact a hand meeting an object there is. The pair is counted in
 /// `workspace_pairs` and reaches `sweep_min_distance` at its own depth. Arm links
 /// and everything outside the box are unchanged; `nullptr` = today's check.
+///
+/// ADR-0121: a pair still about to trip whose two links are both in `gate`'s mask is offered to its
+/// provider (`ExemptionProvider::self_pair`) last; `nullptr` = no provider.
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin,
-                                  const WorkspaceContactRegion* workspace = nullptr) noexcept;
+                                  double margin, const WorkspaceContactRegion* workspace = nullptr,
+                                  const ProviderGate* gate = nullptr) noexcept;
 
 /// Maximum joint count the allocation-free Jacobian step supports (stack scratch
 /// is sized to this). Covers every in-tree robot (humanoids ~30 dof) with
@@ -1926,9 +1936,14 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 /// counted in `workspace_pairs`. Arm links stop as before. Under a live workspace a
 /// box payload carrying a stage-2 refinement is checked as its measured (unpadded)
 /// box; `nullptr` or an invalid workspace = today's check on the shipped box.
-CollisionHit
-check_attached_self_collision(const CollisionModel& model, const AttachedModel& attached,
-                              const CollisionScratch& scratch, double margin,
-                              const WorkspaceContactRegion* workspace = nullptr) noexcept;
+///
+/// ADR-0121: a pair still about to trip whose attach link and other link are both in `gate`'s mask
+/// is offered to its provider (`payload_self_pair`) last; `nullptr` = no provider. A frozen payload
+/// (no attach link) is never offered.
+CollisionHit check_attached_self_collision(const CollisionModel& model,
+                                           const AttachedModel& attached,
+                                           const CollisionScratch& scratch, double margin,
+                                           const WorkspaceContactRegion* workspace = nullptr,
+                                           const ProviderGate* gate = nullptr) noexcept;
 
 }  // namespace openral_safety_kernel

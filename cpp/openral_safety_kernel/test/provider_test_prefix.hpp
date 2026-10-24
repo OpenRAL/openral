@@ -47,7 +47,8 @@ inline void serve_test_providers() {
       << "<maintainer email=\"t@t\">t</maintainer><license>Apache-2.0</license></package>\n";
   std::ofstream xml(root / "share" / kTestPkg / "plugins.xml");
   xml << "<library path=\"test_exemption_providers\">\n";
-  for (const char* cls : {"TolerateEveryPair", "WrongApiVersion", "Declines", "Throws"}) {
+  for (const char* cls :
+       {"TolerateEveryPair", "WrongApiVersion", "Declines", "Throws", "Recorder"}) {
     xml << "  <class name=\"" << kTestPkg << "/" << cls
         << "\" type=\"openral_safety_kernel_test::" << cls
         << "\" base_class_type=\"openral_safety_kernel::ExemptionProvider\"/>\n";

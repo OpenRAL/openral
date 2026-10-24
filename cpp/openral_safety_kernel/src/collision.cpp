@@ -1129,11 +1129,12 @@ bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScra
 // Fold one self pair, exempting a slow hand-hand pair inside the workspace (#349).
 void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
                     const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
-                    bool depth_is_box_bound = false) noexcept;
+                    const ProviderGate* gate, bool depth_is_box_bound = false) noexcept;
 }  // namespace
 
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                  double margin, const WorkspaceContactRegion* workspace) noexcept {
+                                  double margin, const WorkspaceContactRegion* workspace,
+                                  const ProviderGate* gate) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
@@ -1154,7 +1155,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           capsule_distance(cap_i, model.capsules[i].radius, model.capsules[i].half_length, cap_j,
                            model.capsules[j].radius, model.capsules[j].half_length);
-      fold_self_pair(result, sweep_min, d, margin, li, lj, workspace, scratch);
+      fold_self_pair(result, sweep_min, d, margin, li, lj, workspace, scratch, gate);
     }
   }
   // Blocky links carry an OBB instead of a capsule (issue #84):
@@ -1177,7 +1178,7 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
       const double d =
           box_capsule_distance(box_i, model.boxes[bi].half_extents, cap_j,
                                model.capsules[cj].radius, model.capsules[cj].half_length);
-      fold_self_pair(result, sweep_min, d, margin, lb, lc, workspace, scratch);
+      fold_self_pair(result, sweep_min, d, margin, lb, lc, workspace, scratch, gate);
     }
     for (std::size_t bj = bi + 1; bj < n_boxes; ++bj) {
       const int lb2 = model.box_link[bj];
@@ -1195,7 +1196,8 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
         // ship one; otherwise `d` comes back unchanged.
         d = refine_self_pair(model, bi, box_i, bj, box_j, margin, d, &depth_is_box_bound);
       }
-      fold_self_pair(result, sweep_min, d, margin, lb, lb2, workspace, scratch, depth_is_box_bound);
+      fold_self_pair(result, sweep_min, d, margin, lb, lb2, workspace, scratch, gate,
+                     depth_is_box_bound);
     }
   }
   return finish_sweep(result, sweep_min);
@@ -1375,31 +1377,38 @@ bool workspace_link_slow(const WorkspaceContactRegion& ws, int link) noexcept {
 
 // ADR-0121: may the loaded provider be asked about this link at all? The kernel's own mask, never
 // the provider's word.
-bool provider_relaxable(const VoxelGrid& grid, int link) noexcept {
-  return grid.provider != nullptr && grid.provider_links != nullptr && link >= 0 &&
-         static_cast<std::size_t>(link) < grid.provider_links_n &&
-         grid.provider_links[static_cast<std::size_t>(link)] != 0;
+bool provider_relaxable(const ProviderGate& gate, int link) noexcept {
+  return gate.provider != nullptr && gate.links != nullptr && link >= 0 &&
+         static_cast<std::size_t>(link) < gate.links_n &&
+         gate.links[static_cast<std::size_t>(link)] != 0;
 }
 
-// ADR-0121: ask the provider about one pair that would trip; disclose a tolerated one.
+// ADR-0121: disclose one pair the provider tolerated (`other` is a cell index or, for a self or
+// payload-self pair, the other link).
+void note_provider_pair(CollisionHit& hit, double d, int link, int other) noexcept {
+  ++hit.provider_pairs;
+  if (d < hit.provider_min_distance) {
+    hit.provider_min_distance = d;
+    hit.provider_link = link;
+    hit.provider_cell = other;
+  }
+}
+
+// ADR-0121: ask the provider about one robot-link-vs-cell pair that would trip.
 bool provider_tolerates(CollisionHit& hit, const VoxelGrid& grid, const CollisionScratch& scratch,
                         int link, std::size_t cell, const Vec3& cell_local, double d) noexcept {
+  const ProviderGate& gate = grid.provider_gate;
   VoxelPairQuery q;
   q.link = link;
   q.cell = cell;
   q.cell_center_base = apply(grid.pose, cell_local);
   q.distance = d;
-  q.row = grid.provider_row;
+  q.row = gate.row;
   q.row_fk = &scratch;
-  if (grid.provider->voxel_pair(q) != ProviderVerdict::kTolerate) {
+  if (gate.provider->voxel_pair(q) != ProviderVerdict::kTolerate) {
     return false;
   }
-  ++hit.provider_pairs;
-  if (d < hit.provider_min_distance) {
-    hit.provider_min_distance = d;
-    hit.provider_link = link;
-    hit.provider_cell = static_cast<int>(cell);
-  }
+  note_provider_pair(hit, d, link, static_cast<int>(cell));
   return true;
 }
 
@@ -1428,13 +1437,29 @@ bool workspace_self_exempt(const WorkspaceContactRegion* ws, const CollisionScra
 
 void fold_self_pair(CollisionHit& result, double& sweep_min, double d, double margin, int a, int b,
                     const WorkspaceContactRegion* ws, const CollisionScratch& scratch,
-                    bool depth_is_box_bound) noexcept {
+                    const ProviderGate* gate, bool depth_is_box_bound) noexcept {
   const bool exempt = d <= margin && workspace_self_exempt(ws, scratch, a, b);
   if (exempt) {
     note_workspace_pair(result, d, a, b);
   }
-  fold_pair(result, sweep_min, d, d <= margin && !exempt, a, b, /*allowance_active=*/false,
-            /*advisory=*/false, /*place_target_adjudicated=*/false, depth_is_box_bound);
+  // ADR-0121: last, and only when BOTH links are in the kernel's mask.
+  bool provider_exempt = false;
+  if (!exempt && d <= margin && gate != nullptr && provider_relaxable(*gate, a) &&
+      provider_relaxable(*gate, b)) {
+    SelfPairQuery q;
+    q.link_a = a;
+    q.link_b = b;
+    q.distance = d;
+    q.row = gate->row;
+    q.row_fk = &scratch;
+    provider_exempt = gate->provider->self_pair(q) == ProviderVerdict::kTolerate;
+    if (provider_exempt) {
+      note_provider_pair(result, d, a, b);
+    }
+  }
+  fold_pair(result, sweep_min, d, d <= margin && !exempt && !provider_exempt, a, b,
+            /*allowance_active=*/false, /*advisory=*/false, /*place_target_adjudicated=*/false,
+            depth_is_box_bound);
 }
 
 }  // namespace
@@ -1608,7 +1633,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           }
           // ADR-0121: last, and only for a pair still about to trip on a relaxable link.
           const bool provider_exempt =
-              !exempt && !ws_exempt && d <= margin && provider_relaxable(grid, li) &&
+              !exempt && !ws_exempt && d <= margin && provider_relaxable(grid.provider_gate, li) &&
               provider_tolerates(result, grid, scratch, li, idx, voxel.t, d);
           const bool tripped = !exempt && !ws_exempt && !provider_exempt && d <= margin;
           fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx), false, false, false,
@@ -1716,7 +1741,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           }
           // ADR-0121: after the narrow phase, so the provider sees the distance that would trip.
           const bool provider_exempt =
-              !exempt && d <= margin && provider_relaxable(grid, lb) &&
+              !exempt && d <= margin && provider_relaxable(grid.provider_gate, lb) &&
               provider_tolerates(result, grid, scratch, lb, idx, center, d);
           const bool tripped = !exempt && !provider_exempt && d <= margin;
           fold_pair(result, sweep_min, d, tripped, lb, static_cast<int>(idx), false, false, false,
@@ -2363,6 +2388,24 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // touch. Same predicate as the hand links', on its attach link.
                 tripped = false;
                 note_workspace_pair(result, d, obj.attach_link, static_cast<int>(idx));
+              } else if (provider_relaxable(grid.provider_gate, obj.attach_link)) {
+                // ADR-0121: last, on a carried (never frozen) payload's masked attach link.
+                PayloadPairQuery q;
+                q.object = i;
+                q.attached = &obj;
+                q.object_xf = obj_xf;
+                q.attach_link = obj.attach_link;
+                q.cell = idx;
+                q.cell_center_base = center;
+                q.cell_center_grid = voxel.t;
+                q.distance = d;
+                q.row = grid.provider_gate.row;
+                q.row_fk = &scratch;
+                if (grid.provider_gate.provider->payload_voxel_pair(q) ==
+                    ProviderVerdict::kTolerate) {
+                  tripped = false;
+                  note_provider_pair(result, d, obj.attach_link, static_cast<int>(idx));
+                }
               }
             }
             // Advisory band (#176). A payload ARRIVED in its own declared
@@ -2892,7 +2935,8 @@ bool update_attached_voxel_contacts(const AttachedModel& attached, const Collisi
 CollisionHit check_attached_self_collision(const CollisionModel& model,
                                            const AttachedModel& attached,
                                            const CollisionScratch& scratch, double margin,
-                                           const WorkspaceContactRegion* workspace) noexcept {
+                                           const WorkspaceContactRegion* workspace,
+                                           const ProviderGate* gate) noexcept {
   CollisionHit result;
   double sweep_min = std::numeric_limits<double>::infinity();
   const std::size_t n_caps = model.capsules.size();
@@ -2904,7 +2948,27 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
     if (exempt) {
       note_workspace_pair(result, d, attach_link, link);
     }
-    fold_pair(result, sweep_min, d, d <= margin && !exempt, object, link);
+    // ADR-0121: last; a carried payload only (a frozen one has no attach link), with its attach
+    // link and the other link both in the kernel's mask.
+    bool provider_exempt = false;
+    const AttachedObject& obj = attached.objects[static_cast<std::size_t>(object)];
+    if (!exempt && d <= margin && gate != nullptr && obj.attach_link >= 0 &&
+        provider_relaxable(*gate, obj.attach_link) && provider_relaxable(*gate, link)) {
+      PayloadPairQuery q;
+      q.object = static_cast<std::size_t>(object);
+      q.attached = &obj;
+      q.object_xf = attached_object_transform(obj, scratch);
+      q.attach_link = obj.attach_link;
+      q.other_link = link;
+      q.distance = d;
+      q.row = gate->row;
+      q.row_fk = &scratch;
+      provider_exempt = gate->provider->payload_self_pair(q) == ProviderVerdict::kTolerate;
+      if (provider_exempt) {
+        note_provider_pair(result, d, obj.attach_link, link);
+      }
+    }
+    fold_pair(result, sweep_min, d, d <= margin && !exempt && !provider_exempt, object, link);
   };
   for (std::size_t i = 0; i < attached.n_objects; ++i) {
     const AttachedObject& obj = attached.objects[i];

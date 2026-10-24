@@ -49,6 +49,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include "provider_test_prefix.hpp"
+#include "recorder_log.hpp"
 
 // #349 review F: the workspace brake's decision must not allocate. Allocations are
 // counted on the calling thread only, and only while the kernel's
@@ -8193,4 +8194,41 @@ TEST_F(LifecycleKernelTest, AnExemptionProviderOffSimLeavesTodaysStop) {
   rig.warm(nullptr, 0.0, 300);
   EXPECT_FALSE(rig.offer(nullptr, 0.0));
   EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AnExemptionProviderSeesTheValidatedViewAndTheChunkOutcomes) {
+  // API v2: per candidate, the kernel's measured FK, its ADR-0115 declaration verdict and region,
+  // the hands and the region age bound; on acceptance the chunk's last row; on an external E-stop
+  // a reset. The Recorder refuses every pair, so every verdict here is the open kernel's.
+  osk_test::serve_test_providers();
+  *osk_test_recorder() = openral_safety_kernel_test::RecorderLog{};
+  auto params = with_param(grasp_params(true), "hal_mode", rclcpp::ParameterValue("sim"));
+  params = with_param(params, "exemption_provider",
+                      rclcpp::ParameterValue(osk_test::test_provider("Recorder")));
+  params = with_param(params, "exemption_provider_links",
+                      rclcpp::ParameterValue(std::vector<std::string>{"link0"}));
+  GraspRig rig("kernel_provider_recorder", params);
+  rig.start();
+  ASSERT_TRUE(rig.node->exemption_provider_loaded()) << rig.node->exemption_provider_status();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 300);
+  ASSERT_TRUE(rig.offer(&b, kGraspClearQ));
+  const auto& log = *osk_test_recorder();
+  EXPECT_GE(log.begins, 1);
+  EXPECT_TRUE(log.measured) << "the kernel's FK at the fresh measured state";
+  EXPECT_TRUE(log.declaration_live) << "the kernel's own ADR-0115 verdict";
+  EXPECT_TRUE(log.grasp_region);
+  EXPECT_TRUE(log.hands) << "built from grasp_contact_links";
+  EXPECT_GT(log.region_max_age_ns, 0);
+  EXPECT_GE(log.ends, 1) << "an accepted JOINT_POSITION chunk is reported";
+  EXPECT_GT(log.horizon, 0);
+  EXPECT_EQ(log.n_dof, 1U);
+  EXPECT_NEAR(log.q_last, kGraspClearQ, 1e-9);
+  // The finger on its target cell: refused by the Recorder, exempted by the open ADR-0115 region.
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the open exemption still decides, the provider adds none";
+  const int resets_before = log.resets;
+  rig.estop();
+  EXPECT_GT(log.resets, resets_before);
+  EXPECT_EQ(log.last_reset, static_cast<int>(osk::ResetReason::kExternalEstop));
 }

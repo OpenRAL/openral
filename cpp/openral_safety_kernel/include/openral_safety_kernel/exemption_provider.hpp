@@ -11,7 +11,8 @@
 //    trip;
 //  * only on a link in the kernel's relaxable-link mask (the manifest's hand
 //    links, `exemption_provider_links`), ANDed with every answer;
-//  * never for self-collision, a joint/speed/torque limit, the
+//  * self and payload pairs only when every robot link of the pair is in the mask;
+//  * never for a joint/speed/torque limit, the
 //    workspace envelope, a lead bound or a watchdog;
 //  * sim only: the kernel refuses to load any provider off `hal_mode: sim`;
 //  * fail closed: no provider, a failed load, an API-version mismatch or a
@@ -38,7 +39,7 @@ namespace openral_safety_kernel {
 
 /// Bumped on any change to this header's layout or hook semantics. A provider
 /// built against another version is refused at load (fail closed).
-inline constexpr std::uint32_t kExemptionProviderApiVersion = 1;
+inline constexpr std::uint32_t kExemptionProviderApiVersion = 2;
 
 /// A provider's answer for one pair. Anything but `kTolerate` keeps the open
 /// kernel's verdict.
@@ -52,23 +53,67 @@ enum class ProviderVerdict : std::uint8_t {
 struct TrackedObjectView {
   std::size_t id_hash{0};  ///< std::hash of object_id (the K6 key)
   std::uint32_t epoch{0};
-  bool live{false};                ///< confirmed / occluded / bound
-  bool released{false};            ///< the tracker let go of it
-  bool target{false};              ///< role == "target"
-  bool contact{false};             ///< role target or destination
-  bool exemptible{false};          ///< confirmed / occluded
-  bool provisional{false};         ///< exemption geometry only, never payload
-  bool cover_ok{false};            ///< the kernel's OWN cover check on this grid
-  std::uint32_t visible_cells{0};  ///< the tracker's expected visible cells
-  std::int64_t confirmed_ns{0};    ///< last confirmation, source clock
-  double support_z{0.0};           ///< NaN = none
-  double floor_z{0.0};             ///< NaN = none
-  GraspTargetRegion box{};         ///< the validated containing box
+  bool live{false};                     ///< confirmed / occluded / bound
+  bool released{false};                 ///< the tracker let go of it
+  bool target{false};                   ///< role == "target"
+  bool contact{false};                  ///< role target or destination
+  bool exemptible{false};               ///< confirmed / occluded
+  bool provisional{false};              ///< exemption geometry only, never payload
+  bool cover_ok{false};                 ///< the kernel's OWN cover check on this grid
+  std::uint32_t visible_cells{0};       ///< the tracker's expected visible cells
+  std::int64_t confirmed_ns{0};         ///< last confirmation, source clock
+  double support_z{0.0};                ///< NaN = none
+  double floor_z{0.0};                  ///< NaN = none
+  std::size_t declaration_key_hash{0};  ///< std::hash of the track's declaration_key (API v2)
+  GraspTargetRegion box{};              ///< the validated containing box
+};
+
+/// The live grasp declaration as the kernel's OWN ingest validated it (API v2). The refusal-type
+/// checks (frames, ages, backstop, retirement, refusal, wrong claim) stay in the open kernel; a
+/// provider reads only their verdicts.
+struct DeclarationView {
+  bool live{false};            ///< the kernel's ADR-0115 verdict (`grasp_declaration_live`)
+  bool refused{false};         ///< the kernel refused the declaration
+  bool wrong_claim{false};     ///< the kernel matched a wrong claim to this identity
+  bool tracked_active{false};  ///< the K2 identity checks passed (active, target, not retired)
+  std::size_t key_hash{0};     ///< std::hash of "<target_id>@<stamp_ns>" (tracked_active only)
+  std::int64_t stamp_ns{0};
+  double timeout_s{0.0};
+  const GraspTargetRegion* grasp_region{nullptr};    ///< kernel-ingested; null when not live
+  const WorkspaceContactRegion* workspace{nullptr};  ///< kernel-ingested; null when not live
+  /// The robot's hands (per-hand finger link sets and TCP samples), built by the kernel from
+  /// `grasp_contact_links` at configure; boxes empty. Null without `grasp_allowance_enabled`.
+  const TrackedGraspTable* hands{nullptr};
+};
+
+/// Why the kernel reset its per-chunk state (API v2). A provider that keeps command memory forgets
+/// it on every reason.
+enum class ResetReason : std::uint8_t {
+  kOther = 0,
+  kConfigure,
+  kActivate,
+  kCleanup,
+  kRefusal,
+  kLatch,
+  kExternalEstop,
+  kEstopReset,
+  kDeclarationChanged,
+};
+
+/// A JOINT_POSITION chunk the kernel accepted (API v2): its last row, which joints it commanded,
+/// its length and when it was accepted (it plays out over `horizon - 1` control periods).
+struct CandidateOutcome {
+  const double* q_last_row{nullptr};       ///< n_dof
+  const std::uint8_t* commanded{nullptr};  ///< n_dof, 1 = commanded; null = every joint
+  std::size_t n_dof{0};
+  int horizon{0};
+  std::int64_t accepted_ns{0};  ///< kernel clock
 };
 
 /// Everything a provider may read for one candidate chunk. All pointers are
 /// kernel-owned and valid only for the duration of the call that receives the
-/// view (or until the next `begin_candidate`).
+/// view (or until the next `begin_candidate`). `measured` is the kernel's FK at
+/// the same measured state its own checks use (base dofs zeroed).
 struct CandidateView {
   const CollisionModel* model{nullptr};
   const VoxelGrid* grid{nullptr};             ///< null = no fresh grid this chunk
@@ -82,6 +127,9 @@ struct CandidateView {
   std::int64_t now_ns{0};                        ///< kernel clock (ROS time)
   bool position_mode{false};                     ///< JOINT_POSITION chunk
   double control_period_s{0.0};
+  DeclarationView declaration{};      ///< API v2
+  std::int64_t region_max_age_ns{0};  ///< `grasp_region_max_age_s` (API v2)
+  bool tracked_frame_ok{false};       ///< the tracked set and the grid share a frame (API v2)
 };
 
 /// One (robot link, occupied cell) pair the open kernel is about to trip on.
@@ -92,6 +140,32 @@ struct VoxelPairQuery {
   double distance{0.0};                     ///< surface distance the open check computed
   int row{0};                               ///< checked row of the chunk (0 = measured)
   const CollisionScratch* row_fk{nullptr};  ///< FK at that row
+};
+
+/// Two robot links of one self-collision pair about to trip (both in the mask).
+struct SelfPairQuery {
+  int link_a{-1};
+  int link_b{-1};
+  double distance{0.0};
+  int row{0};
+  const CollisionScratch* row_fk{nullptr};
+};
+
+/// A carried payload about to trip against an occupied cell (`payload_voxel_pair`) or against a
+/// robot link (`payload_self_pair`). Its attach link (and, for a self pair, `other_link`) are in
+/// the mask; a frozen payload (no attach link) is never offered.
+struct PayloadPairQuery {
+  std::size_t object{0};  ///< index into the kernel's AttachedModel
+  const AttachedObject* attached{nullptr};
+  Transform object_xf{};  ///< the payload's pose, robot base frame
+  int attach_link{-1};
+  int other_link{-1};       ///< payload_self_pair only
+  std::size_t cell{0};      ///< payload_voxel_pair only
+  Vec3 cell_center_base{};  ///< payload_voxel_pair only
+  Vec3 cell_center_grid{};  ///< payload_voxel_pair only, grid axes
+  double distance{0.0};
+  int row{0};
+  const CollisionScratch* row_fk{nullptr};
 };
 
 /// The interface. Default implementations refuse everything, so a provider
@@ -116,8 +190,33 @@ public:
   /// Per candidate chunk, before any pair query. Preallocated state only.
   virtual void begin_candidate(const CandidateView& view) noexcept { (void)view; }
 
+  /// A JOINT_POSITION chunk was accepted (API v2). A refusal surfaces as
+  /// `on_reset(kRefusal)` before the next candidate.
+  virtual void end_candidate(const CandidateOutcome& outcome) noexcept { (void)outcome; }
+
+  /// The kernel reset its per-chunk state (API v2).
+  virtual void on_reset(ResetReason why) noexcept { (void)why; }
+
   /// May this robot link touch this occupied cell?
   virtual ProviderVerdict voxel_pair(const VoxelPairQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+
+  /// May these two robot links touch? (API v2)
+  virtual ProviderVerdict self_pair(const SelfPairQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+
+  /// May this carried payload touch this occupied cell? (API v2)
+  virtual ProviderVerdict payload_voxel_pair(const PayloadPairQuery& q) noexcept {
+    (void)q;
+    return ProviderVerdict::kRefuse;
+  }
+
+  /// May this carried payload touch this robot link? (API v2)
+  virtual ProviderVerdict payload_self_pair(const PayloadPairQuery& q) noexcept {
     (void)q;
     return ProviderVerdict::kRefuse;
   }

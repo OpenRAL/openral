@@ -356,7 +356,8 @@ private:
   /// magnifies on paper (#349 p3_mix02: 95.6 mm with the payload's reach).
   double workspace_reach(std::size_t link) const noexcept;
   // Forget every previously accepted command (row 0 falls back to measured).
-  void clear_workspace_commands() noexcept;
+  /// Also the provider's `on_reset(why)` (ADR-0121), at every site that forgets the chunk chain.
+  void clear_workspace_commands(ResetReason why = ResetReason::kOther) noexcept;
   // Is joint `d`'s previously accepted command still row 0's previous row at
   // `now_ns`? Recorded, not cleared since, its last row due (acceptance +
   // (horizon-1) periods) at or before now, and at most
@@ -420,6 +421,14 @@ private:
   std::array<TrackedObjectView, kMaxTrackedObjects> provider_tracked_{};
   std::uint64_t provider_pairs_total_{0};
   std::chrono::steady_clock::time_point provider_last_warn_{};
+  std::bitset<kMaxGraspMaskLinks> provider_link_bits_{};  ///< `provider_links_` as a link mask
+  TrackedGraspTable provider_hands_{};  ///< the hands, for the provider's DeclarationView
+  bool provider_hands_valid_{false};
+  CollisionScratch provider_meas_scratch_;  ///< FK at the measured state (sized at load)
+  std::vector<double> provider_q_fk_;       ///< its FK input (sized at load)
+  /// The workspace region is ingested for the in-tree #349 rule OR for a loaded provider; the
+  /// in-tree rule still needs `workspace_contact_enabled_`.
+  bool workspace_ingest_enabled_{false};
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.
@@ -530,6 +539,7 @@ private:
   /// stamps on the tracks it grounds or re-keys for that declaration).
   bool tracked_decl_active_{false};
   std::string tracked_decl_key_;
+  std::size_t tracked_decl_key_hash_{0};  ///< std::hash of tracked_decl_key_ (provider view)
   std::int64_t tracked_decl_stamp_ns_{0};
   double tracked_decl_timeout_s_{0.0};
   std::size_t tracked_grasp_logged_n_{static_cast<std::size_t>(-1)};

@@ -8506,8 +8506,28 @@ public:
     last = q;
     return osk::ProviderVerdict::kTolerate;
   }
+  osk::ProviderVerdict self_pair(const osk::SelfPairQuery& q) noexcept override {
+    ++asked_self;
+    last_self = q;
+    return osk::ProviderVerdict::kTolerate;
+  }
+  osk::ProviderVerdict payload_voxel_pair(const osk::PayloadPairQuery& q) noexcept override {
+    ++asked_payload;
+    last_payload = q;
+    return osk::ProviderVerdict::kTolerate;
+  }
+  osk::ProviderVerdict payload_self_pair(const osk::PayloadPairQuery& q) noexcept override {
+    ++asked_payload_self;
+    last_payload = q;
+    return osk::ProviderVerdict::kTolerate;
+  }
   int asked{0};
+  int asked_self{0};
+  int asked_payload{0};
+  int asked_payload_self{0};
   osk::VoxelPairQuery last{};
+  osk::SelfPairQuery last_self{};
+  osk::PayloadPairQuery last_payload{};
 };
 
 class DefaultRefuses final : public osk::ExemptionProvider {
@@ -8531,9 +8551,9 @@ std::vector<std::uint8_t> provider_mask(std::initializer_list<int> links) {
 
 void arm_provider(osk::VoxelGrid& grid, osk::ExemptionProvider& provider,
                   const std::vector<std::uint8_t>& mask) {
-  grid.provider = &provider;
-  grid.provider_links = mask.data();
-  grid.provider_links_n = mask.size();
+  grid.provider_gate.provider = &provider;
+  grid.provider_gate.links = mask.data();
+  grid.provider_gate.links_n = mask.size();
 }
 
 }  // namespace
@@ -8549,8 +8569,8 @@ TEST(ExemptionProvider, NoProviderIsTodayBitForBit) {
     ASSERT_TRUE(today.hit) << link;
     // A mask with no provider changes nothing.
     const auto mask = provider_mask({kGraspLeftFinger, kGraspCapFinger, kGraspArm});
-    grid.provider_links = mask.data();
-    grid.provider_links_n = mask.size();
+    grid.provider_gate.links = mask.data();
+    grid.provider_gate.links_n = mask.size();
     const auto masked = osk::check_voxel_collision(m, s, grid, kGraspMargin);
     expect_same_hit(masked, today);
     EXPECT_EQ(masked.provider_pairs, 0);
@@ -8586,7 +8606,7 @@ TEST(ExemptionProvider, AToleratedHandPairDoesNotTripAndIsDisclosed) {
     ASSERT_TRUE(today.hit) << hand;
     const auto mask = provider_mask({hand});
     arm_provider(grid, provider, mask);
-    grid.provider_row = 3;
+    grid.provider_gate.row = 3;
     const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
     EXPECT_FALSE(with.hit) << hand;
     EXPECT_GE(with.provider_pairs, 1) << "never silent: every tolerated pair is counted";
@@ -8618,11 +8638,11 @@ TEST(ExemptionProvider, TheMostPermissiveProviderCannotExemptAnUnmaskedLink) {
   EXPECT_EQ(provider.asked, 0);
   // A mask too short to index the link, or no mask at all, is the same refusal.
   const auto short_mask = provider_mask({});
-  grid.provider_links = short_mask.data();
-  grid.provider_links_n = static_cast<std::size_t>(kGraspArm);
+  grid.provider_gate.links = short_mask.data();
+  grid.provider_gate.links_n = static_cast<std::size_t>(kGraspArm);
   expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
-  grid.provider_links = nullptr;
-  grid.provider_links_n = 0;
+  grid.provider_gate.links = nullptr;
+  grid.provider_gate.links_n = 0;
   expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
   EXPECT_EQ(provider.asked, 0);
 }
@@ -8655,4 +8675,101 @@ TEST(ExemptionProvider, IsNeverAskedAboutAPairTheOpenKernelAlreadyClearsOrExempt
     EXPECT_EQ(with.provider_pairs, 0);
     EXPECT_EQ(provider.asked, 0) << "an open exemption is never handed to the provider";
   }
+}
+
+// API v2: self pairs, carried-payload pairs. Same bounds: last, only for a pair still about to
+// trip, and only with every robot link of the pair in the kernel's mask.
+
+TEST(ExemptionProvider, ASelfPairIsOfferedOnlyWhenBothLinksAreMasked) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  // Both fingers at the same pose: their boxes overlap, a self pair that trips today.
+  s.link_world[static_cast<std::size_t>(kGraspLeftFinger)] = identity();
+  s.link_world[static_cast<std::size_t>(kGraspRightFinger)] = identity();
+  // The other two links parked apart, so the fingers are the only tripping pair.
+  s.link_world[static_cast<std::size_t>(kGraspArm)] = translate(5.0, 0.0, 0.0);
+  s.link_world[static_cast<std::size_t>(kGraspCapFinger)] = translate(-5.0, 0.0, 0.0);
+  const auto today = osk::check_self_collision(m, s, 0.0);
+  ASSERT_TRUE(today.hit);
+  ASSERT_EQ(std::min(today.link_a, today.link_b), kGraspLeftFinger);
+  ASSERT_EQ(std::max(today.link_a, today.link_b), kGraspRightFinger);
+  TolerateEveryPair provider;
+  const auto both = provider_mask({kGraspLeftFinger, kGraspRightFinger});
+  osk::ProviderGate gate{&provider, both.data(), both.size(), 2};
+  const auto with = osk::check_self_collision(m, s, 0.0, nullptr, &gate);
+  EXPECT_FALSE(with.hit);
+  EXPECT_GE(with.provider_pairs, 1);
+  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance);
+  EXPECT_EQ(provider.last_self.row, 2);
+  EXPECT_LE(provider.last_self.distance, 0.0);
+  // One hand unmasked: never offered, today's stop.
+  TolerateEveryPair other;
+  const auto one = provider_mask({kGraspLeftFinger});
+  osk::ProviderGate half{&other, one.data(), one.size(), 0};
+  expect_same_hit(osk::check_self_collision(m, s, 0.0, nullptr, &half), today);
+  EXPECT_EQ(other.asked_self, 0);
+  // A null gate is today's check.
+  expect_same_hit(osk::check_self_collision(m, s, 0.0, nullptr, nullptr), today);
+}
+
+TEST(ExemptionProvider, ACarriedPayloadCellIsOfferedOnlyOnAMaskedAttachLink) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});  // carried on link 1
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  const auto today = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  ASSERT_TRUE(today.hit);
+  TolerateEveryPair provider;
+  const std::vector<std::uint8_t> attach_masked{0, 1, 0, 0};
+  grid.provider_gate = osk::ProviderGate{&provider, attach_masked.data(), attach_masked.size(), 1};
+  const auto with = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  EXPECT_FALSE(with.hit);
+  EXPECT_GE(with.provider_pairs, 1);
+  EXPECT_EQ(provider.last_payload.attach_link, 1);
+  EXPECT_EQ(provider.last_payload.object, 0U);
+  EXPECT_EQ(provider.last_payload.cell, static_cast<std::size_t>(voxel_index(2, 2, 2)));
+  EXPECT_EQ(provider.last_payload.row, 1);
+  // Attach link unmasked: never offered.
+  TolerateEveryPair other;
+  const std::vector<std::uint8_t> arm_only{0, 0, 0, 1};
+  grid.provider_gate = osk::ProviderGate{&other, arm_only.data(), arm_only.size(), 0};
+  expect_same_hit(osk::check_attached_voxel_collision(m, att, s, grid, 0.0), today);
+  EXPECT_EQ(other.asked_payload, 0);
+  // A frozen payload (K5, no attach link) is never offered, whatever the mask: the verdict is the
+  // open kernel's alone.
+  att.objects[0].attach_link = -1;
+  grid.provider_gate = osk::ProviderGate{};
+  const auto frozen_open = osk::check_attached_voxel_collision(m, att, s, grid, 0.0);
+  const std::vector<std::uint8_t> all{1, 1, 1, 1};
+  grid.provider_gate = osk::ProviderGate{&other, all.data(), all.size(), 0};
+  expect_same_hit(osk::check_attached_voxel_collision(m, att, s, grid, 0.0), frozen_open);
+  EXPECT_EQ(other.asked_payload, 0);
+}
+
+TEST(ExemptionProvider, APayloadSelfPairNeedsTheAttachAndTheOtherLinkMasked) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 3, 0.1, 0.0, translate(0.15, 0.0, 0.0));  // arm link 3, near the payload
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+  const auto today = osk::check_attached_self_collision(m, att, s, 0.0);
+  ASSERT_TRUE(today.hit);
+  ASSERT_EQ(today.link_b, 3);
+  TolerateEveryPair provider;
+  const std::vector<std::uint8_t> attach_only{0, 1, 0, 0};
+  osk::ProviderGate half{&provider, attach_only.data(), attach_only.size(), 0};
+  expect_same_hit(osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &half), today);
+  EXPECT_EQ(provider.asked_payload_self, 0) << "link 3 is not in the mask";
+  const std::vector<std::uint8_t> both{0, 1, 0, 1};
+  osk::ProviderGate gate{&provider, both.data(), both.size(), 0};
+  const auto with = osk::check_attached_self_collision(m, att, s, 0.0, nullptr, &gate);
+  EXPECT_FALSE(with.hit);
+  EXPECT_GE(with.provider_pairs, 1);
+  EXPECT_EQ(provider.last_payload.other_link, 3);
+  EXPECT_EQ(provider.last_payload.attach_link, 1);
 }

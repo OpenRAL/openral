@@ -595,6 +595,9 @@ public:
   osk::ProviderVerdict voxel_pair(const osk::VoxelPairQuery& /*q*/) noexcept override {
     return osk::ProviderVerdict::kTolerate;
   }
+  osk::ProviderVerdict self_pair(const osk::SelfPairQuery& /*q*/) noexcept override {
+    return osk::ProviderVerdict::kTolerate;
+  }
 };
 
 }  // namespace
@@ -633,9 +636,9 @@ TEST(NoAlloc, TheExemptionProviderQueryIsAllocationFree) {
   grid.occupancy = occ.data();
   TolerateEveryPair provider;
   const std::vector<std::uint8_t> mask{0, 1, 1};
-  grid.provider = &provider;
-  grid.provider_links = mask.data();
-  grid.provider_links_n = mask.size();
+  grid.provider_gate.provider = &provider;
+  grid.provider_gate.links = mask.data();
+  grid.provider_gate.links_n = mask.size();
 
   g_alloc_count.store(0, std::memory_order_relaxed);
   g_count_enabled.store(true, std::memory_order_relaxed);
@@ -647,4 +650,17 @@ TEST(NoAlloc, TheExemptionProviderQueryIsAllocationFree) {
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
       << "the voxel check allocated with a provider armed; CLAUDE.md §2 forbids this.";
   EXPECT_GT(tolerated, 0) << "the loop really exercised tolerated provider pairs";
+
+  // API v2: the self-pair query (the box finger and the capsule finger overlap at one pose).
+  const osk::ProviderGate gate{&provider, mask.data(), mask.size(), 0};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int self_tolerated = 0;
+  for (int i = 0; i < 10000; ++i) {
+    self_tolerated += osk::check_self_collision(m, s, 0.0, nullptr, &gate).provider_pairs;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the self check allocated with a provider armed; CLAUDE.md §2 forbids this.";
+  EXPECT_GT(self_tolerated, 0) << "the loop really exercised tolerated self pairs";
 }

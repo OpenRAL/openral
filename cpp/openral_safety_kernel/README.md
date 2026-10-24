@@ -1663,12 +1663,20 @@ installed header
   - an `api_version()` other than `kExemptionProviderApiVersion`;
   - `initialize` returning false or throwing.
 
-**On the live check** the provider is consulted only in `check_voxel_collision`, and only under
-all of these conditions:
-- *after* every open check and open exemption (ADR-0115 grasp region, #349 workspace, K2/K7);
-- for a robot link in the mask;
-- for a pair that would otherwise trip (capsules: before the narrow phase; boxes: after it, so
-  the query carries the tripping distance).
+**On the live check** (API v2) the provider is consulted in four places:
+- `check_voxel_collision`: robot link vs cell (`voxel_pair`);
+- `check_self_collision`: link vs link (`self_pair`);
+- `check_attached_voxel_collision`: carried payload vs cell (`payload_voxel_pair`);
+- `check_attached_self_collision`: carried payload vs link (`payload_self_pair`).
+
+Each query is made only under all of these conditions:
+- *after* every open check and open exemption (ADR-0115 grasp region, ADR-0092 witnesses and
+  residue, #349 workspace, K2/K7, OT-10);
+- for a pair that would otherwise trip (world-voxel capsules: before the narrow phase; boxes:
+  after it, so the query carries the tripping distance);
+- with **every robot link of the pair** in the mask;
+- for a payload query, on a carried payload only. A frozen payload has no attach link and is
+  never offered.
 
 A `kTolerate` answer has these effects:
 - the pair does not trip;
@@ -1677,10 +1685,26 @@ A `kTolerate` answer has these effects:
 - it is logged as WARN `safety.exemption_provider_contact` (≤ 1 Hz) and set as span attribute
   `safety.exemption_provider_pairs`.
 
-Self-collision, the limits, the envelope, the lead bound and the watchdog are never offered.
-Before any query, each candidate gets a preallocated read-only `CandidateView` through
-`begin_candidate`. It carries the tracked set after K1 without K6-retired identities, and the
-measured state when it is fresh. Hooks are `noexcept` and must not allocate; `test_no_alloc`
+The limits, the envelope, the lead bound and the watchdog are never offered. Before any query,
+each candidate gets a preallocated read-only `CandidateView` through `begin_candidate`. It
+carries:
+- the tracked set after K1, without K6-retired identities (with each track's declaration-key
+  hash);
+- the kernel's FK at the fresh measured state;
+- a `DeclarationView`: the kernel's own ADR-0115 verdict and region, its refusal and wrong-claim
+  flags, the K2 identity checks and key hash, the frame- and age-checked workspace box, and the
+  hands built from `grasp_contact_links`;
+- `region_max_age_ns`;
+- whether the tracked set shares the grid's frame.
+
+The refusal-type ingest (frames, ages, backstop, retirement) stays here; the provider reads only
+verdicts. While a provider is loaded, the workspace declaration is ingested even with the
+in-tree #349 rule off. That rule and the in-tree contact hold still need
+`workspace_contact_enabled`.
+
+`end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
+horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
+activate, cleanup, refusal, latch, external E-stop, reset, declaration change. Hooks are `noexcept` and must not allocate; `test_no_alloc`
 covers the kernel side with the most permissive provider loaded.
 
 **Step 1 of 3.** #349, K2, K5, K7 and the OT-10 payload-own cells are still in-tree. The provider
@@ -1691,10 +1715,14 @@ seam is additive: nothing loads by default, so no verdict changes. The next step
 **Tests:**
 - `ExemptionProvider.*` in `test_collision`: no provider or the default provider is bit-for-bit
   today; the most permissive provider cannot reach an unmasked link, a clear pair or an
-  open-exempt pair.
+  open-exempt pair, nor a self or payload pair with one link unmasked, nor a frozen payload.
 - `test_exemption_provider_kernel`: every refusal path, and a real plugin load from a
   never-installed test library.
-- The live-check pass/disclosure and off-sim stop in `test_lifecycle_kernel`.
+- In `test_lifecycle_kernel`:
+  - the live-check pass and disclosure;
+  - the off-sim stop;
+  - a recording provider that receives the v2 view, an accepted chunk's outcome and an E-stop
+    reset.
 - `NoAlloc.TheExemptionProviderQueryIsAllocationFree`.
 
 ## Slot rows: uncommanded joints at their measured pose (ADR-0102)
