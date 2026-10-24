@@ -2,16 +2,19 @@
 
 Usage (spawned by ``openral_cli.deploy_sim._run_launch``, never by hand)::
 
-    python _launch_guard.py <cli_pid> <launch_pid>
+    python _launch_guard.py <cli_pid> <launch_pid> [<launch_tag>]
 
 The CLI's own teardown (``_run_launch``'s ``finally``) cannot run when the CLI is
 SIGKILLed or crashes hard, and ``ros2 launch`` puts every node in its own process group
 (a sim sidecar even in its own session), so nothing signals them: they keep running on
 the ROS domain (#418 r4dr_shadow2). This process, in its own session so a signal to the
 CLI's group does not reach it, snapshots every descendant of the launch every
-``POLL_S`` and, once the CLI's pid is gone (or reused), SIGTERMs every process it ever
-saw that is still the same process (pid + start time), then SIGKILLs what is left after
-``GRACE_S``. A sidecar marked kept alive (``KEPT_ALIVE_ENV``) is left running.
+``POLL_S`` and, once the CLI's pid is gone (or reused, or already gone when the guard
+starts), SIGTERMs every process it ever saw that is still the same process (pid + start
+time), then SIGKILLs what is left after ``GRACE_S``. A sidecar marked kept alive
+(``KEPT_ALIVE_ENV``) is left running. A process whose parent exited between two
+snapshots is reparented out of the tree; the CLI puts ``<LAUNCH_TAG_ENV>=<launch_tag>``
+in the launch's environment, which every descendant inherits, so those are found by it.
 Stdlib only: it must start fast and never import the CLI.
 """
 
@@ -28,6 +31,8 @@ POLL_S = 0.5
 GRACE_S = 5.0
 #: ``openral_sim.sidecar.KEPT_ALIVE_ENV`` (this module is stdlib-only, so it repeats the name).
 KEPT_ALIVE_ENV = b"OPENRAL_SIDECAR_KEPT_ALIVE=1"
+#: Set by ``openral_cli.deploy_sim._run_launch`` to a fresh token per launch.
+LAUNCH_TAG_ENV = "OPENRAL_LAUNCH_TAG"
 
 
 def _stat(pid: int) -> tuple[int, int] | None:
@@ -56,9 +61,28 @@ def _children() -> dict[int, list[int]]:
     return out
 
 
-def _snapshot(seen: dict[int, int]) -> None:
-    """Add every live descendant of every process already seen."""
+def _tagged(tag: bytes) -> list[int]:
+    """This user's processes whose environment carries ``tag`` (``LAUNCH_TAG_ENV=<tag>``).
+
+    ponytail: inherited environment, so a descendant that exec's with a cleared
+    environment is found only through its parent links.
+    """
+    out = []
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            with contextlib.suppress(OSError):
+                if tag in Path(f"/proc/{entry}/environ").read_bytes().split(b"\0"):
+                    out.append(int(entry))
+    return out
+
+
+def _snapshot(seen: dict[int, int], tag: bytes | None = None) -> None:
+    """Add every live descendant of every process already seen, and every tagged one."""
     children = _children()
+    for pid in _tagged(tag) if tag else ():
+        st = _stat(pid)
+        if st is not None and pid not in seen:
+            seen[pid] = st[1]
     todo = [p for p, s in seen.items() if _same(p, s)]
     while todo:
         for child in children.get(todo.pop(), []):
@@ -91,14 +115,16 @@ def _reap(seen: dict[int, int]) -> None:
 
 def main(argv: list[str]) -> int:
     cli_pid, launch_pid = int(argv[0]), int(argv[1])
+    tag = f"{LAUNCH_TAG_ENV}={argv[2]}".encode() if argv[2:3] and argv[2] else None
     cli, launch = _stat(cli_pid), _stat(launch_pid)
-    if cli is None or launch is None:
+    if launch is None:
         return 0
     seen = {launch_pid: launch[1]}
-    while _same(cli_pid, cli[1]):
-        _snapshot(seen)
+    # A CLI already gone (killed before this guard ran) is the cleanup trigger too.
+    while cli is not None and _same(cli_pid, cli[1]):
+        _snapshot(seen, tag)
         time.sleep(POLL_S)
-    _snapshot(seen)  # what the dying launch left behind
+    _snapshot(seen, tag)  # what the dying launch left behind
     _reap(seen)
     return 0
 

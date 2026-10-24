@@ -47,6 +47,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -2407,7 +2408,16 @@ def _reap_orphans_with_log(hal_mode: str = "sim") -> None:
         # scoped by ``ROS_DOMAIN_ID``.
         _console.print("[yellow]orphan reap skipped (OPENRAL_SKIP_ORPHAN_REAP=1)[/yellow]")
         return
-    killed = _kill_orphan_openral_graph_processes(_prepare_launch_env(hal_mode=hal_mode))
+    # Only what `_graph_identity` reads (domain + checkout): `_prepare_launch_env` also
+    # purges the DDS SHM and prints DDS_TRANSPORT_READY_MARKER, which must come once,
+    # after this reap (#421 review).
+    from openral_cli._dds_scope import confine_sim_scope  # reason: deferred, as above
+
+    env = os.environ.copy()
+    if hal_mode == "sim":
+        confine_sim_scope(env)
+    env[GRAPH_ROOT_ENV] = str(_repo_root_from(Path(__file__)))
+    killed = _kill_orphan_openral_graph_processes(env)
     if killed:
         _console.print(
             f"[yellow]reaped {killed} orphan openral-graph process(es) from a prior run[/yellow]"
@@ -2647,15 +2657,16 @@ def _spawn_launch(argv: list[str], env: dict[str, str]) -> subprocess.Popen[byte
     return subprocess.Popen(argv, env=env, start_new_session=True, preexec_fn=_default_sigint)  # noqa: PLW1509  # reason: only resets one signal disposition before exec; no locks, no imports
 
 
-def _spawn_orphan_guard(launch_pid: int) -> subprocess.Popen[bytes]:
+def _spawn_orphan_guard(launch_pid: int, launch_tag: str) -> subprocess.Popen[bytes]:
     """Start ``_launch_guard.py`` watching this CLI over the launch ``launch_pid``.
 
     Its own session, so a signal to the CLI's process group (``kill -INT -<pgid>``) does
-    not take it down with the CLI; it reaps the launch tree once the CLI is gone.
+    not take it down with the CLI; it reaps the launch tree once the CLI is gone, and
+    every process carrying ``launch_tag`` in its environment (one reparented away).
     """
     return subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name("_launch_guard.py")), str(os.getpid()),
-         str(launch_pid)],
+         str(launch_pid), launch_tag],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -2708,9 +2719,12 @@ def _run_launch(
     Returns the launch process's exit code (0 if it exited via signal
     with no recorded returncode).
     """
+    launch_tag = uuid.uuid4().hex
+    if orphan_guard:
+        env = {**env, "OPENRAL_LAUNCH_TAG": launch_tag}  # _launch_guard.LAUNCH_TAG_ENV
     proc = _spawn_launch(argv, env)
     if orphan_guard:
-        _spawn_orphan_guard(proc.pid)
+        _spawn_orphan_guard(proc.pid, launch_tag)
 
     def _forward(_signum: int, _frame: object) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):

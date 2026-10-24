@@ -147,3 +147,73 @@ def test_a_sidecar_marked_kept_alive_survives_the_cli_that_spawned_it(tmp_path: 
             with contextlib.suppress(OSError):
                 os.kill(p, signal.SIGKILL)
         cli.kill()
+
+
+_REPARENTED_TREE = textwrap.dedent(
+    """
+    import os, subprocess, sys, time
+    out = sys.argv[1]
+    sleeper = [sys.executable, "-c", "import time; time.sleep(120)"]
+    spawn = (
+        "import subprocess, sys; "
+        f"p = subprocess.Popen({sleeper!r}, start_new_session=True, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid)"
+    )
+    # A launch child that starts a long-running process and exits at once: the
+    # grandchild is reparented out of the launch tree before any snapshot sees it.
+    mid = subprocess.run([sys.executable, "-c", spawn], capture_output=True, text=True)
+    with open(out, "w") as f:
+        f.write(f"{os.getpid()} {mid.stdout.strip()}")
+    time.sleep(120)
+    """
+)
+
+
+def test_a_process_reparented_out_of_the_tree_is_still_reaped(tmp_path: Path) -> None:
+    """#421 review: a descendant whose parent exited between two snapshots lost its link
+    to the launch; the launch's environment tag still names it."""
+    tree = tmp_path / "tree.py"
+    tree.write_text(_REPARENTED_TREE)
+    out = tmp_path / "pids"
+    env = {**os.environ, "OPENRAL_SKIP_ORPHAN_REAP": "1"}
+    cli = subprocess.Popen([sys.executable, "-c", _CLI, str(tree), str(out)], env=env)
+    pids: list[int] = []
+    try:
+        deadline = time.monotonic() + 30.0
+        while not (out.exists() and len(out.read_text().split()) == 2) and (
+            time.monotonic() < deadline
+        ):
+            time.sleep(0.1)
+        pids = [int(p) for p in out.read_text().split()]
+        time.sleep(2.0)
+        assert all(_alive(p) for p in pids)
+        cli.send_signal(signal.SIGKILL)
+        cli.wait(timeout=5)
+        deadline = time.monotonic() + 20.0
+        while any(_alive(p) for p in pids) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not [p for p in pids if _alive(p)], "the reparented process outlived the CLI"
+    finally:
+        for p in pids:
+            with contextlib.suppress(OSError):
+                os.kill(p, signal.SIGKILL)
+        cli.kill()
+
+
+def test_a_cli_gone_before_the_guard_started_still_reaps_the_launch() -> None:
+    """#421 review: the guard returned at once when the CLI was already dead, leaving the
+    launch it was started to clean up."""
+    guard = Path(__file__).resolve().parents[2] / "python/cli/src/openral_cli/_launch_guard.py"
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    launch = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True
+    )
+    try:
+        subprocess.run(
+            [sys.executable, str(guard), str(dead.pid), str(launch.pid)], timeout=30, check=True
+        )
+        launch.wait(timeout=10)
+    finally:
+        launch.kill()
+    assert launch.returncode == -signal.SIGTERM
