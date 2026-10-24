@@ -206,6 +206,9 @@ struct CoverHoldQuery {
   std::int64_t now_ns{0};
   std::int64_t max_age_ns{0};
   const CollisionScratch* measured{nullptr};  ///< FK at the fresh measured state
+  /// The kernel-ingested workspace (its hand-link mask and box), null when not live.
+  const WorkspaceContactRegion* workspace{nullptr};
+  double resolution{0.0};  ///< this grid's cell size
 };
 
 /// A bound (carried) tracked payload at a fresh measured state (API v3). Releasing it

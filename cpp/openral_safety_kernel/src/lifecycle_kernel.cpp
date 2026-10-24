@@ -5999,6 +5999,8 @@ bool SafetyKernelLifecycleNode::refresh_tracked_cover() {
         q.now_ns = now;
         q.max_age_ns = max_age_ns;
         q.measured = &binding_scratch_;
+        q.workspace = workspace_live() ? &workspace_region_ : nullptr;
+        q.resolution = voxel_grid_.resolution;
         if (provider_->hold_cover(q) == ProviderVerdict::kTolerate) {
           e.cover_ok = true;
           rec.pass_ns = prev->pass_ns;  // never re-stamped: the hold ends at the age bound

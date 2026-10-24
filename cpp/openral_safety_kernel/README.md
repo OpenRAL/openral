@@ -1737,6 +1737,12 @@ arithmetic.
 
 The kernel library is SHARED, so a provider .so and `safety_kernel_node` share one copy.
 
+**A known, stricter difference under a provider.** With the in-tree #349 rule on, a box payload
+with a stage-2 refinement is checked against the robot's own links as its measured (unpadded)
+box. With a provider and the in-tree rule off, it is checked as the shipped, padded box. That
+narrowing loosens geometry for every link, arm links included, so it is not offered as a
+provider capability. It ends with the in-tree rule.
+
 `end_candidate` reports each accepted JOINT_POSITION chunk's last row, commanded joints and
 horizon. `on_reset(reason)` fires wherever the kernel forgets its command chain: configure,
 activate, cleanup, refusal, latch, external E-stop, reset, declaration change. Hooks are `noexcept` and must not allocate; `test_no_alloc`
