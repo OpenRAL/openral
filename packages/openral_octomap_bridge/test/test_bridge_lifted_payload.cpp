@@ -1,21 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// A lifted payload's own interior stays cleared while its support witness lives.
-//
-// Isaac i64/i70 (2026-10-05, OpenArm, a 7.5 x 5 x 4.5 cm brick on a table,
-// 15 mm octomap): the attach grid cleared the brick's TOP cell layer and
-// withheld the two below it (the support band reaches half-width + attested
-// depth + one voxel = 32.5 mm above the plane). The band is stated in the
-// object frame, so it rose with the lifted payload; past ~5 mm of rise it
-// claimed the top layer too and re-published it, inside the payload. The
-// kernel never baselined those cells as embedded residue (absent from the
-// attach grid), so only the witness exempted them — and the producer retires
-// the witness at 15 mm. The kernel drops it on ingest; the grid it held until
-// the bridge's next publish still carried the top layer:
-// `safety.collision kind=world a=attached:<payload> b=voxel_N step=0
-// min_distance_m=-0.0145`, on the brick's own top layer, 0.19 s after the
-// retirement. The published-grid trace of the same trial's right-hand pick
-// (`spark:~/livesim/trials/i70/cells.jsonl`) shows the layer go 24 -> 0 cells at
-// the attach grid and come back 0 -> 9 -> 24 at ~5 mm of rise.
+// A support witness describes contact; it does not prove that occupied cells inside an
+// attached primitive belong to the held object. Geometry-only attachments preserve all
+// occupancy, including the payload's own cells, at every height and witness state.
 //
 // Runs the REAL node in-process against a real `octomap::OcTree`, real TF and
 // real DDS topics, on the trial's geometry.
@@ -235,32 +221,30 @@ protected:
   std::atomic<int> grids_{0};
 };
 
-TEST_F(BridgeLiftedPayload, TheBandStaysOnTheSupportWhileThePayloadRises) {
-  // ATTACH: the band (32.5 mm) withholds the table and the brick's lower two
-  // layers (+7.5, +22.5 mm); the top layer (+37.5 mm) is the payload's and clears.
+TEST_F(BridgeLiftedPayload, ASupportWitnessDoesNotAuthorizeGeometryOnlyClearing) {
+  // ATTACH: the support and all three brick layers stay in the map.
   place_hand(0.0);
   const Counts attach = run(true);
   EXPECT_EQ(attach.table, 36) << "the support the witness is measured against stays";
   EXPECT_EQ(attach.layer[0], 4);
   EXPECT_EQ(attach.layer[1], 4);
-  EXPECT_EQ(attach.layer[2], 0) << "the brick's top layer is payload: cleared at attach";
+  EXPECT_EQ(attach.layer[2], 4) << "the witness does not authorize clearing the top layer";
 
-  // 12 mm up: inside the producer's 15 mm rise tolerance, so the witness lives.
-  // A band riding the object frame now reaches +44.5 mm over the table and
-  // claims the top layer again — inside the payload, never baselined.
+  // The geometry-only attachment remains untrusted after the payload rises.
   place_hand(0.012);
   const Counts lifted = run(true);
-  EXPECT_EQ(lifted.layer[2], 0)
-      << "the payload's own top layer came back inside the lifted payload — the kernel "
-         "has no residue baseline for it, so the witness's retirement stops the arm on it";
-  EXPECT_EQ(lifted.layer[0], 4) << "cells withheld since the attach grid stay withheld";
+  EXPECT_EQ(lifted.layer[2], 4);
+  EXPECT_EQ(lifted.layer[0], 4);
   EXPECT_EQ(lifted.layer[1], 4);
   EXPECT_EQ(lifted.table, 36);
 
-  // Retired at the rise tolerance: nothing withholds, every brick cell in reach clears.
+  // Retiring the witness does not change occupancy either.
   place_hand(0.016);
   const Counts retired = run(false);
-  EXPECT_EQ(retired.layer[0] + retired.layer[1] + retired.layer[2], 0);
+  EXPECT_EQ(retired.table, 36);
+  EXPECT_EQ(retired.layer[0], 4);
+  EXPECT_EQ(retired.layer[1], 4);
+  EXPECT_EQ(retired.layer[2], 4);
 }
 
 }  // namespace

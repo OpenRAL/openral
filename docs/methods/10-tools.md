@@ -3,14 +3,17 @@
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
 ### `tools/lifecycle_autostart.py`
-_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, and reasoner._
+_Drives a lifecycle node through `configure` → `activate` after `ros2 launch` brings it up. Spawned per node by `deploy_e2e.launch.py` for the HAL, safety kernel, reasoner, E-stop sources, and (via its private `_poll_autostart`) the segmenter and the #418 object tracker._
 
 - `--transition-timeout-s` — Per-transition spin budget, default `300.0`; the HAL's budget is derived per scene, not hardcoded — raise the scene's `backend_options.boot_timeout_s` instead of this flag.
 - **Why the HAL's is derived.** The bound must cover the whole `on_configure`, including a sidecar's spawn — some backends need far more than 300 s to boot, so the timeout is set per scene rather than fixed.
 - `--required` (flag) — Treat an absent `change_state` service as a failure (exit 1) instead of informational, so a missing node cannot come up looking healthy; used for the deadman watchdog so a deploy without it refuses to run.
 - **Transitions carry their label as well as their id.** rclpy refuses an invalid labelled `ChangeState` with `success=False`, but an id-only one raises out of the target's service callback and kills the node; with the label, a transition another activator already made redundant is refused harmlessly.
+- **A dropped reply is noticed by polling.** The `change_state` wait is spun in `_POLL_SLICE_S` (2 s) slices with a `get_state` read between them, accepted as soon as the state is the transition's goal (`_GOAL_STATES`: CONFIGURE → `inactive`/`active`, ACTIVATE → `active` only). Jazzy can drop a reply (`failed to send response (timeout)`); the launch_ros event chain then never sends ACTIVATE, which left the segmenter and the tracker INACTIVE for whole #418 trials.
+- `_GOAL_STATES: dict[str, set[str]]` (L44) — per-transition FSM states that mean it landed; `inactive` is not evidence an ACTIVATE advanced.
+- `_POLL_SLICE_S: float` (L47) — slice of the `change_state` wait between `get_state` reads.
 - `_STATE_TO_TRANSITION: dict[str, list[int]]` (L36) — `--target` → the `Transition` constants to drive in order (`inactive` = CONFIGURE; `active` = CONFIGURE then ACTIVATE).
-- `main() -> int` (L127) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
+- `main() -> int` (L146) — CLI entry; parses `--node` / `--target` / `--required` / `--service-timeout-s` / `--transition-timeout-s` (documented above) and drives the transitions via `_drive_transition`.
 
 ### `tools/profile_policy_load.py`
 _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.factory.make_policy` against an in-tree rSkill manifest and prints a phase-by-phase summary. Use when a launch or `openral sim run` is slow to first action, to see where the seconds go._
@@ -751,14 +754,14 @@ _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 cos
 ### `tools/gen_ros_topic_graph.py`
 _Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by statically joining every publisher, subscriber, server and client in `python/`, `packages/`, `tools/` and `cpp/` (tests excluded) on its resolved name, plus launch-file remappings. Pre-commit rewrites the page; `just lint` and the quality workflow run `--check`._
 
-- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L48–50) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`).
-- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L90)
-- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults (a parameter without one stays unresolved), `declare_parameter` defaults, argparse `add_argument(default=...)` and `openral_core.camera_topic(name, kind)` (a non-literal name becomes `{sensor}`); name and type are read positionally or by rclpy's keywords (`topic`/`msg_type`, `srv_name`/`srv_type`, `action_name`/`action_type`). (L428)
-- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; arguments are split with balanced brackets, both `rclcpp_action::create_server`/`create_client` overloads (node, or the four node interfaces) are handled, and a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L471)
-- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L537)
-- `render(endpoints, remaps) -> str` — The Markdown page: concrete and per-instance (`{placeholder}`) topics, services and actions, unresolved endpoints, remappings. (L569)
-- `build() -> str` — Scans the tree and renders the page. (L639)
-- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L647)
+- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L46–55) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`). The script puts `REPO_ROOT/python/core/src` first on `sys.path` before importing `openral_core`, so from a git worktree it reads that worktree's camera-topic kinds, not the main checkout's the shared venv resolves.
+- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L95)
+- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults (a parameter without one stays unresolved), `declare_parameter` defaults, argparse `add_argument(default=...)` and `openral_core.camera_topic(name, kind)` (a non-literal name becomes `{sensor}`); name and type are read positionally or by rclpy's keywords (`topic`/`msg_type`, `srv_name`/`srv_type`, `action_name`/`action_type`). (L433)
+- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; arguments are split with balanced brackets, both `rclcpp_action::create_server`/`create_client` overloads (node, or the four node interfaces) are handled, and a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L476)
+- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L542)
+- `render(endpoints, remaps) -> str` — The Markdown page: concrete and per-instance (`{placeholder}`) topics, services and actions, unresolved endpoints, remappings. (L574)
+- `build() -> str` — Scans the tree and renders the page. (L644)
+- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L652)
 
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._

@@ -43,9 +43,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, camera_topic
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# This repo's openral_core, not whichever checkout the venv's editable install points at:
+# from a git worktree the shared venv resolves the main checkout, whose camera-topic kinds
+# can differ, and the page would flip on every commit.
+sys.path.insert(0, str(REPO_ROOT / "python" / "core" / "src"))
+
+from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, camera_topic  # noqa: E402
+
 OUT_PATH = REPO_ROOT / "docs" / "topics" / "README.md"
 SCAN_ROOTS = ("python", "packages", "cpp", "tools")
 _EXCLUDED_PARTS = frozenset(

@@ -7,6 +7,8 @@ a C++ literal no longer resolving) turns the graph silently sparse and fails her
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -223,3 +225,21 @@ def test_untracked_files_do_not_reach_the_page() -> None:
         assert probe not in graph._iter_sources((".py",))
     finally:
         probe.unlink()
+
+
+def test_the_tool_reads_the_camera_kinds_of_the_repo_it_runs_in() -> None:
+    """From a git worktree the shared venv resolves the main checkout's ``openral_core``;
+    the generator must still import this repo's, or the page flips between checkouts."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    script = (
+        "import runpy, sys; runpy.run_path(sys.argv[1]); "
+        "print(sys.modules['openral_core'].__file__)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script, str(REPO_ROOT / "tools" / "gen_ros_topic_graph.py")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(out).is_relative_to(REPO_ROOT / "python" / "core" / "src")

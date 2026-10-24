@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <limits>
@@ -25,6 +27,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
@@ -38,6 +42,7 @@
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
+#include <openral_msgs/msg/tracked_object.hpp>
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
@@ -274,7 +279,7 @@ TEST_F(LifecycleKernelTest, ParameterPathFailsOnANaNOrNegativePerModeBound) {
   // would refuse every chunk. Both must fail configure; +inf stays legal.
   for (const char* name :
        {"max_ee_angular_speed_rad_s", "max_base_linear_speed_m_s", "max_base_angular_speed_rad_s",
-        "max_cartesian_step_m", "max_cartesian_step_rad"}) {
+        "max_cartesian_step_m", "max_cartesian_step_rad", "contact_force_threshold_n"}) {
     for (const double bad : {std::numeric_limits<double>::quiet_NaN(), -0.1}) {
       rclcpp::NodeOptions opts;
       auto params = minimal_envelope_params();
@@ -840,6 +845,12 @@ TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   voxel_qos.reliable();
   auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
       "/openral/world_voxels", voxel_qos);
+  std::vector<std::string> failure_evidence;
+  auto failure_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", rclcpp::QoS(10).reliable(),
+      [&failure_evidence](const openral_msgs::msg::FailureTrigger::SharedPtr msg) {
+        failure_evidence.push_back(msg->evidence_json);
+      });
   rclcpp::executors::SingleThreadedExecutor exec;
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
@@ -887,6 +898,10 @@ TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
   EXPECT_GT(node->chunks_dropped(), 0U) << "chunks against a stale world must be dropped";
   EXPECT_EQ(node->chunks_passed(), 0U) << "no chunk may pass on a world older than the budget";
 
+  ASSERT_FALSE(failure_evidence.empty());
+  EXPECT_NE(failure_evidence.back().find("voxel_stale"), std::string::npos);
+  EXPECT_EQ(failure_evidence.back().find("joint=65535"), std::string::npos);
+
   // Phase 2: the same wall, captured just now: the collision is adjudicated.
   const auto fresh_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (!node->fault_latched() && std::chrono::steady_clock::now() < fresh_deadline) {
@@ -898,6 +913,10 @@ TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
     exec.spin_some(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(node->fault_latched()) << "a fresh world with the arm inside a wall must E-stop";
+  // Flush the tracing worker before process teardown, as other active-node tests do.
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
 }
 
 namespace {
@@ -1373,6 +1392,17 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   // predictive payload rather than a hand-written one (same convention as
   // `kernel_reactive_collision_evidence.json`).
   RecordProperty("predictive_collision_evidence_json", stop_evidence);
+  EXPECT_NE(stop_evidence.find(R"("joint_names":["j0","j1"])"), std::string::npos) << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("sweep_min_distance_m":)"), std::string::npos) << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("workspace_denial_reason":"not_applicable_or_exempt")"),
+            std::string::npos)
+      << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("workspace_contact_active":false)"), std::string::npos)
+      << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("grasp_exemption_active":false)"), std::string::npos)
+      << stop_evidence;
+  EXPECT_NE(stop_evidence.find(R"("depth_is_box_bound":false)"), std::string::npos)
+      << stop_evidence;
   const int step = std::stoi(evidence_field(stop_evidence, "horizon_step"));
   ASSERT_GE(step, 0) << "this must be a predicted step, not the reactive floor: " << stop_evidence;
 
@@ -2121,7 +2151,10 @@ TEST_F(LifecycleKernelTest, EnvelopeUnconfiguredDropPublishesSafetyStatus) {
 // numeric kind the FailureTrigger on /openral/failure/safety carries.
 TEST_F(LifecycleKernelTest, EnvelopeViolationPublishesLatchedSafetyStatus) {
   rclcpp::NodeOptions opts;
-  opts.parameter_overrides(minimal_envelope_params());
+  auto overrides = minimal_envelope_params();
+  overrides.emplace_back("collision_joint_names",
+                         std::vector<std::string>{"shoulder_pan", "shoulder_lift", "elbow_flex"});
+  opts.parameter_overrides(overrides);
   auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_violation", opts);
   rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
   rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
@@ -2138,10 +2171,12 @@ TEST_F(LifecycleKernelTest, EnvelopeViolationPublishesLatchedSafetyStatus) {
   fail_qos.reliable();
   fail_qos.durability_volatile();
   std::vector<std::uint8_t> trigger_kinds;
+  std::string failure_evidence;
   auto fail_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
       "/openral/failure/safety", fail_qos,
-      [&trigger_kinds](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
+      [&trigger_kinds, &failure_evidence](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
         trigger_kinds.push_back(m->kind);
+        failure_evidence = m->evidence_json;
       });
   rclcpp::executors::SingleThreadedExecutor exec;
   exec.add_node(node->get_node_base_interface());
@@ -2159,6 +2194,7 @@ TEST_F(LifecycleKernelTest, EnvelopeViolationPublishesLatchedSafetyStatus) {
            spy.saw(true, openral_msgs::msg::SafetyStatus::KIND_WORKSPACE);
   });
 
+  EXPECT_NE(failure_evidence.find("\"ee_name\":\"shoulder_pan\""), std::string::npos);
   ASSERT_TRUE(node->fault_latched());
   ASSERT_FALSE(trigger_kinds.empty());
   ASSERT_TRUE(spy.saw(true, openral_msgs::msg::SafetyStatus::KIND_WORKSPACE))
@@ -2168,6 +2204,9 @@ TEST_F(LifecycleKernelTest, EnvelopeViolationPublishesLatchedSafetyStatus) {
   EXPECT_EQ(spy.latest().drop_reason, trigger_kinds.front());
   EXPECT_TRUE(spy.latest().latched);
   EXPECT_EQ(spy.latest().rskill_id, "rskills/rskill-smolvla-so100");
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
 }
 
 // An external /openral/estop latches the kernel; the status names the topic
@@ -2407,7 +2446,8 @@ openral_msgs::msg::OccupancyVoxels declared_target_voxels() {
 openral_msgs::msg::WorldStateStamped
 declared_carry_state(std::int64_t attachment_stamp_ns, std::int64_t declaration_stamp_ns,
                      double timeout_s, bool carrying = true, std::uint64_t revision = 1,
-                     double payload_x = 0.10, double target_face_x = 0.0) {
+                     double payload_x = 0.10, double target_face_x = 0.0,
+                     std::string evidence_kind = {}, std::string evidence_ref = {}) {
   openral_msgs::msg::WorldStateStamped msg;
   msg.attachment_stamp_ns = attachment_stamp_ns;
   msg.attachment_revision = revision;
@@ -2416,6 +2456,8 @@ declared_carry_state(std::int64_t attachment_stamp_ns, std::int64_t declaration_
     openral_msgs::msg::AttachedCollisionObject obj;
     obj.object_id = "sim:obj_main";
     obj.attach_link = "link0";
+    obj.evidence_kind = std::move(evidence_kind);
+    obj.evidence_ref = std::move(evidence_ref);
     // `payload_x` 0.10 is the approach pose these tests were built around (the
     // payload's +x face at 0.120, 20 mm clear of the cell). The advisory-band
     // tests push it in to 0.130 so the face lands 10 mm INSIDE the cell —
@@ -2759,8 +2801,9 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
-    ws_pub->publish(
-        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s,
+                                         true, 1, 0.10, 0.0, "pinch_fallback",
+                                         "ambiguous:trk3,trk4"));
     exec.spin_some(std::chrono::milliseconds(5));
   }
 
@@ -2770,8 +2813,9 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
-    ws_pub->publish(
-        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s,
+                                         true, 1, 0.10, 0.0, "pinch_fallback",
+                                         "ambiguous:trk3,trk4"));
     exec.spin_some(std::chrono::milliseconds(5));
     cand_pub->publish(chunk);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -2796,8 +2840,9 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
-    ws_pub->publish(
-        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s,
+                                         true, 1, 0.10, 0.0, "pinch_fallback",
+                                         "ambiguous:trk3,trk4"));
     exec.spin_some(std::chrono::milliseconds(5));
   }
   const int passed_before = safe_count.load();
@@ -2807,8 +2852,9 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
-    ws_pub->publish(
-        declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s));
+    ws_pub->publish(declared_carry_state(node->now().nanoseconds(), declaration_stamp_ns, timeout_s,
+                                         true, 1, 0.10, 0.0, "pinch_fallback",
+                                         "ambiguous:trk3,trk4"));
     exec.spin_some(std::chrono::milliseconds(5));
     cand_pub->publish(chunk);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -2825,11 +2871,17 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
       << (safe_count.load() - passed_before);
   EXPECT_EQ(safe_count.load(), passed_before) << "no candidate may pass on an expired declaration";
   ASSERT_FALSE(evidence_json.empty());
+  RecordProperty("attached_collision_evidence_json", evidence_json);
   EXPECT_EQ(evidence_field(evidence_json, "link_a"), "attached:sim:obj_main")
       << "the stop must name the payload the withdrawn allowance belonged to: " << evidence_json;
   EXPECT_NEAR(std::stod(evidence_field(evidence_json, "min_distance_m")), 0.02, 1e-6)
       << "the reported distance is the pair's true one — only the margin it was gated against "
          "moved: "
+      << evidence_json;
+  EXPECT_NE(evidence_json.find(R"("payload_evidence_kind":"pinch_fallback")"), std::string::npos)
+      << evidence_json;
+  EXPECT_NE(evidence_json.find(R"("payload_evidence_ref":"ambiguous:trk3,trk4")"),
+            std::string::npos)
       << evidence_json;
 }
 
@@ -3886,6 +3938,42 @@ struct GraspBeat {
   double workspace_x{0.05};            ///< the workspace box centre along x
   std::int64_t workspace_stamp_ns{0};  ///< its confirmation stamp; 0 = declaration_stamp_ns
   std::string workspace_frame{"base_link"};
+  /// Issue #418: the carried payload's evidence kind and epoch ("" = a legacy
+  /// producer), and the tracker's set riding the same snapshot (one object).
+  std::string evidence_kind{};
+  std::uint32_t epoch{0};
+  bool tracked_set{false};
+  std::string tracked_id{"trk:1"};
+  std::uint32_t tracked_epoch{0};
+  std::string tracked_status{"bound"};
+  std::string tracked_frame{"base_link"};
+  double tracked_x{0.05};  ///< the tracked box centre along x (link0's finger is at 0.05)
+  double tracked_half{0.02};
+  std::uint64_t tracked_revision{1};
+  std::int64_t tracked_stamp_ns{0};      ///< 0 = the stream stamp
+  std::size_t tracked_hull_vertices{0};  ///< one tight hull with this many vertices (0 = none)
+  bool tracked_provisional{false};       ///< TrackedObject.provisional
+  /// Issue #418 K2 eligibility fields of the tracked object.
+  std::string tracked_role{"target"};
+  std::string tracked_key{};             ///< "" = "<target_id>@<declaration_stamp_ns>"
+  std::uint32_t tracked_visible{0};      ///< visible_cells
+  std::int64_t tracked_confirmed_ns{0};  ///< last_confirmed_stamp_ns; 0 = the stream stamp
+  /// Issue #418 K7: the measured support under it (grid z); far below the rig's cells.
+  double tracked_support_z{-1.0};
+  /// Issue #418 OT-10 amendment: the carried payload's primitive evidence (wire
+  /// `geometry_source`: 0 fallback, 1 measured, 2 grown, anything else unknown), its half
+  /// extent, the attachment's evidence_ref, and the track's clearing floor (grid z).
+  std::uint8_t payload_source{0};
+  double payload_half{0.01};
+  double payload_z{0.0};  ///< payload origin along link0's z
+  /// `own_payload_passes`: the payload's z once carried onto the cell (NaN = unchanged).
+  double carry_z{std::numeric_limits<double>::quiet_NaN()};
+  std::string payload_evidence_ref{};
+  double tracked_floor_z{-1.0};
+  /// A second settled track in the same set (`trk:2`, a neighbour), centred at `other_x`.
+  bool other_track{false};
+  double other_x{0.0};
+  double other_half{0.02};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3899,13 +3987,66 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     obj.object_id = b.object_label;
     obj.attach_link = b.attach_link;
     obj.pose_in_link.position.x = b.payload_x;
+    obj.pose_in_link.position.z = b.payload_z;
     obj.pose_in_link.orientation.w = 1.0;
     openral_msgs::msg::AttachedCollisionPrimitive prim;
     prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
-    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.shape_dimensions = {b.payload_half, b.payload_half, b.payload_half};
     prim.pose_in_object.orientation.w = 1.0;
+    prim.geometry_source = b.payload_source;
     obj.primitives.push_back(prim);
+    obj.evidence_kind = b.evidence_kind;
+    obj.evidence_ref = b.payload_evidence_ref;
+    obj.epoch = b.epoch;
     msg.attached_objects.push_back(obj);
+  }
+  if (b.tracked_set) {
+    msg.tracked_objects_valid = true;
+    auto& set = msg.tracked_objects;
+    set.schema_version = "1";
+    set.frame_id = b.tracked_frame;
+    set.stamp_ns = b.tracked_stamp_ns != 0 ? b.tracked_stamp_ns : stream_ns;
+    set.revision = b.tracked_revision;
+    openral_msgs::msg::TrackedObject o;
+    o.object_id = b.tracked_id;
+    o.epoch = b.tracked_epoch;
+    o.label = "cube";
+    o.role = b.tracked_role;
+    o.declaration_key = !b.tracked_key.empty()
+                            ? b.tracked_key
+                            : b.target_id + "@" + std::to_string(b.declaration_stamp_ns);
+    o.visible_cells = b.tracked_visible;
+    o.last_confirmed_stamp_ns = b.tracked_confirmed_ns != 0 ? b.tracked_confirmed_ns : stream_ns;
+    o.status = b.tracked_status;
+    o.provisional = b.tracked_provisional;
+    o.support_z = b.tracked_support_z;
+    o.floor_z = b.tracked_floor_z;
+    o.box.frame_id = b.tracked_frame;
+    o.box.pose.position.x = b.tracked_x;
+    o.box.pose.orientation.w = 1.0;
+    o.box.half_extents.x = b.tracked_half;
+    o.box.half_extents.y = b.tracked_half;
+    o.box.half_extents.z = b.tracked_half;
+    if (b.tracked_hull_vertices > 0) {
+      openral_msgs::msg::AttachedCollisionPrimitive hull;
+      hull.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+      hull.shape_dimensions = {0.01, 0.01, 0.01};
+      hull.pose_in_object.orientation.w = 1.0;
+      hull.tight_hull_vertices.assign(3 * b.tracked_hull_vertices, 0.0);
+      o.tight.push_back(hull);
+    }
+    set.objects.push_back(o);
+    if (b.other_track) {
+      openral_msgs::msg::TrackedObject n = o;
+      n.object_id = "trk:2";
+      n.role = "context";
+      n.status = "confirmed";
+      n.provisional = false;
+      n.box.pose.position.x = b.other_x;
+      n.box.half_extents.x = n.box.half_extents.y = n.box.half_extents.z = b.other_half;
+      n.tight.clear();
+      set.objects.push_back(n);
+    }
   }
   if (!b.second_attach_link.empty()) {
     openral_msgs::msg::AttachedCollisionObject obj;
@@ -4050,6 +4191,9 @@ public:
     js.position = {q};
     js.position.insert(js.position.end(), js_tail.begin(), js_tail.end());
     js.velocity = js_velocity;
+    if (js_stamped) {
+      js.header.stamp = helper_->now();
+    }
     js_pub_->publish(js);
     exec_.spin_some(std::chrono::milliseconds(5));
     if (state_fn) {
@@ -4146,6 +4290,7 @@ public:
   /// the message carries no velocity field, as every rig published before #349's
   /// measured hand speed).
   std::vector<double> js_velocity{};
+  bool js_stamped{false};  ///< header-stamp the joint states (the velocity corroboration)
   /// When set, the world state published every beat (stream stamp in, message
   /// out) in place of the `GraspBeat` one — the place-region tests drive the
   /// same rig with the declared-carry fixture.
@@ -6167,6 +6312,20 @@ TEST_F(LifecycleKernelTest, AMeasuredHandSpeedAboveTheBoundTrips) {
       << logs.joined();
 }
 
+TEST_F(LifecycleKernelTest, AMeasuredVelocityItsPositionsDoNotCorroborateIsNotHandSpeed) {
+  // Spark R262: PhysX reported wrist_roll at 10 rad/s while it sat 6 mrad from its command.
+  // Stamped, the same 0.5 rad/s with the joint standing still reads 0 m/s; it passes.
+  LogCapture logs;
+  GraspRig rig("kernel_ws_meas_spike", lag_params());
+  rig.js_velocity = {-0.5};
+  rig.js_stamped = true;
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  rig.warm(&b, 0.0, 300);
+  EXPECT_TRUE(rig.send_once(&b, 0.0, grasp_chunk(0.0))) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
 TEST_F(LifecycleKernelTest, AJawJointsMeasuredVelocityIsNotHandSpeed) {
   // The same 0.5 rad/s, but j0 is a jaw joint: a jaw jittering at its squeeze
   // contact (#349 p4_mix00) is not the hand moving — 0 m/s, it passes.
@@ -6591,4 +6750,1332 @@ TEST_F(LifecycleKernelTest, TheOtherArmPassingDoesNotResetAHoldRun) {
   ASSERT_TRUE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j1"}, tick)));
   EXPECT_FALSE(rig.send_once(&b, kLagMeasuredQ, two_arm_chunk(0.0, 0.0, {"j0"}, tick)));
   EXPECT_TRUE(rig.node->fault_latched()) << "past j0's cap despite j1 passing every tick";
+}
+
+// ── Issue #418 K1/K3/K6: tracked objects, binding check, (id, epoch) retirement ──
+//
+// The GraspRig's finger (link0, a 10 mm capsule at x = 0.05 for j0 = 0) is the
+// hand. A TRACKED_OBJECT attachment binds only to a live object of the last
+// accepted set whose box meets it at the MEASURED configuration; otherwise the
+// payload stays a checked payload but can never be a grasp handover.
+namespace {
+
+GraspBeat tracked_beat(GraspRig& rig) {
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.object_label = "trk:1";
+  b.declared_object = "trk:1";
+  b.evidence_kind = "tracked_object";
+  b.tracked_set = true;
+  return b;
+}
+
+// Arm, then attach: true when the attach became the handover.
+bool attach_tracked(GraspRig& rig, GraspBeat& b) {
+  b.carrying = false;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the declaration did not arm";
+  b.carrying = true;
+  ++b.revision;
+  rig.warm(&b, 0.0, 150);
+  return rig.node->fault_latched() == false && rig.offer(&b, 0.0, 600);
+}
+
+std::vector<rclcpp::Parameter> tracked_payload_params() {
+  auto params = grasp_params();
+  for (auto& p : params) {
+    if (p.get_name() == "attached_collision_enabled") {
+      p = rclcpp::Parameter("attached_collision_enabled", true);
+    }
+  }
+  params.emplace_back("attached_collision_margin_m", 0.03);
+  params.emplace_back("attached_contact_tolerance_m", 0.001);
+  // Room for a tracked payload's K4 union (a moved pose is unioned, not replaced).
+  for (auto& p : params) {
+    if (p.get_name() == "attached_max_primitives") {
+      p = rclcpp::Parameter("attached_max_primitives", std::int64_t{4});
+    }
+  }
+  return params;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ATrackedBindingAtTheHandIsTheHandover) {
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_on_hand");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attachment_binding_off_hand"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATrackedBindingOffTheHandIsNeverTheHandover) {
+  struct Case {
+    const char* reason;
+    std::function<void(GraspBeat&)> edit;
+  };
+  const std::vector<Case> cases{
+      {"box_off_hand", [](GraspBeat& b) { b.tracked_x = 0.5; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_id = "trk:2"; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_epoch = 1; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_status = "lost"; }},
+      {"no_live_track", [](GraspBeat& b) { b.tracked_status = "released"; }},
+      {"no_accepted_set", [](GraspBeat& b) { b.tracked_set = false; }},
+      // A provisional fit may under-contain the object: never payload geometry.
+      {"provisional_track", [](GraspBeat& b) { b.tracked_provisional = true; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    GraspRig rig("kernel_tracked_off_hand_" + std::to_string(n++));
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    c.edit(b);
+    EXPECT_FALSE(attach_tracked(rig, b)) << c.reason << ": " << logs.joined();
+    EXPECT_GE(logs.count(std::string("safety.attachment_binding_off_hand object=trk:1 epoch=0 "
+                                     "reason=") +
+                         c.reason),
+              1U)
+        << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=binding_off_hand"), 1U)
+        << c.reason << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_handover"), 0U) << c.reason << ": " << logs.joined();
+  }
+  // The control: a LEGACY producer's payload (no evidence kind) is untouched by
+  // the tracker's set, even one that puts the object off the hand.
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_legacy");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.evidence_kind.clear();
+  b.tracked_x = 0.5;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.attachment_binding_off_hand"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AnOffHandBindingIsStillCheckedAsAPayload) {
+  // Off the hand, the payload is never dropped: moved to 20 mm of the occupied
+  // cell (inside the 30 mm attached margin) it stops exactly as a legacy
+  // producer's payload does. Trips never decrease.
+  for (const char* kind : {"", "tracked_object"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_tracked_payload_") + (*kind != 0 ? "tracked" : "legacy"),
+                 tracked_payload_params());
+    rig.voxels = declared_target_voxels();  // one cell, x in [0.140, 0.165]
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    b.evidence_kind = kind;
+    b.tracked_x = 0.5;  // the tracker's box is nowhere near the hand
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << kind << ": 70 mm clear must pass: " << logs.joined();
+    b.payload_x = 0.11;  // box face at 0.120
+    rig.warm(&b, 0.0, 100);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << kind << ": " << logs.joined();
+    EXPECT_TRUE(rig.node->fault_latched()) << kind;
+  }
+}
+
+TEST_F(LifecycleKernelTest, ARefusedTrackedSetMakesEveryObjectIneligible) {
+  struct Case {
+    const char* reason;
+    std::function<void(GraspBeat&, std::int64_t)> edit;
+  };
+  const std::vector<Case> cases{
+      {"frame_mismatch", [](GraspBeat& b, std::int64_t) { b.tracked_frame = "odom"; }},
+      {"oversize", [](GraspBeat& b, std::int64_t) { b.tracked_half = 0.25; }},
+      {"oversize_volume", [](GraspBeat& b, std::int64_t) { b.tracked_half = 0.19; }},
+      {"hull_too_many_vertices", [](GraspBeat& b, std::int64_t) { b.tracked_hull_vertices = 65; }},
+      {"future_stamp",
+       [](GraspBeat& b, std::int64_t now) { b.tracked_stamp_ns = now + 30'000'000'000; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    GraspRig rig("kernel_tracked_refused_" + std::to_string(n++));
+    rig.start();
+    GraspBeat b = tracked_beat(rig);
+    c.edit(b, rig.now_ns());
+    EXPECT_FALSE(attach_tracked(rig, b)) << c.reason << ": " << logs.joined();
+    EXPECT_EQ(logs.count(std::string("safety.tracked_objects_rejected reason=") + c.reason), 1U)
+        << "announced once, on the change: " << logs.joined();
+    EXPECT_GE(logs.count("safety.attachment_binding_off_hand object=trk:1 epoch=0 "
+                         "reason=no_accepted_set"),
+              1U)
+        << c.reason << ": " << logs.joined();
+  }
+  // A 64-vertex hull is within the cap: the control.
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_hull_ok");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.tracked_hull_vertices = 64;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ATrackedSetWhoseRevisionGoesBackIsRefused) {
+  LogCapture logs;
+  GraspRig rig("kernel_tracked_revision");
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.tracked_revision = 5;
+  ASSERT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  // The aggregator re-sends the same revision every beat: still accepted.
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected"), 0U) << logs.joined();
+  // Back to 4: the whole set is refused, so the latched handover's binding is
+  // no longer verified and the declaration retires.
+  b.tracked_revision = 4;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.tracked_objects_rejected reason=revision_regressed"), 1U)
+      << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=binding_off_hand"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the finger in the target cell is no longer exempt";
+}
+
+TEST_F(LifecycleKernelTest, ARetiredTrackedIdentityNeverReArmsButANewEpochDoes) {
+  LogCapture logs;
+  auto params = grasp_params();
+  params.emplace_back("estop_reset_cooldown_s", 0.05);
+  GraspRig rig("kernel_tracked_epochs", params);
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  // Pick and release trk:1 at epoch 0: the release retires (trk:1, 0).
+  pick_and_release(rig, b, "approach:link0:1");
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1 object=trk:1"), 1U)
+      << logs.joined();
+  // A fresh declaration, the same (id, epoch) re-attached: never the handover.
+  b.target_id = "approach:link0:2";
+  EXPECT_FALSE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(
+      logs.count("safety.grasp_region_rejected reason=object_retired target=approach:link0:2"), 1U)
+      << logs.joined();
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));  // past the cooldown
+  ASSERT_TRUE(rig.reset());
+  // Re-grounded after the release: epoch 1 arms.
+  b.target_id = "approach:link0:3";
+  b.carrying = false;
+  ++b.revision;
+  b.epoch = 1;
+  b.tracked_epoch = 1;
+  EXPECT_TRUE(attach_tracked(rig, b)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:3 object=trk:1"), 1U)
+      << logs.joined();
+}
+
+// ── Issue #418 K4: the monotone bound geometry ──────────────────────────────
+//
+// One payload on link0 at x = 0.05; each primitive a 10 mm half box at an
+// object-frame offset. The one occupied cell spans x in [0.140, 0.165], so a
+// primitive at object x = 0.06 (face at 0.12) is inside the 30 mm attached
+// margin and stops, and one at object x = -0.05 is far clear.
+namespace {
+
+constexpr double kTripX = 0.06;
+constexpr double kClearX = -0.05;
+
+struct BoundBeat {
+  std::string kind{"tracked_object"};
+  std::uint32_t epoch{0};
+  std::uint64_t geometry_revision{0};
+  std::vector<std::pair<double, double>> prims;  ///< (x, y) in the object frame
+};
+
+openral_msgs::msg::WorldStateStamped bound_state(std::int64_t stream_ns, const BoundBeat& b) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = stream_ns;
+  msg.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "trk:1";
+  obj.attach_link = "link0";
+  obj.pose_in_link.position.x = 0.05;
+  obj.pose_in_link.orientation.w = 1.0;
+  obj.evidence_kind = b.kind;
+  obj.epoch = b.epoch;
+  obj.geometry_revision = b.geometry_revision;
+  for (const auto& [x, y] : b.prims) {
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.pose_in_object.position.x = x;
+    prim.pose_in_object.position.y = y;
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+  }
+  msg.attached_objects.push_back(obj);
+  return msg;
+}
+
+std::vector<rclcpp::Parameter> bound_params() {
+  auto params = tracked_payload_params();
+  for (auto& p : params) {
+    if (p.get_name() == "attached_max_primitives") {
+      p = rclcpp::Parameter("attached_max_primitives", std::int64_t{32});
+    }
+  }
+  return params;
+}
+
+// A rig publishing `b` every beat, its one cell next to the payload's x.
+struct BoundRig {
+  BoundBeat b;
+  GraspRig rig;
+  explicit BoundRig(const std::string& name) : rig(name, bound_params()) {
+    rig.voxels = declared_target_voxels();
+    rig.state_fn = [this](std::int64_t ns) { return bound_state(ns, b); };
+    rig.start();
+  }
+  void publish(std::uint64_t revision, std::vector<std::pair<double, double>> prims) {
+    b.geometry_revision = revision;
+    b.prims = std::move(prims);
+    rig.warm(nullptr, 0.0, 150);
+  }
+  bool passes() { return rig.offer(nullptr, 0.0, 600); }
+};
+
+std::vector<std::pair<double, double>> clear_prims(std::size_t n) {
+  std::vector<std::pair<double, double>> out;
+  for (std::size_t k = 0; k < n; ++k) {
+    out.emplace_back(kClearX, 0.002 * static_cast<double>(k));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ATrackedBoundGeometryGrowsAndNeverShrinks) {
+  for (const char* kind : {"", "tracked_object"}) {
+    LogCapture logs;
+    BoundRig r(std::string("kernel_bound_grows_") + (*kind != 0 ? "tracked" : "legacy"));
+    r.b.kind = kind;
+    r.publish(0, {{kTripX, 0.0}});
+    r.publish(1, {{kClearX, 0.0}});  // the producer moved its estimate clear
+    if (*kind == 0) {
+      EXPECT_TRUE(r.passes()) << "legacy: the new record replaces the old: " << logs.joined();
+    } else {
+      EXPECT_FALSE(r.passes()) << "tracked: revision 0's primitive stays in the union";
+      EXPECT_TRUE(r.rig.node->fault_latched());
+    }
+  }
+}
+
+TEST_F(LifecycleKernelTest, ALowerOrEqualGeometryRevisionNeverRemovesGeometry) {
+  LogCapture logs;
+  BoundRig r("kernel_bound_revision");
+  r.publish(1, {{kTripX, 0.0}});
+  r.publish(1, {{kTripX, 0.0}});  // the heartbeat re-send: nothing new, nothing said
+  EXPECT_EQ(logs.count("safety.tracked_geometry_unrevised"), 0U) << logs.joined();
+  // A lower revision moving the estimate clear: unioned (never a replacement)
+  // and disclosed, since the producer changed geometry without a new revision.
+  r.publish(0, {{kClearX, 0.0}});
+  EXPECT_EQ(logs.count("safety.tracked_geometry_unrevised object=trk:1 epoch=0 revision=0 held=1"),
+            1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes()) << "revision 1's primitive is still held: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGeometryUpdatePastTheCapIsRefusedAndTheUnionStays) {
+  {
+    LogCapture logs;
+    BoundRig r("kernel_bound_cap_refused");
+    r.publish(0, clear_prims(16));
+    r.publish(1, {{kTripX, 0.0}});  // the 17th primitive: refused whole
+    EXPECT_EQ(logs.count("safety.tracked_geometry_cap object=trk:1 epoch=0 revision=1 cap=16"), 1U)
+        << "WARN, rate-limited: " << logs.joined();
+    EXPECT_TRUE(r.passes()) << logs.joined();
+  }
+  {
+    LogCapture logs;
+    BoundRig r("kernel_bound_cap_keeps");
+    auto prims = clear_prims(15);
+    prims.emplace_back(kTripX, 0.0);
+    r.publish(0, prims);
+    r.publish(1, {{kClearX, 0.1}, {kClearX, 0.2}});  // 18: refused, the 16 stay
+    EXPECT_GE(logs.count("safety.tracked_geometry_cap"), 1U) << logs.joined();
+    EXPECT_FALSE(r.passes()) << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ANewEpochStartsAFreshBoundGeometry) {
+  LogCapture logs;
+  BoundRig r("kernel_bound_epoch");
+  r.publish(0, {{kTripX, 0.0}});
+  r.b.epoch = 1;  // released and re-grounded
+  r.publish(0, {{kClearX, 0.0}});
+  EXPECT_TRUE(r.passes()) << logs.joined();
+}
+
+// ── Issue #418 K5: the kernel's jaw-open release ────────────────────────────
+//
+// Three links. link0 "hand" (j0 about z): a palm capsule at x = 0.05. link1
+// "finger" (the jaw, about x): a capsule ON the x axis at 0.10, so the jaw angle
+// moves nothing and is only the measured signal. link2 "other" (j2 along y):
+// a capsule at (0.10, -0.05), 35 mm clear of the payload; j2 = 0.03 drives it
+// into the payload. The payload is a 10 mm sphere on the hand at x = 0.10,
+// touch link "finger", bound to the tracker's box at the same place. The trace
+// mirrors t9: hold ~0.3, the jaw opens to 0.988.
+namespace {
+
+std::vector<rclcpp::Parameter> release_params() {
+  return {
+      {"n_dof", std::int64_t{3}},
+      {"joint_position_min", std::vector<double>{-3.14, -3.14, -0.5}},
+      {"joint_position_max", std::vector<double>{3.14, 3.14, 0.5}},
+      {"joint_velocity_max", std::vector<double>{3.15, 3.15, 3.15}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{64}},
+      {"attached_collision_enabled", true},
+      {"attached_collision_deadline_ms", 200.0},
+      {"attached_collision_margin_m", 0.02},
+      {"attached_max_objects", std::int64_t{1}},
+      {"attached_max_primitives", std::int64_t{16}},
+      {"attached_max_touch_links", std::int64_t{4}},
+      {"collision_n_links", std::int64_t{3}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0, -1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1, 1, 2}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_origin_xyzrpy", std::vector<double>(18, 0.0)},
+      {"collision_axis", std::vector<double>{0, 0, 1, 1, 0, 0, 0, 1, 0}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1, 2}},
+      {"collision_capsule_radius", std::vector<double>{0.01, 0.005, 0.005}},
+      {"collision_capsule_half_length", std::vector<double>{0.0, 0.0, 0.0}},
+      {"collision_capsule_origin_xyzrpy",
+       std::vector<double>{0.05, 0, 0, 0, 0, 0, 0.10, 0, 0, 0, 0, 0, 0.10, -0.05, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"hand", "finger", "other"}},
+      {"collision_joint_names", std::vector<std::string>{"j0", "jaw", "j2"}},
+      {"collision_state_deadline_ms", 5000.0},
+      {"tracked_release_jaw_joints", std::vector<std::string>{"jaw"}},
+      {"tracked_release_jaw_open_sign", std::vector<double>{1.0}},
+      {"tracked_release_gap", 0.2},
+      {"tracked_release_dwell_s", 0.1},
+      {"tracked_release_clear_m", 0.02},
+      {"tracked_release_timeout_s", 0.4},
+      {"hal_mode", std::string("sim")},  // K5 is sim-only until Safety-WG review
+  };
+}
+
+openral_msgs::msg::WorldStateStamped release_state(std::int64_t stream_ns) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = stream_ns;
+  msg.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "trk:1";
+  obj.attach_link = "hand";
+  obj.touch_links = {"finger"};
+  obj.pose_in_link.position.x = 0.10;
+  obj.pose_in_link.orientation.w = 1.0;
+  obj.evidence_kind = "tracked_object";
+  openral_msgs::msg::AttachedCollisionPrimitive prim;
+  prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE;
+  prim.shape_dimensions = {0.01};
+  prim.pose_in_object.orientation.w = 1.0;
+  obj.primitives.push_back(prim);
+  msg.attached_objects.push_back(obj);
+  msg.tracked_objects_valid = true;
+  auto& set = msg.tracked_objects;
+  set.schema_version = "1";
+  set.frame_id = "base_link";
+  set.stamp_ns = stream_ns;
+  set.revision = 1;
+  openral_msgs::msg::TrackedObject o;
+  o.object_id = "trk:1";
+  o.label = "banana";
+  o.role = "target";
+  o.status = "bound";
+  o.box.frame_id = "base_link";
+  o.box.pose.position.x = 0.10;
+  o.box.pose.orientation.w = 1.0;
+  o.box.half_extents.x = 0.02;
+  o.box.half_extents.y = 0.02;
+  o.box.half_extents.z = 0.02;
+  set.objects.push_back(o);
+  return msg;
+}
+
+openral_msgs::msg::ActionChunk release_chunk(double j0, double jaw, double j2) {
+  openral_msgs::msg::ActionChunk chunk;
+  chunk.control_mode = 0;  // JOINT_POSITION
+  chunk.horizon = 1;
+  chunk.n_dof = 3;
+  chunk.flat = {j0, jaw, j2};
+  chunk.rskill_id = "pick_cube";
+  return chunk;
+}
+
+struct ReleaseRig {
+  GraspRig rig;
+  explicit ReleaseRig(const std::string& name) : rig(name, release_params()) {
+    rig.voxels = grasp_target_voxels();
+    rig.voxels.origin.x = 1.0;  // one cell, far from everything
+    rig.js_names = {"j0", "jaw", "j2"};
+    rig.js_tail = {0.30, 0.0};
+    rig.state_fn = release_state;
+    rig.start();
+  }
+  void jaw(double q, int ms, double j0 = 0.0) {
+    rig.js_tail = {q, 0.0};
+    rig.warm(nullptr, j0, ms);
+  }
+  // The t9 trace past the hold: opens to 0.988 and stays.
+  void open_t9() {
+    for (const double q : {0.6, 0.8, 0.988}) {
+      jaw(q, 60);
+    }
+    jaw(0.988, 250);
+  }
+  bool passes(double j0, double j2 = 0.0) {
+    return rig.offer_chunk(nullptr, j0, release_chunk(j0, 0.988, j2), 400);
+  }
+};
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_t9");
+  r.jaw(0.30, 300);  // the hold, captured at attach
+  r.jaw(0.38, 200);  // squeeze jitter, inside the gap
+  r.jaw(0.90, 1);    // a spike shorter than the dwell
+  r.jaw(0.30, 200);
+  EXPECT_EQ(logs.count("safety.tracked_release object="), 0U) << logs.joined();
+  r.open_t9();
+  EXPECT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  // Window open: the finger still touching the frozen payload is exempt.
+  EXPECT_TRUE(r.passes(0.0)) << logs.joined();
+  // The hand retreats: FK separation closes the window.
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  // The payload stayed where it was released, now a plain obstacle: driving the
+  // finger back into it stops (with the payload on the hand it would ride along).
+  EXPECT_FALSE(r.passes(0.0)) << logs.joined();
+  EXPECT_TRUE(r.rig.node->fault_latched());
+  EXPECT_EQ(logs.count("b=finger step="), 1U)
+      << "the payload against the finger: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, TheTrackersReleaseFreezesThePayloadWhenTheJawRuleDoesNot) {
+  // 2026-10-22, Spark R138: the tracker released the banana, the jaw never opened past this
+  // kernel's gap, and the payload rode the hand for 3 s after it fell.
+  LogCapture logs;
+  ReleaseRig r("kernel_release_by_tracker");
+  r.jaw(0.30, 300);  // the hold, captured at attach; it never opens past the gap
+  ASSERT_EQ(logs.count("safety.tracked_release object="), 0U) << logs.joined();
+  r.rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = release_state(stream_ns);
+    msg.tracked_objects.objects[0].status = "released";
+    return msg;
+  };
+  r.jaw(0.30, 200);
+  EXPECT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0 by=tracker"), 1U)
+      << logs.joined();
+  EXPECT_TRUE(r.passes(0.0)) << "the touching finger is exempt in the window: " << logs.joined();
+  r.jaw(0.30, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AFrozenReleasedPayloadIsNotCheckedAgainstTheWorld) {
+  // 2026-10-22, Spark R168-R176: the banana's frozen box on the bowl it was dropped into
+  // latched a world stop ~60 ms after release. Not carried, it cannot be moved into the map.
+  LogCapture logs;
+  ReleaseRig r("kernel_release_frozen_world");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  r.jaw(0.988, 150, kGraspClearQ);  // the hand clears it: a plain obstacle from here
+  ASSERT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  r.rig.voxels.origin.x = 0.0875;  // a cell right on the frozen payload (base 0.10, 0, 0)
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_TRUE(r.passes(kGraspClearQ)) << "a static box on a static cell: " << logs.joined();
+  EXPECT_EQ(logs.count("a=attached:trk:1"), 0U) << logs.joined();
+}
+
+// Two 1 cm cells inside the frozen payload's box (sphere r=0.01 at base 0.10, 0, 0).
+openral_msgs::msg::OccupancyVoxels cells_on_the_frozen_payload() {
+  auto vox = grasp_target_voxels();
+  vox.resolution = 0.01;
+  vox.size_x = 2;
+  vox.origin.x = 0.09;
+  vox.origin.y = -0.005;
+  vox.origin.z = -0.005;
+  vox.occupancy.assign(2, 1);
+  return vox;
+}
+
+TEST_F(LifecycleKernelTest, AClosedReleaseHandsTheFrozenBoxToTheMapOnceTheMapCarriesIt) {
+  // Spark R263, 2026-10-22: the orange's frozen box blocked the regrasp for 16 s.
+  LogCapture logs;
+  ReleaseRig r("kernel_release_in_map");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  r.jaw(0.988, 150, kGraspClearQ);
+  ASSERT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  r.rig.voxels = cells_on_the_frozen_payload();
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_in_map"), 0U)
+      << "the tracker still calls it bound (the bridge may be clearing it): " << logs.joined();
+  r.rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = release_state(stream_ns);
+    msg.tracked_objects.objects[0].status = "confirmed";  // re-found by the tracker
+    return msg;
+  };
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_in_map object=trk:1 epoch=0 cells=2"), 1U)
+      << logs.joined();
+  r.rig.voxels.origin.x = 1.0;  // the hand occludes it: the drop is latched
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_TRUE(r.passes(0.0)) << "no frozen box around the finger: " << logs.joined();
+  EXPECT_EQ(logs.count("a=attached:trk:1"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AClosedReleaseKeepsTheFrozenBoxWhileTheMapIsEmptyThere) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_not_in_map");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  r.jaw(0.988, 150, kGraspClearQ);
+  r.rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = release_state(stream_ns);
+    msg.tracked_objects.objects[0].status = "confirmed";
+    return msg;
+  };
+  r.jaw(0.988, 150, kGraspClearQ);
+  EXPECT_EQ(logs.count("safety.tracked_release_in_map"), 0U) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "nothing measured there: the box stays: " << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, ANewBindingNeverInheritsAReleasedOnesSlot) {
+  // Spark R285: trk:1 released and retired; trk:2, bound to the same hand next, took its
+  // slot with the closed window and frozen box, and the gripper stopped against it.
+  LogCapture logs;
+  ReleaseRig r("kernel_release_slot_reuse");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  r.jaw(0.988, 150, kGraspClearQ);
+  ASSERT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=separation"), 1U)
+      << logs.joined();
+  r.rig.state_fn = [](std::int64_t stream_ns) {  // trk:1 retired; trk:2 bound in its place
+    auto msg = release_state(stream_ns);
+    msg.attached_objects[0].object_id = "trk:2";
+    msg.tracked_objects.objects[0].object_id = "trk:2";
+    return msg;
+  };
+  r.jaw(0.30, 300);  // the new hold
+  EXPECT_TRUE(r.passes(0.0)) << "the finger on the payload it carries: " << logs.joined();
+  EXPECT_EQ(logs.count("a=attached:trk:2"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.tracked_geometry_unrevised object=trk:2"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AReleaseWindowThatNeverSeparatesClosesOnTimeout) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_timeout");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  r.jaw(0.988, 500);  // the hand never moves; 0.4 s timeout
+  EXPECT_EQ(logs.count("safety.tracked_release_closed object=trk:1 epoch=0 reason=timeout"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(r.passes(0.0)) << "the touching finger is no longer exempt: " << logs.joined();
+  EXPECT_EQ(logs.count("b=finger step="), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload) {
+  LogCapture logs;
+  ReleaseRig r("kernel_release_other_link");
+  r.jaw(0.30, 300);
+  r.open_t9();
+  ASSERT_EQ(logs.count("safety.tracked_release object=trk:1 epoch=0"), 1U) << logs.joined();
+  ASSERT_TRUE(r.passes(0.0)) << logs.joined();
+  EXPECT_FALSE(r.passes(0.0, 0.03)) << "link2 into the frozen payload: " << logs.joined();
+  EXPECT_EQ(logs.count("b=other step="), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.tracked_release_closed"), 0U) << "still in the window";
+}
+
+TEST_F(LifecycleKernelTest, TheTrackedReleaseRefusesToConfigureOffSim) {
+  // Mirrors K2: K5 is not monotone (hazard OT-7), so the kernel itself keeps it
+  // off real hardware, not only the launch's sim-only rule for bind / on.
+  for (const char* mode : {"real", "mock", ""}) {
+    GraspRig off_sim(std::string("kernel_release_cfg_") + (*mode != 0 ? mode : "empty"),
+                     with_param(release_params(), "hal_mode", rclcpp::ParameterValue(mode)));
+    EXPECT_FALSE(off_sim.configure()) << "hal_mode '" << mode << "'";
+  }
+  // Without jaw joints K5 is off, and nothing about it is refused on real.
+  auto off = with_param(release_params(), "hal_mode", rclcpp::ParameterValue("real"));
+  off = with_param(off, "tracked_release_jaw_joints",
+                   rclcpp::ParameterValue(std::vector<std::string>{}));
+  off = with_param(off, "tracked_release_jaw_open_sign",
+                   rclcpp::ParameterValue(std::vector<double>{}));
+  GraspRig real_off("kernel_release_cfg_real_off", off);
+  EXPECT_TRUE(real_off.configure());
+  GraspRig ok("kernel_release_cfg_sim", release_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+// ── Issue #418 K2: the grasp exemption by tracked-object id (hazard OT-6) ───
+//
+// The GraspRig's finger (link0, its TCP the capsule origin at x = 0.05 for
+// j0 = 0) is the one hand. Two occupied cells, centred at x = 0.025 and 0.05;
+// the finger sits in the second. The tracked target's box (centre 0.0375, half
+// 0.03) holds both, so the kernel's own cover check (>= 2 occupied centres)
+// passes. No producer region (`region = false`): in `on` the HAL's leg stands
+// down, and the tracked table is the only possible source.
+namespace {
+
+std::vector<rclcpp::Parameter> k2_params(bool enabled = true, bool grasp_allowance = true,
+                                         const std::string& hal_mode = "sim") {
+  auto params = grasp_params(grasp_allowance);
+  params.emplace_back("tracked_grasp_exemption_enabled", enabled);
+  params.emplace_back("hal_mode", hal_mode);
+  return params;
+}
+
+openral_msgs::msg::OccupancyVoxels k2_voxels() {
+  auto vox = grasp_target_voxels();
+  vox.size_x = 2;
+  vox.origin.x = 0.0125;
+  vox.occupancy.assign(2, 1);
+  return vox;
+}
+
+GraspBeat k2_beat(GraspRig& rig) {
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region = false;
+  b.tracked_set = true;
+  b.tracked_status = "confirmed";
+  b.tracked_x = 0.0375;
+  b.tracked_half = 0.03;
+  return b;
+}
+
+// A fresh on-mode rig, `mutate` applied to the beat: does the finger-in-target
+// chunk pass?
+bool k2_passes(const std::string& name, const std::function<void(GraspRig&, GraspBeat&)>& mutate,
+               std::vector<rclcpp::Parameter> params = k2_params()) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = k2_voxels();
+  rig.start();
+  GraspBeat b = k2_beat(rig);
+  mutate(rig, b);
+  rig.warm(&b, 0.0, 200);
+  return rig.offer(&b, 0.0, 600);
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, OnModeExemptsTheFingerAgainstItsUniqueEligibleTarget) {
+  LogCapture logs;
+  EXPECT_TRUE(k2_passes("kernel_k2_on", [](GraspRig&, GraspBeat&) {})) << logs.joined();
+  EXPECT_GE(logs.count("safety.tracked_grasp_eligible n=1 of=1 declaration=cell:cube@"), 1U)
+      << logs.joined();
+  // The control: the same scene with the source on the legacy region (no
+  // region measured) stops, so the pass above is K2's.
+  EXPECT_FALSE(k2_passes("kernel_k2_off", [](GraspRig&, GraspBeat&) {}, k2_params(false)));
+}
+
+TEST_F(LifecycleKernelTest, AProvisionalTrackStillServesAsTheK2Exemption) {
+  // A provisional box may under-contain, so it can only shrink what is exempted:
+  // it stays K2 exemption geometry (K3 refuses it as payload).
+  LogCapture logs;
+  EXPECT_TRUE(k2_passes("kernel_k2_provisional", [](GraspRig&, GraspBeat& b) {
+    b.tracked_provisional = true;
+  })) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, EveryIneligibleTrackedTargetStops) {
+  struct Case {
+    const char* why;
+    std::function<void(GraspRig&, GraspBeat&)> mutate;
+  };
+  const std::vector<Case> cases = {
+      {"role", [](GraspRig&, GraspBeat& b) { b.tracked_role = "destination"; }},
+      {"declaration_key", [](GraspRig&, GraspBeat& b) { b.tracked_key = "cell:cube@1"; }},
+      {"deploy_key", [](GraspRig&, GraspBeat& b) { b.tracked_key = "deploy@0"; }},
+      {"bound", [](GraspRig&, GraspBeat& b) { b.tracked_status = "bound"; }},
+      {"tentative", [](GraspRig&, GraspBeat& b) { b.tracked_status = "tentative"; }},
+      {"split", [](GraspRig&, GraspBeat& b) { b.tracked_status = "split"; }},
+      {"stale",
+       [](GraspRig& r, GraspBeat& b) { b.tracked_confirmed_ns = r.now_ns() - 10'000'000'000LL; }},
+      {"cover", [](GraspRig&, GraspBeat& b) { b.tracked_visible = 5; }},  // needs 3 of 2
+      {"retracted", [](GraspRig&, GraspBeat& b) { b.active = false; }},
+      {"no_set", [](GraspRig&, GraspBeat& b) { b.tracked_set = false; }},
+      {"one_cell", [](GraspRig& r, GraspBeat&) { r.voxels.occupancy = {0, 1}; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    EXPECT_FALSE(k2_passes("kernel_k2_inelig_" + std::to_string(n++), c.mutate))
+        << c.why << ": " << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ARetiredTrackedIdentityIsNeverExemptButANewEpochIs) {
+  // K6 retires (id, epoch) when a latched tracked handover retires; K2 then
+  // never exempts that identity again, while the re-grounded epoch is eligible.
+  const auto run = [](const std::string& name, std::uint32_t epoch_after) {
+    LogCapture logs;
+    GraspRig rig(name, k2_params());
+    rig.voxels = k2_voxels();
+    rig.start();
+    GraspBeat b = k2_beat(rig);
+    b.region = true;  // a legacy producer region, so the handover can latch
+    b.object_label = "trk:1";
+    b.declared_object = "trk:1";
+    b.evidence_kind = "tracked_object";
+    rig.warm(&b, 0.0, 200);
+    EXPECT_TRUE(rig.offer(&b, 0.0)) << "K2 exempts before the grasp: " << logs.joined();
+    b.carrying = true;  // bound: the octomap clears it by identity
+    b.tracked_status = "bound";
+    ++b.revision;
+    rig.voxels.occupancy = {0, 0};
+    rig.warm(&b, 0.0, 200);
+    EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=trk:1"), 1U)
+        << logs.joined();
+    b.active = false;  // the pick ends: the latched handover retires (trk:1, 0)
+    rig.warm(&b, 0.0, 200);
+    EXPECT_GE(logs.count("safety.grasp_region_dropped reason=retracted"), 1U) << logs.joined();
+    // A new declaration; the object is back on the table, confirmed.
+    b = k2_beat(rig);
+    b.revision = 2;
+    b.tracked_epoch = epoch_after;
+    rig.voxels = k2_voxels();
+    rig.warm(&b, 0.0, 200);
+    return rig.offer(&b, 0.0, 600);
+  };
+  EXPECT_FALSE(run("kernel_k2_retired", 0)) << "(trk:1, 0) was retired";
+  EXPECT_TRUE(run("kernel_k2_new_epoch", 1)) << "(trk:1, 1) is a new identity";
+}
+
+TEST_F(LifecycleKernelTest, TheTrackedSourceRefusesToConfigureOutsideItsScope) {
+  GraspRig no_allowance("kernel_k2_cfg_noallow", k2_params(true, false));
+  EXPECT_FALSE(no_allowance.configure()) << "needs grasp_allowance_enabled";
+  GraspRig real("kernel_k2_cfg_real", k2_params(true, true, "real"));
+  EXPECT_FALSE(real.configure()) << "sim-only until Safety-WG review";
+  GraspRig ok("kernel_k2_cfg_ok", k2_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+TEST_F(LifecycleKernelTest, TheK2ExtraFixedJawsRefuseAnUnknownLinkOrNoK2) {
+  // tracked_grasp_extra_contact_links is K2-only: set without K2 it has no reader,
+  // and a name the collision model does not know would exempt nothing (or the wrong
+  // index). Both refuse configure; a known link configures.
+  const auto extra = [](std::vector<std::string> names, bool enabled = true) {
+    auto p = k2_params(enabled);
+    p.emplace_back("tracked_grasp_extra_contact_links", names);
+    return p;
+  };
+  GraspRig no_k2("kernel_k2_extra_nok2", extra({"link0"}, false));
+  EXPECT_FALSE(no_k2.configure()) << "a K2-only parameter with K2 off";
+  GraspRig unknown("kernel_k2_extra_unknown", extra({"gripper"}));
+  EXPECT_FALSE(unknown.configure()) << "not a collision link";
+  GraspRig ok("kernel_k2_extra_ok", extra({"link0"}));
+  EXPECT_TRUE(ok.configure());
+}
+
+// ── Issue #418 K7: explained cells for workspace contact (hazard OT-11) ──────
+//
+// The #349 workspace rig (link0 a hand link, the hand still, the workspace a
+// 0.10 m cube on the finger), on the K2 grid: two occupied cells centred at
+// x = 0.025 and 0.05, the finger in the second. With #349 alone the slow hand
+// touches them; with K7 they are tolerated only when something explains them.
+namespace {
+
+std::vector<rclcpp::Parameter> k7_params(bool enabled = true, const std::string& points = "",
+                                         bool workspace = true) {
+  auto params = workspace_params(workspace);
+  params.emplace_back("workspace_explained_cells_enabled", enabled);
+  if (!points.empty()) {
+    params.emplace_back("static_points_file", points);
+  }
+  return params;
+}
+
+// A tracked CONTEXT carton (a neighbour, not the target) whose box holds both cells.
+void k7_neighbour(GraspBeat& b) {
+  b.tracked_set = true;
+  b.tracked_status = "confirmed";
+  b.tracked_role = "context";
+  b.tracked_key = "deploy@0";  // any declaration: K7 does not key on it
+  b.tracked_x = 0.0375;
+  b.tracked_half = 0.03;
+}
+
+bool k7_passes(const std::string& name, const std::function<void(GraspRig&, GraspBeat&)>& mutate,
+               std::vector<rclcpp::Parameter> params = k7_params()) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = k2_voxels();
+  rig.start();
+  GraspBeat b = workspace_beat(rig.now_ns());
+  mutate(rig, b);
+  rig.warm(&b, 0.0, 300);
+  return rig.offer(&b, 0.0, 600);
+}
+
+std::string k7_points_file(const std::string& name, const std::string& body) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("openral_k7_" + name + "_" + std::to_string(::getpid()) + ".txt");
+  std::ofstream(path) << body;
+  return path.string();
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APersonsHandInTheWorkspaceStopsUnderK7) {
+  // The control: #349 alone tolerates the slow hand on the two cells.
+  EXPECT_TRUE(k7_passes("kernel_k7_off", [](GraspRig&, GraspBeat&) {}, k7_params(false)));
+  // K7 on, nothing explains them (no tracked object, no static geometry, no
+  // support): the person-hand probe stops, and says why.
+  LogCapture logs;
+  EXPECT_FALSE(k7_passes("kernel_k7_probe", [](GraspRig&, GraspBeat&) {})) << logs.joined();
+  EXPECT_GE(logs.count("workspace_denied=5"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.workspace_explained_cells enabled"), 1U) << "configure WARNs";
+}
+
+TEST_F(LifecycleKernelTest, AnEligibleTrackedObjectOfAnyRoleExplainsItsCells) {
+  LogCapture logs;
+  EXPECT_TRUE(k7_passes("kernel_k7_neighbour", [](GraspRig&, GraspBeat& b) { k7_neighbour(b); }))
+      << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_explained objects=1 of=1"), 1U) << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_contact link=link0"), 1U) << "never silent";
+}
+
+TEST_F(LifecycleKernelTest, EveryUnexplainingTrackedObjectStopsUnderK7) {
+  struct Case {
+    const char* why;
+    std::function<void(GraspRig&, GraspBeat&)> mutate;
+  };
+  const std::vector<Case> cases = {
+      {"split", [](GraspRig&, GraspBeat& b) { b.tracked_status = "split"; }},
+      {"tentative", [](GraspRig&, GraspBeat& b) { b.tracked_status = "tentative"; }},
+      {"released", [](GraspRig&, GraspBeat& b) { b.tracked_status = "released"; }},
+      {"lost", [](GraspRig&, GraspBeat& b) { b.tracked_status = "lost"; }},
+      {"stale",
+       [](GraspRig& r, GraspBeat& b) { b.tracked_confirmed_ns = r.now_ns() - 10'000'000'000LL; }},
+      {"cover", [](GraspRig&, GraspBeat& b) { b.tracked_visible = 5; }},  // needs 3 of 2
+      {"one_cell", [](GraspRig& r, GraspBeat&) { r.voxels.occupancy = {0, 1}; }},
+      {"frame", [](GraspRig&, GraspBeat& b) { b.tracked_frame = "world"; }},
+      {"too_small", [](GraspRig&, GraspBeat& b) { b.tracked_half = 0.005; }},
+  };
+  int n = 0;
+  for (const auto& c : cases) {
+    LogCapture logs;
+    EXPECT_FALSE(k7_passes("kernel_k7_inelig_" + std::to_string(n++),
+                           [&c](GraspRig& r, GraspBeat& b) {
+                             k7_neighbour(b);
+                             c.mutate(r, b);
+                           }))
+        << c.why << ": " << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ABoundObjectExplainsItsCellsUntilTheBridgeClearsThem) {
+  // Spark R245/R253, 2026-10-22: the bind took the banana out of the explaining set while
+  // the octomap bridge had yet to clear its cells; the fingertip in them stopped 0.1 s later.
+  LogCapture logs;
+  EXPECT_TRUE(k7_passes("kernel_k7_bound", [](GraspRig&, GraspBeat& b) {
+    k7_neighbour(b);
+    b.tracked_status = "bound";
+  })) << logs.joined();
+  EXPECT_GE(logs.count("safety.workspace_explained objects=1 of=1"), 1U) << logs.joined();
+  EXPECT_FALSE(k7_passes("kernel_k7_bound_cleared",
+                         [](GraspRig& r, GraspBeat& b) {
+                           k7_neighbour(b);
+                           b.tracked_status = "bound";
+                           r.voxels.occupancy = {
+                               0, 1};  // the bridge cleared the rest: the cover fails
+                         }))
+      << "a cell left over is no longer the payload's: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AHandAtTheTargetHoldsItsCoverUntilTheAgeBound) {
+  // Issue #418 contact hold (Isaac R41-R43): the fingers hide half the target, so the
+  // kernel's own cover check falls short (here 5 expected cells, 2 occupied) while link0,
+  // a declared hand link, is in the box. A TARGET box whose cover the kernel last passed
+  // within grasp_region_max_age_s (0.6 s) keeps explaining; past it, it stops. A
+  // destination box is held the same way; a context object, or a target whose cover never
+  // passed, is never held.
+  const auto params =
+      with_param(k7_params(), "grasp_region_max_age_s", rclcpp::ParameterValue(0.6));
+  const auto rig_with = [&](const std::string& name) {
+    auto rig = std::make_unique<GraspRig>(name, params);
+    rig->voxels = k2_voxels();
+    rig->start();
+    return rig;
+  };
+  {
+    LogCapture logs;
+    auto rig = rig_with("kernel_hold_target");
+    GraspBeat b = workspace_beat(rig->now_ns());
+    k7_neighbour(b);
+    b.tracked_role = "target";
+    b.tracked_visible = 2;  // the kernel's cover passes: 2 of 2
+    rig->warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig->offer(&b, 0.0, 600)) << logs.joined();
+    b.tracked_visible = 5;  // the hand hides it: 2 of the 3 needed
+    rig->warm(&b, 0.0, 150);
+    EXPECT_TRUE(rig->offer(&b, 0.0, 300)) << "held within the age bound: " << logs.joined();
+    EXPECT_GE(logs.count("safety.tracked_cover_held object=trk:1"), 1U) << logs.joined();
+    rig->warm(&b, 0.0, 700);
+    EXPECT_FALSE(rig->offer(&b, 0.0, 600)) << "past grasp_region_max_age_s it fails closed";
+  }
+  {
+    // The destination the hand places into (Isaac R63: the bowl) is held the same way.
+    auto rig = rig_with("kernel_hold_destination");
+    GraspBeat b = workspace_beat(rig->now_ns());
+    k7_neighbour(b);
+    b.tracked_role = "destination";
+    b.tracked_visible = 2;
+    rig->warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig->offer(&b, 0.0, 600));
+    b.tracked_visible = 5;
+    rig->warm(&b, 0.0, 150);
+    EXPECT_TRUE(rig->offer(&b, 0.0, 300)) << "the destination is held too";
+  }
+  {
+    auto rig = rig_with("kernel_hold_context");
+    GraspBeat b = workspace_beat(rig->now_ns());
+    k7_neighbour(b);  // a context neighbour: never held
+    b.tracked_visible = 2;
+    rig->warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig->offer(&b, 0.0, 600));
+    b.tracked_visible = 5;
+    rig->warm(&b, 0.0, 150);
+    EXPECT_FALSE(rig->offer(&b, 0.0, 600)) << "only the target is held";
+  }
+}
+
+TEST_F(LifecycleKernelTest, DeclaredStaticCellsAreExplainedUnderK7) {
+  // A fixed-base grid is the base frame's own lattice (origin on a multiple of
+  // the resolution): two cells centred at x = 0.0375 and 0.0625, the finger
+  // between them. The launch's cells file holds one centre per static cell.
+  const auto on_lattice = [](GraspRig& r, GraspBeat&) {
+    r.voxels = k2_voxels();
+    r.voxels.origin.x = 0.025;
+    r.voxels.origin.y = -0.025;
+    r.voxels.origin.z = -0.025;
+  };
+  const auto both =
+      k7_points_file("both", "# tote wall\n0.0375 -0.0125 -0.0125\n\n0.0625 -0.0125 -0.0125\n");
+  {
+    LogCapture logs;
+    EXPECT_TRUE(k7_passes("kernel_k7_static", on_lattice, k7_params(true, both))) << logs.joined();
+    EXPECT_EQ(logs.count("safety.workspace_static_cells marked=2 of 2 points"), 1U)
+        << "marked once per lattice, not per grid: " << logs.joined();
+  }
+  // Cells elsewhere in the grid's frame explain nothing here.
+  const auto elsewhere = k7_points_file("elsewhere", "0.5 0.5 0.5\n");
+  EXPECT_FALSE(k7_passes("kernel_k7_static_far", on_lattice, k7_params(true, elsewhere)));
+  {
+    // A grid off the base frame's lattice (the half-cell rig): a centre could
+    // land in a neighbouring cell, so no cell is explained as static.
+    LogCapture logs;
+    EXPECT_FALSE(k7_passes(
+        "kernel_k7_static_offlattice", [](GraspRig& r, GraspBeat&) { r.voxels = k2_voxels(); },
+        k7_params(true, both)));
+    EXPECT_GE(logs.count("safety.workspace_static_cells refused reason=lattice"), 1U)
+        << logs.joined();
+  }
+  std::filesystem::remove(both);
+  std::filesystem::remove(elsewhere);
+}
+
+TEST_F(LifecycleKernelTest, TheMeasuredSupportBesideATrackedObjectIsExplainedUnderK7) {
+  // Four cells along x (0.025 .. 0.10). A tracked object covers the outer two
+  // (its cover check passes on them); the two at the finger are the support
+  // beside it: explained only by the support_z the tracker measured under it.
+  const auto run = [](const std::string& name, double support_z) {
+    GraspRig rig(name, k7_params());
+    rig.voxels = k2_voxels();
+    rig.voxels.size_x = 4;
+    rig.voxels.occupancy.assign(4, 1);
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    k7_neighbour(b);
+    b.tracked_x = 0.0875;
+    b.tracked_half = 0.0249;
+    b.tracked_support_z = support_z;
+    rig.warm(&b, 0.0, 300);
+    return rig.offer(&b, 0.0, 600);
+  };
+  EXPECT_TRUE(run("kernel_k7_support", 0.0)) << "the cells are the support's top layer";
+  EXPECT_FALSE(run("kernel_k7_support_low", -1.0)) << "a support far below explains nothing";
+  EXPECT_FALSE(run("kernel_k7_support_nan", std::numeric_limits<double>::quiet_NaN()));
+}
+
+TEST_F(LifecycleKernelTest, TheConnectedSupportLayerIsExplainedPastTheReachUnderK7) {
+  // Spark R11: a finger on the tabletop 14 cm from the tracked object. Ten cells
+  // along x (0.025 .. 0.25) inside a workspace spanning them; the object covers
+  // the cells at 0.20 / 0.225, the finger is on the cell at 0.05, far past the
+  // 5 cm reach. Connected through the row, it is the object's support; with two
+  // cells of the row free, it is not (one free cell is bridged, Spark R18).
+  const auto run = [](const std::string& name, bool connected, LogCapture* logs) {
+    GraspRig rig(name, k7_params());
+    rig.voxels = k2_voxels();
+    rig.voxels.size_x = 10;
+    rig.voxels.occupancy.assign(10, 1);
+    if (!connected) {
+      rig.voxels.occupancy[5] = 0;  // x = 0.15
+      rig.voxels.occupancy[6] = 0;  // x = 0.175
+    }
+    rig.start();
+    GraspBeat b = workspace_beat(rig.now_ns());
+    b.workspace_x = 0.125;
+    b.workspace_half = 0.13;
+    k7_neighbour(b);
+    b.tracked_x = 0.2125;
+    b.tracked_half = 0.0249;
+    b.tracked_support_z = 0.0;
+    rig.warm(&b, 0.0, 300);
+    const bool passed = rig.offer(&b, 0.0, 600);
+    if (logs != nullptr) {
+      EXPECT_GE(logs->count("support_cells=10"), 1U) << logs->joined();
+    }
+    return passed;
+  };
+  LogCapture logs;
+  EXPECT_TRUE(run("kernel_k7_support_connected", true, &logs)) << logs.joined();
+  EXPECT_FALSE(run("kernel_k7_support_gap", false, nullptr)) << "a gap ends the support";
+}
+
+TEST_F(LifecycleKernelTest, ExplainedCellsRefuseToConfigureOutsideTheirScope) {
+  GraspRig no_ws("kernel_k7_cfg_nows", k7_params(true, "", false));
+  EXPECT_FALSE(no_ws.configure()) << "K7 narrows the workspace rule and needs it";
+  GraspRig missing("kernel_k7_cfg_missing", k7_params(true, "/nonexistent/openral_k7.txt"));
+  EXPECT_FALSE(missing.configure()) << "an unreadable static points file";
+  const auto bad = k7_points_file("bad", "0.1 0.2\n");
+  GraspRig malformed("kernel_k7_cfg_bad", k7_params(true, bad));
+  EXPECT_FALSE(malformed.configure()) << "a malformed line refuses the whole file";
+  std::filesystem::remove(bad);
+  GraspRig ok("kernel_k7_cfg_ok", k7_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+// ── Issue #418 (hazard OT-10 amendment): a bound payload's measured cells cannot stop it ──
+//
+// A tracked payload on link0 at the hand (K3 passes), carried into the rig's one occupied cell
+// (x in [0.140, 0.165]). Without the exemption the payload latches on its own cell; with it,
+// only the payload's MEASURED / GROWN primitive can explain the cell.
+namespace {
+
+std::vector<rclcpp::Parameter> own_params(bool enabled = true, bool k2 = true,
+                                          const std::string& hal_mode = "sim") {
+  auto params = tracked_payload_params();
+  if (k2) {
+    params.emplace_back("tracked_grasp_exemption_enabled", true);
+  }
+  params.emplace_back("hal_mode", hal_mode);
+  if (enabled) {
+    params.emplace_back("payload_own_cells_enabled", true);
+  }
+  return params;
+}
+
+// Arm and attach at the hand, then carry the payload onto the cell; true when it was accepted.
+bool own_payload_passes(const std::string& name, const std::function<void(GraspBeat&)>& edit,
+                        std::vector<rclcpp::Parameter> params = own_params(),
+                        bool* latched = nullptr) {
+  GraspRig rig(name, std::move(params));
+  rig.voxels = declared_target_voxels();  // one cell, x in [0.140, 0.165]
+  rig.start();
+  GraspBeat b = tracked_beat(rig);
+  b.carrying = true;
+  b.revision = 1;
+  edit(b);
+  rig.warm(&b, 0.0, 300);
+  if (!rig.offer(&b, 0.0)) {
+    ADD_FAILURE() << name << ": the 70 mm clear payload must pass";
+    return false;
+  }
+  b.payload_x = 0.1525;  // the payload box is the cell
+  b.payload_half = 0.0125;
+  if (std::isfinite(b.carry_z)) {
+    b.payload_z = b.carry_z;
+  }
+  // The attachment revision stays: a new revision re-baselines the embedded-residue exemption
+  // with the payload already on the cell, which would hide what this test is about.
+  rig.warm(&b, 0.0, 100);
+  const bool ok = rig.offer(&b, 0.0);
+  if (latched != nullptr) {
+    *latched = rig.node->fault_latched();
+  }
+  return ok;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APayloadStopsOnItsOwnCellWithoutTheExemption) {
+  bool latched = false;
+  EXPECT_FALSE(own_payload_passes(
+      "kernel_own_off", [](GraspBeat& b) { b.payload_source = 1; }, own_params(/*enabled=*/false),
+      &latched));
+  EXPECT_TRUE(latched);
+}
+
+TEST_F(LifecycleKernelTest, ABoundPayloadsMeasuredOrGrownCellCannotStopIt) {
+  for (const std::uint8_t source : {std::uint8_t{1}, std::uint8_t{2}}) {
+    EXPECT_TRUE(own_payload_passes("kernel_own_on_" + std::to_string(source),
+                                   [source](GraspBeat& b) { b.payload_source = source; }))
+        << "source " << static_cast<int>(source);
+  }
+}
+
+TEST_F(LifecycleKernelTest, AFallbackOrUnknownOrMissingTagExemptsNothing) {
+  // 0: the pinch-volume fallback / a publisher that never sets the field; 7: a code this
+  // kernel does not know. Both are fallback.
+  for (const std::uint8_t source : {std::uint8_t{0}, std::uint8_t{7}}) {
+    bool latched = false;
+    EXPECT_FALSE(own_payload_passes(
+        "kernel_own_tag_" + std::to_string(source),
+        [source](GraspBeat& b) { b.payload_source = source; }, own_params(), &latched))
+        << "source " << static_cast<int>(source);
+    EXPECT_TRUE(latched);
+  }
+}
+
+TEST_F(LifecycleKernelTest, ACellBelowTheTracksFloorOrInAnotherSettledTracksBoxStillStops) {
+  EXPECT_FALSE(own_payload_passes("kernel_own_floor", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.tracked_floor_z = 0.5;  // the cell (z = 0) is under the support top
+  })) << "at or below the floor is the support";
+  EXPECT_FALSE(own_payload_passes("kernel_own_other", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.other_track = true;  // a neighbour's settled box holds the cell
+    b.other_x = 0.1525;
+    b.other_half = 0.05;
+  })) << "another settled track's cell is that body's";
+  EXPECT_TRUE(own_payload_passes("kernel_own_other_far", [](GraspBeat& b) {
+    b.payload_source = 1;
+    b.other_track = true;  // control: the same neighbour well away from the cell
+    b.other_x = -0.3;
+    b.other_half = 0.05;
+  })) << "a neighbour that does not hold the cell changes nothing";
+}
+
+TEST_F(LifecycleKernelTest, AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox) {
+  // PINCH_FALLBACK + `provisional:trk:1` (the tracker's box of exactly one candidate rides as a
+  // measured primitive): that candidate is the payload's own track; the fallback part is not.
+  EXPECT_TRUE(own_payload_passes("kernel_own_prov_one", [](GraspBeat& b) {
+    b.evidence_kind = "pinch_fallback";
+    b.payload_evidence_ref = "provisional:trk:1";
+    b.tracked_status = "confirmed";
+    b.tracked_provisional = true;
+    b.payload_source = 1;
+  }));
+  // Several candidates may be neighbours, an unnamed one has no track: no own track, no exemption.
+  for (const char* ref : {"provisional:trk:1,trk:2", "ambiguous:trk:1", "untracked_grasp", ""}) {
+    EXPECT_FALSE(own_payload_passes(std::string("kernel_own_prov_") + std::to_string(*ref),
+                                    [ref](GraspBeat& b) {
+                                      b.evidence_kind = "pinch_fallback";
+                                      b.payload_evidence_ref = ref;
+                                      b.tracked_status = "confirmed";
+                                      b.tracked_provisional = true;
+                                      b.payload_source = 1;
+                                    }))
+        << ref;
+  }
+}
+
+// ── Issue #418 (OT-10 amendment, untracked holds): a pinch hold's own cells cannot stop it ──
+//
+// Spark R191 / R194 / R200 / R203 / R206 (2026-10-22): a grasp no track explained bound the
+// pinch-volume fallback, and the object in the hand -- unexplained world inside that box --
+// stopped it. `pinch_payload_own_cells_enabled` lets the fallback of an `untracked_grasp` hold
+// explain its cells above the box's lowest point AT THE BIND (the fingers closed above the
+// support), never a static cell or another settled track's.
+namespace {
+
+std::vector<rclcpp::Parameter> pinch_own_params(bool pinch = true, bool own = true) {
+  auto params = own_params(own);
+  if (pinch) {
+    params.emplace_back("pinch_payload_own_cells_enabled", true);
+  }
+  return params;
+}
+
+void untracked_hold(GraspBeat& b) {
+  b.evidence_kind = "pinch_fallback";
+  b.payload_evidence_ref = "untracked_grasp";
+  b.tracked_status = "confirmed";  // the set holds a track; none explains the hold
+  b.payload_source = 0;            // the pinch volume: fallback
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, AnUntrackedPinchHoldsOwnCellCannotStopIt) {
+  EXPECT_TRUE(own_payload_passes("kernel_pinch_own_on", untracked_hold, pinch_own_params()));
+  bool latched = false;
+  EXPECT_FALSE(own_payload_passes("kernel_pinch_own_off", untracked_hold,
+                                  pinch_own_params(/*pinch=*/false), &latched))
+      << "the tracked rule alone never lets a fallback explain a cell";
+  EXPECT_TRUE(latched);
+}
+
+TEST_F(LifecycleKernelTest, AnUntrackedPinchHoldsCellBelowItsBindFloorStillStops) {
+  // Bound 20 mm above the cell: the box's lowest point then (z = 0.0075) is the floor, and the
+  // cell (centre z = 0) under it is the support, even once the box is lowered onto it.
+  EXPECT_FALSE(own_payload_passes(
+      "kernel_pinch_own_floor",
+      [](GraspBeat& b) {
+        untracked_hold(b);
+        b.payload_half = 0.0125;
+        b.payload_z = 0.02;
+        b.carry_z = 0.0;
+      },
+      pinch_own_params()));
+  // Ambiguous or provisional candidates are no untracked hold: nothing new is exempt.
+  for (const char* ref : {"ambiguous:trk:1,trk:2", "provisional:trk:1,trk:2"}) {
+    EXPECT_FALSE(own_payload_passes(
+        std::string("kernel_pinch_own_ref_") + std::to_string(*ref),
+        [ref](GraspBeat& b) {
+          untracked_hold(b);
+          b.payload_evidence_ref = ref;
+        },
+        pinch_own_params()))
+        << ref;
+  }
+  // Another settled track's box holding the cell is that body's.
+  EXPECT_FALSE(own_payload_passes(
+      "kernel_pinch_own_other",
+      [](GraspBeat& b) {
+        untracked_hold(b);
+        b.other_track = true;
+        b.other_x = 0.1525;
+        b.other_half = 0.05;
+      },
+      pinch_own_params()));
+}
+
+TEST_F(LifecycleKernelTest, ThePinchOwnExemptionNeedsThePayloadOwnExemption) {
+  GraspRig alone("kernel_pinch_own_cfg_alone", pinch_own_params(true, /*own=*/false));
+  EXPECT_FALSE(alone.configure()) << "it widens the payload-own rule and needs it";
+  GraspRig ok("kernel_pinch_own_cfg_ok", pinch_own_params());
+  EXPECT_TRUE(ok.configure());
+}
+
+TEST_F(LifecycleKernelTest, ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions) {
+  // Without K2 (object_tracking on) it has no tracked set to stand on; off sim it is refused
+  // exactly as K2 and K5 are; with both it configures.
+  GraspRig no_k2("kernel_own_cfg_nok2", own_params(true, /*k2=*/false));
+  EXPECT_FALSE(no_k2.configure()) << "no K2";
+  GraspRig real("kernel_own_cfg_real", own_params(true, true, "real"));
+  EXPECT_FALSE(real.configure()) << "not sim";
+  GraspRig ok("kernel_own_cfg_ok", own_params());
+  EXPECT_TRUE(ok.configure());
 }

@@ -28,9 +28,8 @@ octomap_msgs/Octomap (map frame)          openral_msgs/WorldStateStamped
    │  cover a ball around the robot,         │
    │  on the octree's own lattice            │
    ▼                                         ▼
-   │                                         │  .support_contact (ADR-0092 D6)
-   └───────────▶ clear_attached_payload_cells (the payload leaves the map,
-   ▼                                          the attested support patch stays)
+   │                                         │  .tracked_objects
+   └───────────▶ identity-validated clearing (only bound track cells)
 openral_msgs/OccupancyVoxels (origin+orientation in base_frame,
                               cell axes the octree's, /openral/world_voxels)
    ▼
@@ -89,7 +88,7 @@ Tests (`test_octree_to_grid`, no ROS graph, real `octomap::OcTree`):
 
 The bridge re-rasterizes the **last** octree it received on a
 `publish_rate_hz` timer, so between octrees the grid follows the robot
-through TF and the payload clearing follows the payload's live pose.
+through TF and identity-validated clearing follows the tracked object pose.
 `octomap_server` publishes `/octomap_binary` only when it inserts a cloud,
 so a dead camera is a silent octree. Until hazard log Entry 033 the timer
 kept republishing that frozen map, stamped `now()`, forever; the kernel times
@@ -144,13 +143,64 @@ Stamps:
   0 does not disable the check), so a kernel started with `ros2 run` is held
   to the same limits as a validated scene.
 
-`robot_self_filter` (real camera path only) removes the robot's own returns
+`robot_self_filter` removes the robot's own returns on robot-visible camera paths
+(real depth and Isaac-rendered depth)
 before `octomap_server` inserts the cloud: it poses the kernel's collision
-parameters at the cloud's capture stamp and drops every return within
-`padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
-provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the whole cloud.
+parameters at the cloud's capture stamp and drops returns within `padding_m`
+of those robot primitives (from `DeployRuntime.robot_self_filter_padding_m`,
+provisional 0.02 m, hard cap 0.10 m). It filters attached-object returns only
+when `identity_clearing_track` validates one unique `tracked_object` binding
+against the fresh tracked set in the robot root frame. Region, segmentation,
+pinch-fallback, unknown, stale, or ambiguous attachment geometry leaves the
+sensor returns in the cloud. No pose at the capture stamp drops the whole cloud.
+
+The identity check ties the mask to one tracked object, but does not establish
+per-point sensor ownership. A foreign surface overlapping a validated track
+shape may still have its returns suppressed; typed occupancy provenance remains
+unfinished.
 The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
 non-finite) logs an ERROR and forwards nothing.
+
+Joint positions are linearly interpolated at the capture stamp between the two
+samples around it. The frame is refused (dropped, counted, WARN rate-limited)
+when those samples are more than two `joint_state_period_s` apart or the stamp
+needs more than one period of extrapolation past the newest; a refused frame
+inserts nothing. Each robot primitive's padding grows with its speed:
+`padding_m + |v|·velocity_padding_dt_s`, `|v|·δt` the primitive's motion over
+the interpolated joint rate within δt_sync (default 0.02 s: the stamp error
+interpolation cannot see; 0.5 m/s adds 10 mm). The total stays under the 0.10 m
+cap: a link faster than that is under-padded, which leaves its points in the
+map (a false stop) rather than erasing more of the world.
+
+**Recent sweep** (issue #418, `trailing_sweep_s`, default 0 = off; the deploy
+launch sets 0.2 s in sim only, Safety-WG review pending, hazard row owed). Each
+primitive is also padded by how far it has moved since `stamp − trailing_sweep_s`
+(the same history and interpolation), taking the larger of that and its forward
+motion, under the same 0.10 m cap. A return inside the volume the robot just left is
+then the robot's own trailing or silhouette-edge return. Spark R16: two returns of the
+Robotiq finger edge, 15–21 mm outside its hull, landed 0.13 s after the gripper left
+that cell; OctoMap held them, and the finger stopped on that mid-air voxel 2.4 s later.
+The world there is blind to new returns for at most `trailing_sweep_s` after the robot
+leaves. Obstacles already in the map are never removed. With no joint state that far
+back (a fresh start) the padding is the forward motion alone. A value outside
+[0, `kMaxTrailingSweepS` = 0.5] logs an ERROR and forwards nothing.
+
+**Robot mask** (issue #418, off by default). With `robot_mask_enabled`, the node
+also renders the UNPADDED model into each named depth camera at the depth
+stamp and publishes `/openral/cameras/<cam>/robot_mask` (mono8: 0 free, 128
+uncertain, 255 robot; the depth image's header; BEST_EFFORT, KEEP_LAST 5). A
+pixel is robot iff the rendered robot depth is at most the measured depth +
+5 mm (so a held object in front of a finger stays free) and the return is not seen
+past the robot (a return more than 3 cm behind the rendered front and more than 10 mm
+outside every link is not robot: a convex hull or 26-DOP spans a gripper's open jaw,
+#418), or its back-projected
+return is inside the unpadded hand (`robot_mask_hand_links`) or within 10 mm of
+any other link. Pixels within `robot_mask_uncertain_px` of a robot/non-robot
+boundary, and robot-covered pixels with no return, are uncertain. Each
+primitive is rasterised over its projected bounding box only; a hulled box is
+rendered as its 26-DOP (which contains the hull). The deploy launch turns it on
+with `robot_mask_cameras:=top,wrist` (only where the self-filter runs).
+RGB-only cameras get no mask yet.
 
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
@@ -238,280 +288,52 @@ Nav2/SLAM/the dashboard). Not corrected here. The direction is always safe
 (reports nearer than true, never farther); pinned by
 `TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase`.
 
-## The attached payload leaves world occupancy here
+## Attached objects and world occupancy
 
-Contract (`openral_msgs/AttachedCollisionObject`): *"The same object must be
-absent from world occupancy while attached."* Before grasp, the object's
-cells are honest sensor occupancy; at attach they become the robot's own
-payload, already checked as collision-active attached geometry by the
-kernel. Until PR #110 nothing removed them: on the 2026-08-14 acceptance run
-the arm E-stopped 1.8 mm off the carried object's surface (26 cells inside
-the payload's own primitives, +32 mm above the attested support plane) — the
-ADR-0092 D6 support-contact witness correctly refused to exempt it (not
-support contact — the payload's own stale silhouette).
+The kernel continues checking every occupied world voxel against robot and
+attached-object geometry. The bridge removes world occupancy only for an
+attachment with `evidence_kind == "tracked_object"` when
+`identity_clearing_track` finds exactly one matching track with status
+`bound`, matching `epoch` and `attach_link`, a finite `floor_z`, no conflicting
+track or payload on the link, and a usable tracked-object set in `base_frame`.
+The current-pose grid clear uses the track's bound geometry and tight hull when
+available; malformed or ambiguous geometry clears nothing. Identity sweeps,
+vacated boxes, and the short release window use the same track binding and the
+configured `payload_sweep_clear_service`.
 
-**Why here, not elsewhere:**
-- *Kernel*: could skip cells inside the payload's primitives, but that's an
-  exemption, not a clearing — the map still carries the phantom for SLAM/the
-  dashboard, and adds a per-cell escape hatch to the kernel's one
-  unconditional rule.
-- *HAL depth self-filter*: already makes the payload transparent to rays
-  (`exclude_body_ids`), ray-clearing via OctoMap — but only cells **a ray
-  still crosses**. An occluded/out-of-frustum/between-rays cell gets nothing;
-  `OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt` pins
-  it stays for the rest of the run. `test_depth_camera_synth.py::test_transparency_clears_only_the_payload_cells_a_ray_still_reaches`
-  measures both halves against a real `MjModel` (visible half clears to a
-  wall 1.9 m away; behind a counter, rays stop 0.95 m out).
-- *This bridge*: already owns the lowering, re-derives the grid every frame,
-  sits in the same layer as the attachment state. Clears.
+Attachments evidenced by `grasp_target_region`, `vision_segmentation`,
+`pinch_fallback`, gripper closure, unknown evidence, or an ambiguous tracked
+binding remain occupied in the world grid. Primitive geometry, attachment-link
+transforms, and support-contact witnesses do not establish which occupied cells
+belong to an object, so they do not authorize removal. The attachment revision
+in `OccupancyVoxels` acknowledges processing of a fresh state revision and any
+required identity-clearing work; it does not certify that every attached object's
+cells were removed or that asynchronous octree clear requests completed. The kernel
+still checks remaining cells normally.
 
-**Mechanism.** Subscribes `/openral/world_state_fast` (the kernel's own
-attachment source), places each object by
-`FK(attach_link) · pose_in_link · pose_in_object`, zeroes every occupied cell
-whose centre lies within the cell cube's **circumradius**
-(`resolution·√3/2`, 21.7 mm at 25 mm cells) of a payload primitive.
-`attached_clear_padding_m` adds to this reach on every frame, default **0**
-(padding removes cells the payload cannot explain — protection given up).
+**Consequence for a deploy without the object tracker (decided posture: fail closed).**
+Only the #418 object tracker (`DeployRuntime.object_tracking: bind` or `on`, sim-only
+until Safety-WG review) publishes `tracked_object` attachments, so identity clearing
+applies to its bindings in both modes; its `pinch_fallback` holds stay mapped. With `object_tracking` `off`
+or `shadow` — every real arm today, the MuJoCo digital twin (`MujocoArmHAL`) and an Isaac
+sidecar scene — the attachment the HAL's vision leg or the sim bridge publishes is
+geometry-only, so nothing the arm holds is cleared
+from the world grid, nor filtered from the self-filter's cloud: the payload stays a
+mapped obstacle and the kernel may stop the arm on the object in its own hand, during
+the carry and at the place. That stop is the accepted cost. There is deliberately no
+pose-based fallback clear, because a pose does not say which cells are the payload's.
+A run that must carry an object with world collision on needs `object_tracking: bind`
+or `on` (sim) until a real-cell tracker posture is reviewed. (A MuJoCo `SimAttachedHAL` scene is
+the exception that does not need the bridge: it masks the payload bodies out of its
+rendered depth, so they never enter the map.)
 
-### …and the attach transition reaches one voxel further than steady state
-
-The circumradius reach is right for the volume the payload explains *now*,
-not the pre-grasp real-object silhouette a fitted convex primitive doesn't
-cover. Fit error + lattice quantization leave residue just outside one
-circumradius, uncleared thereafter
-(`OccupancyPersistence.AConfirmedVoxelSurvivesWhenNoRayEverCrossesIt`).
-
-Round-5 field measurement (2026-08-14): baguette r1's E-stop cell
-`voxel_91633` sat **22.13 mm** from the payload primitive surface at
-resolution 0.025 — **0.48 mm outside** the 21.65 mm reach.
-
-| Grid state | Reach | Why |
-|---|---|---|
-| payload within `attach_sweep_padding_m` of where its **object revision** first appeared | `resolution·√3/2 + attached_clear_padding_m + attach_sweep_padding_m` (default one voxel → 46.65 mm at 25 mm cells) | stale pre-attach silhouette still under the payload |
-| payload moved further | `resolution·√3/2 + attached_clear_padding_m` — unchanged | payload has left the silhouette; nearby occupancy is now evidence about the world |
-
-The bridge re-rasterizes from the octree every tick, so a one-shot sweep
-loses the residue back next tick. Round-5 timeline: attach sweep at
-1786710428.38, E-stop at 1786710431.16 — **2.78 s, ~28 published grids at
-10 Hz, later**, payload still where grasped.
-`PayloadClearing.TheAttachWindowOutlivesTheFieldRunsTwentyEightGrids`
-replays 29 consecutive grids; a one-shot sweep fails 28 of them.
-
-Window closes once the payload has moved past `attach_sweep_padding_m`
-(`TheAttachWindowClosesOnceThePayloadHasMovedAVoxel`, pinned to the
-millimetre) and **latches** — does not reopen on return
-(`AClosedAttachWindowDoesNotReopenWhenThePayloadComesBack`). Displacement is
-measured in the **OctoMap's frame** (world-fixed), not `base_frame`.
-
-Also pinned: `PayloadClearing.TheRoundSixFieldCellSurvivesTheSteadyReachAndGoesOnTheAttachSweep`,
-`…StopsOneVoxelPastTheSteadyReach`,
-`TheAttachPaddingNeverShrinksTheSteadyReach` (`attach_transition_padding`
-floors negative/non-finite at 0).
-
-**State kept.** `WorldStateStamped.attachment_revision` (producer's own
-counter, bumped once per atomic `AttachmentState` change) makes
-`(object_id, attachment_revision)` a payload's attachment-record identity.
-`AttachSweepLedger` remembers only, per live object: that identity, the
-window's anchor position, and whether it has shut — bounded by the current
-attachment count. Not a cell latch; every grid is still derived fresh from
-the wire. Answering and recording are the same call (`sweep`).
-
-- Re-grasp / second payload / place-phase arm-disarm each open a window;
-  carrying one payload does not (`ANewObjectRevisionOpensANewAttachWindow`).
-- A release sweeps the empty set — next grasp opens a window even under an
-  already-seen revision (same test).
-- A frame that clears **nothing** (stale attachment state, missing TF, an
-  unplaceable payload) never calls `sweep`, so it can't advance/close a
-  window (`AFrameThatClearsNothingLeavesTheWindowExactlyAsItWas`).
-
-The padded reach still withholds the attested support patch exactly as the
-steady reach does
-(`PayloadClearing.ThePaddedAttachSweepStillWithholdsTheAttestedSupportPatch`,
-with the no-attestation counterfactual beside it).
-
-### …and the payload's own posed volume is cleared from the octree itself
-
-The grid clearing above edits only the published grid, around the payload's
-CURRENT pose: the octree keeps whatever the carried object left along its path.
-Returns captured before the attachment reached the self-filter (deploy trial g12:
-the orange 0.27 s before ATTACH, 85-120 mm behind the payload when it stopped the
-arm) or a return the payload volume missed mid-carry (DROID t6: a banana voxel)
-are never retired, because every later ray through them ends on the robot, which
-the self-filter removes. With `payload_sweep_clear_service` set, the bridge records,
-on every grid tick the live, fresh payload is attached, one axis-aligned box per
-primitive at that pose (`SweptBox`, `payload_primitive_boxes`), and every
-`payload_sweep_clear_period_s` asks octomap_server to clear each of them
-(`floor_pose_boxes`; a box inside one already sent is not resent). It clears the
-payload's own posed volume, never the AABB of its motion: the box around 0.2 s of a
-diagonal place approach takes in the neighbour orange on the plate or the bowl rim
-beside the path, which the payload never occupied (PR #417 review). Only attached
-poses are cleared — there is no pre-attach TF backfill, because the payload posed
-rigidly in the hand along the pre-grasp approach is where the object never was. The
-octree leg is **off by default and sim-only**: `deploy_e2e.launch.py` passes
-`/openral_octomap_server/clear_bbox` only for `DeployRuntime.payload_sweep_clear_enabled`
-(`payload_sweep_clear_enabled:=true`) and refuses it on any HAL but `sim`
-(`ROSConfigError`), as does `openral deploy run`; the LeIsaac PickOrange and the DROID
-banana deploy-sim scenes opt in. A box never
-reaches below a support (`floor_swept_box`, per posed box and never below the floor
-the same rule gives the union of the period's boxes):
-
-- it starts one cell above every support patch attested during this carry, as first
-  attested (a vision pick's attestation lasts only until the payload moves, so it is
-  latched for the carry), and one cell above every declared static-geometry point
-  (`static_points_file`) under its footprint below its top;
-- it never starts below the REGION payload's lowest point at attach
-  (`evidence_kind == "grasp_target_region"`: the producer-measured grasp-target region),
-  even with a support under it: the floor is the highest of every bound, since a static
-  point under the box (the room floor) does not prove it is the surface the payload was
-  lifted from (an undeclared table only the camera sees);
-- with neither (a segmented payload — its bottom can take in counter and depth-edge
-  points, which floored three LeIsaac g17 boxes at z 0.020-0.027 under a 0.030 counter
-  top — or a gripper-closure jaw box, and no known support) it is **not cleared**, and
-  the bridge logs `payload sweep: NOT clearing ...`.
-
-A non-vertical support empties the box. Before this, a box went 49 mm below the DROID
-table top once the attestation lapsed mid-carry (deploy-sim t7, 2026-10-16). Pinned by
-`PayloadSweep.*` / `PayloadSweepFloor.*` (test_payload_clearing.cpp) and
-`BridgePayloadSweep.*` (the real node against a real `BoundingBoxQuery` server).
-
-**Hazard (user-approved 2026-10-16, sim-only; Safety-WG review and a hazard-log
-row owed): the payload's posed volume is cleared from the world map.** A real obstacle
-inside a posed payload box (the AABB of a primitive at one attached pose — a rotated
-box's corners included) — a hand entering right behind the payload, an object the
-payload is pressed against — disappears from the octree until a camera sees it again.
-
-### …except the attested support patch, which is the counter
-
-A resting payload shares its bottom cell layer with the counter's own top
-surface. Clearing by volume alone takes the counter with it:
-
-- The kernel's support-contact witness (ADR-0092 D6,
-  `update_support_contact_witnesses`) is kept alive by *occupancy*: clear the
-  supporting cells and the witness declares separation from a payload that
-  hasn't moved. Observed 2/2 on 2026-08-14 (baguette+counter, cup+island):
-  `support_witness_separated live=0x0 was=0x1` 2.7 s after arming, ground
-  truth +0.000 mm still touching, nearest surviving cell 21.77 mm out.
-- SLAM/the dashboard read the same octree; the counter is real furniture.
-
-Partition (never neither, never both):
-
-| Cell | Owner | Outcome |
-|---|---|---|
-| Inside the attested patch laterally **and** in the support half-space — no higher above the attested plane than `resolution/2·(\|n.x\|+\|n.y\|+\|n.z\|) + attested depth + resolution`, unbounded below it | kernel's witness | withheld from clearing, exempted by the kernel |
-| Anywhere else within a circumradius of a payload primitive | this clearing | zeroed |
-
-The `+ resolution` term is the kernel's one voxel of co-planar headroom
-(hazard log Entry 012, "Calibration 2026-08-15"), mirrored here **in
-lockstep by obligation of that entry**: `withheld ⊆ exempt` holds because
-both sides are the same inequality, this one with zero slack.
-
-At 25 mm cells the withheld slab reaches at most
-`21.65 mm + attested depth + 25 mm` above the plane; with the kernel's
-`support_witness_max_penetration_m` of 10 mm, no acceptable attestation
-withholds a cell more than 56.65 mm up
-(`PayloadClearing.NoAttestationTheKernelAcceptsWithholdsACellAboveTheWidenedSlab`
-pins +60 mm). `PayloadClearing.TheRoundFiveResidueCellIsWithheldInTheCoplanarBand`
-pins the field's +35.8 mm cell (cleared before the calibration) as now
-withheld.
-
-`place_attached_object` lifts the wire `SupportContactWitness` through the
-payload's live pose into a grid-frame `SupportPatch`; `support_patch_withholds`
-mirrors the kernel's `support_contact_exempts` at **zero slack** (the kernel
-adds `attached_contact_tolerance`, 1 mm), so withholding is a strict subset
-of what the kernel exempts.
-`PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack` and
-`…WithholdingOnlyEverPutsOccupancyBack` pin it cell-for-cell. Two scope notes:
-
-- **Per-object.** The kernel exempts per object
-  (`check_attached_voxel_collision`); this bridge withholds per message, so
-  one payload's attestation also guards a second payload's clearing
-  (`PayloadClearing.OneObjectsAttestationGuardsEveryObjectsClearing`).
-- **Acceptance bounds.** The kernel's lifecycle node caps acceptance —
-  `support_witness_max_patch_radius_m` (0.5 m),
-  `support_witness_max_penetration_m` (10 mm) — and fails the message closed
-  past either; this bridge applies the geometry but not those caps
-  (mirrored in the sim producer, `openral_hal._sim_attachment_evidence`).
-
-**Phase-blind, so ADR-0097 is free here.** `place_attached_object` /
-`support_patch_withholds` read only `AttachedCollisionObject.support_contact`
-geometry (plus `support_id`/`stamp_ns` only as the anchor's identity key), never `evidence_kind`, so ADR-0097's place-phase
-witness rides this partition unchanged
-(`PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs`
-asserts a bit-identical grid). ADR-0097's 2026-08-14 approach allowance and
-its 2026-08-15 Second Amendment (`min(1.5 × voxel, 4 cm)` cap) are a kernel
-margin on cells inside a declared `PlaceRegion`, not a change to which cells
-exist — this bridge never reads `AttachmentState.place_declaration`.
-
-The two predicates (bridge vs. kernel) are a deliberate cross-package
-mirror — consolidating them would couple this Layer-2 node to the Layer-5
-kernel's collision core — see `docs/methods/14-duplication-watch.md`, "Support-contact patch predicate"
-(Deliberate mirrors).
-
-**No latch beyond the attach window and the support anchor.** Withholding is derived from the wire
-attestation every publish; the bridge's memory is `AttachSweepLedger`'s
-per-object attach window (decides reach) and `SupportPatchAnchors`' first-grid
-plane per attestation (keyed as the kernel arms: object, support id, stamp).
-
-**The band stays on the support (Isaac i64/i70, 2026-10-05).** The attestation
-is in the object frame, so its live plane rides a lifted payload; the support
-does not. A riding band climbed into the payload's own stale occupancy — the
-brick's top layer, cleared at the attach grid and therefore never baselined by
-the kernel as embedded residue — and re-published it inside the payload. When
-the producer retired the witness at 15 mm, the kernel dropped it on ingest
-while still holding a grid built under the old attestation: a -14.5 / -18.0 mm
-stop on the payload's own top layer. A cell is now withheld only when the
-attestation's first-grid plane also claims it — an AND, so `withheld ⊆ exempt`
-still holds (`BridgeLiftedPayload.TheBandStaysOnTheSupportWhileThePayloadRises`,
-`PayloadClearing.AnAnchoredBandOnlyNarrowsTheLiveOne`).
-Hysteresis lives in the kernel: a witness that died stays dead until a new
-attestation, so a lifted-and-set-down payload finds its support cells
-unexempted (correct, new violation). On a genuine lift the patch (object
-frame) rides with the payload and the counter cells are out of reach — the
-kernel sees the separation geometrically.
-
-**No attestation, no withholding.** `support_contact_valid == false` (honest
-default for any producer that can't measure support contact, incl. the
-vision attachment producer) appends no patch; cells clear as before the
-witness existed. A *malformed* attestation is not downgraded to that — it
-fails the whole object closed and clears nothing (same rule
-`ingest_attached_objects` applies in the kernel).
-
-**Conservative.** The payload stays collision-active attached geometry;
-`check_attached_voxel_collision` keeps testing it against every remaining
-occupied cell, plus `check_attached_self_collision`. Only self-stops are removed.
-`AttachedVoxelCollision.ClearingThePayloadsOwnCellsKeepsThePayloadVsWorldCheck`
-(`cpp/openral_safety_kernel/test/test_collision.cpp`) pins it: payload cells
-cleared, a real obstacle 90 mm off its surface stays, kernel still stops and
-reports true 40 mm clearance.
-
-**Failure is refusal to clear.** No attachment message, one older than
-`attached_state_timeout_s`, a missing `base_frame ← attach_link` TF, or a
-primitive the kernel would itself reject (unknown shape tag, too few
-dimensions, degenerate quaternion) — clears nothing and logs, which can only
-stop the robot early.
-
-**Detach.** Which cells clear is derived from the current attachment set on
-every published grid, so the frame after detach already publishes the
-payload as an obstacle again (the ledger's only detach role is forgetting
-the revision). Re-marking a cell the transparency rays cleared costs
-OctoMap's two-hit confirmation (~0.2 s at 10 Hz, pinned by
-`test_occupancy_persistence`).
-
-**What it does not do.** Clears this node's published grid, not
-`octomap_server`'s own octree (ROS 2's `octomap_server` exposes `~/reset`
-but no `clear_bbx`). A consumer reading `/octomap_binary` directly still
-sees the payload's silhouette until transparency rays retire it.
-
-**Who the residual reaches.** Issue #108 expected Nav2 to be a consumer — it
-is not: Nav2's costmaps take a `sensor_msgs/LaserScan` (lidar profile) and
-an `OccupancyGrid` on `/map` (visual profile)
-(`packages/openral_nav2_bringup/config/nav2_panda_mobile.yaml` /
-`nav2_visual.yaml`); nothing in
-the Nav2 graph subscribes `/octomap_binary`. The payload is kept out of
-Nav2's world at *its* source by `openral_nav2_bringup`'s
-`payload_scan_filter_node`; Nav2's footprint is the bare chassis (ADR-0099,
-Nav2 is base-only). What remains on this octree is the dashboard and any future
-direct octomap consumer — a display concern.
+Identity binding is not per-cell occupancy ownership. The bridge constrains
+clearing to a tight track shape and excludes the floor, declared static points,
+and other tracked objects, but an untracked obstacle touching or overlapping
+that shape can still be removed. Typed per-cell contribution provenance is
+unfinished; this residual remains part of the identity-clearing hazard. See
+`identity_clearing.hpp`, `test_identity_clearing`, and
+`BridgeIdentitySweep.*` for the current bounds and tests.
 
 ## The frame contract (ADR-0095)
 
@@ -589,19 +411,17 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `base_frame` | `base_link` | Output frame; the kernel expects obstacles here. |
 | `octomap_topic` | `/octomap_binary` | Input `octomap_msgs/Octomap`. |
 | `output_topic` | `/openral/world_voxels` | Output `OccupancyVoxels`. |
-| `resolution` | `0.05` | Output voxel edge length (m). |
+| `resolution` | `0.05` | Compatibility parameter; output lattice and cell size come from the input octree. |
 | `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
 | `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
 | `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
 | `static_points_file` | `""` | Base-frame surface points of declared static geometry, marked occupied in every published grid. Only adds occupancy; empty = off; a file that fails to load is fatal. |
-| `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
+| `attached_clear_enabled` | `true` | Enable identity-validated tracked-object clearing. Attachments with region, segmentation, pinch, unknown, or ambiguous evidence stay occupied. |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
-| `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |
-| `attach_sweep_padding_m` | `resolution` (one voxel) | Extra reach **while a payload is within this distance of where its object revision first appeared** — for the stale pre-attach silhouette (round-5 `voxel_91633`, 22.13 mm out). Also the distance the payload must travel to close the window. Adds to `attached_clear_padding_m`; `0` restores the pre-#111 single reach; negative/non-finite contributes nothing. |
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
-| `payload_sweep_clear_service` | `""` (off) | octomap_server's `~/clear_bbox` service; set, the carried payload's posed primitive boxes are cleared from the octree (above). |
-| `payload_sweep_clear_period_s` | `0.2` | How often the period's posed payload boxes are cleared. |
+| `payload_sweep_clear_service` | `""` (off) | octomap_server `~/clear_bbox`; identity-validated track sweeps, vacated boxes, and release-window clearing only. Geometry-only attachment evidence never authorizes octree clearing. |
+| `payload_sweep_clear_period_s` | `0.2` | Period for identity-validated octree clearing requests. |
 | `attach_link_tf_frames` | `[]` (none) | `"link=frame"` renames for the TF lookup of a payload's attach link: the published `attach_link` is the manifest's name (the kernel's collision model uses manifest names), but a real cell's TF tree may name that body differently (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). Unmapped links are looked up as themselves. `deploy_e2e.launch.py` passes the scene's `vision_attachment.tf_frames` — the strings the HAL gets as `vision_attachment_tf_frames` — and nothing when the leg is off. A malformed or conflicting entry refuses the whole mapping (logged ERROR): every link is then looked up by its own name and, on such a cell, its payload stays in the map. An unmapped link whose lookup fails logs a one-time hint to set this. |
 
 `size_x = size_y = size_z ≤ floor(2·coverage_radius_m / resolution + 1/2) + 1` (the half
@@ -612,13 +432,26 @@ the kernel fails closed.
 
 ### `robot_self_filter`
 
-The package's second executable (`robot_self_filter`, real camera path) takes
+The package's second executable (`robot_self_filter`, robot-visible camera path) takes
 `cloud_in` and publishes `cloud_out` (+ `cloud_out_rgb` for viewers). Parameters:
 the kernel's collision model (`collision_*`), `padding_m` (`0.02`),
-`max_joint_state_skew_s` (`0.1`), `tf_timeout_s` (`0.05`), `joint_state_history_s`
-(`2.0`), `attached_filter_enabled` (`true`), `attached_state_timeout_s` (`0.5`),
+`max_joint_state_skew_s` (`0.1`), `joint_state_period_s` (`0.05`; the launch
+normally passes `1 / action_spec.control_freq_hz`). On Isaac sim camera paths
+the filter starts with no admitted period and drops clouds until the connected
+HAL sends its actual simulation tick through `joint_state_period_s`; an invalid
+or missing update leaves it closed. That accepted update clears joint history.
+`joint_state_period_from_hal` is launch-owned and enabled only for this path.
+Real and non-Isaac paths retain the manifest cadence. Nanosecond bounds round up
+to the smallest integer count that represents the configured period; no timing
+margin is added. `velocity_padding_dt_s` (`0.02`), `trailing_sweep_s` (`0.0`),
+`tf_timeout_s` (`0.05`), `joint_state_history_s`
+(`2.0`), `attached_filter_enabled` (`true`, unique tracked-object bindings only), `attached_state_timeout_s` (`0.5`),
 `joint_states_topic` (`/joint_states`), `world_state_topic`
-(`/openral/world_state_fast`). With no collision model it forwards nothing.
+(`/openral/world_state_fast`), and the robot mask's `robot_mask_enabled`
+(`false`), `robot_mask_cameras` / `robot_mask_depth_topics` /
+`robot_mask_camera_info_topics` / `robot_mask_topics` (parallel, `[]`),
+`robot_mask_hand_links` (`[]`), `robot_mask_uncertain_px` (`3`). With no
+collision model, or a period / δt_sync out of range, it forwards nothing.
 
 ## Producing the upstream OctoMap
 
@@ -653,42 +486,17 @@ launch tunes for, on a real `OcTree` seeded with `occupancy_thres 0.8`,
 - a cleared cell still comes back when something real is there — four 10 Hz
   frames (~0.4 s) from the clamping floor.
 
-`test_payload_clearing` pins the attached-payload half on a real `OcTree`
-seeded through real rays:
-- 20 cells a pre-grasp camera marked on the object reach the kernel's grid
-  unchanged before the fix; the attach clears exactly those 20, leaves the
-  real obstacle beside them;
-- a cell 1.8 mm off the payload surface (the acceptance run's tripping cell)
-  goes; one a millimetre past the circumradius stays; clearing never marks;
-  it follows the payload's live pose, not a snapshot at attach; detach
-  restores the object in the same frame; an unplaceable payload (unknown
-  shape, short dimension list, no primitives, degenerate quaternion) clears
-  nothing.
-- **Partition half** (2026-08-13 baguette-run lattice phase, support cell
-  centre 3.2 mm above the attested face, ~1 mm contact reads as 15.7 mm cube
-  penetration): 12 payload-silhouette cells clear, 16 counter cells under
-  the footprint survive; same payload with no attestation clears all 28
-  (the 2026-08-14 defect mechanism); partitioned cleared-set is a strict
-  subset of the un-partitioned one; depth bound holds to the millimetre
-  either side of `resolution/2 + attested depth`, lateral bound either side
-  of `patch_radius + circumradius`; a lift clears and withholds nothing; a
-  payload rolled 90° carries its attested plane with it; a malformed
-  attestation clears nothing.
-- **Attach-transition window half**: the round-5 field cell at 22.13 mm
-  survives the steady reach, clears at the attach reach; 29 grids replaying
-  the field run's ~28-grid gap all clear it; the window closes to the
-  millimetre once the payload has moved a voxel and does not re-open on
-  return; a new revision / second payload / release-then-grasp each open a
-  window, carrying does not; a frame clearing nothing cannot advance one;
-  the padded sweep still withholds the attested patch; the widened reach
-  stops one voxel past the steady one to the millimetre; no parameter value
-  makes the transition clear less than an ordinary frame.
-
-Kernel's half of the same partition:
-`SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence`,
-`…ClearingTheAttestedPatchKillsTheWitnessAndTheReturningCellStops`
-(`cpp/openral_safety_kernel/test/test_collision.cpp`) — change either
-predicate and one of the two suites goes red.
+The real-node bridge tests pin the current removal boundary:
+- `BridgePayloadSweep.*` verifies region, segmentation, unknown, pinch-fallback,
+  and gripper-closure evidence preserve occupied cells, issue no `clear_bbox`
+  request, and still publish the processed attachment revision.
+- `BridgeAttachLinkTf.TheMappingDoesNotAuthorizeGeometryOnlyClearing` and
+  `BridgeLiftedPayload.ASupportWitnessDoesNotAuthorizeGeometryOnlyClearing`
+  verify that a valid link mapping or support witness alone preserves occupancy.
+- `BridgeIdentitySweep.*` verifies identity-bound carry backfill, keep-outs,
+  revision acknowledgement, unavailable-state handling, vacated boxes, and the
+  release window. This identity path still removes selected occupancy and retains
+  the residual ownership risk described above.
 
 **Sim status.** Target scene: `scenes/sim/robocasa_panda_mobile_kitchen.yaml`
 (mobile manipulator, cluttered RoboCasa kitchen, only scene with real 3-D
@@ -720,3 +528,25 @@ the kernel-side voxel check by
 `tests/unit/test_voxel_grid_frame_alignment.py` and, against the live
 kitchen, by `tests/sim/safety/test_panda_mobile_robocasa_collision_fk.py`
 (see *The frame contract* above).
+
+Robot-mask depth arriving before its camera TF is retained for nonblocking
+exact-source-stamp retries every 5 ms. Each camera holds at most two images;
+oldest overflow and a steady-clock wait reaching `max_joint_state_skew_s` refuse
+that mask with diagnostics. At most 16 cameras and 32 MiB / 8 megapixels per image
+are admitted. CameraInfo is captured with the image. No latest-TF substitution,
+extra joint extrapolation, or payload masking is used; late TF after expiry
+cannot resurrect an image.
+
+### Capture-time joint-state arrival
+
+Clouds and robot-mask images wait for joint history to cover their capture stamp
+(exact sample or interpolation), rather than extrapolating a removal pose. Cloud
+retention is bounded to two buffers of at most 32 MiB each; a shared 5 ms timer
+retries only within the existing `max_joint_state_skew_s` wall deadline. Overflow
+and expiry refuse the sensor frame. Existing interpolation gap/skew checks,
+TF requirements and padding are unchanged.
+
+The recorded R9 fixture reproduces 3/16 gripper returns surviving forward
+extrapolation; all 16 disappear when the matching state arrives 5.1 ms later.
+World-point preservation and real ROS delayed-arrival/expiry/overflow cases
+guard the bounded wait. This is not permission to remove unknown objects.
