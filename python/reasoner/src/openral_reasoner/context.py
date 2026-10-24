@@ -284,7 +284,9 @@ def reflect_on_grasp_miss(
             undeclared.
         short_of_command: How far the jaw stopped short of its command, in the gripper
             joint's units, or ``None`` when unknown.
-        consecutive_misses: Misses on this hand since its last ATTACH.
+        consecutive_misses: Misses on this hand since its last ATTACH, across targets (a
+            new declaration does not reset the HAL's count), so the hint calls the run a
+            per-hand one and keys abandonment on the same target only.
 
     Example:
         >>> hint = reflect_on_grasp_miss("openarm_left_finger_pair", "cell:pick_box", 0.031)
@@ -296,8 +298,8 @@ def reflect_on_grasp_miss(
     target = f"declared target {target_id!r}" if target_id else "an undeclared target"
     short = "unknown" if short_of_command is None else f"{short_of_command:.3f}"
     repeat = (
-        f"; that is {consecutive_misses} misses in a row on this hand, so this approach "
-        "is not working"
+        f"; that is {consecutive_misses} misses in a row on this hand (across targets), "
+        "so the recent approaches are not working"
         if consecutive_misses > 1
         else ""
     )
@@ -307,7 +309,7 @@ def reflect_on_grasp_miss(
         "NOT re-issue the identical execute_rskill: re-ground the target (recall_object / "
         "locate_in_view, then pass grasp_target.object_id), try the other hand "
         "(grasp_target.contact_links), or substitute a different skill. If several "
-        "different approaches keep missing, abandon this object."
+        "different approaches keep missing on the same target, abandon that target."
     )
 
 
