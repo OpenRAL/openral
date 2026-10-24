@@ -1,6 +1,6 @@
 """Pre-grasp target producer leg — measures the grasp declaration's region on real hardware.
 
-The ROS wiring around ``_grasp_target`` (real pick-and-place design
+The ROS wiring around ``openral_core.perception_geometry`` (real pick-and-place design
 ``docs/reference/real-pick-place-design.md`` §2.2), owned by
 ``VisionAttachmentBridge`` so ``/openral/attachment_state`` keeps one authority
 (§2.4). Default off (``VisionAttachmentConfig.grasp_target_enabled``).
@@ -220,7 +220,7 @@ every ``SegmentInView`` request is an *instance pre-measurement* (``_premeasure`
 ``_PREMEASURE_MAX_HZ``, one in flight): before any hand is within ``approach_m``, the raised
 top surfaces of the voxel map around each free hand (``_PREMEASURE_REACH_APPROACHES``
 approach distances) or in a named search box are prompted one at a time
-(``_object_primitives.instance_prompt``: the map says where to look, the camera what is
+(``openral_core.object_primitives.instance_prompt``: the map says where to look, the camera what is
 there), each reply fitted exactly as above (self-filtered masks, nested-mask rules, support,
 caps) and **confirmed** by the map (``map_confirms``: the map holds the box, and the box holds
 one body — never completed or grown from the map, so two masks separate a packed pair the map
@@ -269,8 +269,16 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError, ROSSafetyViolation
 from openral_core.geometry import homogeneous_from_quat_xyz
-
-from openral_hal._grasp_target import (
+from openral_core.object_primitives import (
+    ObjectPrimitive,
+    PrimitiveFit,
+    PrimitiveTracker,
+    instance_prompt,
+    map_confirms,
+    nearest_primitive,
+)
+from openral_core.perception_geometry import (
+    WORKSPACE_MIN_COVER,
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
@@ -279,6 +287,7 @@ from openral_hal._grasp_target import (
     _in_region,
     cell_closed_region,
     fit_pad_m,
+    lattice_from_msg,
     lowered_to_support,
     map_completed_region,
     margin_grown_region,
@@ -292,14 +301,6 @@ from openral_hal._grasp_target import (
     target_region_from_masks,
     target_seed_from_voxels,
     track_region,
-)
-from openral_hal._object_primitives import (
-    ObjectPrimitive,
-    PrimitiveFit,
-    PrimitiveTracker,
-    instance_prompt,
-    map_confirms,
-    nearest_primitive,
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -346,13 +347,6 @@ _PREMEASURE_MAX_HZ = 2.0
 #: band the hand crosses *before* it arms, so the instance it arms on is already tracked.
 #: *Calibration point.*
 _PREMEASURE_REACH_APPROACHES = 2.0
-#: Manipulation workspace (issue #349): the declared ``workspace_box`` is confirmed only
-#: while occupied cells centred in it cover at least this fraction of its footprint
-#: (``region_covers_occupied``) on a fresh grid. A tote interior holding its cartons
-#: covers most of its floor; a box declared over empty space (a wrong pose, the tote
-#: taken away) covers none. 10 % keeps a nearly-emptied tote confirmed while a stray
-#: cell or two cannot confirm an empty volume. *Calibration point.*
-WORKSPACE_MIN_COVER = 0.10
 
 
 _P = ParamSpec("_P")
@@ -1103,23 +1097,6 @@ class GraspTargetTracker:
         return target.model_copy(update={"region": self._region})
 
 
-def lattice_from_msg(msg: Any) -> VoxelLattice:
-    """Decode one ``openral_msgs/OccupancyVoxels`` into a ``VoxelLattice``.
-
-    Raises:
-        ROSConfigError: On a malformed grid (via ``VoxelLattice``).
-    """
-    o, q = msg.origin, msg.orientation
-    return VoxelLattice(
-        frame_id=str(msg.header.frame_id),
-        origin=(float(o.x), float(o.y), float(o.z)),
-        orientation_xyzw=(float(q.x), float(q.y), float(q.z), float(q.w)),
-        resolution=float(msg.resolution),
-        size=(int(msg.size_x), int(msg.size_y), int(msg.size_z)),
-        occupancy=np.array(msg.occupancy, dtype=np.uint8),
-    )
-
-
 #: The most a fixed frame's ``frame <- box frame`` rotation may tilt off vertical for a
 #: declared box to be re-expressed yaw-only (``rebase_box``): a mobile base on a level
 #: floor. Beyond it the box's footprint is not a column in the grid frame.
@@ -1492,7 +1469,7 @@ def _gate_refit(
 
     ``complete=False`` (instance pre-measurement) skips the completion: the camera
     separates bodies the map merges, so growing an instance to its map component would
-    undo exactly that (``_object_primitives.map_confirms`` gates it instead).
+    undo exactly that (``openral_core.object_primitives.map_confirms`` gates it instead).
 
     A re-fit the map does not cover is always a contradiction (the target is gone).
 
@@ -1860,7 +1837,9 @@ class GraspTargetLeg:
                     )
                 }
             )
-        declaration.fill_idl(msg.grasp_declaration)
+        from openral_msgs.msg import ObjectQuery  # reason: ROS import at call time
+
+        declaration.fill_idl(msg.grasp_declaration, query_factory=ObjectQuery)
 
     @_locked
     def kernel_region(

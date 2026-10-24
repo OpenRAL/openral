@@ -33,6 +33,8 @@ string[] contact_links
 # the trace alone.
 string rskill_id
 string trace_id
+# ExecuteRskill action goal UUID; stable across dispatcher restamping and trace reuse.
+string invocation_id
 
 # Backstop expiry window, seconds after stamp_ns.
 float64 timeout_s
@@ -77,3 +79,7 @@ PlaceRegion workspace_box
 # NO workspace contact. `workspace_region.geometry[]` MUST be empty.
 bool workspace_region_valid
 PlaceRegion workspace_region
+
+# The classes the prompt names (issue #418), role "target" or "context". The
+# Layer-2 tracker grounds every instance of each; they arm nothing. Empty = none.
+ObjectQuery[<=8] target_queries

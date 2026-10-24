@@ -869,7 +869,7 @@ def test_publishing_a_region_cannot_silently_drop_its_geometry() -> None:
 # is box-only in v1. The cup is a sphere of radius 0.04 carried at world (0, 0,
 # 0.46); the base frame sits at (0.1, 0, 0.05), so its box centre is (-0.1, 0,
 # 0.41) in the base frame, half-extents 0.04 plus the measurement's 0.1 mm pad —
-# then, as on real (``_grasp_target.target_region_from_mask``), the lower face is
+# then, as on real (``perception_geometry.target_region_from_mask``), the lower face is
 # lifted one voxel off the support so the support cells stay outside the region:
 # centre up by half a voxel, z half-extent down by half a voxel.
 _GRID_RES_M = 0.02

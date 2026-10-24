@@ -16,6 +16,7 @@ from openral_core import (
     ObjectDetection2D,
     ObjectsMetadata,
     Pose6D,
+    RobotDescription,
     TimeoutEvidence,
     WorldState,
 )
@@ -283,18 +284,12 @@ def test_failure_render_summarises_kernel_reactive_collision_evidence() -> None:
     assert json.loads(payload)["horizon_step"] == CollisionEvidence.REACTIVE_HORIZON_STEP
 
     summary = _summarise_evidence_json(payload)
-    # Pinned against literal expected content, not a second model_dump() of the
-    # same object, so a regression that drops a field (as happened to link_a/
-    # link_b_or_object/min_distance_m here) can't silently agree with itself.
-    # Missing closing brace: the object renders at 121 chars and the 120-char
-    # truncation clips it. The `+joint_positions_rad[0]` marker sits AFTER the
-    # truncation — discloses the field was present-but-empty (CLAUDE.md §1.4),
-    # which is what a record predating #187 looks like.
-    assert summary == (
-        'evidence={"collision_kind": "world", "horizon_step": -1, "link_a": "ee", '
-        '"link_b_or_object": "voxel_189", "min_distance_m": -0.05'
-        " +joint_positions_rad[0]"
-    )
+    # Collision actors, signed distance and phase survive the prompt budget.
+    assert '"link_a": "ee"' in summary
+    assert '"link_b_or_object": "voxel_189"' in summary
+    assert '"min_distance_m": -0.05' in summary
+    assert '"check": "measured"' in summary
+    assert "+joint_positions_rad[0]" in summary
     # The structured path drops the discriminator; the raw fallback would keep it.
     assert '"kind"' not in summary
     assert '"horizon_step": -1' in summary
@@ -758,3 +753,41 @@ def test_note_located_latest_wins_and_bumps_seq() -> None:
     seq1 = r.seq
     r.note_located(None)
     assert r.seq == seq1
+
+
+def test_collision_summary_preserves_long_actor_and_obstacle_names() -> None:
+    """Long payload IDs must not evict the other actor or predicted phase."""
+    robot = RobotDescription.from_yaml(str(Path(__file__).parents[2] / "robots/openarm/robot.yaml"))
+    joint = next(j for j in robot.joints if j.name == "left_joint7")
+    payload = json.loads(_KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    payload.update(
+        link_a=joint.child_link,
+        link_b_or_object="voxel_285076" + "_" * 300,
+        horizon_step=5,
+    )
+    summary = _summarise_evidence_json(json.dumps(payload))
+    assert joint.child_link in summary
+    assert "voxel_285076" in summary
+    assert "..." in summary
+    assert '"check": "predicted"' in summary
+    assert '"min_distance_m": -0.05' in summary
+
+
+def test_collision_summary_retains_workspace_and_payload_denial_details() -> None:
+    """Replanning gets the actual denial and ambiguity, not just a voxel number."""
+    payload = json.loads(_KERNEL_REACTIVE_EVIDENCE.read_text(encoding="utf-8"))
+    payload.update(
+        link_a="openarm_left_link7",
+        workspace_denial_reason="cell_unexplained",
+        workspace_contact_active=True,
+        grasp_exemption_active=False,
+        sweep_min_distance_m=-0.00761643,
+        payload_evidence_kind="pinch_fallback",
+        payload_evidence_ref="ambiguous:trk:3,trk:4",
+    )
+    summary = _summarise_evidence_json(json.dumps(payload))
+    assert '"workspace_denial_reason": "cell_unexplained"' in summary
+    assert '"payload_evidence_ref": "ambiguous:trk:3,trk:4"' in summary
+    assert '"link_a": "openarm_left_link7"' in summary
+    assert '"link_b_or_object": "voxel_189"' in summary
+    assert '"sweep_min_distance_m": -0.00761643' in summary

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObjectRole",
+  "description": "What a prompt-named object is to the task (issue #418).",
+  "type": "string",
+  "enum": [
+    "target",
+    "destination",
+    "context"
+  ]
+}

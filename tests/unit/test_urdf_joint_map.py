@@ -26,10 +26,11 @@ from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
-from openral_core.schemas import MimicJoint
+from openral_core.kinematics import edge_chain as _edge_chain
+from openral_core.kinematics import joint_motion as _joint_motion
+from openral_core.schemas import FixedAttachment, MimicJoint
 from openral_hal.lifecycle import URDF_JOINT_UNITS_UNSET, urdf_joint_units, urdf_named_joint_state
 from openral_hal.resolver import UrdfJointMap, urdf_joint_map, urdf_joint_names
-from openral_hal.vision_attachment_bridge import _edge_chain, _joint_motion
 
 _ROBOTS = Path(__file__).resolve().parents[2] / "robots"
 
@@ -86,6 +87,7 @@ def _manifest_link_pose(
     assert chain is not None
     pose = np.eye(4)
     for edge, origin in chain:
+        assert not isinstance(edge, FixedAttachment), edge  # joint_motion poses joints only
         value = edge.value_at(q) if isinstance(edge, MimicJoint) else q
         pose = pose @ origin @ _joint_motion(edge, value)
     return np.asarray(pose, dtype=np.float64)

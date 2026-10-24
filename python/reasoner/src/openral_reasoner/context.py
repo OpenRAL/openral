@@ -361,6 +361,12 @@ def render_robot_self_model(description: RobotDescription) -> str:
         f"name: {description.name} (embodiment={description.embodiment_kind.value})",
         f"dof: {len(description.joints)} joints",
     ]
+    # Keep manifest names and graph relationships; do not guess anatomical labels.
+    for joint in description.joints:
+        alias = f" (sim={joint.sim_joint_name})" if joint.sim_joint_name else ""
+        lines.append(
+            f"joint: {joint.name}{alias}; links: {joint.parent_link} -> {joint.child_link}"
+        )
     if description.end_effectors:
         ees = ", ".join(f"{e.name}({e.kind})" for e in description.end_effectors)
         lines.append(f"end_effectors: {ees}")
@@ -1129,22 +1135,24 @@ def _extract_priority(metadata_json: str) -> int:
 
 #: Evidence fields that never belong in the one-line prompt summary.
 #:
-#: The summary sorts keys and truncates at 120 chars; the reactive collision
+#: Non-collision summaries truncate at 120 chars; the reactive collision
 #: line alone renders 121 chars for just ``collision_kind``/``horizon_step``/
 #: ``link_a``/``link_b_or_object``/``min_distance_m``, so any extra field
-#: sorting before ``link_a`` evicts what the reasoner needs.
+#: sorting before ``link_a`` formerly evicted what the reasoner needs. Collision
+#: summaries now preserve all scalar fields with bounded individual identifiers.
 #:
 #: ``joint_positions_rad`` exists so a stop can be replayed offline (issue
 #: #187) but is useless to the planner; excluded **by role**, not by
 #: rendered length (a 2-dof vector renders only 41 chars and still evicted
 #: ``link_a``).
-_PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad"})
+_PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad", "joint_names"})
 
 #: Backstop for a future bulk field nobody remembered to name above: a list
 #: that renders longer than this is dropped too. Short arrays stay inline,
 #: because for ``SuppressedSummaryEvidence`` the parallel arrays *are* the
 #: roll-up.
 _PROMPT_FIELD_BUDGET = 48
+_COLLISION_IDENTIFIER_BUDGET = 256
 
 
 def _render_instances(
@@ -1201,7 +1209,21 @@ def _summarise_evidence_json(payload: str) -> str:
         and (k in _PROMPT_EXCLUDED_FIELDS or len(json.dumps(v)) > _PROMPT_FIELD_BUDGET)
     }
     summary_fields = {k: v for k, v in dumped.items() if k not in omitted}
-    summary = f"evidence={json.dumps(summary_fields, sort_keys=True)[:120]}"
+    if evidence.kind == "collision":
+        # Bound individual identifiers, never truncate the other actor or denial cause.
+        summary_fields = {
+            k: (
+                v[:_COLLISION_IDENTIFIER_BUDGET] + "..."
+                if isinstance(v, str) and len(v) > _COLLISION_IDENTIFIER_BUDGET
+                else v
+            )
+            for k, v in summary_fields.items()
+            if v is not None
+        }
+        summary_fields["check"] = "measured" if evidence.horizon_step == -1 else "predicted"
+        summary = f"evidence={json.dumps(summary_fields, sort_keys=True)}"
+    else:
+        summary = f"evidence={json.dumps(summary_fields, sort_keys=True)[:120]}"
     # Disclosed after the truncation, never inside it (CLAUDE.md §1.4): a
     # dropped field must be visible as dropped, but it must not be what pushes
     # the identities out of the line. `[0]` is disclosed like any other count —

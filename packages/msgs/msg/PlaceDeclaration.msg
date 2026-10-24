@@ -41,6 +41,8 @@ string object_id
 # declaration reconstructible from the trace alone after the fact.
 string rskill_id
 string trace_id
+# ExecuteRskill action goal UUID; stable across dispatcher restamping and trace reuse.
+string invocation_id
 
 # Backstop expiry window, seconds after stamp_ns. Consumers treat the
 # declaration as dead past it, independent of whether a retraction arrived.
@@ -90,3 +92,8 @@ float64 contact_force_threshold_n
 # `search_box.geometry[]` MUST be empty.
 bool search_box_valid
 PlaceRegion search_box
+
+# Optional class of the destination (a plate, a bowl; issue #418), role
+# "destination". The tracker grounds it; it arms nothing.
+bool destination_query_valid
+ObjectQuery destination_query

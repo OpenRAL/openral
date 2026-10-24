@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObjectQueryStatus",
+  "description": "Status of one standing ``ObjectQuery`` in the World State tracker (#418 Addendum G).",
+  "type": "string",
+  "enum": [
+    "unresolved",
+    "resolving",
+    "resolved",
+    "exhausted"
+  ]
+}

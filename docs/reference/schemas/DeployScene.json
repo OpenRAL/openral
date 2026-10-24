@@ -2,7 +2,7 @@
   "$defs": {
     "AttachedCollisionPrimitive": {
       "additionalProperties": false,
-      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True",
+      "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n    geometry_source: Where the geometry came from (issue #418, hazard OT-10): ``measured``\n        (the tracked or single provisional object's own fitted geometry), ``grown`` (cells\n        observed to move with the hand) or ``fallback`` (the pinch volume, or boxes of\n        candidates that may not be the held object; the default, and what a reader treats an\n        unknown code as). Only measured and grown primitives can explain the payload's own\n        cells to the kernel (``payload_own_cells_enabled``, sim only).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True\n    >>> p.geometry_source\n    'fallback'",
       "properties": {
         "shape": {
           "discriminator": {
@@ -39,6 +39,16 @@
             }
           ],
           "default": null
+        },
+        "geometry_source": {
+          "default": "fallback",
+          "enum": [
+            "fallback",
+            "measured",
+            "grown"
+          ],
+          "title": "Geometry Source",
+          "type": "string"
         }
       },
       "required": [
@@ -442,6 +452,19 @@
           "default": null,
           "title": "Reward Monitor Task"
         },
+        "reward_monitor_score_window_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reward Monitor Score Window S"
+        },
         "enable_critic": {
           "anyOf": [
             {
@@ -453,6 +476,34 @@
           ],
           "default": null,
           "title": "Enable Critic"
+        },
+        "enable_completion_check": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enable Completion Check"
+        },
+        "completion_check_judge": {
+          "anyOf": [
+            {
+              "enum": [
+                "scene_vlm",
+                "reasoner"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Check Judge"
         },
         "enable_scene_vlm": {
           "anyOf": [
@@ -654,6 +705,18 @@
           "default": null,
           "title": "Workspace Contact Max Lead M"
         },
+        "workspace_explained_cells": {
+          "default": true,
+          "title": "Workspace Explained Cells",
+          "type": "boolean"
+        },
+        "workspace_contact_wrist_links": {
+          "default": 1,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Workspace Contact Wrist Links",
+          "type": "integer"
+        },
         "payload_sweep_clear_enabled": {
           "default": false,
           "title": "Payload Sweep Clear Enabled",
@@ -670,6 +733,46 @@
           ],
           "default": null,
           "title": "Static Geometry File"
+        },
+        "object_tracking": {
+          "default": "off",
+          "enum": [
+            "off",
+            "shadow",
+            "bind",
+            "on"
+          ],
+          "title": "Object Tracking",
+          "type": "string"
+        },
+        "grounding_wait_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grounding Wait S"
+        },
+        "grounding_required": {
+          "default": false,
+          "title": "Grounding Required",
+          "type": "boolean"
+        },
+        "object_surface_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectSurfaceModelConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "DeployRuntime",
@@ -677,7 +780,7 @@
     },
     "GraspDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:pick_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-0115-2).\n    trace_id: OTel trace id, for attributability (HZ-0115-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n    search_box: Optional box (in the voxel grid's base frame, or a fixed\n        tf2 frame such as ``odom`` / ``map`` that the producer re-expresses\n        in the grid frame every tick, so a scene's box stays put while a\n        mobile base moves) the target\n        producer searches the occupancy map in for a seed: a search hint only,\n        with no support semantics \u2014 the producer measures the support layer\n        from the voxel map itself (the box is padded so that layer lies inside\n        it). It only *seeds* perception and never arms anything:\n        the exemption is always the measured ``region``. The reasoner grounds\n        it from a named ``GraspTargetRef`` (the generic path); unlike\n        ``region`` a direct-dispatch scene may also supply it; dispatch passes\n        it through unchanged. ``None`` = no search, so the producer never\n        measures a region.\n    workspace_box: Optional manipulation workspace (issue #349,\n        ``docs/reference/manipulation-workspace-contact.md``) in the voxel\n        grid's base frame, or a fixed tf2 frame like ``search_box`` (the\n        confirmed ``workspace_region`` is always in the grid's frame) \u2014 the\n        box the task works in (the source tote's\n        interior for a pick). Like ``search_box`` a scene may *declare* it and\n        dispatch passes it through unchanged; it arms nothing on its own.\n        Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;\n        ``geometry`` must be empty. ``None`` = no workspace.\n    workspace_region: The producer-*confirmed* workspace: ``workspace_box``\n        itself (never grown), stamped with the ``source_stamp`` of the fresh\n        voxel grid that confirmed it holds occupied cells. Producer-supplied\n        only, exactly like ``region`` \u2014 a scene can never supply it\n        (``DeployScene._reject_scene_supplied_place_region``) and the rSkill\n        runner strips it. With the kernel's ``workspace_contact_enabled`` the\n        robot's hand links may touch occupied cells centred inside it while\n        the hand is slow. ``None`` = no workspace contact.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:pick_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:pick_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-0115-2).\n    trace_id: OTel trace id, for attributability (HZ-0115-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n    search_box: Optional box (in the voxel grid's base frame, or a fixed\n        tf2 frame such as ``odom`` / ``map`` that the producer re-expresses\n        in the grid frame every tick, so a scene's box stays put while a\n        mobile base moves) the target\n        producer searches the occupancy map in for a seed: a search hint only,\n        with no support semantics \u2014 the producer measures the support layer\n        from the voxel map itself (the box is padded so that layer lies inside\n        it). It only *seeds* perception and never arms anything:\n        the exemption is always the measured ``region``. The reasoner grounds\n        it from a named ``GraspTargetRef`` (the generic path); unlike\n        ``region`` a direct-dispatch scene may also supply it; dispatch passes\n        it through unchanged. ``None`` = no search, so the producer never\n        measures a region. **Pending deprecation (issue #418):** a scene\n        setting it gets a ``FutureWarning`` from ``DeployScene.from_yaml``\n        (OpenRAL's own producers set it on every goal and do not warn).\n        ``target_queries`` grounded by the Layer-2 tracker replace it, but it\n        stays the only input of the HAL grasp-target leg while\n        ``DeployRuntime.object_tracking`` is ``off`` or ``shadow`` (the two\n        postures ``deploy run`` allows), and, unless sim ground truth, it\n        seeds the tracker's TARGET query. It is removed only after #418\n        phase 5, with an on-disk ``schema_version`` bump and a migrator.\n    workspace_box: Optional manipulation workspace (issue #349,\n        ``docs/reference/manipulation-workspace-contact.md``) in the voxel\n        grid's base frame, or a fixed tf2 frame like ``search_box`` (the\n        confirmed ``workspace_region`` is always in the grid's frame) \u2014 the\n        box the task works in (the source tote's\n        interior for a pick). Like ``search_box`` a scene may *declare* it and\n        dispatch passes it through unchanged; it arms nothing on its own.\n        Capped by ``MAX_WORKSPACE_HALF_EXTENT_M`` / ``MAX_WORKSPACE_VOLUME_M3``;\n        ``geometry`` must be empty. ``None`` = no workspace.\n    workspace_region: The producer-*confirmed* workspace: ``workspace_box``\n        itself (never grown), stamped with the ``source_stamp`` of the fresh\n        voxel grid that confirmed it holds occupied cells. Producer-supplied\n        only, exactly like ``region`` \u2014 a scene can never supply it\n        (``DeployScene._reject_scene_supplied_place_region``) and the rSkill\n        runner strips it. With the kernel's ``workspace_contact_enabled`` the\n        robot's hand links may touch occupied cells centred inside it while\n        the hand is slow. ``None`` = no workspace contact.\n    target_queries: The classes the prompt names (issue #418), at most\n        ``MAX_TARGET_QUERIES``, each with role ``TARGET`` or ``CONTEXT``. The\n        Layer-2 tracker grounds every instance of each class; they arm nothing.\n        Side by side with ``search_box``, which is pending deprecation.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:pick_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -705,6 +808,12 @@
         "trace_id": {
           "default": "",
           "title": "Trace Id",
+          "type": "string"
+        },
+        "invocation_id": {
+          "default": "",
+          "pattern": "^(?:[0-9a-f]{32})?$",
+          "title": "Invocation Id",
           "type": "string"
         },
         "timeout_s": {
@@ -765,6 +874,15 @@
             }
           ],
           "default": null
+        },
+        "target_queries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObjectQuery"
+          },
+          "maxItems": 8,
+          "title": "Target Queries",
+          "type": "array"
         }
       },
       "required": [
@@ -878,6 +996,153 @@
       "title": "LaunchInclude",
       "type": "object"
     },
+    "ObjectQuery": {
+      "additionalProperties": false,
+      "description": "A class of objects a prompt names; never geometry the kernel uses (issue #418).\n\nRides ``GraspDeclaration.target_queries`` / ``PlaceDeclaration.destination_query``\ninto the Layer-2 object tracker, which keeps it as a standing query for the life of\nthe goal and grounds every instance of the class.\n\nAttributes:\n    label: Open-vocabulary label, e.g. ``\"orange\"``.\n    count: ``\"one\"`` still tracks every match (the policy chooses); ``\"all\"`` names\n        the whole class.\n    role: What the objects are to the task.\n    hand: Gripper joint name, a hint for the policy/reasoner only.\n    seed: Optional search hint (sim-derived or scene graph) in the grid frame or a\n        fixed tf2 frame. Seeds prompts only; ``geometry`` must be empty.\n    min_instances: CONFIRMED instances that make the query ``RESOLVED``.\n    synonyms: Other names for the same class, sent with ``label`` to an\n        open-vocabulary locator as one class list (``\"box, carton\"``); empty = the\n        label alone. Additive (#418), never geometry.\n\nExample:\n    >>> query = ObjectQuery(label=\"orange\", count=\"all\", role=ObjectRole.TARGET)\n    >>> query.min_instances\n    1",
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "count": {
+          "enum": [
+            "one",
+            "all"
+          ],
+          "title": "Count",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ObjectRole"
+        },
+        "hand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hand"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "min_instances": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Min Instances",
+          "type": "integer"
+        },
+        "synonyms": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Synonyms",
+          "type": "array"
+        }
+      },
+      "required": [
+        "label",
+        "count",
+        "role"
+      ],
+      "title": "ObjectQuery",
+      "type": "object"
+    },
+    "ObjectRole": {
+      "description": "What a prompt-named object is to the task (issue #418).\n\n``CONTEXT`` covers neighbours and supports: tracked, never a target.",
+      "enum": [
+        "target",
+        "destination",
+        "context"
+      ],
+      "title": "ObjectRole",
+      "type": "string"
+    },
+    "ObjectSurfaceModelConfig": {
+      "additionalProperties": false,
+      "description": "Resource and convergence bounds for observation-only object surface registration.",
+      "properties": {
+        "voxel_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 0.1,
+          "title": "Voxel M",
+          "type": "number"
+        },
+        "max_points": {
+          "maximum": 8192,
+          "minimum": 4,
+          "title": "Max Points",
+          "type": "integer"
+        },
+        "max_voxels": {
+          "maximum": 8192,
+          "minimum": 4,
+          "title": "Max Voxels",
+          "type": "integer"
+        },
+        "max_iterations": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "max_correspondence_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Max Correspondence M",
+          "type": "number"
+        },
+        "max_rmse_m": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Max Rmse M",
+          "type": "number"
+        },
+        "min_overlap": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Min Overlap",
+          "type": "number"
+        },
+        "free_space_calibration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SurfaceFreeSpaceCalibration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "voxel_m",
+        "max_points",
+        "max_voxels",
+        "max_iterations",
+        "max_correspondence_m",
+        "max_rmse_m",
+        "min_overlap"
+      ],
+      "title": "ObjectSurfaceModelConfig",
+      "type": "object"
+    },
     "PhysicsBackend": {
       "description": "Physics / scene backend used to instantiate a ``SceneSpec``.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld,\n        and VLABench (native lerobot 0.6.0 VLABenchEnv, in-process).\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The\n        engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm\n        benchmark backend runs it out-of-process via a py3.10 sidecar.\n        ManiSkill3 scenes predate this slot and historically\n        declared ``MUJOCO`` \u2014 new SAPIEN backends use this value.\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse + PhysX + RTX, GPU) \u2014 the\n        ``isaac_sim`` scene, driven out-of-process via a py3.11 sidecar.\n    COPPELIASIM: CoppeliaSim/PyRep \u2014 the RLBench benchmark backend, driven\n        out-of-process via a py3.10 sidecar.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
       "enum": [
@@ -895,7 +1160,7 @@
     },
     "PlaceDeclaration": {
       "additionalProperties": false,
-      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. Never read from the\n        robot-wide ``SafetyEnvelope.contact_force_threshold_n``.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
+      "description": "Dispatch's typed statement that a place phase is active for a payload.\n\nThe ADR-0097 distinction between \"arrived at its declared destination\"\nand \"grazed a wall\" mid-carry \u2014 never inferred from motion or simulator\nintrospection. On its own it exempts nothing: it only lets a producer\nattest a place-phase ``SupportContactWitness`` on the declared\ntarget, which the kernel then exempts under the pick witness's own\nbounds/hysteresis (ADR-0092 D6). Scoped to one goal execution; dies on\nretraction, goal end/cancel, E-stop, or ``timeout_s`` after\n``stamp_ns``, whichever fires first (HZ-0097-3).\n\nDrafted amendment (ADR-0097, default off): the real place producer\n(``openral_hal._place_target_leg``) measures the surface directly under the\ncarried payload and attaches it as the region of dispatch's goal-scope\ndeclaration (``target_id=\"surface\"``, the runner's ``place_approach_enabled``);\nit never declares on its own, and the region dies with the declaration, the\npayload and the region's age bound.\n\nAttributes:\n    target_id: Identity of the declared place target, e.g.\n        ``\"sim:cab_1_left_group_main\"``; an attested ``support_id`` must\n        name it or a surface of it.\n    object_id: Payload the declaration scopes to\n        (``AttachedCollisionObject.object_id``); empty = whichever\n        payload is carried.\n    rskill_id: Dispatching skill, for attributability (HZ-0097-2).\n    trace_id: OTel trace id, for attributability (HZ-0097-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    contact_force_threshold_n: Per-declaration contact-force bound\n        (ADR-0100); ``0.0`` = no force gate. The kernel caps a positive\n        bound at ``SafetyEnvelope.contact_force_threshold_n``; a task\n        can lower the robot ceiling, never raise it.\n    region: Producer-measured bounded region of the target (ADR-0097's\n        2026-08-14 amendment); ``None`` = no approach allowance\n        (pre-amendment margins). Dies with the declaration.\n    search_box: Optional gravity-aligned box (in the voxel grid's base\n        frame) naming the surface a place may use: a hint only. The real\n        place producer measures the support directly under the carried\n        payload with or without it; when set, it refuses a measured patch\n        whose centre lies outside the box. The reasoner grounds it from an\n        optional ``PlaceTargetRef`` (a lifted detection or a recalled memory\n        node, padded); dispatch passes it through unchanged. It never arms\n        anything \u2014 the allowance is always the producer-measured ``region``.\n        ``geometry`` must be empty.\n    destination_query: Optional class the destination belongs to (a plate, a\n        bowl; issue #418), with role ``DESTINATION``. The tracker grounds it; it\n        arms nothing. A shelf slot stays a ``search_box``.\n\nExample:\n    >>> declaration = PlaceDeclaration(\n    ...     target_id=\"sim:cab_1_left_group_main\",\n    ...     rskill_id=\"openral/pi05-robocasa\",\n    ...     timeout_s=60.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=91_000_000_000)\n    False",
       "properties": {
         "target_id": {
           "default": "",
@@ -915,6 +1180,12 @@
         "trace_id": {
           "default": "",
           "title": "Trace Id",
+          "type": "string"
+        },
+        "invocation_id": {
+          "default": "",
+          "pattern": "^(?:[0-9a-f]{32})?$",
+          "title": "Invocation Id",
           "type": "string"
         },
         "timeout_s": {
@@ -952,6 +1223,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "destination_query": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectQuery"
             },
             {
               "type": "null"
@@ -1078,7 +1360,7 @@
       "type": "object"
     },
     "SafetyEnvelope": {
-      "description": "Safety constraints handed to the C++ safety kernel.\n\nNot every field is enforced yet. Several are **declared, not yet enforced\nby the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2``,\n``contact_force_threshold_n`` and ``deadman_required`` are passed to the\nkernel as ROS parameters but no check consults them, and ``no_go_zones``,\n``e_stop_topic``, ``e_stop_qos``, ``cycle_time_violation_threshold_ms``\nand ``human_in_loop_required`` are not read by any runtime component.\nEach attribute below says which case it is in.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m). The\n        kernel checks it only against CARTESIAN_POSE chunk positions.\n    workspace_box_max_xyz: Upper corner of allowed workspace (m). Same\n        scope as ``workspace_box_min_xyz``.\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n        **Declared, not yet enforced**: not passed to the kernel and\n        not read by any runtime component.\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter, but no check compares an acceleration against it.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Declared maximum contact force in Newtons. **Not\n        enforced yet**: it is validated here and passed to the C++\n        safety kernel as a parameter, but no check compares any\n        measured or estimated force against it (issue #373).\n    max_torque_nm: Maximum joint torque in Nm. The kernel caps\n        JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.\n    deadman_required: Whether a deadman switch is required.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter but never consulted. The deploy launch starts the\n        deadman watchdog unconditionally, whatever this says.\n    e_stop_topic: ROS 2 topic for E-stop commands. **Declared, not\n        read**: the kernel latches on its hardcoded ``/openral/estop``\n        topic.\n    e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**\n    contact_force_threshold_n: Force threshold for contact detection.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter but never consulted. The kernel's place-contact force\n        gate takes its threshold from each placement declaration\n        instead.\n    cycle_time_violation_threshold_ms: Control cycle time violation\n        threshold. **Declared, not read** by any runtime component.\n    human_in_loop_required: rSkill names requiring human supervision.\n        **Declared, not read** by any runtime component.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it. Must be\n        finite and > 0 (``inf`` would disable the kernel bound).\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.",
+      "description": "Safety constraints handed to the C++ safety kernel.\n\nNot every field is enforced yet. Several are **declared, not yet enforced\nby the kernel**: ``max_force_n`` (issue #373), ``max_ee_accel_m_s2`` and\n``deadman_required`` are passed to the kernel as ROS parameters but no check\nconsults them, and ``no_go_zones``, ``e_stop_topic``, ``e_stop_qos``,\n``cycle_time_violation_threshold_ms``\nand ``human_in_loop_required`` are not read by any runtime component.\nEach attribute below says which case it is in.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m). The\n        kernel checks it only against CARTESIAN_POSE chunk positions.\n    workspace_box_max_xyz: Upper corner of allowed workspace (m). Same\n        scope as ``workspace_box_min_xyz``.\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n        **Declared, not yet enforced**: not passed to the kernel and\n        not read by any runtime component.\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also the C++ safety kernel's CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter, but no check compares an acceleration against it.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Declared maximum contact force in Newtons. **Not\n        enforced yet**: it is validated here and passed to the C++\n        safety kernel as a parameter, but no check compares any\n        measured or estimated force against it (issue #373).\n    max_torque_nm: Maximum joint torque in Nm. The kernel caps\n        JOINT_TORQUE chunks at ``min(joint.torque_limit, this)``.\n    deadman_required: Whether a deadman switch is required.\n        **Declared, not yet enforced by the kernel**: passed as a ROS\n        parameter but never consulted. The deploy launch starts the\n        deadman watchdog unconditionally, whatever this says.\n    e_stop_topic: ROS 2 topic for E-stop commands. **Declared, not\n        read**: the kernel latches on its hardcoded ``/openral/estop``\n        topic.\n    e_stop_qos: QoS profile for E-stop topic. **Declared, not read.**\n    contact_force_threshold_n: Robot ceiling on the additive place-force\n        refusal: the kernel uses the smaller of this and the live place\n        declaration's positive threshold. Requires a fresh calibrated\n        payload-to-target witness; not a general contact monitor or a\n        permission to make contact.\n    cycle_time_violation_threshold_ms: Control cycle time violation\n        threshold. **Declared, not read** by any runtime component.\n    human_in_loop_required: rSkill names requiring human supervision.\n        **Declared, not read** by any runtime component.\n    max_cartesian_step_m: Per-control-mode bound the C++ safety\n        kernel enforces \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean, after\n        ``cartesian_delta_scale``). ``None`` means \"no per-mode\n        check declared, skip\". It is a norm, so a controller with a\n        per-axis output limit ``a`` needs at least ``a\u00b7\u221a3`` here or\n        in-distribution diagonal moves E-stop.\n    max_cartesian_step_rad: Per-control-mode kernel bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it. Must be\n        finite and > 0 (``inf`` would disable the kernel bound).\n    max_base_angular_speed_rad_s: Per-control-mode kernel bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.",
       "properties": {
         "workspace_box_min_xyz": {
           "anyOf": [
@@ -1848,6 +2130,63 @@
       "title": "SphereShape",
       "type": "object"
     },
+    "SurfaceFreeSpaceCalibration": {
+      "additionalProperties": false,
+      "description": "External sensor/pose error bounds required to retire observed surface cells.\n\nThe reference identifies independently established calibration evidence; this\nconfiguration does not establish that evidence or authorize world-map clearing.",
+      "properties": {
+        "calibration_ref": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Calibration Ref",
+          "type": "string"
+        },
+        "sensor_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Sensor Ids",
+          "type": "array"
+        },
+        "depth_error_m": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Depth Error M",
+          "type": "number"
+        },
+        "pose_error_m": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Pose Error M",
+          "type": "number"
+        },
+        "pixel_error": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Pixel Error",
+          "type": "integer"
+        },
+        "max_age_s": {
+          "exclusiveMinimum": 0.0,
+          "maximum": 600.0,
+          "title": "Max Age S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "calibration_ref",
+        "sensor_ids",
+        "depth_error_m",
+        "pose_error_m",
+        "pixel_error",
+        "max_age_s"
+      ],
+      "title": "SurfaceFreeSpaceCalibration",
+      "type": "object"
+    },
     "TightCollisionGeometry": {
       "additionalProperties": false,
       "description": "Tight convex geometry refining a link's ``BoxShape`` for the kernel's narrow phases.\n\nThe safety kernel's arm-link-vs-world-voxel check runs a **staged** narrow\nphase when a link declares this: a 26-DOP separating-axis bound on every\noccupied cell, then GJK on the link's exact convex hull for the cells the\nDOP cannot clear. Self-collision does the same for a box pair the OBBs\ncannot separate, when *both* links declare a stage-2 hull \u2014 which retired\nthe ``panda_link5``/``panda_link7`` allowed-collision exemption (issue\n#191). Both stages are strict subsets of the box they refine, so the\nbroad-phase window (sized from ``half_extents_m`` alone) does not move.\nExpressed in the box's own local frame (``LinkCollisionGeometry.origin_xyz_rpy``).\n\nContainment is checked here, again by the kernel at ``on_configure``\n(``validate_tight_geometry``), and once more against the real source mesh\nby ``tests/unit/test_collision_tight_geometry.py`` \u2014 **definitional\nrather than fitted**: the slabs are tangent halfspaces ``u\u00b7x <= max over\nthe mesh of u\u00b7x``, the hull is ``conv(vertices)`` of the mesh, no\noptimiser tolerance anywhere.\n\nGenerated by ``tools/generate_tight_geometry.py``; not hand-authored.\n\nAttributes:\n    dop_lo_m: Per-axis lower slab bound along ``DOP_AXES``, 13 entries.\n    dop_hi_m: Per-axis upper slab bound, 13 entries.\n    hull_vertices_m: Exact convex-hull vertices in the box frame, at most\n        ``MAX_TIGHT_HULL_VERTICES`` of them. **Empty means stage 1\n        only** \u2014 the DOP still tightens the check, but no exact test runs.\n        That is the representation a link whose hull is over the ceiling\n        gets, and it is a cost decision, not a safety one: the DOP is a\n        containing solid either way.\n    hull_overhang_m: How far the hull's surface reaches past the real\n        source mesh it was built from, sampled by\n        ``tools/generate_tight_geometry.py`` (issue #221). Containment\n        (``mesh \u2286 hull``) is proved elsewhere; this is the *other*\n        direction, and it is what an offline adjudicator needs to charge a\n        hull-fidelity self-collision stop an admissible gap instead of\n        leaving it unscorable. ``None`` when ``hull_vertices_m`` is empty,\n        or when the hull has no source mesh on disk to measure against \u2014\n        never defaulted to ``0``, since that would silently claim a\n        perfect fit.\n\nExample:\n    >>> t = TightCollisionGeometry(\n    ...     dop_lo_m=(-0.05,) * 13,\n    ...     dop_hi_m=(0.05,) * 13,\n    ... )\n    >>> t.hull_vertices_m\n    ()",
@@ -1907,9 +2246,59 @@
       "title": "TightCollisionGeometry",
       "type": "object"
     },
+    "USDObjectCatalogRef": {
+      "additionalProperties": false,
+      "description": "External USD source, reader configuration, and catalog metadata.",
+      "properties": {
+        "usd": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usd"
+        },
+        "prim_path": {
+          "default": "/",
+          "title": "Prim Path",
+          "type": "string"
+        },
+        "expected_revision": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Expected Revision",
+          "type": "string"
+        },
+        "reader_python": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reader Python"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "title": "USDObjectCatalogRef",
+      "type": "object"
+    },
     "VisionAttachmentRuntime": {
       "additionalProperties": false,
-      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The\noctomap bridge clears a published payload from the map and the robot self-filter removes it\nfrom the cloud regardless of the kernel flag, so a leg without the kernel check would make\nthe payload invisible to every collision check.\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngrasp trigger is the gripper's *position* stalling short of a close command (the OpenArm\ngripper reports no effort), its thresholds the manifest's robot-type constants\n(``JointSpec.closure_calibration``) derived from teleop data, not per cell.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for\n        every gripper may be before the attachment heartbeat stops (HAL param\n        ``vision_attachment_evidence_timeout_s``).\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n    grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param\n        ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's\n        grasp-target exemption arms with, so ``deploy run`` refuses\n        ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.\n    grasp_target_approach_m: Approach-armed grasp target (HAL param\n        ``vision_attachment_grasp_target_approach_m``; needs ``grasp_target_enabled``):\n        with no named target, a hand whose TCP comes within this many metres of\n        occupied voxels arms a one-hand declaration measured around its jaws, and\n        the rSkill runner arms a goal-scope declaration for every goal so the\n        policy, not the reasoner, picks what to grasp. ``None`` = off (default).\n        Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.\n    grasp_target_premeasure: Pre-measure every object instance near a hand (or in a\n        named search box) from head-camera segmentation before any hand arms, each\n        camera box confirmed by the voxel map, and arm the region from the tracked\n        instance nearest the hand on the arming tick (HAL param\n        ``vision_attachment_grasp_target_premeasure``; needs ``grasp_target_enabled``),\n        so the region exists before contact without the policy pausing for an\n        unoccluded view. Source order: camera instance first, the map confirms it and\n        holds it while the declared hand occludes it\n        (``docs/reference/object-primitives-design.md``, issue #349). Prototype;\n        default off.\n    grasp_target_margin_m: How far the grasp target is bloated, metres (HAL param\n        ``vision_attachment_grasp_target_margin_m``; design note \u00a72.1 \"Grasp-target\n        margin\"). Before the handover the region the kernel exempts for the declared\n        finger links is the measured target grown by this margin on every face,\n        **downward too** \u2014 the finger links may press up to this far into the support\n        under the target (and into anything else within it) without a stop. From the\n        handover on, the attached payload \u2014 the target lowered onto the measured support\n        top and grown by it on the four sides and the top, never down \u2014 is also the\n        region the kernel latches and keeps exempting the finger links over until the\n        payload leaves it, carried with the hand and checked against the environment.\n        The producer's own gates keep the measured region. Default ``0.0`` (no bloat,\n        the safer side): a scene that wants the wider exemption names it (the real\n        OpenArm cell's 20 mm octomap needs ``>= 0.03`` to cover the support layer,\n        design note \u00a72.1). In ``[0, MAX_GRASP_TARGET_MARGIN_M]`` (0.05 m); the margin,\n        not the measurement, shrinks when a bloated box would exceed the declaration's\n        caps (logged). Calibration point, task-dependent; a Safety-WG setting (hazard\n        row HZ-0115-32).\n    place_target_enabled: Run the real place producer (HAL param\n        ``vision_attachment_place_target_enabled``): while a payload is held it\n        measures the support surface directly under it from the voxel map, arms a\n        place region for it and attests the map-support proximity witness. No place\n        target needs naming. Default off.\n    release_timeout_s: How long the bridge's release window waits for the payload to\n        clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration\n        point. The window's grid age and clearance are not scene knobs: the deploy\n        launch derives them from the kernel's voxel deadline, world margin and octree\n        resolution.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
+      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone: the\npayload is checked as attached geometry only by the kernel. The leg's payload is\ngeometry-only, so the octomap bridge never clears it from the map (it clears only a #418\n``tracked_object`` binding, by identity) and it stays a mapped obstacle the kernel may stop\non (fail closed).\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngrasp trigger is the gripper's *position* stalling short of a close command (the OpenArm\ngripper reports no effort), its thresholds the manifest's robot-type constants\n(``JointSpec.closure_calibration``) derived from teleop data, not per cell.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for\n        every gripper may be before the attachment heartbeat stops (HAL param\n        ``vision_attachment_evidence_timeout_s``).\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n    grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param\n        ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's\n        grasp-target exemption arms with, so ``deploy run`` refuses\n        ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.\n    grasp_target_approach_m: Approach-armed grasp target (HAL param\n        ``vision_attachment_grasp_target_approach_m``; needs ``grasp_target_enabled``):\n        with no named target, a hand whose TCP comes within this many metres of\n        occupied voxels arms a one-hand declaration measured around its jaws, and\n        the rSkill runner arms a goal-scope declaration for every goal so the\n        policy, not the reasoner, picks what to grasp. ``None`` = off (default).\n        Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.\n    grasp_target_premeasure: Pre-measure every object instance near a hand (or in a\n        named search box) from head-camera segmentation before any hand arms, each\n        camera box confirmed by the voxel map, and arm the region from the tracked\n        instance nearest the hand on the arming tick (HAL param\n        ``vision_attachment_grasp_target_premeasure``; needs ``grasp_target_enabled``),\n        so the region exists before contact without the policy pausing for an\n        unoccluded view. Source order: camera instance first, the map confirms it and\n        holds it while the declared hand occludes it\n        (``docs/reference/object-primitives-design.md``, issue #349). Prototype;\n        default off.\n    grasp_target_margin_m: How far the grasp target is bloated, metres (HAL param\n        ``vision_attachment_grasp_target_margin_m``; design note \u00a72.1 \"Grasp-target\n        margin\"). Before the handover the region the kernel exempts for the declared\n        finger links is the measured target grown by this margin on every face,\n        **downward too** \u2014 the finger links may press up to this far into the support\n        under the target (and into anything else within it) without a stop. From the\n        handover on, the attached payload \u2014 the target lowered onto the measured support\n        top and grown by it on the four sides and the top, never down \u2014 is also the\n        region the kernel latches and keeps exempting the finger links over until the\n        payload leaves it, carried with the hand and checked against the environment.\n        The producer's own gates keep the measured region. Default ``0.0`` (no bloat,\n        the safer side): a scene that wants the wider exemption names it (the real\n        OpenArm cell's 20 mm octomap needs ``>= 0.03`` to cover the support layer,\n        design note \u00a72.1). In ``[0, MAX_GRASP_TARGET_MARGIN_M]`` (0.05 m); the margin,\n        not the measurement, shrinks when a bloated box would exceed the declaration's\n        caps (logged). Calibration point, task-dependent; a Safety-WG setting (hazard\n        row HZ-0115-32).\n    place_target_enabled: Run the real place producer (HAL param\n        ``vision_attachment_place_target_enabled``): while a payload is held it\n        measures the support surface directly under it from the voxel map, arms a\n        place region for it and attests the map-support proximity witness. No place\n        target needs naming. Default off.\n    release_timeout_s: How long the bridge's release window waits for the payload to\n        clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration\n        point. The window's grid age and clearance are not scene knobs: the deploy\n        launch derives them from the kernel's voxel deadline, world margin and octree\n        resolution.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
       "properties": {
         "enabled": {
           "default": false,
@@ -2053,6 +2442,17 @@
   "properties": {
     "scene": {
       "$ref": "#/$defs/SceneSpec"
+    },
+    "object_catalog": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/USDObjectCatalogRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "robot_id": {
       "anyOf": [

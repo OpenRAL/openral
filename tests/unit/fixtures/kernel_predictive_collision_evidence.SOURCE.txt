@@ -41,3 +41,9 @@ Kernel log line for the same event:
     safety.collision kind=world a=ee b=voxel_269 step=5
     min_distance_m=-0.0451849 sweep_min_distance_m=-0.0451849 mode=5
     rskill_id= place_allowance_active=0 place_target=
+
+The captured publisher payload also carries the same ordered joint names,
+sweep minimum, explicit workspace denial reason, active-region flags, box-bound
+indicator, and grid origin. These are copies of state already used or logged by
+the kernel; they disclose no inferred obstacle identity and do not change the
+collision decision.

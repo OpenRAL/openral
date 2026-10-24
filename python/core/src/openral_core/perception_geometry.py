@@ -49,6 +49,10 @@ Flow, one call per step so every step is replayable from its inputs alone:
    refused when that component touches the search column's edge, exceeds the caps or
    leaves another body's cell inside the result.
 
+Lives in ``openral_core`` (moved from ``openral_hal._grasp_target``, issue #418) so the
+Layer-2 tracker and the HAL legs import it downward. ``backproject_masked_depth`` and
+``lattice_from_msg`` moved here with it.
+
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤
 0.03 m³), the rest are chosen conservatively, not measured.
@@ -64,11 +68,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
+
 from openral_core import PlaceRegion, Pose6D
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
-
-from openral_hal._vision_attachment_evidence import backproject_masked_depth
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from collections.abc import Iterable, Sequence
@@ -76,11 +79,15 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import IntrinsicsPinhole
 
 __all__ = [
+    "WORKSPACE_MIN_COVER",
     "TargetRefusal",
     "TargetRegionFit",
     "TargetSeed",
     "VoxelLattice",
+    "backproject_masked_depth",
     "cell_closed_region",
+    "fit_pad_m",
+    "lattice_from_msg",
     "map_completed_region",
     "margin_grown_region",
     "mask_without_removed_points",
@@ -95,6 +102,15 @@ __all__ = [
     "target_seed_from_voxels",
     "track_region",
 ]
+
+#: A declared manipulation workspace (``GraspDeclaration.workspace_box``) is confirmed
+#: while occupied cells centred in it cover at least this fraction of its footprint
+#: (``region_covers_occupied``) on a fresh grid. A tote interior holding its cartons
+#: covers most of its floor; a box declared over empty space (a wrong pose, the tote
+#: taken away) covers none. 10 % keeps a nearly-emptied tote confirmed while a stray
+#: cell or two cannot confirm an empty volume. Shared by the HAL grasp-target producer
+#: and the #418 object tracker. *Calibration point.*
+WORKSPACE_MIN_COVER = 0.10
 
 # Unit-quaternion tolerance, the same one bucket2_markers.occupied_voxel_centers applies:
 # an unset OccupancyVoxels.orientation is all zeros, never identity.
@@ -159,7 +175,7 @@ class VoxelLattice:
     """The fields of one ``openral_msgs/OccupancyVoxels`` the target producer reads.
 
     Same convention as ``openral_foxglove_bringup.bucket2_markers.occupied_voxel_centers``
-    (not importable from the HAL layer, so re-derived here and cross-checked in
+    (not importable from ``openral_core``, so re-derived here and cross-checked in
     ``tests/unit/test_grasp_target.py``): ``idx = x + size_x * (y + size_y * z)``;
     ``origin`` + ``orientation_xyzw`` is the pose of cell ``(0, 0, 0)``'s minimum
     corner in ``frame_id``; the lattice axes are the octomap's, so a cell centre is
@@ -186,6 +202,7 @@ class VoxelLattice:
     occupancy: NDArray[np.uint8]
 
     def __post_init__(self) -> None:
+        """Refuse a malformed grid (see the class ``Raises``)."""
         expected = int(np.prod(self.size))
         if self.occupancy.size != expected:
             raise ROSConfigError(
@@ -219,6 +236,25 @@ class VoxelLattice:
             # Frozen: the lattice never changes, so neither do its centres.
             self.__dict__["_occupied_centers"] = cached
         return cached
+
+
+def lattice_from_msg(msg: Any) -> VoxelLattice:  # noqa: ANN401  # reason: duck-typed ROS msg
+    """Decode one ``openral_msgs/OccupancyVoxels`` into a ``VoxelLattice``.
+
+    Duck-typed on the message's fields, so this module needs no ROS import.
+
+    Raises:
+        ROSConfigError: On a malformed grid (via ``VoxelLattice``).
+    """
+    o, q = msg.origin, msg.orientation
+    return VoxelLattice(
+        frame_id=str(msg.header.frame_id),
+        origin=(float(o.x), float(o.y), float(o.z)),
+        orientation_xyzw=(float(q.x), float(q.y), float(q.z), float(q.w)),
+        resolution=float(msg.resolution),
+        size=(int(msg.size_x), int(msg.size_y), int(msg.size_z)),
+        occupancy=np.array(msg.occupancy, dtype=np.uint8),
+    )
 
 
 @dataclass(frozen=True)
@@ -564,6 +600,82 @@ def target_seed_from_voxels(
     z_top = float(cluster[:, 2].max()) + 0.5 * grid.resolution
     bottom = float(cluster[:, 2].min()) - 0.5 * grid.resolution
     return TargetSeed((float(x), float(y), z_top), None, sizes, bottom)
+
+
+def backproject_masked_depth(
+    mask: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    *,
+    min_depth_m: float,
+    max_depth_m: float,
+) -> tuple[NDArray[np.float64], float]:
+    """Back-project the masked pixels of a depth frame into the camera frame.
+
+    Args:
+        mask: ``(H, W)`` boolean segmentation mask.
+        depth_m: ``(H, W)`` metric depth, same shape as ``mask``. Zero / NaN /
+            out-of-range readings are treated as missing.
+        intrinsics: Pinhole intrinsics matching the frame's resolution. Rescale
+            with ``openral_core.scale_intrinsics_to`` first if they were
+            calibrated at a different size.
+        min_depth_m: Readings at or below this are invalid.
+        max_depth_m: Readings at or above this are invalid.
+
+    Returns:
+        ``(points, valid_fraction)`` — an ``(N, 3)`` float64 array of points in
+        the camera **optical** frame (REP-103: +x right, +y down, +z forward),
+        and the fraction of masked pixels that carried usable depth. An empty
+        mask yields ``((0, 3), 0.0)`` rather than raising: "nothing was masked"
+        is a gate result, not an error.
+
+    Raises:
+        ROSConfigError: If ``mask`` and ``depth_m`` shapes disagree, or the
+            intrinsics resolution does not match the frame.
+
+    Rays leave pixel *centres* (``col + 0.5``), unlike
+    ``openral_hal.depth_cloud.points_from_depth_grid``, which inverts the depth synth's
+    own corner-indexed projection.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import IntrinsicsPinhole
+        >>> k = IntrinsicsPinhole(width=4, height=2, fx=2.0, fy=2.0, cx=2.0, cy=1.0)
+        >>> m = np.zeros((2, 4), dtype=bool)
+        >>> m[1, 2] = True
+        >>> d = np.full((2, 4), 0.5)
+        >>> pts, frac = backproject_masked_depth(m, d, k, min_depth_m=0.1, max_depth_m=1.0)
+        >>> pts.round(3).tolist()
+        [[0.125, 0.125, 0.5]]
+        >>> frac
+        1.0
+    """
+    if mask.shape != depth_m.shape:
+        raise ROSConfigError(
+            f"backproject_masked_depth: mask shape {mask.shape} != depth shape {depth_m.shape}."
+        )
+    if mask.shape != (intrinsics.height, intrinsics.width):
+        raise ROSConfigError(
+            f"backproject_masked_depth: frame {mask.shape} does not match intrinsics "
+            f"{(intrinsics.height, intrinsics.width)}; rescale with scale_intrinsics_to first."
+        )
+    masked_total = int(mask.sum())
+    if masked_total == 0:
+        return np.zeros((0, 3), dtype=np.float64), 0.0
+
+    rows, cols = np.nonzero(mask)
+    z = np.asarray(depth_m, dtype=np.float64)[rows, cols]
+    usable = np.isfinite(z) & (z > min_depth_m) & (z < max_depth_m)
+    valid_fraction = float(usable.sum()) / float(masked_total)
+    if not usable.any():
+        return np.zeros((0, 3), dtype=np.float64), valid_fraction
+
+    z = z[usable]
+    u = cols[usable].astype(np.float64) + 0.5
+    v = rows[usable].astype(np.float64) + 0.5
+    x = (u - intrinsics.cx) * z / intrinsics.fx
+    y = (v - intrinsics.cy) * z / intrinsics.fy
+    return np.stack((x, y, z), axis=1), valid_fraction
 
 
 def project_point(

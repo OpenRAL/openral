@@ -296,7 +296,7 @@ def test_deploy_sim_forwards_workspace_contact_and_deploy_run_refuses_it(
 
 def _tote_lattice(*, floor: bool = True, frame: str = "openarm_base") -> Any:
     """20 mm cells over the tote: its floor layer (k = 0) occupied, the rest free."""
-    from openral_hal._grasp_target import VoxelLattice
+    from openral_core.perception_geometry import VoxelLattice
 
     occ = np.zeros(10 * 10 * 6, dtype=np.uint8)
     if floor:

@@ -68,4 +68,9 @@ float32 confidence
 # gate does not arm, and geometry decides alone.
 string evidence_kind
 string evidence_ref
+# Producer sample timestamp in the same ROS clock domain used by the safety
+# kernel (`/clock` on sim, system time on hardware). A zero stamp is missing.
+# The witness is ignored if this stamp is in the future or older than the
+# smaller of the declaration's remaining lifetime and the kernel's
+# attached-collision freshness budget.
 int64 stamp_ns

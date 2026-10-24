@@ -512,6 +512,9 @@ onnx-export = [
     "transformers>=4.45",  # reason: RTDetrForObjectDetection for ONNX export (one-time)
     "torch>=2.2",          # reason: torch.onnx.export
 ]
+scene-usd = [
+    "usd-core>=24.11",  # reason: standalone pxr.Usd reads authored USD catalog customData without Isaac Sim.
+]
 lowering = [
     "yourdfpy>=0.0.56",   # reason: URDF parse + FK for the offline collision-lowering tool
     "trimesh>=4.0.0",     # reason: load URDF collision meshes to fit conservative bounding capsules

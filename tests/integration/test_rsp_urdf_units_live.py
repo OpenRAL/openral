@@ -28,7 +28,7 @@ import pytest
 import yaml
 from openral_core import RobotDescription
 from openral_core.geometry import homogeneous_from_quat_xyz
-from openral_core.schemas import MimicJoint
+from openral_core.schemas import FixedAttachment, MimicJoint
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
 pytestmark = pytest.mark.skipif(
@@ -44,9 +44,10 @@ _TOPIC = "/test_rsp_urdf_units/urdf_joint_states"
 def test_robot_state_publisher_poses_the_jaw_by_the_mimic_map() -> None:
     import rclpy
     import tf2_ros
+    from openral_core.kinematics import edge_chain as _edge_chain
+    from openral_core.kinematics import joint_motion as _joint_motion
     from openral_hal.lifecycle import urdf_named_joint_state
     from openral_hal.resolver import urdf_joint_map
-    from openral_hal.vision_attachment_bridge import _edge_chain, _joint_motion
     from sensor_msgs.msg import JointState
 
     if shutil.which("ros2") is None:
@@ -105,6 +106,7 @@ def test_robot_state_publisher_poses_the_jaw_by_the_mimic_map() -> None:
             assert chain is not None
             model = np.eye(4)
             for edge, origin in chain:
+                assert not isinstance(edge, FixedAttachment), edge  # joint_motion poses joints only
                 value = edge.value_at(fraction) if isinstance(edge, MimicJoint) else fraction
                 model = model @ origin @ _joint_motion(edge, value)
             np.testing.assert_allclose(tf_pose, model, atol=1e-5)

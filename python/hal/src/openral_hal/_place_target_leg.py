@@ -93,8 +93,8 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
+from openral_core.perception_geometry import VoxelLattice
 
-from openral_hal._grasp_target import VoxelLattice
 from openral_hal._grasp_target_leg import _locked
 
 if TYPE_CHECKING:  # pragma: no cover — typing only

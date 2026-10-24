@@ -24,6 +24,7 @@ Synth: ``openral_sim.backends.depth_camera.synthesize_depth_image``.
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -561,35 +562,74 @@ def pointcloud2_from_points_xyz(
     return msg
 
 
-def colours_from_frame(
-    points: NDArray[np.float32],
+@functools.lru_cache(maxsize=16)
+def _pixel_rays(
+    height: int, width: int, fx: float, fy: float, cx: float, cy: float
+) -> NDArray[np.float32]:
+    """``(H, W, 3)`` optical-frame rays ``((u - cx) / fx, (v - cy) / fy, 1)``, read-only.
+
+    Example:
+        >>> _pixel_rays(1, 2, 4.0, 4.0, 1.0, 0.5)[0].tolist()
+        [[-0.25, -0.125, 1.0], [0.0, -0.125, 1.0]]
+    """
+    rays = np.empty((height, width, 3), dtype=np.float32)
+    rays[..., 0] = ((np.arange(width, dtype=np.float64) - cx) / fx)[None, :]
+    rays[..., 1] = ((np.arange(height, dtype=np.float64) - cy) / fy)[:, None]
+    rays[..., 2] = 1.0
+    rays.flags.writeable = False
+    return rays
+
+
+def cloud_from_depth_frame(
+    depth: NDArray[np.float32],
     rgb: NDArray[np.uint8],
     k: NDArray[np.float64],
     optical_in_base: NDArray[np.float64],
-) -> NDArray[np.uint8]:
-    """Colour ``base_frame`` points by projecting them into a registered RGB frame.
+    *,
+    max_planar_range_m: float | None = None,
+) -> tuple[NDArray[np.float32], NDArray[np.uint8] | None]:
+    """A registered RGB-D frame as a ``base_frame`` cloud with each point's own colour.
 
-    ``k`` is ``[fx, fy, cx, cy]`` of the ``(H, W, 3)`` ``rgb`` raster and
-    ``optical_in_base`` the 4x4 pose of its REP-103 optical frame. A point behind
-    the camera or outside the image is grey.
+    Back-projects every measured pixel (``depth > 0``) through ``k`` =
+    ``[fx, fy, cx, cy]`` (``points_from_depth_grid``, REP-103 optical), moves the
+    points into the base frame by ``optical_in_base``, and colours each from the
+    pixel it came from, so no point is re-projected. ``max_planar_range_m`` keeps
+    points whose base-frame XY distance is within it (the depth sensor's range).
+    The colours are ``None`` when ``rgb`` is not an ``(H, W, 3)`` raster of the
+    depth's size.
 
-    >>> pts = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], dtype=np.float32)
-    >>> img = np.zeros((2, 2, 3), dtype=np.uint8)
-    >>> img[1, 1] = (255, 0, 0)
-    >>> colours_from_frame(pts, img, np.array([1.0, 1.0, 1.0, 1.0]), np.eye(4)).tolist()
-    [[255, 0, 0], [128, 128, 128]]
+    Example:
+        >>> depth = np.array([[0.0, 2.0], [1.0, 0.0]], dtype=np.float32)
+        >>> rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+        >>> rgb[0, 1] = (255, 0, 0)
+        >>> pts, col = cloud_from_depth_frame(depth, rgb, np.array([1.0, 1.0, 0.0, 0.0]), np.eye(4))
+        >>> pts.tolist(), col.tolist()
+        ([[2.0, 0.0, 2.0], [0.0, 1.0, 1.0]], [[255, 0, 0], [0, 0, 0]])
+        >>> cloud_from_depth_frame(
+        ...     depth, rgb, np.array([1.0, 1.0, 0.0, 0.0]), np.eye(4), max_planar_range_m=1.5
+        ... )[0].tolist()
+        [[0.0, 1.0, 1.0]]
     """
-    base_to_opt = np.linalg.inv(np.asarray(optical_in_base, dtype=np.float64))
-    p = np.asarray(points, dtype=np.float64) @ base_to_opt[:3, :3].T + base_to_opt[:3, 3]
-    fx, fy, cx, cy = (float(v) for v in k)
-    h, w = rgb.shape[:2]
-    z = np.where(p[:, 2] > 0.0, p[:, 2], np.inf)
-    u = np.floor(fx * p[:, 0] / z + cx).astype(np.int64)
-    v = np.floor(fy * p[:, 1] / z + cy).astype(np.int64)
-    ok = np.isfinite(z) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
-    out = np.full((len(p), 3), 128, dtype=np.uint8)
-    out[ok] = rgb[v[ok], u[ok], :3]
-    return out
+    grid = np.asarray(depth, dtype=np.float32)
+    fx, fy, cx, cy = (float(v) for v in np.asarray(k, dtype=np.float64).reshape(4))
+    # The pinhole ray of every pixel, as points_from_depth_grid lifts them, cached per
+    # raster size and K (a camera's never change): the per-frame cost is one masked
+    # gather, a scale and one matrix product, in float32 (the cloud's own precision).
+    measured = grid > 0.0
+    pts_opt = _pixel_rays(grid.shape[0], grid.shape[1], fx, fy, cx, cy)[measured]
+    pts_opt *= grid[measured][:, None]
+    pose = np.asarray(optical_in_base, dtype=np.float64).reshape(4, 4)
+    pts = pts_opt @ pose[:3, :3].T.astype(np.float32) + pose[:3, 3].astype(np.float32)
+    colour_raster = np.asarray(rgb)
+    colours: NDArray[np.uint8] | None = None
+    if colour_raster.ndim == 3 and colour_raster.shape[:2] == grid.shape:  # noqa: PLR2004  # reason: (H, W, C)
+        # The same row-major pixel order as the points.
+        colours = np.ascontiguousarray(colour_raster[measured][:, :3], dtype=np.uint8)
+    if max_planar_range_m is not None:
+        keep = pts[:, 0] ** 2 + pts[:, 1] ** 2 <= float(max_planar_range_m) ** 2
+        pts = pts[keep]
+        colours = None if colours is None else colours[keep]
+    return pts, colours
 
 
 def depth_image_from_grid(

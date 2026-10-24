@@ -95,3 +95,8 @@ PlaceDeclaration place_declaration
 # False means no grasp declaration is in force — no exemption.
 bool grasp_declaration_valid
 GraspDeclaration grasp_declaration
+
+# The Layer-2 tracker's object set (issue #418), for the kernel and the voxel
+# bridge. tracked_objects_valid false = no tracker publishing.
+bool tracked_objects_valid
+TrackedObjectSet tracked_objects
