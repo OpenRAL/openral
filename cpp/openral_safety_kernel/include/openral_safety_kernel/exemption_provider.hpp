@@ -155,7 +155,8 @@ struct SelfPairQuery {
 /// robot link (`payload_self_pair`). Its attach link (and, for a self pair, `other_link`) are in
 /// the mask; a frozen payload (no attach link) is never offered.
 struct PayloadPairQuery {
-  std::size_t object{0};  ///< index into the kernel's AttachedModel
+  std::size_t object{0};                         ///< index into the kernel's AttachedModel
+  const AttachedModel* attached_model{nullptr};  ///< its primitives and hulls
   const AttachedObject* attached{nullptr};
   Transform object_xf{};  ///< the payload's pose, robot base frame
   int attach_link{-1};

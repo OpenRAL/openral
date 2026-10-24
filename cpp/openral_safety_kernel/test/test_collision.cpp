@@ -8731,6 +8731,7 @@ TEST(ExemptionProvider, ACarriedPayloadCellIsOfferedOnlyOnAMaskedAttachLink) {
   EXPECT_GE(with.provider_pairs, 1);
   EXPECT_EQ(provider.last_payload.attach_link, 1);
   EXPECT_EQ(provider.last_payload.object, 0U);
+  EXPECT_EQ(provider.last_payload.attached_model, &att);
   EXPECT_EQ(provider.last_payload.cell, static_cast<std::size_t>(voxel_index(2, 2, 2)));
   EXPECT_EQ(provider.last_payload.row, 1);
   // Attach link unmasked: never offered.

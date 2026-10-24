@@ -2392,6 +2392,7 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
                 // ADR-0121: last, on a carried (never frozen) payload's masked attach link.
                 PayloadPairQuery q;
                 q.object = i;
+                q.attached_model = &attached;
                 q.attached = &obj;
                 q.object_xf = obj_xf;
                 q.attach_link = obj.attach_link;
@@ -2956,6 +2957,7 @@ CollisionHit check_attached_self_collision(const CollisionModel& model,
         provider_relaxable(*gate, obj.attach_link) && provider_relaxable(*gate, link)) {
       PayloadPairQuery q;
       q.object = static_cast<std::size_t>(object);
+      q.attached_model = &attached;
       q.attached = &obj;
       q.object_xf = attached_object_transform(obj, scratch);
       q.attach_link = obj.attach_link;
