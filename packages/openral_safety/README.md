@@ -38,6 +38,13 @@ this package is the Python seam around it.
   for a pair whose links both declare `tight_geometry`, because the
   kernel decides those on the exact hulls and this module reasons with
   the box (issue #191).
+* **`dynamics_lowering`** (`openral_safety/dynamics_lowering.py`) — offline
+  MJCF → `RobotDescription.force_observer` lowering for the kernel's
+  external-torque observer (issue #373): inertials re-expressed in the
+  manifest's link frames, refused unless every link's zero-configuration
+  pose is its MJCF body's; joint terms from `armature` / `damping` /
+  `frictionloss`. Run through `tools/lower_force_observer.py`
+  ([`external-torque-observer.md`](../../docs/reference/external-torque-observer.md)).
 * **`cumotion_config`** (`openral_safety/cumotion_config.py`) — renders a
   cuRobo/cuMotion `robot_cfg` from the **manifest's** geometry. Its
   plan-time model deliberately **over**-covers the kernel's: a planner

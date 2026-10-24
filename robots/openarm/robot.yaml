@@ -6624,4 +6624,183 @@ allowed_collision_pairs:
   - [openarm_right_link5, openarm_right_link6]
   - [openarm_right_link5, openarm_right_link7]
   - [openarm_right_link6, openarm_right_link7]
+# Issue #373: dynamics model for the safety kernel's external joint-torque
+# observer, lowered from the MJCF by tools/lower_force_observer.py (do not edit
+# by hand; tests/sim/safety/test_force_observer_lowering.py fails on drift).
+# The inertials are the CAD's; the joint terms are the MJCF's armature, damping
+# and frictionloss, i.e. the SIMULATOR's drives. On the real arm the residual
+# also carries stiction (J4 +/-0.6-0.8 Nm) and per-joint offsets these do not
+# model (docs/reference/manipulation-workspace-contact.md section 8).
+# The model alone stops nothing: no safety.max_external_joint_torque_nm is set
+# here, so the real cell runs the observer for disclosure only
+# (/openral/safety/external_torque) until the load-cell go/no-go sets per-joint
+# ceilings (#373, Safety-WG #374).
+force_observer:
+  source: openral_safety.dynamics_lowering from mjcf openarm:bimanual
+  gravity_xyz_m_s2: [0.0, 0.0, -9.81]
+  gain_per_s: 50.0
+  coulomb_velocity_rad_s: 0.05
+  limit_margin_rad: 0.02
+  links:
+  - link: openarm_left_link0
+    mass_kg: 1.14323
+    com_xyz_m: [-0.00253124, 0.0258186, -2.7066e-05]
+    inertia_kgm2: [0.00113608, 0.00159935, 0.000750542, 3.81e-07, 1.1e-08, 2.8e-08]
+  - link: openarm_right_link0
+    mass_kg: 1.14323
+    com_xyz_m: [-0.00253124, -0.0258186, -2.7066e-05]
+    inertia_kgm2: [0.00113608, 0.00159935, 0.000750542, -3.81e-07, 1.1e-08, -2.8e-08]
+  - link: openarm_left_link1
+    mass_kg: 1.14167
+    com_xyz_m: [0.00090035, 0.044466, 2.8844e-05]
+    inertia_kgm2: [0.001094326, 0.000759199, 0.000670659, -9.416e-06, 4.5e-08, -6.7e-08]
+  - link: openarm_right_link1
+    mass_kg: 1.14167
+    com_xyz_m: [0.00090035, -0.044466, 2.8844e-05]
+    inertia_kgm2: [0.001094326, 0.000759199, 0.000670659, 9.416e-06, 4.5e-08, 6.7e-08]
+  - link: openarm_left_link2
+    mass_kg: 0.277509
+    com_xyz_m: [-0.0247185, -7.6e-08, -0.0312643]
+    inertia_kgm2: [0.000153589, 0.000113062, 8.23e-05, 0.0, 5.211e-06, 0.0]
+  - link: openarm_right_link2
+    mass_kg: 0.277509
+    com_xyz_m: [-0.0247185, 7.6e-08, -0.0312643]
+    inertia_kgm2: [0.000153589, 0.000113062, 8.23e-05, 0.0, 5.211e-06, 0.0]
+  - link: openarm_left_link3
+    mass_kg: 1.07386
+    com_xyz_m: [-0.00300862, -0.000514813, -0.109368]
+    inertia_kgm2: [0.001289393, 0.001140192, 0.000559766, -2.3e-07, -6.7616e-05, -1.0626e-05]
+  - link: openarm_right_link3
+    mass_kg: 1.07386
+    com_xyz_m: [-0.00300862, -0.000514813, -0.109368]
+    inertia_kgm2: [0.001289393, 0.001140192, 0.000559766, -2.3e-07, -6.7616e-05, -1.0626e-05]
+  - link: openarm_left_link4
+    mass_kg: 0.634853
+    com_xyz_m: [-0.00310326, -0.00136539, -0.0574601]
+    inertia_kgm2: [0.000469004, 0.000433926, 0.000245212, 5.636e-06, -1.779e-06, 3.418e-06]
+  - link: openarm_right_link4
+    mass_kg: 0.634853
+    com_xyz_m: [-0.00310326, -0.00136539, -0.0574601]
+    inertia_kgm2: [0.000469004, 0.000433926, 0.000245212, 5.636e-06, -1.779e-06, 3.418e-06]
+  - link: openarm_left_link5
+    mass_kg: 0.615659
+    com_xyz_m: [-0.000737189, 0.000412407, -0.0470938]
+    inertia_kgm2: [0.000279654, 0.000334599, 0.000176663, -3.317e-06, 7.68e-07, 1.5e-07]
+  - link: openarm_right_link5
+    mass_kg: 0.615659
+    com_xyz_m: [-0.000737189, -0.000412407, -0.0470938]
+    inertia_kgm2: [0.000279654, 0.000334599, 0.000176663, 3.317e-06, 7.68e-07, -1.5e-07]
+  - link: openarm_left_link6
+    mass_kg: 0.475203
+    com_xyz_m: [2.2744e-05, -0.000686496, 5.44e-05]
+    inertia_kgm2: [0.000179276, 0.000136248, 0.00013534, -6.6e-08, -3.4e-08, -3.3e-08]
+  - link: openarm_right_link6
+    mass_kg: 0.475203
+    com_xyz_m: [2.2744e-05, 0.000686496, 5.44e-05]
+    inertia_kgm2: [0.000179276, 0.000136248, 0.00013534, 6.6e-08, -3.4e-08, 3.3e-08]
+  - link: openarm_left_link7
+    mass_kg: 0.52832
+    com_xyz_m: [0.0137902, -0.0084073, -0.05938]
+    inertia_kgm2: [0.00021911, 0.00015627, 0.0001659, -4.168e-06, 1.404e-06, 1.512e-06]
+  - link: openarm_right_link7
+    mass_kg: 0.52832
+    com_xyz_m: [0.0137902, 0.0084073, -0.05938]
+    inertia_kgm2: [0.00021911, 0.00015627, 0.0001659, 4.168e-06, 1.404e-06, -1.512e-06]
+  - link: openarm_left_finger_follower
+    mass_kg: 0.11372
+    com_xyz_m: [-0.012796, 0.0020183, -0.026792]
+    inertia_kgm2: [3.4565e-05, 3.5306e-05, 1.6571e-05, 1.339e-06, 7.158e-06, -3.717e-06]
+  - link: openarm_left_finger_pair
+    mass_kg: 0.125979
+    com_xyz_m: [-0.0124991, -0.00176593, -0.0241663]
+    inertia_kgm2: [3.6111e-05, 3.6214e-05, 1.7496e-05, -1.359e-06, 7.139e-06, 3.603e-06]
+  - link: openarm_right_finger_follower
+    mass_kg: 0.11372
+    com_xyz_m: [-0.012796, -0.0020183, -0.026792]
+    inertia_kgm2: [3.4565e-05, 3.5306e-05, 1.6571e-05, -1.339e-06, 7.158e-06, 3.717e-06]
+  - link: openarm_right_finger_pair
+    mass_kg: 0.125979
+    com_xyz_m: [-0.0124991, 0.00176593, -0.0241663]
+    inertia_kgm2: [3.6111e-05, 3.6214e-05, 1.7496e-05, 1.359e-06, 7.139e-06, -3.603e-06]
+  joints:
+  - joint: left_joint1
+    armature_kgm2: 0.0081
+    viscous_nm_s_per_rad: 1.0
+    coulomb_nm: 0.2
+    offset_nm: 0.0
+  - joint: left_joint2
+    armature_kgm2: 0.0081
+    viscous_nm_s_per_rad: 1.0
+    coulomb_nm: 0.2
+    offset_nm: 0.0
+  - joint: left_joint3
+    armature_kgm2: 0.16
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.1
+    offset_nm: 0.0
+  - joint: left_joint4
+    armature_kgm2: 0.16
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.1
+    offset_nm: 0.0
+  - joint: left_joint5
+    armature_kgm2: 0.01
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.04
+    offset_nm: 0.0
+  - joint: left_joint6
+    armature_kgm2: 0.01
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.04
+    offset_nm: 0.0
+  - joint: left_joint7
+    armature_kgm2: 0.0049
+    viscous_nm_s_per_rad: 0.01
+    coulomb_nm: 0.01
+    offset_nm: 0.0
+  - joint: left_gripper
+    armature_kgm2: 0.0
+    viscous_nm_s_per_rad: 2.0
+    coulomb_nm: 0.0
+    offset_nm: 0.0
+  - joint: right_joint1
+    armature_kgm2: 0.0081
+    viscous_nm_s_per_rad: 1.0
+    coulomb_nm: 0.2
+    offset_nm: 0.0
+  - joint: right_joint2
+    armature_kgm2: 0.0081
+    viscous_nm_s_per_rad: 1.0
+    coulomb_nm: 0.2
+    offset_nm: 0.0
+  - joint: right_joint3
+    armature_kgm2: 0.16
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.1
+    offset_nm: 0.0
+  - joint: right_joint4
+    armature_kgm2: 0.16
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.1
+    offset_nm: 0.0
+  - joint: right_joint5
+    armature_kgm2: 0.01
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.04
+    offset_nm: 0.0
+  - joint: right_joint6
+    armature_kgm2: 0.01
+    viscous_nm_s_per_rad: 0.9
+    coulomb_nm: 0.04
+    offset_nm: 0.0
+  - joint: right_joint7
+    armature_kgm2: 0.0049
+    viscous_nm_s_per_rad: 0.01
+    coulomb_nm: 0.01
+    offset_nm: 0.0
+  - joint: right_gripper
+    armature_kgm2: 0.0
+    viscous_nm_s_per_rad: 2.0
+    coulomb_nm: 0.0
+    offset_nm: 0.0
 schema_version: "0.2"

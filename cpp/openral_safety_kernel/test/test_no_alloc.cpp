@@ -10,6 +10,7 @@
 // that guarantee enforceable in CI.
 
 #include "openral_safety_kernel/collision.hpp"
+#include "openral_safety_kernel/force_observer.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
 #include <array>
@@ -535,4 +536,45 @@ TEST(NoAlloc, ThePayloadOwnCellExemptionIsAllocationFree) {
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
   EXPECT_GT(pairs, 0) << "the loop really exercised the exemption";
+}
+
+TEST(NoAlloc, TheForceObserverUpdateIsAllocationFree) {
+  // Two revolute links off a fixed root, plus a mimic follower: every RNEA
+  // branch (revolute, mimic projection, armature) runs inside the window.
+  osk::CollisionModel m;
+  m.n_links = 4;
+  m.parent = {-1, 0, 1, 1};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kRevolute, osk::JointKind::kRevolute,
+                  osk::JointKind::kMimicRevolute};
+  m.dof_index = {-1, 0, 1, 1};
+  m.origin.assign(4, osk::Transform{});
+  m.origin[2].t = {0.3, 0.0, 0.0};
+  m.axis.assign(4, osk::Vec3{0.0, 1.0, 0.0});
+  m.mimic_multiplier = {1.0, 1.0, 1.0, -1.0};
+  m.mimic_offset = {0.0, 0.0, 0.0, 0.0};
+  osk::ForceObserverModel dyn;
+  dyn.links.assign(4, osk::LinkInertial{});
+  dyn.joints.assign(4, osk::JointFrictionModel{});
+  for (std::size_t i = 1; i < 4; ++i) {
+    dyn.links[i].mass = 0.5;
+    dyn.links[i].com = {0.1, 0.0, 0.0};
+    dyn.links[i].inertia[0] = dyn.links[i].inertia[4] = dyn.links[i].inertia[8] = 0.01;
+    dyn.joints[i].armature = 0.01;
+    dyn.joints[i].coulomb = 0.2;
+  }
+  osk::ForceObserverState state;
+  osk::init_force_observer(m, 2, state);
+  double q[2] = {0.1, -0.2};
+  const double qd[2] = {0.3, -0.5};
+  const double effort[2] = {1.0, 0.5};
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  int ok = 0;
+  for (int i = 0; i < 5000; ++i) {
+    q[0] += 1e-4;
+    ok += osk::force_observer_update(m, dyn, q, qd, effort, 0.002, state) ? 1 : 0;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+  EXPECT_EQ(ok, 5000);
 }

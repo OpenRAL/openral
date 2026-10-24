@@ -11,8 +11,10 @@ Contract: ``SafetyClient.check_action`` returns ``None`` on pass
 (forwarded to the HAL) or raises
 ``ROSSafetyViolation`` (or a subclass, e.g. ``ROSWorkspaceViolation``
 or ``ROSEStopRequested``) on rejection. No implementation raises
-``ROSForceLimitExceeded``: nothing checks a force against
-``SafetyEnvelope.max_force_n`` yet (issue #373), and the only shipped
+``ROSForceLimitExceeded``: the force/current collision tier (issue #373) lives
+in the C++ kernel, which stops on a per-joint external-torque ceiling
+(``SafetyEnvelope.max_external_joint_torque_nm``) with ``KIND_FORCE``; nothing
+checks a force against ``SafetyEnvelope.max_force_n``. The only shipped
 implementation, ``NullSafetyClient``, never raises. Per CLAUDE.md §5 this is never
 silently caught; the runner catches it at its supervisor boundary
 (``DeployRunner``), records into

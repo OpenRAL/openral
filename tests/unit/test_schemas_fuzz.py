@@ -42,6 +42,7 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     ExecuteRskillTool,
+    ForceObserverSpec,
     FrameEncoding,
     GraspDeclaration,
     GraspTargetRef,
@@ -51,10 +52,12 @@ from openral_core.schemas import (
     HalEntrypoints,
     Hand,
     IntrinsicsPinhole,
+    JointFriction,
     JointSpec,
     JointState,
     JointType,
     LinkCollisionGeometry,
+    LinkInertial,
     MimicJoint,
     ObjectQuery,
     ObjectQueryEvidence,
@@ -760,6 +763,58 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
+
+
+# Issue #373 observer model: non-negative masses / principal inertias / friction,
+# any finite products of inertia and COM, unique link and joint names.
+_link_inertial_st = st.builds(
+    LinkInertial,
+    link=_name,
+    mass_kg=_pos_float,
+    com_xyz_m=st.tuples(_safe_float, _safe_float, _safe_float),
+    inertia_kgm2=st.tuples(
+        _pos_float, _pos_float, _pos_float, _safe_float, _safe_float, _safe_float
+    ),
+)
+_joint_friction_st = st.builds(
+    JointFriction,
+    joint=_name,
+    armature_kgm2=_pos_float,
+    viscous_nm_s_per_rad=_pos_float,
+    coulomb_nm=_pos_float,
+    offset_nm=_safe_float,
+)
+_force_observer_st = st.builds(
+    ForceObserverSpec,
+    source=_name,
+    gravity_xyz_m_s2=st.tuples(_safe_float, _safe_float, _safe_float),
+    gain_per_s=st.floats(min_value=1e-3, max_value=1e4),
+    coulomb_velocity_rad_s=st.floats(min_value=1e-4, max_value=10.0),
+    limit_margin_rad=_pos_float,
+    links=st.lists(_link_inertial_st, min_size=1, max_size=4, unique_by=lambda x: x.link),
+    joints=st.lists(_joint_friction_st, max_size=4, unique_by=lambda x: x.joint),
+)
+
+
+@_FUZZ_SETTINGS
+@given(
+    st.dictionaries(
+        _name,
+        st.floats(allow_nan=False, allow_infinity=False, min_value=1e-3, max_value=1e3),
+        max_size=3,
+    )
+)
+def test_fuzz_safety_envelope_external_torque_ceilings(ceilings: dict[str, float]) -> None:
+    """The #373 per-joint ceiling map round-trips (kept off ``_safety_st``: a
+    ``RobotDescription`` refuses a ceiling on a joint it does not have)."""
+    _round_trip_and_validate(SafetyEnvelope, SafetyEnvelope(max_external_joint_torque_nm=ceilings))
+
+
+@_FUZZ_SETTINGS
+@given(_force_observer_st)
+def test_fuzz_force_observer_spec(instance: ForceObserverSpec) -> None:
+    """ForceObserverSpec (and its LinkInertial / JointFriction rows) round-trips."""
+    _round_trip_and_validate(ForceObserverSpec, instance)
 
 
 @_FUZZ_SETTINGS
