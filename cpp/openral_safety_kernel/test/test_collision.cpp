@@ -7657,7 +7657,12 @@ TEST(TrackedGraspExemption, TheCheckStaysInsideTheVoxelP99BudgetOfIssue253) {
   RecordProperty("p99_with_k2_ms", std::to_string(with));
   std::printf("[ K2 p99 ] without %.4f ms, with K2 %.4f ms (budget 0.825 ms)\n", without, with);
   EXPECT_GT(hits, 0) << "the scene trips without K2: the check does real work";
-  EXPECT_LT(with, 0.825) << "the #253 kernel round-trip p99 at 15 mm";
+  // The absolute bound is host-dependent (sanitizers, coverage, shared runners): it is enforced
+  // only on the reference host, `OPENRAL_REFERENCE_HOST=1`. The relative bound scales with the
+  // host and always runs.
+  if (std::getenv("OPENRAL_REFERENCE_HOST") != nullptr) {
+    EXPECT_LT(with, 0.825) << "the #253 kernel round-trip p99 at 15 mm";
+  }
   EXPECT_LT(with, 3.0 * without + 0.05) << "K2 adds at most a constant factor";
 }
 

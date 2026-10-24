@@ -182,3 +182,67 @@ def test_an_abandoned_service_call_is_removed_from_its_client_at_the_next_issue(
             node.destroy_client(client)
         finally:
             node.destroy_node()
+
+
+def _entities(node: Any) -> tuple[list[str], list[str], int, int]:
+    return (
+        sorted(p.topic_name for p in node.publishers),
+        sorted(s.topic_name for s in node.subscriptions),
+        len(list(node.timers)),
+        len(list(node.clients)),
+    )
+
+
+def test_cleanup_destroys_every_entity_configure_created() -> None:
+    """Review finding (#426): ``on_cleanup`` left ``hands_clear``, ``/diagnostics`` and the
+    TF listener's ``/tf`` / ``/tf_static`` subscriptions alive, so a cleanup + configure (a
+    supported lifecycle path) doubled them. After cleanup the node owns exactly what it owned
+    before configure, and a second configure creates the same set as the first."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+
+    with tracker_rig() as rig:
+        node = rig.tracker("bind")
+        try:
+            configured = _entities(node)
+            assert {"/openral/object_tracker/hands_clear", "/diagnostics"} <= set(configured[0])
+            assert {"/tf", "/tf_static"} <= set(configured[1])
+            node.trigger_deactivate()
+            node.trigger_cleanup()
+            after = _entities(node)
+            for topic in (
+                "/openral/tracked_objects",
+                "/openral/attachment_state",
+                "/openral/object_tracker/hands_clear",
+                "/diagnostics",
+            ):
+                assert topic not in after[0], after[0]
+            assert not after[1], after[1]  # every subscription was configure's
+            assert after[2:] == (0, 0), after
+            node.trigger_configure()
+            node.trigger_activate()
+            assert _entities(node) == configured  # no second copies
+        finally:
+            node.destroy_node()
+
+
+def test_an_invalid_declaration_is_rejected_without_escaping_its_callback() -> None:
+    """Review finding (#426): ``GraspDeclaration.from_idl`` / ``PlaceDeclaration.from_idl``
+    validate, so a malformed latched declaration (here the all-default message: ``timeout_s``
+    0) raised out of the subscription callback and stopped the executor's spin. It is now
+    logged and dropped; the session keeps the declaration it had."""
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
+
+    with tracker_rig() as rig:
+        node = rig.tracker("bind")
+        try:
+            node._on_grasp_declaration(GraspDeclarationMsg())
+            node._on_place_declaration(PlaceDeclarationMsg())
+            # The node still grounds a valid declaration on the same executor.
+            rig.declare()
+            assert rig.ground()
+        finally:
+            node.destroy_node()

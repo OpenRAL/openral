@@ -480,8 +480,8 @@ private:
   TrackedGraspTable tracked_grasp_{};
   bool tracked_cover_dirty_{true};  ///< a new grid or set: re-run the cover check once
   /// Issue #418 contact hold: per tracked identity, the kernel time (ROS clock) its OWN
-  /// cover check last passed. A TARGET box whose cover falls short while a declared hand
-  /// link (the kernel's FK of the measured state) is within a cell of it keeps `cover_ok`
+  /// cover check last passed. A TARGET or DESTINATION box whose cover falls short while a declared
+  /// hand link (the kernel's FK of the measured state) is within a cell of it keeps `cover_ok`
   /// until that pass is older than `grasp_region_max_age_s`; then it fails closed.
   struct CoverPass {
     std::size_t id_hash{0};
@@ -509,6 +509,7 @@ private:
   std::size_t static_cells_marked_{0};      ///< cells marked for `static_cells_for_`
   VoxelGrid static_cells_for_{};            ///< the lattice `static_cells_` was marked on
   bool static_cells_for_valid_{false};
+  bool static_cells_lattice_ok_{false};  ///< `static_cells_for_` is the base frame's lattice
   /// #418 K7 amendment: the connected support layer (`mark_support_cells`), re-marked
   /// only when a grid arrives or the explaining objects / workspace change (`support_key_`).
   static constexpr std::size_t kSupportKeyN = 1 + kMaxTrackedObjects * 16 + 16;
@@ -536,6 +537,7 @@ private:
   std::array<PinchFloor, 8> pinch_floor_{};
   PayloadOwnCells payload_own_{};
   std::size_t payload_own_logged_n_{static_cast<std::size_t>(-1)};
+  const char* payload_own_disarm_logged_{nullptr};  ///< last `payload_own_disarmed` reason
   std::chrono::steady_clock::time_point payload_own_last_warn_{};
   std::size_t fill_payload_own();
   /// Issue #418 K3: per accepted attachment, its binding. `off_hand` is the

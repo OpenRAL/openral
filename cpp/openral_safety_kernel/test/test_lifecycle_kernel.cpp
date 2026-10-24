@@ -7490,6 +7490,21 @@ TEST_F(LifecycleKernelTest, OnModeExemptsTheFingerAgainstItsUniqueEligibleTarget
   EXPECT_FALSE(k2_passes("kernel_k2_off", [](GraspRig&, GraspBeat&) {}, k2_params(false)));
 }
 
+TEST_F(LifecycleKernelTest, AStopUnderK2ReportsTheTrackedExemptionOnItsCollisionLine) {
+  // PR #426 §5 item 6: K2 clears the legacy region, so the stop line must report the tracked
+  // table. Four cells; the eligible box holds the outer two, the finger trips in the second.
+  LogCapture logs;
+  EXPECT_FALSE(k2_passes("kernel_k2_stop_line", [](GraspRig& r, GraspBeat& b) {
+    r.voxels.size_x = 4;
+    r.voxels.occupancy.assign(4, 1);
+    b.tracked_x = 0.0875;
+    b.tracked_half = 0.0249;
+  })) << logs.joined();
+  EXPECT_GE(logs.count("safety.tracked_grasp_eligible n=1 of=1"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=1"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=0"), 0U) << logs.joined();
+}
+
 TEST_F(LifecycleKernelTest, AProvisionalTrackStillServesAsTheK2Exemption) {
   // A provisional box may under-contain, so it can only shrink what is exempted:
   // it stays K2 exemption geometry (K3 refuses it as payload).
@@ -7890,9 +7905,13 @@ std::vector<rclcpp::Parameter> own_params(bool enabled = true, bool k2 = true,
 // Arm and attach at the hand, then carry the payload onto the cell; true when it was accepted.
 bool own_payload_passes(const std::string& name, const std::function<void(GraspBeat&)>& edit,
                         std::vector<rclcpp::Parameter> params = own_params(),
-                        bool* latched = nullptr) {
+                        bool* latched = nullptr,
+                        const std::function<void(openral_msgs::msg::OccupancyVoxels&)>& grid = {}) {
   GraspRig rig(name, std::move(params));
   rig.voxels = declared_target_voxels();  // one cell, x in [0.140, 0.165]
+  if (grid) {
+    grid(rig.voxels);
+  }
   rig.start();
   GraspBeat b = tracked_beat(rig);
   b.carrying = true;
@@ -7990,6 +8009,53 @@ TEST_F(LifecycleKernelTest, AFallbackBindingWithOneProvisionalCandidateOwnsItsMe
                                     }))
         << ref;
   }
+}
+
+TEST_F(LifecycleKernelTest, DeclaredStaticGeometryTheGridCannotNameDisarmsThePayloadOwnExemption) {
+  // Rule 3 (a declared static collider's cell is never the payload) needs the static table. When
+  // static points are declared but this grid's table names no cell -- off the base lattice, or no
+  // point marks a cell -- the exemption is disarmed rather than run without rule 3 (CodeRabbit,
+  // PR #426): the payload stops on the cell exactly as with the exemption off.
+  const auto at_cell = k7_points_file("own_static_cell", "0.1625 0.0125 0.0125\n");
+  const auto elsewhere = k7_points_file("own_static_far", "0.5 0.5 0.5\n");
+  const auto with_points = [](const std::string& points) {
+    auto p = own_params();
+    p.emplace_back("static_points_file", points);
+    return p;
+  };
+  // The base frame's 25 mm lattice: the one cell is x in [0.150, 0.175], meeting the payload box.
+  const auto on_lattice = [](openral_msgs::msg::OccupancyVoxels& v) {
+    v.origin.x = 0.150;
+    v.origin.y = 0.0;
+    v.origin.z = 0.0;
+  };
+  const auto measured = [](GraspBeat& b) { b.payload_source = 1; };
+  EXPECT_TRUE(
+      own_payload_passes("kernel_own_static_none", measured, own_params(), nullptr, on_lattice))
+      << "control: no static geometry declared, the on-lattice cell is the payload's";
+  EXPECT_FALSE(own_payload_passes("kernel_own_static_marked", measured, with_points(at_cell),
+                                  nullptr, on_lattice))
+      << "rule 3: a marked static cell is never the payload";
+  {
+    LogCapture logs;
+    bool latched = false;
+    EXPECT_FALSE(own_payload_passes("kernel_own_static_nocell", measured, with_points(elsewhere),
+                                    &latched, on_lattice))
+        << "declared points that mark no cell of this grid exempt nothing";
+    EXPECT_TRUE(latched);
+    EXPECT_GE(logs.count("safety.payload_own_disarmed reason=no_cell"), 1U) << logs.joined();
+  }
+  {
+    LogCapture logs;
+    bool latched = false;
+    EXPECT_FALSE(
+        own_payload_passes("kernel_own_static_lattice", measured, with_points(at_cell), &latched))
+        << "an off-lattice grid (origin 0.140 / -0.0125) refuses the table: exempt nothing";
+    EXPECT_TRUE(latched);
+    EXPECT_GE(logs.count("safety.payload_own_disarmed reason=lattice"), 1U) << logs.joined();
+  }
+  std::filesystem::remove(at_cell);
+  std::filesystem::remove(elsewhere);
 }
 
 // ── Issue #418 (OT-10 amendment, untracked holds): a pinch hold's own cells cannot stop it ──

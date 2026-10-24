@@ -1034,11 +1034,21 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   fired: one release decision for both sides (2026-10-22; Spark R138 — the tracker's
   jaw rule fired, this one did not, and the payload rode the hand after the banana
   fell; `…TheTrackersReleaseFreezesThePayloadWhenTheJawRuleDoesNot`). From then on it
-  is a **plain obstacle**: nothing is exempt against it, for as long as the wire
-  still carries that binding (`…OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate`,
-  `…AReleaseWindowThatNeverSeparatesClosesOnTimeout`). Throughout, the frozen
+  is a **plain obstacle**: nothing is exempt against it while the wire still carries
+  that binding and the map does not carry the object yet
+  (`…OnTheT9JawTraceTheKernelFreezesThePayloadUntilTheFingersSeparate`,
+  `…AReleaseWindowThatNeverSeparatesClosesOnTimeout`). Once the tracker no longer calls that
+  (`object_id`, `epoch`) bound or released and the map has enough cells inside the frozen box
+  (`tracked_box_cover`), the frozen box is dropped (latched, logged once as
+  `safety.tracked_release_in_map`): the map's cells are the obstacle from then on, so a hand
+  occluding it on a regrasp cannot bring the stale box back around the fingers (Spark R263,
+  2026-10-22; Safety-WG review owed). Throughout, the frozen
   payload is checked against every other link
-  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`) but not against
+  (`…DuringTheReleaseWindowANonTouchLinkStillTripsOnThePayload`), except that while the window is
+  open `release_hand_link` keeps the #349 slow-hands-inside-the-workspace rule it had while
+  carrying it, so a slow hand link inside the live workspace is tolerated against the frozen box
+  as it was against the carried one (Spark R243/R250, 2026-10-22; closed windows clear
+  `release_hand_link`, so no rule then; Safety-WG review owed). It is not checked against
   the world: no longer carried, no robot motion moves it, so its overlap with the
   map is a static box on static cells (2026-10-22; Spark R168-R176 — the banana's
   frozen box on the bowl it was dropped into latched a stop ~60 ms after release;
@@ -1124,7 +1134,14 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   per row, map-confirmed and cover-checked. Disclosure: INFO
   `safety.tracked_grasp_eligible n=… of=… declaration=… live=…` on each change,
   span attributes `safety.tracked_grasp_eligible` and
-  `safety.grasp_exemption_active` (true while any object is eligible).
+  `safety.grasp_exemption_active` (true while any object is eligible); the
+  `grasp_exemption_active=` field of a `safety.collision` stop line and the
+  `FailureTrigger` report the same K2 state (not the legacy region K2 clears;
+  `…AStopUnderK2ReportsTheTrackedExemptionOnItsCollisionLine`). The voxel-check p99
+  budget test (`TrackedGraspExemption.TheCheckStaysInsideTheVoxelP99BudgetOfIssue253`)
+  always asserts K2's relative cost, and the absolute #253 bound (0.825 ms) only when
+  `OPENRAL_REFERENCE_HOST` is set (run it so on the reference host: sanitizer, coverage
+  and shared CI builds are not a timing reference).
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
@@ -1204,7 +1221,13 @@ ADR-0115 exemption (which keeps precedence), a pair does NOT trip iff **all** ho
 3. the **hand is slow** — `hand_speed_mps ≤ workspace_contact_max_speed_mps` (impact energy).
    The speed is the **measured** hand speed, once per candidate: `max over hand links of
    link_displacement_bound(pose at q_meas, pose at q_meas + dq_meas · period, reach) / period`
-   (`period` = `workspace_contact_control_period_s`), `dq_meas` the `/joint_states` velocity. Impact
+   (`period` = `workspace_contact_control_period_s`), `dq_meas` the `/joint_states` velocity,
+   **corroborated** by the joint's own measured position: a reported velocity is clamped to
+   |Δposition| / Δstamp since that joint's previous stamped message (Spark R262, 2026-10-22: PhysX
+   reported `wrist_roll` at its 10 rad/s limit while it sat 6 mrad from the command). An unstamped,
+   repeated or out-of-order message is not corroborated and the raw reading stands. This can only
+   LOWER the measured speed, so it widens the #349 tolerance; it feeds nothing else (draft, no
+   hazard id yet, Safety-WG review owed). Impact
    energy is set by how fast the hand actually moves; the commanded trajectory has 0.5–1 rad
    chunk-boundary jumps (the runner's non-RTC prefetch) that the arm smooths, and a commanded jump
    into an obstacle is the lead bound's job (item 4). A message naming a joint without a finite
@@ -1308,8 +1331,11 @@ payload, cell) that the workspace tolerates stays tolerated only when the cell i
 
 1. **Its centre lies in the box of an explaining tracked object.** The object may have any role
    (target, neighbour or destination). Explaining means all of the following hold:
-   * status `confirmed` or `occluded`. It is never `split` (a foreign body in the box), `bound`,
-     `tentative`, `released` or `lost`;
+   * status `confirmed` or `occluded`. It is never `split` (a foreign body in the box),
+     `tentative`, `released` or `lost`. A `bound` track (the payload) explains its OWN box's cells
+     only, never a support layer (cases 3 and 4): the cells the octomap bridge has yet to clear as
+     the payload's (Spark R245/R253, 2026-10-22; `fill_workspace_explained`, Safety-WG review
+     owed); the cover check ends it once the bridge clears them;
    * (`object_id`, `epoch`) is not K6-retired;
    * the object was confirmed within `grasp_region_max_age_s` on the source clock;
    * the box passes the kernel's own cover check on its grid. This is K2's `tracked_box_cover`,
@@ -1419,8 +1445,12 @@ the payload's OWN cell, decided per cell over all of the object's primitives
    so a neighbouring object inside it still stops the payload;
 2. its centre stands strictly above the payload's track `floor_z` (support top + one cell): the
    support is the world, never the payload;
-3. it is not a declared static collider cell (K7's padded set, from `static_points_file`); a static
-   table of another layout exempts nothing;
+3. it is not a declared static collider cell (K7's padded set, from `static_points_file`). When
+   static points ARE declared but this grid's table names none of them -- the grid is not the base
+   frame's lattice (`reason=lattice`) or no point marks one of its cells (`reason=no_cell`) -- the
+   whole exemption is disarmed for that candidate (`safety.payload_own_disarmed reason=`), never run
+   without this rule. With no `static_points_file` the kernel knows of no static geometry and this
+   rule is vacuous: a launch whose scene has static colliders must pass the file;
 4. its volume meets no OTHER settled track's box (`confirmed`, `occluded` or `bound`, provisional or
    not, never a K6-retired identity). The payload's own track is excluded from the others;
 5. the binding is valid right now: a `tracked_object` attachment K3 places at the hand with an
@@ -1437,8 +1467,9 @@ primitive. An exempt cell contributes to `sweep_min` only and is never a stop's 
 
 **Fail-closed.** Configure refuses it without K2 (`tracked_grasp_exemption_enabled`), without
 `attached_collision_enabled`, off `hal_mode: sim`, or with an unreadable `static_points_file`.
-A refused or stale tracked set, an unknown floor, an unarmed object, a missing table or a
-non-finite number exempts nothing.
+A refused or stale tracked set, an unknown floor, an unarmed object, a missing table, declared
+static points the grid's table cannot name (off-lattice, or none marked) or a non-finite number
+exempts nothing.
 
 **Failure modes (both directions).** A missed stop needs a measured/grown primitive that covers a
 real foreign object: a fit that swallowed a neighbour the tracker has no settled track for (a
@@ -1453,14 +1484,16 @@ satisfies the rule written out independently; measured non-vacuity: a stop remov
 scenes and kept in 167 of 200.
 
 **Disclosure.** WARN `safety.payload_own_cells enabled ... Safety-WG review pending` at configure;
-INFO `safety.payload_own_armed objects= of= others= static_cells=` on each change; WARN (at most
-1 Hz) `safety.payload_own_cells step= pairs= deepest= mm` when it tolerates a pair; span attribute
+INFO `safety.payload_own_armed objects= of= others= static_cells=` on each change; WARN (once per
+change of reason) `safety.payload_own_disarmed reason=lattice|no_cell|pending` when declared static
+points disarm it; WARN (at most 1 Hz) `safety.payload_own_cells step= pairs= deepest= mm` when it tolerates a pair; span attribute
 `safety.payload_own_armed`.
 
 **Tests.** `PayloadOwnCells.*` in `test_collision.cpp`; `APayloadStopsOnItsOwnCellWithoutTheExemption`,
 `ABoundPayloadsMeasuredOrGrownCellCannotStopIt`, `AFallbackOrUnknownOrMissingTagExemptsNothing`,
 `ACellBelowTheTracksFloorOrInAnotherSettledTracksBoxStillStops`,
-`AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox` and
+`AFallbackBindingWithOneProvisionalCandidateOwnsItsMeasuredBox`,
+`DeclaredStaticGeometryTheGridCannotNameDisarmsThePayloadOwnExemption` and
 `ThePayloadOwnExemptionRefusesToConfigureOffItsPreconditions` in `test_lifecycle_kernel.cpp`;
 `NoAlloc.ThePayloadOwnCellExemptionIsAllocationFree`.
 
