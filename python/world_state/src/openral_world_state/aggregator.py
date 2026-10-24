@@ -538,6 +538,9 @@ class WorldStateAggregator:
         """
         with self._lock:
             self._tracked_clock_fn = clock_fn
+            # A set received on the old clock has no age on the new one: drop it.
+            self._tracked_objects = None
+            self._tracked_objects_rx_ns = 0
 
     def _live_tracked(self) -> TrackedObjectSet | None:
         """The tracker's set, or ``None`` once stale: never an old set as a live one."""
