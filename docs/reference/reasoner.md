@@ -192,6 +192,17 @@ ships; the broader ladder (retry → param-tweak → substitute-skill → goal-r
 human-handoff, CLAUDE.md §3) is partially realized — the substitute/replan rungs
 are still being built out.
 
+The param-tweak rung gets a crisp input for the most common manipulation failure, a
+missed grasp (issue #353): the HAL publishes `KIND_GRASP_OUTCOME` on
+`/openral/failure/hal` when a gripper close ends without an ATTACH, and
+`ContextRenderer` renders one `[grasp_miss] hand=<jaw link> target=<id>` line per hand
+in `## EXECUTION` with a `reflect_on_grasp_miss` hint naming the levers `execute_rskill`
+already has (a re-grounded `grasp_target.object_id`, the other hand via
+`grasp_target.contact_links`, a different skill). That hand's next ATTACH clears it.
+The core still sequences nothing on it: per-target miss counting and the
+substitute / goal-replan escalation are deferred until trials show whether the LLM's
+own re-dispatch recovers.
+
 ---
 
 ## Observability

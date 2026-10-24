@@ -764,6 +764,19 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   explicitly (`resample_mask_nearest`). `head_zed` keeps `frame_id: zed_camera_link` and nominal
   intrinsics on purpose (the kernel mount and unit overlays key on them); nothing geometric reads
   them.
+- A missed grasp is evidence for S2, never a HAL retry (issue #353). The 2026-10-08 Isaac restock
+  trials closed beside the target carton and hovered for the rest of the run while the bridge only
+  logged `no ATTACH before the close ended`. The bridge now also publishes that outcome
+  (`VisionAttachmentBridge._report_outcome`): one `FailureTrigger` `KIND_GRASP_OUTCOME`
+  (`GraspOutcomeEvidence`: gripper joint, jaw link, attach link, consecutive misses, the live
+  declaration's `target_id` and whether its region was armed, the trigger's last
+  `short_of_command` / settle spread) on `/openral/failure/hal` per close that ended without an
+  ATTACH — `SEVERITY_FAIL` when the declaration named that hand, `SEVERITY_WARN` for an undeclared
+  close (a policy may close an empty hand on purpose; that wakes no reasoner) — and one
+  `SEVERITY_INFO` `attach` at the next ATTACH after one or more misses; a first-try ATTACH publishes
+  nothing. The kernel's grasp allowance is unchanged and nothing below S2 retries. The reasoner
+  turns it into a per-hand reflection (`openral_reasoner.context.reflect_on_grasp_miss`). Live:
+  `tests/integration/test_grasp_outcome_live.py`.
 
 ### 2.3 Place
 
