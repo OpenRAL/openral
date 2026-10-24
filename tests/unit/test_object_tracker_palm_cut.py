@@ -181,7 +181,16 @@ def test_a_hull_primitive_is_cut_from_its_hull_not_its_box(robot: str) -> None:
     [new] = _palm_clipped([prim], t_ao, shifted, "o")
     box_cut = _palm_clipped([_prim(np.eye(4), (h, h, h), "o", "measured")], t_ao, shifted, "o")[0]
 
-    def vol(p: AttachedCollisionPrimitive) -> float:
+    from scipy.spatial import ConvexHull
+
+    def box_vol(p: AttachedCollisionPrimitive) -> float:
         return float(np.prod(bounding_half_extents(p.shape)))
 
-    assert vol(new) <= vol(box_cut) + 1e-12, "no larger than the cut of the plain box"
+    def hull_vol(p: AttachedCollisionPrimitive) -> float:
+        assert p.tight_geometry is not None
+        return float(ConvexHull(np.asarray(p.tight_geometry.hull_vertices_m)).volume)
+
+    assert box_vol(new) <= box_vol(box_cut) + 1e-12, "no larger than the cut of the plain box"
+    # The inscribed tetrahedron shares the cube's bounding box, so only the hull tells them
+    # apart: cut from the hull, the solid is strictly smaller than the cut cube.
+    assert hull_vol(new) < 0.9 * hull_vol(box_cut), "cut from the hull, not from its box"
